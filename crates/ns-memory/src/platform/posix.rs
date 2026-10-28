@@ -455,11 +455,10 @@ pub(crate) unsafe fn unmap_code(mapping: &CodeMapping, bytes: usize) {
 
 #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
 thread_local! {
-    /// How many writes the calling thread is in. The switch is one per
-    /// thread, not one per write, so only the outermost write switches it
-    /// to writing and back: a write that ended inside another would
-    /// otherwise leave the other storing into pages its thread may only
-    /// execute.
+    /// How many writes the calling thread is in: one at most, since a
+    /// write calls nothing that writes, but the switch is one per thread,
+    /// so counting keeps a write nested inside another -- should one ever
+    /// be -- from switching the thread back under the outer one.
     static WRITERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 

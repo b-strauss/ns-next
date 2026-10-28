@@ -29,11 +29,12 @@ pub(crate) mod macro_assembler;
 pub(crate) mod stubs;
 
 use std::cell::Cell;
+use std::rc::{Rc, Weak};
 
 use ns_memory::{CodeOffset, CodeWriter};
 
 use crate::bytecode::CompiledCode;
-use crate::heap::{ActivationReference, CodeId, RegisterBase};
+use crate::heap::{ActivationReference, CodeId, Heap, RegisterBase};
 use crate::interpreter::{Mutator, DEPTH_RESERVE, MAX_ACTIVATION_DEPTH};
 
 /// The code zone's size unless a test asks for another. A first guess
@@ -315,10 +316,13 @@ pub(crate) enum Refusal {
 /// A body installed in the zone: which body, where its code lies, and its
 /// program-counter map.
 struct InstalledBody {
-    /// The body's row in the heap's code table. An installed body's id is
-    /// never freed while its code lies in the zone
-    /// (`JitState::installed_code_ids`), so it names this body for as long.
-    code_id: CodeId,
+    /// The body itself, held weakly so that its code still dies with its
+    /// mixin's row: the zone keeps no body alive. Not its code id, which a
+    /// full collection may free and mint again for another body; the id is
+    /// asked of the heap whenever it is wanted (`JitState::body_at`). An
+    /// allocation a `Weak` points to is never reused while the `Weak`
+    /// lives, so a body that died answers nothing rather than another.
+    code: Weak<CompiledCode>,
     /// The offsets of its first byte and of the byte past its last.
     start: u32,
     end: u32,
@@ -458,11 +462,17 @@ impl JitState {
             .map_or(0, |zone| zone.writer.zone().identity())
     }
 
-    /// The body whose machine code holds `machine_address`, an address in
-    /// the zone's executable view -- a return address the exit's walk finds
-    /// on the native stack -- with its program-counter map, whose offsets
-    /// count from the body's start (`body_start`); `None` for an address in
-    /// no installed body, the stubs' among them.
+    /// The body a call returns into at `return_address`, an address in the
+    /// zone's executable view that the exit's walk finds on the native
+    /// stack, with the body's code id in `heap` and its program-counter
+    /// map, whose offsets count from the body's start (`body_start`).
+    /// `None` for an address in no installed body -- the stubs' among them
+    /// -- and for a body that has died since it was installed. The id is
+    /// asked of the heap afresh, which mints one for a body a full
+    /// collection freed the id of, so it never names another body; a
+    /// return address is looked up by the byte before it, the call's last,
+    /// so that a call ending its body still finds its body rather than the
+    /// next one installed right after it.
     #[cfg_attr(
         not(test),
         expect(
@@ -470,14 +480,20 @@ impl JitState {
             reason = "the exit that materializes frames maps return addresses back"
         )
     )]
-    pub(crate) fn body_at(&self, machine_address: usize) -> Option<(CodeId, &ProgramCounterMap)> {
-        let body = self.installed_body_at(machine_address)?;
-        Some((body.code_id, &body.map))
+    pub(crate) fn body_at(
+        &self,
+        return_address: usize,
+        heap: &mut Heap<'_>,
+    ) -> Option<(CodeId, &ProgramCounterMap)> {
+        let body = self.installed_body_at(return_address)?;
+        let code = body.code.upgrade()?;
+        Some((heap.code_id(&code), &body.map))
     }
 
-    /// Where the code of the body holding `machine_address` starts, as an
-    /// address in the zone's executable view: what a return address less
-    /// gives the offset its body's program-counter map is read at.
+    /// Where the code of the body a call returns into at `return_address`
+    /// starts, as an address in the zone's executable view: what a return
+    /// address less gives the offset its body's program-counter map is read
+    /// at. Looked up as `body_at` looks it up.
     #[cfg_attr(
         not(test),
         expect(
@@ -485,8 +501,8 @@ impl JitState {
             reason = "the exit that materializes frames maps return addresses back"
         )
     )]
-    pub(crate) fn body_start(&self, machine_address: usize) -> Option<usize> {
-        let body = self.installed_body_at(machine_address)?;
+    pub(crate) fn body_start(&self, return_address: usize) -> Option<usize> {
+        let body = self.installed_body_at(return_address)?;
         let zone = self.zone.as_ref()?;
         Some(
             zone.writer
@@ -495,22 +511,35 @@ impl JitState {
         )
     }
 
-    fn installed_body_at(&self, machine_address: usize) -> Option<&InstalledBody> {
+    /// For each installed body, a return address into it -- the address
+    /// one past its start -- and the body, while it lives.
+    #[cfg(test)]
+    pub(crate) fn installed_bodies_for_test(&self) -> Vec<(usize, Option<Rc<CompiledCode>>)> {
+        let Some(zone) = self.zone.as_ref() else {
+            return Vec::new();
+        };
+        self.bodies
+            .iter()
+            .map(|body| {
+                let start = zone
+                    .writer
+                    .zone()
+                    .executable_address(CodeOffset(body.start));
+                (start + 1, body.code.upgrade())
+            })
+            .collect()
+    }
+
+    /// The installed body holding the byte before `return_address`.
+    fn installed_body_at(&self, return_address: usize) -> Option<&InstalledBody> {
         let zone = self.zone.as_ref()?;
         let base = zone.writer.zone().executable_address(CodeOffset(0));
-        let offset = u32::try_from(machine_address.checked_sub(base)?).ok()?;
+        let offset = u32::try_from(return_address.checked_sub(base)?.checked_sub(1)?).ok()?;
         // Installed in ascending order, so the body holding the offset, if
         // one does, is the last that starts at or before it.
         let after = self.bodies.partition_point(|body| body.start <= offset);
         let body = &self.bodies[after.checked_sub(1)?];
         (offset < body.end).then_some(body)
-    }
-
-    /// The code ids of every body installed in the zone. A full collection
-    /// keeps their rows (`Mutator::reclaim_ids`): an id freed and minted
-    /// again for another body would have `body_at` name the wrong one.
-    pub(crate) fn installed_code_ids(&self) -> Vec<CodeId> {
-        self.bodies.iter().map(|body| body.code_id).collect()
     }
 
     /// A state with the JIT on and a zone of `bytes`, whatever the
@@ -615,13 +644,12 @@ pub(crate) fn machine_entry(state: &JitState, code: &CompiledCode) -> Option<Cod
         .then(|| CodeOffset(slot.offset.get()))
 }
 
-/// Counts an entry into `code`, whose row in the heap's code table is
-/// `code_id`; at its `COMPILE_AT_ENTRY`th, compiles it. While the JIT is
-/// off, refuses it at once (`JitState::set_enabled`). A body that cannot
-/// be compiled is refused for good. A body compiled into a zone that is
-/// not this interpreter's -- another interpreter's, or one since replaced
-/// -- is compiled again into this one.
-pub(crate) fn note_entry(state: &mut JitState, code: &CompiledCode, code_id: CodeId) {
+/// Counts an entry into `code`; at its `COMPILE_AT_ENTRY`th, compiles it.
+/// While the JIT is off, refuses it at once (`JitState::set_enabled`).
+/// A body that cannot be compiled is refused for good. A body compiled
+/// into a zone that is not this interpreter's -- another interpreter's, or
+/// one since replaced -- is compiled again into this one.
+pub(crate) fn note_entry(state: &mut JitState, code: &Rc<CompiledCode>) {
     let slot = &code.jit;
     if !state.enabled {
         slot.refuse();
@@ -635,11 +663,11 @@ pub(crate) fn note_entry(state: &mut JitState, code: &CompiledCode, code_id: Cod
         // every switch, each time leaving its old code in the other's
         // zone; no body is run by two interpreters today
         // (`docs/OPEN-WORK.md`, road step 8).
-        COMPILED => compile_into_slot(state, code, code_id),
+        COMPILED => compile_into_slot(state, code),
         entries => {
             let entries = entries + 1;
             if entries >= state.compile_at_entry {
-                compile_into_slot(state, code, code_id);
+                compile_into_slot(state, code);
             } else {
                 slot.state.set(entries);
             }
@@ -649,8 +677,8 @@ pub(crate) fn note_entry(state: &mut JitState, code: &CompiledCode, code_id: Cod
 
 /// Compiles `code` into the zone and records the outcome in its slot and
 /// the statistics.
-fn compile_into_slot(state: &mut JitState, code: &CompiledCode, code_id: CodeId) {
-    match compile(state, code, code_id) {
+fn compile_into_slot(state: &mut JitState, code: &Rc<CompiledCode>) {
+    match compile(state, code) {
         Ok((offset, map)) => {
             code.jit.compiled(state.zone_identity(), offset, map);
             state.statistics.compiled_bodies += 1;
@@ -669,11 +697,7 @@ fn compile_into_slot(state: &mut JitState, code: &CompiledCode, code_id: CodeId)
 /// Compiles `code` and installs it, answering its offset and its index
 /// among the installed bodies.
 #[cfg(ns_jit)]
-fn compile(
-    state: &mut JitState,
-    code: &CompiledCode,
-    code_id: CodeId,
-) -> Result<(CodeOffset, u32), Refusal> {
+fn compile(state: &mut JitState, code: &Rc<CompiledCode>) -> Result<(CodeOffset, u32), Refusal> {
     let Some(zone) = state.zone.as_mut() else {
         panic!("internal: the JIT is on without a zone");
     };
@@ -687,7 +711,7 @@ fn compile(
     let offset = install(zone, &body.code.bytes)?;
     let length = u32::try_from(body.code.bytes.len()).map_err(|_| Refusal::ZoneFull)?;
     state.bodies.push(InstalledBody {
-        code_id,
+        code: Rc::downgrade(code),
         start: offset.0,
         end: offset.0 + length,
         map: body.map,
@@ -696,11 +720,7 @@ fn compile(
 }
 
 #[cfg(not(ns_jit))]
-fn compile(
-    _state: &mut JitState,
-    _code: &CompiledCode,
-    _code_id: CodeId,
-) -> Result<(CodeOffset, u32), Refusal> {
+fn compile(_state: &mut JitState, _code: &Rc<CompiledCode>) -> Result<(CodeOffset, u32), Refusal> {
     Err(Refusal::Unassembled)
 }
 
@@ -724,11 +744,10 @@ pub(crate) enum Resumption {
 pub(crate) fn entered(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
-    code: &CompiledCode,
+    code: &Rc<CompiledCode>,
     register_base: RegisterBase,
 ) -> Resumption {
-    let code_id = mutator.heap.activation_code_id(activation);
-    note_entry(&mut mutator.jit, code, code_id);
+    note_entry(&mut mutator.jit, code);
     match machine_entry(&mutator.jit, code) {
         Some(entry) => run_machine_code(mutator, activation, register_base, entry),
         None => Resumption::Interpreted { program_counter: 0 },
@@ -741,7 +760,7 @@ pub(crate) fn entered(
 pub(crate) fn entered_at_start(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
-    code: &CompiledCode,
+    code: &Rc<CompiledCode>,
     register_base: RegisterBase,
 ) -> Resumption {
     if code.jit.is_armed() {
@@ -896,14 +915,15 @@ mod tests {
         use ns_memory::Leaf;
 
         use crate::bytecode::{CodeKind, CompiledCode, Instruction, Literal};
-        use crate::heap::{CodeId, Immediate};
+        use crate::heap::Immediate;
+        use crate::interpreter::Interpreter;
         use crate::jit::macro_assembler::{Abi, LeafIndex, MacroAssembler, Operand};
         use crate::jit::stubs::testing::run_in;
         use crate::jit::stubs::{ExitKind, MachineExit};
         use crate::jit::{install, machine_entry, note_entry, JitState};
 
-        fn body() -> CompiledCode {
-            CompiledCode::new(
+        fn body() -> Rc<CompiledCode> {
+            Rc::new(CompiledCode::new(
                 CodeKind::Method,
                 vec![
                     Instruction::LoadLiteral {
@@ -917,12 +937,12 @@ mod tests {
                 0,
                 Vec::new(),
                 ns_syntax::Span::new(0, 0),
-            )
+            ))
         }
 
         /// A body whose first instruction, a return, has no template yet.
-        fn body_returning_at_once() -> CompiledCode {
-            CompiledCode::new(
+        fn body_returning_at_once() -> Rc<CompiledCode> {
+            Rc::new(CompiledCode::new(
                 CodeKind::Method,
                 vec![Instruction::Return { register: 13 }],
                 0,
@@ -930,13 +950,13 @@ mod tests {
                 0,
                 Vec::new(),
                 ns_syntax::Span::new(0, 0),
-            )
+            ))
         }
 
         /// A body whose templates jump back before its return: a loop that
         /// runs while its register holds `true`, which it never does.
-        fn body_with_a_loop() -> CompiledCode {
-            CompiledCode::new(
+        fn body_with_a_loop() -> Rc<CompiledCode> {
+            Rc::new(CompiledCode::new(
                 CodeKind::Method,
                 vec![
                     Instruction::LoadLiteral {
@@ -954,12 +974,12 @@ mod tests {
                 0,
                 Vec::new(),
                 ns_syntax::Span::new(0, 0),
-            )
+            ))
         }
 
-        fn enter_twice(state: &mut JitState, code: &CompiledCode) {
-            note_entry(state, code, CodeId::from_raw(0));
-            note_entry(state, code, CodeId::from_raw(0));
+        fn enter_twice(state: &mut JitState, code: &Rc<CompiledCode>) {
+            note_entry(state, code);
+            note_entry(state, code);
         }
 
         #[test]
@@ -994,12 +1014,12 @@ mod tests {
             let mut state = JitState::for_test(1 << 16, true);
             let code = body();
             state.set_enabled(false);
-            note_entry(&mut state, &code, CodeId::from_raw(0));
+            note_entry(&mut state, &code);
             assert_eq!(format!("{:?}", code.jit), "JitSlot::Refused");
             assert!(!code.jit.is_armed(), "a later push pays only the compare");
             assert_eq!(state.statistics().refused_bodies, 1);
             state.set_enabled(true);
-            note_entry(&mut state, &code, CodeId::from_raw(0));
+            note_entry(&mut state, &code);
             assert_eq!(machine_entry(&state, &code), None, "not revived");
             assert_eq!(state.statistics().refused_bodies, 1);
             assert_eq!(state.statistics().compiled_bodies, 0);
@@ -1017,7 +1037,7 @@ mod tests {
                 None,
                 "an offset into the first zone means nothing in the second"
             );
-            note_entry(&mut second, &code, CodeId::from_raw(0));
+            note_entry(&mut second, &code);
             assert!(machine_entry(&second, &code).is_some());
             assert_eq!(machine_entry(&first, &code), None);
             assert_eq!(second.statistics().compiled_bodies, 1);
@@ -1028,7 +1048,7 @@ mod tests {
         /// mutator, and the body it compiles.
         struct Compiling {
             state: JitState,
-            code: CompiledCode,
+            code: Rc<CompiledCode>,
         }
 
         fn compile_the_body(context: &mut Compiling, _arguments: [u64; 3]) -> u64 {
@@ -1082,40 +1102,60 @@ mod tests {
         }
 
         #[test]
-        fn every_address_of_an_installed_body_names_it() {
+        fn every_return_address_into_an_installed_body_names_it() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.enter(|mutator| every_return_address_names_its_body(&mut mutator.heap));
+        }
+
+        fn every_return_address_names_its_body(heap: &mut crate::heap::Heap<'_>) {
             let mut state = JitState::for_test(1 << 16, false);
             let first = body_with_a_loop();
             let second = body_with_a_loop();
-            note_entry(&mut state, &first, CodeId::from_raw(3));
-            note_entry(&mut state, &first, CodeId::from_raw(3));
-            note_entry(&mut state, &second, CodeId::from_raw(5));
-            note_entry(&mut state, &second, CodeId::from_raw(5));
+            enter_twice(&mut state, &first);
+            enter_twice(&mut state, &second);
+            let third = body_with_a_loop();
+            enter_twice(&mut state, &third);
             let zone = state.zone.as_ref().expect("a zone");
             let address = |offset| zone.writer.zone().executable_address(offset);
             let first_start = address(machine_entry(&state, &first).expect("compiled"));
             let second_start = address(machine_entry(&state, &second).expect("compiled"));
-            let first_length = second_start - first_start;
-            for (start, id) in [(first_start, 3), (second_start, 5)] {
-                for address in [start, start + 1, start + first_length / 2] {
-                    let (code_id, map) = state.body_at(address).expect("in a body");
-                    assert_eq!(code_id, CodeId::from_raw(id));
+            let third_start = address(machine_entry(&state, &third).expect("compiled"));
+            let length =
+                |index: usize| (state.bodies[index].end - state.bodies[index].start) as usize;
+            for (start, end, code) in [
+                (first_start, first_start + length(0), &first),
+                (second_start, second_start + length(1), &second),
+            ] {
+                // A return address lies past its call, so one at the body's
+                // very end still names it, and one at its start does not.
+                for return_address in [start + 1, (start + end) / 2, end] {
+                    let (code_id, map) = state.body_at(return_address, heap).expect("in a body");
+                    let named = heap.code(code_id).expect("a live row");
+                    assert!(Rc::ptr_eq(&named, code), "its own body");
                     assert_eq!(map.machine_offset(0), Some(0));
-                    assert_eq!(state.body_start(address), Some(start));
+                    assert_eq!(state.body_start(return_address), Some(start));
                 }
             }
-            assert!(state.body_at(first_start - 1).is_none(), "the stubs' code");
-            assert!(state.body_at(address(ns_memory::CodeOffset(0))).is_none());
-            assert!(state.body_at(0).is_none(), "outside the zone");
-            assert_eq!(
-                state.installed_code_ids(),
-                [CodeId::from_raw(3), CodeId::from_raw(5)]
+            assert!(
+                state.body_at(first_start, heap).is_none(),
+                "the stubs' code, or the padding after them"
             );
+            assert!(state
+                .body_at(address(ns_memory::CodeOffset(1)), heap)
+                .is_none());
+            assert!(state.body_at(0, heap).is_none(), "outside the zone");
+            // A body that died answers nothing, never another body. (The
+            // two above live on in the heap's code rows, which `body_at`
+            // registered them in, until a full collection.)
+            drop(third);
+            assert!(state.body_at(third_start + 1, heap).is_none());
+            assert!(state.body_at(second_start + 1, heap).is_some());
         }
 
         #[test]
         fn a_full_zone_refuses_bodies() {
             let mut state = JitState::for_test(4096, true);
-            let bodies: Vec<CompiledCode> = (0..200).map(|_| body()).collect();
+            let bodies: Vec<Rc<CompiledCode>> = (0..200).map(|_| body()).collect();
             for code in &bodies {
                 enter_twice(&mut state, code);
             }

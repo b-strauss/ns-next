@@ -9555,7 +9555,10 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   (`lower`), recording where each instruction's code starts and, for
   every call a send's template is to emit, the program counter of the
   send its return address belongs to (`ProgramCounterMap`,
-  `program_counter_of_return`, recorded by `record_call_return`). Templates: `LoadLiteral` of a literal whose value
+  `program_counter_of_return`): a send's call goes through
+  `BodyAssembler::call_send`, whose idiom `MacroAssembler::call_returning`
+  binds the return label right after the `call`, at the address the
+  processor pushes. Templates: `LoadLiteral` of a literal whose value
   is a word (`nil`, a Boolean, a `SmallInteger`, an immediate float),
   `LoadSelf`, `Move`, `StoreLocal`, `Jump`, `JumpIfNotBoolean`,
   `BranchIfFalse`, `BranchIfTrue`, and `IntegerBinary`'s `SmallInteger`
@@ -9577,13 +9580,17 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   counting its entries; at the second, `note_entry` compiles the body
   into the zone of the running interpreter, whose state -- the zone, 16
   MiB by default (`DEFAULT_ZONE_BYTES`, a first guess), the bodies
-  installed in it, each with its code id, its range and its
-  program-counter map, so that `JitState::body_at` answers the body an
-  address of the zone lies in, and the statistics
-  (`Interpreter::jit_statistics`) -- is held on the `Mutator`. An
-  installed body's code id is kept by every full collection while its
-  code lies in the zone (`Mutator::reclaim_ids`), so the id a return
-  address maps to never names another body. A push in `vm::run_stretch` pays one load
+  installed in it, each held weakly with its range and its
+  program-counter map, so that `JitState::body_at` answers the body a
+  return address into the zone lies in, and the statistics
+  (`Interpreter::jit_statistics`) -- is held on the `Mutator`. The zone
+  keeps no body alive, so code still dies with its mixin's row, and it
+  records no code id, which a full collection may free and mint again
+  for another body: `body_at` asks the heap for the body's id afresh,
+  and a body that died answers nothing. No return address into the zone
+  outlives an exit, and a collection runs only at an exit or between
+  entries, so a body with a compiled frame is always one that runs. A
+  push in `vm::run_stretch` pays one load
   and one compare (`JitSlot::is_armed`); everything else is
   `jit::entered`, out of line and `#[cold]`. A run's base activation,
   which the host pushed, is entered at `vm::run`'s start like any push,

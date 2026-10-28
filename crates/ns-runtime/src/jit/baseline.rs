@@ -70,7 +70,7 @@ struct BodyAssembler {
     backward_branches: Vec<(Label, u32)>,
     /// Each call's return address, a label bound right after the call,
     /// and the program counter of the send it is the call of, in the order
-    /// the calls are emitted (`record_call_return`).
+    /// the calls are emitted (`call_send`).
     call_returns: Vec<(Label, u32)>,
 }
 
@@ -340,21 +340,20 @@ impl BodyAssembler {
             .store_frame_register(destination, value);
     }
 
-    /// Records that the call just emitted is the call of the send being
-    /// lowered: its return address, the position right after it, maps back
-    /// to the send's program counter
-    /// (`ProgramCounterMap::program_counter_of_return`), which the exit's
-    /// walk over the native stack reads. Every call a send's template
-    /// emits is recorded right after it is emitted.
+    /// A send's call of the code at the address in `target`, recorded so
+    /// that its return address -- the address right after the `call`,
+    /// which the processor pushes and the exit's walk over the native
+    /// stack finds -- maps back to the send being lowered
+    /// (`ProgramCounterMap::program_counter_of_return`). Every call a
+    /// send's template emits goes through here, so none is left unmapped.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the sends' templates call through their cells")
     )]
-    fn record_call_return(&mut self) {
-        let assembler = self.macro_assembler.assembler();
-        let label = assembler.label();
-        assembler.bind(label);
-        self.call_returns.push((label, self.program_counter));
+    fn call_send(&mut self, target: Register) {
+        let return_address = self.macro_assembler.call_returning(target);
+        self.call_returns
+            .push((return_address, self.program_counter));
     }
 
     /// The call of the generic leaf, which runs the instruction being
@@ -713,75 +712,65 @@ mod tests {
             .0
     }
 
-    /// Assembles a body of two instructions, the first a leaf call
-    /// recorded as a send's call at program counter 0, the second an exit
-    /// after a second recorded call at program counter 1, and answers its
-    /// map and the bytes each call ends at -- measured by assembling the
-    /// code up to each call alone, which lays out the same bytes, since
-    /// no branch precedes them.
-    fn body_with_two_recorded_calls() -> (super::ProgramCounterMap, [u32; 2]) {
-        use crate::jit::macro_assembler::{LeafIndex, Operand};
-        use crate::jit::stubs::ExitKind;
+    /// The bytes of `call rax` and `call rcx`: `FF /2` with the register
+    /// in the ModRM byte's r/m field and mode 3 (Intel SDM, Volume 2A,
+    /// "CALL -- Call Procedure"), neither needing a REX prefix.
+    const CALL_RAX: [u8; 2] = [0xFF, 0xD0];
+    const CALL_RCX: [u8; 2] = [0xFF, 0xD1];
 
-        let emit = |calls: usize, record: bool| {
-            let mut macro_assembler = MacroAssembler::new(Abi::host());
-            let starts = (0..2)
-                .map(|_| macro_assembler.assembler().label())
-                .collect();
-            let mut body = super::BodyAssembler {
-                macro_assembler,
-                starts,
-                argument_count: 0,
-                program_counter: 0,
-                backward_branches: Vec::new(),
-                call_returns: Vec::new(),
-            };
-            for program_counter in 0..2u32 {
-                body.program_counter = program_counter;
-                let start = body.starts[program_counter as usize];
-                body.macro_assembler.assembler().bind(start);
-                if program_counter as usize >= calls {
-                    continue;
-                }
-                body.macro_assembler
-                    .call_leaf(LeafIndex(0), [Operand::Immediate(0); 3]);
-                if record {
-                    body.record_call_return();
-                }
-            }
-            if record {
-                body.macro_assembler.exit(ExitKind::Reexecute, 1);
-            }
-            let assembled = body.macro_assembler.finish().expect("assembled");
-            let map = super::program_counter_map(&assembled, &body.starts, &body.call_returns);
-            (map, u32::try_from(assembled.bytes.len()).expect("small"))
-        };
-        let (map, _) = emit(2, true);
-        let (_, first_end) = emit(1, false);
-        let (_, second_end) = emit(2, false);
-        (map, [first_end, second_end])
+    /// Where a call whose encoding is `call` ends in `bytes`, the one place
+    /// it occurs.
+    fn end_of_the_one(bytes: &[u8], call: [u8; 2]) -> u32 {
+        let ends: Vec<usize> = bytes
+            .windows(2)
+            .enumerate()
+            .filter(|(_, window)| *window == call)
+            .map(|(start, _)| start + 2)
+            .collect();
+        assert_eq!(ends.len(), 1, "the call occurs once");
+        u32::try_from(ends[0]).expect("small")
     }
 
     #[test]
-    fn a_recorded_call_maps_its_return_address_to_its_send() {
-        let (map, [first_end, second_end]) = body_with_two_recorded_calls();
-        assert_eq!(map.program_counter_of_return(first_end), Some(0));
-        assert_eq!(map.program_counter_of_return(second_end), Some(1));
+    fn a_sends_call_maps_its_return_address_to_the_send() {
+        use crate::jit::stubs::ExitKind;
+        use ns_assembler::x64::{RAX, RCX};
+
+        let mut macro_assembler = MacroAssembler::new(Abi::host());
+        let starts = (0..2)
+            .map(|_| macro_assembler.assembler().label())
+            .collect();
+        let mut body = super::BodyAssembler {
+            macro_assembler,
+            starts,
+            argument_count: 0,
+            program_counter: 0,
+            backward_branches: Vec::new(),
+            call_returns: Vec::new(),
+        };
+        // Each call is followed by more code of its instruction, so that a
+        // label bound anywhere but right after the call would show.
+        for (program_counter, target) in [(0u32, RAX), (1, RCX)] {
+            body.program_counter = program_counter;
+            let start = body.starts[program_counter as usize];
+            body.macro_assembler.assembler().bind(start);
+            body.call_send(target);
+            body.macro_assembler.store_frame_register(3, target);
+        }
+        body.macro_assembler.exit(ExitKind::Reexecute, 1);
+        let assembled = body.macro_assembler.finish().expect("assembled");
+        let map = super::program_counter_map(&assembled, &body.starts, &body.call_returns);
+        let first = end_of_the_one(&assembled.bytes, CALL_RAX);
+        let second = end_of_the_one(&assembled.bytes, CALL_RCX);
+        assert_eq!(map.program_counter_of_return(first), Some(0));
+        assert_eq!(map.program_counter_of_return(second), Some(1));
+        assert_eq!(map.program_counter_of_return(first + 1), None, "past it");
         assert_eq!(
-            map.machine_offset(1),
-            Some(first_end),
-            "the second starts there"
-        );
-        assert_eq!(
-            map.program_counter_of_return(0),
-            None,
-            "no call returns there"
-        );
-        assert_eq!(
-            map.program_counter_of_return(first_end - 1),
+            map.program_counter_of_return(first - 1),
             None,
             "inside the call"
         );
+        assert_eq!(map.program_counter_of_return(0), None);
     }
 
     fn integer(value: i64) -> u64 {

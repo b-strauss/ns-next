@@ -22,8 +22,11 @@ thread_local! {
 /// Windows reports its guard pages and the guarantee for the overflow
 /// handler, which are left out; a system whose report includes a guard
 /// page (glibc before 2.27) answers that much more, which a caller's
-/// margin covers. The stack grows down on every platform the code zone
-/// supports.
+/// margin covers. A Linux main thread under a large or unlimited stack
+/// limit reports a stack reaching down to the next mapping, the kernel's
+/// guard gap included, so it answers up to that gap (1 MiB by default)
+/// more -- of a stack far larger than any need the JIT has. The stack
+/// grows down on every platform the code zone supports.
 pub fn remaining_bytes() -> Option<usize> {
     let lowest = LOWEST_USABLE_ADDRESS
         .with(|lowest| *lowest.get_or_init(platform::thread_stack_lowest_usable_address))?;

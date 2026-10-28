@@ -382,6 +382,22 @@ impl MacroAssembler {
         self.assembler.load(Width::Word64, RSP, saved_stack_pointer);
     }
 
+    /// Calls the code at the address in `target`, and answers a label
+    /// bound right after the `call` instruction: its return address, the
+    /// address the processor pushes, with nothing emitted between the two.
+    /// A send's call goes through here so that the exit's walk can map
+    /// the return address it finds on the native stack back to the send.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the sends' templates call through their cells")
+    )]
+    pub(crate) fn call_returning(&mut self, target: Register) -> Label {
+        self.assembler.call_register(target);
+        let return_address = self.assembler.label();
+        self.assembler.bind(return_address);
+        return_address
+    }
+
     /// Leaves machine code through the exit stub, which writes `kind` and
     /// `program_counter` into the block and returns to `enter`'s caller.
     /// A jump rather than a call: the stub never returns here, and a call

@@ -129,13 +129,16 @@ pub(crate) fn thread_stack_lowest_usable_address() -> Option<usize> {
         return None;
     }
     let mut guarantee = 0u32;
+    // An unknown guarantee is an unknown bound: no answer, which runs
+    // interpreted, rather than one that may promise the guarantee's pages.
     // SAFETY: with a value of 0 the call writes the current guarantee into
     // the word it is given and changes nothing.
-    let answered = unsafe { SetThreadStackGuarantee(&mut guarantee) };
-    let guarantee = if answered == 0 { 0 } else { guarantee as usize };
+    if unsafe { SetThreadStackGuarantee(&mut guarantee) } == 0 {
+        return None;
+    }
     lowest
         .checked_add(2 * page_size())
-        .and_then(|address| address.checked_add(guarantee))
+        .and_then(|address| address.checked_add(guarantee as usize))
 }
 
 /// How the code zone's executable view may be accessed. Neither ever

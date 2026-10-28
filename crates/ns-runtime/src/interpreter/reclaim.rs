@@ -136,10 +136,7 @@ impl Mutator<'_> {
         self.heap.truncate_application_rows();
         self.reclaim_mixins(&gathered);
         // Step 4: codes. The marked closures and frames and the running
-        // activations are every holder of one, and so is the JIT's zone,
-        // which names every body installed in it by id -- after step 3,
-        // since machine code alone keeps no body's mixin.
-        gathered.running_codes(&self.jit.installed_code_ids());
+        // activations are every holder of one.
         self.heap.free_unnamed_codes(&gathered.codes);
         // Step 5: feedback ranges. Whether or not anything above was freed:
         // a body steps 3 and 4 let go of can end a family on its own.
@@ -706,6 +703,67 @@ mod tests {
         interpreter.collect_now();
         let after_first_round = after_first_round.expect("the first round ran");
         assert!(table_counts(&mut interpreter).2 <= after_first_round);
+    }
+
+    /// Each round edits `count` anew, runs the new body compiled -- the
+    /// stress setting compiles it at its first entry -- and collects, which
+    /// lets the old body die and frees its code id for a later body. The
+    /// zone keeps no body alive and records no id a collection can free:
+    /// every installed body's return address answers that body, under the
+    /// id the heap has for it now, or nothing once it died -- never another
+    /// body, though ids are minted again.
+    #[cfg(ns_jit)]
+    #[test]
+    fn a_return_address_never_names_a_body_that_took_a_freed_id() {
+        let (mut interpreter, outer) = load(OUTER);
+        interpreter.set_jit_enabled(true);
+        interpreter.set_jit_stress(true);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let id = id_of(&mut interpreter, &outer);
+        // Every body each id was answered for, by its allocation.
+        let mut bodies_by_id: std::collections::HashMap<crate::heap::CodeId, Vec<usize>> =
+            std::collections::HashMap::new();
+        let mut died = 0;
+        for round in 1..=20 {
+            install(
+                &mut interpreter,
+                id,
+                &add_method(&format!(
+                    "public count = ( | sum ::= 0. index ::= 0. | [index < {round}] whileTrue: [ sum:: sum + index. index:: index + 1 ]. ^sum + {round} )"
+                )),
+            );
+            let answer = send(&mut interpreter, &instance, "count");
+            assert_eq!(
+                integer(&mut interpreter, &answer),
+                Some(round * (round - 1) / 2 + round)
+            );
+            drop(answer);
+            interpreter.collect_now();
+            interpreter.enter(|mutator| {
+                for (return_address, body) in mutator.jit.installed_bodies_for_test() {
+                    let answered = mutator.jit.body_at(return_address, &mut mutator.heap);
+                    match (body, answered) {
+                        (Some(body), Some((code_id, _))) => {
+                            let named = mutator.heap.code(code_id).expect("a live row");
+                            assert!(Rc::ptr_eq(&named, &body), "its own body, no other");
+                            let allocation = Rc::as_ptr(&body) as usize;
+                            let seen = bodies_by_id.entry(code_id).or_default();
+                            if !seen.contains(&allocation) {
+                                seen.push(allocation);
+                            }
+                        }
+                        (None, None) => died += 1,
+                        (Some(_), None) => panic!("a live body's return address answers nothing"),
+                        (None, Some(_)) => panic!("a dead body's return address answers a body"),
+                    }
+                }
+            });
+        }
+        assert!(died > 0, "edited-away bodies die with their mixin");
+        assert!(
+            bodies_by_id.values().any(|bodies| bodies.len() > 1),
+            "some id was minted again for another body"
+        );
     }
 
     /// Every table a hundred edit-install-call-collect rounds could grow.
