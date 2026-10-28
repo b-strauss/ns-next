@@ -50,11 +50,45 @@ fn names_the_x64_module(code: &str) -> bool {
     })
 }
 
-/// Whether `line` is a `cfg` attribute that holds its item to test builds:
-/// `#[cfg(test)]`, or an `all` that requires `test`.
+/// Whether `line` is a `cfg` attribute that holds its item to test builds
+/// only: `#[cfg(test)]`, or an `all(...)` one of whose own operands is
+/// `test`. A `test` nested deeper -- `all(any(test, debug_assertions),
+/// ...)` -- does not count, since such an item is compiled outside tests.
 fn is_test_configuration(line: &str) -> bool {
     let line = line.trim();
-    line == "#[cfg(test)]" || (line.starts_with("#[cfg(all(") && line.contains("test,"))
+    if line == "#[cfg(test)]" {
+        return true;
+    }
+    let Some(operands) = line
+        .strip_prefix("#[cfg(all(")
+        .and_then(|rest| rest.strip_suffix("))]"))
+    else {
+        return false;
+    };
+    top_level_operands(operands)
+        .iter()
+        .any(|operand| operand.trim() == "test")
+}
+
+/// The comma-separated operands of a `cfg` predicate's argument list, a
+/// comma inside a nested `any(...)`, `not(...)` or `all(...)` not
+/// splitting them.
+fn top_level_operands(operands: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let (mut depth, mut start) = (0_usize, 0);
+    for (index, character) in operands.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                found.push(&operands[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    found.push(&operands[start..]);
+    found
 }
 
 /// The lines of `source` outside its `#[cfg(test)]` modules, each with its
@@ -138,6 +172,11 @@ fn the_scan_finds_a_use_and_a_path_but_not_prose_or_a_test_module() {
         "#[cfg(all(test, target_arch = \"x86_64\"))]"
     ));
     assert!(!is_test_configuration("#[cfg(debug_assertions)]"));
+    assert!(!is_test_configuration(
+        "#[cfg(all(any(test, debug_assertions), target_arch = \"x86_64\"))]"
+    ));
+    assert!(!is_test_configuration("#[cfg(all(not(test), unix))]"));
+    assert!(!is_test_configuration("#[cfg(any(test, unix))]"));
     let source = "use a::b;\n#[cfg(test)]\nmod tests {\n    use ns_assembler::x64::RAX;\n    fn f() {\n    }\n}\nuse ns_assembler::x64::RCX;\n";
     let kept: Vec<usize> = lines_outside_test_modules(source)
         .into_iter()

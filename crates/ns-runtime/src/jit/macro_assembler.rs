@@ -754,7 +754,9 @@ impl MacroAssembler {
     /// finds it from `LexicalOrigin::Class`, instruction for instruction:
     /// the current class, header place 1, then `depth` steps out along the
     /// declaring-class fields; a jump to `missing` where the chain is
-    /// shorter, where the Rust answers `None`. Clobbers the flags.
+    /// shorter, where the Rust answers `None`, with `target` then holding
+    /// no class -- the word that ended the walk -- which the code at
+    /// `missing` must not read. Clobbers the flags.
     pub(crate) fn load_lexical_class(
         &mut self,
         target: Register,
@@ -1085,5 +1087,153 @@ mod tests {
             }
         );
         assert_eq!(frame[5], 0, "the read stopped the body");
+    }
+
+    /// A fake class object for the walks below: words the machine code
+    /// reads at the layout's displacements from its handle, which is its
+    /// address, since the tests' object space starts at 0.
+    struct FakeClass {
+        words: Vec<u64>,
+    }
+
+    impl FakeClass {
+        fn new() -> FakeClass {
+            FakeClass {
+                words: vec![crate::heap::Immediate::NIL.bits(); 64],
+            }
+        }
+
+        fn handle(&self) -> u64 {
+            self.words.as_ptr().expose_provenance() as u64
+        }
+
+        fn set(&mut self, displacement: i32, word: u64) {
+            let index = usize::try_from(displacement / 8).expect("a field lies after the start");
+            self.words[index] = word;
+        }
+    }
+
+    const NIL: u64 = crate::heap::Immediate::NIL.bits();
+
+    /// A frame of a body taking no arguments, its receiver `receiver` and
+    /// its current class `current_class`.
+    fn frame_with(receiver: u64, current_class: u64) -> [u64; 16] {
+        let mut frame = [0u64; 16];
+        frame[usize::from(crate::heap::Heap::receiver_register(0))] = receiver;
+        frame[usize::from(crate::heap::Heap::current_class_register(0))] = current_class;
+        frame
+    }
+
+    /// Runs `load_enclosing_object` at `depth` on `frame`, answering what
+    /// it left in register 15.
+    fn enclosing_object(frame: &mut [u64; 16], depth: u16) -> u64 {
+        let mut machine = Machine::new();
+        let body = machine.body(|macro_assembler| {
+            macro_assembler.load_enclosing_object(RAX, 0, depth);
+            macro_assembler.store_frame_register(15, RAX);
+            macro_assembler.exit(ExitKind::Reexecute, 0);
+        });
+        machine.run(body, frame, 0, false, &mut (), &[]);
+        frame[15]
+    }
+
+    /// `dispatch::kth_enclosing_object`'s ends: `self` at depth 0; `nil`
+    /// at every positive depth for a frame with no current class, a
+    /// top-level activation's; the enclosing object one level out; and
+    /// `nil` where the declaring chain ends before the depth.
+    #[test]
+    fn the_enclosing_object_walk_answers_nil_where_the_chain_ends() {
+        let layout = crate::heap::Heap::machine_layout();
+        let enclosing = FakeClass::new();
+        let mut class = FakeClass::new();
+        class.set(layout.enclosing_displacement, enclosing.handle());
+        let receiver = 0x1235;
+        assert_eq!(
+            enclosing_object(&mut frame_with(receiver, NIL), 0),
+            receiver
+        );
+        assert_eq!(enclosing_object(&mut frame_with(receiver, NIL), 1), NIL);
+        assert_eq!(enclosing_object(&mut frame_with(receiver, NIL), 3), NIL);
+        let mut frame = frame_with(receiver, class.handle());
+        assert_eq!(enclosing_object(&mut frame, 1), enclosing.handle());
+        let mut frame = frame_with(receiver, class.handle());
+        assert_eq!(enclosing_object(&mut frame, 2), NIL, "no declaring class");
+    }
+
+    /// `load_lexical_class` jumps to its `missing` label where
+    /// `dispatch::kth_lexical_class` answers `None` -- no current class,
+    /// a declaring chain shorter than the depth -- and answers N otherwise.
+    #[test]
+    fn the_lexical_class_walk_takes_its_missing_label_where_the_chain_ends() {
+        let layout = crate::heap::Heap::machine_layout();
+        let declaring = FakeClass::new();
+        let mut class = FakeClass::new();
+        class.set(layout.declaring_class_displacement, declaring.handle());
+        let lexical_class = |frame: &mut [u64; 16], depth: u16| {
+            let mut machine = Machine::new();
+            let body = machine.body(|macro_assembler| {
+                let missing = macro_assembler.assembler().label();
+                macro_assembler.load_lexical_class(RAX, 0, depth, missing);
+                macro_assembler.store_frame_register(15, RAX);
+                macro_assembler.exit(ExitKind::Reexecute, 1);
+                macro_assembler.assembler().bind(missing);
+                macro_assembler.exit(ExitKind::Reexecute, 2);
+            });
+            let (exit, _) = machine.run(body, frame, 0, false, &mut (), &[]);
+            (exit, frame[15])
+        };
+        let missing = MachineExit::Reexecute { program_counter: 2 };
+        let found = MachineExit::Reexecute { program_counter: 1 };
+        assert_eq!(lexical_class(&mut frame_with(0, NIL), 0).0, missing);
+        assert_eq!(lexical_class(&mut frame_with(0, NIL), 1).0, missing);
+        assert_eq!(
+            lexical_class(&mut frame_with(0, class.handle()), 0),
+            (found, class.handle())
+        );
+        assert_eq!(
+            lexical_class(&mut frame_with(0, class.handle()), 1),
+            (found, declaring.handle())
+        );
+        assert_eq!(
+            lexical_class(&mut frame_with(0, class.handle()), 2).0,
+            missing
+        );
+    }
+
+    /// `load_superclass` exits at the send where `decide_super_send`
+    /// raises its errors -- no current class, no superclass -- before it
+    /// writes anything, and answers S otherwise.
+    #[test]
+    fn the_superclass_load_exits_where_there_is_no_current_class_or_superclass() {
+        let layout = crate::heap::Heap::machine_layout();
+        let superclass = FakeClass::new();
+        let without_superclass = FakeClass::new();
+        let mut class = FakeClass::new();
+        class.set(layout.superclass_displacement, superclass.handle());
+        let load = |frame: &mut [u64; 16]| {
+            let mut machine = Machine::new();
+            let body = machine.body(|macro_assembler| {
+                macro_assembler.load_superclass(RAX, 0, 7);
+                macro_assembler.store_frame_register(15, RAX);
+                macro_assembler.exit(ExitKind::Reexecute, 99);
+            });
+            let (exit, _) = machine.run(body, frame, 0, false, &mut (), &[]);
+            (exit, frame[15])
+        };
+        let at_the_send = MachineExit::Reexecute { program_counter: 7 };
+        assert_eq!(load(&mut frame_with(0, NIL)), (at_the_send, 0));
+        assert_eq!(
+            load(&mut frame_with(0, without_superclass.handle())),
+            (at_the_send, 0)
+        );
+        assert_eq!(
+            load(&mut frame_with(0, class.handle())),
+            (
+                MachineExit::Reexecute {
+                    program_counter: 99
+                },
+                superclass.handle()
+            )
+        );
     }
 }

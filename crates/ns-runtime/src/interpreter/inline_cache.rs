@@ -1668,21 +1668,16 @@ enum LexicalClass<'gc> {
     Known(Option<ClassReference<'gc>>),
 }
 
-/// The site's own entry for `key`, materialized: a monomorphic hit, or
-/// `None`.
+/// The target of the site's own entry for `key`'s guard: a monomorphic
+/// hit once `materialize` finds its step up, or `None`. It answers the
+/// target rather than its `Resolved`, so that the caller materializes
+/// and acts where the `Resolved` is consumed: a `Resolved` answered out
+/// of here is handed back through memory and tested again before
+/// `act_with_base`, on the hit path of every send.
 #[inline(always)]
-fn site_hit<'gc>(
-    mutator: &mut Mutator<'gc>,
-    index: usize,
-    key: SendKey<'_, 'gc>,
-) -> Option<(Resolved<'gc>, FeedbackBase)> {
-    if let Some(entry) = mutator.caches.sites.get(index) {
-        if entry.guard == key.guard {
-            let target = entry.target.clone();
-            return materialize(mutator, target, key);
-        }
-    }
-    None
+fn site_target(mutator: &Mutator<'_>, index: usize, guard: DispatchId) -> Option<Target> {
+    let entry = mutator.caches.sites.get(index)?;
+    (entry.guard == guard).then(|| entry.target.clone())
 }
 
 /// A monomorphic hit, or everything else out of line. `lexical_of` answers
@@ -1698,27 +1693,62 @@ fn cached<'gc>(
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    if let Some((resolved, base)) = site_hit(mutator, index, key) {
-        return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
+    if let Some(target) = site_target(mutator, index, key.guard) {
+        if let Some((resolved, base)) = materialize(mutator, target, key) {
+            return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
+        }
     }
     miss(
-        mutator, index, key, selector, arguments, lexical_of, resolve,
+        mutator,
+        index,
+        key.guard,
+        key.rule,
+        *key.receiver,
+        key.lexical_class,
+        key.superclass,
+        key.current_class,
+        selector,
+        arguments,
+        lexical_of,
+        resolve,
     )
 }
 
 /// `decided_miss`'s decision, acted on. Out of line so that a monomorphic
 /// hit keeps its registers; not `#[cold]`, since a polymorphic hit comes
-/// through here.
+/// through here. It takes its key's parts rather than the key: a key
+/// handed over whole is handed over through memory, and the sender then
+/// builds it in memory where it is made -- before the guard's compare,
+/// on the hit path of every send, the receiver's word spilled for the
+/// key's reference to it -- where its parts, in registers until this
+/// call, are stored only on the miss (`cargo xtask gates codegen`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the key's parts are passed one by one so that the hit path builds no key in memory"
+)]
 #[inline(never)]
 fn miss<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
-    key: SendKey<'_, 'gc>,
+    guard: DispatchId,
+    rule: CacheRule,
+    receiver: Value<'gc>,
+    lexical_class: Option<ClassReference<'gc>>,
+    superclass: Option<ClassReference<'gc>>,
+    current_class: Option<ClassReference<'gc>>,
     selector: Symbol,
     arguments: Arguments<'_, 'gc>,
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
+    let key = SendKey {
+        guard,
+        rule,
+        receiver: &receiver,
+        lexical_class,
+        superclass,
+        current_class,
+    };
     let (resolved, base) = decided_miss(mutator, index, key, selector, lexical_of, resolve);
     mutator.check_super_handler_slot(&resolved, *key.receiver)?;
     mutator.act_with_base(resolved, base, *key.receiver, selector, arguments)
@@ -1796,7 +1826,7 @@ pub(crate) enum MissAnswer {
 /// send makes (`send_public`, `send_lexical`, `send_super`), through the
 /// same functions -- its site and key (`public_key`, `lexical_site`,
 /// `lexical_receiver` and `lexical_key`, `super_site` and `super_key`), the site's entry
-/// (`site_hit`), the rest (`decided_miss`, or a vacant lexical site's
+/// (`site_target`, materialized), the rest (`decided_miss`, or a vacant lexical site's
 /// `decided_lexical_first`), filling the caches as they fill them -- but
 /// no `act`. Only a cached site calls through its cell, so an uncached
 /// one, which the interpreter decides uncached, refuses. A method machine
@@ -1927,7 +1957,7 @@ pub(crate) fn decide_at<'gc>(
 }
 
 /// `cached`'s decision, without `act`: the site's own entry
-/// (`site_hit`), else `decided_miss`.
+/// (`site_target`, materialized), else `decided_miss`.
 fn decided<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
@@ -1936,8 +1966,10 @@ fn decided<'gc>(
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> (Resolved<'gc>, FeedbackBase) {
-    if let Some(found) = site_hit(mutator, index, key) {
-        return found;
+    if let Some(target) = site_target(mutator, index, key.guard) {
+        if let Some(found) = materialize(mutator, target, key) {
+            return found;
+        }
     }
     decided_miss(mutator, index, key, selector, lexical_of, resolve)
 }
@@ -1946,9 +1978,9 @@ fn decided<'gc>(
 /// has no id, or the resolution's privacy is not the site's (only a crafted
 /// image makes a site's N change; refinement 1). Before `act`, which may run
 /// code. `key.rule`'s `Lexical` payload, if any, must already be N's
-/// application -- `miss` fills it in before falling through here;
-/// `send_lexical_first` builds it directly, since it never goes through
-/// `miss`.
+/// application -- `decided_miss` fills it in before falling through
+/// here; `decided_lexical_first` builds it directly, since it never goes
+/// through `decided_miss`.
 fn fill<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
