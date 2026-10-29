@@ -1853,7 +1853,33 @@ mod tests {
     /// code and the leaf stub's calls of the second run.
     #[cfg(ns_jit)]
     fn sum_across_a_forward(lowering: crate::Lowering, jit: bool) -> ([i64; 2], [u64; 3]) {
-        let source = indoc! {"
+        sum_across_a_forward_of(GETTER_FORWARD, lowering, jit)
+    }
+
+    /// `sum_across_a_forward` of the fixture `source`, whose root answers
+    /// `sumWith:` the vm mirror.
+    #[cfg(ns_jit)]
+    fn sum_across_a_forward_of(
+        source: &str,
+        lowering: crate::Lowering,
+        jit: bool,
+    ) -> ([i64; 2], [u64; 3]) {
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("forward.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        run_across_a_forward(&resolved, lowering, jit)
+    }
+
+    /// A getter read in a loop across a forward of its receiver to an
+    /// object of another layout (`sum_across_a_forward`).
+    #[cfg(ns_jit)]
+    const GETTER_FORWARD: &str = indoc! {"
             class Forwarding = Object new () (
               public class Point = (
                 | public x ::= 1. public y ::= 2. |
@@ -1880,20 +1906,60 @@ mod tests {
               )
             ) : ()
         "};
-        let module = ns_syntax::parse(source).expect("the fixture parses");
-        let resolved = match crate::resolve(
-            module,
-            std::rc::Rc::from(source),
-            crate::SourceOrigin::File(std::path::PathBuf::from("getter_forward.ns")),
-        ) {
-            Ok(resolved) => resolved,
-            Err(_) => panic!("the fixture resolves"),
-        };
+
+    /// A setter and a private slot accessor sent in a loop across a forward
+    /// of their receiver: a `Point`, whose private `count` its own `bump`
+    /// reads and writes through the leaf stub, becomes a `Wide`, a subclass
+    /// whose instances have the `Point` level's slots, so that the private
+    /// sites' recorded guard -- the `Point`'s -- misses and the level is
+    /// checked again, and the public setter `x:` stores into the `Wide`.
+    #[cfg(ns_jit)]
+    const SETTER_AND_PRIVATE_FORWARD: &str = indoc! {"
+            class Forwarding = Object new () (
+              public class Point = (
+                | public x ::= 1. private count ::= 0. |
+              ) (
+                public bump = (
+                  count: count + 1.
+                  ^count
+                )
+              )
+              public class Wide = Point (
+                | public z ::= 30. |
+              ) ()
+              public sumWith: mirror = (
+                ^sum: Point new forwardedTo: Wide new with: mirror
+              )
+              sum: point forwardedTo: wide with: mirror = (
+                | sum index |
+                sum:: 0.
+                index:: 0.
+                [index < 1000] whileTrue: [
+                  point x: index.
+                  sum:: sum + point bump + point x.
+                  index = 500 ifTrue: [forward: point to: wide with: mirror].
+                  index:: index + 1.
+                ].
+                ^sum
+              )
+              forward: point to: wide with: mirror = (
+                mirror elementsOf: {point} forwardIdentityToElementsOf: {wide} ifFail: [^-1].
+              )
+            ) : ()
+        "};
+
+    /// `sum_across_a_forward`'s run, of the loaded fixture.
+    #[cfg(ns_jit)]
+    fn run_across_a_forward(
+        resolved: &crate::types::ResolvedModule,
+        lowering: crate::Lowering,
+        jit: bool,
+    ) -> ([i64; 2], [u64; 3]) {
         let mut interpreter = Interpreter::bootstrap_with(lowering);
         interpreter.set_jit_enabled(jit);
         interpreter.set_jit_stress(jit);
         interpreter.set_jit_counting(jit);
-        let class = interpreter.load_module(&resolved);
+        let class = interpreter.load_module(resolved);
         let fixture = expect_ok(interpreter.instantiate(&class, &[]), "Forwarding new");
         let mirror = the_vm_mirror(&mut interpreter);
         let mut sums = [0; 2];
@@ -1949,6 +2015,33 @@ mod tests {
                     "the whole loop ran in machine code: {back_edges}"
                 );
                 assert_eq!(act_calls, 0, "both getters ran in their stubs");
+            }
+        }
+    }
+
+    #[cfg(ns_jit)]
+    crate::for_each_lowering! {
+        /// A setter stub and a private accessor through the leaf stub
+        /// across a forward answer what the interpreter answers: the
+        /// setter stores into the `Wide` the `Point` became, and the private
+        /// accessors' level check, whose recorded guard is the `Point`'s,
+        /// finds the `Point` level in the `Wide`'s chain.
+        fn a_setter_and_a_private_accessor_after_a_forward_answer_the_interpreters(lowering) {
+            let (compiled, [_, _, act_calls]) =
+                sum_across_a_forward_of(SETTER_AND_PRIVATE_FORWARD, lowering, true);
+            let (interpreted, _) =
+                sum_across_a_forward_of(SETTER_AND_PRIVATE_FORWARD, lowering, false);
+            assert_eq!(compiled, interpreted);
+            let stressed = std::env::vars_os().any(|(name, value)| {
+                name.to_string_lossy().starts_with("NS_NEXT_STRESS_")
+                    && !value.is_empty()
+                    && value != "0"
+            });
+            if lowering == crate::Lowering::Optimized && !stressed {
+                assert!(
+                    act_calls >= 1,
+                    "the private accessors ran through the leaf stub: {act_calls}"
+                );
             }
         }
     }

@@ -2048,3 +2048,42 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+ns_runtime::for_each_lowering! {
+    /// A callee found never compilable -- its body makes a block at once,
+    /// so it exits at once -- is refused by the miss leaf, which writes the
+    /// cells the decision went through afresh, naming the refusing stub:
+    /// the site's later sends exit at once rather than calling the miss
+    /// leaf again.
+    fn a_callee_never_compiled_is_refused_without_the_miss_leaf(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              step: value = (
+                ^[value + 1] value.
+              )
+              public run = (
+                |
+                  sum ::= 0.
+                  index ::= 0.
+                |
+                [index < 100] whileTrue: [
+                  sum:: sum + (self step: index).
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        assert_eq!(run(&mut interpreter, &class), 5050);
+        assert_eq!(run(&mut interpreter, &class), 5050);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 5050);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.machine_entries >= 1, "`run`, which loops, is entered");
+            assert_eq!(done.send_exits, 1, "the call of `step:` is refused");
+            assert_eq!(done.miss_leaf_calls, 0, "by the refusing stub, not the miss leaf");
+        }
+    }
+}

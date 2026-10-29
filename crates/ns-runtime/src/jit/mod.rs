@@ -467,7 +467,14 @@ struct InstalledBody {
     code: Weak<CompiledCode>,
     /// The method the body is the body of, when it is one's, held weakly
     /// as the body is: a frame materialized for it names it through its
-    /// code's row (`materialize`).
+    /// code's row (`materialize`). Neither upgrade fails while a frame runs
+    /// the body -- and so while a return address into it lies on the
+    /// native stack: the frame names the body's row of the heap's code
+    /// table (`heap/tables.rs`'s `CodeEntry`), which holds the code and its
+    /// method, and a full collection reclaims no row a frame names. The
+    /// exit's walk therefore treats a failed upgrade as unreachable; a
+    /// change that frees or replaces a row a frame still names must keep
+    /// both alive instead.
     method: Option<Weak<MixinMethod>>,
     /// The feedback base the body's sends' cells were compiled against:
     /// its machine code is entered only by an activation with that base.
@@ -1501,6 +1508,10 @@ fn run_machine_code(
     // compiled frame lay above it.
     let innermost = mutator.jit.take_walked().unwrap_or(activation);
     let exit = stubs::decode_exit(&block, kind);
+    // Counted on every exit, not only while counting, since the abandonment
+    // and the tests read it: a match on the exit's slot, which decodes
+    // nothing (`CompiledCode::is_send`), on a path that has just left
+    // machine code.
     let at_a_send = match exit {
         MachineExit::PushRefused => true,
         MachineExit::Reexecute { program_counter } => mutator

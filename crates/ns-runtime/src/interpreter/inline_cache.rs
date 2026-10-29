@@ -476,9 +476,10 @@ impl InlineCaches {
     /// cache files it under, the mirror's row of that key. Each cell copies
     /// what its entry records, its entry address from the JIT's state,
     /// which the miss leaf found changed -- a body compiled since the
-    /// entry was filled -- so that the site's next send calls the body
-    /// directly, from the site's cell, the polymorphic stub's scan or the
-    /// megamorphic stub's probe alike.
+    /// entry was filled, or found never to be compiled -- so that the
+    /// site's next send calls the body directly, or exits at once, from the
+    /// site's cell, the polymorphic stub's scan or the megamorphic stub's
+    /// probe alike.
     fn refresh_cells(
         &mut self,
         index: usize,
@@ -2219,12 +2220,18 @@ pub(crate) fn decide_at<'gc>(
         base
     };
     jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
-    let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
-        return MissAnswer::Refuse;
-    };
+    let address = jit::machine_entry_address(&mutator.jit, &method.code, base);
+    // The cells the decision went through follow the JIT's state either
+    // way: the callee's machine entry once it has one, the refusing stub
+    // once it never will -- refused or exiting at once -- so that the
+    // site's next send exits at once rather than calling the miss leaf
+    // again; the miss stub while it may still be compiled.
     mutator
         .caches
         .refresh_cells(index, guard, global_key, &mutator.jit);
+    let Some(address) = address else {
+        return MissAnswer::Refuse;
+    };
     mutator.heap.hand_machine_callee(receiver, defining_class);
     MissAnswer::Enter(address)
 }
@@ -2570,12 +2577,13 @@ impl InlineCaches {
         {
             return Err("the cells of a table were never written".to_owned());
         }
-        // Most entries are vacant, and what a vacant entry's cell must hold
-        // is the guard no receiver matches: one comparison each, which the
-        // scavenge stress mode makes at nearly every safepoint.
+        // Most entries are vacant, and a vacant entry's cell must read
+        // `Cell::VACANT` whole: the guard no receiver matches, and the entry
+        // word 0, since the polymorphic stub, entered on every mismatch,
+        // jumps to the entry of a cell whose guard is vacant.
         let check_cell = |entry: &CacheEntry, words: &[u64], place: &dyn Fn() -> String| {
             if matches!(entry.target, Target::Vacant) {
-                if words[0] != VACANT_GUARD {
+                if words != Cell::VACANT.words() {
                     return Err(format!(
                         "{}: a vacant entry's cell reads {words:?}",
                         place()
@@ -2629,7 +2637,8 @@ impl InlineCaches {
         for (index, entry) in self.global.entries.iter().enumerate() {
             let words = &global_words[index * cells::ROW_WORDS..][..cells::ROW_WORDS];
             if entry.is_vacant() {
-                if words[0] != VACANT_GUARD {
+                let row = GlobalRow::from_words(words);
+                if row.guard != VACANT_GUARD || row.entry != GlobalRow::VACANT.entry {
                     return Err(format!(
                         "global row {index} of a vacant entry reads {words:?}"
                     ));

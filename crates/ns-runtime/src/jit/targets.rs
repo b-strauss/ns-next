@@ -488,7 +488,12 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     assembler.test_immediate(answer, layout.instance_format_bits);
     assembler.jump_if(Condition::NotEqual, decline);
     // The count of the words after the header, the class word first:
-    // the fields are one fewer.
+    // the fields are one fewer. The header's eight-bit count reads 255
+    // for an object of 255 words or more, whose true count the heap
+    // keeps in an overflow word; the stub takes 255 as it is, so such an
+    // object has at least 254 fields here, more than any getter stub's
+    // field (`GETTER_STUBS`, asserted below), and no field a stub names
+    // is refused for it.
     assembler.shift_right_arithmetic(answer, layout.word_count_shift);
     assembler.and_immediate(answer, WORD_COUNT_FIELD_MASK);
     assembler.add_immediate(answer, -1);
@@ -607,6 +612,8 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
 
 /// The eight bits of the header's word count, once shifted down.
 const WORD_COUNT_FIELD_MASK: i32 = 0xFF;
+
+const _: () = assert!((GETTER_STUBS as i32) < WORD_COUNT_FIELD_MASK - 1);
 
 /// How far a field's index is shifted to be its byte offset.
 const WORD_SHIFT: u8 = 3;
