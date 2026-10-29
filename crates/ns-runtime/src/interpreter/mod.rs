@@ -1037,7 +1037,8 @@ impl Interpreter {
     /// Turns the JIT stress mode (`NS_NEXT_STRESS_JIT`) on or off for this
     /// interpreter: every body compiled at its first entry, installed and
     /// entered at every send, push and frame returned to -- one that exits
-    /// at once among them -- and never abandoned. A test hook, set before the code it is meant for runs.
+    /// at once among them -- and never abandoned. A test hook, set before the code it is meant
+    /// for runs.
     #[doc(hidden)]
     pub fn set_jit_stress(&mut self, stress: bool) {
         self.enter(|mutator| mutator.jit.set_stress(stress));

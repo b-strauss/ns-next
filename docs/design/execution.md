@@ -7614,8 +7614,10 @@ List -52.2%, Bounce -38.4%, Towers -36.1%, DeltaBlueTon80 -33.5%,
 Richards -27.1%, Json -26.5%: their hot callees cannot loop, so at
 `master` an interpreted caller pushed them and ran them interpreted,
 and now it calls them. Mandelbrot, whose hot loop ran in machine code
-already, Sieve and Storage are level, as are the micro sources
-whose sends were compiled calls or stubs already.
+already, Sieve (+1.2%) and Storage (-5.0%) are level, neither
+separated, as are the micro sources whose sends were compiled calls or
+stubs already; `bench_while` is 7.7% faster with its builds separated,
+a figure no profile has tied to one change.
 
 **The first run found Sieve slower, and it was fixed.** The first run of
 this measurement, at `335d44b2`, found Sieve +5.3% with its builds
