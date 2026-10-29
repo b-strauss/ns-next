@@ -2144,13 +2144,15 @@ fn decision_at<'gc>(
 /// site, which only the interpreter decides, refuses. A method machine
 /// code runs (`jit::runs_in_machine_code`) is its callee: its body is
 /// compiled when this entry is the one that compiles it
-/// (`jit::note_entry_by_call`), and once the body has machine code the
-/// cells the send reached its decision through -- the site's, its
-/// polymorphic block's slot, the global cache's row -- are written afresh
-/// (`InlineCaches::refresh_cells`), so that its next send calls the body
-/// straight, and the answer is the body's machine entry, the callee's
-/// receiver and current class handed over for its machine entry to
-/// store. A target that is no method with code is entered at the stub
+/// (`jit::note_entry_by_call`), and the cells the send reached its
+/// decision through -- the site's, its polymorphic block's slot, the
+/// global cache's row -- are written afresh
+/// (`InlineCaches::refresh_cells`): once the body has machine code they
+/// name its machine entry, so that its next send calls the body straight,
+/// and the answer is that entry, the callee's receiver and current class
+/// handed over for it to store; once the body never will -- refused, or
+/// exiting at once -- they name the refusing stub, so that the next send
+/// exits at once, and the answer refuses the call. A target that is no method with code is entered at the stub
 /// its cell names (`jit::stub_entry`), which runs it as `act` does, the
 /// receiver handed over. Every other decision refuses the call, and the interpreter,
 /// running the send again, finds the entry the fill made, or raises the

@@ -2087,3 +2087,109 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+/// `count` classes sharing a `step:` whose body makes a block at once, so
+/// that it exits at once and is never compiled, sent at one site of a
+/// loop in turn, each run starting at the next class: with two to four the
+/// site is polymorphic, its callee reached through its block's slots; with
+/// five or more megamorphic, reached through the global cache's rows.
+fn refused_through(count: usize) -> String {
+    let fills: String = (1..=count)
+        .map(|index| format!("      steppers at: {index} put: Stepper{index} new.\n"))
+        .collect();
+    let classes: String = (2..=count)
+        .map(|index| format!("      class Stepper{index} = Stepper1 () ()\n"))
+        .collect();
+    formatdoc! {"
+        class Subject = Object new (
+          |
+            steppers = Array new: {count}.
+            start ::= 0.
+          |
+        {fills}    ) (
+              class Stepper1 = () (
+                public step: value = (
+                  ^[value + 1] value.
+                )
+              )
+        {classes}      public run = (
+                |
+                  sum ::= 0.
+                  index ::= 0.
+                |
+                start: start + 1.
+                [index < 100] whileTrue: [
+                  sum:: sum + ((steppers at: index + start \\\\ {count} + 1) step: index).
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+            ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// The refusal of a callee never compiled rewrites the cell the send
+    /// reached it through when that is a polymorphic block's slot (three
+    /// classes) or a global row (five), not only a site's own cell: once
+    /// every class's slot or row has been refused once -- each run's first
+    /// call refused, from a different class -- a full turn of runs, each
+    /// first calling another class, is refused by the refusing stub
+    /// alone, without the miss leaf, and every cell agrees with its entry.
+    /// A slot filled while the callee could still be compiled names the
+    /// miss stub until the refusal rewrites it.
+    fn a_callee_never_compiled_is_refused_through_a_block_or_a_row(lowering) {
+        for count in [3, 5] {
+            let source = refused_through(count);
+            let (mut interpreter, class) = load_with(&source, lowering);
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let run_once = |interpreter: &mut Interpreter| {
+                let answer = expect_ok(
+                    interpreter.send(&instance, Symbol::intern("run"), &[]),
+                    "run",
+                );
+                interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+                    ValueKind::SmallInteger(integer) => integer,
+                    _ => panic!("run: expected a small integer"),
+                })
+            };
+            for _ in 0..count + 2 {
+                assert_eq!(run_once(&mut interpreter), 5050);
+            }
+            // A full turn of the classes, each run's first call another's.
+            let before = interpreter.jit_statistics();
+            for _ in 0..count {
+                assert_eq!(run_once(&mut interpreter), 5050);
+            }
+            let done = since(interpreter.jit_statistics(), before);
+            if let Err(message) = interpreter.verify_cells() {
+                panic!("{count} classes: {message}");
+            }
+            if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+                assert!(done.machine_entries >= 1, "{count} classes: `run` is entered");
+                assert_eq!(
+                    done.send_exits, count as u64,
+                    "{count} classes: each run's call is refused"
+                );
+                assert_eq!(
+                    done.miss_leaf_calls, 0,
+                    "{count} classes: by the refusing stub, not the miss leaf"
+                );
+                let states = interpreter.call_site_states(
+                    &class,
+                    MethodSide::Instance,
+                    Symbol::intern("run"),
+                    Symbol::intern("step:"),
+                );
+                assert!(
+                    states.iter().any(|state| if count <= 4 {
+                        matches!(state, CallSiteState::Polymorphic(entries) if entries.len() == count)
+                    } else {
+                        matches!(state, CallSiteState::Megamorphic)
+                    }),
+                    "{count} classes: the site's state"
+                );
+            }
+        }
+    }
+}

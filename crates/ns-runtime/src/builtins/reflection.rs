@@ -2027,7 +2027,7 @@ mod tests {
         /// accessors' level check, whose recorded guard is the `Point`'s,
         /// finds the `Point` level in the `Wide`'s chain.
         fn a_setter_and_a_private_accessor_after_a_forward_answer_the_interpreters(lowering) {
-            let (compiled, [_, _, act_calls]) =
+            let (compiled, [back_edges, resumed, act_calls]) =
                 sum_across_a_forward_of(SETTER_AND_PRIVATE_FORWARD, lowering, true);
             let (interpreted, _) =
                 sum_across_a_forward_of(SETTER_AND_PRIVATE_FORWARD, lowering, false);
@@ -2041,6 +2041,11 @@ mod tests {
                 assert!(
                     act_calls >= 1,
                     "the private accessors ran through the leaf stub: {act_calls}"
+                );
+                assert!(resumed >= 1, "the loop resumed in machine code after the forward");
+                assert!(
+                    back_edges >= 1000,
+                    "the whole loop ran in machine code: {back_edges}"
                 );
             }
         }
