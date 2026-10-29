@@ -50,7 +50,9 @@ const _: () = assert!(CELL_WORDS == 4 && CELL_BYTES == 32);
 /// scratch registers and the flags word with the push's generation, the
 /// rest of the header the exit's walk's (`jit::materialize`). The run
 /// loop's push writes all of it itself and enters the body past the
-/// prologue, at its first instruction.
+/// prologue, at its first instruction; an interpreter's send that calls
+/// the body enters at the prologue, through the call stub, as a compiled
+/// call does (`jit::called`).
 ///
 /// The depth limit word is a bound, not the limit: at or past it the
 /// interpreter decides, as it does while a `doesNotUnderstand:` handler
@@ -169,7 +171,9 @@ fn frame_slot(frame: Register, register: u16) -> Memory {
 /// `Return` and `ImplicitReturn`: the frame's `register` into the value
 /// register, the count taken back, and `ret` to the caller's send, which
 /// stores the value -- or to the entry stub, for the frame the run loop
-/// entered, whose pop the run loop makes (`stubs::assemble_entry_stub`).
+/// entered, whose pop the run loop makes (`stubs::assemble_entry_stub`),
+/// or to the call stub, for a callee an interpreter's send called, which
+/// the send's destination takes the value of (`stubs::assemble_call_stub`).
 /// A frame pushed by compiled code since the last exit delivers its value
 /// and was reified by nothing, since only its own code could have and no
 /// template reifies a frame, so the return tests neither.

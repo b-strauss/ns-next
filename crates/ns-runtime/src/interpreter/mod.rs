@@ -198,6 +198,24 @@ pub(crate) enum Step<'gc> {
     MethodThen(Box<MethodThen<'gc>>),
 }
 
+/// What a run loop's send ran once it was decided
+/// (`Mutator::enter_sent`): the value a compiled callee returned, for the
+/// send's destination; the activation pushed and the instruction to start
+/// it at; or, once a called body's machine code exited, where the run
+/// loop goes on.
+pub(crate) enum Sent<'gc> {
+    Value(Value<'gc>),
+    Pushed(ActivationReference, usize),
+    Stopped(crate::jit::Resumption),
+}
+
+/// What `Mutator::call_sent` did with a send: ran it, or left it to the
+/// push, which takes the send's arguments from where it names.
+enum Call<'values, 'gc> {
+    Ran(Sent<'gc>),
+    Push(Arguments<'values, 'gc>),
+}
+
 /// What `Step::MethodThen` activates: a kernel method on `receiver` with
 /// `arguments`, `defining_class` its current class, and the continuation
 /// its activation returns to.
@@ -1018,9 +1036,9 @@ impl Interpreter {
 
     /// Turns the JIT stress mode (`NS_NEXT_STRESS_JIT`) on or off for this
     /// interpreter: every body compiled at its first entry, installed and
-    /// entered at every push and every frame returned to -- one that exits
-    /// at once and one otherwise called only among them -- and never
-    /// abandoned. A test hook, set before the code it is meant for runs.
+    /// entered at every send, push and frame returned to -- one that exits
+    /// at once among them -- and never abandoned. A test hook, set before the code it is meant
+    /// for runs.
     #[doc(hidden)]
     pub fn set_jit_stress(&mut self, stress: bool) {
         self.enter(|mutator| mutator.jit.set_stress(stress));
@@ -1053,7 +1071,11 @@ impl Interpreter {
     /// must be twice a power of two -- two per group -- and a host that gets
     /// this wrong panics rather than the cache rounding it silently.
     pub fn set_global_cache_size(&mut self, entries: usize) {
-        self.enter(|mutator| mutator.caches.set_global_cache_size(entries));
+        self.enter(|mutator| {
+            mutator.caches.set_global_cache_size(entries);
+            // The entry block holds the cache's mask.
+            mutator.jit.mark_block_stale();
+        });
     }
 
     /// A test hook standing in for the debugger, not an input path a
@@ -2075,6 +2097,131 @@ impl<'gc> Mutator<'gc> {
             }
             None => Ok((pushed, 0)),
         }
+    }
+
+    /// `push_sent`, but for a method's activation on the send's own slots
+    /// whose body is compiled: the run loop's send calls its machine code
+    /// instead (`call_sent`; `docs/design/execution.md`, "The entry at a
+    /// send"), which answers its value or where an exit left the run
+    /// loop. The test is inline: three loads, from the method to its code
+    /// to the code's slot, and one compare; everything else is out of
+    /// line.
+    ///
+    /// The step is lent to the call and moved only into the one push
+    /// below, so that it reaches `push_sent` from the place the decision
+    /// wrote it: with a second by-value consumer, the call, the step was
+    /// first copied into a place of its own, reading the decision's
+    /// narrow stores back wide -- a store-forwarding stall on every
+    /// interpreted push.
+    #[inline(always)]
+    pub(crate) fn enter_sent(
+        &mut self,
+        step: Step<'gc>,
+        send_arguments: Arguments<'_, 'gc>,
+        sender: Option<ActivationReference>,
+        inlinable: bool,
+        slots: Option<u16>,
+    ) -> Result<Sent<'gc>, Signal<'gc>> {
+        let mut arguments = send_arguments;
+        if let Step::Method {
+            receiver,
+            method,
+            defining_class,
+            arguments: StepArguments::Send,
+            feedback_base,
+        } = &step
+        {
+            if slots.is_some() && method.code.jit.is_compiled() {
+                match self.call_sent(
+                    *receiver,
+                    method,
+                    *defining_class,
+                    *feedback_base,
+                    send_arguments,
+                    sender,
+                    slots,
+                )? {
+                    Call::Ran(sent) => return Ok(sent),
+                    Call::Push(placed) => arguments = placed,
+                }
+            }
+        }
+        self.push_sent(step, arguments, sender, inlinable, slots)
+            .map(|(activation, program_counter)| Sent::Pushed(activation, program_counter))
+    }
+
+    /// `enter_sent`'s call of a compiled method's machine code, the
+    /// method's activation on the send's own slots: the arity checked as
+    /// the push checks it, the arguments placed into the slots and the
+    /// feedback base resolved as the push places and resolves them, and
+    /// the body called (`jit::called`). A call the JIT refuses -- the body
+    /// compiled into another zone or against another feedback base, too
+    /// little native stack, its prologue's refusal -- is the push's, which
+    /// raises the overflow or grows the stack as for any push; so is every
+    /// send that does not name the slots and arguments a call needs.
+    /// `Call::Push` names where the push takes the arguments from. A
+    /// refused call's push resolves an unassigned feedback base again,
+    /// which `InlineCaches::base_for` answers the same, since nothing ran
+    /// between the two.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the step's parts, lent apart so that the step itself is moved only into the push"
+    )]
+    #[cold]
+    #[inline(never)]
+    fn call_sent<'values>(
+        &mut self,
+        receiver: Value<'gc>,
+        method: &Rc<crate::mixin::MixinMethod>,
+        defining_class: ClassReference<'gc>,
+        feedback_base: FeedbackBase,
+        send_arguments: Arguments<'values, 'gc>,
+        sender: Option<ActivationReference>,
+        slots: Option<u16>,
+    ) -> Result<Call<'values, 'gc>, Signal<'gc>> {
+        let (Arguments::Slots(window), Some(sender_activation), Some(argument_base)) =
+            (send_arguments, sender, slots)
+        else {
+            return Ok(Call::Push(send_arguments));
+        };
+        // A body that stands for too many arguments takes another count
+        // than its method's; only the push lays such a frame out.
+        if method.argument_count != usize::from(method.code.argument_count) {
+            return Ok(Call::Push(send_arguments));
+        }
+        check_method_arity(method, receiver, usize::from(window.count()))?;
+        let feedback_base = if feedback_base == FeedbackBase::NOT_ASSIGNED {
+            self.caches.base_for(&method.code)
+        } else {
+            feedback_base
+        };
+        let register_base = window.register_base();
+        if window.start() != argument_base {
+            self.heap.place_in_slots(window, argument_base);
+        }
+        Ok(
+            match crate::jit::called(
+                self,
+                sender_activation,
+                register_base,
+                argument_base,
+                receiver,
+                defining_class,
+                &method.code,
+                feedback_base,
+            ) {
+                crate::jit::Called::Returned { value } => {
+                    Call::Ran(Sent::Value(self.heap.machine_value(value)))
+                }
+                crate::jit::Called::Stopped(resumption) => Call::Ran(Sent::Stopped(resumption)),
+                // From the slots, where the arguments now are.
+                crate::jit::Called::Refused => Call::Push(Arguments::Slots(ArgumentSlots::new(
+                    register_base,
+                    argument_base,
+                    window.count(),
+                ))),
+            },
+        )
     }
 
     /// Pushes the initializer body `body` of `level`'s mixin on `receiver`,

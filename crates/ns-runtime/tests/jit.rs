@@ -75,6 +75,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         act_leaf_calls: after.act_leaf_calls - before.act_leaf_calls,
         abandoned_bodies: after.abandoned_bodies - before.abandoned_bodies,
         site_slot_hits: after.site_slot_hits - before.site_slot_hits,
+        called_entries: after.called_entries - before.called_entries,
     }
 }
 
@@ -100,9 +101,10 @@ ns_runtime::for_each_lowering! {
     /// entry and enters machine code that exits at once, so that a program
     /// runs the entry stub, the exit and the resumption on every push and
     /// still answers right. The optimized lowering's `self answer` is a
-    /// cached lexical send, which `run`'s machine code makes itself, so
-    /// that the interpreter pushes `answer` only where the reference
-    /// lowering leaves every send uncached.
+    /// cached lexical send, which `run`'s machine code makes itself; the
+    /// reference lowering leaves every send uncached, so that `run` leaves
+    /// its machine code at its first send and the interpreter's sends call
+    /// `answer`'s (`jit::called`).
     fn the_stress_setting_enters_machine_code_on_every_push(lowering) {
         let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
         interpreter.set_jit_stress(true);
@@ -125,9 +127,13 @@ ns_runtime::for_each_lowering! {
             }
         } else {
             assert_eq!(
-                done.machine_entries, 5,
-                "`answer`, entered three times, runs its machine code from the first, and so \
-                 do the two base activations the host pushes, the factory's and `run`'s"
+                done.machine_entries, 3,
+                "the two base activations the host pushes, the factory's and `run`'s, and \
+                 `answer`'s first push, which compiles it, run their machine code from the first"
+            );
+            assert_eq!(
+                done.called_entries, 2,
+                "the interpreter's next two sends of `answer` call its machine code"
             );
         }
         assert_eq!(done.bodies_exiting_at_once, 0, "installed, not left out");
@@ -316,11 +322,10 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// The default trigger, without the stress setting: `run` has no
     /// loop, but its code runs to a compiled send and a return before it
-    /// exits, so the second run compiles it, for a compiled call to enter;
-    /// a push does not, since it cannot loop, so every run of it stays
-    /// interpreted. The reference lowering sends uncached, so there `run`
-    /// exits at once.
-    fn a_straight_line_method_with_a_send_is_compiled_for_calls_only(lowering) {
+    /// exits, so the second run compiles it and the third, a push by the
+    /// host, enters its machine code. The reference lowering sends
+    /// uncached, so there `run` exits at once.
+    fn a_straight_line_method_with_a_send_is_entered_at_a_push(lowering) {
         let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
         interpreter.set_jit_counting(true);
         assert_eq!(run(&mut interpreter, &class), 42);
@@ -331,7 +336,43 @@ ns_runtime::for_each_lowering! {
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_eq!(done.compiled_bodies, 1, "`run`, at its second entry");
             assert_eq!(done.bodies_exiting_at_once, 0);
-            assert_eq!(done.machine_entries, 0, "no push enters `run`");
+            assert!(done.machine_entries >= 2, "a push enters `run`: {}", done.machine_entries);
+        }
+    }
+}
+
+/// How many elements `a_straight_line_body_is_entered_at_a_push`'s `do:`
+/// visits.
+const ELEMENTS: i64 = 1000;
+
+ns_runtime::for_each_lowering! {
+    /// The block `[:each | each]` runs straight to its return: the
+    /// interpreted `do:`'s `value:` pushes it once per element, and from
+    /// its second push on, compiled, every push enters its machine code,
+    /// which returns at once.
+    fn a_straight_line_body_is_entered_at_a_push(lowering) {
+        let source = formatdoc! {"
+            class Subject = Object new () (
+              public run = (
+                |
+                  elements = Array new: {ELEMENTS}.
+                |
+                elements do: [:each | each].
+                ^elements size.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(&source, lowering);
+        assert_eq!(run(&mut interpreter, &class), ELEMENTS);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), ELEMENTS);
+        let done = since(interpreter.jit_statistics(), before);
+        if !a_stress_mode_is_on() {
+            assert!(
+                done.machine_entries >= ELEMENTS as u64,
+                "every push of the block enters it: {}",
+                done.machine_entries
+            );
         }
     }
 }
@@ -548,6 +589,142 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+ns_runtime::for_each_lowering! {
+    /// `fib:` recurses without a loop. `run`, entered once, stays
+    /// interpreted, and so does the first `fib:`, whose sends' pushes
+    /// compile the body; from then
+    /// on an interpreted frame's send of `fib:` calls its machine code
+    /// (`jit::called`), whose own sends call it through their cells, so
+    /// that the recursion runs in machine code below an interpreted root.
+    fn a_recursion_rooted_in_an_interpreted_frame_runs_in_machine_code(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              public fib: n = (
+                n < 2 ifTrue: [^1].
+                ^(self fib: n - 1) + (self fib: n - 2).
+              )
+              public run = (
+                ^self fib: 20.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_counting(true);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 10_946);
+        let done = since(interpreter.jit_statistics(), before);
+        let (mut interpreted, class) = load_with(source, lowering);
+        interpreted.set_jit_enabled(false);
+        assert_eq!(run(&mut interpreted, &class), 10_946);
+        // The reference lowering's sends are uncached and leave machine
+        // code; a stress mode leaves it far more often than the program
+        // needs to.
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.called_entries > 0,
+                "an interpreted send called `fib:`'s machine code"
+            );
+            assert!(
+                done.compiled_calls > 10_000,
+                "the recursion ran in machine code: {}",
+                done.compiled_calls
+            );
+        }
+    }
+}
+
+/// An interpreted `run:`'s send of `first:with:`, called in machine code
+/// once `first:with:` is compiled, whose own send of `second:with:`
+/// reaches, at the run's last round, the closure `second:with:` makes
+/// there, which machine code does not make: the exit materializes
+/// `second:with:`'s frame and `first:with:`'s above the interpreted
+/// sender, and the unhandled error the closure raises records the stack.
+const CALLED_THEN_CLOSURE: &str = indoc! {"
+    class Subject = Object new () (
+      class Chain = () (
+        public first: value with: chain = (
+          ^(chain second: value + 1 with: chain) + 1
+        )
+        public second: value with: chain = (
+          value > 100 ifTrue: [^[nil frobnicate] value].
+          ^value * 2
+        )
+        public run: chain = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 200] whileTrue: [
+            sum:: sum + (chain first: index with: chain).
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+      public run = (
+        |
+          chain = Chain new.
+        |
+        ^chain run: chain.
+      )
+    ) : ()
+"};
+
+/// The stack `CALLED_THEN_CLOSURE`'s unhandled error recorded, with the JIT
+/// on or off, and what the JIT did meanwhile.
+fn called_then_closure_stack(lowering: Lowering, jit: bool) -> (Vec<String>, JitStatistics) {
+    let (mut interpreter, class) = load_with(CALLED_THEN_CLOSURE, lowering);
+    interpreter.set_jit_enabled(jit);
+    let before = interpreter.jit_statistics();
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Err(HostSignal::Error(error)) => {
+            assert!(error.message.contains("frobnicate"), "{}", error.message);
+        }
+        _ => panic!("run: expected the unhandled error"),
+    }
+    let done = since(interpreter.jit_statistics(), before);
+    (interpreter.stack_trace(), done)
+}
+
+ns_runtime::for_each_lowering! {
+    fn an_exit_in_a_called_body_materializes_it_above_its_interpreted_sender(lowering) {
+        let (compiled, statistics) = called_then_closure_stack(lowering, true);
+        let (interpreted, _) = called_then_closure_stack(lowering, false);
+        assert_eq!(compiled, interpreted);
+        // The suspension stress mode suspends every activation into its
+        // frame object at a safepoint and resumes only the top one, and
+        // the trace (`Interpreter::stack_trace`) names only the
+        // activations on the stack: there, with the JIT on as off, it
+        // holds only those pushed since the last suspension --
+        // `defaultAction`'s alone -- and none of the two frames.
+        if std::env::var_os("NS_NEXT_STRESS_SUSPEND")
+            .is_some_and(|value| !value.is_empty() && value != "0")
+        {
+            return;
+        }
+        assert!(
+            compiled.iter().any(|frame| frame.starts_with("second:with:")),
+            "the innermost method's frame: {compiled:?}"
+        );
+        assert!(
+            compiled.iter().any(|frame| frame.starts_with("first:with:")),
+            "the called body's frame: {compiled:?}"
+        );
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                statistics.called_entries > 0,
+                "`run:`'s send called `first:with:`'s machine code"
+            );
+            assert!(
+                statistics.materialized_frames >= 2,
+                "`first:with:` and `second:with:` were compiled frames: {}",
+                statistics.materialized_frames
+            );
+        }
+    }
+}
+
 /// Whether the environment turns a stress mode on (`NS_NEXT_STRESS_*`
 /// set, and neither empty nor `0`), under which machine code leaves for
 /// the interpreter far more often than a program needs it to.
@@ -726,7 +903,7 @@ ns_runtime::for_each_lowering! {
     /// it, so the miss leaf counts its second entry, compiles it and
     /// installs it from inside the entry, and the send calls it; every
     /// later send of the loop calls it through the cell the miss rewrote,
-    /// and the interpreter enters no other body.
+    /// and the interpreter enters no other body but at its two pushes.
     fn a_callee_the_miss_compiles_is_entered_at_its_next_call(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -782,24 +959,27 @@ ns_runtime::for_each_lowering! {
             assert!(done.compiled_bodies >= 2, "`sumWith:count:`, then `add:` by the miss");
             assert_eq!(done.miss_leaf_calls, 1, "the one send that found no machine entry");
             assert!(done.compiled_calls >= 9_000, "{}", done.compiled_calls);
+            assert_eq!(done.send_exits, 1, "`run:` leaves at the one send it does not make");
             assert_eq!(
-                done.machine_entries, 1,
-                "`sumWith:count:`, which loops, is entered by the interpreter's push; `run:`, \
-                 which sends and returns, and `add:` only through compiled calls"
+                done.machine_entries, 2,
+                "`run:`, compiled at the host's push, is entered there, and `sumWith:count:`, \
+                 compiled at the interpreter's push after `run:` left, is entered there; `add:` \
+                 only through compiled calls"
             );
         }
     }
 }
 
 ns_runtime::for_each_lowering! {
-    /// A loop whose callee makes a block, which machine code does not do,
-    /// leaves its machine code on every turn: the callee exits there, the
-    /// exit materializes it and the loop's frame, the interpreter runs the
-    /// rest of the callee, and the loop's frame, returned to, resumes in
-    /// machine code. Once the callee has spent its exit budget the JIT
-    /// abandons it, and the loop's call of it, refused since, spends the
-    /// loop's, so that the program goes on interpreted rather than paying
-    /// an exit and an entry per turn.
+    /// A callee that makes a block, which machine code does not do, leaves
+    /// its machine code on every call: the interpreted loop of the first
+    /// run calls it once it is compiled (`jit::called`), the exit
+    /// materializes it and the interpreter runs the rest of it. Once it
+    /// has spent its exit budget the JIT abandons it, and the loop's call
+    /// of it in the loop's own machine code, compiled at its second entry
+    /// and refused since, leaves at that send on every run and spends the
+    /// loop's budget, so that the program goes on interpreted rather than
+    /// paying an exit and an entry per turn.
     fn a_body_that_keeps_leaving_is_abandoned(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -826,8 +1006,8 @@ ns_runtime::for_each_lowering! {
             ) : ()
         "};
         let (mut interpreter, class) = load_with(source, lowering);
-        assert_eq!(run(&mut interpreter, &class), 1_000_000);
         let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 1_000_000);
         for _ in 0..80 {
             assert_eq!(run(&mut interpreter, &class), 1_000_000);
         }
@@ -955,8 +1135,11 @@ ns_runtime::for_each_lowering! {
         assert_eq!(compiled, first);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(done.machine_entries >= 1, "`overrun`, which loops, is entered");
-            assert_eq!(
-                done.send_exits, 1,
+            // The bodies that raise the index error, compiled by the first
+            // overrun, are entered at their pushes and leave at sends of
+            // their own.
+            assert!(
+                done.send_exits >= 1,
                 "the eleventh `at:` declines and its call is refused"
             );
         }
@@ -1340,6 +1523,39 @@ ns_runtime::for_each_lowering! {
     /// global cache's mirror, which the megamorphic stub probes.
     fn a_megamorphic_site_hits_in_machine_code(lowering) {
         assert_hits_in_machine_code(6, lowering);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The entry block is kept from one entry to the next, its global
+    /// cache's mask among its words: after the cache is resized between
+    /// two runs, the megamorphic stub probes the new one -- the answers
+    /// are the interpreter's, and once the resized cache is filled a run
+    /// meets the miss leaf nowhere, which a stale mask probing the wrong
+    /// group would not.
+    fn the_entry_block_follows_a_resized_global_cache(lowering) {
+        let source = polymorphic_source(6);
+        let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_jit_counting(true);
+        let offsets: i64 = [1, 10, 100, 1000, 10_000, 100_000].iter().sum();
+        let expected = 6 * 499_500 + 1000 * offsets;
+        assert_eq!(run(&mut interpreter, &class), expected);
+        interpreter.set_global_cache_size(4096);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), expected, "filling the resized cache");
+        let middle = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), expected, "hitting in it");
+        let filled = since(middle, before);
+        let hitting = since(interpreter.jit_statistics(), middle);
+        assert!(filled.machine_entries >= 1, "machine code ran after the resize");
+        assert!(hitting.machine_entries >= 1, "machine code ran after the resize");
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(
+                hitting.miss_leaf_calls, 0,
+                "every send hit in machine code, the megamorphic one in the resized cache"
+            );
+        }
     }
 }
 
@@ -2001,11 +2217,11 @@ fn leaving_through(count: usize) -> String {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A callee that keeps leaving, reached through a polymorphic site's
-    /// block cells (three classes) and through a megamorphic site's global
-    /// rows (five), is abandoned while the site is in that state, like one
-    /// reached through a site's own cell, and every cell that named its
-    /// machine entry -- the block's cells, the global rows -- is written
+    /// A callee that keeps leaving, sent from a polymorphic site (three
+    /// classes) and from a megamorphic one (five), is abandoned while the
+    /// site is in that state, like one sent from a site with a cell of its
+    /// own, and every cell that named its machine entry -- the site's
+    /// block cells, the global rows -- is written
     /// afresh from its entry, so that every cell still agrees with its
     /// entry afterwards (`Interpreter::verify_cells`, which reads every
     /// site's cell, every block's cells and every global row).
@@ -2013,8 +2229,8 @@ ns_runtime::for_each_lowering! {
         for (count, polymorphic) in [(3, true), (5, false)] {
             let source = leaving_through(count);
             let (mut interpreter, class) = load_with(&source, lowering);
-            assert_eq!(run(&mut interpreter, &class), 1_000_000);
             let before = interpreter.jit_statistics();
+            assert_eq!(run(&mut interpreter, &class), 1_000_000);
             for _ in 0..10 {
                 assert_eq!(run(&mut interpreter, &class), 1_000_000);
             }

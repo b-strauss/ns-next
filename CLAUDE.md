@@ -22,7 +22,11 @@ Rust 1.98.0, edition 2021, seven crates:
   (`jit/`, x64 only so far: a body compiled at its second entry through
   the one exhaustive `match` over `Instruction` in `jit/baseline.rs`, each
   instruction a template, a leaf of `jit/leaves.rs` or an exit that hands
-  the frame to the interpreter; a cached send calls through its site's
+  the frame to the interpreter, and every compiled body entered wherever
+  it runs -- an interpreter's send calls it through the call stub
+  (`Mutator::enter_sent` in `interpreter/mod.rs`, `jit::called`), a push
+  and a frame returned to cross a bridge whose entry block lasts between
+  entries -- unless its code exits at once; a cached send calls through its site's
   machine-readable cell (`interpreter/inline_cache/cells.rs`) into the
   callee's machine code or a stub the cell names (`jit/sends.rs`,
   `jit/targets.rs`: polymorphic, megamorphic, accessor, mirror method,
@@ -30,10 +34,10 @@ Rust 1.98.0, edition 2021, seven crates:
   what the cell did not and may compile the callee, and an exit at any
   depth of compiled frames materializes them (`jit/materialize.rs`); the
   VM's idioms and the register roles in `jit/macro_assembler.rs`, the
-  entry, exit and miss stubs in `jit/stubs.rs`, the trigger, the entry
-  and which bodies are entered in `jit/mod.rs`; `execution.md`, "The
-  baseline JIT's foundation", "Sends, returns and the exit that
-  materializes") and the send machinery it calls
+  entry, call, exit and miss stubs in `jit/stubs.rs`, the trigger, the
+  entry and which bodies are entered in `jit/mod.rs`; `execution.md`,
+  "The baseline JIT's foundation", "Sends, returns and the exit that
+  materializes", "The entry at a send") and the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
@@ -430,9 +434,13 @@ but a send's argument slots, which the mirror leaf places as the
 interpreter does and which nothing reads after the send but the send
 re-executed. A new instruction is one arm of
 `jit::baseline::lower` plus the macro-assembler idioms it lacks, never a
-second dispatch; the run loop enters machine code only through
-`jit::entered` and `jit::resumed` (`mod.rs`), every address it needs asked
-of the heap afresh at each entry, and it holds no handle. A cache cell is
+second dispatch; the run loop enters machine code through
+`jit::entered` and `jit::resumed`, a send it delivers through
+`jit::called` (`mod.rs`); the entry block's lasting words -- what does
+not move between entries -- are written only when what they name
+changes, which must mark the block stale (`JitState::mark_block_stale`;
+only a debug build's check at every entry catches a missed mark), the
+frame's and the code's words at each entry, and it holds no handle. A cache cell is
 written only from its entry -- beside it, or afresh when the JIT's state
 under it changes -- its entry address a function of the entry's target
 and the JIT's state, and a stub does what
@@ -442,7 +450,8 @@ machine code reads or writes between two leaf calls lives inline in
 stack's and the object space's reservations, the cells and the
 application id table in reservations of their own, all outside it, and
 every other such word lives in the heap's machine words
-(`heap/machine_words.rs`). `CodeZone::enter`
+(`heap/machine_words.rs`) or the entry block (`ns_memory::EntryBlock`),
+`Cell`s behind an `Rc` each. `CodeZone::enter`
 holds the mutator as a protected `&mut`, so machine code's access to a
 word inside it is undefined behaviour once a leaf has written that word,
 which no test and no tool detects (`execution.md`, "The baseline JIT's

@@ -1180,11 +1180,17 @@ compared, the current tree included, built with the same explicit
 `RUSTFLAGS` that pin function alignment, several builds per tree pooled
 ("What removing the re-entries moved" below). The five programs that take
 seconds per run -- CD, Havlak, Mandelbrot, NBody and DeltaBlue -- are
-timed with `bench --iterations 3`, every other program with
-`--iterations 10` (decided with the user on 2026-10-02): a run of seconds
-varies by far less than the changes measured, and ten of them made a
-comparison of three builds a side take an hour and a half, three bring it
-to about half an hour. A comparison of two ns-next trees uses `bench`
+timed with `bench --iterations 3`, every other program and every
+microbenchmark with `--iterations 8`, and a final comparison takes three
+builds a side over three rounds in one sitting, an interim one a build a
+side over three rounds with `--iterations 15`, only the sources the change
+can move and no seconds-long Are We Fast Yet program (decided with the
+user on 2026-10-02 and 2026-10-29): a run of seconds varies by far less
+than the changes measured, and ten of them made a comparison of three
+builds a side take an hour and a half. A final comparison takes about
+fifteen minutes on the development machine: building the six binaries at
+once 98 s, the three rounds 820 s (measured 2026-10-29, "What the entry
+at a send moved"). A comparison of two ns-next trees uses `bench`
 alone (decided with the user on 2026-10-02): on the eleven programs whose
 `--timed` score is a throughput it agreed with `bench` ("What the
 eight-byte value moved"), on the five slow ones it is one run's rate to one
@@ -7264,9 +7270,9 @@ JIT off the same binaries measure -0.55%:
 | `Towers` | 3.059 | 3.042–3.077 | 3.046 | 3.034–3.068 | -0.4% | no |
 
 So the push's check, one load and one compare of the body's `JitSlot`,
-costs nothing measurable, and nor does the JIT on: the few bodies whose
-code can loop before their first exit run their loops in machine code,
-and the rest are never entered. `bench_loop` and `bench_block` are
+costs nothing measurable, and nor did the JIT on in that tree: the few
+bodies whose code could loop before their first exit ran their loops in
+machine code, and the rest were never entered. `bench_loop` and `bench_block` are
 nearly as much faster with the JIT off, so they are the run loop's new
 layout, not machine code.
 
@@ -7280,9 +7286,11 @@ the exit for nothing: `bench_block` +31.5%, `bench_send` +21.7%,
 `bench_megamorphic` +18.9%, Sieve +13.8%, `bench_signal` +10.3%, the
 geometric mean over seventeen sources +7.3%, while the same binaries with
 `NS_NEXT_NO_JIT=1` measured -1.3%. `bench_send`'s 0.7 ms over its
-50,000 entries of `tick:` is about 14 ns an entry and exit. Since then a
-body is entered only when its code can take a backward jump before its
-first exit ("The baseline JIT's foundation"). An interim measurement
+50,000 entries of `tick:` is about 14 ns an entry and exit. `56c6e8ac`
+entered a body only when its code could take a backward jump before its
+first exit; a body whose code exits at once is still neither installed
+nor entered, and the entry's own cost is what "What the entry at a send
+moved" took down. An interim measurement
 of `56c6e8ac` in the same form (one round of the seventeen sources that
 take milliseconds, three builds a side) found no program slower with its
 builds separated -- `bench_block` -0.6%, `bench_send` -1.7%,
@@ -7390,8 +7398,8 @@ leaf stub's slot path running (`ec531abe`, below), Havlak measures
 3,070 ms against `master`'s 3,176, 3.3% faster, and Richards 61.54 ms
 against 61.43, level -- three builds a side, five rounds. The others'
 hot code makes blocks, allocates or returns
-non-locally, which stage 4 is to bring into machine code; until then
-their bodies are called only or abandoned and run interpreted, so they run
+non-locally, which stage 4 is to bring into machine code; at `cbe7908f`
+their bodies were called only or abandoned and ran interpreted, so they ran
 at the interpreter's speed -- and that is what is slower than `master`'s
 (below): with the JIT on against the same binaries with it off, no
 program is slower by more than 1.3%, and only RichardsTon80, +0.9%, with
@@ -7468,12 +7476,14 @@ measurement above:
 
 - **Entering every body that reaches a return** (`9d64f65b`): 1.45
   million entries a Richards run, each an entry and an exit of about
-  fourteen nanoseconds around a few instructions. A body that cannot loop
-  before its first exit is now compiled for compiled calls only
-  (`CALLED_ONLY`, "The baseline JIT's foundation"), which brought
-  Richards to 101 ms and left `bench_send`'s and `bench_block`'s tiny
-  callees -- `^x + 1`, a `LoadLiteral` and a `Return` -- to compiled
-  calls, which cost less than the interpreter's push.
+  fourteen nanoseconds around a few instructions. A body that could not
+  loop before its first exit was then compiled for compiled calls only
+  (`CALLED_ONLY`), which brought Richards to 101 ms and left
+  `bench_send`'s and `bench_block`'s tiny callees -- `^x + 1`, a
+  `LoadLiteral` and a `Return` -- to compiled calls, which cost less than
+  the interpreter's push. The entry at a send made the entry itself
+  cheap and entered every compiled body again ("What the entry at a send
+  moved").
 - **The leaf stub's leaf for every setter**: 47 ns a setter against the
   interpreter's few, two thirds of it spent finding the send again -- a
   binary search over the installed bodies and their returns, two
@@ -7534,10 +7544,10 @@ send's call loads the cell's entry beside the guard's compare it cannot be
 separated from, and no program's time is spent in the call alone, so
 whether a patched direct call pays stays open ("Inline caches" below).
 **Tiny bodies** -- `bench_send`'s `^x + 1`, `bench_block`'s block
-bodies, accessors -- no longer pay an entry and an exit per push: a body
-that cannot loop is called only, and an accessor or a quick method is a
-stub, so `bench_send` is four times as fast and `bench_block`, whose
-blocks machine code does not run, is the interpreter's.
+bodies, accessors -- paid no entry and exit per push at `cbe7908f`: a
+body that could not loop was called only, and an accessor or a quick
+method is a stub, so `bench_send` was four times as fast and
+`bench_block`, whose blocks machine code did not run, the interpreter's.
 
 **What it does not cover.** No benchmark spends its time in machine code
 that makes a block, allocates or returns non-locally, which stage 4 is
@@ -7545,6 +7555,100 @@ for; the programs above that do run at the interpreter's speed because
 their machine code is abandoned, not because it is fast. The exit
 budget's 64 is a guess that the measurement only shows does no harm on
 these programs.
+
+### What the entry at a send moved
+
+**Measured 2026-10-29, `df21be83` against `master` (`d2f7e9bc`)**, by the
+final protocol of the `measuring-performance` skill as it stands ("The
+Are We Fast Yet benchmarks" above): three pinned release builds a side
+with debug information -- a with the pinned `RUSTFLAGS` alone, b adding
+`-C metadata=buildb -C llvm-args=-align-all-nofallthru-blocks=4`, c
+adding `-C metadata=buildc -C llvm-args=-align-all-nofallthru-blocks=5`
+(checked in a `dumpbin /disasm` of each: `vm::run` spans 41,344, 44,416
+and 47,872 bytes at `master` and 51,584, 55,488 and 60,224 at
+`df21be83`, and no build has a `run_stretch` or a `vm::run` closure of
+its own); three rounds in one sitting, the order of the six binaries
+rotated each round; `bench --iterations 3` for CD, Havlak, Mandelbrot,
+NBody and DeltaBlue and `--iterations 8` for every other Are We Fast Yet
+program and every micro source, `bench_recursion` among them. Each cell
+is a side's medians per build pooled by geometric mean, in
+milliseconds; "range" is the range of its three builds, and "builds
+separated" says whether every build of one side beat every build of the
+other. The six builds took 98 s at once, the three rounds 820 s (about
+fourteen minutes), about fifteen minutes in all.
+
+| Program | master (ms) | range | `df21be83` (ms) | range | Change | Builds separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 1.081 | 1.055–1.105 | 0.666 | 0.664–0.668 | -38.4% | faster |
+| `CD` | 3514.890 | 3488.958–3551.278 | 3285.953 | 3265.833–3298.550 | -6.5% | faster |
+| `DeltaBlue` | 616.720 | 611.528–621.044 | 546.446 | 545.748–547.546 | -11.4% | faster |
+| `DeltaBlueTon80` | 6.808 | 6.720–6.930 | 4.531 | 4.459–4.572 | -33.5% | faster |
+| `Havlak` | 3057.879 | 3033.874–3098.947 | 2891.395 | 2888.148–2893.130 | -5.4% | faster |
+| `Json` | 7.493 | 7.466–7.545 | 5.505 | 5.495–5.526 | -26.5% | faster |
+| `List` | 0.398 | 0.394–0.401 | 0.190 | 0.188–0.195 | -52.2% | faster |
+| `Mandelbrot` | 1924.103 | 1910.012–1940.356 | 1913.910 | 1899.592–1934.796 | -0.5% | no |
+| `NBody` | 2002.616 | 1999.823–2007.298 | 1695.174 | 1685.244–1705.392 | -15.4% | faster |
+| `Permute` | 2.347 | 2.280–2.386 | 2.004 | 1.999–2.014 | -14.6% | faster |
+| `Queens` | 1.970 | 1.958–1.988 | 1.562 | 1.551–1.571 | -20.7% | faster |
+| `Richards` | 61.291 | 60.945–61.912 | 44.694 | 44.213–45.271 | -27.1% | faster |
+| `RichardsTon80` | 4.227 | 4.178–4.324 | 3.375 | 3.325–3.404 | -20.1% | faster |
+| `Sieve` | 1.301 | 1.289–1.320 | 1.317 | 1.291–1.334 | +1.2% | no |
+| `Storage` | 1.398 | 1.346–1.437 | 1.327 | 1.296–1.351 | -5.0% | no |
+| `Towers` | 3.001 | 2.983–3.025 | 1.917 | 1.891–1.953 | -36.1% | faster |
+| `bench_block` | 7.032 | 6.962–7.136 | 7.757 | 7.668–7.931 | +10.3% | slower |
+| `bench_loop` | 0.805 | 0.804–0.806 | 0.820 | 0.804–0.842 | +1.8% | no |
+| `bench_megamorphic` | 4.749 | 4.667–4.804 | 4.719 | 4.662–4.758 | -0.6% | no |
+| `bench_send` | 0.769 | 0.768–0.772 | 0.769 | 0.768–0.771 | +0.0% | no |
+| `bench_signal` | 21.690 | 21.431–21.921 | 21.735 | 21.615–21.835 | +0.2% | no |
+| `bench_while` | 51.106 | 50.859–51.359 | 47.182 | 46.954–47.433 | -7.7% | faster |
+| `bench_recursion` | 9.262 | 9.246–9.287 | 0.661 | 0.660–0.663 | -92.9% | faster |
+
+The geometric mean over the twenty-three sources is -24.2%, and fifteen
+are faster with their builds separated. `bench_recursion` (`fib: 25`
+sent from an interpreted frame) runs fourteen times as fast: at `master`
+a recursion without a loop rooted in an interpreted frame ran
+interpreted throughout, its body compiled for compiled calls only, and
+now the interpreter's send calls its machine code and the recursion
+stays there. The Are We Fast Yet programs gain for the same reason --
+List -52.2%, Bounce -38.4%, Towers -36.1%, DeltaBlueTon80 -33.5%,
+Richards -27.1%, Json -26.5%: their hot callees cannot loop, so at
+`master` an interpreted caller pushed them and ran them interpreted,
+and now it calls them. Mandelbrot, whose hot loop ran in machine code
+already, Sieve (+1.2%) and Storage (-5.0%) are level, neither
+separated, as are the micro sources whose sends were compiled calls or
+stubs already; `bench_while` is 7.7% faster with its builds separated,
+a figure no profile has tied to one change.
+
+**The first run found Sieve slower, and it was fixed.** The first run of
+this measurement, at `335d44b2`, found Sieve +5.3% with its builds
+separated. A profile showed the interpreter's push of a method grown,
+with the JIT off as well: `Mutator::enter_sent` tested the decided step
+through a borrow and then moved the whole `Result<Step, Signal>` into
+the call or the push, so LLVM copied it into a place of its own on every
+interpreted push, its tag stored apart and the rest read back by
+overlapping eight-byte loads, and `push_sent` read the copy back -- 2.2%
+of Sieve's samples on one load, none at `master`. `df21be83` lends the
+call the step's parts, so the step moves only into the push, which again
+receives the place the decision wrote it in ("The entry at a send"
+above); Sieve is level since, +1.2% and not separated, and an interim
+measurement put Sieve under `NS_NEXT_NO_JIT=1` at +0.5% against
+`master`, where it had been +4.6%.
+
+**`bench_block` is slower, accepted until stage 4** (decided with the
+user on 2026-10-29). A block is now entered at an interpreter's push,
+since no rule leaves a compiled body unentered, and a short block an
+interpreted `value:` pushes pays the bridge for little: the profile behind
+`a8f96b90` put an entry at a push about 8.5 ns above
+interpreting a one-instruction block -- the switch
+(`vm::machine_code_switch`), `run_machine_code`, `jit::entered` and the
+entry stub saving and restoring eight registers -- and
+`bench_block`'s block `[:y | acc:: acc + y]` reaches its indirection
+vector through `Leaf::Step`, about 18 ns more an entry. So `bench_block`
+is 10.3% slower with its builds separated, and an interpreted `do:` over
+a million elements with `[:each | each]` measured about 12% slower in an
+interim measurement. Stage 4 removes the cost: it makes a closure's
+activation a compiled call, as a method's is ([OPEN-WORK.md](../OPEN-WORK.md),
+"A block an interpreted `value:` pushes pays the bridge").
 
 ## The trampoline
 
@@ -9669,7 +9773,11 @@ activation" above); one it inlines creates neither.
 Road step 8's first three stages are built ("Planned: the baseline JIT",
 "Stages" below): the code zone and the x64 encoder; the entry, the exit
 and the instructions without a send; and sends and the inline caches in
-machine code. On x64 a body is compiled at its second entry. Its machine
+machine code -- with the entry at an interpreter's send, which calls a
+compiled callee as a compiled send does ("The entry at a send" below).
+On x64 a body is compiled at its second entry, and every compiled body
+is entered wherever it runs: at a send, a push and a frame returned to.
+Its machine
 code runs until the first instruction that has no template -- a closure,
 an allocation, a non-local return, a send whose call is refused -- where
 it exits and the interpreter runs that instruction and the rest of the
@@ -9682,9 +9790,10 @@ line the AArch64 port changes; elsewhere `jit::available` answers `false`
 and every body stays interpreted. What the design names beyond this --
 closures, non-local return, allocation and the write barrier, on-stack
 replacement, the register cache, compacting the zone, the AArch64
-encoder -- is stages 4 to 7, still planned. "What sends in machine code
-moved" has the measurement of stage 3, "What the baseline JIT's
-foundation moved" that of the first two.
+encoder -- is stages 4 to 7, still planned. "What the entry at a send
+moved" has the measurement of the entry, "What sends in machine code
+moved" that of stage 3, "What the baseline JIT's foundation moved" that
+of the first two.
 
 - **The code zone** (`crates/ns-memory/src/code_zone.rs`): one
   reservation of at most 128 MiB (`CodeZone::MAXIMUM_BYTES`, AArch64's
@@ -9705,12 +9814,13 @@ foundation moved" that of the first two.
   that a commit allocates its pages with `fallocate` and a zone the
   system cannot back
   fails as a value rather than by `SIGBUS`, on every kernel with `memfd`.
-  `CodeZone::enter` calls the entry stub with the platform's C
-  convention, handing it a
-  block of thirty-two words -- 0 to 3 its own, 4 to 31 the caller's
-  (`jit::stubs::BlockWord`), 13 and 22 to 28 of those free for the later
-  stages' words -- and the leaf shim calls a Rust function
-  `fn(&mut C, [u64; 3]) -> u64` back.
+  `CodeZone::enter` calls the entry or the call stub with the platform's
+  C convention, handing it a block of thirty-two words, an `EntryBlock`
+  kept from one entry to the next -- 0 to 3 its own, written at every
+  entry, 4 to 31 the caller's (`jit::stubs::BlockWord`), 22 to 28 of
+  those free for the later stages' words ("The entry at a send" below) --
+  and the leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64`
+  back, from a leaf table that is one constant for the process.
   Every zone has an identity of its own, never 0, so that a body records
   which zone its code lies in.
 - **The native stack's room** (`crates/ns-memory/src/native_stack.rs`):
@@ -9791,7 +9901,11 @@ foundation moved" that of the first two.
   after a `lea` (`Assembler::load_code_address`, `Operand::CodeAddress`),
   never by an absolute address. A body that returns from the entry's
   frame returns into the entry stub, which stores the value and the kind
-  `Returned`.
+  `Returned`. The call stub (`assemble_call_stub`) is the entry stub for
+  an interpreter's send: it also hands the callee its receiver and class
+  from the machine words and writes block word `EnteredByCall` (13), so
+  that the exit stub materializes the called callee ("The entry at a
+  send" below).
 - **The baseline compiler** (`jit/baseline.rs`) lowers a body instruction
   by instruction through the one exhaustive `match` over `Instruction`
   (`lower`), recording where each instruction's code starts and, for
@@ -9835,38 +9949,39 @@ foundation moved" that of the first two.
   entries, so a body with a compiled frame is always one that runs. A
   push in `vm::run_stretch` pays one load
   and one compare (`JitSlot::is_armed`); everything else is
-  `jit::entered`, out of line and `#[cold]`. A run's base activation,
-  which the host pushed, is entered at `vm::run`'s start like any push,
-  or a host's entry send would never run compiled. **Which bodies are
-  installed and which are entered** is decided from the code, by
-  `baseline::reaches_before_an_exit` over the instructions' lowerings:
+  `jit::entered`, out of line and `#[cold]`. A send of a method in the
+  run loop pays three loads, from the method to its code to the slot,
+  and one compare (`JitSlot::is_compiled`, inline in
+  `Mutator::enter_sent`); everything else is `call_sent` and
+  `jit::called`, out of line ("The entry at a send" below). A run's base
+  activation, which the host pushed, is entered at `vm::run`'s start
+  like any push, or a host's entry send would never run compiled.
+  **Which bodies are installed and which are entered** is decided from
+  the code, by `baseline::reaches_before_an_exit` over the instructions'
+  lowerings:
   - a body whose code cannot reach a return, a compiled send or a
     backward jump before its first exit is neither installed nor entered
-    (`JitStatistics::bodies_exiting_at_once`): such code runs a few
-    straight-line instructions the interpreter runs as fast, for an entry
-    and an exit on every push, which measured `bench_block` 31.5% and
-    `bench_send` 21.7% slower ("What the baseline JIT's foundation
-    moved");
-  - a body whose code can reach a return or a compiled send but cannot
-    take a backward jump before its first exit is installed **for compiled
-    calls only** (`CALLED_ONLY`): a send in machine code calls it, but
-    neither an interpreter's push nor a frame returned to enters it, and
-    its slot is not armed, so the push pays only the compare. An entry and
-    an exit cost about fourteen nanoseconds, more than a straight run to
-    the return buys; entering every such body cost Richards 2.6 times its
-    time and most of the other programs twice theirs ("What sends in
-    machine code moved"). So a recursion whose root is an interpreted
-    frame without a loop runs interpreted throughout; the prior art makes
-    the entry cheap and enters compiled code at every call instead, which
-    is left open (`OPEN-WORK.md`, "An entry into machine code costs too
-    much");
-  - a body whose code can loop before it exits is installed and entered
-    at a push and at a frame returned to;
+    (`EXITS_AT_ONCE`, `JitStatistics::bodies_exiting_at_once`): such
+    code runs a few straight-line instructions the interpreter runs as
+    fast, for an entry and an exit on every push, which measured
+    `bench_block` 31.5% and `bench_send` 21.7% slower ("What the
+    baseline JIT's foundation moved");
+  - every other body is installed and entered wherever it runs: an
+    interpreter's send and a compiled send call it, and a push that is
+    no send and a frame returned to enter it through the bridge ("The
+    entry at a send" below). No rule leaves a compiled body unentered:
+    a recursion rooted in an interpreted frame runs in machine code, and
+    only a short block an interpreted `value:` pushes is slower for it,
+    until stage 4 makes a closure's activation a compiled call ("What
+    the entry at a send moved"; [OPEN-WORK.md](../OPEN-WORK.md), "A
+    block an interpreted `value:` pushes pays the bridge");
   - a body whose machine code has handed its frame to the interpreter
     `EXIT_BUDGET` (64) times -- an exit at an instruction or a refused
     call, not a poll -- is **abandoned** (`jit::abandon`,
-    `JitStatistics::abandoned_bodies`): it is refused, and every cell that
-    names its machine entry is written afresh from its entry
+    `JitStatistics::abandoned_bodies`): it is refused, so that neither
+    an interpreter's send nor a push nor a frame returned to enters it,
+    and every cell that names its machine entry is written afresh from
+    its entry
     (`InlineCaches::refresh_cells_entering`), which names the refusing
     stub since, so that its callers' calls are refused and spend their own
     budgets. A loop whose callee makes a block, which machine code does
@@ -9895,13 +10010,16 @@ foundation moved" that of the first two.
   `crates/ns-runtime/tests/jit.rs` pins the trigger, the zone's identity,
   a full zone, a body exiting mid-way, the sends at every lexical depth
   and both `super` levels against the interpreter, the stubs, the
-  materialized stack trace, the entry rules and the abandonment, and
-  every leaf-safe mirror row's audit (`AUDITED_LEAF_ROWS`);
-  `goldens/runtime/jit/` holds a counting loop, an overflow, compiled
-  sends, lexical sends, a mixin applied twice, polymorphic and
-  megamorphic sites, the accessor stubs and leaf rows, and a recursion
-  that overflows through compiled calls, each `.toml` recorded with
-  `NS_NEXT_NO_JIT=1`.
+  materialized stack trace, the entry rules, the call stub and the
+  entry block, and the abandonment, and every leaf-safe mirror row's
+  audit (`AUDITED_LEAF_ROWS`); `goldens/runtime/jit/` holds a counting
+  loop, an overflow, compiled sends, lexical sends, a mixin applied
+  twice, polymorphic and megamorphic sites, the accessor stubs and leaf
+  rows, a recursion that overflows through compiled calls, an
+  interpreter's sends that call compiled methods with their arguments
+  from other registers than the send's slots, and a recursion rooted in
+  an interpreted frame that overflows through the interpreter's calls,
+  each `.toml` recorded with `NS_NEXT_NO_JIT=1`.
 
 ### Sends, returns and the exit that materializes
 
@@ -10053,6 +10171,163 @@ sends and the inline caches in machine code.
   refused may have written those slots -- which nothing reads after the
   send but the send itself, re-executed -- and nothing else.
 
+### The entry at a send
+
+Decided with the user on 2026-10-29
+(`docs/superpowers/plans/2026-10-29-2030-jit-entry-cost.md`). **An
+interpreter's send whose target is a method with machine code calls
+that code as a compiled send does**, through the call stub, and the
+callee's `ret` delivers its value into the send's destination, the run
+loop going on at the next instruction; **every other entry -- a push
+that is no send, a frame returned to -- crosses a thin bridge** whose
+block lasts from one entry to the next. With both, every compiled body
+is entered wherever it runs ("Which bodies are installed and which are
+entered" above); "What the entry at a send moved" has the measurement.
+
+**What an entry cost before.** Measured on 2026-10-29 at `d2f7e9bc`, one
+pinned release build with debug information, with every compiled body
+entered at every push: an interpreted `do:` pushing the block
+`[:each | each]` a million times a run took 75.3 ms against 64.4 ms
+interpreted, about 11 ns more an entry than the block's interpreted run.
+A profile (`samply` at 8 kHz, its frames named through `llvm-symbolizer`
+against the PDB) split an entry's roughly 17 ns: `jit::run_machine_code`
+3.6 ns -- the room check, the sixteen words of the block written afresh,
+the leaf table built, the zone's `Rc` cloned, the exit decoded and
+counted -- `jit::entered` 2.0 ns (counting a compiled body's entry, the
+program-counter map searched for offset 0), `vm::machine_code_switch`
+1.9 ns, the return 7.8 ns -- `finish`, `pop_activation` and
+`resume_caller`, which reads the caller's send again to find its
+destination -- and the machine code with its stubs 1.6 ns;
+`CodeZone::enter` itself 0.15 ns. On top of all of it the interpreter's
+own push of the frame had already run. So the cost was the bookkeeping
+on either side of the crossing, not the crossing.
+
+**What the prior art does.** None of the three pays a crossing of the
+platform convention per call; each pays it only where its runtime calls
+in. HotSpot's `Method::set_code` swaps the pointer every interpreted
+invoke jumps through (`share/oops/method.cpp:1448-1488`,
+`cpu/x86/interp_masm_x86.cpp:731`); the frameless i2c adapter, 12 to 20
+instructions, loads the arguments into the compiled convention and jumps
+(`cpu/x86/sharedRuntime_x86_64.cpp:1099-1263`), so no interpreter frame
+is ever built for the callee, whose `ret` lands in an interpreter return
+entry that has the value in its top-of-stack register and decodes
+nothing (`cpu/x86/templateInterpreterGenerator_x86.cpp:176-221`); its
+`call_stub`, which saves every callee-saved register, runs only where
+C++ calls Java (`cpu/x86/stubGenerator_x86_64.cpp:186-379`). V8's
+Ignition and Sparkplug share one frame layout, one slot apart
+(`src/execution/frame-constants.h:744-837`); every caller jumps through
+the function's dispatch entry, which `UpdateCodeImpl` points at the
+baseline code (`src/objects/js-function-inl.h:142-157`), and a return
+lands in the interpreter's trampoline with the value in its accumulator,
+which reads the call's opcode for its length alone
+(`src/builtins/x64/builtins-x64.cc:1262-1276`); `JSEntry` crosses only
+from C++ (`:347-553`). Cog's interpreter, a C loop as this one is a Rust
+loop, builds the callee's frame itself and jumps into the method past
+its frame-building prologue (`cointerp.c:11322-11395`); machine code
+returns to an interpreted caller through a trampoline that resets the C
+stack and jumps into `interpret()` afresh
+(`cogitX64SysV.c:8334-8393`), so no C frame ever waits for machine code.
+
+**Why a call stub and not Cog's switch.** Cog never returns into the C
+frame that entered machine code; here the run loop's frames hold `Rc`s
+and the protected `&mut Mutator`, and skipping a Rust frame without
+returning through it is undefined behaviour, so every entry returns to
+the Rust that made it ("The native stack carries the return addresses"
+below). What is kept of the prior art is what makes its transitions
+cheap without that: the callee builds its own frame -- the compiled
+prologue does ("Sends, returns and the exit that materializes", "The
+callee writes its own header places"), and the overlapping windows lay
+a send's callee on its sender's slots in the interpreter as in machine
+code, the role V8's shared layout plays -- and the value comes back to
+where the caller goes on, with no pop and no second reading of the
+send.
+
+- **The test** (`Mutator::enter_sent`, inlined at each of the run
+  loop's sends through `vm::deliver`): when the decided step is a
+  method's activation with the send's own arguments, laid on the send's
+  slots, and its body's slot says compiled (`JitSlot::is_compiled`;
+  three loads, from the method to its code to the slot, and one
+  compare), the send goes to `call_sent`, out of line and `#[cold]`;
+  every other step, and every call refused, is pushed by `push_sent` as
+  before. `call_sent` is lent the step's parts -- the receiver, the
+  method by reference, the class and the feedback base -- and answers
+  `Call::Ran` with what it ran or `Call::Push` with where the push takes
+  the arguments from, so the step itself moves only into the push, which
+  receives the place the decision wrote it in: with the call a second
+  by-value consumer, the step was copied into a place of its own on
+  every interpreted push and read back wide, which measured Sieve 5.3%
+  slower ("What the entry at a send moved").
+- **The call** (`call_sent`, `jit::called`): `call_sent` leaves to the
+  push a body that stands for another argument count than its method's;
+  checks the arity as the push does (`check_method_arity`), resolving an
+  unassigned feedback base as the push resolves it
+  (`InlineCaches::base_for`, which answers the push the same once a
+  call is refused), and places the arguments into the slots when they
+  lie elsewhere. `jit::called` refuses (`Called::Refused`) when the body
+  has no machine code in this zone compiled against the feedback base or
+  the native stack has too little room; otherwise it hands the receiver
+  and the defining class over in the machine words (`CalleeReceiver`,
+  `CalleeClass`; `Heap::hand_machine_callee`), seeds the exit's walk,
+  writes the block's frame word at the send's argument base, and calls
+  the body's machine entry through the call stub
+  (`stubs::assemble_call_stub`), which loads the callee's roles from the
+  machine words, hands `send_cells` 0 as the miss stub does, and writes
+  `EnteredByCall`. The callee's prologue checks the depth, the stack's
+  room and the safepoint request and counts the push as for any compiled
+  call; its `Return` takes the count off, and nothing is popped, so
+  nothing is added back. The deciding stays in `interpreter/`; `vm.rs`
+  only delivers what the send answers (`Sent`): a value into the send's
+  destination, a pushed activation switched to, or where an exit left
+  the run loop (`Sent::Stopped`, which `vm::stopped` switches to as
+  `Transfer::Stopped`, or `Transfer::StoppedAtSafepoint` when the exit
+  was a safepoint's). `JitStatistics::called_entries` counts the calls.
+- **A refusal is the push's.** A call the callee's own prologue refused
+  before it wrote anything -- at the depth limit's bound, past the
+  stack's room, with a safepoint requested -- exits with
+  `ExitKind::PushRefused` and the sender as the innermost frame, which
+  `called` answers as `Called::Refused`: the interpreter pushes the
+  callee from the slots, as it pushes a body without machine code, and
+  so raises the overflow, grows the stack or takes the safepoint, rather
+  than run the send again, which would only call the body again. Such a
+  refusal is counted nowhere ([OPEN-WORK.md](../OPEN-WORK.md), "A call
+  refused at the depth bound is counted nowhere").
+- **The exit's walk starts at the send** (`Walk::seed_call`): the call
+  seeds the walk with the sender, its registers, the send's argument
+  base and count and the stack's top, as if the sender were a compiled
+  frame stopped at the send, so that the callee is materialized as any
+  compiled callee is and the sender, interpreted, goes on after it as
+  after any callee. The exit stub, told by `EnteredByCall`, materializes
+  a called callee even when no compiled frame lies above it, as the
+  innermost; the entry stub's frame, with nothing above it, is the
+  interpreter's already. A return clears the seed.
+- **The bridge** (`jit::entered`, `jit::resumed`, `run_machine_code`):
+  a push that is no send and a frame returned to enter through the entry
+  stub. A compiled body's entry at a push counts nothing
+  (`JitState::is_entered_here`) and reads its first instruction's offset
+  off its slot (`JitSlot::first_instruction`) rather than searching the
+  program-counter map; the leaf table is a constant the compiler
+  promotes to a static (`leaves::table`); a return is answered before
+  the exit is decoded.
+- **The entry block** (`ns_memory::EntryBlock`): the thirty-two words
+  machine code is entered with are `Cell`s behind an `Rc` that
+  `JitState` holds and keeps from one entry to the next, an allocation
+  of its own outside the mutator, as the machine words are ("The machine
+  words" below): Rust reads and writes them only through shared
+  references, and machine code through the `Rc`'s own pointer, which
+  `CodeZone::enter` hands it. An entry writes `RegisterBase`,
+  `MachineEntry` and, while counting, the counters' zero
+  (`prepared_block`). The lasting words -- the object space's and the
+  activation stack's bases, the machine words' address, the exit stub,
+  the site cells, the polymorphic stub and blocks, the global cache's
+  rows and mask (`lasting_block_words`) -- are written only when what
+  they name changes: `JitState::mark_block_stale` marks the block, and
+  the next entry writes them all, wherever a zone is made or replaced
+  (`set_enabled`, `replace_zone`) or the global cache resized
+  (`Interpreter::set_global_cache_size`). A new lasting word, or a new
+  way to replace what one names, calls it too: a debug build compares
+  every lasting word with what it names at every entry and panics on a
+  missed mark, while a release build would run on with the stale word.
+
 ### The machine words
 
 Machine code runs while `CodeZone::enter` holds the mutator as its
@@ -10089,9 +10364,10 @@ build the generation the last pushed frame took (`NextGeneration`),
 which the heap's push and a compiled prologue share; the receiver and
 the current class handed between machine code and a leaf
 (`CalleeReceiver`, `CalleeClass`: the miss leaf writes the callee's for
-the miss stub to hand the callee's machine entry, the leaf stub and the
-mirror method stub write the send's receiver for their leaves, each read
-only right after it was written); and the application id table's
+the miss stub to hand the callee's machine entry, an interpreter's send
+the callee's for the call stub, the leaf stub and the mirror method stub
+the send's receiver for their leaves, each read only right after it was
+written); and the application id table's
 address and the number of its rows recorded (`ApplicationIds`,
 `ApplicationIdRows`; [memory.md](memory.md), "The application id
 table"). Eden's top and limit, which stage 4's bump allocation reads and
@@ -10109,7 +10385,10 @@ machine code runs. An address taken from a slice instead would be a child
 of that `&mut` retag, invalidated by the next sibling's write. The
 argument is written where `CodeZone::enter` is documented, at
 `Reservation::base_address` and at the area's definition, since no tool
-checks it.
+checks it. The entry block is an allocation of the same kind
+(`ns_memory::EntryBlock`, `Cell`s behind an `Rc` that `JitState` holds),
+outside the mutator, its lasting words written only when what they name
+changes ("The entry at a send" above).
 
 Reading the flag through the area costs the interpreter's poll one load
 more -- the area's address, then the word -- at every backward jump and
@@ -10481,11 +10760,15 @@ encoder; entry, exit and the instructions without a send, every body
 compilable since an instruction without a template exits; sends and the
 caches; closures, non-local return, allocation and the barrier;
 on-stack replacement, the polls and the depth count's measurement; the
-register cache; the AArch64 encoder under QEMU. The first three are built
-("The baseline JIT's foundation" above, "What sends in machine code
-moved"); the fourth, closures, non-local return, allocation and the
-write barrier in machine code, is next ([OPEN-WORK.md](../OPEN-WORK.md),
-"Next").
+register cache; the AArch64 encoder under QEMU. The first three are
+built, and the entry into machine code at its cost after them -- an
+interpreter's send calling a compiled callee, every compiled body
+entered ("The baseline JIT's foundation" above, "What sends in machine
+code moved", "What the entry at a send moved"); the fourth, closures,
+non-local return, allocation and the write barrier in machine code, is
+next ([OPEN-WORK.md](../OPEN-WORK.md), "Next"), and it also removes the
+cost a short block an interpreted `value:` pushes pays at the bridge, by
+making a closure's activation a compiled call.
 
 ## Decisions
 

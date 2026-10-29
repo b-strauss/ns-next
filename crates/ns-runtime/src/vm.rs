@@ -30,7 +30,7 @@ use crate::interpreter::locals::{
 };
 use crate::interpreter::unwind::{non_boolean_condition, UnwindOutcome};
 use crate::interpreter::{
-    EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
+    EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Sent, Signal, Step,
 };
 use crate::jit::Resumption;
 use crate::types::*;
@@ -84,6 +84,15 @@ enum Transfer {
     Switched,
     /// The run is over; the handoff holds its result.
     Exited,
+    /// Run the frame the handoff names, from its program counter, in the
+    /// interpreter: the innermost frame an exit of machine code an
+    /// interpreter's send called materialized, which goes on at the
+    /// instruction the exit handed it rather than enter machine code
+    /// again there (`stopped`).
+    Stopped,
+    /// `Stopped`, at a poll that found a safepoint requested: the loop
+    /// takes it before the frame's instruction runs.
+    StoppedAtSafepoint,
 }
 
 /// What a `Transfer::Switched` or `Transfer::Exited` carries. Its
@@ -1390,6 +1399,21 @@ fn run_stretch<'gc>(
                         .expect("internal: an exit carries its result"),
                 );
             }
+            transfer @ (Transfer::Stopped | Transfer::StoppedAtSafepoint) => {
+                activation = handoff.activation;
+                code = handoff
+                    .code
+                    .take()
+                    .expect("internal: a switch names its code");
+                program_counter = handoff.program_counter;
+                feedback_base = handoff.feedback_base;
+                register_base = mutator.heap.activation_register_base(activation);
+                if matches!(transfer, Transfer::StoppedAtSafepoint)
+                    || mutator.heap.safepoint_requested()
+                {
+                    break 'run;
+                }
+            }
         }
     }
     // A safepoint is requested, at a switch or a backward jump: the frame
@@ -2348,18 +2372,51 @@ fn deliver<'gc>(
                 .set_register(sender.register_base, sender.destination, value);
             Transfer::Next
         }
-        Ok(step) => match mutator.push_sent(
+        Ok(step) => match mutator.enter_sent(
             step,
             send_arguments,
             Some(sender.activation),
             sender.inlinable,
             slots,
         ) {
-            Ok((callee, program_counter)) => handoff.switch_to(mutator, callee, program_counter),
+            Ok(Sent::Pushed(callee, program_counter)) => {
+                handoff.switch_to(mutator, callee, program_counter)
+            }
+            // A compiled callee's value, delivered as a decided one is.
+            Ok(Sent::Value(value)) => {
+                mutator
+                    .heap
+                    .set_register(sender.register_base, sender.destination, value);
+                Transfer::Next
+            }
+            Ok(Sent::Stopped(resumption)) => stopped(mutator, resumption, handoff),
             Err(signal) => unwind(mutator, signal, floor, handoff),
         },
         Err(signal) => unwind(mutator, signal, floor, handoff),
     }
+}
+
+/// Where an exit of a called body's machine code left the run loop
+/// (`Mutator::enter_sent`): the innermost frame it materialized, which the
+/// loop goes on running interpreted, or takes a safepoint at first.
+#[cold]
+#[inline(never)]
+fn stopped(mutator: &Mutator<'_>, resumption: Resumption, handoff: &mut Handoff) -> Transfer {
+    let (activation, program_counter, transfer) = match resumption {
+        Resumption::Interpreted {
+            activation,
+            program_counter,
+        } => (activation, program_counter, Transfer::Stopped),
+        Resumption::Safepoint {
+            activation,
+            program_counter,
+        } => (activation, program_counter, Transfer::StoppedAtSafepoint),
+        Resumption::Returned { .. } => {
+            unreachable!("internal: a called body's return is its send's value")
+        }
+    };
+    handoff.switch_to(mutator, activation, program_counter as usize);
+    transfer
 }
 
 /// `activation` has returned `value`: pop it and do what its continuation says.
@@ -2588,7 +2645,9 @@ fn machine_code_switch<'gc>(
                         }
                     }
                     Transfer::Exited => return Switched::Exited,
-                    Transfer::Next => unreachable!("internal: a return switches or exits"),
+                    Transfer::Next | Transfer::Stopped | Transfer::StoppedAtSafepoint => {
+                        unreachable!("internal: a return switches or exits")
+                    }
                 }
             }
         }

@@ -32,13 +32,6 @@ pub(crate) struct BaselineBody {
     /// and the exit cost; such a body is neither installed nor entered
     /// (`jit::note_entry`).
     pub(crate) exits_at_once: bool,
-    /// Whether the code can take a backward jump before its first exit,
-    /// a return or a compiled send passed through: only such code runs a
-    /// loop in machine code that pays for an entry at an interpreter's
-    /// push; any other body is entered only by a compiled call
-    /// (`jit::CALLED_ONLY`), which costs no more than the interpreter's
-    /// push of it.
-    pub(crate) loops_before_an_exit: bool,
 }
 
 /// What `lower` did with one instruction, and what `compile` still emits
@@ -550,8 +543,7 @@ pub(crate) fn compile(
             }
         }
     }
-    let exits_at_once = !reaches_before_an_exit(code, &exits, &transfers, true);
-    let loops_before_an_exit = reaches_before_an_exit(code, &exits, &transfers, false);
+    let exits_at_once = !reaches_before_an_exit(code, &exits, &transfers);
     body.emit_backward_branches();
     let assembled = body
         .macro_assembler
@@ -562,7 +554,6 @@ pub(crate) fn compile(
         code: assembled,
         map,
         exits_at_once,
-        loops_before_an_exit,
     })
 }
 
@@ -591,22 +582,14 @@ fn program_counter_map(
 
 /// Whether the code of `code`, whose instructions at the program counters
 /// `exits` marks lower to exits and `transfers` marks lower to a return or
-/// a compiled send, can take a backward jump -- or, when
-/// `transfer_suffices`, reach a transfer -- before its first exit: whether
-/// some instruction reachable from the first through templates, leaves
-/// and, unless a transfer suffices, transfers is one or jumps back. Only
-/// code that reaches a transfer or a loop does work in machine code that
-/// pays for a compiled call of it; a body that exits after a few
-/// straight-line instructions costs an entry and an exit on every push.
-/// Only code that loops pays for an entry at an interpreter's push. A
-/// leaf that declines exits, but is counted as falling through, since it
-/// declines only what the interpreter must run.
-fn reaches_before_an_exit(
-    code: &CompiledCode,
-    exits: &[bool],
-    transfers: &[bool],
-    transfer_suffices: bool,
-) -> bool {
+/// a compiled send, can reach a transfer or take a backward jump before
+/// its first exit: whether some instruction reachable from the first
+/// through templates and leaves is a transfer or jumps back. Only such
+/// code does work in machine code that pays for an entry; a body that
+/// exits after a few straight-line instructions costs an entry and an
+/// exit on every push. A leaf that declines exits, but is counted as
+/// falling through, since it declines only what the interpreter must run.
+fn reaches_before_an_exit(code: &CompiledCode, exits: &[bool], transfers: &[bool]) -> bool {
     let mut reached = vec![false; exits.len()];
     let mut pending = Vec::new();
     if let Some(first) = reached.first_mut() {
@@ -617,7 +600,7 @@ fn reaches_before_an_exit(
         if exits[program_counter as usize] {
             continue;
         }
-        if transfer_suffices && transfers[program_counter as usize] {
+        if transfers[program_counter as usize] {
             return true;
         }
         let instruction = code.instruction(program_counter as usize);
@@ -1322,15 +1305,10 @@ mod tests {
     #[test]
     fn a_loop_reachable_only_past_an_exit_is_no_reason_to_enter() {
         let (code, exits) = loop_past_an_instruction(true);
-        assert!(!super::reaches_before_an_exit(
-            &code,
-            &exits,
-            &[false; 6],
-            true
-        ));
+        assert!(!super::reaches_before_an_exit(&code, &exits, &[false; 6]));
         let (code, exits) = loop_past_an_instruction(false);
         assert!(
-            super::reaches_before_an_exit(&code, &exits, &[false; 6], true),
+            super::reaches_before_an_exit(&code, &exits, &[false; 6]),
             "the same loop through a template is"
         );
     }
@@ -1361,27 +1339,21 @@ mod tests {
             0,
         );
         let exits = [false, false, false, false, false, true];
-        assert!(!super::reaches_before_an_exit(
-            &code,
-            &exits,
-            &[false; 6],
-            true
-        ));
+        assert!(!super::reaches_before_an_exit(&code, &exits, &[false; 6]));
     }
 
-    /// A body that runs to its return reaches a transfer, so a compiled
-    /// call of it pays, but does not loop, so a push does not enter it;
-    /// one that loops past a transfer -- a compiled send -- does both.
+    /// A body that runs straight to its return reaches a transfer, which
+    /// pays for its entry at a send, a push or a frame returned to as a
+    /// loop does.
     #[test]
-    fn a_return_is_a_transfer_but_no_loop() {
+    fn a_return_is_a_reason_to_enter() {
         let (code, _) = loop_past_an_instruction(true);
         let transfers = [false, false, false, true];
         let exits_but_the_return = [false, false, false, false];
         assert!(super::reaches_before_an_exit(
             &code,
             &exits_but_the_return,
-            &transfers,
-            true
+            &transfers
         ));
         let straight = method(
             vec![
@@ -1396,24 +1368,11 @@ mod tests {
         assert!(super::reaches_before_an_exit(
             &straight,
             &[false, false],
-            &[false, true],
-            true
+            &[false, true]
         ));
-        assert!(!super::reaches_before_an_exit(
-            &straight,
-            &[false, false],
-            &[false, true],
-            false
-        ));
-        let (looping, looping_exits) = loop_past_an_instruction(false);
         assert!(
-            super::reaches_before_an_exit(
-                &looping,
-                &looping_exits,
-                &[false, true, false, false],
-                false
-            ),
-            "a loop through a compiled send is entered at a push"
+            !super::reaches_before_an_exit(&straight, &[false, true], &[false, true]),
+            "a return the interpreter runs is no reason"
         );
     }
 }

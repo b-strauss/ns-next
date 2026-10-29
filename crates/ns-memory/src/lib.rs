@@ -32,7 +32,7 @@ mod platform;
 use std::ops::Range;
 use std::ptr::NonNull;
 
-pub use code_zone::{CodeOffset, CodeWriter, CodeZone, Leaf, ENTRY_BLOCK_WORDS};
+pub use code_zone::{CodeOffset, CodeWriter, CodeZone, EntryBlock, Leaf, ENTRY_BLOCK_WORDS};
 use page_map::PageMap;
 
 /// How a committed page range may be accessed.

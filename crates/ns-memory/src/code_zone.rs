@@ -11,6 +11,7 @@
 //! executable view's bytes, so code is installed while machine code
 //! entered from the zone runs -- from a leaf it calls.
 
+use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +34,63 @@ pub type Leaf<C> = fn(&mut C, [u64; 3]) -> u64;
 /// the number of leaves; `CodeZone::enter` writes these four on every
 /// entry. Words 4 to 31 belong to the caller (`jit::stubs` defines them).
 pub const ENTRY_BLOCK_WORDS: usize = 32;
+
+/// The block machine code is entered with (`ENTRY_BLOCK_WORDS`), kept from
+/// one entry to the next, so that its caller writes a word only when what
+/// the word names changes rather than at every entry. Its clones share the
+/// one allocation.
+///
+/// The words are `Cell`s behind an `Rc` that is never lent mutably: Rust
+/// reads and writes them only through shared references to
+/// interior-mutable cells, which assert no uniqueness, and machine code
+/// through the pointer `CodeZone::enter` hands it, derived from the `Rc`'s
+/// own pointer without a reference in between, so neither side's access
+/// invalidates the other's. An `Rc` rather than a `Box`: a `Box` is
+/// retagged as unique wherever it moves, as a `&mut` is, which would
+/// invalidate the pointer a later entry hands the code; an `Rc`'s pointer
+/// never is. And the block is an allocation of its own, never words
+/// inside the context `enter` lends the code, which may hold a clone of
+/// it: a leaf's `&mut` context covers the `Rc`, not the words it points
+/// to.
+#[derive(Clone)]
+pub struct EntryBlock {
+    words: Rc<[Cell<u64>; ENTRY_BLOCK_WORDS]>,
+}
+
+impl EntryBlock {
+    /// A block whose every word is 0.
+    pub fn new() -> EntryBlock {
+        EntryBlock {
+            words: Rc::new(std::array::from_fn(|_| Cell::new(0))),
+        }
+    }
+
+    /// Word `index`. Panics on an index at or past `ENTRY_BLOCK_WORDS`.
+    #[inline(always)]
+    pub fn get(&self, index: usize) -> u64 {
+        self.words[index].get()
+    }
+
+    /// Writes `word` at `index`. Panics on an index at or past
+    /// `ENTRY_BLOCK_WORDS`.
+    #[inline(always)]
+    pub fn set(&self, index: usize, word: u64) {
+        self.words[index].set(word);
+    }
+
+    /// The pointer machine code reads and writes the words through: the
+    /// `Rc`'s own, whose provenance covers every word, cast to the words'
+    /// representation -- a `Cell<u64>` is laid out as a `u64`.
+    fn as_mut_ptr(&self) -> *mut u64 {
+        Rc::as_ptr(&self.words).cast::<u64>().cast_mut()
+    }
+}
+
+impl Default for EntryBlock {
+    fn default() -> EntryBlock {
+        EntryBlock::new()
+    }
+}
 
 /// The next zone's identity. It starts at 1, so 0 is never an identity and
 /// can stand for "no zone" where one is recorded.
@@ -112,7 +170,8 @@ impl CodeZone {
     /// an `extern "C" fn(*mut u64) -> u64` given the block's address, and
     /// answers what it answers. Words 0 to 3 of the block are written first
     /// (`ENTRY_BLOCK_WORDS`), so the code reaches `context` and `leaves`
-    /// only through the shim.
+    /// only through the shim; every other word is as the caller left it,
+    /// and as the code leaves it once it returns.
     ///
     /// Safe on one trust: the code at `stub` was written by `ns-runtime`'s
     /// JIT, which is the contract -- a complete function of the C calling
@@ -147,10 +206,19 @@ impl CodeZone {
     /// pointer rather than a slice of it, so the slices Rust reborrows
     /// between leaf calls, all derived from that pointer, never invalidate
     /// the address the code holds (that method has the argument in full).
+    /// The block is such an allocation too (`EntryBlock`): the code writes
+    /// its words through the pointer handed it here, Rust only through its
+    /// cells, so the context may hold a clone of it and a leaf may read or
+    /// write it.
+    ///
+    /// A block serves one entry at a time: the code keeps the stack
+    /// pointer it returns to and its exit in it, so no leaf may enter code
+    /// with the block of the entry it was called from (`ns-runtime`'s
+    /// leaves enter none).
     pub fn enter<C>(
         &self,
         stub: CodeOffset,
-        block: &mut [u64; ENTRY_BLOCK_WORDS],
+        block: &EntryBlock,
         context: &mut C,
         leaves: &[Leaf<C>],
     ) -> u64 {
@@ -159,10 +227,10 @@ impl CodeZone {
         // once, and `context` is not touched again before the code returns,
         // so every `&mut C` the shim makes from it is the only live one.
         let context: *mut C = context;
-        block[0] = context.expose_provenance() as u64;
-        block[1] = (leaf_shim::<C> as *const ()).expose_provenance() as u64;
-        block[2] = leaves.as_ptr().expose_provenance() as u64;
-        block[3] = leaves.len() as u64;
+        block.set(0, context.expose_provenance() as u64);
+        block.set(1, (leaf_shim::<C> as *const ()).expose_provenance() as u64);
+        block.set(2, leaves.as_ptr().expose_provenance() as u64);
+        block.set(3, leaves.len() as u64);
         let block = block.as_mut_ptr();
         // The view's provenance, which `executable_address` exposed.
         let code = std::ptr::with_exposed_provenance::<()>(address);
@@ -200,9 +268,11 @@ impl Drop for CodeZone {
 /// leaf aborts too -- Rust aborts when a panic reaches an `extern "C"`
 /// boundary.
 extern "C" fn leaf_shim<C>(block: *mut u64, leaf: u64, first: u64, second: u64, third: u64) -> u64 {
-    // SAFETY: `block` is the address `enter` handed the code, of a block of
-    // `ENTRY_BLOCK_WORDS` words that `enter` borrows mutably until the code
-    // returns, and the code calls the shim only before it returns.
+    // SAFETY: `block` is the address `enter` handed the code, of an
+    // `EntryBlock`'s `ENTRY_BLOCK_WORDS` cells, which `enter` borrows until
+    // the code returns, and the code calls the shim only before it returns;
+    // the words are cells, which no shared reference Rust holds to them
+    // forbids reading through the `Rc`'s pointer.
     let (context, table, count) =
         unsafe { (block.read(), block.add(2).read(), block.add(3).read()) };
     if leaf >= count {
@@ -473,12 +543,11 @@ mod tests {
         #[cfg(not(windows))]
         let code = [0x48, 0x8B, 0x47, 0x20, 0xC3];
         zone.write(CodeOffset(0), &code).expect("written");
-        let mut block = [0u64; ENTRY_BLOCK_WORDS];
-        block[4] = 42;
+        let block = EntryBlock::new();
+        block.set(4, 42);
         let mut context = ();
         assert_eq!(
-            zone.zone()
-                .enter(CodeOffset(0), &mut block, &mut context, &[]),
+            zone.zone().enter(CodeOffset(0), &block, &mut context, &[]),
             42
         );
     }
@@ -491,19 +560,46 @@ mod tests {
             .expect("written");
         zone.write(CodeOffset(16), &a_body_answering_the_block_word(1))
             .expect("written");
-        let mut block = [0u64; ENTRY_BLOCK_WORDS];
+        let block = EntryBlock::new();
         let mut context: u64 = 7;
         let context_address = std::ptr::addr_of_mut!(context) as u64;
         assert_eq!(
-            zone.zone()
-                .enter(CodeOffset(0), &mut block, &mut context, &[]),
+            zone.zone().enter(CodeOffset(0), &block, &mut context, &[]),
             context_address
         );
         assert_eq!(
-            zone.zone()
-                .enter(CodeOffset(16), &mut block, &mut context, &[]),
+            zone.zone().enter(CodeOffset(16), &block, &mut context, &[]),
             (leaf_shim::<u64> as *const ()).expose_provenance() as u64
         );
+    }
+
+    #[test]
+    fn an_entry_block_is_shared_by_its_clones() {
+        let block = EntryBlock::new();
+        let clone = block.clone();
+        assert_eq!(clone.get(7), 0, "a new block's words are 0");
+        block.set(7, 42);
+        assert_eq!(clone.get(7), 42);
+        clone.set(31, 9);
+        assert_eq!(block.get(31), 9);
+        assert_eq!(block.as_mut_ptr(), clone.as_mut_ptr());
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn entered_code_writes_the_entry_block_rust_reads() {
+        let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
+        // mov qword [argument + 40], 42; ret
+        #[cfg(windows)]
+        let code = [0x48, 0xC7, 0x41, 0x28, 42, 0, 0, 0, 0xC3];
+        #[cfg(not(windows))]
+        let code = [0x48, 0xC7, 0x47, 0x28, 42, 0, 0, 0, 0xC3];
+        zone.write(CodeOffset(0), &code).expect("written");
+        let block = EntryBlock::new();
+        let clone = block.clone();
+        let mut context = ();
+        zone.zone().enter(CodeOffset(0), &block, &mut context, &[]);
+        assert_eq!(clone.get(5), 42, "the code's write, read through a clone");
     }
 
     #[test]
@@ -520,10 +616,13 @@ mod tests {
         }
         let leaves: [Leaf<u64>; 2] = [first, second];
         let mut context: u64 = 0;
-        let mut block = [0u64; ENTRY_BLOCK_WORDS];
-        block[0] = std::ptr::addr_of_mut!(context).expose_provenance() as u64;
-        block[2] = leaves.as_ptr().expose_provenance() as u64;
-        block[3] = 2;
+        let block = EntryBlock::new();
+        block.set(
+            0,
+            std::ptr::addr_of_mut!(context).expose_provenance() as u64,
+        );
+        block.set(2, leaves.as_ptr().expose_provenance() as u64);
+        block.set(3, 2);
         let block = block.as_mut_ptr();
         assert_eq!(leaf_shim::<u64>(block, 1, 0, 3, 5), 2);
         assert_eq!(leaf_shim::<u64>(block, 0, 7, 0, 0), 1);
@@ -543,16 +642,16 @@ mod tests {
         zone.write(CodeOffset(16), &a_body_answering_the_block_word(3))
             .expect("written");
         let leaves: [Leaf<u64>; 2] = [add_one, add_one];
-        let mut block = [0u64; ENTRY_BLOCK_WORDS];
+        let block = EntryBlock::new();
         let mut context: u64 = 0;
         assert_eq!(
             zone.zone()
-                .enter(CodeOffset(0), &mut block, &mut context, &leaves),
+                .enter(CodeOffset(0), &block, &mut context, &leaves),
             leaves.as_ptr() as u64
         );
         assert_eq!(
             zone.zone()
-                .enter(CodeOffset(16), &mut block, &mut context, &leaves),
+                .enter(CodeOffset(16), &block, &mut context, &leaves),
             2
         );
     }

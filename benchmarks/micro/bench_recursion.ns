@@ -1,0 +1,15 @@
+/// A recursion without a loop, each activation of `fib:` a short body:
+/// it times what entering such a body costs.
+class BenchRecursion = Object new () (
+  /// Answers the `count`th Fibonacci number, 1 for a `count` below 2.
+  fib: count = (
+    count < 2 ifTrue: [^1].
+    ^(self fib: count - 1) + (self fib: count - 2).
+  )
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: (self fib: 25) printString;
+        newLine.
+  )
+)

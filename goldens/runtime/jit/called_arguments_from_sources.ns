@@ -1,0 +1,55 @@
+/// Sends of two and three arguments from an interpreted frame to compiled
+/// methods without a loop, each argument a local of `main:args:`, so
+/// that the arguments lie in consecutive registers that are not the
+/// send's slots: the interpreter places them into the slots before it
+/// calls the callee's machine code, as its push places them
+/// (`docs/design/execution.md`, "The entry at a send"). `main:args:` is
+/// entered once and so runs interpreted throughout; the callees, which do
+/// not loop, are compiled at their second entry and called from the
+/// third on.
+class CalledArgumentsFromSources = Object new () (
+  class Arithmetic = () (
+    public add: left to: right = (
+      ^left * 10 + right.
+    )
+
+    public add: left to: middle and: right = (
+      ^(left * 100) + (middle * 10) + right.
+    )
+
+    public subtract: right from: left = (
+      ^left - right.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      arithmetic = Arithmetic new.
+      first ::= 0.
+      second ::= 0.
+      third ::= 0.
+      sum ::= 0.
+      index ::= 0.
+    |
+    [index < 6] whileTrue: [
+      first:: index.
+      second:: index + 1.
+      third:: index + 2.
+      sum:: sum + (arithmetic add: first to: second).
+      sum:: sum + (arithmetic add: first to: second and: third).
+      sum:: sum + (arithmetic subtract: second from: third).
+      transcript
+          show: (arithmetic add: second to: third) printString;
+          show: ' ';
+          show: (arithmetic add: third to: first and: second) printString;
+          show: ' ';
+          show: (arithmetic subtract: first from: third) printString;
+          newLine.
+      index:: index + 1.
+    ].
+    transcript
+        show: sum printString;
+        newLine.
+  )
+)
