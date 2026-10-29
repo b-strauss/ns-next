@@ -8,7 +8,7 @@
 //! exit.
 
 use ns_assembler::{Assembled, Condition, Memory, Width};
-use ns_memory::ENTRY_BLOCK_WORDS;
+use ns_memory::{EntryBlock, ENTRY_BLOCK_WORDS};
 
 use super::leaves::Leaf;
 use super::macro_assembler::{Abi, MacroAssembler, Operand};
@@ -16,9 +16,12 @@ use crate::heap::machine_words::MachineWord;
 
 /// The words of the entry block, by index. `CodeZone::enter` writes the
 /// first four on every entry; the caller of `enter` writes the inputs
-/// (`ObjectSpaceBase` … `MachineEntry`, `MachineWords`, `ExitStub`,
-/// `Cells`, `PolymorphicStub`, `PolymorphicBlocks` … `GlobalMask`, and
-/// the counters' zero) before it, the exit stub the
+/// before it -- `RegisterBase`, `MachineEntry` and, while counting, the
+/// counters' zero at every entry, and `ObjectSpaceBase`, `StackBase`,
+/// `MachineWords`, `ExitStub`, `Cells`, `PolymorphicStub`,
+/// `PolymorphicBlocks` … `GlobalMask`, which name what lasts from one
+/// entry to the next, only when the block is stale
+/// (`JitState::mark_block_stale`) -- the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
 /// dead register's exit), a leaf call `LeafStackPointer`, and code that
 /// counts its back edges `BackEdges`.
@@ -81,8 +84,10 @@ pub(crate) enum BlockWord {
     /// probes.
     GlobalRows = 20,
     /// The global cache's group mask (`InlineCaches::global_mask`), which
-    /// the megamorphic stub picks a group with: a word of the entry, since
-    /// a test may resize the cache between two entries.
+    /// the megamorphic stub picks a group with: a word of the block rather
+    /// than a constant of the code, since a test may resize the cache
+    /// between two entries, which marks the block stale
+    /// (`JitState::mark_block_stale`).
     GlobalMask = 21,
     /// The sends code compiled to count them called compiled code through
     /// (`JitStatistics::compiled_calls`).
@@ -149,8 +154,8 @@ pub(crate) enum MachineExit {
 /// On a kind, program counter or register no exit writes: the stubs and
 /// the macro assembler write only those, so any other is a defect of the
 /// JIT.
-pub(crate) fn decode_exit(block: &[u64; ENTRY_BLOCK_WORDS], kind: u64) -> MachineExit {
-    let word = block[BlockWord::ExitProgramCounter.index()];
+pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
+    let word = block.get(BlockWord::ExitProgramCounter.index());
     if kind == ExitKind::Returned as u64 {
         return MachineExit::Returned { value: word };
     }
@@ -165,7 +170,7 @@ pub(crate) fn decode_exit(block: &[u64; ENTRY_BLOCK_WORDS], kind: u64) -> Machin
     } else if kind == ExitKind::Safepoint as u64 {
         MachineExit::Safepoint { program_counter }
     } else if kind == ExitKind::DeadRegister as u64 {
-        let word = block[BlockWord::ExitRegister.index()];
+        let word = block.get(BlockWord::ExitRegister.index());
         let Ok(register) = u16::try_from(word) else {
             panic!("internal: machine code exited reading register {word}");
         };
@@ -406,7 +411,7 @@ pub(crate) fn assemble_refusing_stub(abi: Abi) -> Assembled {
 #[cfg(test)]
 pub(super) mod testing {
     use ns_assembler::Assembled;
-    use ns_memory::{CodeOffset, CodeWriter, CodeZone, Leaf, ENTRY_BLOCK_WORDS};
+    use ns_memory::{CodeOffset, CodeWriter, CodeZone, EntryBlock, Leaf, ENTRY_BLOCK_WORDS};
 
     use super::{assemble_entry_stub, assemble_exit_stub, decode_exit, BlockWord, MachineExit};
     use crate::heap::machine_words::{MachineWord, MachineWords};
@@ -494,20 +499,28 @@ pub(super) mod testing {
         leaves: &[Leaf<C>],
     ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
         let [entry, exit] = stubs;
-        let mut block = [0u64; ENTRY_BLOCK_WORDS];
-        block[BlockWord::StackBase.index()] = frame.as_mut_ptr().expose_provenance() as u64;
-        block[BlockWord::RegisterBase.index()] = register_base;
-        block[BlockWord::MachineEntry.index()] = zone.executable_address(body) as u64;
-        block[BlockWord::ExitStub.index()] = zone.executable_address(exit) as u64;
+        let block = EntryBlock::new();
+        let set = |word: BlockWord, value: u64| block.set(word.index(), value);
+        set(
+            BlockWord::StackBase,
+            frame.as_mut_ptr().expose_provenance() as u64,
+        );
+        set(BlockWord::RegisterBase, register_base);
+        set(
+            BlockWord::MachineEntry,
+            zone.executable_address(body) as u64,
+        );
+        set(BlockWord::ExitStub, zone.executable_address(exit) as u64);
         let machine_words = MachineWords::new();
         machine_words.set(
             MachineWord::SafepointRequested,
             u64::from(safepoint_requested),
         );
-        block[BlockWord::MachineWords.index()] = machine_words.address() as u64;
-        let kind = zone.enter(entry, &mut block, context, leaves);
-        assert_eq!(kind, block[BlockWord::ExitKind.index()]);
-        (decode_exit(&block, kind), block)
+        set(BlockWord::MachineWords, machine_words.address() as u64);
+        let kind = zone.enter(entry, &block, context, leaves);
+        assert_eq!(kind, block.get(BlockWord::ExitKind.index()));
+        let words = std::array::from_fn(|index| block.get(index));
+        (decode_exit(&block, kind), words)
     }
 }
 

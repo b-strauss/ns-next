@@ -1053,7 +1053,11 @@ impl Interpreter {
     /// must be twice a power of two -- two per group -- and a host that gets
     /// this wrong panics rather than the cache rounding it silently.
     pub fn set_global_cache_size(&mut self, entries: usize) {
-        self.enter(|mutator| mutator.caches.set_global_cache_size(entries));
+        self.enter(|mutator| {
+            mutator.caches.set_global_cache_size(entries);
+            // The entry block holds the cache's mask.
+            mutator.jit.mark_block_stale();
+        });
     }
 
     /// A test hook standing in for the debugger, not an input path a

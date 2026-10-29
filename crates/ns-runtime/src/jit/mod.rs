@@ -38,7 +38,7 @@ pub(crate) mod targets;
 use std::cell::Cell;
 use std::rc::{Rc, Weak};
 
-use ns_memory::{CodeOffset, CodeWriter};
+use ns_memory::{CodeOffset, CodeWriter, EntryBlock};
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
@@ -193,6 +193,10 @@ pub(crate) struct JitSlot {
     /// of the interpreter running the body.
     zone: Cell<u64>,
     offset: Cell<u32>,
+    /// Where the code of the body's instruction at program counter 0
+    /// starts, an offset into the zone: where an entry at a push goes in,
+    /// recorded so that no entry searches the program-counter map for it.
+    first_instruction: Cell<u32>,
     map: Cell<u32>,
     /// How many times the body's machine code handed its frame to the
     /// interpreter (`EXIT_BUDGET`).
@@ -205,6 +209,7 @@ impl Default for JitSlot {
             state: Cell::new(0),
             zone: Cell::new(0),
             offset: Cell::new(0),
+            first_instruction: Cell::new(0),
             map: Cell::new(0),
             exits: Cell::new(0),
         }
@@ -230,6 +235,7 @@ impl std::fmt::Debug for JitSlot {
                 })
                 .field("zone", &self.zone.get())
                 .field("offset", &self.offset.get())
+                .field("first_instruction", &self.first_instruction.get())
                 .field("map", &self.map.get())
                 .finish(),
             entries => write!(formatter, "JitSlot::Counting({entries})"),
@@ -266,10 +272,12 @@ impl JitSlot {
         self.zone.set(0);
     }
 
-    /// Records the body compiled into `zone` at `offset`, the installed
-    /// body `map`; entered at a push when `entered_at_a_push`, else only by
-    /// a compiled call.
-    fn compiled(&self, zone: u64, offset: CodeOffset, map: u32, entered_at_a_push: bool) {
+    /// Records the body compiled into `zone` at `offset`, its instruction
+    /// at program counter 0 at `first_instruction`, the installed body
+    /// `map`; entered at a push when `entered_at_a_push`, else only by a
+    /// compiled call.
+    fn compiled(&self, zone: u64, offsets: [CodeOffset; 2], map: u32, entered_at_a_push: bool) {
+        let [offset, first_instruction] = offsets;
         self.state.set(if entered_at_a_push {
             COMPILED
         } else {
@@ -277,6 +285,7 @@ impl JitSlot {
         });
         self.zone.set(zone);
         self.offset.set(offset.0);
+        self.first_instruction.set(first_instruction.0);
         self.map.set(map);
     }
 }
@@ -522,6 +531,15 @@ pub(crate) struct JitState {
     /// The innermost frame the last walk materialized, for the run loop to
     /// go on with (`take_walked`).
     pub(crate) walked: Option<ActivationReference>,
+    /// The block every entry hands machine code (`stubs::BlockWord`), kept
+    /// from one entry to the next: an entry writes only the words that
+    /// name its frame and its code, the others when `block_stale` says
+    /// what they name has changed.
+    block: EntryBlock,
+    /// Whether a word of `block` that an entry does not write may no
+    /// longer name what it named when it was written: the zone made or
+    /// replaced, the global cache resized (`mark_block_stale`).
+    block_stale: bool,
 }
 
 /// Whether `NS_NEXT_STRESS_JIT` asks for the JIT stress mode: set, and
@@ -578,7 +596,16 @@ impl JitState {
             compile_at_entry: if stress_jit { 1 } else { COMPILE_AT_ENTRY },
             walk: materialize::Walk::default(),
             walked: None,
+            block: EntryBlock::new(),
+            block_stale: true,
         }
+    }
+
+    /// Makes the next entry write every word of the entry block afresh:
+    /// called wherever what one of them names changes -- the zone made or
+    /// replaced, the global cache resized.
+    pub(crate) fn mark_block_stale(&mut self) {
+        self.block_stale = true;
     }
 
     pub(crate) fn statistics(&self) -> JitStatistics {
@@ -599,6 +626,7 @@ impl JitState {
         let reserved = enabled && self.zone.is_none() && available();
         if reserved {
             self.zone = reserve_zone(DEFAULT_ZONE_BYTES);
+            self.mark_block_stale();
         }
         self.enabled = enabled && self.zone.is_some();
         reserved
@@ -617,6 +645,7 @@ impl JitState {
             self.zone = reserve_zone(bytes);
         }
         self.enabled = self.enabled && self.zone.is_some();
+        self.mark_block_stale();
     }
 
     /// Turns the JIT stress mode on or off for this state, as
@@ -799,6 +828,8 @@ impl JitState {
             compile_at_entry: COMPILE_AT_ENTRY,
             walk: materialize::Walk::default(),
             walked: None,
+            block: EntryBlock::new(),
+            block_stale: true,
         }
     }
 }
@@ -1167,7 +1198,8 @@ impl JitState {
     /// Where the run loop enters `code`'s machine code at the instruction
     /// at `program_counter`, for an activation with `feedback_base`: never
     /// for a body called only, which a frame returned to goes on running
-    /// interpreted, as a push does.
+    /// interpreted, as a push does. Program counter 0, a push's, is read
+    /// off the slot rather than searched for in the map.
     fn interpreter_entry(
         &self,
         code: &CompiledCode,
@@ -1178,8 +1210,25 @@ impl JitState {
             return None;
         }
         let body = self.installed(code)?;
+        if body.feedback_base != feedback_base {
+            return None;
+        }
+        if program_counter == 0 {
+            return Some(CodeOffset(code.jit.first_instruction.get()));
+        }
         let offset = body.map.machine_offset(program_counter)?;
-        (body.feedback_base == feedback_base).then_some(CodeOffset(body.start + offset))
+        Some(CodeOffset(body.start + offset))
+    }
+
+    /// Whether an entry into `code` has nothing to count: the JIT is on
+    /// and the body is compiled into this zone, entered at a push. Every
+    /// other body's entry is `note_entry`'s -- one still counting, one
+    /// compiled into another zone, and any while the JIT is off, which
+    /// `note_entry` refuses.
+    fn is_entered_here(&self, code: &CompiledCode) -> bool {
+        self.enabled
+            && code.jit.state.get() == COMPILED
+            && code.jit.zone.get() == self.zone_identity()
     }
 
     /// Whether `code` may still be compiled into this zone: it is counting
@@ -1288,9 +1337,9 @@ fn compile_into_slot(
     method: Option<&Rc<MixinMethod>>,
 ) {
     match compile(state, code, feedback_base, method) {
-        Ok((offset, map, entered_at_a_push)) => {
+        Ok((offsets, map, entered_at_a_push)) => {
             code.jit
-                .compiled(state.zone_identity(), offset, map, entered_at_a_push);
+                .compiled(state.zone_identity(), offsets, map, entered_at_a_push);
             state.statistics.compiled_bodies += 1;
         }
         Err(Refusal::ExitsAtOnce) => {
@@ -1305,17 +1354,17 @@ fn compile_into_slot(
 }
 
 /// Compiles `code`, its sends' cells those of `feedback_base`'s range,
-/// and installs it, answering its offset, its index among the installed
-/// bodies, and whether a push enters it: when its code can loop before it
-/// exits, or under the JIT stress mode, which enters every body it
-/// installs.
+/// and installs it, answering its offset and that of its instruction at
+/// program counter 0, its index among the installed bodies, and whether a
+/// push enters it: when its code can loop before it exits, or under the
+/// JIT stress mode, which enters every body it installs.
 #[cfg(ns_jit)]
 fn compile(
     state: &mut JitState,
     code: &Rc<CompiledCode>,
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
-) -> Result<(CodeOffset, u32, bool), Refusal> {
+) -> Result<([CodeOffset; 2], u32, bool), Refusal> {
     let Some(zone) = state.zone.as_mut() else {
         panic!("internal: the JIT is on without a zone");
     };
@@ -1326,6 +1375,9 @@ fn compile(
         return Err(Refusal::ExitsAtOnce);
     }
     let map = u32::try_from(state.bodies.len()).map_err(|_| Refusal::ZoneFull)?;
+    // Every body has an instruction, its last a return or a jump; one
+    // without would have nowhere for a push to enter.
+    let first_instruction = body.map.machine_offset(0).ok_or(Refusal::Unassembled)?;
     let offset = install(zone, &body.code.bytes)?;
     let length = u32::try_from(body.code.bytes.len()).map_err(|_| Refusal::ZoneFull)?;
     for call in &body.map.returns {
@@ -1353,7 +1405,8 @@ fn compile(
         map: body.map,
     });
     let entered_at_a_push = body.loops_before_an_exit || state.install_bodies_exiting_at_once;
-    Ok((offset, map, entered_at_a_push))
+    let first_instruction = CodeOffset(offset.0 + first_instruction);
+    Ok(([offset, first_instruction], map, entered_at_a_push))
 }
 
 #[cfg(not(ns_jit))]
@@ -1362,7 +1415,7 @@ fn compile(
     _code: &Rc<CompiledCode>,
     _feedback_base: FeedbackBase,
     _method: Option<&Rc<MixinMethod>>,
-) -> Result<(CodeOffset, u32, bool), Refusal> {
+) -> Result<([CodeOffset; 2], u32, bool), Refusal> {
     Err(Refusal::Unassembled)
 }
 
@@ -1389,9 +1442,10 @@ pub(crate) enum Resumption {
 }
 
 /// A push of `activation`, whose body `code` has an armed slot, at
-/// program counter 0: counts the entry, and runs the body's machine code
-/// when it has some in this interpreter's zone. Out of line, so that the
-/// run loop pays only `JitSlot::is_armed` for the JIT on a push.
+/// program counter 0: counts the entry, unless the body is compiled into
+/// this zone already, and runs the body's machine code when it has some
+/// in this interpreter's zone. Out of line, so that the run loop pays only
+/// `JitSlot::is_armed` for the JIT on a push.
 #[cold]
 #[inline(never)]
 pub(crate) fn entered(
@@ -1401,8 +1455,10 @@ pub(crate) fn entered(
     register_base: RegisterBase,
 ) -> Resumption {
     let feedback_base = mutator.heap.activation_feedback_base(activation);
-    let method = mutator.heap.activation_method(activation);
-    note_entry(&mut mutator.jit, code, feedback_base, method.as_ref());
+    if !mutator.jit.is_entered_here(code) {
+        let method = mutator.heap.activation_method(activation);
+        note_entry(&mut mutator.jit, code, feedback_base, method.as_ref());
+    }
     match mutator.jit.interpreter_entry(code, feedback_base, 0) {
         Some(entry) => run_machine_code(mutator, activation, register_base, entry),
         None => Resumption::Interpreted {
@@ -1449,8 +1505,12 @@ pub(crate) fn resumed(
 /// registers start at `register_base`, and answers where the interpreter
 /// goes on: at 0, running nothing, when the thread's native stack has less
 /// than `NATIVE_STACK_NEED` left, since compiled frames' return addresses
-/// lie there. Every address the code needs is asked of the heap afresh, as
-/// nothing keeps one valid across entries.
+/// lie there. The entry block's words that name the frame and the code
+/// are written at every entry; the others name what does not move between
+/// entries -- reservations, the stubs, the global cache's mask -- and are
+/// written afresh only once something marked the block stale
+/// (`JitState::mark_block_stale`), which a debug build checks at every
+/// entry.
 ///
 /// # Panics
 ///
@@ -1463,8 +1523,7 @@ fn run_machine_code(
     register_base: RegisterBase,
     entry: CodeOffset,
 ) -> Resumption {
-    use ns_memory::ENTRY_BLOCK_WORDS;
-    use stubs::{BlockWord, MachineExit};
+    use stubs::{BlockWord, ExitKind, MachineExit};
 
     if !native_stack_has_room() {
         return Resumption::Interpreted {
@@ -1475,34 +1534,55 @@ fn run_machine_code(
     let Some(zone) = mutator.jit.zone.as_ref() else {
         panic!("internal: machine code is entered without a zone");
     };
-    // The zone is held apart from the mutator, which `enter` lends to the
-    // code as its context.
-    let code = std::rc::Rc::clone(zone.writer.zone());
+    // The zone and the block are held apart from the mutator, which
+    // `enter` lends to the code as its context.
+    let code = Rc::clone(zone.writer.zone());
     let (entry_stub, exit_stub) = (zone.entry_stub, zone.exit_stub);
-    let mut block = [0u64; ENTRY_BLOCK_WORDS];
-    block[BlockWord::ObjectSpaceBase.index()] = mutator.heap.object_space_base_address() as u64;
-    block[BlockWord::StackBase.index()] = mutator.heap.activation_stack_base_address() as u64;
-    block[BlockWord::RegisterBase.index()] = crate::heap::Heap::register_base_words(register_base);
-    block[BlockWord::MachineEntry.index()] = code.executable_address(entry) as u64;
-    block[BlockWord::MachineWords.index()] = mutator.heap.machine_words_address() as u64;
-    block[BlockWord::ExitStub.index()] = code.executable_address(exit_stub) as u64;
-    block[BlockWord::Cells.index()] = mutator.caches.site_cells_address() as u64;
-    block[BlockWord::PolymorphicStub.index()] = mutator.jit.polymorphic_stub_address();
-    block[BlockWord::PolymorphicBlocks.index()] = mutator.caches.block_cells_address() as u64;
-    block[BlockWord::GlobalRows.index()] = mutator.caches.global_rows_address() as u64;
-    block[BlockWord::GlobalMask.index()] = mutator.caches.global_mask();
-    let leaves = leaves::table();
+    let exit_stub = || code.executable_address(exit_stub) as u64;
+    let block = mutator.jit.block.clone();
+    if mutator.jit.block_stale {
+        for (word, value) in lasting_block_words(mutator, exit_stub()) {
+            block.set(word.index(), value);
+        }
+        mutator.jit.block_stale = false;
+    } else {
+        debug_assert!(
+            lasting_block_words(mutator, exit_stub())
+                .iter()
+                .all(|(word, value)| block.get(word.index()) == *value),
+            "internal: a word of the entry block changed and nothing marked it stale"
+        );
+    }
+    block.set(
+        BlockWord::RegisterBase.index(),
+        crate::heap::Heap::register_base_words(register_base),
+    );
+    block.set(
+        BlockWord::MachineEntry.index(),
+        code.executable_address(entry) as u64,
+    );
+    if mutator.jit.counting {
+        block.set(BlockWord::BackEdges.index(), 0);
+        block.set(BlockWord::CompiledCalls.index(), 0);
+    }
     mutator.jit.statistics.machine_entries += 1;
     mutator.jit.walked = None;
-    let kind = code.enter(entry_stub, &mut block, mutator, &leaves);
+    let kind = code.enter(entry_stub, &block, mutator, leaves::table());
     debug_assert_eq!(
         kind,
-        block[BlockWord::ExitKind.index()],
+        block.get(BlockWord::ExitKind.index()),
         "internal: the exit stub answers the kind it wrote"
     );
     if mutator.jit.counting {
-        mutator.jit.statistics.machine_back_edges += block[BlockWord::BackEdges.index()];
-        mutator.jit.statistics.compiled_calls += block[BlockWord::CompiledCalls.index()];
+        mutator.jit.statistics.machine_back_edges += block.get(BlockWord::BackEdges.index());
+        mutator.jit.statistics.compiled_calls += block.get(BlockWord::CompiledCalls.index());
+    }
+    // A return first: the frame the run loop entered returned, so no frame
+    // was materialized, none goes on interpreted and nothing exited.
+    if kind == ExitKind::Returned as u64 {
+        return Resumption::Returned {
+            value: block.get(BlockWord::ExitProgramCounter.index()),
+        };
     }
     // The innermost frame the exit materialized, or the entry's when no
     // compiled frame lay above it.
@@ -1537,11 +1617,11 @@ fn run_machine_code(
     }
     // The innermost frame goes on interpreted from here: it no longer
     // stands in machine code, which only the frames below it still do.
-    if !matches!(exit, MachineExit::Returned { .. }) {
-        mutator.heap.clear_compiled(innermost);
-    }
+    mutator.heap.clear_compiled(innermost);
     match exit {
-        MachineExit::Returned { value } => Resumption::Returned { value },
+        MachineExit::Returned { .. } => {
+            unreachable!("internal: a return is answered before the exit is decoded")
+        }
         MachineExit::Reexecute { program_counter } => Resumption::Interpreted {
             activation: innermost,
             program_counter,
@@ -1567,6 +1647,44 @@ fn run_machine_code(
             mutator.heap.refuse_dead_register(innermost, register)
         }
     }
+}
+
+/// The words of the entry block that name what lasts from one entry to
+/// the next, with what they name now: the reservations machine code reads
+/// and writes, the stubs it reaches through the block -- the exit stub at
+/// `exit_stub` -- and the global cache's mask.
+#[cfg(ns_jit)]
+fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 9] {
+    use stubs::BlockWord;
+    [
+        (
+            BlockWord::ObjectSpaceBase,
+            mutator.heap.object_space_base_address() as u64,
+        ),
+        (
+            BlockWord::StackBase,
+            mutator.heap.activation_stack_base_address() as u64,
+        ),
+        (
+            BlockWord::MachineWords,
+            mutator.heap.machine_words_address() as u64,
+        ),
+        (BlockWord::ExitStub, exit_stub),
+        (BlockWord::Cells, mutator.caches.site_cells_address() as u64),
+        (
+            BlockWord::PolymorphicStub,
+            mutator.jit.polymorphic_stub_address(),
+        ),
+        (
+            BlockWord::PolymorphicBlocks,
+            mutator.caches.block_cells_address() as u64,
+        ),
+        (
+            BlockWord::GlobalRows,
+            mutator.caches.global_rows_address() as u64,
+        ),
+        (BlockWord::GlobalMask, mutator.caches.global_mask()),
+    ]
 }
 
 /// Abandons `code`, whose machine code has spent its `EXIT_BUDGET`: its
@@ -1656,17 +1774,18 @@ mod tests {
     #[test]
     fn a_copied_slot_counts_afresh() {
         let slot = JitSlot::default();
-        slot.compiled(7, ns_memory::CodeOffset(64), 3, true);
+        let offsets = [ns_memory::CodeOffset(64), ns_memory::CodeOffset(80)];
+        slot.compiled(7, offsets, 3, true);
         assert_eq!(
             format!("{slot:?}"),
-            "JitSlot::Compiled { zone: 7, offset: 64, map: 3 }"
+            "JitSlot::Compiled { zone: 7, offset: 64, first_instruction: 80, map: 3 }"
         );
         assert!(slot.is_armed());
         assert_eq!(format!("{:?}", slot.clone()), "JitSlot::Counting(0)");
-        slot.compiled(7, ns_memory::CodeOffset(64), 3, false);
+        slot.compiled(7, offsets, 3, false);
         assert_eq!(
             format!("{slot:?}"),
-            "JitSlot::CalledOnly { zone: 7, offset: 64, map: 3 }"
+            "JitSlot::CalledOnly { zone: 7, offset: 64, first_instruction: 80, map: 3 }"
         );
         assert!(!slot.is_armed(), "a push leaves a body called only alone");
         slot.refuse();

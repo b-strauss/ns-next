@@ -58,12 +58,13 @@ impl Leaf {
 }
 
 /// The leaves, in `Leaf` order, each handed the mutator the code was
-/// entered with.
-pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 8] {
+/// entered with: one table for the process, a constant the compiler
+/// promotes to a static, so that no entry builds it.
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 8] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
-    [
+    &[
         step as ns_memory::Leaf<Mutator<'gc>>,
         miss as ns_memory::Leaf<Mutator<'gc>>,
         materialize_frame as ns_memory::Leaf<Mutator<'gc>>,

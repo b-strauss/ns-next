@@ -1343,6 +1343,39 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+ns_runtime::for_each_lowering! {
+    /// The entry block is kept from one entry to the next, its global
+    /// cache's mask among its words: after the cache is resized between
+    /// two runs, the megamorphic stub probes the new one -- the answers
+    /// are the interpreter's, and once the resized cache is filled a run
+    /// meets the miss leaf nowhere, which a stale mask probing the wrong
+    /// group would not.
+    fn the_entry_block_follows_a_resized_global_cache(lowering) {
+        let source = polymorphic_source(6);
+        let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_jit_counting(true);
+        let offsets: i64 = [1, 10, 100, 1000, 10_000, 100_000].iter().sum();
+        let expected = 6 * 499_500 + 1000 * offsets;
+        assert_eq!(run(&mut interpreter, &class), expected);
+        interpreter.set_global_cache_size(4096);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), expected, "filling the resized cache");
+        let middle = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), expected, "hitting in it");
+        let filled = since(middle, before);
+        let hitting = since(interpreter.jit_statistics(), middle);
+        assert!(filled.machine_entries >= 1, "machine code ran after the resize");
+        assert!(hitting.machine_entries >= 1, "machine code ran after the resize");
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(
+                hitting.miss_leaf_calls, 0,
+                "every send hit in machine code, the megamorphic one in the resized cache"
+            );
+        }
+    }
+}
+
 /// A mixin applied over six superclasses, whose one compiled `step:`
 /// makes a `super` send to six S, a private lexical send under six N and
 /// a public lexical one to receivers of six classes: three megamorphic
