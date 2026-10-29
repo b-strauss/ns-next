@@ -41,23 +41,66 @@ impl<'gc> Mutator<'gc> {
         field: usize,
         arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        if let Some(object) = receiver.as_object() {
-            match kind {
-                AccessorKind::Getter => {
-                    if let Some(value) = self.heap.instance_field(object, field) {
-                        return Ok(Step::Value(value));
-                    }
-                }
-                AccessorKind::Setter => {
-                    if let Some(value) = arguments.first(&self.heap) {
-                        if self.heap.instance_set_field(object, field, value) {
-                            return Ok(Step::Value(receiver));
-                        }
-                    }
-                }
+        match self.access_slot(receiver, kind, field, arguments) {
+            Some(value) => Ok(Step::Value(value)),
+            None => Err(self.no_field_for_slot_accessor(receiver, selector, field)),
+        }
+    }
+
+    /// `decide_slot_accessor`'s read or write, answering the value the
+    /// accessor answers, or `None`, having written nothing, for a receiver
+    /// without the field or a setter without an argument.
+    #[inline(always)]
+    fn access_slot(
+        &mut self,
+        receiver: Value<'gc>,
+        kind: AccessorKind,
+        field: usize,
+        arguments: Arguments<'_, 'gc>,
+    ) -> Option<Value<'gc>> {
+        let object = receiver.as_object()?;
+        match kind {
+            AccessorKind::Getter => self.heap.instance_field(object, field),
+            AccessorKind::Setter => {
+                let value = arguments.first(&self.heap)?;
+                self.heap
+                    .instance_set_field(object, field, value)
+                    .then_some(receiver)
             }
         }
-        Err(self.no_field_for_slot_accessor(receiver, selector, field))
+    }
+
+    /// `act`'s arm for `resolved`, a slot accessor of any chain but a
+    /// `doesNotUnderstand:` handler's, for machine code's leaf stub: the
+    /// guard check a private or `super` accessor makes, then the read or
+    /// the write, answering the accessor's value, or `None` where `act`
+    /// would raise an error, having written nothing, so that the
+    /// interpreter runs the send and raises it.
+    pub(crate) fn slot_for_machine_code(
+        &mut self,
+        resolved: &Resolved<'gc>,
+        receiver: Value<'gc>,
+        arguments: Arguments<'_, 'gc>,
+    ) -> Option<Value<'gc>> {
+        let Resolved::Slot {
+            kind,
+            field,
+            chain,
+            level,
+            recorded_guard,
+        } = *resolved
+        else {
+            return None;
+        };
+        match chain {
+            Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => None,
+            Chain::Private | Chain::Super
+                if !self.slot_level_holds(receiver, level, recorded_guard) =>
+            {
+                None
+            }
+            _ => self.access_slot(receiver, kind, field, arguments),
+        }
     }
 
     /// Whether `receiver` still has the slots of `level`, the application

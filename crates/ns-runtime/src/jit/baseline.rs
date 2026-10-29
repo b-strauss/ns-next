@@ -25,10 +25,11 @@ use super::{CallReturn, ProgramCounterMap, Refusal};
 pub(crate) struct BaselineBody {
     pub(crate) code: ns_assembler::Assembled,
     pub(crate) map: ProgramCounterMap,
-    /// Whether the code leaves before it can take a backward jump: every
-    /// path from the first instruction reaches an exit first, so the
-    /// code runs at most a few straight-line instructions the interpreter
-    /// would have run for less than the entry and the exit cost
+    /// Whether the code exits before it reaches a return, a compiled send
+    /// or a backward jump: every path from the first instruction reaches an
+    /// exit first, so the code runs at most a few straight-line
+    /// instructions the interpreter would have run for less than the entry
+    /// and the exit cost; such a body is neither installed nor entered
     /// (`jit::note_entry`).
     pub(crate) exits_at_once: bool,
     /// Whether the code can take a backward jump before its first exit,

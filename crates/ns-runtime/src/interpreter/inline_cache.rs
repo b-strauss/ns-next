@@ -424,21 +424,15 @@ impl InlineCaches {
         self.cells.site_address(0)
     }
 
-    /// The slot accessor site `index`'s own entry records, when its target
-    /// is one and its cell lies at `cell_address`: the cell machine code's
-    /// send hit, which the leaf stub hands its leaf. A cell copies its
-    /// entry and the two are written together, so the hit on the site's
-    /// own cell is a hit on this entry, for this key; a hit on a block's
-    /// cell or a global row answers `None`, and the leaf decides the send
-    /// as the interpreter's cached send does.
-    pub(crate) fn site_slot_hit<'gc>(
-        &self,
-        index: usize,
-        cell_address: u64,
-    ) -> Option<Resolved<'gc>> {
-        if self.cells.site_address(index) as u64 != cell_address {
-            return None;
-        }
+    /// The slot accessor whose site's own cell lies at `cell_address`, when
+    /// the site's entry records one: the cell machine code's send hit,
+    /// which the leaf stub hands its leaf. A cell copies its entry and the
+    /// two are written together, so the hit on the site's own cell is a
+    /// hit on this entry, for this key; a hit on a block's cell or a
+    /// global row answers `None`, and the leaf decides the send as the
+    /// interpreter's cached send does.
+    pub(crate) fn site_slot_hit<'gc>(&self, cell_address: u64) -> Option<Resolved<'gc>> {
+        let index = self.cells.site_of_cell(cell_address)?;
         match self.sites.get(index)?.target {
             Target::Slot {
                 field,
@@ -1904,9 +1898,22 @@ fn miss<'gc>(
         superclass,
         current_class,
     };
-    let (resolved, base) = decided_miss(mutator, index, key, selector, lexical_of, resolve);
-    mutator.check_super_handler_slot(&resolved, *key.receiver)?;
-    mutator.act_with_base(resolved, base, *key.receiver, selector, arguments)
+    decided_miss(
+        mutator,
+        index,
+        key,
+        selector,
+        lexical_of,
+        resolve,
+        #[inline(always)]
+        |mutator, resolved, base| {
+            mutator.act_with_base(resolved, base, receiver, selector, arguments)
+        },
+        |mutator, resolved| {
+            mutator.check_super_handler_slot(&resolved, receiver)?;
+            mutator.act(resolved, receiver, selector, arguments)
+        },
+    )
 }
 
 /// A send's decision past its site's own entry, for `miss` and the miss
@@ -1920,15 +1927,30 @@ fn miss<'gc>(
 /// `super` `doesNotUnderstand:` slot handler, which is never recorded, so
 /// that `miss`'s check of it after any of the three is the uncached
 /// send's.
+///
+/// What is decided goes on where it is found rather than back as a
+/// value: a hit in the block or the global cache to `hit`, a lookup's
+/// resolution to `resolved`, so that `miss` acts at each, as the
+/// interpreter's send did before the miss leaf shared the decision. A
+/// resolution carried back through one join was copied through memory on
+/// every polymorphic and megamorphic hit, read back wider than it was
+/// written, a store-forwarding stall that cost DeltaBlue 5% with the JIT
+/// off.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the key, the two lookups it may need and the two places a decision goes on, each a closure the caller's send inlines"
+)]
 #[inline(always)]
-fn decided_miss<'gc>(
+fn decided_miss<'gc, Answer>(
     mutator: &mut Mutator<'gc>,
     index: usize,
     mut key: SendKey<'_, 'gc>,
     selector: Symbol,
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
-) -> (Resolved<'gc>, FeedbackBase) {
+    hit: impl FnOnce(&mut Mutator<'gc>, Resolved<'gc>, FeedbackBase) -> Answer,
+    resolved: impl FnOnce(&mut Mutator<'gc>, Resolved<'gc>) -> Answer,
+) -> Answer {
     let mut known_lexical_class = if key.private() {
         LexicalClass::Known(key.lexical_class)
     } else {
@@ -1936,8 +1958,8 @@ fn decided_miss<'gc>(
     };
     if key.guard != DispatchId::NONE {
         if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard) {
-            if let Some(found) = materialize(mutator, target, key) {
-                return found;
+            if let Some((found, base)) = materialize(mutator, target, key) {
+                return hit(mutator, found, base);
             }
         }
         if let CacheRule::Lexical(ref mut lexical) = key.rule {
@@ -1950,18 +1972,18 @@ fn decided_miss<'gc>(
             .global_get(key.guard, selector, key.rule)
             .cloned();
         if let Some(target) = global {
-            if let Some(found) = materialize(mutator, target.clone(), key) {
+            if let Some((found, base)) = materialize(mutator, target.clone(), key) {
                 let cell = cell_for(mutator, key, &target);
                 mutator
                     .caches
                     .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
-                return found;
+                return hit(mutator, found, base);
             }
         }
     }
-    let resolved = resolve(mutator, known_lexical_class);
-    fill(mutator, index, key, selector, &resolved);
-    (resolved, FeedbackBase::NOT_ASSIGNED)
+    let found = resolve(mutator, known_lexical_class);
+    fill(mutator, index, key, selector, &found);
+    resolved(mutator, found)
 }
 
 /// What the miss leaf answers machine code for a send its cell did not
@@ -2249,7 +2271,16 @@ fn decided<'gc>(
             return found;
         }
     }
-    decided_miss(mutator, index, key, selector, lexical_of, resolve)
+    decided_miss(
+        mutator,
+        index,
+        key,
+        selector,
+        lexical_of,
+        resolve,
+        |_mutator, found, base| (found, base),
+        |_mutator, found| (found, FeedbackBase::NOT_ASSIGNED),
+    )
 }
 
 /// Records `resolved` in the global cache and at the site -- unless the key

@@ -220,6 +220,15 @@ impl Cells {
         self.reservation.base_address() + self.sites.start + index * CELL_BYTES
     }
 
+    /// The site whose cell lies at `address`, or `None` for an address
+    /// that is no site's cell -- a block's cell or a global row.
+    pub(crate) fn site_of_cell(&self, address: u64) -> Option<usize> {
+        let offset = usize::try_from(address)
+            .ok()?
+            .checked_sub(self.reservation.base_address() + self.sites.start)?;
+        (offset < self.sites.committed && offset % CELL_BYTES == 0).then_some(offset / CELL_BYTES)
+    }
+
     /// The address of polymorphic block `block`'s four cells, in the order
     /// of its slots: block 0's is where the polymorphic stub finds a block
     /// from (`jit::stubs::BlockWord::PolymorphicBlocks`).

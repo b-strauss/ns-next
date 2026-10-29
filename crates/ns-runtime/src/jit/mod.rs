@@ -420,13 +420,11 @@ pub(crate) enum Refusal {
     Unassembled,
     /// No room left in the zone, or its memory could not be committed.
     ZoneFull,
-    /// The code leaves before it can take a backward jump
-    /// (`JitStatistics::bodies_exiting_at_once`).
+    /// The code exits before it reaches a return, a compiled send or a
+    /// backward jump (`JitStatistics::bodies_exiting_at_once`).
     ExitsAtOnce,
 }
 
-/// A body installed in the zone: which body, where its code lies, and its
-/// program-counter map.
 /// What a call's return address says of its send (`JitState::returns`).
 #[derive(Clone, Copy)]
 struct ReturnSite {
@@ -440,9 +438,6 @@ struct ReturnSite {
     argument_count: u16,
     /// The send's selector.
     selector: crate::Symbol,
-    /// The send's site in the inline caches, which the body's feedback
-    /// base and its call site name (`inline_cache::site_index`).
-    cache_index: Option<u32>,
 }
 
 /// What a call's return address says of its send, for the leaves a callee
@@ -453,9 +448,10 @@ pub(crate) struct CallSiteOperands {
     pub(crate) argument_base: u16,
     pub(crate) argument_count: u16,
     pub(crate) selector: crate::Symbol,
-    pub(crate) cache_index: Option<usize>,
 }
 
+/// A body installed in the zone: which body, where its code lies, and its
+/// program-counter map.
 struct InstalledBody {
     /// The body itself, held weakly so that its code still dies with its
     /// mixin's row: the zone keeps no body alive. Not its code id, which a
@@ -722,7 +718,6 @@ impl JitState {
             argument_base: site.argument_base,
             argument_count: site.argument_count,
             selector: site.selector,
-            cache_index: site.cache_index.map(|index| index as usize),
         })
     }
 
@@ -776,8 +771,8 @@ impl JitState {
     }
 
     /// A state with the JIT on and a zone of `bytes`, whatever the
-    /// environment says, installing bodies that leave before a loop when
-    /// `install_bodies_exiting_at_once` is set.
+    /// environment says, installing and entering at a push every body it
+    /// compiles when `install_bodies_exiting_at_once` is set.
     #[cfg(all(test, ns_jit))]
     fn for_test(bytes: usize, install_bodies_exiting_at_once: bool) -> JitState {
         let zone = reserve_zone(bytes).expect("a zone");
@@ -1331,12 +1326,6 @@ fn compile(
                 argument_base: send.argument_base,
                 argument_count: crate::heap::register_number(send.argument_count),
                 selector: send.selector,
-                cache_index: crate::interpreter::inline_cache::site_index(
-                    feedback_base,
-                    code.family_size,
-                    send.call_site,
-                )
-                .and_then(|index| u32::try_from(index).ok()),
             },
         );
     }

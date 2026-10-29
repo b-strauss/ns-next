@@ -83,10 +83,13 @@ pub(crate) enum MachineWord {
         expect(dead_code, reason = "only a debug build's generation reads it")
     )]
     NextGeneration,
-    /// The receiver the miss leaf decided a compiled call's callee to
-    /// have, as a stored word, which the miss stub hands the callee's
-    /// machine entry (`Roles::callee_receiver`). Read only right after the
-    /// leaf wrote it.
+    /// A compiled call's receiver, as a stored word, handed between
+    /// machine code and a leaf: the miss leaf writes the receiver it
+    /// decided, which the miss stub hands the callee's machine entry
+    /// (`Roles::callee_receiver`), and the leaf stub and the mirror method
+    /// stub write the send's, which their leaves read
+    /// (`Heap::machine_callee_receiver`). Read only right after it was
+    /// written.
     CalleeReceiver,
     /// The current class the miss leaf decided, as `CalleeReceiver` is.
     CalleeClass,

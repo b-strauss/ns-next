@@ -250,8 +250,7 @@ fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     let [callee_address, return_address, cell_address] = arguments;
     mutator.jit.statistics.act_leaf_calls += 1;
-    if let Some(answer) = act_on_a_site_slot(mutator, callee_address, return_address, cell_address)
-    {
+    if let Some(answer) = act_on_a_site_slot(mutator, callee_address, cell_address) {
         return answer;
     }
     let Some((sender_address, program_counter)) =
@@ -270,31 +269,36 @@ fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 
 /// `act` for a slot accessor the send's site's own cell recorded: the
 /// accessor run on the receiver handed over in the machine words and, for
-/// a setter, the value in the send's one slot, as `act` runs it -- its
-/// guard's check for a private or `super` one included -- without a frame
-/// for the sender or a decision of the send. `None` for any other hit.
+/// a setter, the value in the send's one slot, at `callee_address`, as
+/// `act` runs it -- its guard's check for a private or `super` one
+/// included (`Mutator::slot_for_machine_code`) -- without a frame for the
+/// sender, a look at the send or a decision of it. `None` for any other
+/// hit.
 fn act_on_a_site_slot(
     mutator: &mut Mutator<'_>,
     callee_address: u64,
-    return_address: u64,
     cell_address: u64,
 ) -> Option<u64> {
-    let site = mutator.jit.call_site(return_address)?;
-    let resolved = mutator
-        .caches
-        .site_slot_hit(site.cache_index?, cell_address)?;
+    let resolved = mutator.caches.site_slot_hit(cell_address)?;
     let receiver = mutator.heap.machine_callee_receiver();
+    let setter = matches!(
+        resolved,
+        crate::interpreter::resolve::Resolved::Slot {
+            kind: crate::mixin::AccessorKind::Setter,
+            ..
+        }
+    );
     // A getter's call places no argument, so its slot is read only for a
     // setter's.
     let slot;
-    let given: &[Value<'_>] = if site.argument_count == 0 {
-        &[]
-    } else {
+    let given: &[Value<'_>] = if setter {
         slot = [mutator.heap.machine_frame_value(callee_address)];
         &slot
+    } else {
+        &[]
     };
     let answer = mutator
-        .act_for_machine_code(resolved, receiver, site.selector, Arguments::Values(&given))
+        .slot_for_machine_code(&resolved, receiver, Arguments::Values(&given))
         .map_or(Word::NO_VALUE_BITS, |value| {
             mutator.heap.machine_word_of(value)
         });
@@ -407,7 +411,12 @@ const HANDED_ARGUMENTS: usize = 4;
 /// `FAILED` with nothing written when the leaf declined, so that the code
 /// goes on at the failure block, and `REFUSED` for anything else, the
 /// destination unwritten, so that the exit after the call re-executes the
-/// instruction and the interpreter runs it.
+/// instruction and the interpreter runs it. Arguments that are not
+/// consecutive registers are placed into the send's argument slots
+/// before the row's leaf runs, as the interpreter places them, so a
+/// decline or a refusal may leave those slots written: nothing reads a
+/// send's slots after it but the send itself, which the interpreter
+/// re-executes, so the refusal still changed nothing the program sees.
 fn mirror(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     let [frame_address, program_counter, code_address] = arguments;
     let Ok(program_counter) = u32::try_from(program_counter) else {
