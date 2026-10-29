@@ -1183,13 +1183,14 @@ seconds per run -- CD, Havlak, Mandelbrot, NBody and DeltaBlue -- are
 timed with `bench --iterations 3`, every other program and every
 microbenchmark with `--iterations 8`, and a final comparison takes three
 builds a side over three rounds in one sitting, an interim one a build a
-side with `--iterations 15` (decided with the user on 2026-10-02 and
-2026-10-29): a run of seconds varies by far less than the changes
-measured, and ten of them made a comparison of three builds a side take
-an hour and a half, three bring it to about half an hour. A final
-comparison so takes about fifteen minutes on the development machine:
-building the six binaries at once 98 s, the three rounds 820 s
-(measured 2026-10-29, "What the entry at a send moved"). A comparison of two ns-next trees uses `bench`
+side over three rounds with `--iterations 15`, only the sources the change
+can move and no seconds-long Are We Fast Yet program (decided with the
+user on 2026-10-02 and 2026-10-29): a run of seconds varies by far less
+than the changes measured, and ten of them made a comparison of three
+builds a side take an hour and a half. A final comparison takes about
+fifteen minutes on the development machine: building the six binaries at
+once 98 s, the three rounds 820 s (measured 2026-10-29, "What the entry
+at a send moved"). A comparison of two ns-next trees uses `bench`
 alone (decided with the user on 2026-10-02): on the eleven programs whose
 `--timed` score is a throughput it agreed with `bench` ("What the
 eight-byte value moved"), on the five slow ones it is one run's rate to one
@@ -7573,8 +7574,8 @@ program and every micro source, `bench_recursion` among them. Each cell
 is a side's medians per build pooled by geometric mean, in
 milliseconds; "range" is the range of its three builds, and "builds
 separated" says whether every build of one side beat every build of the
-other. The six builds took 98 s at once, the three rounds 820 s, about
-fourteen minutes.
+other. The six builds took 98 s at once, the three rounds 820 s (about
+fourteen minutes), about fifteen minutes in all.
 
 | Program | master (ms) | range | `df21be83` (ms) | range | Change | Builds separated |
 |---|---|---|---|---|---|---|
