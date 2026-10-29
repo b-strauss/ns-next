@@ -322,11 +322,10 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// The default trigger, without the stress setting: `run` has no
     /// loop, but its code runs to a compiled send and a return before it
-    /// exits, so the second run compiles it, for a compiled call to enter;
-    /// a push does not, since it cannot loop, so every run of it stays
-    /// interpreted. The reference lowering sends uncached, so there `run`
-    /// exits at once.
-    fn a_straight_line_method_with_a_send_is_compiled_for_calls_only(lowering) {
+    /// exits, so the second run compiles it and the third, a push by the
+    /// host, enters its machine code. The reference lowering sends
+    /// uncached, so there `run` exits at once.
+    fn a_straight_line_method_with_a_send_is_entered_at_a_push(lowering) {
         let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
         interpreter.set_jit_counting(true);
         assert_eq!(run(&mut interpreter, &class), 42);
@@ -337,7 +336,43 @@ ns_runtime::for_each_lowering! {
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_eq!(done.compiled_bodies, 1, "`run`, at its second entry");
             assert_eq!(done.bodies_exiting_at_once, 0);
-            assert_eq!(done.machine_entries, 0, "no push enters `run`");
+            assert!(done.machine_entries >= 2, "a push enters `run`: {}", done.machine_entries);
+        }
+    }
+}
+
+/// How many elements `a_straight_line_body_is_entered_at_a_push`'s `do:`
+/// visits.
+const ELEMENTS: i64 = 1000;
+
+ns_runtime::for_each_lowering! {
+    /// The block `[:each | each]` runs straight to its return: the
+    /// interpreted `do:`'s `value:` pushes it once per element, and from
+    /// its second push on, compiled, every push enters its machine code,
+    /// which returns at once.
+    fn a_straight_line_body_is_entered_at_a_push(lowering) {
+        let source = formatdoc! {"
+            class Subject = Object new () (
+              public run = (
+                |
+                  elements = Array new: {ELEMENTS}.
+                |
+                elements do: [:each | each].
+                ^elements size.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(&source, lowering);
+        assert_eq!(run(&mut interpreter, &class), ELEMENTS);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), ELEMENTS);
+        let done = since(interpreter.jit_statistics(), before);
+        if !a_stress_mode_is_on() {
+            assert!(
+                done.machine_entries >= ELEMENTS as u64,
+                "every push of the block enters it: {}",
+                done.machine_entries
+            );
         }
     }
 }
@@ -555,9 +590,9 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// `fib:` recurses without a loop, so its body is compiled to be
-    /// called only. `run`, entered once, stays interpreted, and so does
-    /// the first `fib:`, whose sends' pushes compile the body; from then
+    /// `fib:` recurses without a loop. `run`, entered once, stays
+    /// interpreted, and so does the first `fib:`, whose sends' pushes
+    /// compile the body; from then
     /// on an interpreted frame's send of `fib:` calls its machine code
     /// (`jit::called`), whose own sends call it through their cells, so
     /// that the recursion runs in machine code below an interpreted root.
@@ -654,15 +689,20 @@ fn called_then_closure_stack(lowering: Lowering, jit: bool) -> (Vec<String>, Jit
 
 ns_runtime::for_each_lowering! {
     fn an_exit_in_a_called_body_materializes_it_above_its_interpreted_sender(lowering) {
-        // The suspension stress mode suspends the frames below a
-        // safepoint into their frame objects, which the trace does not
-        // walk, with the JIT off as on.
-        if std::env::var_os("NS_NEXT_STRESS_SUSPEND").is_some_and(|value| !value.is_empty() && value != "0") {
-            return;
-        }
         let (compiled, statistics) = called_then_closure_stack(lowering, true);
         let (interpreted, _) = called_then_closure_stack(lowering, false);
         assert_eq!(compiled, interpreted);
+        // The suspension stress mode suspends every activation into its
+        // frame object at a safepoint and resumes only the top one, and
+        // the trace (`Interpreter::stack_trace`) names only the
+        // activations on the stack: there, with the JIT on as off, it
+        // holds only those pushed since the last suspension --
+        // `defaultAction`'s alone -- and none of the two frames.
+        if std::env::var_os("NS_NEXT_STRESS_SUSPEND")
+            .is_some_and(|value| !value.is_empty() && value != "0")
+        {
+            return;
+        }
         assert!(
             compiled.iter().any(|frame| frame.starts_with("second:with:")),
             "the innermost method's frame: {compiled:?}"
@@ -782,6 +822,8 @@ ns_runtime::for_each_lowering! {
         }
         let (compiled, statistics) = three_deep_stack(lowering, true);
         let (interpreted, _) = three_deep_stack(lowering, false);
+        eprintln!("COMPILED {compiled:?}
+INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         assert!(
             compiled.iter().any(|frame| frame.starts_with("third:with:")),
@@ -863,7 +905,7 @@ ns_runtime::for_each_lowering! {
     /// it, so the miss leaf counts its second entry, compiles it and
     /// installs it from inside the entry, and the send calls it; every
     /// later send of the loop calls it through the cell the miss rewrote,
-    /// and the interpreter enters no other body.
+    /// and the interpreter enters no other body but at its two pushes.
     fn a_callee_the_miss_compiles_is_entered_at_its_next_call(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -919,10 +961,12 @@ ns_runtime::for_each_lowering! {
             assert!(done.compiled_bodies >= 2, "`sumWith:count:`, then `add:` by the miss");
             assert_eq!(done.miss_leaf_calls, 1, "the one send that found no machine entry");
             assert!(done.compiled_calls >= 9_000, "{}", done.compiled_calls);
+            assert_eq!(done.send_exits, 1, "`run:` leaves at the one send it does not make");
             assert_eq!(
-                done.machine_entries, 1,
-                "`sumWith:count:`, which loops, is entered by the interpreter's push; `run:`, \
-                 which sends and returns, and `add:` only through compiled calls"
+                done.machine_entries, 2,
+                "`run:`, compiled at the host's push, is entered there, and `sumWith:count:`, \
+                 compiled at the interpreter's push after `run:` left, is entered there; `add:` \
+                 only through compiled calls"
             );
         }
     }
@@ -1093,8 +1137,11 @@ ns_runtime::for_each_lowering! {
         assert_eq!(compiled, first);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(done.machine_entries >= 1, "`overrun`, which loops, is entered");
-            assert_eq!(
-                done.send_exits, 1,
+            // The bodies that raise the index error, compiled by the first
+            // overrun, are entered at their pushes and leave at sends of
+            // their own.
+            assert!(
+                done.send_exits >= 1,
                 "the eleventh `at:` declines and its call is refused"
             );
         }
@@ -1191,6 +1238,8 @@ ns_runtime::for_each_lowering! {
         let (compiled, statistics) = run_compiled(LEXICAL_DEPTHS, lowering, true);
         let (interpreted, _) = run_compiled(LEXICAL_DEPTHS, lowering, false);
         assert_eq!(interpreted, 2_009_257_000);
+        eprintln!("COMPILED {compiled:?}
+INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(
@@ -1253,6 +1302,8 @@ ns_runtime::for_each_lowering! {
         let (compiled, statistics) = run_compiled(SUPER_AT_TWO_LEVELS, lowering, true);
         let (interpreted, _) = run_compiled(SUPER_AT_TWO_LEVELS, lowering, false);
         assert_eq!(interpreted, 5_509_500);
+        eprintln!("COMPILED {compiled:?}
+INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(
@@ -1333,6 +1384,8 @@ ns_runtime::for_each_lowering! {
     fn a_scavenge_inside_a_three_deep_compiled_stretch_matches_the_interpreter(lowering) {
         let (compiled, statistics) = collected_deep(lowering, true);
         let (interpreted, _) = collected_deep(lowering, false);
+        eprintln!("COMPILED {compiled:?}
+INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized {
             assert!(statistics.safepoint_exits >= 1, "a back edge took the held request");
@@ -1598,6 +1651,8 @@ ns_runtime::for_each_lowering! {
         // Per index 4 index + 7 plus its class's offset, for six classes.
         let expected = 6 * (4 * 499_500 + 7000) + 111_111_000;
         assert_eq!(interpreted, [expected, expected]);
+        eprintln!("COMPILED {compiled:?}
+INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             let [_, second] = statistics;
@@ -1680,6 +1735,8 @@ ns_runtime::for_each_lowering! {
         let (compiled, statistics) = run_thrice_on_one_instance(GETTERS, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(GETTERS, lowering, false);
         assert_eq!(interpreted, [3000, 3000, 3000]);
+        eprintln!("COMPILED {compiled:?}
+INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
@@ -1735,6 +1792,8 @@ ns_runtime::for_each_lowering! {
         let (compiled, statistics) = run_thrice_on_one_instance(ROWS, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(ROWS, lowering, false);
         assert_eq!(interpreted, [500_500, 500_500, 500_500]);
+        eprintln!("COMPILED {compiled:?}
+INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");

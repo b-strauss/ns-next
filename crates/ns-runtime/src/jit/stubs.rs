@@ -488,7 +488,10 @@ pub(super) mod testing {
     use ns_assembler::Assembled;
     use ns_memory::{CodeOffset, CodeWriter, CodeZone, EntryBlock, Leaf, ENTRY_BLOCK_WORDS};
 
-    use super::{assemble_entry_stub, assemble_exit_stub, decode_exit, BlockWord, MachineExit};
+    use super::{
+        assemble_call_stub, assemble_entry_stub, assemble_exit_stub, decode_exit, BlockWord,
+        MachineExit,
+    };
     use crate::heap::machine_words::{MachineWord, MachineWords};
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
 
@@ -498,6 +501,7 @@ pub(super) mod testing {
     pub(crate) struct Machine {
         zone: CodeWriter,
         entry: CodeOffset,
+        call: CodeOffset,
         exit: CodeOffset,
         next: u32,
     }
@@ -508,10 +512,12 @@ pub(super) mod testing {
             let mut machine = Machine {
                 zone,
                 entry: CodeOffset(0),
+                call: CodeOffset(0),
                 exit: CodeOffset(0),
                 next: 0,
             };
             machine.entry = machine.install(&assemble_entry_stub(Abi::host()));
+            machine.call = machine.install(&assemble_call_stub(Abi::host()));
             machine.exit = machine.install(&assemble_exit_stub(Abi::host()));
             machine
         }
@@ -550,6 +556,27 @@ pub(super) mod testing {
                 frame,
                 register_base,
                 safepoint_requested,
+                context,
+                leaves,
+            )
+        }
+
+        /// `run`, but entering `body` through the call stub, as an
+        /// interpreter's send calls a compiled callee.
+        pub(crate) fn run_called<C>(
+            &self,
+            body: CodeOffset,
+            frame: &mut [u64],
+            context: &mut C,
+            leaves: &[Leaf<C>],
+        ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
+            run_in(
+                self.zone.zone(),
+                [self.call, self.exit],
+                body,
+                frame,
+                0,
+                false,
                 context,
                 leaves,
             )
@@ -640,6 +667,54 @@ mod tests {
         }
         assert_eq!(std::hint::black_box(live), 499_500);
         assert_eq!(std::hint::black_box(other), 3u64.wrapping_pow(1000));
+    }
+
+    /// The exit stub's other leaves, which an exit with no compiled frame
+    /// above the body must not call: recorded as a call of none of the
+    /// innermost's arguments, since no panic may unwind through machine
+    /// code.
+    fn unexpected(recorded: &mut Vec<[u64; 3]>, _arguments: [u64; 3]) -> u64 {
+        recorded.push([u64::MAX; 3]);
+        0
+    }
+
+    fn record_innermost(recorded: &mut Vec<[u64; 3]>, arguments: [u64; 3]) -> u64 {
+        recorded.push(arguments);
+        0
+    }
+
+    /// A callee the call stub called is a frame no interpreted one stands
+    /// for, so an exit with no compiled frame above it materializes it as
+    /// the innermost; the entry stub's body is the frame the run loop
+    /// entered, interpreted already, which the exit leaves alone.
+    #[test]
+    fn an_exit_at_once_materializes_the_callee_the_call_stub_called() {
+        let mut machine = Machine::new();
+        let body = machine.body(|macro_assembler| {
+            macro_assembler.exit(ExitKind::Reexecute, 7);
+        });
+        let leaves: [Leaf<Vec<[u64; 3]>>; 4] =
+            [unexpected, unexpected, unexpected, record_innermost];
+        assert_eq!(
+            crate::jit::leaves::Leaf::MaterializeInnermost.index().0,
+            3,
+            "the leaf the table records at"
+        );
+        let mut frame = [0u64; 8];
+        let mut recorded = Vec::new();
+        let (exit, block) = machine.run_called(body, &mut frame, &mut recorded, &leaves);
+        assert_eq!(exit, MachineExit::Reexecute { program_counter: 7 });
+        assert_eq!(block[BlockWord::EnteredByCall.index()], 1);
+        assert_eq!(recorded.len(), 1, "the callee is materialized once");
+        let [code_address, kind, program_counter] = recorded[0];
+        assert_eq!(code_address, block[BlockWord::ExitCodeAddress.index()]);
+        assert_eq!(kind, ExitKind::Reexecute as u64);
+        assert_eq!(program_counter, 7);
+        recorded.clear();
+        let (exit, block) = machine.run(body, &mut frame, 0, false, &mut recorded, &leaves);
+        assert_eq!(exit, MachineExit::Reexecute { program_counter: 7 });
+        assert_eq!(block[BlockWord::EnteredByCall.index()], 0);
+        assert!(recorded.is_empty(), "the entry's frame is the run loop's");
     }
 
     fn add_arguments(counter: &mut u64, arguments: [u64; 3]) -> u64 {

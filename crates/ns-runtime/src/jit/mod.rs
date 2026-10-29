@@ -146,14 +146,9 @@ pub struct JitStatistics {
     pub called_entries: u64,
 }
 
-/// What a body's `JitSlot` says once it is compiled and entered at a
-/// push.
-const COMPILED: u32 = u32::MAX - 3;
-/// What a body's `JitSlot` says once it is compiled but entered only by a
-/// compiled call: its code cannot take a backward jump before its first
-/// exit, so an entry at an interpreter's push would cost more than the
-/// straight-line run to its return it buys.
-const CALLED_ONLY: u32 = u32::MAX - 2;
+/// What a body's `JitSlot` says once it is compiled, and so entered at a
+/// send, a push and a frame returned to.
+const COMPILED: u32 = u32::MAX - 2;
 /// What a body's `JitSlot` says once its machine code is known to leave
 /// before it reaches a return, a compiled send or a backward jump, so that
 /// it is never entered.
@@ -177,15 +172,13 @@ const EXIT_BUDGET: u32 = 64;
 
 /// A body's state in the JIT: *counting* its entries (`state` below
 /// `COMPILED`), *compiled* (`COMPILED`; `zone` names the zone its machine
-/// code lies in, `offset` where, `map` its program-counter map), *called
-/// only* (`CALLED_ONLY`: compiled, with the same three, but entered only
-/// by a compiled call, never at an interpreter's push or a frame returned
-/// to, since its code cannot loop before it exits), *exiting at once*
-/// (`EXITS_AT_ONCE`: its code would exit before it reaches a return, a
-/// compiled send or a backward jump, so entering it would cost every push
-/// more than the few instructions it runs), or *refused* (`REFUSED`). A
-/// push looks at a body in none of the last three, so they are the top
-/// values, which one compare tells from the others (`is_armed`).
+/// code lies in, `offset` where, `map` its program-counter map), *exiting
+/// at once* (`EXITS_AT_ONCE`: its code would exit before it reaches a
+/// return, a compiled send or a backward jump, so entering it would cost
+/// every push more than the few instructions it runs), or *refused*
+/// (`REFUSED`). A push looks at a body in neither of the last two, so they
+/// are the top values, which one compare tells from the others
+/// (`is_armed`).
 /// Interior-mutable, since a body is shared by every activation of it.
 ///
 /// A copy starts counting afresh: it is another body to the JIT, compiled
@@ -231,12 +224,8 @@ impl std::fmt::Debug for JitSlot {
         match self.state.get() {
             REFUSED => formatter.write_str("JitSlot::Refused"),
             EXITS_AT_ONCE => formatter.write_str("JitSlot::ExitsAtOnce"),
-            COMPILED | CALLED_ONLY => formatter
-                .debug_struct(if self.state.get() == COMPILED {
-                    "JitSlot::Compiled"
-                } else {
-                    "JitSlot::CalledOnly"
-                })
+            COMPILED => formatter
+                .debug_struct("JitSlot::Compiled")
                 .field("zone", &self.zone.get())
                 .field("offset", &self.offset.get())
                 .field("first_instruction", &self.first_instruction.get())
@@ -249,13 +238,12 @@ impl std::fmt::Debug for JitSlot {
 
 impl JitSlot {
     /// Whether an entry into the body has anything to do with the JIT:
-    /// false once the body is refused, exits at once or is called only.
-    /// The one load and
+    /// false once the body is refused or exits at once. The one load and
     /// compare the run loop makes on a push (`vm::run_stretch`);
     /// everything else is `entered`'s, out of line.
     #[inline(always)]
     pub(crate) fn is_armed(&self) -> bool {
-        self.state.get() < CALLED_ONLY
+        self.state.get() <= COMPILED
     }
 
     /// Whether the body is compiled, whether or not into this
@@ -265,7 +253,7 @@ impl JitSlot {
     /// line.
     #[inline(always)]
     pub(crate) fn is_compiled(&self) -> bool {
-        matches!(self.state.get(), COMPILED | CALLED_ONLY)
+        self.state.get() == COMPILED
     }
 
     fn refuse(&self) {
@@ -278,7 +266,7 @@ impl JitSlot {
     fn note_exit(&self) -> bool {
         let exits = self.exits.get().saturating_add(1);
         self.exits.set(exits);
-        exits == EXIT_BUDGET && matches!(self.state.get(), COMPILED | CALLED_ONLY)
+        exits == EXIT_BUDGET && self.state.get() == COMPILED
     }
 
     fn settle(&self, state: u32) {
@@ -288,15 +276,10 @@ impl JitSlot {
 
     /// Records the body compiled into `zone` at `offset`, its instruction
     /// at program counter 0 at `first_instruction`, the installed body
-    /// `map`; entered at a push when `entered_at_a_push`, else only by a
-    /// compiled call.
-    fn compiled(&self, zone: u64, offsets: [CodeOffset; 2], map: u32, entered_at_a_push: bool) {
+    /// `map`.
+    fn compiled(&self, zone: u64, offsets: [CodeOffset; 2], map: u32) {
         let [offset, first_instruction] = offsets;
-        self.state.set(if entered_at_a_push {
-            COMPILED
-        } else {
-            CALLED_ONLY
-        });
+        self.state.set(COMPILED);
         self.zone.set(zone);
         self.offset.set(offset.0);
         self.first_instruction.set(first_instruction.0);
@@ -1197,9 +1180,8 @@ impl JitState {
     /// this interpreter's zone and the JIT is on.
     fn installed(&self, code: &CompiledCode) -> Option<&InstalledBody> {
         let slot = &code.jit;
-        let compiled = self.enabled
-            && matches!(slot.state.get(), COMPILED | CALLED_ONLY)
-            && slot.zone.get() == self.zone_identity();
+        let compiled =
+            self.enabled && slot.state.get() == COMPILED && slot.zone.get() == self.zone_identity();
         compiled
             .then(|| self.bodies.get(slot.map.get() as usize))
             .flatten()
@@ -1218,19 +1200,15 @@ impl JitState {
     }
 
     /// Where the run loop enters `code`'s machine code at the instruction
-    /// at `program_counter`, for an activation with `feedback_base`: never
-    /// for a body called only, which a frame returned to goes on running
-    /// interpreted, as a push does. Program counter 0, a push's, is read
-    /// off the slot rather than searched for in the map.
+    /// at `program_counter`, for an activation with `feedback_base`.
+    /// Program counter 0, a push's, is read off the slot rather than
+    /// searched for in the map.
     fn interpreter_entry(
         &self,
         code: &CompiledCode,
         feedback_base: FeedbackBase,
         program_counter: u32,
     ) -> Option<CodeOffset> {
-        if code.jit.state.get() != COMPILED {
-            return None;
-        }
         let body = self.installed(code)?;
         if body.feedback_base != feedback_base {
             return None;
@@ -1243,7 +1221,7 @@ impl JitState {
     }
 
     /// Whether an entry into `code` has nothing to count: the JIT is on
-    /// and the body is compiled into this zone, entered at a push. Every
+    /// and the body is compiled into this zone. Every
     /// other body's entry is `note_entry`'s -- one still counting, one
     /// compiled into another zone, and any while the JIT is off, which
     /// `note_entry` refuses.
@@ -1256,7 +1234,7 @@ impl JitState {
     /// Whether `code` may still be compiled into this zone: it is counting
     /// its entries, or compiled into another zone.
     fn may_compile(&self, code: &CompiledCode) -> bool {
-        self.enabled && code.jit.state.get() <= CALLED_ONLY
+        self.enabled && code.jit.state.get() <= COMPILED
     }
 
     /// Whether a cell's entry address `found` is one a cell of `expected`
@@ -1309,12 +1287,12 @@ pub(crate) fn note_entry(
     }
     match slot.state.get() {
         REFUSED | EXITS_AT_ONCE => {}
-        COMPILED | CALLED_ONLY if slot.zone.get() == state.zone_identity() => {}
+        COMPILED if slot.zone.get() == state.zone_identity() => {}
         // A body two interpreters ran in turn would be compiled again at
         // every switch, each time leaving its old code in the other's
         // zone; no body is run by two interpreters today
         // (`docs/OPEN-WORK.md`, road step 8).
-        COMPILED | CALLED_ONLY => compile_into_slot(state, code, feedback_base, method),
+        COMPILED => compile_into_slot(state, code, feedback_base, method),
         entries => {
             let entries = entries + 1;
             if entries >= state.compile_at_entry {
@@ -1342,7 +1320,7 @@ pub(crate) fn note_entry_by_call(
     let compiles = state.enabled
         && match code.jit.state.get() {
             REFUSED | EXITS_AT_ONCE => false,
-            COMPILED | CALLED_ONLY => code.jit.zone.get() != state.zone_identity(),
+            COMPILED => code.jit.zone.get() != state.zone_identity(),
             entries => entries + 1 >= state.compile_at_entry,
         };
     if compiles {
@@ -1359,9 +1337,8 @@ fn compile_into_slot(
     method: Option<&Rc<MixinMethod>>,
 ) {
     match compile(state, code, feedback_base, method) {
-        Ok((offsets, map, entered_at_a_push)) => {
-            code.jit
-                .compiled(state.zone_identity(), offsets, map, entered_at_a_push);
+        Ok((offsets, map)) => {
+            code.jit.compiled(state.zone_identity(), offsets, map);
             state.statistics.compiled_bodies += 1;
         }
         Err(Refusal::ExitsAtOnce) => {
@@ -1377,16 +1354,14 @@ fn compile_into_slot(
 
 /// Compiles `code`, its sends' cells those of `feedback_base`'s range,
 /// and installs it, answering its offset and that of its instruction at
-/// program counter 0, its index among the installed bodies, and whether a
-/// push enters it: when its code can loop before it exits, or under the
-/// JIT stress mode, which enters every body it installs.
+/// program counter 0 and its index among the installed bodies.
 #[cfg(ns_jit)]
 fn compile(
     state: &mut JitState,
     code: &Rc<CompiledCode>,
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
-) -> Result<([CodeOffset; 2], u32, bool), Refusal> {
+) -> Result<([CodeOffset; 2], u32), Refusal> {
     let Some(zone) = state.zone.as_mut() else {
         panic!("internal: the JIT is on without a zone");
     };
@@ -1428,9 +1403,8 @@ fn compile(
         end: offset.0 + length,
         map: body.map,
     });
-    let entered_at_a_push = body.loops_before_an_exit || state.install_bodies_exiting_at_once;
     let first_instruction = CodeOffset(offset.0 + first_instruction);
-    Ok(([offset, first_instruction], map, entered_at_a_push))
+    Ok(([offset, first_instruction], map))
 }
 
 #[cfg(not(ns_jit))]
@@ -1439,7 +1413,7 @@ fn compile(
     _code: &Rc<CompiledCode>,
     _feedback_base: FeedbackBase,
     _method: Option<&Rc<MixinMethod>>,
-) -> Result<([CodeOffset; 2], u32, bool), Refusal> {
+) -> Result<([CodeOffset; 2], u32), Refusal> {
     Err(Refusal::Unassembled)
 }
 
@@ -1972,19 +1946,14 @@ mod tests {
     fn a_copied_slot_counts_afresh() {
         let slot = JitSlot::default();
         let offsets = [ns_memory::CodeOffset(64), ns_memory::CodeOffset(80)];
-        slot.compiled(7, offsets, 3, true);
+        slot.compiled(7, offsets, 3);
         assert_eq!(
             format!("{slot:?}"),
             "JitSlot::Compiled { zone: 7, offset: 64, first_instruction: 80, map: 3 }"
         );
-        assert!(slot.is_armed());
+        assert!(slot.is_armed(), "a push enters every compiled body");
+        assert!(slot.is_compiled());
         assert_eq!(format!("{:?}", slot.clone()), "JitSlot::Counting(0)");
-        slot.compiled(7, offsets, 3, false);
-        assert_eq!(
-            format!("{slot:?}"),
-            "JitSlot::CalledOnly { zone: 7, offset: 64, first_instruction: 80, map: 3 }"
-        );
-        assert!(!slot.is_armed(), "a push leaves a body called only alone");
         slot.refuse();
         assert!(!slot.is_armed());
         assert_eq!(format!("{slot:?}"), "JitSlot::Refused");
@@ -2086,12 +2055,19 @@ mod tests {
             note_entry(state, code, FeedbackBase::NOT_ASSIGNED, None);
         }
 
+        /// A body whose code runs straight to its return is compiled, and
+        /// entered at a push as at a send.
         #[test]
         fn a_body_that_runs_to_a_return_is_compiled() {
             let mut state = JitState::for_test(1 << 16, false);
             let code = body();
             enter_twice(&mut state, &code);
             assert!(machine_entry(&state, &code).is_some());
+            assert!(code.jit.is_armed(), "a push enters it");
+            assert!(state.is_entered_here(&code));
+            assert!(state
+                .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
+                .is_some());
             assert_eq!(state.statistics().compiled_bodies, 1);
             assert_eq!(state.statistics().bodies_exiting_at_once, 0);
         }
@@ -2119,6 +2095,10 @@ mod tests {
             let code = body_with_a_loop();
             enter_twice(&mut state, &code);
             assert!(machine_entry(&state, &code).is_some());
+            assert!(code.jit.is_armed(), "a push enters it");
+            assert!(state
+                .interpreter_entry(&code, FeedbackBase::NOT_ASSIGNED, 0)
+                .is_some());
             assert_eq!(state.statistics().compiled_bodies, 1);
             assert_eq!(state.statistics().bodies_exiting_at_once, 0);
         }
