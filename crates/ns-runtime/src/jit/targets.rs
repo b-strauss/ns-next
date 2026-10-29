@@ -30,14 +30,15 @@
 //!
 //! Beside them lie the stubs a cell names for a target that is no method
 //! with code (`assemble_accessor_stubs`): a getter, a setter, a quick
-//! method, and the leaf stub, which runs `act`'s arm through the leaf
-//! shim.
+//! method, a method that is a leaf-safe mirror row, and the leaf stub,
+//! which runs `act`'s arm through the leaf shim.
 
 use ns_assembler::{Assembled, Condition, Label, Memory, Width};
 
 use super::leaves::Leaf;
 use super::macro_assembler::{Abi, MacroAssembler, Operand};
 use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};
+use crate::heap::machine_words::MachineWord;
 use crate::interpreter::inline_cache::cells::{
     BLOCK_BYTES, CELL_BYTES, CELL_WORDS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES, ROW_WORDS, VACANT_GUARD,
 };
@@ -349,6 +350,8 @@ pub(crate) struct AccessorEntries {
     pub(crate) setters: Vec<u32>,
     /// The quick method answering parameter `position`, by position.
     pub(crate) parameters: Vec<u32>,
+    /// The method whose fast path is mirror row `index`, by index.
+    pub(crate) mirror_methods: Vec<u32>,
     /// The quick methods answering `nil`, `true` and `false`.
     pub(crate) nil: u32,
     pub(crate) true_constant: u32,
@@ -379,18 +382,23 @@ pub(crate) struct AccessorEntries {
 ///   the stub answers the receiver;
 /// - a quick method's constant, its receiver or its parameter
 ///   (`MethodFastPath::Constant`, `Receiver`, `Parameter`);
+/// - a method whose fast path is a leaf-safe mirror row
+///   (`MethodFastPath::Mirror`): the mirror method leaf
+///   (`Leaf::MirrorMethod`) runs the row's leaf on the receiver, handed
+///   over in the machine words, and the send's arguments in its slots, as
+///   `Mutator::act_for_machine_code` runs it;
 /// - the leaf stub, for every other target machine code runs this way --
-///   a private or `super` slot accessor, a setter past `SETTER_STUBS`, whose
-///   `Mutator::slot_level_holds` is the guard check, a primitive method
-///   or a mirror send of a leaf-safe row, a builtin class's accessor: the
-///   leaf runs `act`'s arm through the shim (`Leaf::Act`) and answers its
-///   value, or the word no value is when the arm would answer anything
-///   else, before it changed anything.
+///   a private or `super` slot accessor, whose
+///   `Mutator::slot_level_holds` is the guard check, a setter past
+///   `SETTER_STUBS`, a primitive that is a mirror send of a leaf-safe row,
+///   a builtin class's accessor: the leaf runs `act`'s arm through the
+///   shim (`Leaf::Act`) and answers its value, or the word no value is
+///   when the arm would answer anything else, before it changed anything.
 ///
-/// Every decline -- a receiver the getter's check refuses, the store
-/// leaf's or the leaf stub's word that is no value -- refuses the call, before anything is
-/// written, so that the caller re-executes the send and the interpreter
-/// runs it.
+/// Every decline -- a receiver the getter's check refuses, the word no
+/// value is from the store leaf, the mirror method leaf or the leaf
+/// stub's -- refuses the call before anything is written, so that the
+/// caller re-executes the send and the interpreter runs it.
 pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) {
     let mut macro_assembler = MacroAssembler::new(abi);
     let roles = macro_assembler.roles();
@@ -398,7 +406,12 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     let (field, answer, address) = (roles.accessor_field, roles.leaf_result, roles.idiom_scratch);
     let receiver = roles.callee_receiver();
     let assembler = macro_assembler.assembler();
-    let (decline, getter, setter) = (assembler.label(), assembler.label(), assembler.label());
+    let (decline, getter, setter, mirror_method) = (
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+    );
     let getters: Vec<Label> = (0..GETTER_STUBS)
         .map(|index| {
             let entry = assembler.label();
@@ -414,6 +427,17 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
             assembler.bind(entry);
             assembler.move_immediate(field, u64::from(index));
             assembler.jump(setter);
+            entry
+        })
+        .collect();
+    let rows = u16::try_from(crate::builtins::primitive::MIRROR.len())
+        .expect("internal: the mirror rows are numbered in 16 bits");
+    let mirror_methods: Vec<Label> = (0..rows)
+        .map(|row| {
+            let entry = assembler.label();
+            assembler.bind(entry);
+            assembler.move_immediate(field, u64::from(row));
+            assembler.jump(mirror_method);
             entry
         })
         .collect();
@@ -504,6 +528,33 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     assembler.compare_immediate(answer, NO_VALUE_IMMEDIATE);
     assembler.jump_if(Condition::Equal, decline);
     assembler.return_();
+    // The mirror method: the receiver handed over in the machine words,
+    // the row in the field's role, the send found by its return address.
+    assembler.bind(mirror_method);
+    macro_assembler.load_machine_words(address);
+    let handed = MacroAssembler::machine_word(address, MachineWord::CalleeReceiver);
+    let assembler = macro_assembler.assembler();
+    assembler.store(Width::Word64, handed, receiver);
+    assembler.load(
+        Width::Word64,
+        roles.return_address,
+        Memory {
+            base: roles.stack_pointer,
+            displacement: 0,
+        },
+    );
+    macro_assembler.call_leaf(
+        Leaf::MirrorMethod.index(),
+        [
+            Operand::Register(roles.frame),
+            Operand::Register(field),
+            Operand::Register(roles.return_address),
+        ],
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(answer, NO_VALUE_IMMEDIATE);
+    assembler.jump_if(Condition::Equal, decline);
+    assembler.return_();
     // The leaf stub.
     let act = assembler.label();
     assembler.bind(act);
@@ -538,6 +589,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         getters: getters.into_iter().map(offset).collect(),
         setters: setters.into_iter().map(offset).collect(),
         parameters: parameters.into_iter().map(offset).collect(),
+        mirror_methods: mirror_methods.into_iter().map(offset).collect(),
         nil: offset(nil),
         true_constant: offset(true_constant),
         false_constant: offset(false_constant),

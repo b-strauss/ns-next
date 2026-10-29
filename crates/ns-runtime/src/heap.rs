@@ -8843,6 +8843,16 @@ impl<'gc> Heap<'gc> {
             .set(MachineWord::CalleeClass, class.bits());
     }
 
+    /// The receiver machine code handed a leaf in the machine words
+    /// (`MachineWord::CalleeReceiver`), which the mirror method stub
+    /// stores before its leaf call (`jit::targets`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_callee_receiver(&self) -> Value<'gc> {
+        self.load(Word::from_bits(
+            self.machine_words.get(MachineWord::CalleeReceiver),
+        ))
+    }
+
     /// The value machine code answered as the word `bits`
     /// (`jit::Resumption::Returned`): a word a frame register held.
     #[cfg(ns_jit)]

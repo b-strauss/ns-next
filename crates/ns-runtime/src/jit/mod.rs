@@ -395,6 +395,8 @@ struct AccessorStubs {
     /// The quick method answering each parameter position that has one,
     /// by position.
     parameters: Vec<CodeOffset>,
+    /// The method whose fast path is each mirror row, by row.
+    mirror_methods: Vec<CodeOffset>,
     nil: CodeOffset,
     true_constant: CodeOffset,
     false_constant: CodeOffset,
@@ -428,6 +430,20 @@ struct ReturnSite {
     program_counter: u32,
     /// The send's first argument slot, on which its callee's frame lies.
     argument_base: u16,
+    /// How many arguments the send has.
+    argument_count: u16,
+    /// The send's selector.
+    selector: crate::Symbol,
+}
+
+/// What a call's return address says of its send, for the leaves a callee
+/// calls (`JitState::call_site`).
+#[derive(Clone, Copy)]
+pub(crate) struct CallSiteOperands {
+    pub(crate) program_counter: u32,
+    pub(crate) argument_base: u16,
+    pub(crate) argument_count: u16,
+    pub(crate) selector: crate::Symbol,
 }
 
 struct InstalledBody {
@@ -687,6 +703,18 @@ impl JitState {
         Some((upgraded(body)?, site.program_counter))
     }
 
+    /// The send whose call returns to `return_address`, as `returns`
+    /// records it.
+    pub(crate) fn call_site(&self, return_address: u64) -> Option<CallSiteOperands> {
+        let site = self.call_return(usize::try_from(return_address).ok()?)?;
+        Some(CallSiteOperands {
+            program_counter: site.program_counter,
+            argument_base: site.argument_base,
+            argument_count: site.argument_count,
+            selector: site.selector,
+        })
+    }
+
     /// What `returns` records of the call that returns to
     /// `return_address`.
     fn call_return(&self, return_address: usize) -> Option<ReturnSite> {
@@ -801,6 +829,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             getters: Vec::new(),
             setters: Vec::new(),
             parameters: Vec::new(),
+            mirror_methods: Vec::new(),
             nil: CodeOffset(0),
             true_constant: CodeOffset(0),
             false_constant: CodeOffset(0),
@@ -839,6 +868,11 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             .collect(),
         parameters: entries
             .parameters
+            .iter()
+            .map(|offset| placed(*offset))
+            .collect(),
+        mirror_methods: entries
+            .mirror_methods
             .iter()
             .map(|offset| placed(*offset))
             .collect(),
@@ -1015,7 +1049,12 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
                 )
             }
             Some(MethodFastPath::BuiltinClass(_)) => Some(act),
-            Some(MethodFastPath::Mirror(row)) if leaf_safe(row) => Some(act),
+            Some(MethodFastPath::Mirror(row)) if leaf_safe(row) => Some(
+                zone.accessors
+                    .mirror_methods
+                    .get(row.index())
+                    .map_or(act, |entry| address(*entry)),
+            ),
             _ => None,
         },
         Stubbed::Slot {
@@ -1279,6 +1318,8 @@ fn compile(
                 body: map,
                 program_counter: call.program_counter,
                 argument_base: send.argument_base,
+                argument_count: crate::heap::register_number(send.argument_count),
+                selector: send.selector,
             },
         );
     }
@@ -1870,14 +1911,14 @@ mod tests {
 
         #[test]
         fn a_full_zone_refuses_bodies() {
-            let mut state = JitState::for_test(4096, true);
+            let mut state = JitState::for_test(8192, true);
             let bodies: Vec<Rc<CompiledCode>> = (0..200).map(|_| body()).collect();
             for code in &bodies {
                 enter_twice(&mut state, code);
             }
             let statistics = state.statistics();
             assert!(statistics.compiled_bodies >= 1);
-            assert!(statistics.refused_bodies >= 1, "one page fills");
+            assert!(statistics.refused_bodies >= 1, "the zone fills");
             let last = bodies.last().expect("a body");
             assert_eq!(format!("{:?}", last.jit), "JitSlot::Refused");
             assert_eq!(machine_entry(&state, last), None);

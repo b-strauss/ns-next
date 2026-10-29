@@ -8,6 +8,7 @@
 //! the frames machine code pushed. A template or a stub names one by its index in `table`
 //! (`Leaf::index`).
 
+use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, Instruction};
 use crate::heap::{register_number, ActivationReference, ArgumentSlots, Word};
 use crate::interpreter::inline_cache::{self, MissAnswer};
@@ -43,6 +44,9 @@ pub(crate) enum Leaf {
     /// Stores a setter's argument into its receiver's field
     /// (`store_field`).
     StoreField = 6,
+    /// Runs a method whose fast path is a leaf-safe mirror row
+    /// (`mirror_method`).
+    MirrorMethod = 7,
 }
 
 impl Leaf {
@@ -54,7 +58,7 @@ impl Leaf {
 
 /// The leaves, in `Leaf` order, each handed the mutator the code was
 /// entered with.
-pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 7] {
+pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 8] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -66,6 +70,7 @@ pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 7] {
         act as ns_memory::Leaf<Mutator<'gc>>,
         mirror as ns_memory::Leaf<Mutator<'gc>>,
         store_field as ns_memory::Leaf<Mutator<'gc>>,
+        mirror_method as ns_memory::Leaf<Mutator<'gc>>,
     ]
 }
 
@@ -277,6 +282,57 @@ fn store_field(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     } else {
         Word::NO_VALUE_BITS
     }
+}
+
+/// The mirror method stub's leaf (`targets::assemble_accessor_stubs`),
+/// which a send whose cell names the stub of mirror row `arguments[1]`
+/// calls: the callee's register 0 at `arguments[0]`, the send's slots,
+/// and the send's return address `arguments[2]`, which names the send, its
+/// receiver handed over in the machine words. Runs the row's leaf as
+/// `Mutator::act_for_machine_code` runs a method whose fast path it is
+/// (`mirror::execute_method_for_machine_code`) and answers its value, or
+/// `Word::NO_VALUE_BITS` for a decline, an error or anything else, having
+/// changed nothing, so that the stub refuses the call and the interpreter
+/// runs the send. Its own leaf rather than the leaf stub's, since the
+/// cell already decided the target: nothing of the send's lookup is made
+/// again.
+fn mirror_method(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [callee_address, row, return_address] = arguments;
+    mutator.jit.statistics.act_leaf_calls += 1;
+    let Some(site) = mutator.jit.call_site(return_address) else {
+        unreachable!("internal: a send's call returns into an installed body");
+    };
+    let Some(sender_address) = callee_address.checked_sub(u64::from(site.argument_base) * 8) else {
+        unreachable!("internal: a callee lies on its send's argument slots");
+    };
+    let Ok(row) = u16::try_from(row) else {
+        unreachable!("internal: a mirror row is numbered in 16 bits");
+    };
+    let frame = materialize::leaf_frame(
+        mutator,
+        sender_address,
+        return_address,
+        site.program_counter,
+    );
+    let register_base = mutator.heap.activation_register_base(frame.activation);
+    let receiver = mutator.heap.machine_callee_receiver();
+    let slots = Arguments::Slots(ArgumentSlots::new(
+        register_base,
+        site.argument_base,
+        site.argument_count,
+    ));
+    let answer = mirror::execute_method_for_machine_code(
+        mutator,
+        MirrorPrimitive::from_index(row),
+        receiver,
+        site.selector,
+        slots,
+    )
+    .map_or(Word::NO_VALUE_BITS, |value| {
+        mutator.heap.machine_word_of(value)
+    });
+    materialize::release_leaf_frame(mutator, frame);
+    answer
 }
 
 /// The leaf of a `SendMirror` of a leaf-safe row: the instruction at

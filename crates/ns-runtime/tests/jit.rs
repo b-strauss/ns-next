@@ -183,11 +183,11 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A program with more bodies than a zone of one page holds, each
+    /// A program with more bodies than a zone of two pages holds, each
     /// starting with a template and installed by the stress setting, fills
     /// the zone, and the bodies refused once it is full run interpreted
     /// with the output unchanged.
-    fn a_zone_of_one_page_leaves_the_output_right(lowering) {
+    fn a_zone_of_two_pages_leaves_the_output_right(lowering) {
         let count: i64 = 300;
         let methods: String = (0..count)
             .map(|index| format!("  m{index} = (\n    ^{index}\n  )\n"))
@@ -205,11 +205,13 @@ ns_runtime::for_each_lowering! {
             ) : ()
         "};
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(4096);
+        interpreter.set_jit_zone_bytes(8192);
         interpreter.set_jit_stress(true);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), count * (count - 1));
-        assert!(since(interpreter.jit_statistics(), before).refused_bodies >= 1, "the page fills");
+        let done = since(interpreter.jit_statistics(), before);
+        assert!(done.compiled_bodies >= 1, "the zone holds the stubs and a body");
+        assert!(done.refused_bodies >= 1, "the zone fills");
     }
 }
 
@@ -865,6 +867,50 @@ ns_runtime::for_each_lowering! {
                 done.act_leaf_calls
             );
             assert_eq!(done.send_exits, 0, "no setter's call is refused");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// `Array>>at:` and `at:put:`, methods whose fast path is a leaf-safe
+    /// mirror row, run in the mirror method stub's leaf, which runs the
+    /// row's leaf on the receiver and the send's arguments without
+    /// deciding the send again; an index out of range declines, and the
+    /// interpreter, running the send, raises the error.
+    fn a_mirror_method_runs_in_its_stub(lowering) {
+        let source = indoc! {"
+            class Subject = Object new (
+              |
+                elements = Array new: 10.
+              |
+            ) (
+              public run = (
+                |
+                  index ::= 1.
+                  sum ::= 0.
+                |
+                [index <= 10] whileTrue: [
+                  elements at: index put: index.
+                  sum:: sum + (elements at: index).
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_counting(true);
+        assert_eq!(run(&mut interpreter, &class), 55);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 55);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.act_leaf_calls >= 20,
+                "both sends of every turn run in the leaf: {}",
+                done.act_leaf_calls
+            );
+            assert_eq!(done.send_exits, 0, "no call is refused");
         }
     }
 }
