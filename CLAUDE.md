@@ -21,11 +21,19 @@ Rust 1.98.0, edition 2021, seven crates:
   `bytecode/leftovers.rs`'s analysis), the VM (`vm.rs`), the baseline JIT
   (`jit/`, x64 only so far: a body compiled at its second entry through
   the one exhaustive `match` over `Instruction` in `jit/baseline.rs`, each
-  instruction a template, the generic leaf of `jit/leaves.rs` or an exit
-  that hands the frame to the interpreter; the VM's idioms in
-  `jit/macro_assembler.rs`, the entry and exit stubs in `jit/stubs.rs`,
-  the trigger and the entry in `jit/mod.rs`; `execution.md`, "The baseline
-  JIT's foundation") and the send machinery it calls
+  instruction a template, a leaf of `jit/leaves.rs` or an exit that hands
+  the frame to the interpreter; a cached send calls through its site's
+  machine-readable cell (`interpreter/inline_cache/cells.rs`) into the
+  callee's machine code or a stub the cell names (`jit/sends.rs`,
+  `jit/targets.rs`: polymorphic, megamorphic, accessor, mirror method,
+  leaf, refusing), the callee returns by `ret`, the miss leaf decides
+  what the cell did not and may compile the callee, and an exit at any
+  depth of compiled frames materializes them (`jit/materialize.rs`); the
+  VM's idioms and the register roles in `jit/macro_assembler.rs`, the
+  entry, exit and miss stubs in `jit/stubs.rs`, the trigger, the entry
+  and which bodies are entered in `jit/mod.rs`; `execution.md`, "The
+  baseline JIT's foundation", "Sends, returns and the exit that
+  materializes") and the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
@@ -103,7 +111,8 @@ Rust 1.98.0, edition 2021, seven crates:
   and the JIT's code zone (`code_zone.rs`): one reservation mapped twice,
   an executable view and a writable one its one writer stores through, the
   entry into machine code and the shim through which machine code calls a
-  Rust leaf. The only crate with `unsafe`; `ns-runtime`, `ns-assembler`,
+  Rust leaf; and the native stack's remaining room, which every entry into
+  machine code checks (`native_stack.rs`). The only crate with `unsafe`; `ns-runtime`, `ns-assembler`,
   `ns-tooling` and `ns-analyzer` forbid it.
   The heap's object space is its user (`docs/design/memory.md`, "The memory
   layer", "The object space"), and the JIT (`execution.md`, "Executable
@@ -400,9 +409,11 @@ records a `MirrorSend` binding.
 **A cache records what the lookup decided; it never decides.** An inline-cache
 hit is `act` on the resolution `resolve_*` answered for the same key; an entry
 holds no handle. Anything the key does not cover is read afresh on every
-send — today a primitive's payload check and a method's `MethodFastPath`, in
-`act`, and the class object's builtin field (`Heap::class_builtin`), which the
-factory body's `AllocateInstance` reads on every instantiation. Add such a read and its per-send re-check goes with
+send — today a primitive's payload check, in `act`, and the class object's
+builtin field (`Heap::class_builtin`), which the factory body's
+`AllocateInstance` reads on every instantiation; a method's `MethodFastPath`
+is read off the entry's method, which is immutable, on every hit, by the
+interpreter's `act` and machine code's stub alike. Add such a read and its per-send re-check goes with
 it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
 instead). The reference lowering runs every send uncached and is the oracle
 (`dispatch.md`, "Primitive methods", "3b — The caches").
@@ -413,20 +424,33 @@ second interpreter.** Four rules keep the baseline JIT
 into the frame only after its last decline or exit, so an exit, which
 hands the instruction to the interpreter, never re-applies it. A leaf
 (`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
-activation, never pushes and never compiles, and answers "re-execute" only
-before it changed anything. A new instruction is one arm of
+activation and never pushes; only the miss leaf compiles and installs a
+callee; and a leaf answers "re-execute" only before it changed anything
+but a send's argument slots, which the mirror leaf places as the
+interpreter does and which nothing reads after the send but the send
+re-executed. A new instruction is one arm of
 `jit::baseline::lower` plus the macro-assembler idioms it lacks, never a
-second dispatch; machine code is entered only through `jit::entered`
-(`mod.rs`), every address it needs asked of the heap afresh at each entry,
-and it holds no handle. No word machine code reads or writes between two
-leaf calls lives inline in `Mutator`: frame registers and object fields
-lie in the activation stack's and the object space's reservations, which
-are outside it, and every other such word lives in the heap's machine
-words (`heap/machine_words.rs`). `CodeZone::enter`
+second dispatch; the run loop enters machine code only through
+`jit::entered` and `jit::resumed` (`mod.rs`), every address it needs asked
+of the heap afresh at each entry, and it holds no handle. A cache cell is
+written only from its entry -- beside it, or afresh when the JIT's state
+under it changes -- its entry address a function of the entry's target
+and the JIT's state, and a stub does what
+`Mutator::act_with_base` does for its target and nothing more. No word
+machine code reads or writes between two leaf calls lives inline in
+`Mutator`: frame registers and object fields lie in the activation
+stack's and the object space's reservations, the cells and the
+application id table in reservations of their own, all outside it, and
+every other such word lives in the heap's machine words
+(`heap/machine_words.rs`). `CodeZone::enter`
 holds the mutator as a protected `&mut`, so machine code's access to a
 word inside it is undefined behaviour once a leaf has written that word,
 which no test and no tool detects (`execution.md`, "The baseline JIT's
-foundation", "The machine words").
+foundation", "The machine words"). No file under `jit/` but
+`macro_assembler.rs` names an architecture's registers outside a test
+module: a template, a send or a stub uses the macro assembler's idioms
+and its `Roles`, and a new register need is a new named role, held by
+`crates/ns-runtime/tests/jit_architecture_split.rs`.
 
 **A chain of messages is walked link by link.** `a b + c …` is a left-nested
 `Send` as deep as the chain is long, and every chain length is valid

@@ -477,7 +477,16 @@ finds even the reserve spent goes old ("Generations").
 compare of a flag the heap owns, `Heap::safepoint_requested`, a word of its
 machine words, which machine code's poll reads as well and which therefore
 lives apart from the heap's own bytes ([execution.md](execution.md), "The
-machine words"). When the flag is
+machine words"). The same area holds the other words machine code reads
+between two leaf calls: the depth count and its limit, the activation
+stack's ordinary end, each immediate's class and guard, the generation
+counter of a debug build, the receiver and class handed between machine
+code and a leaf, and the application id table's address and bound ("The
+application id table" below). Its one handle-like word is an immediate's
+class, a stored word the collector does not trace, so
+`Mutator::rewrite_immediate_classes` writes them afresh after every
+scavenge, compaction, move and bulk forward; the hand-over words are read
+only right after they are written, and no collection runs between. When the flag is
 set the stretch writes its frame back and leaves its entry, and `run` calls
 `Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
 line, so `vm.rs` holds the compare and the call and nothing of what a
@@ -1898,7 +1907,7 @@ these five keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),
 `NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
-enters its machine code even when that leaves before a loop, and
+enters its machine code at every push, even when that exits at once, and
 `NS_NEXT_STRESS_EXIT`, which makes every poll in machine code -- every
 backward jump it takes -- take its exit, as if a safepoint were
 requested.
@@ -2129,7 +2138,10 @@ heap is its user: each `Heap`'s object space is one `Reservation` ("The
 object space" below), eden's top is that reservation's bump cursor
 ("Inline allocation"), and the heap's activation stack is a second
 `Reservation`, the frames of the running activations
-([execution.md](execution.md), "Representation"). `Reservation` is not
+([execution.md](execution.md), "Representation"); the heap's application
+id table is a third and the inline caches' cells a fourth, both read by
+machine code ("The cells' reservation", "The application id table"
+below). `Reservation` is not
 `Send` or `Sync`, since it holds a `NonNull`, and nothing needs it to be:
 both belong to one `Heap`,
 and an interpreter, which holds `Rc`s throughout, is not `Send` either.
@@ -2252,9 +2264,50 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   which machine code calls Rust ([execution.md](execution.md), "The
   baseline JIT's foundation", "Executable memory"). Only the x64 Windows
   path runs here; the Linux, BSD and Apple AArch64 paths are checked by
-  clippy alone (the `memory` gate). Reading the bounds of the native
-  stack, which the entry is to check once compiled frames nest, comes with
-  road step 8's third stage ([OPEN-WORK.md](../OPEN-WORK.md)).
+  clippy alone (the `memory` gate). The bounds of the running thread's
+  native stack are read there too (`native_stack.rs`), for the entry's
+  check of its room ([execution.md](execution.md), "The native stack
+  carries the return addresses").
+
+### The cells' reservation
+
+The inline caches' cells -- every site's, every polymorphic block slot's,
+and the global cache's mirror ([dispatch.md](dispatch.md), "The cells
+beside the entries") -- lie in one `Reservation` of exactly 1 GiB, owned by
+the `InlineCaches` (`inline_cache/cells.rs`), outside the mutator, since
+machine code reads them between two leaf calls ([execution.md](execution.md),
+"The machine words"): the global mirror's 64 MiB at its base, room for
+2^20 rows of 64 bytes; the site cells' 192 MiB, 6,291,456 cells of 32
+bytes (`MAXIMUM_SITES`); the block cells' 768 MiB, one block of four per
+site. A cell's address is fixed for the reservation's life -- the region's
+base plus its index times its size -- while the `Vec`s of entries beside
+it move as they grow. Each region is committed as it grows, doubling what
+it has and at least 64 KiB, or exactly what it needs where the system
+refuses more, and `heap::out_of_memory` past that; a page newly committed
+reads 0, so every cell a table grows by is written vacant explicitly. The
+addresses come from `Reservation::base_address`, and every slice Rust
+borrows of it is derived afresh, as the object space's are. A cell names
+no handle, so nothing traces it.
+
+### The application id table
+
+Machine code reads an application's instances dispatch id by its index
+(`heap/application_ids.rs`): one `Reservation` of 2^22 rows of a word,
+row `index` the bits of application `index`'s instances `DispatchId`, its
+address and the number of rows recorded in the machine words
+(`ApplicationIds`, `ApplicationIdRows`). The megamorphic stub needs it at
+a `super` or private lexical site, whose guard is S's or N's application
+word while the global cache is keyed by dispatch id (decided on
+2026-10-29, so that no site kind is left to the Rust probe). It has three
+writers: `Heap::register_application` records an application's id when
+it is registered, `Heap::free_application` records `DispatchId::NONE`
+when a full collection reclaims the application, and
+`Heap::truncate_application_rows` takes the bound back with the table of
+applications. An application's ids never change after it is built, and a
+class object's application word, which `class_set_application` changes,
+is read afresh by the stub, so nothing else writes it. A word that is no
+`SmallInteger`, or an index at or past the bound, names no application,
+and the stub goes to the miss leaf, which decides.
 
 ### The allocator of the Rust side
 

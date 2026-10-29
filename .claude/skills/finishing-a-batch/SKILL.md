@@ -28,7 +28,7 @@ Create a todo for each item.
    verifies the remembered set and scavenges at every safepoint, WIDE encodes
    every instruction in its wide form, SUSPEND suspends every activation into
    its frame and runs on from the frames, JIT compiles every body at its first
-   entry and enters machine code that leaves before a loop, EXIT makes every poll in
+   entry and enters it at every push even when its machine code exits at once, EXIT makes every poll in
    machine code take its exit; beside them the suite runs once with
    `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the nine suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most

@@ -1,0 +1,106 @@
+/// One send site, `sendStep:to:`'s, sent receivers of one to six classes
+/// from compiled code (`docs/design/execution.md`, "Sends in machine
+/// code"): monomorphic with one, a polymorphic block with two to four,
+/// which the polymorphic stub scans, and megamorphic from the fifth on,
+/// which the megamorphic stub probes in the global cache's mirror. Every
+/// method loops once before it does anything else, so that its body is
+/// compiled at its second entry.
+///
+/// newspeak-spec.pdf 5.5 sends `step:` to each receiver's own class,
+/// whatever classes the site met before: First answers value + 1, Second
+/// value + 10, and so on to Sixth's value + 100000. Over the values 0 to
+/// 999, with the first count classes, the sum is count * 499500 plus
+/// 1000 times the sum of their offsets: 500500, 1010000, 1609500,
+/// 3109000, 13608500 and 114108000. The second round sends them again at
+/// the site that went megamorphic in the first.
+class PolymorphicSends = Object new () (
+  class First = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 1.
+    )
+  )
+
+  class Second = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 10.
+    )
+  )
+
+  class Third = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 100.
+    )
+  )
+
+  class Fourth = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 1000.
+    )
+  )
+
+  class Fifth = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 10000.
+    )
+  )
+
+  class Sixth = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 100000.
+    )
+  )
+
+  sendStep: receiver to: value = (
+    |
+      index ::= 0.
+    |
+    [index < 1] whileTrue: [index:: index + 1].
+    ^receiver step: value.
+  )
+
+  sumOver: receivers = (
+    |
+      sum ::= 0.
+    |
+    0 to: 999 do: [:value | receivers do: [:receiver | sum:: sum + (sendStep: receiver to: value)]].
+    ^sum.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      receivers = {First new. Second new. Third new. Fourth new. Fifth new. Sixth new}.
+    |
+    1 to: 2 do: [:round |
+      1 to: 6 do: [:count |
+        transcript
+            show: (sumOver: (receivers copyFrom: 1 to: count)) printString;
+            newLine.
+      ].
+    ].
+  )
+)

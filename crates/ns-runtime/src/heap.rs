@@ -30,6 +30,7 @@ use std::num::NonZeroU64;
 use std::ops::Range;
 use std::rc::Rc;
 
+mod application_ids;
 mod compaction;
 mod frames;
 #[cfg(test)]
@@ -388,6 +389,17 @@ impl BuiltinGuards {
 /// guard an immediate one dispatches on, both instances of `Float`.
 const FLOAT_DISPATCH_INDEX: usize = 4;
 
+/// What `MachineWord::SafepointRequested` reads while only a stress mode
+/// holds the request (`Heap::set_safepoint_requested`); a real request
+/// writes 1 over it.
+#[cfg(debug_assertions)]
+pub(crate) const STRESS_HOLD: u64 = 2;
+
+/// `Value::immediate_index`'s for a `SmallInteger`, which machine code's
+/// guard and class idioms compute as it does.
+#[cfg(ns_jit)]
+const SMALL_INTEGER_DISPATCH_INDEX: usize = 3;
+
 /// Where a running activation's registers start in the activation stack's
 /// words, at its first argument, `argument_count` words below its frame's
 /// header, whose words the register numbering skips (`bytecode::
@@ -687,13 +699,14 @@ struct ActivationStack {
     /// How many frames are on the stack: what `Heap::activation_depth`
     /// answers, since an offset is no count.
     live: usize,
-    /// How many of the live activations, and of the activations suspended
-    /// into their frames, count against the depth limit. One running total,
-    /// since the limit is checked on every push: suspending and resuming an
+    /// The machine words, whose `MachineWord::DepthCount` is how many of
+    /// the live activations, and of the activations suspended into their
+    /// frames, count against the depth limit. One running total, since the
+    /// limit is checked on every push: suspending and resuming an
     /// activation leave it alone, as a suspended one counts all along.
-    counted: usize,
-    #[cfg(debug_assertions)]
-    next_generation: u32,
+    /// Machine code reads and writes the count in place, so it lives
+    /// there and nowhere else.
+    machine_words: MachineWords,
 }
 
 /// Hands every word of `words` to `tracer`: words of the activation
@@ -717,6 +730,110 @@ const GENERATION_MASK: u32 = 0x7FFF_FFFF;
 // The compiler leaves the header's words out of the register numbering by
 // this many numbers, so the two must agree.
 const _: () = assert!(crate::bytecode::HEADER_REGISTERS as usize == frame_header::COUNT);
+
+/// A shift count machine code takes, which is below 64.
+#[cfg(ns_jit)]
+fn small_count(count: u32) -> u8 {
+    let Ok(count) = u8::try_from(count) else {
+        unreachable!("internal: a shift count is below 64");
+    };
+    count
+}
+
+/// What machine code reads of an object and a value, in the form its
+/// instructions take (`Heap::machine_layout`).
+#[cfg(ns_jit)]
+pub(crate) struct MachineLayout {
+    /// The header word's displacement from an object's offset.
+    pub(crate) header_displacement: i32,
+    /// The header word's dispatch guard bits.
+    pub(crate) guard_mask: i32,
+    /// The class word's displacement from an object's offset.
+    pub(crate) class_word_displacement: i32,
+    /// A class object's superclass field's displacement from its offset.
+    pub(crate) superclass_displacement: i32,
+    /// A class object's enclosing-object field's displacement from its
+    /// offset (`Heap::class_enclosing`).
+    pub(crate) enclosing_displacement: i32,
+    /// A class object's declaring-class field's displacement from its
+    /// offset (`Heap::class_declaring`).
+    pub(crate) declaring_class_displacement: i32,
+    /// A class object's application field's displacement from its offset
+    /// (`Heap::class_application_word`).
+    pub(crate) application_displacement: i32,
+    /// A word's tag bits, 0 for an object.
+    pub(crate) tag_mask: i32,
+    /// A `SmallInteger`'s tag bit.
+    pub(crate) small_integer_tag: i32,
+    /// A `SmallFloat`'s tag bit.
+    pub(crate) small_float_tag: i32,
+    /// A `SmallInteger`'s immediate index (`Value::immediate_index`).
+    pub(crate) small_integer_index: u64,
+    /// A `SmallFloat`'s immediate index.
+    pub(crate) small_float_index: u64,
+    /// How far a constant's payload lies above its tag: its index.
+    pub(crate) tag_bits: u8,
+    /// The header word's format bits, all clear exactly for an instance's
+    /// format, whose fields `Heap::instance_field` reads.
+    pub(crate) instance_format_bits: i32,
+    /// How far the header word's count of the words after it -- the class
+    /// word and the fields -- is shifted up; 255 there says the count is
+    /// in an overflow word, and is past every field a stub reads.
+    pub(crate) word_count_shift: u8,
+    /// An object's field 0's displacement from its offset.
+    pub(crate) fields_displacement: i32,
+}
+
+// `instance_format_bits` is a test for all-clear bits.
+const _: () = assert!(Format::FixedPointers as u64 == 0);
+
+/// Where a debug build's generation lies in a flags word, for machine
+/// code (`Heap::machine_flags`).
+#[cfg(all(ns_jit, debug_assertions))]
+pub(crate) struct MachineGeneration {
+    /// The generation counter's bits.
+    pub(crate) mask: i32,
+    /// How far the generation is shifted in the flags word's bits.
+    pub(crate) shift: u8,
+    /// The flags word's register number past the frame's arguments.
+    pub(crate) flags_register: u16,
+}
+
+/// A frame machine code pushed, described for its header
+/// (`Heap::write_machine_frame`): where it lies, what it runs and where it
+/// stands, and its caller.
+#[cfg(ns_jit)]
+pub(crate) struct MachineFrame {
+    /// Its header's word offset.
+    pub(crate) offset: u32,
+    pub(crate) argument_count: u16,
+    pub(crate) code: CodeId,
+    pub(crate) selector: Symbol,
+    pub(crate) program_counter: u32,
+    pub(crate) feedback_base: FeedbackBase,
+    /// The registers above its header.
+    pub(crate) register_count: usize,
+    /// Whether its code addresses its own slots
+    /// (`CompiledCode::addresses_own_slots`), so that it records its
+    /// entered level.
+    pub(crate) addresses_own_slots: bool,
+    /// The caller's offset and the top the frame was pushed at; `None`
+    /// for a leaf's view of its own frame, whose caller nothing reads.
+    pub(crate) caller: Option<(u32, usize)>,
+}
+
+#[cfg(ns_jit)]
+impl MachineFrame {
+    /// Its first argument's word offset.
+    pub(crate) fn start(&self) -> usize {
+        self.offset as usize - usize::from(self.argument_count)
+    }
+
+    /// Where its registers end.
+    pub(crate) fn window_end(&self) -> usize {
+        self.offset as usize + frame_header::COUNT + self.register_count
+    }
+}
 
 /// `ActivationStack::innermost` of an empty stack: no frame starts there,
 /// since a frame's offset is below the reservation's 2^31 words.
@@ -1144,16 +1261,36 @@ impl ActivationStack {
     /// An empty stack in a reservation of its own, or running out of
     /// memory when the operating system grants no address space, as the
     /// object space does.
-    fn new() -> ActivationStack {
+    fn new(machine_words: &MachineWords) -> ActivationStack {
         ActivationStack {
-            frames: FrameStack::new(frames::stack_reservation())
+            frames: FrameStack::new(frames::stack_reservation(), machine_words.clone())
                 .unwrap_or_else(|_| out_of_memory(frames::stack_reservation())),
             innermost: NO_FRAME,
             live: 0,
-            counted: 0,
-            #[cfg(debug_assertions)]
-            next_generation: 0,
+            machine_words: machine_words.clone(),
         }
+    }
+
+    /// The generation the next frame pushed takes: one past the last,
+    /// which the machine words hold so that a compiled callee's prologue
+    /// takes its own from the same counter
+    /// (`MachineWord::NextGeneration`).
+    #[cfg(debug_assertions)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the word holds a generation, masked to 31 bits"
+    )]
+    fn peek_next_generation(&self) -> u32 {
+        let last = self.machine_words.get(MachineWord::NextGeneration) as u32;
+        last.wrapping_add(1) & GENERATION_MASK
+    }
+
+    /// Counts the generation `peek_next_generation` answered as taken.
+    #[cfg(debug_assertions)]
+    fn advance_generation(&self) {
+        let next = self.peek_next_generation();
+        self.machine_words
+            .set(MachineWord::NextGeneration, u64::from(next));
     }
 
     /// Header word `field` of the frame at `offset`.
@@ -1186,6 +1323,17 @@ impl ActivationStack {
     #[inline(always)]
     fn window_end(&self, offset: u32) -> usize {
         offset as usize + frame_header::COUNT + self.register_count(offset)
+    }
+
+    /// `window_end`, of a frame whose header machine code may have just
+    /// written above the top.
+    #[cfg(ns_jit)]
+    fn window_end_of_committed(&self, offset: u32) -> usize {
+        let count = Word::from_bits(
+            self.frames
+                .committed_word(offset as usize + frame_header::REGISTER_COUNT),
+        );
+        offset as usize + frame_header::COUNT + frames::number_as_usize(count)
     }
 
     /// Where the frame at `offset` starts: its first argument, its
@@ -1727,6 +1875,10 @@ pub struct Heap<'gc> {
     /// The mixins, applications and compiled bodies objects of this heap
     /// name by index (`tables.rs`).
     tables: Tables,
+    /// Each application's instances dispatch id by index, for machine
+    /// code (`application_ids.rs`), written wherever `tables` writes an
+    /// application's row.
+    application_ids: application_ids::ApplicationIds,
     /// What a body's `CodeIdCache` must carry for its id to name a row of
     /// `tables` (`next_code_table_epoch`).
     code_table_epoch: u64,
@@ -1977,7 +2129,7 @@ struct FrameFields<'gc> {
 /// `bytes` is what the failed request asked for: an allocation's size, or
 /// what a commit asked for beyond what was committed.
 #[cold]
-fn out_of_memory(bytes: usize) -> ! {
+pub(crate) fn out_of_memory(bytes: usize) -> ! {
     std::alloc::handle_alloc_error(
         std::alloc::Layout::from_size_align(bytes, 8)
             .unwrap_or_else(|_| std::alloc::Layout::new::<u64>()),
@@ -2049,9 +2201,19 @@ impl<'gc> Heap<'gc> {
     /// Private to the heap module: `World` builds the one heap an interpreter
     /// has, and only this module's own tests build a bare one.
     fn new() -> Heap<'gc> {
+        let machine_words = MachineWords::new();
+        machine_words.set(
+            MachineWord::DepthLimit,
+            crate::interpreter::MAX_ACTIVATION_DEPTH as u64,
+        );
+        let application_ids = application_ids::ApplicationIds::new();
+        machine_words.set(
+            MachineWord::ApplicationIds,
+            application_ids.address() as u64,
+        );
         let mut heap = Heap {
             next_identity_hash: 1,
-            stack: ActivationStack::new(),
+            stack: ActivationStack::new(&machine_words),
             suspensions: Suspensions::default(),
             continuations: Continuations::default(),
             space: Space::new(space::DEFAULT_RESERVATION)
@@ -2075,7 +2237,7 @@ impl<'gc> Heap<'gc> {
                 slots: Vec::new(),
                 sweep_at: MIN_ROOT_SWEEP,
             }),
-            machine_words: MachineWords::new(),
+            machine_words,
             next_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
@@ -2085,6 +2247,7 @@ impl<'gc> Heap<'gc> {
             immediate_dispatch_ids: [DispatchId::NONE; 5],
             builtin_guards: BuiltinGuards::NONE,
             tables: Tables::default(),
+            application_ids,
             code_table_epoch: next_code_table_epoch(),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
@@ -4941,7 +5104,62 @@ impl<'gc> Heap<'gc> {
         );
         let application = Rc::new(application);
         self.tables.applications[row] = Some(application.clone());
+        self.record_application_id(row, application.dispatch_ids.instances);
         application
+    }
+
+    /// Writes `id` as row `row`'s in the application id table machine code
+    /// reads (`heap/application_ids.rs`), and its bound, the application
+    /// table's length.
+    pub(crate) fn record_application_id(&mut self, row: usize, id: DispatchId) {
+        self.application_ids
+            .record(row, id, self.tables.applications.len());
+        self.machine_words.set(
+            MachineWord::ApplicationIdRows,
+            self.application_ids.rows() as u64,
+        );
+    }
+
+    /// The application id table's bound taken to the application table's
+    /// length, after its trailing free rows were given back.
+    pub(crate) fn record_application_rows(&mut self) {
+        self.application_ids
+            .set_rows(self.tables.applications.len());
+        self.machine_words.set(
+            MachineWord::ApplicationIdRows,
+            self.application_ids.rows() as u64,
+        );
+    }
+
+    /// Whether the application id table records, for every row of the
+    /// application table and nothing past it, that row's instances id --
+    /// `NONE`'s 0 for a free row -- and the machine words its address and
+    /// bound.
+    #[cfg(all(test, debug_assertions))]
+    pub(crate) fn verify_application_ids(&self) -> Result<(), String> {
+        let rows = self.tables.applications.len();
+        if self.application_ids.rows() != rows
+            || self.machine_words.get(MachineWord::ApplicationIdRows) != rows as u64
+            || self.machine_words.get(MachineWord::ApplicationIds)
+                != self.application_ids.address() as u64
+        {
+            return Err(format!("the table's bound is not the {rows} rows"));
+        }
+        for (row, application) in self.tables.applications.iter().enumerate() {
+            let expected = application
+                .as_ref()
+                .map_or(0, |application| application.dispatch_ids.instances.bits());
+            if self.application_ids.id(row) != Some(u64::from(expected)) {
+                return Err(format!(
+                    "row {row} records {:?}, its application's id is {expected}",
+                    self.application_ids.id(row)
+                ));
+            }
+        }
+        if self.application_ids.id(rows).is_some() {
+            return Err("the table records a row past its bound".to_owned());
+        }
+        Ok(())
     }
 
     /// Records `new` as the application that took `old`'s place and
@@ -5245,6 +5463,31 @@ impl<'gc> Heap<'gc> {
             .class_field(class, class_field::APPLICATION)?
             .as_small_integer()?;
         ApplicationIndex::from_index(usize::try_from(index).ok()?)
+    }
+
+    /// The word `class`'s application field holds, as machine code reads
+    /// it from the class object: the guard a `super` or private lexical
+    /// site's cell compares (`inline_cache::cells::Cell`). `None` for a
+    /// handle that is no class object.
+    pub(crate) fn class_application_word(&self, class: ClassReference<'gc>) -> Option<u64> {
+        self.pointer_words(class, Format::Class)?
+            .get(class_field::APPLICATION)
+            .copied()
+    }
+
+    /// The instances id of the registered application whose class objects
+    /// hold `word` in their application field (`class_application_word`);
+    /// `None` for a word no class object of an application holds. For
+    /// `InlineCaches::verify_cells`, which holds a `super` or private
+    /// lexical cell's guard to its entry's.
+    pub(crate) fn application_dispatch_id_for_word(&self, word: u64) -> Option<DispatchId> {
+        let word = Word::from_bits(word);
+        if !word.is_small_integer() {
+            return None;
+        }
+        let index = usize::try_from(self.load(word).as_small_integer()?).ok()?;
+        let application = self.tables.applications.get(index)?.as_ref()?;
+        (count_word(index).bits() == word.bits()).then_some(application.dispatch_ids.instances)
     }
 
     /// §3.1.1's "its class inherits from class `Value`", read off the
@@ -5713,8 +5956,46 @@ impl<'gc> Heap<'gc> {
             .map_or(DispatchIds::NONE, |application| application.dispatch_ids)
     }
 
+    /// Records the dispatch ids of the immediates, here and as the
+    /// `ImmediateGuard` words machine code compares a receiver's against.
     pub(crate) fn set_immediate_dispatch_ids(&mut self, ids: [DispatchId; 5]) {
         self.immediate_dispatch_ids = ids;
+        for (index, id) in ids.into_iter().enumerate() {
+            self.machine_words
+                .set(MachineWord::ImmediateGuard(index), u64::from(id.bits()));
+        }
+    }
+
+    /// Records the class objects of the immediates, indexed as
+    /// `immediate_dispatch_ids` is, as the `ImmediateClass` words machine
+    /// code hands a send's miss path. A stored word is a handle, so the
+    /// step state calls this again after every scavenge, compaction and
+    /// move (`Mutator::rewrite_immediate_classes`).
+    pub(crate) fn set_immediate_classes(&self, classes: [ClassReference<'gc>; 5]) {
+        for (index, class) in classes.into_iter().enumerate() {
+            let word = self.store(Value::object(class));
+            self.machine_words
+                .set(MachineWord::ImmediateClass(index), word.bits());
+        }
+    }
+
+    /// Sets the depth limit's word: the limit with the reserve free, or
+    /// past the reserve while it is held (`Mutator::set_depth_reserve`).
+    pub(crate) fn set_depth_limit(&self, limit: usize) {
+        self.machine_words
+            .set(MachineWord::DepthLimit, limit as u64);
+    }
+
+    /// The word of the machine words `word` names, for a test.
+    #[cfg(test)]
+    pub(crate) fn machine_word(&self, word: MachineWord) -> u64 {
+        self.machine_words.get(word)
+    }
+
+    /// The frame stack's ordinary end, for a test.
+    #[cfg(test)]
+    pub(crate) fn ordinary_stack_end(&self) -> usize {
+        self.stack.frames.ordinary_end()
     }
 
     /// The guards a closure's and a frame's headers carry, read off the
@@ -6570,11 +6851,12 @@ impl<'gc> Heap<'gc> {
         let stack = &mut self.stack;
         stack.innermost = offset;
         stack.live += 1;
-        stack.counted += usize::from(counted);
+        let count = stack.machine_words.get(MachineWord::DepthCount);
+        stack
+            .machine_words
+            .set(MachineWord::DepthCount, count + u64::from(counted));
         #[cfg(debug_assertions)]
-        {
-            stack.next_generation = stack.next_generation.wrapping_add(1) & GENERATION_MASK;
-        }
+        stack.advance_generation();
         self.activation_handle(offset)
     }
 
@@ -6821,7 +7103,7 @@ impl<'gc> Heap<'gc> {
     /// which the push advances only once it has succeeded.
     #[cfg(debug_assertions)]
     fn peek_next_generation(&self) -> u32 {
-        self.stack.next_generation.wrapping_add(1) & GENERATION_MASK
+        self.stack.peek_next_generation()
     }
 
     /// The kind tag and the operand word a frame of `kind` records: the
@@ -6912,7 +7194,10 @@ impl<'gc> Heap<'gc> {
         // by side, and subtracting both at once is one 16-byte load over
         // the push's two narrower stores, which no store forwards.
         if flags.counted {
-            self.stack.counted -= 1;
+            let count = self.stack.machine_words.get(MachineWord::DepthCount);
+            self.stack
+                .machine_words
+                .set(MachineWord::DepthCount, count - 1);
         }
         // A delivering frame names no row, so a send's return reaches no
         // table; every other continuation is taken out of line.
@@ -7053,6 +7338,28 @@ impl<'gc> Heap<'gc> {
         handle
     }
 
+    /// Every live activation, innermost first, as a line naming what it
+    /// runs and where it stands: a method's selector, or its kind, and its
+    /// stored program counter. What `Interpreter::stack_trace` answers.
+    pub(crate) fn describe_activations(&self) -> Vec<String> {
+        self.stack
+            .offsets()
+            .map(|offset| {
+                let activation = self.activation_handle(offset);
+                let program_counter = self.activation_program_counter(activation);
+                let what = match self.activation_kind(activation) {
+                    ActivationKind::Method(selector) => selector.to_string(),
+                    ActivationKind::Closure(_) => "block".to_owned(),
+                    ActivationKind::TopLevel => "top level".to_owned(),
+                    ActivationKind::Initializer(..) => "initializer".to_owned(),
+                    ActivationKind::SuperclassClause(_) => "superclass clause".to_owned(),
+                    ActivationKind::Factory(_) => "factory".to_owned(),
+                };
+                format!("{what} at {program_counter}")
+            })
+            .collect()
+    }
+
     /// How many activations are live. `Interpreter::run_from_host`, through
     /// which a host's send or instantiation runs, asserts that it leaves it
     /// where it found it.
@@ -7071,8 +7378,12 @@ impl<'gc> Heap<'gc> {
     /// How many activations count against the depth limit: the live ones
     /// that do, and the suspended ones that do, which count all along so
     /// that resuming one never has to check the limit.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the count never exceeds the depth limit plus its reserve, far below the pointer width"
+    )]
     pub fn counted_depth(&self) -> usize {
-        self.stack.counted
+        self.stack.machine_words.get(MachineWord::DepthCount) as usize
     }
 
     // ---------- Suspended activations ----------
@@ -7331,10 +7642,7 @@ impl<'gc> Heap<'gc> {
         self.stack.innermost = offset;
         self.stack.live += 1;
         #[cfg(debug_assertions)]
-        {
-            self.stack.next_generation =
-                self.stack.next_generation.wrapping_add(1) & GENERATION_MASK;
-        }
+        self.stack.advance_generation();
         self.activation_handle(offset)
     }
 
@@ -8133,15 +8441,29 @@ impl<'gc> Heap<'gc> {
         self.machine_words.get(MachineWord::SafepointRequested) != 0
     }
 
+    /// Whether a real request is pending -- a collection's, an
+    /// interrupt's -- rather than a stress mode's hold (`STRESS_HOLD`),
+    /// which the run loop takes at its next poll all the same.
+    pub(crate) fn real_safepoint_requested(&self) -> bool {
+        self.machine_words.get(MachineWord::SafepointRequested) == 1
+    }
+
     /// A request served (`Interpreter::safepoint`).
     pub(crate) fn clear_safepoint_request(&mut self) {
         self.machine_words.set(MachineWord::SafepointRequested, 0);
     }
 
+    /// Holds the request set for a stress mode, or drops it. A held
+    /// request reads `STRESS_HOLD`, not a real request's 1: every poll
+    /// takes it, but a compiled callee's machine entry refuses only a real
+    /// one (`jit::sends::prologue`), so that under a stress mode compiled
+    /// frames still nest, and the collections the mode makes at the polls
+    /// inside them run over the frames the exit materializes.
     #[cfg(debug_assertions)]
     pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
+        let word = if requested { STRESS_HOLD } else { 0 };
         self.machine_words
-            .set(MachineWord::SafepointRequested, u64::from(requested));
+            .set(MachineWord::SafepointRequested, word);
     }
 
     /// Asks the run loop's next safepoint to take its slow path.
@@ -8181,49 +8503,15 @@ impl<'gc> Heap<'gc> {
         u64::from(base.index)
     }
 
-    /// The word machine code carries `activation` in
-    /// (`jit::stubs::BlockWord::Activation`), which a leaf turns back into
-    /// the handle (`machine_activation`): its offset, and in a debug build
-    /// its generation above it, so that the handle a leaf gets back is
-    /// checked as the one the run loop held.
+    /// The register number machine code reads a frame's current class at:
+    /// the header word `CURRENT_CLASS`, placed as `receiver_register`
+    /// places the receiver.
     #[cfg(ns_jit)]
-    pub(crate) fn activation_word(activation: ActivationReference) -> u64 {
-        #[cfg(debug_assertions)]
-        {
-            u64::from(activation.offset) | (u64::from(activation.generation) << 32)
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            u64::from(activation.offset)
-        }
-    }
-
-    /// The running activation machine code named by `word`
-    /// (`activation_word`).
-    ///
-    /// # Panics
-    ///
-    /// On a word `activation_word` did not make, which only a defect of
-    /// the JIT passes; a debug build also refuses a frame since popped.
-    #[cfg(ns_jit)]
-    pub(crate) fn machine_activation(&self, word: u64) -> ActivationReference {
-        let Ok(offset) = u32::try_from(word & u64::from(u32::MAX)) else {
-            unreachable!("internal: the low half of a word fits 32 bits");
+    pub(crate) fn current_class_register(argument_count: u16) -> u16 {
+        let Ok(current_class) = u16::try_from(frame_header::CURRENT_CLASS) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
         };
-        #[cfg(not(debug_assertions))]
-        if word >> 32 != 0 {
-            panic!("internal: machine code named activation word {word:#x}");
-        }
-        let activation = ActivationReference {
-            offset,
-            #[cfg(debug_assertions)]
-            origin: self.heap_id,
-            #[cfg(debug_assertions)]
-            generation: u32::try_from(word >> 32)
-                .expect("internal: the high half of a word fits 32 bits"),
-        };
-        self.check_activation(activation);
-        activation
+        argument_count + current_class
     }
 
     /// The register number machine code reads a frame's receiver at: the
@@ -8236,6 +8524,364 @@ impl<'gc> Heap<'gc> {
             unreachable!("internal: the header's words are numbered from 0 to 12");
         };
         argument_count + receiver
+    }
+
+    /// Where machine code finds what it reads of an object and a value
+    /// (`jit::macro_assembler`'s `load_guard`, `load_class`,
+    /// `walk_superclasses`, `load_enclosing_object` and
+    /// `load_lexical_class`, and the guards of `jit::sends`): the words of an object at its handle's offset
+    /// from the object space's base, and the tags of a value's word.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_layout() -> MachineLayout {
+        let displacement = |word: usize| {
+            let Ok(displacement) = i32::try_from(word * 8) else {
+                unreachable!("internal: an object's first words lie near its start");
+            };
+            displacement
+        };
+        let small = |bits: u64| {
+            let Ok(bits) = i32::try_from(bits) else {
+                unreachable!("internal: a tag and a mask fit 32 bits");
+            };
+            bits
+        };
+        MachineLayout {
+            header_displacement: displacement(HEADER),
+            guard_mask: small(header::GUARD_MASK),
+            class_word_displacement: displacement(CLASS),
+            superclass_displacement: displacement(FIELDS + class_field::SUPERCLASS),
+            enclosing_displacement: displacement(FIELDS + class_field::ENCLOSING),
+            declaring_class_displacement: displacement(FIELDS + class_field::DECLARING_CLASS),
+            application_displacement: displacement(FIELDS + class_field::APPLICATION),
+            tag_mask: small(value::machine::TAG_MASK),
+            small_integer_tag: small(value::machine::SMALL_INTEGER_TAG),
+            small_float_tag: small(value::machine::SMALL_FLOAT_TAG),
+            small_integer_index: SMALL_INTEGER_DISPATCH_INDEX as u64,
+            small_float_index: FLOAT_DISPATCH_INDEX as u64,
+            tag_bits: small_count(value::machine::TAG_BITS),
+            instance_format_bits: small(header::FORMAT_BITS),
+            word_count_shift: small_count(header::WORD_COUNT_SHIFT),
+            fields_displacement: displacement(FIELDS),
+        }
+    }
+
+    /// The word offset from the activation stack's base of the address
+    /// `address` machine code holds a frame's register 0 at (its frame
+    /// role's register), or `None` for one outside the stack's committed
+    /// words.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_register_base_index(&self, address: u64) -> Option<u32> {
+        let base = self.stack.frames.base_address() as u64;
+        let bytes = address.checked_sub(base)?;
+        let index = usize::try_from(bytes / 8).ok()?;
+        (bytes % 8 == 0 && index < self.stack.frames.committed_words())
+            .then(|| frames::stack_offset(index))
+    }
+
+    /// The word offset of `base`'s register 0 from the stack's base.
+    #[cfg(ns_jit)]
+    pub(crate) fn register_base_index(base: RegisterBase) -> u32 {
+        base.index
+    }
+
+    /// What a debug build's compiled prologue writes as a method frame's
+    /// flags word for a body taking `argument_count` arguments
+    /// (`jit::sends::prologue`): the generation's mask and its shift in
+    /// the word, the flags word's register past the arguments, and the
+    /// word with every bit but the generation's -- a counted method
+    /// activation stopped in machine code.
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn machine_flags(argument_count: u16) -> (MachineGeneration, u64) {
+        let flags = FrameFlags {
+            compiled: true,
+            ..FrameFlags::new(kind_tag::METHOD, argument_count, true, false)
+        };
+        let Ok(mask) = i32::try_from(GENERATION_MASK) else {
+            unreachable!("internal: a generation fits 31 bits");
+        };
+        let Ok(flags_register) = u16::try_from(frame_header::FLAGS) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        let shift = frames::GENERATION_SHIFT + value::machine::TAG_BITS;
+        (
+            MachineGeneration {
+                mask,
+                shift: small_count(shift),
+                flags_register,
+            },
+            flags.word().bits(),
+        )
+    }
+
+    /// The word offset of `activation`'s header from the stack's base.
+    #[cfg(ns_jit)]
+    pub(crate) fn activation_offset(activation: ActivationReference) -> u32 {
+        activation.offset
+    }
+
+    /// The method `activation` runs the body of, when it is a method's
+    /// activation: its code's row names it (`code_id_of_method`).
+    pub(crate) fn activation_method(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<Rc<MixinMethod>> {
+        match self.activation_kind(activation) {
+            ActivationKind::Method(_) => self.code_method(self.activation_code_id(activation)),
+            _ => None,
+        }
+    }
+
+    /// The header machine code's frame `frame` describes, written but for
+    /// its receiver and current class, which the compiled call wrote: the
+    /// frame an exit materializes (`jit::materialize`) or a leaf runs in.
+    /// Its flags say a counted method activation stopped in machine code,
+    /// with a debug build's generation from the flags word the frame's
+    /// prologue wrote. Its guard is none, and its entered level the one
+    /// the push records. Answers the frame's handle.
+    #[cfg(ns_jit)]
+    pub(crate) fn write_machine_frame(&mut self, frame: &MachineFrame) -> ActivationReference {
+        let offset = frame.offset as usize;
+        let flags = FrameFlags {
+            compiled: true,
+            ..FrameFlags::new(kind_tag::METHOD, frame.argument_count, true, false)
+        };
+        #[cfg(debug_assertions)]
+        let flags = {
+            let written = Word::from_bits(
+                self.stack
+                    .frames
+                    .committed_word(offset + frame_header::FLAGS),
+            );
+            flags.with_generation(FrameFlags::of(written).generation)
+        };
+        let caller = match frame.caller {
+            Some((caller, top)) => frames::caller_link_word(caller, frame.start(), top),
+            None => Word::NIL,
+        };
+        // As the push records it for code that addresses its own slots:
+        // the current class's application, which the call wrote. The
+        // guard is none, so that the first own-slot access takes the cold
+        // check against it, as after a resume.
+        let entered_level = if frame.addresses_own_slots {
+            let current_class = self.load(Word::from_bits(
+                self.stack
+                    .frames
+                    .committed_word(offset + frame_header::CURRENT_CLASS),
+            ));
+            current_class
+                .as_object()
+                .and_then(|class| self.class_application_index(class))
+                .unwrap_or(ApplicationIndex::UNREGISTERED)
+        } else {
+            ApplicationIndex::UNREGISTERED
+        };
+        let words = [
+            (
+                frame_header::OPERAND,
+                frames::number_word(frame.selector.index() as u64),
+            ),
+            (frame_header::REIFIED, Word::NIL),
+            (frame_header::FLAGS, flags.word()),
+            (
+                frame_header::CODE,
+                frames::number_word(frame.code.index() as u64),
+            ),
+            (
+                frame_header::PROGRAM_COUNTER,
+                frames::number_word(u64::from(frame.program_counter)),
+            ),
+            (
+                frame_header::FEEDBACK_BASE,
+                frames::number_word(u64::from(frame.feedback_base.raw())),
+            ),
+            (frame_header::CALLER, caller),
+            (frame_header::CONTINUATION, Word::NIL),
+            (
+                frame_header::GUARD,
+                frames::number_word(u64::from(DispatchId::NONE.bits())),
+            ),
+            (
+                frame_header::ENTERED_LEVEL,
+                frames::number_word(entered_level.index() as u64),
+            ),
+            (
+                frame_header::REGISTER_COUNT,
+                frames::number_word(frame.register_count as u64),
+            ),
+        ];
+        for (field, word) in words {
+            self.stack
+                .frames
+                .set_committed_word(offset + field, word.bits());
+        }
+        self.activation_handle_at(frame.offset)
+    }
+
+    /// The handle of the frame whose header lies at `offset`, whatever the
+    /// top: a frame machine code pushed, whose header was just written.
+    #[cfg(ns_jit)]
+    fn activation_handle_at(&self, offset: u32) -> ActivationReference {
+        ActivationReference {
+            offset,
+            #[cfg(debug_assertions)]
+            origin: self.heap_id,
+            #[cfg(debug_assertions)]
+            generation: FrameFlags::of(Word::from_bits(
+                self.stack
+                    .frames
+                    .committed_word(offset as usize + frame_header::FLAGS),
+            ))
+            .generation,
+        }
+    }
+
+    /// Marks `activation`, a frame the run loop pushed or resumed, as
+    /// stopped in machine code at the send at `program_counter`: the
+    /// bottom frame of a stretch an exit above it materializes.
+    #[cfg(ns_jit)]
+    pub(crate) fn mark_stopped_in_machine_code(
+        &mut self,
+        activation: ActivationReference,
+        program_counter: u32,
+    ) {
+        self.check_activation(activation);
+        let flags = FrameFlags {
+            compiled: true,
+            ..self.stack.flags(activation.offset)
+        };
+        self.stack
+            .set_header_word(activation.offset, frame_header::FLAGS, flags.word());
+        self.stack.set_header_word(
+            activation.offset,
+            frame_header::PROGRAM_COUNTER,
+            frames::number_word(u64::from(program_counter)),
+        );
+    }
+
+    /// Whether `activation` stopped in machine code
+    /// (`FrameFlags::compiled`), so that a return to it resumes its
+    /// machine code.
+    #[inline(always)]
+    pub(crate) fn activation_is_compiled(&self, activation: ActivationReference) -> bool {
+        self.stack.flags(activation.offset).compiled
+    }
+
+    /// Clears `activation`'s compiled bit: the whole conversion of a
+    /// baseline frame to an interpreted one, whose words are the
+    /// interpreter's already.
+    pub(crate) fn clear_compiled(&mut self, activation: ActivationReference) {
+        self.check_activation(activation);
+        let flags = FrameFlags {
+            compiled: false,
+            ..self.stack.flags(activation.offset)
+        };
+        self.stack
+            .set_header_word(activation.offset, frame_header::FLAGS, flags.word());
+    }
+
+    /// Makes the frames an exit materialized the stack's: `innermost` the
+    /// innermost, `top` the top, and `added` more live than before.
+    #[cfg(ns_jit)]
+    pub(crate) fn adopt_machine_frames(&mut self, innermost: u32, top: usize, added: usize) {
+        self.stack.frames.set_top(top);
+        self.stack.innermost = innermost;
+        self.stack.live += added;
+    }
+
+    /// The stack's top and innermost frame, which a leaf's view of its own
+    /// machine frame changes for the leaf's while (`view_machine_frame`).
+    #[cfg(ns_jit)]
+    pub(crate) fn stack_extent(&self) -> (usize, u32) {
+        (self.stack.frames.top(), self.stack.innermost)
+    }
+
+    /// Lets the frame `activation`, written by `write_machine_frame`, read
+    /// as the innermost for the length of a leaf: the top raised to its
+    /// window's end. `restore_stack_extent` with what `stack_extent`
+    /// answered before puts the stack back; the frame stays as machine
+    /// code left it.
+    #[cfg(ns_jit)]
+    pub(crate) fn view_machine_frame(&mut self, activation: ActivationReference) {
+        let end = self.stack.window_end_of_committed(activation.offset);
+        self.stack.frames.set_top(end.max(self.stack.frames.top()));
+        self.stack.innermost = activation.offset;
+    }
+
+    /// Puts back the stack's top and innermost frame `stack_extent`
+    /// answered.
+    #[cfg(ns_jit)]
+    pub(crate) fn restore_stack_extent(&mut self, (top, innermost): (usize, u32)) {
+        self.stack.frames.set_top(top);
+        self.stack.innermost = innermost;
+    }
+
+    /// Hands machine code the receiver of the send the miss leaf decided
+    /// to a target that is no method with code, for the stub that runs it
+    /// (`jit::stub_entry`), which reads no current class: `nil` stands in
+    /// for one.
+    #[cfg(ns_jit)]
+    pub(crate) fn hand_machine_receiver(&self, receiver: Value<'gc>) {
+        let receiver = self.store(receiver);
+        self.machine_words
+            .set(MachineWord::CalleeReceiver, receiver.bits());
+        self.machine_words
+            .set(MachineWord::CalleeClass, Word::NIL.bits());
+    }
+
+    /// Hands machine code the receiver and the current class of the
+    /// callee the miss leaf decided (`MachineWord::CalleeReceiver`,
+    /// `MachineWord::CalleeClass`), which the miss stub passes to the
+    /// callee's machine entry as a compiled call passes them: nothing is
+    /// written into the callee's frame before its checks pass.
+    #[cfg(ns_jit)]
+    pub(crate) fn hand_machine_callee(&self, receiver: Value<'gc>, class: ClassReference<'gc>) {
+        let receiver = self.store(receiver);
+        let class = self.store(Value::object(class));
+        self.machine_words
+            .set(MachineWord::CalleeReceiver, receiver.bits());
+        self.machine_words
+            .set(MachineWord::CalleeClass, class.bits());
+    }
+
+    /// The receiver machine code handed a leaf in the machine words
+    /// (`MachineWord::CalleeReceiver`), which the mirror method stub
+    /// stores before its leaf call (`jit::targets`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_callee_receiver(&self) -> Value<'gc> {
+        self.load(Word::from_bits(
+            self.machine_words.get(MachineWord::CalleeReceiver),
+        ))
+    }
+
+    /// The value in the activation stack's word at `address`, which machine
+    /// code handed a leaf as a callee's register 0 -- the first of its
+    /// send's slots -- or `None` for an address outside the stack's
+    /// committed words, at which the leaf declines rather than run on a
+    /// value machine code never handed it.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_frame_value(&self, address: u64) -> Option<Value<'gc>> {
+        let base = self.stack.frames.base_address() as u64;
+        let word = address
+            .checked_sub(base)
+            .filter(|bytes| bytes % 8 == 0)
+            .and_then(|bytes| usize::try_from(bytes / 8).ok())
+            .filter(|index| *index < self.stack.frames.committed_words())
+            .map(|index| self.stack.frames.committed_word(index));
+        word.map(|bits| self.load(Word::from_bits(bits)))
+    }
+
+    /// The value machine code answered as the word `bits`
+    /// (`jit::Resumption::Returned`): a word a frame register held.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_value(&self, bits: u64) -> Value<'gc> {
+        self.load(Word::from_bits(bits))
+    }
+
+    /// The word `value` is in a frame register, which a leaf answers
+    /// machine code (`jit::leaves`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_word_of(&self, value: Value<'gc>) -> u64 {
+        self.store(value).bits()
     }
 
     /// Refuses machine code's read of `activation`'s dead register
@@ -16756,6 +17402,50 @@ mod tests {
         let resumed = heap.resume_activation(lowest_frame, FeedbackBase::NOT_ASSIGNED);
         heap.pop_activation(resumed);
         heap.pop_activation(below);
+    }
+
+    #[test]
+    fn the_depth_count_is_a_machine_word() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Counted");
+        assert_eq!(heap.machine_word(MachineWord::DepthCount), 0);
+        let mut pushed = Vec::new();
+        for _ in 0..3 {
+            pushed.push(
+                heap.push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 1)
+                    .expect("the stack holds the frame"),
+            );
+        }
+        assert_eq!(heap.machine_word(MachineWord::DepthCount), 3);
+        assert_eq!(heap.counted_depth(), 3);
+        heap.pop_activation(pushed.pop().expect("three were pushed"));
+        assert_eq!(heap.machine_word(MachineWord::DepthCount), 2);
+        assert_eq!(heap.counted_depth(), 2);
+        while let Some(activation) = pushed.pop() {
+            heap.pop_activation(activation);
+        }
+        assert_eq!(heap.machine_word(MachineWord::DepthCount), 0);
+    }
+
+    #[test]
+    fn the_ordinary_end_follows_growth() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Growing");
+        assert_eq!(heap.machine_word(MachineWord::OrdinaryStackEnd), 0);
+        let mut ends = std::collections::BTreeSet::new();
+        for _ in 0..100_000 {
+            heap.push_activation(suspendable_header(class, 0, 1), Arguments::NONE, 200)
+                .expect("the stack holds the frame");
+            assert_eq!(
+                heap.machine_word(MachineWord::OrdinaryStackEnd),
+                heap.ordinary_stack_end() as u64
+            );
+            ends.insert(heap.ordinary_stack_end());
+            if ends.len() >= 3 {
+                break;
+            }
+        }
+        assert!(ends.len() >= 3, "the stack grew more than once");
     }
 
     #[test]

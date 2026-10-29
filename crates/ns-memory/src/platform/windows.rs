@@ -18,6 +18,7 @@ use windows_sys::Win32::System::Memory::{
     PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, SEC_RESERVE,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
+use windows_sys::Win32::System::Threading::{GetCurrentThreadStackLimits, SetThreadStackGuarantee};
 
 use crate::Protection;
 
@@ -110,6 +111,34 @@ pub(crate) unsafe fn release(address: *mut u8, _bytes: usize) {
         "VirtualFree(MEM_RELEASE) failed: {}",
         last_error()
     );
+}
+
+/// The lowest address of the running thread's stack a frame may use: the
+/// stack's reserved lower limit (`GetCurrentThreadStackLimits`) raised by
+/// what the system keeps below the last usable page -- the guard page,
+/// the page under it, which is never committed, and the guarantee the
+/// thread keeps for its stack-overflow handler (`SetThreadStackGuarantee`
+/// asked with 0, which answers the guarantee and changes nothing).
+pub(crate) fn thread_stack_lowest_usable_address() -> Option<usize> {
+    let mut lowest = 0usize;
+    let mut highest = 0usize;
+    // SAFETY: `GetCurrentThreadStackLimits` writes the two words it is
+    // given and nothing else.
+    unsafe { GetCurrentThreadStackLimits(&mut lowest, &mut highest) };
+    if lowest == 0 || highest <= lowest {
+        return None;
+    }
+    let mut guarantee = 0u32;
+    // An unknown guarantee is an unknown bound: no answer, which runs
+    // interpreted, rather than one that may promise the guarantee's pages.
+    // SAFETY: with a value of 0 the call writes the current guarantee into
+    // the word it is given and changes nothing.
+    if unsafe { SetThreadStackGuarantee(&mut guarantee) } == 0 {
+        return None;
+    }
+    lowest
+        .checked_add(2 * page_size())
+        .and_then(|address| address.checked_add(guarantee as usize))
 }
 
 /// How the code zone's executable view may be accessed. Neither ever

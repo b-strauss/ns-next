@@ -1,0 +1,155 @@
+/// The targets that are no method with code, sent from compiled loops
+/// (`docs/design/execution.md`, "Sends in machine code"): a public
+/// getter and setter (newspeak-spec.pdf 6.3.2), a `super` send of a slot
+/// getter (5.10), a private slot's getter and setter sent from a nested
+/// class (5.9), the kernel's quick methods -- `yourself`, `isNil`,
+/// `notNil`, `true & x`, `false | x` -- and its primitive methods and
+/// mirror sends: an Array's `at:`, `at:put:`, `size` and `do:`, a
+/// String's `size`, an Integer's `\\`, `bitAnd:` and `printString`.
+///
+/// Each loop runs a thousand times, so that its method is compiled at its
+/// second entry and every send after the first hits its cell. `Counter`
+/// counts 1000 bumps of step 3: 3000. `Wider`'s `count` is its `super`
+/// getter's plus 100, so its one bump from 0 stores 103, which it reads
+/// a thousand times as 203: 203000. The private slot `hidden` is written
+/// with each index and read back: the sum of 0 to 999, 499500. The quick
+/// methods count the thousand indices for which all of them answer as
+/// they must: 1000. The Array holds index * 2 at index, summed by `do:`
+/// as 1001000; its size, the String's and the digits of each index from
+/// 0 to 999 printed sum to 1000000 + 3000 + 2890, 1005890; the indices'
+/// `\\ 7` sum to 2997 and their `bitAnd: 5` to 2500.
+class AccessorsAndRows = Object new (
+  |
+    private hidden ::= 5.
+  |
+) (
+  class Counter = Object new (
+    |
+      public count ::= 0.
+      public step ::= 3.
+    |
+  ) (
+    public bumpTimes: times = (
+      |
+        index ::= 0.
+      |
+      [index < times] whileTrue: [
+        self count: self count + self step.
+        index:: index + 1.
+      ].
+    )
+  )
+
+  class Wider = Counter new () (
+    public count = (
+      ^super count + 100.
+    )
+  )
+
+  class Reader = Object new () (
+    public sumHidden = (
+      |
+        index ::= 0.
+        sum ::= 0.
+      |
+      [index < 1000] whileTrue: [
+        hidden: index.
+        sum:: sum + hidden.
+        index:: index + 1.
+      ].
+      ^sum.
+    )
+  )
+
+  class Adder = Object new (
+    |
+      public total ::= 0.
+    |
+  ) (
+    public value: element = (
+      self total: self total + element.
+    )
+  )
+
+  readWider: wider = (
+    |
+      index ::= 0.
+      sum ::= 0.
+    |
+    [index < 1000] whileTrue: [
+      sum:: sum + wider count.
+      index:: index + 1.
+    ].
+    ^sum.
+  )
+
+  quickMethods = (
+    |
+      index ::= 0.
+      count ::= 0.
+      object = Object new.
+    |
+    [index < 1000] whileTrue: [
+      (object yourself
+          == object
+          & object isNil not
+          & object notNil
+          & (true & (index >= 0))
+          & (false | (index < 1000))) ifTrue: [count:: count + 1].
+      index:: index + 1.
+    ].
+    ^count.
+  )
+
+  rows = (
+    |
+      array = Array new: 1000.
+      text = 'abc'.
+      adder = Adder new.
+      index ::= 1.
+      sizes ::= 0.
+      modulo ::= 0.
+      masked ::= 0.
+    |
+    [index <= 1000] whileTrue: [
+      array at: index put: index * 2.
+      sizes:: sizes + array size + text size + (index - 1) printString size.
+      modulo:: modulo + ((index - 1) \\ 7).
+      masked:: masked + ((index - 1) bitAnd: 5).
+      index:: index + 1.
+    ].
+    array do: adder.
+    ^{adder total. sizes. modulo. masked}.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      counter = Counter new.
+      wider = Wider new.
+    |
+    1 to: 2 do: [:round |
+      counter count: 0.
+      counter bumpTimes: 1000.
+      transcript
+          show: counter count printString;
+          newLine.
+      wider count: 0.
+      wider bumpTimes: 1.
+      transcript
+          show: (readWider: wider) printString;
+          newLine.
+      transcript
+          show: Reader new sumHidden printString;
+          newLine.
+      transcript
+          show: quickMethods printString;
+          newLine.
+      rows do: [:each |
+        transcript
+            show: each printString;
+            newLine.
+      ].
+    ].
+  )
+)

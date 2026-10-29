@@ -17,11 +17,15 @@
 //! The JIT's machine code lives in a `CodeZone`, mapped twice, one view
 //! executable and one writable, and written only through its `CodeWriter`
 //! (docs/design/execution.md, "Executable memory"); `CodeZone::enter` runs
-//! it, and it calls Rust back through the zone's leaf shim.
+//! it, and it calls Rust back through the zone's leaf shim. Before it
+//! enters, the JIT asks `native_stack::remaining_bytes` whether the
+//! running thread's stack has room for the return addresses of compiled
+//! frames.
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 mod code_zone;
+pub mod native_stack;
 mod page_map;
 mod platform;
 

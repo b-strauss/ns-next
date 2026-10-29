@@ -359,6 +359,25 @@ impl SendSite {
     }
 }
 
+/// A cached send's operands, as `EncodedBody::cached_send` reads them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CachedSend {
+    pub(crate) kind: CachedSendKind,
+    pub(crate) selector: Symbol,
+    pub(crate) call_site: CallSite,
+    /// The first argument slot.
+    pub(crate) argument_base: u16,
+    pub(crate) argument_count: usize,
+}
+
+/// Which cached send a `CachedSend` is, with what only its kind has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CachedSendKind {
+    Public { receiver: u16 },
+    Lexical { depth: u16 },
+    Super,
+}
+
 /// The registers of a send that has no eight-byte form: its argument slots
 /// start at `argument_base`, and `arguments` are their sources.
 #[derive(Debug, Clone, PartialEq)]
@@ -1528,6 +1547,137 @@ impl EncodedBody {
     #[inline(always)]
     pub fn register_list(&self, index: usize) -> &[u16] {
         &self.register_lists[index]
+    }
+
+    /// The operands of the cached send in slot `index` -- a `SendPublic`,
+    /// `SendLexical` or `SendSuper`, in either form -- read off its slot
+    /// and its site without decoding the instruction, which would build
+    /// its argument list: what the leaves machine code calls on a send
+    /// read of it (`jit::leaves`). `None` for any other instruction.
+    pub(crate) fn cached_send(&self, index: usize) -> Option<CachedSend> {
+        let narrow = |kind: SendKind, site: u16, receiver: u8, argument_base: u8, count: usize| {
+            Some((
+                kind,
+                usize::from(site),
+                u16::from(receiver),
+                u16::from(argument_base),
+                count,
+            ))
+        };
+        let wide = |kind: SendKind, site: u32| {
+            let site = site as usize;
+            let registers = self.send_sites[site].wide()?;
+            Some((
+                kind,
+                site,
+                registers.receiver(),
+                registers.argument_base(),
+                registers.arguments().len(),
+            ))
+        };
+        let (kind, site, receiver, argument_base, argument_count) = match self.slots[index] {
+            CompactInstruction::SendPublic0 {
+                receiver,
+                argument_base,
+                site,
+                ..
+            } => narrow(SendKind::Public, site, receiver, argument_base, 0),
+            CompactInstruction::SendPublic1 {
+                receiver,
+                argument_base,
+                site,
+                ..
+            } => narrow(SendKind::Public, site, receiver, argument_base, 1),
+            CompactInstruction::SendPublic2 {
+                receiver,
+                argument_base,
+                site,
+                ..
+            } => narrow(SendKind::Public, site, receiver, argument_base, 2),
+            CompactInstruction::SendLexical0 {
+                argument_base,
+                site,
+                ..
+            } => narrow(SendKind::Lexical, site, 0, argument_base, 0),
+            CompactInstruction::SendLexical1 {
+                argument_base,
+                site,
+                ..
+            } => narrow(SendKind::Lexical, site, 0, argument_base, 1),
+            CompactInstruction::SendLexical2 {
+                argument_base,
+                site,
+                ..
+            } => narrow(SendKind::Lexical, site, 0, argument_base, 2),
+            CompactInstruction::SendSuper0 {
+                argument_base,
+                site,
+                ..
+            } => narrow(SendKind::Super, site, 0, argument_base, 0),
+            CompactInstruction::SendSuper1 {
+                argument_base,
+                site,
+                ..
+            } => narrow(SendKind::Super, site, 0, argument_base, 1),
+            CompactInstruction::SendSuper2 {
+                argument_base,
+                site,
+                ..
+            } => narrow(SendKind::Super, site, 0, argument_base, 2),
+            CompactInstruction::SendPublicWide { site } => wide(SendKind::Public, site),
+            CompactInstruction::SendLexicalWide { site } => wide(SendKind::Lexical, site),
+            CompactInstruction::SendSuperWide { site } => wide(SendKind::Super, site),
+            _ => None,
+        }?;
+        let site = &self.send_sites[site];
+        let kind = match kind {
+            SendKind::Public => CachedSendKind::Public { receiver },
+            SendKind::Lexical => CachedSendKind::Lexical {
+                depth: site.depth(),
+            },
+            SendKind::Super => CachedSendKind::Super,
+            SendKind::Inlinable => return None,
+        };
+        Some(CachedSend {
+            kind,
+            selector: site.selector(),
+            call_site: site.call_site(),
+            argument_base,
+            argument_count,
+        })
+    }
+
+    /// Whether slot `index` holds a send of any kind, in either form, read
+    /// without decoding it.
+    pub(crate) fn is_send(&self, index: usize) -> bool {
+        match self.slots[index] {
+            CompactInstruction::SendPublic0 { .. }
+            | CompactInstruction::SendPublic1 { .. }
+            | CompactInstruction::SendPublic2 { .. }
+            | CompactInstruction::SendPublicWide { .. }
+            | CompactInstruction::SendInlinable0 { .. }
+            | CompactInstruction::SendInlinable1 { .. }
+            | CompactInstruction::SendInlinable2 { .. }
+            | CompactInstruction::SendInlinableWide { .. }
+            | CompactInstruction::SendLexical0 { .. }
+            | CompactInstruction::SendLexical1 { .. }
+            | CompactInstruction::SendLexical2 { .. }
+            | CompactInstruction::SendLexicalWide { .. }
+            | CompactInstruction::SendSuper0 { .. }
+            | CompactInstruction::SendSuper1 { .. }
+            | CompactInstruction::SendSuper2 { .. }
+            | CompactInstruction::SendSuperWide { .. }
+            | CompactInstruction::SendMirror { .. } => true,
+            CompactInstruction::Wide { index } => matches!(
+                self.wide[index as usize],
+                Instruction::SendPublic { .. }
+                    | Instruction::SendInlinable { .. }
+                    | Instruction::SendLexical { .. }
+                    | Instruction::SendSuper { .. }
+                    | Instruction::SendMirror { .. }
+            ),
+            _ => false,
+        }
     }
 
     /// The instruction a `Wide` slot names.

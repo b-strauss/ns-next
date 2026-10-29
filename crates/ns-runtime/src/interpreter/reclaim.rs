@@ -351,6 +351,9 @@ mod tests {
         drop(send_with(&mut interpreter, &instance, "run:", &[second]));
         interpreter.collect_now();
         assert_eq!(id_counts(&mut interpreter), counts);
+        interpreter.enter(|mutator| {
+            assert_eq!(mutator.heap.verify_application_ids(), Ok(()));
+        });
         // Between runs no activation is live, so the stack roots nothing.
         interpreter.enter(|mutator| {
             let stack = mutator.heap.stack_roots();
@@ -398,6 +401,34 @@ mod tests {
           )
         )
     "};
+
+    /// The application id table machine code reads
+    /// (`heap/application_ids.rs`) follows the application table through
+    /// registration, a collection's freeing of a hundred dead rows, the
+    /// trailing ones given back, and their minting again.
+    // `collect_now` is a debug build's.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_application_id_table_follows_the_application_table() {
+        let (mut interpreter, churn) = load(CHURN);
+        let verify = |interpreter: &mut Interpreter| {
+            interpreter.enter(|mutator| {
+                assert_eq!(mutator.heap.verify_application_ids(), Ok(()));
+            });
+        };
+        verify(&mut interpreter);
+        let instance = expect_ok(interpreter.instantiate(&churn, &[]), "a Churn");
+        let first = send(&mut interpreter, &instance, "First");
+        let second = send(&mut interpreter, &instance, "Second");
+        drop(send_with(&mut interpreter, &instance, "run:", &[first]));
+        verify(&mut interpreter);
+        interpreter.collect_now();
+        verify(&mut interpreter);
+        drop(send_with(&mut interpreter, &instance, "run:", &[second]));
+        verify(&mut interpreter);
+        interpreter.collect_now();
+        verify(&mut interpreter);
+    }
 
     /// An initializer whose class an install re-applied, keeping its
     /// slots, runs on at the level it was entered at across a later full
@@ -703,6 +734,67 @@ mod tests {
         interpreter.collect_now();
         let after_first_round = after_first_round.expect("the first round ran");
         assert!(table_counts(&mut interpreter).2 <= after_first_round);
+    }
+
+    /// Each round edits `count` anew, runs the new body compiled -- the
+    /// stress setting compiles it at its first entry -- and collects, which
+    /// lets the old body die and frees its code id for a later body. The
+    /// zone keeps no body alive and records no id a collection can free:
+    /// every installed body's return address answers that body, under the
+    /// id the heap has for it now, or nothing once it died -- never another
+    /// body, though ids are minted again.
+    #[cfg(all(ns_jit, debug_assertions))]
+    #[test]
+    fn a_return_address_never_names_a_body_that_took_a_freed_id() {
+        let (mut interpreter, outer) = load(OUTER);
+        interpreter.set_jit_enabled(true);
+        interpreter.set_jit_stress(true);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let id = id_of(&mut interpreter, &outer);
+        // Every body each id was answered for, by its allocation.
+        let mut bodies_by_id: std::collections::HashMap<crate::heap::CodeId, Vec<usize>> =
+            std::collections::HashMap::new();
+        let mut died = 0;
+        for round in 1..=20 {
+            install(
+                &mut interpreter,
+                id,
+                &add_method(&format!(
+                    "public count = ( | sum ::= 0. index ::= 0. | [index < {round}] whileTrue: [ sum:: sum + index. index:: index + 1 ]. ^sum + {round} )"
+                )),
+            );
+            let answer = send(&mut interpreter, &instance, "count");
+            assert_eq!(
+                integer(&mut interpreter, &answer),
+                Some(round * (round - 1) / 2 + round)
+            );
+            drop(answer);
+            interpreter.collect_now();
+            interpreter.enter(|mutator| {
+                for (return_address, body) in mutator.jit.installed_bodies_for_test() {
+                    let answered = mutator.jit.body_at(return_address, &mut mutator.heap);
+                    match (body, answered) {
+                        (Some(body), Some((code_id, _))) => {
+                            let named = mutator.heap.code(code_id).expect("a live row");
+                            assert!(Rc::ptr_eq(&named, &body), "its own body, no other");
+                            let allocation = Rc::as_ptr(&body) as usize;
+                            let seen = bodies_by_id.entry(code_id).or_default();
+                            if !seen.contains(&allocation) {
+                                seen.push(allocation);
+                            }
+                        }
+                        (None, None) => died += 1,
+                        (Some(_), None) => panic!("a live body's return address answers nothing"),
+                        (None, Some(_)) => panic!("a dead body's return address answers a body"),
+                    }
+                }
+            });
+        }
+        assert!(died > 0, "edited-away bodies die with their mixin");
+        assert!(
+            bodies_by_id.values().any(|bodies| bodies.len() > 1),
+            "some id was minted again for another body"
+        );
     }
 
     /// Every table a hundred edit-install-call-collect rounds could grow.

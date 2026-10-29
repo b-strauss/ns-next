@@ -102,6 +102,7 @@ pub(crate) fn forward_identity<'gc>(
     let (heap, mut roots) = split(mutator);
     let mut forwarder = heap.forward_identity(old, new)?;
     roots.trace(&mut forwarder);
+    mutator.rewrite_immediate_classes();
     mutator.caches.invalidate();
     Ok(())
 }
@@ -139,6 +140,7 @@ impl World {
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
                 jit: crate::jit::JitState::new(),
                 unhandled_exceptions_to_resume: 0,
+                last_unhandled_stack: Vec::new(),
                 depth_reserve: None,
                 taking_depth_reserve: false,
                 futures_made: false,
@@ -276,6 +278,7 @@ impl World {
             use crate::trace::Trace;
             roots.trace(scavenger);
         });
+        self.mutator.rewrite_immediate_classes();
         self.mutator.heap.record_scavenge(start.elapsed());
     }
 
@@ -295,6 +298,20 @@ impl World {
     #[cfg(debug_assertions)]
     pub(crate) fn verify_remembered_set(&self) {
         self.mutator.heap.verify_remembered_set();
+    }
+
+    /// Asserts that every inline-cache entry's cell agrees with it
+    /// (`InlineCaches::verify_cells`): the scavenge stress mode's check
+    /// beside the remembered set's.
+    #[cfg(debug_assertions)]
+    pub(crate) fn verify_cells(&self) {
+        if let Err(problem) = self
+            .mutator
+            .caches
+            .verify_cells(&self.mutator.heap, &self.mutator.jit)
+        {
+            panic!("internal: an inline-cache cell disagrees with its entry: {problem}");
+        }
     }
 
     /// Sets eden's occupied bytes at which an allocation asks for a
@@ -358,12 +375,57 @@ impl World {
         use crate::trace::Trace;
         let (_, mut roots) = split(&mut self.mutator);
         roots.trace(forwarder);
+        self.mutator.rewrite_immediate_classes();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(debug_assertions)]
+    use crate::heap::machine_words::MachineWord;
     use crate::types::Value;
+
+    /// The immediates' class words name the classes `class_of` answers
+    /// after each mover: a scavenge that tenures everything, a full
+    /// collection and the move stress mode's move.
+    // `collect_now` and `scavenge_now` are a debug build's.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn an_immediate_class_word_survives_a_compaction() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let check = |interpreter: &mut crate::Interpreter| {
+            interpreter.enter(|mutator| {
+                let immediates = [
+                    Value::nil(),
+                    Value::boolean(false),
+                    Value::boolean(true),
+                    Value::small_integer(1),
+                    Value::small_float(1.5),
+                ];
+                for (index, immediate) in immediates.into_iter().enumerate() {
+                    let class = mutator.class_of(immediate);
+                    let expected = mutator.heap().store(Value::object(class)).bits();
+                    assert_eq!(
+                        mutator
+                            .heap()
+                            .machine_word(MachineWord::ImmediateClass(index)),
+                        expected,
+                        "immediate {index}"
+                    );
+                }
+            });
+        };
+        check(&mut interpreter);
+        interpreter.collect_now();
+        check(&mut interpreter);
+        interpreter.scavenge_now();
+        check(&mut interpreter);
+        interpreter.enter(|mutator| {
+            let guard = mutator.heap().machine_word(MachineWord::ImmediateGuard(3));
+            let expected = mutator.heap().dispatch_id(Value::small_integer(1)).bits();
+            assert_eq!(guard, u64::from(expected));
+        });
+    }
 
     /// What the step state holds beside the heap is forwarded with it: the
     /// `platform` singleton, here, as every `StepRoots` field is.

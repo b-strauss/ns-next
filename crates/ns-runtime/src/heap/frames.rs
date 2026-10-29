@@ -10,6 +10,7 @@
 //! frame's words (`Heap::trace_stack`), so that the trace takes every word
 //! below the top as a value, with no stack map.
 
+use super::machine_words::{MachineWord, MachineWords};
 use super::space::reserve_falling_back;
 use super::{out_of_memory, Word};
 use ns_memory::{MemoryError, Reservation};
@@ -167,15 +168,17 @@ pub(super) mod kind_tag {
 
 /// Where each field of `FrameFlags` sits in the flags word's
 /// `SmallInteger`: the kind tag in bits 0-7, the argument count in bits
-/// 8-23, `counted` at 24, `retains_registers` at 25 and, in a debug build,
-/// the 31-bit generation in bits 26-56; 57 bits, inside 61.
+/// 8-23, `counted` at 24, `retains_registers` at 25, `compiled` at 26 and,
+/// in a debug build, the 31-bit generation in bits 27-57; 58 bits, inside
+/// 61.
 const KIND_TAG_MASK: u64 = 0xFF;
-const ARGUMENT_COUNT_SHIFT: u32 = 8;
+pub(crate) const ARGUMENT_COUNT_SHIFT: u32 = 8;
 const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
-const COUNTED_BIT: u64 = 1 << 24;
+pub(crate) const COUNTED_BIT: u64 = 1 << 24;
 const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
+pub(crate) const COMPILED_BIT: u64 = 1 << 26;
 #[cfg(debug_assertions)]
-const GENERATION_SHIFT: u32 = 26;
+pub(crate) const GENERATION_SHIFT: u32 = 27;
 #[cfg(debug_assertions)]
 const GENERATION_MASK: u64 = 0x7FFF_FFFF;
 /// The bits below a `SmallInteger`'s payload.
@@ -197,6 +200,15 @@ pub(super) struct FrameFlags {
     /// Whether a frame object married to the activation keeps its
     /// registers when the activation returns.
     pub(super) retains_registers: bool,
+    /// Whether the frame stopped in machine code: its body's machine code
+    /// called the frame above it, which an exit materialized
+    /// (`jit::materialize`), so that the run loop resumes it in machine
+    /// code when it is returned to (`vm::resume_caller`). Cleared whenever
+    /// the frame goes on interpreted instead: the innermost frame an exit
+    /// leaves, and one the loop does not resume in machine code. A baseline
+    /// frame's words are the interpreter's, so clearing the bit is the
+    /// whole conversion to an interpreted frame.
+    pub(super) compiled: bool,
     /// The activation's generation, which a debug build checks every
     /// `ActivationReference` against; 31 bits.
     #[cfg(debug_assertions)]
@@ -219,6 +231,7 @@ impl FrameFlags {
             argument_count,
             counted,
             retains_registers,
+            compiled: false,
             #[cfg(debug_assertions)]
             generation: 0,
         }
@@ -247,6 +260,9 @@ impl FrameFlags {
         if self.retains_registers {
             payload |= RETAINS_REGISTERS_BIT;
         }
+        if self.compiled {
+            payload |= COMPILED_BIT;
+        }
         #[cfg(debug_assertions)]
         {
             payload |= (u64::from(self.generation) & GENERATION_MASK) << GENERATION_SHIFT;
@@ -264,6 +280,7 @@ impl FrameFlags {
             argument_count: ((payload >> ARGUMENT_COUNT_SHIFT) & ARGUMENT_COUNT_MASK) as u16,
             counted: payload & COUNTED_BIT != 0,
             retains_registers: payload & RETAINS_REGISTERS_BIT != 0,
+            compiled: payload & COMPILED_BIT != 0,
             #[cfg(debug_assertions)]
             generation: ((payload >> GENERATION_SHIFT) & GENERATION_MASK) as u32,
         }
@@ -426,13 +443,19 @@ pub(super) struct FrameStack {
     /// of the hot path also refuses a frame that would use the reserve,
     /// though a reserved push has committed past it.
     ordinary_end: usize,
+    /// The machine words, whose `OrdinaryStackEnd` mirrors `ordinary_end`
+    /// for machine code (`set_ordinary_end`).
+    machine_words: MachineWords,
 }
 
 impl FrameStack {
     /// Reserves `reservation_bytes` of address space -- less when the
     /// operating system refuses that much, falling back as the object
     /// space does -- committing none of it.
-    pub(super) fn new(reservation_bytes: usize) -> Result<FrameStack, MemoryError> {
+    pub(super) fn new(
+        reservation_bytes: usize,
+        machine_words: MachineWords,
+    ) -> Result<FrameStack, MemoryError> {
         let reservation = reserve_falling_back(reservation_bytes, Reservation::reserve)?;
         let limit = reservation.size() / 8;
         debug_assert!(
@@ -446,7 +469,23 @@ impl FrameStack {
             limit,
             ordinary_limit: limit - limit / RESERVE_FRACTION,
             ordinary_end: 0,
+            machine_words,
         })
+    }
+
+    /// Sets `ordinary_end` and the machine word that mirrors it: the one
+    /// writer of both, so that machine code compares an end the hot path
+    /// of Rust also sees.
+    fn set_ordinary_end(&mut self, end: usize) {
+        self.ordinary_end = end;
+        self.machine_words
+            .set(MachineWord::OrdinaryStackEnd, end as u64);
+    }
+
+    /// `ordinary_end`, for a test that holds it to its machine word.
+    #[cfg(test)]
+    pub(super) fn ordinary_end(&self) -> usize {
+        self.ordinary_end
     }
 
     /// The first word past the innermost frame.
@@ -634,7 +673,7 @@ impl FrameStack {
             out_of_memory(needed_bytes - committed_bytes)
         };
         self.committed = self.committed.max(end / 8);
-        self.ordinary_end = self.committed.min(self.ordinary_limit);
+        self.set_ordinary_end(self.committed.min(self.ordinary_limit));
         Ok(())
     }
 
@@ -700,6 +739,40 @@ impl FrameStack {
         }
     }
 
+    /// How many words of the stack are committed.
+    #[cfg(ns_jit)]
+    pub(super) fn committed_words(&self) -> usize {
+        self.committed
+    }
+
+    /// Word `index` of the committed stack, whatever the top: a word of a
+    /// frame machine code pushed, which the stack's top does not cover
+    /// until an exit materializes the frame (`jit::materialize`).
+    #[cfg(ns_jit)]
+    pub(super) fn committed_word(&self, index: usize) -> u64 {
+        self.reservation.accessible()[index]
+    }
+
+    /// Writes word `index` of the committed stack, whatever the top, as
+    /// `committed_word` reads it.
+    #[cfg(ns_jit)]
+    pub(super) fn set_committed_word(&mut self, index: usize, bits: u64) {
+        self.reservation.accessible_mut()[index] = bits;
+    }
+
+    /// Sets the top to `top`, above or below it, inside the committed
+    /// stack: an exit's materialization of the frames machine code pushed
+    /// past it (`jit::materialize`), and a leaf's view of its own frame
+    /// (`Heap::with_machine_frame`).
+    #[cfg(ns_jit)]
+    pub(super) fn set_top(&mut self, top: usize) {
+        debug_assert!(
+            top <= self.committed,
+            "internal: the top lies inside the committed stack"
+        );
+        self.top = top;
+    }
+
     /// Writes word `index` of a live frame, as `word` reads it.
     #[inline(always)]
     pub(super) fn set_word(&mut self, index: usize, bits: u64) {
@@ -747,14 +820,19 @@ mod tests {
         for kind_tag in ALL_KIND_TAGS {
             for argument_count in [0, 1, u16::MAX] {
                 for counted in [false, true] {
-                    for retains_registers in [false, true] {
+                    for (retains_registers, compiled) in
+                        [(false, false), (true, false), (false, true), (true, true)]
+                    {
                         for generation in GENERATIONS {
-                            let flags = FrameFlags::new(
-                                kind_tag,
-                                argument_count,
-                                counted,
-                                retains_registers,
-                            );
+                            let flags = FrameFlags {
+                                compiled,
+                                ..FrameFlags::new(
+                                    kind_tag,
+                                    argument_count,
+                                    counted,
+                                    retains_registers,
+                                )
+                            };
                             #[cfg(debug_assertions)]
                             let flags = flags.with_generation(generation);
                             let _ = generation;
@@ -787,12 +865,19 @@ mod tests {
             payload(FrameFlags::new(kind_tag::METHOD, 0, false, true)),
             1 << 25
         );
+        assert_eq!(
+            payload(FrameFlags {
+                compiled: true,
+                ..FrameFlags::new(kind_tag::METHOD, 0, false, false)
+            }),
+            1 << 26
+        );
         #[cfg(debug_assertions)]
         assert_eq!(
             payload(
                 FrameFlags::new(kind_tag::METHOD, 0, false, false).with_generation(0x7FFF_FFFF)
             ),
-            0x7FFF_FFFF << 26
+            0x7FFF_FFFF << 27
         );
     }
 
@@ -842,7 +927,7 @@ mod tests {
 
     #[test]
     fn the_stack_reservation_is_reserved_and_commits_nothing_until_a_push() {
-        let stack = FrameStack::new(STACK_RESERVATION).expect("reserve");
+        let stack = FrameStack::new(STACK_RESERVATION, MachineWords::new()).expect("reserve");
         assert!(stack.limit() > 0);
         assert_eq!(stack.top(), 0);
         assert!(stack.words().is_empty());
@@ -850,7 +935,7 @@ mod tests {
 
     #[test]
     fn a_push_past_the_committed_end_commits_the_words_it_answers() {
-        let mut stack = FrameStack::new(1 << 20).expect("reserve");
+        let mut stack = FrameStack::new(1 << 20, MachineWords::new()).expect("reserve");
         let frame_words = usize::from(u16::MAX) + frame_header::COUNT;
         assert!(frame_words * 8 > Reservation::page_size());
         let before = stack.top();
@@ -863,7 +948,7 @@ mod tests {
 
     #[test]
     fn a_push_the_reservation_cannot_hold_is_refused_and_leaves_the_top() {
-        let mut stack = FrameStack::new(64 << 10).expect("reserve");
+        let mut stack = FrameStack::new(64 << 10, MachineWords::new()).expect("reserve");
         let frame_words = frame_header::COUNT + 100;
         let mut pushed = 0;
         loop {
@@ -887,7 +972,7 @@ mod tests {
 
     #[test]
     fn a_reserved_push_may_use_the_room_an_ordinary_push_leaves() {
-        let mut stack = FrameStack::new(64 << 10).expect("reserve");
+        let mut stack = FrameStack::new(64 << 10, MachineWords::new()).expect("reserve");
         let frame_words = frame_header::COUNT + 100;
         while stack.push(frame_words).is_ok() {}
         let ordinary_top = stack.top();
@@ -921,7 +1006,7 @@ mod tests {
 
     #[test]
     fn lowering_the_top_then_pushing_reuses_the_offset() {
-        let mut stack = FrameStack::new(1 << 20).expect("reserve");
+        let mut stack = FrameStack::new(1 << 20, MachineWords::new()).expect("reserve");
         let frame_words = frame_header::COUNT + 4;
         stack.push(frame_words).expect("push");
         let (offset, _, _) = stack.push(frame_words).expect("push");

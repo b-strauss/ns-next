@@ -95,7 +95,7 @@ pub struct Memory {
 ///   compares zero with zero, clearing V, and otherwise sets the flags
 ///   to V alone. So the contract holds as x64's `imul` sets it, and the
 ///   operation needs no other condition.
-/// - **Clobbers**, the flags undefined afterwards: `and_immediate`,
+/// - **Clobbers**, the flags undefined afterwards: `and`, `and_immediate`,
 ///   `or_immediate`, `shift_left`, `shift_right_arithmetic` -- x64's
 ///   instructions set the flags, AArch64's plain `and`, `orr`, `lsl` and
 ///   `asr` keep them, so neither may be relied on -- `divide_signed`,
@@ -103,7 +103,7 @@ pub struct Memory {
 ///   may do anything.
 /// - **Keeps**: every other operation -- `move_register`, `move_if`,
 ///   `move_immediate`, `load`, `store`, `store_immediate32`, `push`, `pop`,
-///   `add_stack`, `jump`, `jump_if`, `jump_register`, `return_` and `trap` -- so a compare
+///   `add_stack`, `load_code_address`, `jump`, `jump_if`, `jump_register`, `return_` and `trap` -- so a compare
 ///   may be separated from its branch by moves, loads and stores.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Condition {
@@ -195,6 +195,8 @@ pub enum Operation {
         remainder: Register,
         divisor: Register,
     },
+    /// `target := target & source`.
+    And { target: Register, source: Register },
     /// `target := target & value` sign-extended.
     AndImmediate { target: Register, value: i32 },
     /// `target := target | value` sign-extended.
@@ -221,6 +223,10 @@ pub enum Operation {
     Pop { target: Register },
     /// Adds `amount` bytes to the stack pointer, keeping the flags.
     AddStack { amount: i32 },
+    /// `target :=` the address of the operation that follows this one:
+    /// an address inside the code, which needs no relocation wherever the
+    /// code is placed.
+    LoadCodeAddress { target: Register },
     /// Returns to the caller.
     Return,
     /// Stops the program with an illegal-instruction fault.
@@ -513,6 +519,11 @@ impl<E: Encoder> Assembler<E> {
         });
     }
 
+    /// `target := target & source`. Clobbers the flags.
+    pub fn and(&mut self, target: Register, source: Register) {
+        self.emit(Operation::And { target, source });
+    }
+
     /// `target := target & value` sign-extended. Clobbers the flags.
     pub fn and_immediate(&mut self, target: Register, value: i32) {
         self.emit(Operation::AndImmediate { target, value });
@@ -596,6 +607,13 @@ impl<E: Encoder> Assembler<E> {
     /// frame may be released between a compare and its branch.
     pub fn add_stack(&mut self, amount: i32) {
         self.emit(Operation::AddStack { amount });
+    }
+
+    /// `target :=` the address of the operation emitted next: an address
+    /// inside this code, wherever it is placed, so that what is handed it
+    /// can tell which code it came from. Keeps the flags.
+    pub fn load_code_address(&mut self, target: Register) {
+        self.emit(Operation::LoadCodeAddress { target });
     }
 
     /// Returns to the caller. Keeps the flags.

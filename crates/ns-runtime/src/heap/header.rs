@@ -13,7 +13,7 @@ use crate::mixin::DispatchId;
 /// One past the widest identity hash: the header word holds 22 bits of it.
 pub(crate) const IDENTITY_HASH_LIMIT: u32 = 1 << 22;
 
-const GUARD_MASK: u64 = (1 << 22) - 1;
+pub(super) const GUARD_MASK: u64 = (1 << 22) - 1;
 const FORMAT_SHIFT: u32 = 22;
 const FORMAT_MASK: u64 = 0b1_1111;
 const AGE_SHIFT: u32 = 27;
@@ -26,7 +26,10 @@ const NEGATIVE_BIT: u64 = 1 << 32;
 const MARK_BIT: u64 = 1 << 33;
 const HASH_SHIFT: u32 = 34;
 const HASH_MASK: u64 = (IDENTITY_HASH_LIMIT as u64) - 1;
-const WORD_COUNT_SHIFT: u32 = 56;
+pub(super) const WORD_COUNT_SHIFT: u32 = 56;
+/// The header bits that hold the format, all clear exactly for an
+/// instance's (`Format::FixedPointers`), for machine code's test of one.
+pub(super) const FORMAT_BITS: u64 = FORMAT_MASK << FORMAT_SHIFT;
 /// The word count that says the count is in an overflow word.
 pub(super) const WORD_COUNT_OVERFLOW: usize = 255;
 

@@ -288,6 +288,10 @@ fn register_arithmetic() {
                 format!("imul {left},{right}")
             );
             assert_eq!(
+                text(|assembler| assembler.and(target, source)),
+                format!("and {left},{right}")
+            );
+            assert_eq!(
                 text(|assembler| assembler.compare(target, source)),
                 format!("cmp {left},{right}")
             );
@@ -392,6 +396,13 @@ fn calls_and_the_stack() {
                     displacement: amount
                 })
             )
+        );
+    }
+    for register in registers() {
+        // Seven bytes from address 0: the next instruction is at 7.
+        assert_eq!(
+            text(|assembler| assembler.load_code_address(register)),
+            format!("lea {},[7]", name(register))
         );
     }
     assert_eq!(text(Assembler::return_), "ret");

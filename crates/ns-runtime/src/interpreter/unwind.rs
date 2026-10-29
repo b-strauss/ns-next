@@ -452,7 +452,8 @@ fn start_signalling<'gc>(
     let sender = mutator.heap.top_activation();
     let taking = taking && sender.is_some();
     if let (true, Some(top)) = (taking, sender) {
-        mutator.depth_reserve = Some(mutator.heap.reify(top));
+        let frame = mutator.heap.reify(top);
+        mutator.set_depth_reserve(Some(frame));
         mutator.taking_depth_reserve = true;
     }
     let pushed = mutator.push_step(step, Arguments::NONE, sender, false);
@@ -467,7 +468,7 @@ fn start_signalling<'gc>(
         }
         Err(_) => {
             if taking {
-                mutator.depth_reserve = None;
+                mutator.set_depth_reserve(None);
             }
             let pending = PendingUnwind {
                 target: None,
@@ -882,12 +883,21 @@ mod tests {
                 .heap
                 .push_activation(header(class), Arguments::NONE, 1)
                 .expect("the stack holds the frame");
-            mutator.depth_reserve = Some(mutator.heap.reify(raised));
+            let frame = mutator.heap.reify(raised);
+            mutator.set_depth_reserve(Some(frame));
             let signal = mutator
                 .heap
                 .push_activation(signalling(class), Arguments::NONE, 1)
                 .expect("the stack holds the frame");
             assert!(mutator.depth_reserve_held(), "held while its signal runs");
+            assert_eq!(
+                mutator
+                    .heap
+                    .machine_word(crate::heap::machine_words::MachineWord::DepthLimit),
+                (crate::interpreter::MAX_ACTIVATION_DEPTH + crate::interpreter::DEPTH_RESERVE)
+                    as u64,
+                "the limit word allows the reserve while it is held"
+            );
             let signal_position = mutator.heap.activation_position(signal);
             mutator.heap.pop_activation(signal);
             mutator.heap.pop_activation(raised);
@@ -909,8 +919,60 @@ mod tests {
                 "the second signal must not inherit the reserve"
             );
             assert!(mutator.depth_reserve.is_none(), "and it is released");
+            assert_eq!(
+                mutator
+                    .heap
+                    .machine_word(crate::heap::machine_words::MachineWord::DepthLimit),
+                crate::interpreter::MAX_ACTIVATION_DEPTH as u64,
+                "the limit word is the limit again"
+            );
             mutator.heap.pop_activation(other_signal);
             mutator.heap.pop_activation(other);
+        });
+    }
+
+    /// The unwind that pops a `signal` which took the reserve gives the
+    /// reserve back at that pop: the limit word is the limit again before
+    /// anything asks whether the reserve is held.
+    #[test]
+    fn the_limit_word_is_exact_right_after_the_signals_pop() {
+        use crate::heap::machine_words::MachineWord;
+        let limit = |mutator: &crate::interpreter::Mutator| {
+            mutator.heap.machine_word(MachineWord::DepthLimit)
+        };
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(BuiltinClass::Object);
+            let error = NewspeakError::error(crate::Symbol::SIGNAL, Value::nil(), "boom");
+            let raised = mutator
+                .heap
+                .push_activation(header(class), Arguments::NONE, 1)
+                .expect("the stack holds the frame");
+            let frame = mutator.heap.reify(raised);
+            mutator.set_depth_reserve(Some(frame));
+            let signal = mutator
+                .heap
+                .push_activation(
+                    ActivationHeader {
+                        then: Continuation::VmErrorSignalled(Box::new(error)),
+                        ..header(class)
+                    },
+                    Arguments::NONE,
+                    1,
+                )
+                .expect("the stack holds the frame");
+            assert_eq!(
+                limit(mutator),
+                (crate::interpreter::MAX_ACTIVATION_DEPTH + crate::interpreter::DEPTH_RESERVE)
+                    as u64
+            );
+            mutator.pop_for_unwind(signal);
+            assert_eq!(
+                limit(mutator),
+                crate::interpreter::MAX_ACTIVATION_DEPTH as u64
+            );
+            assert!(mutator.depth_reserve.is_none());
+            mutator.heap.pop_activation(raised);
         });
     }
 
@@ -931,7 +993,7 @@ mod tests {
                 .push_activation(header(class), Arguments::NONE, 1)
                 .expect("the stack holds the frame");
             let raised_frame = mutator.heap.reify(raised);
-            mutator.depth_reserve = Some(raised_frame);
+            mutator.set_depth_reserve(Some(raised_frame));
             let signalling = ActivationHeader {
                 then: Continuation::VmErrorSignalled(Box::new(error())),
                 ..header(class)

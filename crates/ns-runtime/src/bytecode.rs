@@ -14,11 +14,11 @@ use crate::Symbol;
 mod compact;
 pub(crate) mod leftovers;
 
-pub(crate) use compact::CreatedBlock;
 pub use compact::{
     BlockSite, CodeBuilder, CompactInstruction, Emitted, EncodedBody, MirrorSite, SendSite,
     SuperclassSite, WideSend,
 };
+pub(crate) use compact::{CachedSend, CachedSendKind, CreatedBlock};
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal` that
 /// keeps only what execution needs. Int/float text is parsed once at compile
@@ -864,6 +864,18 @@ impl CompiledCode {
 
     pub(crate) fn slot(&self, index: usize) -> CompactInstruction {
         self.body.slot(index)
+    }
+
+    /// The cached send at `index`, read without decoding it
+    /// (`compact::EncodedBody::cached_send`).
+    pub(crate) fn cached_send(&self, index: usize) -> Option<CachedSend> {
+        self.body.cached_send(index)
+    }
+
+    /// Whether the instruction at `index` is a send of any kind, read
+    /// without decoding it (`compact::EncodedBody::is_send`).
+    pub(crate) fn is_send(&self, index: usize) -> bool {
+        self.body.is_send(index)
     }
 
     /// Whether the instruction at `index` is stored in a wide form -- a

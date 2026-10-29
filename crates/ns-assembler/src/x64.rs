@@ -276,6 +276,11 @@ const SIGNED_DIVIDE: [u8; 1] = [0xF7];
 /// Intel SDM Vol. 2A, IDIV—Signed Divide.
 const SIGNED_DIVIDE_EXTENSION: u8 = 7;
 
+/// `AND r/m64, r64` (`21 /r`) — AND a register into a register.
+///
+/// Intel SDM Vol. 2A, AND—Logical AND.
+const AND_REGISTER_TO_RM: [u8; 1] = [0x21];
+
 /// `SUB r/m64, r64` (`29 /r`) — subtract a register from a register.
 ///
 /// Intel SDM Vol. 2B, SUB—Subtract.
@@ -396,6 +401,13 @@ const POP_REGISTER_BASE: u8 = 0x58;
 ///
 /// Intel SDM Vol. 2A, LEA—Load Effective Address.
 const LOAD_EFFECTIVE_ADDRESS: [u8; 1] = [0x8D];
+
+/// The ModRM `r/m` field that, in mode 0 in 64-bit mode, addresses the
+/// instruction pointer of the next instruction plus a 32-bit displacement:
+/// RIP-relative addressing, which takes the place of mode 0's "no base".
+///
+/// Intel SDM Vol. 2A, 2.2.1.6 RIP-Relative Addressing.
+const RIP_RELATIVE: u8 = 0b101;
 
 /// `RET` (`C3`) — near return.
 ///
@@ -783,6 +795,9 @@ impl Encoder for X64 {
                 code.extend_from_slice(&SIGNED_DIVIDE);
                 code.push(modrm(MODRM_MODE_REGISTER, SIGNED_DIVIDE_EXTENSION, divisor));
             }
+            Operation::And { target, source } => {
+                register_register(code, &AND_REGISTER_TO_RM, source, target);
+            }
             Operation::AndImmediate { target, value } => {
                 immediate_group(code, GROUP_ONE_AND, target, value);
             }
@@ -842,6 +857,15 @@ impl Encoder for X64 {
                     number(RSP),
                     stack,
                 );
+            }
+            Operation::LoadCodeAddress { target } => {
+                // `lea target, [rip + 0]`: the displacement counts from the
+                // end of this instruction, so 0 names the next one.
+                let target = number(target);
+                rex(code, true, target, 0, false);
+                code.extend_from_slice(&LOAD_EFFECTIVE_ADDRESS);
+                code.push(modrm(MODRM_MODE_NO_DISPLACEMENT, target, RIP_RELATIVE));
+                code.extend_from_slice(&0i32.to_le_bytes());
             }
             Operation::Return => code.push(RETURN_NEAR),
             Operation::Trap => code.extend_from_slice(&UNDEFINED_INSTRUCTION),

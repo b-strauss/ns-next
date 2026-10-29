@@ -8,17 +8,21 @@
 //! on a `Resolved` rebuilt from an entry, so it can do nothing a miss would
 //! not (`resolve.rs`).
 
+pub(crate) mod cells;
+
 use super::Arguments;
 use std::collections::BTreeSet;
 use std::hash::BuildHasher;
 use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
+use crate::bytecode::{CachedSend, CachedSendKind};
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
 use crate::dispatch::{self, LexicalOrigin};
 use crate::hash::IdentityMap;
 use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
+use crate::jit::{self, JitState};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
@@ -26,6 +30,7 @@ use crate::Symbol;
 use super::resolve::{Chain, Resolved};
 use super::sends::{decide_lexical_send, decide_super_send};
 use super::{Mutator, Signal, Step};
+use cells::{Cell, Cells, ChainStart, GlobalRow, VACANT_GUARD};
 
 /// Where an activation's code family starts in its heap's cache table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +243,10 @@ pub(crate) struct InlineCaches {
     /// Ranges of `sites` whose family died, served first by `fresh_range`.
     free_ranges: FreeRanges,
     global: GlobalCache,
+    /// Every entry's machine-readable cell -- the sites', the blocks' and
+    /// the global cache's -- in a reservation of its own (`cells.rs`),
+    /// written wherever the entry is.
+    cells: Cells,
     /// The last receiver guard a private or super slot accessor's cold
     /// check found to have a level, with that level
     /// (`Mutator::slot_level_holds`): a verification the check made, not a
@@ -271,12 +280,15 @@ struct Family {
 
 impl InlineCaches {
     pub(crate) fn new() -> InlineCaches {
+        let mut cells = Cells::new();
+        cells.vacate_global_rows(0..GLOBAL_CACHE_ENTRIES);
         InlineCaches {
             sites: Vec::new(),
             pool: Vec::new(),
             free_blocks: Vec::new(),
             free_ranges: FreeRanges::default(),
             global: GlobalCache::with_groups(GLOBAL_CACHE_ENTRIES / 2),
+            cells,
             verified_slot_level: None,
             families: IdentityMap::default(),
         }
@@ -329,6 +341,7 @@ impl InlineCaches {
             pool,
             free_blocks,
             free_ranges,
+            cells,
             ..
         } = self;
         for (base, size) in freed {
@@ -338,15 +351,18 @@ impl InlineCaches {
             if size == 0 || base == FeedbackBase::NOT_ASSIGNED {
                 continue;
             }
-            for entry in &mut sites[base.index()..][..size as usize] {
+            let range = base.index()..base.index() + size as usize;
+            for entry in &mut sites[range.clone()] {
                 if let Target::Polymorphic { block, .. } = entry.target {
                     if let Some(slots) = pool.get_mut(block as usize) {
                         *slots = CacheEntry::vacant_block();
+                        cells.vacate_blocks(block as usize..block as usize + 1);
                         free_blocks.push(block);
                     }
                 }
                 *entry = CacheEntry::vacant();
             }
+            cells.vacate_sites(range);
             free_ranges.free(base.raw(), size);
         }
         let mut end = u32::try_from(sites.len()).expect("the site table fits a u32");
@@ -358,7 +374,8 @@ impl InlineCaches {
 
     /// A range of `size` sites: the first free one that fits, else a new one
     /// at the end of the table. `NOT_ASSIGNED` if the table cannot grow that
-    /// far, which leaves every site of the family uncached.
+    /// far -- past `cells::MAXIMUM_SITES`, the sites its cells have room
+    /// for -- which leaves every site of the family uncached.
     pub(crate) fn fresh_range(&mut self, size: u32) -> FeedbackBase {
         if let Some(start) = self.free_ranges.take_first_fit(size) {
             return FeedbackBase(start);
@@ -366,10 +383,12 @@ impl InlineCaches {
         let start = self.sites.len();
         match start
             .checked_add(size as usize)
+            .filter(|end| *end <= cells::MAXIMUM_SITES)
             .and_then(|end| u32::try_from(end).ok())
         {
             Some(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
                 self.sites.resize(end as usize, CacheEntry::vacant());
+                self.cells.vacate_sites(start..end as usize);
                 // `end` fits 32 bits, and `start` lies `size` below it.
                 FeedbackBase(end - size)
             }
@@ -398,13 +417,158 @@ impl InlineCaches {
         self.sites.len()
     }
 
+    /// The address of site 0's cell, which machine code finds a send's
+    /// cell from (`jit::stubs::BlockWord::Cells`): fixed for the
+    /// reservation's life.
+    pub(crate) fn site_cells_address(&self) -> usize {
+        self.cells.site_address(0)
+    }
+
+    /// The slot accessor whose site's own cell lies at `cell_address`, when
+    /// the site's entry records one: the cell machine code's send hit,
+    /// which the leaf stub hands its leaf. A cell copies its entry and the
+    /// two are written together, so the hit on the site's own cell is a
+    /// hit on this entry, for this key; a hit on a block's cell or a
+    /// global row answers `None`, and the leaf decides the send as the
+    /// interpreter's cached send does.
+    pub(crate) fn site_slot_hit<'gc>(&self, cell_address: u64) -> Option<Resolved<'gc>> {
+        let index = self.cells.site_of_cell(cell_address)?;
+        match self.sites.get(index)?.target {
+            Target::Slot {
+                field,
+                kind,
+                chain,
+                level,
+                recorded_guard,
+            } => Some(Resolved::Slot {
+                kind,
+                field: field as usize,
+                chain,
+                level,
+                recorded_guard,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The address of polymorphic block 0's cells, which the polymorphic
+    /// stub finds a site's block from (`jit::stubs::BlockWord::PolymorphicBlocks`).
+    pub(crate) fn block_cells_address(&self) -> usize {
+        self.cells.block_address(0)
+    }
+
+    /// The address of the global cache's mirror, which the megamorphic
+    /// stub probes (`jit::stubs::BlockWord::GlobalRows`).
+    pub(crate) fn global_rows_address(&self) -> usize {
+        self.cells.global_address()
+    }
+
+    /// The global cache's group mask (`GlobalCache::group`), which the
+    /// megamorphic stub hashes a key with (`jit::stubs::BlockWord::GlobalMask`).
+    pub(crate) fn global_mask(&self) -> u64 {
+        self.global.mask as u64
+    }
+
+    /// Writes afresh from their entries the cells through which machine
+    /// code found the decision the miss leaf just made for `guard` at site
+    /// `index` (`decide_at`): the site's own, the slot of its polymorphic
+    /// block that holds `guard`, and, when `rule` names the key the global
+    /// cache files it under, the mirror's row of that key. Each cell copies
+    /// what its entry records, its entry address from the JIT's state,
+    /// which the miss leaf found changed -- a body compiled since the
+    /// entry was filled, or found never to be compiled -- so that the
+    /// site's next send calls the body directly, or exits at once, from the
+    /// site's cell, the polymorphic stub's scan or the megamorphic stub's
+    /// probe alike.
+    fn refresh_cells(
+        &mut self,
+        index: usize,
+        guard: DispatchId,
+        global_key: Option<(Symbol, CacheRule)>,
+        jit: &JitState,
+    ) {
+        let Some(entry) = self.sites.get(index) else {
+            return;
+        };
+        match entry.target {
+            Target::Vacant | Target::Megamorphic { .. } => {}
+            Target::Polymorphic { block, .. } => {
+                let slot = self.pool.get(block as usize).and_then(|slots| {
+                    slots
+                        .iter()
+                        .position(|slot| slot.guard == guard)
+                        .map(|position| (position, jit::cell_entry(jit, &slots[position].target)))
+                });
+                if let Some((position, address)) = slot {
+                    let cell = Cell {
+                        entry: address,
+                        ..self.cells.block_cell(block, position)
+                    };
+                    self.cells.write_block_cell(block, position, cell);
+                }
+            }
+            _ if entry.guard == guard => {
+                let cell = Cell {
+                    entry: jit::cell_entry(jit, &entry.target),
+                    ..self.cells.site(index)
+                };
+                self.cells.write_site(index, cell);
+            }
+            _ => {}
+        }
+        if let Some((selector, rule)) = global_key {
+            self.global
+                .refresh(&mut self.cells, guard, selector, rule, jit);
+        }
+    }
+
+    /// Writes afresh from its entry every cell whose entry address is
+    /// `address`, its entry address from the JIT's state: a site's own, a
+    /// polymorphic block's, a global row. The JIT abandoned the body whose
+    /// machine entry `address` is (`jit::abandon`), so that a cell of an
+    /// entry for its method now names the stub that refuses the call
+    /// instead.
+    pub(crate) fn refresh_cells_entering(&mut self, address: u64, jit: &JitState) {
+        for (index, entry) in self.sites.iter().enumerate() {
+            let cell = self.cells.site(index);
+            if cell.entry == address {
+                let entry = jit::cell_entry(jit, &entry.target);
+                self.cells.write_site(index, Cell { entry, ..cell });
+            }
+        }
+        for (block, slots) in (0..).zip(&self.pool) {
+            for (position, slot) in slots.iter().enumerate() {
+                let cell = self.cells.block_cell(block, position);
+                if cell.entry == address {
+                    let entry = jit::cell_entry(jit, &slot.target);
+                    self.cells
+                        .write_block_cell(block, position, Cell { entry, ..cell });
+                }
+            }
+        }
+        self.global.refresh_entering(&mut self.cells, address, jit);
+    }
+
     /// Moves site `index` on after a miss found `target` for `guard`
     /// (`docs/design/dispatch.md`, "A site's states"): vacant to
     /// monomorphic, monomorphic to a polymorphic block of four in the order
     /// first seen, a full block to megamorphic, which stays so -- Strongtalk's
     /// and V8's transitions. A site whose §5.9 decision differs from
     /// `private` is left alone: only a crafted image makes one.
-    fn advance(&mut self, index: usize, guard: DispatchId, target: Target, private: bool) {
+    ///
+    /// `cell` is the new entry's cell, which the caller computes from the
+    /// send's key and `jit::cell_entry` (`cell_for`); it is written beside
+    /// the entry wherever the entry lands, and the site's own cell follows
+    /// the site's state, its entry address from `jit`.
+    fn advance(
+        &mut self,
+        index: usize,
+        guard: DispatchId,
+        target: Target,
+        private: bool,
+        cell: Cell,
+        jit: &JitState,
+    ) {
         let Some(entry) = self.sites.get_mut(index) else {
             return;
         };
@@ -416,7 +580,10 @@ impl InlineCaches {
             return;
         }
         match entry.target {
-            Target::Vacant => *entry = CacheEntry { guard, target },
+            Target::Vacant => {
+                *entry = CacheEntry { guard, target };
+                self.cells.write_site(index, cell);
+            }
             Target::Megamorphic { .. } => {}
             Target::Polymorphic { block, .. } => {
                 let Some(slots) = self.pool.get_mut(block as usize) else {
@@ -426,41 +593,62 @@ impl InlineCaches {
                 // be materialized for this receiver; the fresh answer
                 // replaces it rather than taking a second slot.
                 if let Some(slot) = slots
-                    .iter_mut()
-                    .find(|slot| slot.guard == guard || matches!(slot.target, Target::Vacant))
+                    .iter()
+                    .position(|slot| slot.guard == guard || matches!(slot.target, Target::Vacant))
                 {
-                    *slot = CacheEntry { guard, target };
+                    slots[slot] = CacheEntry { guard, target };
+                    self.cells.write_block_cell(block, slot, cell);
                     return;
                 }
                 *slots = CacheEntry::vacant_block();
+                self.cells.vacate_blocks(block as usize..block as usize + 1);
                 self.free_blocks.push(block);
+                let megamorphic = Target::Megamorphic { private };
+                self.cells
+                    .write_site(index, site_state_cell(jit, &megamorphic, cell.chain_start));
                 *entry = CacheEntry {
                     guard: DispatchId::VACANT,
-                    target: Target::Megamorphic { private },
+                    target: megamorphic,
                 };
             }
-            _ if entry.guard == guard => *entry = CacheEntry { guard, target },
+            _ if entry.guard == guard => {
+                *entry = CacheEntry { guard, target };
+                self.cells.write_site(index, cell);
+            }
             _ => {
                 let block = match self.free_blocks.pop() {
                     Some(block) => block,
                     None => match u32::try_from(self.pool.len()) {
-                        Ok(block) => {
+                        Ok(block) if self.pool.len() < cells::MAXIMUM_BLOCKS => {
                             self.pool.push(CacheEntry::vacant_block());
+                            self.cells.vacate_blocks(block as usize..block as usize + 1);
                             block
                         }
-                        Err(_) => return,
+                        _ => return,
                     },
                 };
+                let polymorphic = Target::Polymorphic { block, private };
+                let site_cell = site_state_cell(jit, &polymorphic, cell.chain_start);
                 let first = std::mem::replace(
                     entry,
                     CacheEntry {
                         guard: DispatchId::VACANT,
-                        target: Target::Polymorphic { block, private },
+                        target: polymorphic,
                     },
                 );
+                // The first entry's cell as its target decides it now: its
+                // entry address follows the JIT's state, which may have
+                // changed since the site's cell was written.
+                let first_cell = Cell {
+                    entry: jit::cell_entry(jit, &first.target),
+                    ..self.cells.site(index)
+                };
                 let slots = &mut self.pool[block as usize];
                 slots[0] = first;
                 slots[1] = CacheEntry { guard, target };
+                self.cells.write_block_cell(block, 0, first_cell);
+                self.cells.write_block_cell(block, 1, cell);
+                self.cells.write_site(index, site_cell);
             }
         }
     }
@@ -491,9 +679,11 @@ impl InlineCaches {
         for entry in &mut self.sites {
             *entry = CacheEntry::vacant();
         }
+        self.cells.vacate_sites(0..self.sites.len());
+        self.cells.vacate_blocks(0..self.pool.len());
         self.pool.clear();
         self.free_blocks.clear();
-        self.global.clear();
+        self.global.clear(&mut self.cells);
         self.verified_slot_level = None;
     }
 
@@ -511,24 +701,28 @@ impl InlineCaches {
         let names_freed = |entry: &CacheEntry| {
             freed.guards.contains(&entry.guard) || target_names(&entry.target, freed)
         };
-        for entry in &mut self.sites {
+        for (index, entry) in self.sites.iter_mut().enumerate() {
             match entry.target {
                 Target::Vacant | Target::Megamorphic { .. } => {}
                 Target::Polymorphic { block, .. } => {
                     if let Some(slots) = self.pool.get_mut(block as usize) {
-                        for slot in slots.iter_mut().filter(|slot| names_freed(slot)) {
-                            *slot = CacheEntry::vacant();
+                        for (position, slot) in slots.iter_mut().enumerate() {
+                            if names_freed(slot) {
+                                *slot = CacheEntry::vacant();
+                                self.cells.write_block_cell(block, position, Cell::VACANT);
+                            }
                         }
                     }
                 }
                 _ => {
                     if names_freed(entry) {
                         *entry = CacheEntry::vacant();
+                        self.cells.write_site(index, Cell::VACANT);
                     }
                 }
             }
         }
-        self.global.retain(|entry| {
+        self.global.retain(&mut self.cells, |entry| {
             let lexical_freed =
                 matches!(entry.rule, CacheRule::Lexical(guard) if freed.guards.contains(&guard));
             !(freed.guards.contains(&entry.guard)
@@ -587,7 +781,40 @@ impl InlineCaches {
             entries.is_multiple_of(2) && (entries / 2).is_power_of_two(),
             "the global cache must be sized to twice a power of two, not {entries}"
         );
+        assert!(
+            entries <= cells::MAXIMUM_GLOBAL_ROWS,
+            "the global cache's mirror has room for {} entries, not {entries}",
+            cells::MAXIMUM_GLOBAL_ROWS
+        );
+        let old_entries = self.global.entries.len();
         self.global = GlobalCache::with_groups(entries / 2);
+        self.cells.vacate_global_rows(0..old_entries.max(entries));
+    }
+
+    /// The global cache's entry for the key, promoting it within its group
+    /// (`GlobalCache::get`), its mirror row moving with it.
+    fn global_get(
+        &mut self,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+    ) -> Option<&Target> {
+        self.global.get(&mut self.cells, guard, selector, rule)
+    }
+
+    /// Records `target` for the key in the global cache, and `cell`, the
+    /// target's cell for the send that found it, in its mirror row
+    /// (`GlobalCache::insert`).
+    fn global_insert(
+        &mut self,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        target: Target,
+        cell: Cell,
+    ) {
+        self.global
+            .insert(&mut self.cells, guard, selector, rule, target, cell);
     }
 }
 
@@ -679,12 +906,13 @@ pub(crate) struct GlobalCache {
 }
 
 impl GlobalCache {
-    /// The first of the key's group's two adjacent slots.
+    /// The first of the key's group's two adjacent slots, which the
+    /// megamorphic stub computes as this does (`jit::targets`).
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the hash only picks a group, so folding it to the target's width keeps all the mask reads"
     )]
-    fn group(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> usize {
+    pub(crate) fn group(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> usize {
         let hash = crate::hash::IdentityBuildHasher::default().hash_one((guard, selector, rule));
         (hash as usize & self.mask) * 2
     }
@@ -697,13 +925,20 @@ impl GlobalCache {
     /// colliding key evicts last. A read costs at most the two comparisons
     /// plus, on a second-slot hit, one swap (`docs/design/dispatch.md`, "3b
     /// -- The caches").
-    fn get(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> Option<&Target> {
+    fn get(
+        &mut self,
+        cells: &mut Cells,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+    ) -> Option<&Target> {
         let first = self.group(guard, selector, rule);
         if self.entries[first].holds(guard, selector, rule) {
             return Some(&self.entries[first].target);
         }
         if self.entries[first + 1].holds(guard, selector, rule) {
             self.entries.swap(first, first + 1);
+            cells.swap_global_rows(first, first + 1);
             return Some(&self.entries[first].target);
         }
         None
@@ -726,7 +961,19 @@ impl GlobalCache {
     /// second slot -- the displaced first entry overwrites it, so no group
     /// can come to hold one key twice -- and a case that cannot arise is
     /// better handled than asserted against on the send path.
-    fn insert(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule, target: Target) {
+    ///
+    /// `cell` is the target's cell for the send that found it (`cell_for`),
+    /// whose `entry`, `level` and `chain_start` the mirror row records
+    /// beside the key.
+    fn insert(
+        &mut self,
+        cells: &mut Cells,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        target: Target,
+        cell: Cell,
+    ) {
         let first = self.group(guard, selector, rule);
         let second = first + 1;
         let entry = GlobalEntry {
@@ -735,27 +982,81 @@ impl GlobalCache {
             rule,
             target,
         };
+        let row = GlobalRow {
+            guard: u64::from(guard.bits()),
+            selector: selector.index() as u64,
+            rule: rule_word(rule),
+            entry: cell.entry,
+            level: cell.level,
+            chain_start: cell.chain_start,
+        };
         if self.entries[first].holds(guard, selector, rule) {
             self.entries[first] = entry;
         } else {
             self.entries[second] = std::mem::replace(&mut self.entries[first], entry);
+            cells.write_global_row(second, cells.global_row(first));
+        }
+        cells.write_global_row(first, row);
+    }
+
+    /// Writes the mirror row of the key's entry afresh, its entry address
+    /// from the JIT's state: `InlineCaches::refresh_cells`'s global part.
+    fn refresh(
+        &mut self,
+        cells: &mut Cells,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        jit: &JitState,
+    ) {
+        let first = self.group(guard, selector, rule);
+        for row in [first, first + 1] {
+            if self.entries[row].holds(guard, selector, rule) && !self.entries[row].is_vacant() {
+                let found = cells.global_row(row);
+                cells.write_global_row(
+                    row,
+                    GlobalRow {
+                        entry: jit::cell_entry(jit, &self.entries[row].target),
+                        ..found
+                    },
+                );
+            }
+        }
+    }
+
+    /// Writes afresh every mirror row whose entry address is `address`:
+    /// `InlineCaches::refresh_cells_entering`'s global part.
+    fn refresh_entering(&self, cells: &mut Cells, address: u64, jit: &JitState) {
+        for (row, entry) in self.entries.iter().enumerate() {
+            let found = cells.global_row(row);
+            if found.entry == address {
+                cells.write_global_row(
+                    row,
+                    GlobalRow {
+                        entry: jit::cell_entry(jit, &entry.target),
+                        ..found
+                    },
+                );
+            }
         }
     }
 
     /// Vacates every entry: `InlineCaches::invalidate`'s global half.
-    fn clear(&mut self) {
+    fn clear(&mut self, cells: &mut Cells) {
         for entry in &mut self.entries {
             *entry = GlobalEntry::vacant();
         }
+        cells.vacate_global_rows(0..self.entries.len());
     }
 
     /// Vacates every entry `keep` refuses: `InlineCaches::forget_freed`'s
     /// global half. A group whose first slot is vacated keeps its second,
     /// which `get` still finds there.
-    fn retain(&mut self, keep: impl Fn(&GlobalEntry) -> bool) {
-        for entry in &mut self.entries {
+    fn retain(&mut self, cells: &mut Cells, keep: impl Fn(&GlobalEntry) -> bool) {
+        for (index, entry) in self.entries.iter_mut().enumerate() {
             if !entry.is_vacant() && !keep(entry) {
                 *entry = GlobalEntry::vacant();
+                cells.write_global_row(index, GlobalRow::VACANT);
             }
         }
     }
@@ -1107,6 +1408,21 @@ fn materialize<'gc>(
     })
 }
 
+/// The key of an explicit-receiver send to `receiver` (§5.5): its guard
+/// the receiver's own dispatch id. The one place that builds it, for
+/// `send_public` and the miss leaf's `decide_at`.
+#[inline(always)]
+fn public_key<'send, 'gc>(heap: &Heap<'gc>, receiver: &'send Value<'gc>) -> SendKey<'send, 'gc> {
+    SendKey {
+        guard: heap.dispatch_id(*receiver),
+        rule: CacheRule::Public,
+        receiver,
+        lexical_class: None,
+        superclass: None,
+        current_class: None,
+    }
+}
+
 /// An explicit-receiver send (§5.5), cached (`docs/design/dispatch.md`, "A
 /// send, step by step").
 #[inline(always)]
@@ -1122,14 +1438,7 @@ pub(crate) fn send_public<'gc>(
     let Some(index) = site_index(feedback_base, family_size, site) else {
         return mutator.decide_send(receiver, selector, arguments);
     };
-    let key = SendKey {
-        guard: mutator.heap.dispatch_id(receiver),
-        rule: CacheRule::Public,
-        receiver: &receiver,
-        lexical_class: None,
-        superclass: None,
-        current_class: None,
-    };
+    let key = public_key(&mutator.heap, &receiver);
     cached(
         mutator,
         index,
@@ -1145,12 +1454,116 @@ pub(crate) fn send_public<'gc>(
     )
 }
 
-/// A lexical send (§5.7-§5.9), cached. The site's privacy, decided when it
-/// was first filled, chooses the guard: N's application for a private site,
-/// `o`'s otherwise, so a non-private *hit* still never computes N -- `miss`
-/// only calls its `lexical_of` closure on an actual miss, once N is needed
-/// for the `Lexical` rule's payload (`docs/design/dispatch.md`, "3b -- The
+/// A lexical send's cached site and its §5.9 privacy, `None` while the
+/// site is vacant -- or `None` for an uncached send: the one place that
+/// decides them, for `send_lexical` and the miss leaf's `decide_at`. A
+/// body-less declaration's own code runs once per instantiation of its
+/// class and starts its walk from the declaration's scope: it runs
+/// uncached, so that every cached send starts at its class.
+#[inline(always)]
+fn lexical_site(
+    caches: &InlineCaches,
+    feedback_base: FeedbackBase,
+    family_size: u32,
+    site: CallSite,
+    declaration_code: bool,
+) -> Option<(usize, Option<bool>)> {
+    site_index(feedback_base, family_size, site)
+        .filter(|_| !declaration_code)
+        .and_then(|index| {
+            caches
+                .sites
+                .get(index)
+                .map(|entry| (index, entry.target.site_privacy()))
+        })
+}
+
+/// The enclosing object a cached lexical send of `activation` at lexical
+/// `depth` is sent to, and where its walk started -- decided by
+/// `sends::lexical_origin`, for the uncached path and this one.
+#[inline(always)]
+fn lexical_receiver<'gc>(
+    heap: &Heap<'gc>,
+    activation: ActivationReference,
+    depth: u16,
+) -> (Value<'gc>, LexicalOrigin<'gc>) {
+    let (self_value, origin) = super::sends::lexical_origin(heap, activation, false);
+    let enclosing = dispatch::kth_enclosing_object(heap, self_value, origin, depth);
+    (enclosing, origin)
+}
+
+/// The key of a lexical send to `enclosing` at a site whose privacy is
+/// decided: N's application for a private site, `o`'s otherwise, so a
+/// non-private *hit* still never computes N -- `miss` only calls its
+/// `lexical_of` closure on an actual miss, once N is needed for the
+/// `Lexical` rule's payload (`docs/design/dispatch.md`, "3b -- The
 /// caches").
+#[inline(always)]
+fn lexical_key<'send, 'gc>(
+    heap: &Heap<'gc>,
+    enclosing: &'send Value<'gc>,
+    origin: LexicalOrigin<'gc>,
+    depth: u16,
+    private: bool,
+) -> SendKey<'send, 'gc> {
+    if private {
+        let lexical_class = dispatch::kth_lexical_class(heap, origin, depth);
+        SendKey {
+            guard: lexical_dispatch_id(heap, lexical_class),
+            rule: CacheRule::LexicalPrivate,
+            receiver: enclosing,
+            lexical_class,
+            superclass: None,
+            current_class: None,
+        }
+    } else {
+        SendKey {
+            guard: heap.dispatch_id(*enclosing),
+            // A placeholder payload: `miss` fills it in only on a genuine
+            // miss, so a monomorphic hit still never computes N.
+            rule: CacheRule::Lexical(DispatchId::NONE),
+            receiver: enclosing,
+            lexical_class: None,
+            superclass: None,
+            current_class: None,
+        }
+    }
+}
+
+/// N for a lexical send's `Lexical` payload, which `miss` asks only on a
+/// genuine miss. The closure borrows the send's locals, as one written in
+/// place would, so that handing it to `miss` copies a pointer rather than
+/// the walk's origin.
+#[inline(always)]
+fn lexical_class_of<'send, 'gc>(
+    origin: &'send LexicalOrigin<'gc>,
+    depth: &'send u16,
+) -> impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>> + 'send {
+    move |mutator| dispatch::kth_lexical_class(&mutator.heap, *origin, *depth)
+}
+
+/// A lexical send's lookup, handed N where the miss already knows it;
+/// borrowing as `lexical_class_of` does.
+#[inline(always)]
+fn resolve_lexical_send<'send, 'gc>(
+    enclosing: &'send Value<'gc>,
+    origin: &'send LexicalOrigin<'gc>,
+    depth: &'send u16,
+    selector: &'send Symbol,
+) -> impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc> + 'send {
+    move |mutator, known_lexical_class| {
+        let lexical_class = match known_lexical_class {
+            LexicalClass::Known(lexical_class) => lexical_class,
+            LexicalClass::NotComputed => {
+                dispatch::kth_lexical_class(&mutator.heap, *origin, *depth)
+            }
+        };
+        mutator.resolve_lexical(*enclosing, lexical_class, *selector)
+    }
+}
+
+/// A lexical send (§5.7-§5.9), cached. The site's privacy, decided when it
+/// was first filled, chooses the guard (`lexical_key`).
 #[expect(
     clippy::too_many_arguments,
     reason = "the site, its guard and the closures that decide a miss are passed separately so the hit path builds nothing"
@@ -1167,19 +1580,13 @@ pub(crate) fn send_lexical<'gc>(
     selector: Symbol,
     arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    // A body-less declaration's own code runs once per instantiation of
-    // its class and starts its walk from the declaration's scope: it runs
-    // uncached, so that every cached send below starts at its class.
-    let privacy = site_index(feedback_base, family_size, site)
-        .filter(|_| !declaration_code)
-        .and_then(|index| {
-            mutator
-                .caches
-                .sites
-                .get(index)
-                .map(|entry| (index, entry.target.site_privacy()))
-        });
-    let Some((index, privacy)) = privacy else {
+    let Some((index, privacy)) = lexical_site(
+        &mutator.caches,
+        feedback_base,
+        family_size,
+        site,
+        declaration_code,
+    ) else {
         return decide_lexical_send(
             mutator,
             activation,
@@ -1189,53 +1596,21 @@ pub(crate) fn send_lexical<'gc>(
             arguments,
         );
     };
-    // As in `decide_lexical_send`: where the walk starts is decided once,
-    // by `sends::lexical_origin`, for the uncached path and this one.
-    let (self_value, origin) = super::sends::lexical_origin(&mutator.heap, activation, false);
-    let enclosing = dispatch::kth_enclosing_object(&mutator.heap, self_value, origin, depth);
+    let (enclosing, origin) = lexical_receiver(&mutator.heap, activation, depth);
     let Some(private) = privacy else {
         return send_lexical_first(
             mutator, index, enclosing, origin, depth, selector, arguments,
         );
     };
-    let key = if private {
-        let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
-        SendKey {
-            guard: lexical_dispatch_id(&mutator.heap, lexical_class),
-            rule: CacheRule::LexicalPrivate,
-            receiver: &enclosing,
-            lexical_class,
-            superclass: None,
-            current_class: None,
-        }
-    } else {
-        SendKey {
-            guard: mutator.heap.dispatch_id(enclosing),
-            // A placeholder payload: `miss` fills it in only on a genuine
-            // miss, so a monomorphic hit still never computes N.
-            rule: CacheRule::Lexical(DispatchId::NONE),
-            receiver: &enclosing,
-            lexical_class: None,
-            superclass: None,
-            current_class: None,
-        }
-    };
+    let key = lexical_key(&mutator.heap, &enclosing, origin, depth, private);
     cached(
         mutator,
         index,
         key,
         selector,
         arguments,
-        |mutator| dispatch::kth_lexical_class(&mutator.heap, origin, depth),
-        |mutator, known_lexical_class| {
-            let lexical_class = match known_lexical_class {
-                LexicalClass::Known(lexical_class) => lexical_class,
-                LexicalClass::NotComputed => {
-                    dispatch::kth_lexical_class(&mutator.heap, origin, depth)
-                }
-            };
-            mutator.resolve_lexical(enclosing, lexical_class, selector)
-        },
+        lexical_class_of(&origin, &depth),
+        resolve_lexical_send(&enclosing, &origin, &depth, &selector),
     )
 }
 
@@ -1252,14 +1627,8 @@ fn lexical_dispatch_id<'gc>(
     })
 }
 
-/// A vacant lexical site's first send. Whether §5.9's private rule applies
-/// is not known until N is: §5.9's private rule depends only on N and the
-/// selector, never on `o`, so once N's application is the `Lexical` rule's
-/// payload, a match there is right regardless of which site left it -- and
-/// the two rows this checks, `LexicalPrivate` keyed by N alone and
-/// `Lexical` keyed by (`o`, N), are the only ones N's decision could have
-/// filled. Only a genuine miss on both falls to resolving here, exactly as
-/// before the entries existed.
+/// A vacant lexical site's first send: `decided_lexical_first`'s
+/// decision, acted on.
 #[inline(never)]
 fn send_lexical_first<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -1270,6 +1639,29 @@ fn send_lexical_first<'gc>(
     selector: Symbol,
     arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
+    let (resolved, base, _) =
+        decided_lexical_first(mutator, index, enclosing, origin, depth, selector);
+    mutator.act_with_base(resolved, base, enclosing, selector, arguments)
+}
+
+/// A vacant lexical site's first decision, for `send_lexical_first` and
+/// the miss leaf's `decide_at`, with the guard the site's entry is found
+/// under. Whether §5.9's private rule applies is not known until N is:
+/// §5.9's private rule depends only on N and the selector, never on `o`,
+/// so once N's application is the `Lexical` rule's payload, a match there
+/// is right regardless of which site left it -- and the two rows this
+/// checks, `LexicalPrivate` keyed by N alone and `Lexical` keyed by (`o`,
+/// N), are the only ones N's decision could have filled. Only a genuine
+/// miss on both falls to resolving here, recorded under the key its
+/// privacy chooses.
+fn decided_lexical_first<'gc>(
+    mutator: &mut Mutator<'gc>,
+    index: usize,
+    enclosing: Value<'gc>,
+    origin: LexicalOrigin<'gc>,
+    depth: u16,
+    selector: Symbol,
+) -> (Resolved<'gc>, FeedbackBase, DispatchId) {
     let lexical_class = dispatch::kth_lexical_class(&mutator.heap, origin, depth);
     let lexical_id = lexical_dispatch_id(&mutator.heap, lexical_class);
     if lexical_id != DispatchId::NONE {
@@ -1281,8 +1673,8 @@ fn send_lexical_first<'gc>(
             superclass: None,
             current_class: None,
         };
-        if let Some(step) = global_hit(mutator, index, private_key, selector, arguments) {
-            return step;
+        if let Some((resolved, base)) = global_found(mutator, index, private_key, selector) {
+            return (resolved, base, lexical_id);
         }
     }
     let guard = mutator.heap.dispatch_id(enclosing);
@@ -1295,8 +1687,8 @@ fn send_lexical_first<'gc>(
             superclass: None,
             current_class: None,
         };
-        if let Some(step) = global_hit(mutator, index, public_key, selector, arguments) {
-            return step;
+        if let Some((resolved, base)) = global_found(mutator, index, public_key, selector) {
+            return (resolved, base, guard);
         }
     }
     let resolved = mutator.resolve_lexical(enclosing, lexical_class, selector);
@@ -1315,38 +1707,75 @@ fn send_lexical_first<'gc>(
         current_class: None,
     };
     fill(mutator, index, key, selector, &resolved);
-    mutator.act(resolved, enclosing, selector, arguments)
+    (resolved, FeedbackBase::NOT_ASSIGNED, guard)
 }
 
-/// `key`'s global-cache row, materialized and acted on, if it already holds
-/// an answer -- advancing the still-vacant site `index` to it. `None` on a
-/// miss, which leaves the site untouched for the caller to resolve instead.
-fn global_hit<'gc>(
+/// `key`'s global-cache row materialized, the still-vacant site `index`
+/// advanced to it; `None` on a miss, which leaves the site untouched for
+/// the caller to resolve instead.
+fn global_found<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
     key: SendKey<'_, 'gc>,
     selector: Symbol,
-    arguments: Arguments<'_, 'gc>,
-) -> Option<Result<Step<'gc>, Signal<'gc>>> {
+) -> Option<(Resolved<'gc>, FeedbackBase)> {
     let target = mutator
         .caches
-        .global
-        .get(key.guard, selector, key.rule)
+        .global_get(key.guard, selector, key.rule)
         .cloned()?;
-    let (resolved, base) = materialize(mutator, target.clone(), key)?;
+    let found = materialize(mutator, target.clone(), key)?;
+    let cell = cell_for(mutator, key, &target);
     mutator
         .caches
-        .advance(index, key.guard, target, key.private());
-    Some(mutator.act_with_base(resolved, base, *key.receiver, selector, arguments))
+        .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+    Some(found)
+}
+
+/// A `super` send's cached site, its activation's current class and S
+/// (`sends::super_start`): the one place that decides them, for
+/// `send_super` and the miss leaf's `decide_at`. `None` for an uncached
+/// site, and where there is no current class or no superclass, whose
+/// errors the uncached path raises.
+#[inline(always)]
+fn super_site<'gc>(
+    mutator: &Mutator<'gc>,
+    activation: ActivationReference,
+    feedback_base: FeedbackBase,
+    family_size: u32,
+    site: CallSite,
+) -> Option<(usize, ClassReference<'gc>, ClassReference<'gc>)> {
+    site_index(feedback_base, family_size, site).and_then(|index| {
+        let current_class = mutator.heap.activation_current_class(activation)?;
+        let superclass = super::sends::super_start(&mutator.heap, current_class)?;
+        Some((index, current_class, superclass))
+    })
+}
+
+/// The key of a `super` send of `self_value`, keyed by S's application:
+/// everything §5.10 finds, and the step `level_above` takes from S on a
+/// hit, is a function of S alone.
+#[inline(always)]
+fn super_key<'send, 'gc>(
+    heap: &Heap<'gc>,
+    self_value: &'send Value<'gc>,
+    current_class: ClassReference<'gc>,
+    superclass: ClassReference<'gc>,
+) -> SendKey<'send, 'gc> {
+    SendKey {
+        guard: heap.class_dispatch_ids(superclass).instances,
+        rule: CacheRule::Super,
+        receiver: self_value,
+        lexical_class: None,
+        superclass: Some(superclass),
+        current_class: Some(current_class),
+    }
 }
 
 /// A `super` send (§5.10), cached, keyed by S's application
-/// (`sends::super_start`): everything §5.10 finds, and the step `level_above`
-/// takes from S on a hit, is a function of S alone. A body-less
-/// declaration's own code is cached like any other: its S is its class
-/// object's superclass, as every code's is. Its two errors are raised by
-/// the uncached path, which is where a send without a `current_class` or
-/// a superclass goes.
+/// (`super_key`). A body-less declaration's own code is cached like any
+/// other: its S is its class object's superclass, as every code's is. Its
+/// two errors are raised by the uncached path, which is where a send
+/// without a `current_class` or a superclass goes.
 #[inline(always)]
 pub(crate) fn send_super<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -1357,25 +1786,13 @@ pub(crate) fn send_super<'gc>(
     selector: Symbol,
     arguments: Arguments<'_, 'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    // The classes are read only for a cached site; the uncached path reads
-    // them itself.
-    let cached_site = site_index(feedback_base, family_size, site).and_then(|index| {
-        let current_class = mutator.heap.activation_current_class(activation)?;
-        let superclass = super::sends::super_start(&mutator.heap, current_class)?;
-        Some((index, current_class, superclass))
-    });
-    let Some((index, current_class, superclass)) = cached_site else {
+    let Some((index, current_class, superclass)) =
+        super_site(mutator, activation, feedback_base, family_size, site)
+    else {
         return decide_super_send(mutator, activation, selector, arguments);
     };
     let self_value = mutator.heap.activation_receiver(activation);
-    let key = SendKey {
-        guard: mutator.heap.class_dispatch_ids(superclass).instances,
-        rule: CacheRule::Super,
-        receiver: &self_value,
-        lexical_class: None,
-        superclass: Some(superclass),
-        current_class: Some(current_class),
-    };
+    let key = super_key(&mutator.heap, &self_value, current_class, superclass);
     cached(
         mutator,
         index,
@@ -1401,6 +1818,18 @@ enum LexicalClass<'gc> {
     Known(Option<ClassReference<'gc>>),
 }
 
+/// The target of the site's own entry for `key`'s guard: a monomorphic
+/// hit once `materialize` finds its step up, or `None`. It answers the
+/// target rather than its `Resolved`, so that the caller materializes
+/// and acts where the `Resolved` is consumed: a `Resolved` answered out
+/// of here is handed back through memory and tested again before
+/// `act_with_base`, on the hit path of every send.
+#[inline(always)]
+fn site_target(mutator: &Mutator<'_>, index: usize, guard: DispatchId) -> Option<Target> {
+    let entry = mutator.caches.sites.get(index)?;
+    (entry.guard == guard).then(|| entry.target.clone())
+}
+
 /// A monomorphic hit, or everything else out of line. `lexical_of` answers
 /// N, for the `Lexical` rule's payload; it is never called here, only handed
 /// to `miss`, so a hit costs nothing for it.
@@ -1414,38 +1843,115 @@ fn cached<'gc>(
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    if let Some(entry) = mutator.caches.sites.get(index) {
-        if entry.guard == key.guard {
-            let target = entry.target.clone();
-            if let Some((resolved, base)) = materialize(mutator, target, key) {
-                return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
-            }
+    if let Some(target) = site_target(mutator, index, key.guard) {
+        if let Some((resolved, base)) = materialize(mutator, target, key) {
+            return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
         }
     }
     miss(
-        mutator, index, key, selector, arguments, lexical_of, resolve,
+        mutator,
+        index,
+        key.guard,
+        key.rule,
+        *key.receiver,
+        key.lexical_class,
+        key.superclass,
+        key.current_class,
+        selector,
+        arguments,
+        lexical_of,
+        resolve,
     )
 }
 
-/// The site's polymorphic block, then the global cache, then `resolve`,
-/// whose answer is recorded in both before it is acted on. Out of line so
-/// that a monomorphic hit keeps its registers; not `#[cold]`, since a
-/// polymorphic hit comes through here. `lexical_of` is called at most once,
-/// only once a miss is certain and the `Lexical` rule's payload is actually
-/// needed -- and not at all for a `Public` or `Super` key, whose rule has no
-/// payload to fill. `resolve` is handed N where it is already known -- a
-/// private key's, or the payload's -- so that a lexical miss computes it
-/// once.
+/// `decided_miss`'s decision, acted on. Out of line so that a monomorphic
+/// hit keeps its registers; not `#[cold]`, since a polymorphic hit comes
+/// through here. It takes its key's parts rather than the key: a key
+/// handed over whole is handed over through memory, and the sender then
+/// builds it in memory where it is made -- before the guard's compare,
+/// on the hit path of every send, the receiver's word spilled for the
+/// key's reference to it -- where its parts, in registers until this
+/// call, are stored only on the miss (`cargo xtask gates codegen`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the key's parts are passed one by one so that the hit path builds no key in memory"
+)]
 #[inline(never)]
 fn miss<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
-    mut key: SendKey<'_, 'gc>,
+    guard: DispatchId,
+    rule: CacheRule,
+    receiver: Value<'gc>,
+    lexical_class: Option<ClassReference<'gc>>,
+    superclass: Option<ClassReference<'gc>>,
+    current_class: Option<ClassReference<'gc>>,
     selector: Symbol,
     arguments: Arguments<'_, 'gc>,
     lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
     resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
+    let key = SendKey {
+        guard,
+        rule,
+        receiver: &receiver,
+        lexical_class,
+        superclass,
+        current_class,
+    };
+    decided_miss(
+        mutator,
+        index,
+        key,
+        selector,
+        lexical_of,
+        resolve,
+        #[inline(always)]
+        |mutator, resolved, base| {
+            mutator.act_with_base(resolved, base, receiver, selector, arguments)
+        },
+        |mutator, resolved| {
+            mutator.check_super_handler_slot(&resolved, receiver)?;
+            mutator.act(resolved, receiver, selector, arguments)
+        },
+    )
+}
+
+/// A send's decision past its site's own entry, for `miss` and the miss
+/// leaf's `decided`: the site's polymorphic block, then the global cache,
+/// then `resolve`, whose answer is recorded in both. `lexical_of` is
+/// called at most once, only once a miss is certain and the `Lexical`
+/// rule's payload is actually needed -- and not at all for a `Public` or
+/// `Super` key, whose rule has no payload to fill. `resolve` is handed N
+/// where it is already known -- a private key's, or the payload's -- so
+/// that a lexical miss computes it once. Only a resolution can be a
+/// `super` `doesNotUnderstand:` slot handler, which is never recorded, so
+/// that `miss`'s check of it after any of the three is the uncached
+/// send's.
+///
+/// What is decided goes on where it is found rather than back as a
+/// value: a hit in the block or the global cache to `hit`, a lookup's
+/// resolution to `resolved`, so that `miss` acts at each, as the
+/// interpreter's send did before the miss leaf shared the decision. A
+/// resolution carried back through one join was copied through memory on
+/// every polymorphic and megamorphic hit, read back wider than it was
+/// written, a store-forwarding stall that cost DeltaBlue 5% with the JIT
+/// off.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the key, the two lookups it may need and the two places a decision goes on, each a closure the caller's send inlines"
+)]
+#[inline(always)]
+fn decided_miss<'gc, Answer>(
+    mutator: &mut Mutator<'gc>,
+    index: usize,
+    mut key: SendKey<'_, 'gc>,
+    selector: Symbol,
+    lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
+    resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
+    hit: impl FnOnce(&mut Mutator<'gc>, Resolved<'gc>, FeedbackBase) -> Answer,
+    resolved: impl FnOnce(&mut Mutator<'gc>, Resolved<'gc>) -> Answer,
+) -> Answer {
     let mut known_lexical_class = if key.private() {
         LexicalClass::Known(key.lexical_class)
     } else {
@@ -1453,8 +1959,8 @@ fn miss<'gc>(
     };
     if key.guard != DispatchId::NONE {
         if let Some(target) = mutator.caches.polymorphic_hit(index, key.guard) {
-            if let Some((resolved, base)) = materialize(mutator, target, key) {
-                return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
+            if let Some((found, base)) = materialize(mutator, target, key) {
+                return hit(mutator, found, base);
             }
         }
         if let CacheRule::Lexical(ref mut lexical) = key.rule {
@@ -1464,31 +1970,335 @@ fn miss<'gc>(
         }
         let global = mutator
             .caches
-            .global
-            .get(key.guard, selector, key.rule)
+            .global_get(key.guard, selector, key.rule)
             .cloned();
         if let Some(target) = global {
-            if let Some((resolved, base)) = materialize(mutator, target.clone(), key) {
+            if let Some((found, base)) = materialize(mutator, target.clone(), key) {
+                let cell = cell_for(mutator, key, &target);
                 mutator
                     .caches
-                    .advance(index, key.guard, target, key.private());
-                return mutator.act_with_base(resolved, base, *key.receiver, selector, arguments);
+                    .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+                return hit(mutator, found, base);
             }
         }
     }
-    let resolved = resolve(mutator, known_lexical_class);
-    fill(mutator, index, key, selector, &resolved);
-    mutator.check_super_handler_slot(&resolved, *key.receiver)?;
-    mutator.act(resolved, *key.receiver, selector, arguments)
+    let found = resolve(mutator, known_lexical_class);
+    fill(mutator, index, key, selector, &found);
+    resolved(mutator, found)
+}
+
+/// What the miss leaf answers machine code for a send its cell did not
+/// decide (`decide_at`).
+pub(crate) enum MissAnswer {
+    /// Jump to this address, the callee's machine entry, its receiver and
+    /// current class handed over in the machine words
+    /// (`Heap::hand_machine_callee`).
+    Enter(u64),
+    /// Refuse the call: the interpreter runs the send.
+    Refuse,
+}
+
+/// A send's decision as `decision_at` makes it for machine code's leaves:
+/// what it resolved to and the activation's base, its receiver, the guard
+/// and site it was decided at, the global key its cells are refreshed
+/// under (`InlineCaches::refresh_cells`), and its selector and argument
+/// slots.
+struct Decision<'gc> {
+    resolved: Resolved<'gc>,
+    base: FeedbackBase,
+    receiver: Value<'gc>,
+    guard: DispatchId,
+    index: usize,
+    global_key: Option<(Symbol, CacheRule)>,
+    selector: Symbol,
+    argument_base: u16,
+    argument_count: u16,
+}
+
+/// The decision of the send at `program_counter` of `activation` -- a
+/// `SendPublic`, `SendLexical` or `SendSuper` -- for machine code's
+/// leaves: the decision the interpreter's cached send makes
+/// (`send_public`, `send_lexical`, `send_super`), through the same
+/// functions -- its site and key (`public_key`, `lexical_site`,
+/// `lexical_receiver` and `lexical_key`, `super_site` and `super_key`),
+/// the site's entry (`site_target`, materialized), the rest
+/// (`decided_miss`, or a vacant lexical site's `decided_lexical_first`),
+/// filling the caches as they fill them -- but no `act`. `None` for an
+/// uncached site, which only the interpreter decides, and for a `super`
+/// send without a current class or a superclass, whose error it raises.
+fn decision_at<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: u32,
+) -> Option<Decision<'gc>> {
+    let code = mutator.heap.activation_code(activation);
+    let feedback_base = mutator.heap.activation_feedback_base(activation);
+    let family_size = code.family_size;
+    let Some(CachedSend {
+        kind,
+        selector,
+        call_site,
+        argument_base,
+        argument_count,
+    }) = code.cached_send(program_counter as usize)
+    else {
+        unreachable!("internal: only a cached send calls through its cell");
+    };
+    let (resolved, base, receiver, guard, index, global_key) = match kind {
+        CachedSendKind::Public {
+            receiver: receiver_register,
+        } => {
+            let index = site_index(feedback_base, family_size, call_site)?;
+            let register_base = mutator.heap.activation_register_base(activation);
+            let receiver = mutator.heap.register(register_base, receiver_register);
+            let key = public_key(&mutator.heap, &receiver);
+            let (resolved, base) = decided(
+                mutator,
+                index,
+                key,
+                selector,
+                |_mutator| None,
+                |mutator, _| mutator.resolve_public(receiver, selector),
+            );
+            let global_key = Some((selector, CacheRule::Public));
+            (resolved, base, receiver, key.guard, index, global_key)
+        }
+        CachedSendKind::Lexical { depth } => {
+            let (index, privacy) = lexical_site(
+                &mutator.caches,
+                feedback_base,
+                family_size,
+                call_site,
+                code.is_declaration_code(),
+            )?;
+            let (enclosing, origin) = lexical_receiver(&mutator.heap, activation, depth);
+            match privacy {
+                None => {
+                    // The site's own cell is the only one its first send
+                    // could have reached.
+                    let (resolved, base, guard) =
+                        decided_lexical_first(mutator, index, enclosing, origin, depth, selector);
+                    (resolved, base, enclosing, guard, index, None)
+                }
+                Some(private) => {
+                    let key = lexical_key(&mutator.heap, &enclosing, origin, depth, private);
+                    let (resolved, base) = decided(
+                        mutator,
+                        index,
+                        key,
+                        selector,
+                        lexical_class_of(&origin, &depth),
+                        resolve_lexical_send(&enclosing, &origin, &depth, &selector),
+                    );
+                    // The rule as `decided_miss` filled its payload in.
+                    let rule = if private {
+                        CacheRule::LexicalPrivate
+                    } else {
+                        let lexical_class =
+                            dispatch::kth_lexical_class(&mutator.heap, origin, depth);
+                        CacheRule::Lexical(lexical_dispatch_id(&mutator.heap, lexical_class))
+                    };
+                    (
+                        resolved,
+                        base,
+                        enclosing,
+                        key.guard,
+                        index,
+                        Some((selector, rule)),
+                    )
+                }
+            }
+        }
+        CachedSendKind::Super => {
+            let (index, current_class, superclass) =
+                super_site(mutator, activation, feedback_base, family_size, call_site)?;
+            let self_value = mutator.heap.activation_receiver(activation);
+            let key = super_key(&mutator.heap, &self_value, current_class, superclass);
+            let (resolved, base) = decided(
+                mutator,
+                index,
+                key,
+                selector,
+                |_mutator| None,
+                |mutator, _| mutator.resolve_super(superclass, selector),
+            );
+            let global_key = Some((selector, CacheRule::Super));
+            (resolved, base, self_value, key.guard, index, global_key)
+        }
+    };
+    Some(Decision {
+        resolved,
+        base,
+        receiver,
+        guard,
+        index,
+        global_key,
+        selector,
+        argument_base,
+        argument_count: crate::heap::register_number(argument_count),
+    })
+}
+
+/// The miss leaf's decision (`jit::leaves`'s `miss`) of the send at
+/// `program_counter` of `activation`: `decision_at`'s, and so an uncached
+/// site, which only the interpreter decides, refuses. A method machine
+/// code runs (`jit::runs_in_machine_code`) is its callee: its body is
+/// compiled when this entry is the one that compiles it
+/// (`jit::note_entry_by_call`), and the cells the send reached its
+/// decision through -- the site's, its polymorphic block's slot, the
+/// global cache's row -- are written afresh
+/// (`InlineCaches::refresh_cells`): once the body has machine code they
+/// name its machine entry, so that its next send calls the body straight,
+/// and the answer is that entry, the callee's receiver and current class
+/// handed over for it to store; once the body never will -- refused, or
+/// exiting at once -- they name the refusing stub, so that the next send
+/// exits at once, and the answer refuses the call. A target that is no method with code is entered at the stub
+/// its cell names (`jit::stub_entry`), which runs it as `act` does, the
+/// receiver handed over. Every other decision refuses the call, and the interpreter,
+/// running the send again, finds the entry the fill made, or raises the
+/// error a `super` send without a current class or a superclass raises.
+pub(crate) fn decide_at<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: u32,
+) -> MissAnswer {
+    let Some(Decision {
+        resolved,
+        base,
+        receiver,
+        guard,
+        index,
+        global_key,
+        ..
+    }) = decision_at(mutator, activation, program_counter)
+    else {
+        return MissAnswer::Refuse;
+    };
+    let stubbed = match &resolved {
+        Resolved::Method { method, chain, .. } if !jit::runs_in_machine_code(method, *chain) => {
+            Some(jit::Stubbed::Method {
+                method,
+                chain: *chain,
+            })
+        }
+        Resolved::Method { .. } => None,
+        Resolved::Slot {
+            kind, field, chain, ..
+        } => Some(jit::Stubbed::Slot {
+            kind: *kind,
+            chain: *chain,
+            field: *field,
+        }),
+        Resolved::Primitive {
+            primitive, chain, ..
+        } => Some(jit::Stubbed::Primitive {
+            primitive: *primitive,
+            chain: *chain,
+        }),
+        Resolved::NestedClass { .. } | Resolved::Factory { .. } | Resolved::Unhandled => {
+            return MissAnswer::Refuse;
+        }
+    };
+    if let Some(stubbed) = stubbed {
+        return match jit::stub_entry(&mutator.jit, &stubbed) {
+            Some(entry) => {
+                mutator.heap.hand_machine_receiver(receiver);
+                MissAnswer::Enter(entry)
+            }
+            None => MissAnswer::Refuse,
+        };
+    }
+    let Resolved::Method {
+        method,
+        defining_class,
+        chain: _,
+    } = resolved
+    else {
+        unreachable!("internal: every other resolution was answered above");
+    };
+    let base = if base == FeedbackBase::NOT_ASSIGNED {
+        mutator.caches.base_for(&method.code)
+    } else {
+        base
+    };
+    jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
+    let address = jit::machine_entry_address(&mutator.jit, &method.code, base);
+    // The cells the decision went through follow the JIT's state either
+    // way: the callee's machine entry once it has one, the refusing stub
+    // once it never will -- refused or exiting at once -- so that the
+    // site's next send exits at once rather than calling the miss leaf
+    // again; the miss stub while it may still be compiled.
+    mutator
+        .caches
+        .refresh_cells(index, guard, global_key, &mutator.jit);
+    let Some(address) = address else {
+        return MissAnswer::Refuse;
+    };
+    mutator.heap.hand_machine_callee(receiver, defining_class);
+    MissAnswer::Enter(address)
+}
+
+/// The leaf stub's run (`jit::leaves`'s `act`) of the send at
+/// `program_counter` of `activation`, whose cell named the leaf stub for
+/// the target it records: `decision_at`'s decision -- which finds that
+/// entry, since a cell and its entry are written together -- acted on by
+/// `Mutator::act_for_machine_code`, on the send's arguments in its slots,
+/// where the call placed them. The value the send answers, or `None`
+/// where the interpreter must run the send, nothing having changed.
+pub(crate) fn act_at<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: u32,
+) -> Option<Value<'gc>> {
+    let decision = decision_at(mutator, activation, program_counter)?;
+    let register_base = mutator.heap.activation_register_base(activation);
+    let arguments = Arguments::Slots(crate::heap::ArgumentSlots::new(
+        register_base,
+        decision.argument_base,
+        decision.argument_count,
+    ));
+    mutator.act_for_machine_code(
+        decision.resolved,
+        decision.receiver,
+        decision.selector,
+        arguments,
+    )
+}
+
+/// `cached`'s decision, without `act`: the site's own entry
+/// (`site_target`, materialized), else `decided_miss`.
+fn decided<'gc>(
+    mutator: &mut Mutator<'gc>,
+    index: usize,
+    key: SendKey<'_, 'gc>,
+    selector: Symbol,
+    lexical_of: impl FnOnce(&Mutator<'gc>) -> Option<ClassReference<'gc>>,
+    resolve: impl FnOnce(&mut Mutator<'gc>, LexicalClass<'gc>) -> Resolved<'gc>,
+) -> (Resolved<'gc>, FeedbackBase) {
+    if let Some(target) = site_target(mutator, index, key.guard) {
+        if let Some(found) = materialize(mutator, target, key) {
+            return found;
+        }
+    }
+    decided_miss(
+        mutator,
+        index,
+        key,
+        selector,
+        lexical_of,
+        resolve,
+        |_mutator, found, base| (found, base),
+        |_mutator, found| (found, FeedbackBase::NOT_ASSIGNED),
+    )
 }
 
 /// Records `resolved` in the global cache and at the site -- unless the key
 /// has no id, or the resolution's privacy is not the site's (only a crafted
 /// image makes a site's N change; refinement 1). Before `act`, which may run
 /// code. `key.rule`'s `Lexical` payload, if any, must already be N's
-/// application -- `miss` fills it in before falling through here;
-/// `send_lexical_first` builds it directly, since it never goes through
-/// `miss`.
+/// application -- `decided_miss` fills it in before falling through
+/// here; `decided_lexical_first` builds it directly, since it never goes
+/// through `decided_miss`.
 fn fill<'gc>(
     mutator: &mut Mutator<'gc>,
     index: usize,
@@ -1503,13 +2313,110 @@ fn fill<'gc>(
         return;
     }
     if let Some(target) = record(mutator, resolved, key) {
+        let cell = cell_for(mutator, key, &target);
         mutator
             .caches
-            .global
-            .insert(key.guard, selector, key.rule, target.clone());
+            .global_insert(key.guard, selector, key.rule, target.clone(), cell);
         mutator
             .caches
-            .advance(index, key.guard, target, key.private());
+            .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+    }
+}
+
+/// The cell an entry for `target` takes at a site with `key`: its guard
+/// (the key's dispatch id, or for a `super` or private lexical site the
+/// key class's application word, as `Cell` says), its entry address from
+/// the JIT (`jit::cell_entry`), and where its `current_class` is found.
+fn cell_for<'gc>(mutator: &Mutator<'gc>, key: SendKey<'_, 'gc>, target: &Target) -> Cell {
+    let application_word = |class: Option<ClassReference<'gc>>| {
+        class
+            .and_then(|class| mutator.heap.class_application_word(class))
+            .unwrap_or(VACANT_GUARD)
+    };
+    let chain_start = rule_chain_start(key.rule);
+    let guard = match key.rule {
+        CacheRule::Public | CacheRule::Lexical(_) => u64::from(key.guard.bits()),
+        CacheRule::LexicalPrivate => application_word(key.lexical_class),
+        CacheRule::Super => application_word(key.superclass),
+    };
+    Cell {
+        guard,
+        entry: jit::cell_entry(&mutator.jit, target),
+        level: cell_level(target),
+        chain_start: chain_start as u64,
+    }
+}
+
+/// The cell of a site that holds no entry of its own -- polymorphic or
+/// megamorphic -- whose guard no receiver matches, so that machine code
+/// takes the stub its entry names; `chain_start` is the site's, kept so
+/// that a lexical site's cell still says which guard its sends compare.
+fn site_state_cell(jit: &JitState, target: &Target, chain_start: u64) -> Cell {
+    Cell {
+        guard: VACANT_GUARD,
+        entry: jit::cell_entry(jit, target),
+        level: cell_level(target),
+        chain_start,
+    }
+}
+
+/// A cell's `level` word for `target`: its superclass steps from the
+/// chain's start, 0 for a target that counts none -- a slot, which runs
+/// no body, and a factory, which instantiates the receiver -- and a
+/// polymorphic site's block number.
+fn cell_level(target: &Target) -> u64 {
+    match target {
+        Target::Method { level, .. }
+        | Target::NestedClass { level, .. }
+        | Target::Primitive { level, .. } => u64::from(*level),
+        Target::Polymorphic { block, .. } => u64::from(*block),
+        Target::Vacant
+        | Target::Megamorphic { .. }
+        | Target::Slot { .. }
+        | Target::Factory { .. } => 0,
+    }
+}
+
+/// Where a target found on `chain` counts its levels from, for its cell.
+fn chain_start_of(chain: Chain) -> ChainStart {
+    match chain {
+        Chain::Public | Chain::Protected | Chain::DoesNotUnderstand => ChainStart::ReceiverClass,
+        Chain::Private => ChainStart::LexicalClass,
+        Chain::Super | Chain::SuperDoesNotUnderstand => ChainStart::Superclass,
+    }
+}
+
+/// A global row's `rule` word: the rule's tag in the low
+/// `RULE_TAG_BITS` bits, and a `Lexical` rule's N -- its application's
+/// dispatch id -- above them.
+pub(crate) fn rule_word(rule: CacheRule) -> u64 {
+    match rule {
+        CacheRule::Lexical(lexical) => {
+            rule_tag(rule) | (u64::from(lexical.bits()) << RULE_TAG_BITS)
+        }
+        CacheRule::Public | CacheRule::LexicalPrivate | CacheRule::Super => rule_tag(rule),
+    }
+}
+
+/// How many low bits of a rule word its tag takes.
+pub(crate) const RULE_TAG_BITS: u8 = 2;
+
+/// The mask of a rule word's tag.
+pub(crate) const RULE_TAG_MASK: i32 = (1 << RULE_TAG_BITS) - 1;
+
+/// A `Lexical` rule's tag, beneath its N.
+pub(crate) const RULE_TAG_LEXICAL: i32 = 1;
+
+/// The tag of `rule`, which a send in machine code hands the stubs
+/// (`jit::targets`): its discriminant, in `CacheRule`'s order, which is
+/// also what the rule's derived `Hash` writes first -- the megamorphic
+/// stub hashes the tag where `GlobalCache::group` hashes the rule.
+pub(crate) const fn rule_tag(rule: CacheRule) -> u64 {
+    match rule {
+        CacheRule::Public => 0,
+        CacheRule::Lexical(_) => RULE_TAG_LEXICAL as u64,
+        CacheRule::LexicalPrivate => 2,
+        CacheRule::Super => 3,
     }
 }
 
@@ -1557,11 +2464,63 @@ pub enum MethodSide {
     Class,
 }
 
+/// A call site's cell as a test reads it (`Interpreter::call_site_cells`):
+/// the four words machine code reads (`cells::Cell`).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallSiteCell {
+    pub guard: u64,
+    pub entry: u64,
+    pub level: u64,
+    pub chain_start: u64,
+}
+
+impl CallSiteCell {
+    /// Whether the cell reads as a vacant site's: no receiver matches it.
+    pub fn is_vacant(&self) -> bool {
+        let vacant = Cell::VACANT;
+        (self.guard, self.entry, self.level, self.chain_start)
+            == (vacant.guard, vacant.entry, vacant.level, vacant.chain_start)
+    }
+}
+
 impl InlineCaches {
     /// The states of the sites in `code`'s family that send `sent`, in
     /// emission order, or all vacant when the family has not run. For tests
     /// (`Interpreter::call_site_states`).
     pub(crate) fn states_of(&self, code: &Rc<CompiledCode>, sent: Symbol) -> Vec<CallSiteState> {
+        self.site_indices_of(code, sent)
+            .into_iter()
+            .map(
+                |index| match index.and_then(|index| self.sites.get(index)) {
+                    None => CallSiteState::Vacant,
+                    Some(entry) => self.state_of(entry),
+                },
+            )
+            .collect()
+    }
+
+    /// The cells of the sites in `code`'s family that send `sent`, in
+    /// emission order, each vacant while the family has not run. For tests
+    /// (`Interpreter::call_site_cells`).
+    pub(crate) fn cells_of(&self, code: &Rc<CompiledCode>, sent: Symbol) -> Vec<CallSiteCell> {
+        self.site_indices_of(code, sent)
+            .into_iter()
+            .map(|index| {
+                let cell = index.map_or(Cell::VACANT, |index| self.cells.site(index));
+                CallSiteCell {
+                    guard: cell.guard,
+                    entry: cell.entry,
+                    level: cell.level,
+                    chain_start: cell.chain_start,
+                }
+            })
+            .collect()
+    }
+
+    /// The table index of each site in `code`'s family that sends `sent`,
+    /// in emission order; `None` for each while the family has not run.
+    fn site_indices_of(&self, code: &Rc<CompiledCode>, sent: Symbol) -> Vec<Option<usize>> {
         // Call-site numbers are dense in emission order across the family,
         // so sorting by number is emission order.
         let mut numbers = Vec::new();
@@ -1588,15 +2547,142 @@ impl InlineCaches {
             .map_or(FeedbackBase::NOT_ASSIGNED, |family| family.base);
         numbers
             .into_iter()
-            .map(|number| {
-                match site_index(base, code.family_size, CallSite { number })
-                    .and_then(|index| self.sites.get(index))
-                {
-                    None => CallSiteState::Vacant,
-                    Some(entry) => self.state_of(entry),
-                }
-            })
+            .map(|number| site_index(base, code.family_size, CallSite { number }))
             .collect()
+    }
+
+    /// Whether every cell agrees with its entry -- each site's, each
+    /// polymorphic block slot's, each global row's -- as the writes beside
+    /// the entries are to keep it: the first disagreement found, described,
+    /// otherwise. Run by `Interpreter::verify_cells` and, in a debug build,
+    /// before every scavenge of the scavenge stress mode.
+    pub(crate) fn verify_cells(&self, heap: &Heap<'_>, jit: &JitState) -> Result<(), String> {
+        self.verify_cells_against(&|word| heap.application_dispatch_id_for_word(word), jit)
+    }
+
+    /// `verify_cells`, with `application_of` answering the instances id
+    /// of the application whose class objects hold a word in their
+    /// application field (`Heap::application_dispatch_id_for_word`).
+    fn verify_cells_against(
+        &self,
+        application_of: &dyn Fn(u64) -> Option<DispatchId>,
+        jit: &JitState,
+    ) -> Result<(), String> {
+        let site_words = self.cells.site_words(self.sites.len());
+        let block_words = self.cells.block_words(self.pool.len());
+        let global_words = self.cells.global_words(self.global.entries.len());
+        // Every table's cells were written vacant as it grew, so each slice
+        // holds one cell or row per entry.
+        if site_words.len() != self.sites.len() * cells::CELL_WORDS
+            || block_words.len() != self.pool.len() * POLYMORPHIC_WIDTH * cells::CELL_WORDS
+            || global_words.len() != self.global.entries.len() * cells::ROW_WORDS
+        {
+            return Err("the cells of a table were never written".to_owned());
+        }
+        // Most entries are vacant, and a vacant entry's cell must read
+        // `Cell::VACANT` whole: the guard no receiver matches, and the entry
+        // word 0, since the polymorphic stub, entered on every mismatch,
+        // jumps to the entry of a cell whose guard is vacant.
+        let check_cell = |entry: &CacheEntry, words: &[u64], place: &dyn Fn() -> String| {
+            if matches!(entry.target, Target::Vacant) {
+                if words != Cell::VACANT.words() {
+                    return Err(format!(
+                        "{}: a vacant entry's cell reads {words:?}",
+                        place()
+                    ));
+                }
+                return Ok(None);
+            }
+            let found = Cell::from_words(words);
+            match expected_cell(entry.guard, &entry.target, found, application_of, jit) {
+                Ok(Some(expected)) if !cell_may_be(found, expected, jit) => Err(format!(
+                    "{}: the cell reads {found:?}, its entry's is {expected:?}",
+                    place()
+                )),
+                Ok(Some(_)) => Ok(None),
+                Ok(None) => Ok(Some(found)),
+                Err(problem) => Err(format!("{}: {problem}", place())),
+            }
+        };
+        for (index, (entry, words)) in self
+            .sites
+            .iter()
+            .zip(site_words.as_chunks::<{ cells::CELL_WORDS }>().0)
+            .enumerate()
+        {
+            if let Some(found) = check_cell(entry, words, &|| format!("site {index}"))? {
+                verify_site_state_cell(entry, found, jit)
+                    .map_err(|problem| format!("site {index}: {problem}"))?;
+            }
+        }
+        for (block, (slots, words)) in self
+            .pool
+            .iter()
+            .zip(
+                block_words
+                    .as_chunks::<{ POLYMORPHIC_WIDTH * cells::CELL_WORDS }>()
+                    .0,
+            )
+            .enumerate()
+        {
+            for (position, (slot, words)) in slots
+                .iter()
+                .zip(words.as_chunks::<{ cells::CELL_WORDS }>().0)
+                .enumerate()
+            {
+                let place = || format!("block {block} slot {position}");
+                if check_cell(slot, words, &place)?.is_some() {
+                    return Err(format!("{}: a block holds a site state", place()));
+                }
+            }
+        }
+        for (index, entry) in self.global.entries.iter().enumerate() {
+            let words = &global_words[index * cells::ROW_WORDS..][..cells::ROW_WORDS];
+            if entry.is_vacant() {
+                let row = GlobalRow::from_words(words);
+                if row.guard != VACANT_GUARD || row.entry != GlobalRow::VACANT.entry {
+                    return Err(format!(
+                        "global row {index} of a vacant entry reads {words:?}"
+                    ));
+                }
+                continue;
+            }
+            let found = GlobalRow::from_words(words);
+            let found_cell = Cell {
+                guard: found.guard,
+                entry: found.entry,
+                level: found.level,
+                chain_start: found.chain_start,
+            };
+            // A row's guard is the key's dispatch id whatever the rule,
+            // compared below, so the cell's guard is not asked about.
+            let any_guard = |_: u64| Some(entry.guard);
+            let cell = expected_cell(entry.guard, &entry.target, found_cell, &any_guard, jit)
+                .map_err(|problem| format!("global entry {index}: {problem}"))?
+                .ok_or_else(|| format!("global entry {index} holds a site state"))?;
+            if cell.chain_start != rule_chain_start(entry.rule) as u64 {
+                return Err(format!("global entry {index}'s rule is not its target's"));
+            }
+            let expected = GlobalRow {
+                guard: u64::from(entry.guard.bits()),
+                selector: entry.selector.index() as u64,
+                rule: rule_word(entry.rule),
+                entry: cell.entry,
+                level: cell.level,
+                chain_start: cell.chain_start,
+            };
+            let entry_holds = jit.cell_entry_may_be(found.entry, expected.entry);
+            let others_hold = GlobalRow {
+                entry: expected.entry,
+                ..found
+            } == expected;
+            if !others_hold || !entry_holds || words[cells::ROW_WORDS - 2..] != [0, 0] {
+                return Err(format!(
+                    "global row {index} reads {words:?}, its entry's is {expected:?}"
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn state_of(&self, entry: &CacheEntry) -> CallSiteState {
@@ -1616,6 +2702,94 @@ impl InlineCaches {
                 None => CallSiteState::Vacant,
             },
         }
+    }
+}
+
+/// The cell an entry with `guard` and `target` is to have, `found` the
+/// one it has, or `None` for a site state, whose cell
+/// `verify_site_state_cell` checks: `Cell::VACANT` for a vacant entry,
+/// and for a filled one its guard -- the entry's own, or for a target
+/// counted from N or S a word of the application whose id the entry's
+/// guard is, as `application_of` finds -- with the entry address, level
+/// and chain start its target decides. A global row's guard is the
+/// entry's own whatever the rule, and its caller compares it so.
+fn expected_cell(
+    guard: DispatchId,
+    target: &Target,
+    found: Cell,
+    application_of: &dyn Fn(u64) -> Option<DispatchId>,
+    jit: &JitState,
+) -> Result<Option<Cell>, String> {
+    let chain = match target {
+        Target::Vacant => return Ok(Some(Cell::VACANT)),
+        Target::Polymorphic { .. } | Target::Megamorphic { .. } => return Ok(None),
+        Target::Method { chain, .. }
+        | Target::Slot { chain, .. }
+        | Target::NestedClass { chain, .. }
+        | Target::Primitive { chain, .. }
+        | Target::Factory { chain, .. } => *chain,
+    };
+    let chain_start = chain_start_of(chain);
+    let guard = match chain_start {
+        ChainStart::ReceiverClass => u64::from(guard.bits()),
+        ChainStart::LexicalClass | ChainStart::Superclass => {
+            if application_of(found.guard) != Some(guard) {
+                return Err(format!(
+                    "the guard {} is no word of the application with id {}",
+                    found.guard,
+                    guard.bits()
+                ));
+            }
+            found.guard
+        }
+    };
+    Ok(Some(Cell {
+        guard,
+        entry: jit::cell_entry(jit, target),
+        level: cell_level(target),
+        chain_start: chain_start as u64,
+    }))
+}
+
+/// Whether `found` is a cell an entry whose cell is `expected` may hold:
+/// the same, but for an entry address the JIT's state has moved on from
+/// since -- the miss stub of a body since compiled or refused, which the
+/// site's next miss rewrites (`decide_at`).
+fn cell_may_be(found: Cell, expected: Cell, jit: &JitState) -> bool {
+    Cell {
+        entry: expected.entry,
+        ..found
+    } == expected
+        && jit.cell_entry_may_be(found.entry, expected.entry)
+}
+
+/// Whether a polymorphic or megamorphic site's cell is the one its state
+/// is to have (`site_state_cell`): no receiver matches its guard, its
+/// entry and level are its state's, and it counts from N exactly when the
+/// site is private -- the one thing its chain start must say, since
+/// whether the site is a `super` one its instruction says.
+fn verify_site_state_cell(entry: &CacheEntry, found: Cell, jit: &JitState) -> Result<(), String> {
+    let private = entry.target.site_privacy() == Some(true);
+    let lexical = found.chain_start == ChainStart::LexicalClass as u64;
+    let expected = Cell {
+        chain_start: found.chain_start,
+        ..site_state_cell(jit, &entry.target, 0)
+    };
+    if found != expected || private != lexical {
+        return Err(format!(
+            "the site state's cell reads {found:?}, its state's is {expected:?} (private: {private})"
+        ));
+    }
+    Ok(())
+}
+
+/// Where a target recorded under `rule` counts its levels from: the
+/// `chain_start_of` its chain, which `fill` keeps consistent with the rule.
+fn rule_chain_start(rule: CacheRule) -> ChainStart {
+    match rule {
+        CacheRule::Public | CacheRule::Lexical(_) => ChainStart::ReceiverClass,
+        CacheRule::LexicalPrivate => ChainStart::LexicalClass,
+        CacheRule::Super => ChainStart::Superclass,
     }
 }
 
@@ -1669,6 +2843,66 @@ mod tests {
     use super::*;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction};
     use ns_syntax::Span;
+
+    /// The cell a public site's entry for `target` takes with `guard`.
+    pub(super) fn public_cell(guard: DispatchId, target: &Target, jit: &JitState) -> Cell {
+        Cell {
+            guard: u64::from(guard.bits()),
+            entry: jit::cell_entry(jit, target),
+            level: cell_level(target),
+            chain_start: ChainStart::ReceiverClass as u64,
+        }
+    }
+
+    impl InlineCaches {
+        /// `advance` with the cell a public site's entry takes, for the
+        /// tests of the caches themselves.
+        fn advance_public(
+            &mut self,
+            index: usize,
+            guard: DispatchId,
+            target: Target,
+            private: bool,
+            jit: &JitState,
+        ) {
+            let cell = public_cell(guard, &target, jit);
+            self.advance(index, guard, target, private, cell, jit);
+        }
+    }
+
+    /// A global cache with its cells, for the tests of the global cache
+    /// alone, whose entries are filed as a public site's.
+    struct TestGlobal {
+        global: GlobalCache,
+        cells: Cells,
+        jit: JitState,
+    }
+
+    impl TestGlobal {
+        fn with_groups(groups: usize) -> TestGlobal {
+            let mut cells = Cells::new();
+            cells.vacate_global_rows(0..groups * 2);
+            TestGlobal {
+                global: GlobalCache::with_groups(groups),
+                cells,
+                jit: JitState::new(),
+            }
+        }
+
+        fn get(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> Option<&Target> {
+            self.global.get(&mut self.cells, guard, selector, rule)
+        }
+
+        fn insert(&mut self, guard: DispatchId, selector: Symbol, rule: CacheRule, target: Target) {
+            let cell = public_cell(guard, &target, &self.jit);
+            self.global
+                .insert(&mut self.cells, guard, selector, rule, target, cell);
+        }
+
+        fn clear(&mut self) {
+            self.global.clear(&mut self.cells);
+        }
+    }
 
     /// A factory target on `chain`, for the tests of the caches themselves,
     /// which read only its chain.
@@ -1792,10 +3026,10 @@ mod tests {
     /// when a third arrives, and `clear` vacates every key at once.
     #[test]
     fn a_global_cache_keeps_colliding_keys_apart() {
-        let mut global = GlobalCache::with_groups(1);
+        let mut global = TestGlobal::with_groups(1);
         let selector = Symbol::NEW;
         let guards: Vec<DispatchId> = (3..6).map(DispatchId::from_counter).collect();
-        let chain_of = |global: &mut GlobalCache, guard: DispatchId, rule: CacheRule| match global
+        let chain_of = |global: &mut TestGlobal, guard: DispatchId, rule: CacheRule| match global
             .get(guard, selector, rule)
         {
             Some(Target::Factory { chain, .. }) => Some(*chain),
@@ -1859,7 +3093,7 @@ mod tests {
     /// own N yet (`docs/design/dispatch.md`, "3b -- The caches").
     #[test]
     fn a_global_cache_keys_a_lexical_entry_by_its_lexical_application_too() {
-        let mut global = GlobalCache::with_groups(2);
+        let mut global = TestGlobal::with_groups(2);
         let selector = Symbol::NEW;
         let guard = DispatchId::from_counter(3);
         let (first_lexical, second_lexical) =
@@ -1898,7 +3132,7 @@ mod tests {
     /// use).
     #[test]
     fn a_group_keeps_the_more_recently_used_of_two_keys() {
-        let mut cache = GlobalCache::with_groups(1);
+        let mut cache = TestGlobal::with_groups(1);
         let selector = Symbol::NEW;
         let (first, second, third) = (
             DispatchId::from_counter(3),
@@ -1986,13 +3220,38 @@ mod tests {
             recorded_guard,
         };
         let kept = level(9);
+        let jit = JitState::new();
         let base = caches.fresh_range(5).index();
-        caches.advance(base, guard(0), slot(kept, DispatchId::NONE), false);
-        caches.advance(base + 1, guard(1), slot(level(1), DispatchId::NONE), false);
-        caches.advance(base + 2, guard(1), slot(kept, guard(2)), false);
-        caches.advance(base + 3, guard(1), slot(kept, DispatchId::NONE), false);
-        caches.advance(base + 4, guard(0), slot(kept, DispatchId::NONE), false);
-        caches.advance(base + 4, guard(1), slot(kept, DispatchId::NONE), false);
+        caches.advance_public(base, guard(0), slot(kept, DispatchId::NONE), false, &jit);
+        caches.advance_public(
+            base + 1,
+            guard(1),
+            slot(level(1), DispatchId::NONE),
+            false,
+            &jit,
+        );
+        caches.advance_public(base + 2, guard(1), slot(kept, guard(2)), false, &jit);
+        caches.advance_public(
+            base + 3,
+            guard(1),
+            slot(kept, DispatchId::NONE),
+            false,
+            &jit,
+        );
+        caches.advance_public(
+            base + 4,
+            guard(0),
+            slot(kept, DispatchId::NONE),
+            false,
+            &jit,
+        );
+        caches.advance_public(
+            base + 4,
+            guard(1),
+            slot(kept, DispatchId::NONE),
+            false,
+            &jit,
+        );
         let selector = Symbol::intern("value");
         let lexical = CacheRule::Lexical(guard(0));
         for (key, rule) in [
@@ -2000,9 +3259,9 @@ mod tests {
             (guard(1), lexical),
             (guard(1), CacheRule::Public),
         ] {
-            caches
-                .global
-                .insert(key, selector, rule, slot(kept, DispatchId::NONE));
+            let target = slot(kept, DispatchId::NONE);
+            let cell = public_cell(key, &target, &jit);
+            caches.global_insert(key, selector, rule, target, cell);
         }
         caches.record_slot_level(guard(1), level(1));
         let mut freed = FreedIds::default();
@@ -2020,15 +3279,14 @@ mod tests {
         assert!(caches.polymorphic_hit(base + 4, guard(0)).is_none());
         assert!(caches.polymorphic_hit(base + 4, guard(1)).is_some());
         assert!(caches
-            .global
-            .get(guard(0), selector, CacheRule::Public)
+            .global_get(guard(0), selector, CacheRule::Public)
             .is_none());
-        assert!(caches.global.get(guard(1), selector, lexical).is_none());
+        assert!(caches.global_get(guard(1), selector, lexical).is_none());
         assert!(caches
-            .global
-            .get(guard(1), selector, CacheRule::Public)
+            .global_get(guard(1), selector, CacheRule::Public)
             .is_some());
         assert!(!caches.slot_level_verified(guard(1), level(1)));
+        assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
     }
 
     /// A site moves vacant, monomorphic, polymorphic in the order first
@@ -2046,7 +3304,8 @@ mod tests {
             recorded_guard: DispatchId::NONE,
         };
         let guard = |number: u32| DispatchId::from_counter(DispatchId::FIRST_MINTED + number);
-        caches.advance(index, guard(0), slot(0), false);
+        let jit = JitState::new();
+        caches.advance_public(index, guard(0), slot(0), false, &jit);
         assert_eq!(
             caches.state_of(&caches.sites[index]),
             CallSiteState::Monomorphic(CachedTarget {
@@ -2055,7 +3314,7 @@ mod tests {
             })
         );
         for number in 1..4 {
-            caches.advance(index, guard(number), slot(number), false);
+            caches.advance_public(index, guard(number), slot(number), false, &jit);
         }
         let fields = match caches.state_of(&caches.sites[index]) {
             CallSiteState::Polymorphic(targets) => targets
@@ -2074,7 +3333,8 @@ mod tests {
             caches.polymorphic_hit(index, guard(2)),
             Some(Target::Slot { field: 2, .. })
         ));
-        caches.advance(index, guard(4), slot(4), false);
+        assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
+        caches.advance_public(index, guard(4), slot(4), false, &jit);
         assert_eq!(
             caches.state_of(&caches.sites[index]),
             CallSiteState::Megamorphic
@@ -2082,13 +3342,14 @@ mod tests {
         assert_eq!(caches.free_blocks, vec![0]);
         assert!(caches.polymorphic_hit(index, guard(2)).is_none());
         // A private target never enters a site decided non-private.
-        caches.advance(index, guard(5), slot(5), true);
+        caches.advance_public(index, guard(5), slot(5), true, &jit);
         assert_eq!(
             caches.state_of(&caches.sites[index]),
             CallSiteState::Megamorphic
         );
         // Out of range is a no-op, not a panic.
-        caches.advance(usize::MAX, guard(0), slot(0), false);
+        caches.advance_public(usize::MAX, guard(0), slot(0), false, &jit);
+        assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
     }
 
     /// An entry holds no handle and is the size the pool's blocks are laid

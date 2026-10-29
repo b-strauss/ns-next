@@ -6430,3 +6430,70 @@ loop and an overflow in machine code.
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
 8's third stage, sends and the caches in machine code, next, and what the
 foundation's reviews left to the stages after it.
+
+## Sends and the caches in machine code, road step 8's third stage (2026-10-29)
+
+Road step 8's third stage ([execution.md](design/execution.md), "The
+baseline JIT's foundation", "Sends, returns and the exit that
+materializes"; [its plan](superpowers/plans/2026-10-28-1928-jit-sends.md)).
+Every inline cache entry has a machine-readable cell beside it, in a
+reservation of its own, written in the same function as the entry, and
+the global cache a mirror of rows; a cached `SendPublic`, `SendLexical`
+or `SendSuper` compares its guard with its cell's and calls through the
+cell into the callee's machine code or a stub -- polymorphic,
+megamorphic, a getter, a setter, a quick method, a leaf-safe mirror
+method, the leaf stub, the refusing stub -- each doing what
+`act_with_base` does for its target; the callee writes its own header
+places after its checks and returns by `ret`; the miss leaf decides the
+send as the interpreter's miss does, compiles a callee at its second
+entry from inside machine code and heals the cells it went through; an
+exit at any depth of compiled frames walks their return addresses and
+materializes them; the depth count, the stack's end, the callee
+hand-over and the application id table's address are machine words.
+Every register the sends and the stubs use is a named role of the macro
+assembler, held by a source scan. A body that cannot loop is entered only
+by compiled calls, and one that keeps leaving its machine code is
+abandoned. Measured with three builds a side against `master`
+([execution.md](design/execution.md), "What sends in machine code
+moved"): the geometric mean over twenty-two sources -14.84% with the JIT
+on, `bench_send` -75.8%, `bench_loop` -60.6%, List -56.5%, Mandelbrot
+-29.8%, Json -21.6% and Havlak -3.3%, Richards level; eleven sources
+slower by 0.9% to 3.7% with their builds separated, all programs whose
+hot code makes blocks or allocates and so runs interpreted, at the
+interpreter's speed -- which,
+with the JIT off, is 1.35% slower than `master`'s on the geometric mean,
+a cost of the stage's additions to the run loop and the push that is
+left open. The batch as first built ran Richards 2.6 times as long as
+`master`; four causes found by profiling were fixed before the
+measurement. No golden, `run-corpus` output or benchmark
+outcome changed; eight goldens were added under `goldens/runtime/jit/`.
+
+- `1a5d5619` -- the design and the plan.
+- `067f32ad` -- an uncached send, the reference lowering's, exits.
+- `acbb954e`, `13967eed` -- the depth count, its limit and the stack's
+  end as machine words, the limit exact when a VM error's reserve ends.
+- `4ea5c978` -- a machine-readable cell beside every cache entry.
+- `d349d3df`, `c75c7a83` -- the native stack's room, installing while
+  machine code runs, and the zone's map of bodies and returns.
+- `c395299e`, `c2f2d7d7`, `5d9c5c2f` -- compiled sends and returns, the
+  exit that materializes, the callee writing its own header places.
+- `bbe83d49`, `d1fb991e`, `e2bbc4f9` -- lexical and `super` sends, the
+  register roles and the architecture scan, one decision for a send
+  and its miss.
+- `e9ece77e` -- the polymorphic and megamorphic stubs and the
+  application id table.
+- `ad3b9eb7` -- the accessor, constant and leaf stubs and `SendMirror`.
+- `9d64f65b` -- which bodies are entered.
+- `a05fb94f`, `a74fcfcc`, `1794f148`, `11a57be4`, `cbe7908f` -- the
+  measurement's fixes: bodies called only, the setter stub, the leaf
+  stub's lookup, `Value`'s leaf-safe rows, the mirror method stub, the
+  abandoned body, the miss path's stall and the interpreter's accessors.
+- `fb4a18f5` -- the tests under `release-checks` and every stress mode.
+- `ec531abe` -- the leaf stub's slot path reads its own send's site,
+  which it had not: Havlak -6.1% and Richards -2.1% afterwards.
+- The documents' commit after them.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+8's fourth stage, closures, non-local return, allocation and the write
+barrier in machine code, next, and what stage 3's measurement and reviews
+left.

@@ -79,8 +79,8 @@ pub use heap::{
 };
 pub use interpreter::core_library::MANIFEST_SOURCE;
 pub use interpreter::{
-    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, HostError, HostResult,
-    HostSignal, Interpreter, MethodSide, Mutator,
+    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteCell, CallSiteState, HostError,
+    HostResult, HostSignal, Interpreter, MethodSide, Mutator,
 };
 pub use jit::JitStatistics;
 pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};

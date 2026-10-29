@@ -1,0 +1,150 @@
+/// One mixin applied over one to six superclasses, whose one compiled
+/// `step:` makes a `super` send, a private lexical send and a public
+/// lexical one from compiled code (`docs/design/execution.md`, "Sends in
+/// machine code"): each site meets one to six keys -- S's application,
+/// N's and the receiver's -- and goes polymorphic, which the polymorphic
+/// stub scans, then megamorphic, which the megamorphic stub probes in the
+/// global cache's mirror under the key the interpreter files it under.
+/// Every method loops once before it does anything else, so that its body
+/// is compiled at its second entry.
+///
+/// newspeak-spec.pdf 6.2 makes each `<: Marker` an application of its own
+/// with the class to its left as superclass, so one body of Marker's
+/// `step:` runs at six classes. 5.10 starts its `super step:` at the
+/// superclass of the activation's current class, First to Sixth, which
+/// answer value + 1 to value + 100000; 5.9's private rule finds
+/// `secret:`, value * 2, at the application that runs it, and 5.7 sends
+/// `bump:`, value + 7, to the receiver itself. So per value a receiver
+/// answers 4 value + 7 plus its superclass's offset, and over the values
+/// 0 to 999 2005000 plus 1000 times the offset; with the first count
+/// classes 2006000, 4021000, 6126000, 9131000, 21136000 and 123141000.
+/// The second round sends them again at the sites that went megamorphic
+/// in the first.
+class PolymorphicLexicalAndSuperSends = Object new () (
+  class First = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 1.
+    )
+  )
+
+  class Second = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 10.
+    )
+  )
+
+  class Third = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 100.
+    )
+  )
+
+  class Fourth = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 1000.
+    )
+  )
+
+  class Fifth = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 10000.
+    )
+  )
+
+  class Sixth = Object new () (
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 100000.
+    )
+  )
+
+  class Marker = Object new () (
+    private secret: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value * 2.
+    )
+
+    public bump: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^value + 7.
+    )
+
+    public step: value = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      ^(super step: value) + (secret: value) + (bump: value).
+    )
+  )
+
+  class MarkedFirst = First new <: Marker () ()
+
+  class MarkedSecond = Second new <: Marker () ()
+
+  class MarkedThird = Third new <: Marker () ()
+
+  class MarkedFourth = Fourth new <: Marker () ()
+
+  class MarkedFifth = Fifth new <: Marker () ()
+
+  class MarkedSixth = Sixth new <: Marker () ()
+
+  sumOver: receivers = (
+    |
+      sum ::= 0.
+    |
+    0 to: 999 do: [:value | receivers do: [:receiver | sum:: sum + (receiver step: value)]].
+    ^sum.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      receivers = {
+        MarkedFirst new.
+        MarkedSecond new.
+        MarkedThird new.
+        MarkedFourth new.
+        MarkedFifth new.
+        MarkedSixth new.
+      }.
+    |
+    1 to: 2 do: [:round |
+      1 to: 6 do: [:count |
+        transcript
+            show: (sumOver: (receivers copyFrom: 1 to: count)) printString;
+            newLine.
+      ].
+    ].
+  )
+)

@@ -87,6 +87,13 @@ const DEAD_REGISTER_TAG: u64 = 0b110;
 impl Word {
     pub(crate) const NIL: Word = Word(NIL_WORD);
 
+    /// A word no `Value` is in any build -- the never-made tag `0b110`
+    /// over a payload of 0, which is not the debug build's dead register
+    /// either -- that a leaf answering a value or nothing answers for
+    /// nothing (`jit::leaves`).
+    #[cfg(ns_jit)]
+    pub(crate) const NO_VALUE_BITS: u64 = 0b110;
+
     /// What a debug build writes into a register no instruction has
     /// written since its frame was pushed or its callee returned
     /// (`heap.rs`'s `dead_register`): a word no `Value` can be, under the
@@ -174,6 +181,10 @@ pub(crate) mod machine {
     pub(crate) const SMALL_INTEGER_TAG: u64 = super::SMALL_INTEGER_TAG;
     /// How far a `SmallInteger`'s payload is shifted above its tag.
     pub(crate) const TAG_BITS: u32 = super::TAG_BITS;
+    /// The tag bits of every word: 0 for an object's.
+    pub(crate) const TAG_MASK: u64 = super::TAG_MASK;
+    /// A `SmallFloat`'s tag, the one bit no other immediate's has.
+    pub(crate) const SMALL_FLOAT_TAG: u64 = super::SMALL_FLOAT_TAG;
 }
 
 /// A value that holds no handle -- `nil`, a Boolean, a `SmallInteger`, a

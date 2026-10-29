@@ -9,33 +9,49 @@
 
 use ns_assembler::{Condition, Label, Register};
 
+use crate::builtins::primitive::{mirror_entry, MachineCall};
 use crate::bytecode::{successors, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{value_bits, Immediate};
+use crate::interpreter::FeedbackBase;
 
 use super::leaves::Leaf;
 use super::macro_assembler::{LeafIndex, MacroAssembler, Operand};
-use super::stubs::{BlockWord, ExitKind};
-use super::{ProgramCounterMap, Refusal};
+use super::sends;
+use super::stubs::ExitKind;
+use super::{CallReturn, ProgramCounterMap, Refusal};
 
 /// A compiled body: its machine code, and where each instruction's code
 /// starts in it.
 pub(crate) struct BaselineBody {
     pub(crate) code: ns_assembler::Assembled,
     pub(crate) map: ProgramCounterMap,
-    /// Whether the code leaves before it can take a backward jump: every
-    /// path from the first instruction reaches an exit first, so the
-    /// code runs at most a few straight-line instructions the interpreter
-    /// would have run for less than the entry and the exit cost
+    /// Whether the code exits before it reaches a return, a compiled send
+    /// or a backward jump: every path from the first instruction reaches an
+    /// exit first, so the code runs at most a few straight-line
+    /// instructions the interpreter would have run for less than the entry
+    /// and the exit cost; such a body is neither installed nor entered
     /// (`jit::note_entry`).
-    pub(crate) leaves_before_a_loop: bool,
+    pub(crate) exits_at_once: bool,
+    /// Whether the code can take a backward jump before its first exit,
+    /// a return or a compiled send passed through: only such code runs a
+    /// loop in machine code that pays for an entry at an interpreter's
+    /// push; any other body is entered only by a compiled call
+    /// (`jit::CALLED_ONLY`), which costs no more than the interpreter's
+    /// push of it.
+    pub(crate) loops_before_an_exit: bool,
 }
 
 /// What `lower` did with one instruction, and what `compile` still emits
 /// for it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Lowering {
+pub(super) enum Lowering {
     /// The arm emitted the instruction's template itself.
     Template,
+    /// The arm emitted the template of a return or of a compiled send: a
+    /// template like `Template`, but one that does the work of a call, which
+    /// pays for entering the body
+    /// (`reaches_before_an_exit`).
+    Transfer,
     /// A call of `leaf` with `arguments`, the instruction's own
     /// interpreter step, which answers 0 when it ran the instruction and
     /// anything else, having changed nothing, to have the interpreter run
@@ -57,17 +73,38 @@ const SIGN_SHIFT: u8 = 63;
 /// macro assembler, every instruction's label -- all made before the first
 /// instruction is emitted, so that a forward jump names its target -- and
 /// the instruction being lowered.
-struct BodyAssembler {
-    macro_assembler: MacroAssembler,
+pub(super) struct BodyAssembler {
+    pub(super) macro_assembler: MacroAssembler,
     /// Each instruction's label, by program counter.
     starts: Vec<Label>,
     /// The body's argument count, which places its receiver in the frame.
-    argument_count: u16,
-    program_counter: u32,
+    pub(super) argument_count: u16,
+    /// The instruction being lowered.
+    pub(super) program_counter: u32,
+    /// Whether the body is a body-less declaration's own code
+    /// (`CompiledCode::is_declaration_code`), whose lexical walk starts at
+    /// its declaration's scope.
+    pub(super) declaration_code: bool,
     /// The backward jumps taken out of a conditional, each a label bound
     /// after the last instruction and the target it polls before and
     /// jumps to, so that the branch not taken falls straight through.
     backward_branches: Vec<(Label, u32)>,
+    /// Each call's return address, a label bound right after the call,
+    /// and the program counter of the send it is the call of, in the order
+    /// the calls are emitted (`call_send`).
+    call_returns: Vec<(Label, u32)>,
+    /// The feedback base the body's sends' cells are found from, embedded
+    /// in the code: its machine code is entered only by an activation with
+    /// this base (`JitState::interpreter_entry`).
+    pub(super) feedback_base: FeedbackBase,
+    /// The body's family's size, past which a site is uncached.
+    pub(super) family_size: u32,
+    /// One past the frame's last register: its window's end.
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(dead_code, reason = "only a debug build's poison reads it")
+    )]
+    pub(super) window_end: u16,
 }
 
 /// The scratch registers a template uses, by role.
@@ -336,19 +373,69 @@ impl BodyAssembler {
             .store_frame_register(destination, value);
     }
 
+    /// A send's call of the code at the address in `target`, recorded so
+    /// that its return address -- the address right after the `call`,
+    /// which the processor pushes and the exit's walk over the native
+    /// stack finds -- maps back to the send being lowered
+    /// (`ProgramCounterMap::program_counter_of_return`). Every call a
+    /// send's template emits goes through here, so none is left unmapped.
+    pub(super) fn call_send(&mut self, target: Register) {
+        let return_address = self.macro_assembler.call_returning(target);
+        self.call_returns
+            .push((return_address, self.program_counter));
+    }
+
+    /// `SendMirror` of a leaf-safe row: the mirror leaf's call, which runs
+    /// the send as `vm::send_mirror` does and writes its destination itself
+    /// (`leaves::mirror`), then on at the next instruction when it ran the
+    /// send, at `failure` when the row's leaf declined, and an exit that
+    /// re-executes the send, nothing written, for anything else.
+    fn send_mirror(&mut self, failure: u32) {
+        let program_counter = self.program_counter;
+        let frame = self.macro_assembler.roles().frame;
+        self.macro_assembler.call_leaf(
+            Leaf::Mirror.index(),
+            [
+                Operand::Register(frame),
+                Operand::Immediate(u64::from(program_counter)),
+                Operand::CodeAddress,
+            ],
+        );
+        let answer = self.macro_assembler.roles().leaf_result;
+        self.macro_assembler
+            .assembler()
+            .compare_immediate(answer, MIRROR_FAILED);
+        self.jump_to_if(Condition::Equal, failure);
+        self.macro_assembler
+            .assembler()
+            .compare_immediate(answer, 0);
+        self.macro_assembler
+            .exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
+    }
+
     /// The call of the generic leaf, which runs the instruction being
-    /// lowered through the interpreter's own effect function.
+    /// lowered through the interpreter's own effect function in the frame
+    /// whose register 0 the frame register points at, whichever frame of
+    /// the stretch that is, and whose body the code address names.
     fn step(&self) -> Lowering {
         Lowering::Leaf {
             leaf: Leaf::Step.index(),
             arguments: [
-                Operand::Block(BlockWord::Activation),
+                Operand::Register(self.macro_assembler.roles().frame),
                 Operand::Immediate(u64::from(self.program_counter)),
-                Operand::Immediate(0),
+                Operand::CodeAddress,
             ],
         }
     }
 }
+
+/// The mirror leaf's answer for a row's decline (`leaves::FAILED`), as an
+/// immediate operand.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the answer is a small constant"
+)]
+const MIRROR_FAILED: i32 = super::leaves::FAILED as i32;
 
 /// The `SmallInteger` tag, as an immediate operand.
 fn small_integer_tag() -> i32 {
@@ -402,11 +489,14 @@ fn allocated_literal(literal: &Literal) -> bool {
     }
 }
 
-/// Compiles `code` with `macro_assembler`: each instruction in turn, at a
-/// label whose offset the program-counter map records.
+/// Compiles `code` with `macro_assembler`, its sends' cells found from
+/// `feedback_base`: the prologue a compiled call enters at, then each
+/// instruction in turn, at a label whose offset the program-counter map
+/// records.
 pub(crate) fn compile(
     code: &CompiledCode,
     mut macro_assembler: MacroAssembler,
+    feedback_base: FeedbackBase,
 ) -> Result<BaselineBody, Refusal> {
     // A program counter of the map, and an exit's, is a `u32`; the bound
     // is the zone's layout's, which a later stage's tables index by
@@ -421,9 +511,19 @@ pub(crate) fn compile(
         starts,
         argument_count: code.argument_count,
         program_counter: 0,
+        declaration_code: code.is_declaration_code(),
         backward_branches: Vec::new(),
+        call_returns: Vec::new(),
+        feedback_base,
+        family_size: code.family_size,
+        window_end: code.register_count.max(
+            code.argument_count
+                .saturating_add(crate::bytecode::HEADER_REGISTERS),
+        ),
     };
+    sends::prologue(&mut body, code);
     let mut exits = Vec::with_capacity(usize::from(count));
+    let mut transfers = Vec::with_capacity(usize::from(count));
     for program_counter in 0..u32::from(count) {
         let start = body.starts[program_counter as usize];
         body.macro_assembler.assembler().bind(start);
@@ -434,8 +534,9 @@ pub(crate) fn compile(
         // instruction: the instruction was decided by `lower`'s arm.
         let lowering = lower(&instruction, &mut body);
         exits.push(lowering == Lowering::Exit);
+        transfers.push(lowering == Lowering::Transfer);
         match lowering {
-            Lowering::Template => {}
+            Lowering::Template | Lowering::Transfer => {}
             Lowering::Leaf { leaf, arguments } => {
                 let macro_assembler = &mut body.macro_assembler;
                 macro_assembler.call_leaf(leaf, arguments);
@@ -449,35 +550,63 @@ pub(crate) fn compile(
             }
         }
     }
-    let leaves_before_a_loop = !takes_a_backward_jump_before_an_exit(code, &exits);
+    let exits_at_once = !reaches_before_an_exit(code, &exits, &transfers, true);
+    let loops_before_an_exit = reaches_before_an_exit(code, &exits, &transfers, false);
     body.emit_backward_branches();
     let assembled = body
         .macro_assembler
         .finish()
         .map_err(|_| Refusal::Unassembled)?;
-    let starts = body
-        .starts
-        .into_iter()
-        .map(|label| {
-            assembled.label_offsets[label.index()]
-                .expect("internal: every instruction's label is bound")
-        })
-        .collect();
+    let map = program_counter_map(&assembled, &body.starts, &body.call_returns);
     Ok(BaselineBody {
         code: assembled,
-        map: ProgramCounterMap::new(starts),
-        leaves_before_a_loop,
+        map,
+        exits_at_once,
+        loops_before_an_exit,
     })
 }
 
+/// The map of a body laid out as `assembled`: each instruction's start,
+/// the label of `starts` by program counter, and each call's return
+/// address, a label of `call_returns` with its send's program counter.
+fn program_counter_map(
+    assembled: &ns_assembler::Assembled,
+    starts: &[Label],
+    call_returns: &[(Label, u32)],
+) -> ProgramCounterMap {
+    let offset_of = |label: Label| {
+        assembled.label_offsets[label.index()].expect("internal: every recorded label is bound")
+    };
+    ProgramCounterMap::new(
+        starts.iter().map(|label| offset_of(*label)).collect(),
+        call_returns
+            .iter()
+            .map(|(label, program_counter)| CallReturn {
+                machine_offset: offset_of(*label),
+                program_counter: *program_counter,
+            })
+            .collect(),
+    )
+}
+
 /// Whether the code of `code`, whose instructions at the program counters
-/// `exits` marks lower to exits, can take a backward jump before its
-/// first exit: whether some instruction reachable from the first through
-/// templates and leaves alone jumps back. Only such code does work in
-/// machine code that pays for entering it; a leaf that declines exits,
-/// but is counted as falling through, since it declines only what the
-/// interpreter must run.
-fn takes_a_backward_jump_before_an_exit(code: &CompiledCode, exits: &[bool]) -> bool {
+/// `exits` marks lower to exits and `transfers` marks lower to a return or
+/// a compiled send, can take a backward jump -- or, when
+/// `transfer_suffices`, reach a transfer -- before its first exit: whether
+/// some instruction reachable from the first through templates, leaves
+/// and, unless a transfer suffices, transfers is one or jumps back. Only
+/// code that reaches a transfer or a loop does work in machine code that
+/// pays for a compiled call of it; a body that exits after a few
+/// straight-line instructions costs an entry and an exit on every push.
+/// Only code that loops pays for an entry at an interpreter's push. A
+/// leaf that declines exits, but is counted as falling through, since it
+/// declines only what the interpreter must run.
+fn reaches_before_an_exit(
+    code: &CompiledCode,
+    exits: &[bool],
+    transfers: &[bool],
+    transfer_suffices: bool,
+) -> bool {
     let mut reached = vec![false; exits.len()];
     let mut pending = Vec::new();
     if let Some(first) = reached.first_mut() {
@@ -487,6 +616,9 @@ fn takes_a_backward_jump_before_an_exit(code: &CompiledCode, exits: &[bool]) -> 
     while let Some(program_counter) = pending.pop() {
         if exits[program_counter as usize] {
             continue;
+        }
+        if transfer_suffices && transfers[program_counter as usize] {
+            return true;
         }
         let instruction = code.instruction(program_counter as usize);
         for successor in successors(program_counter, &instruction) {
@@ -589,15 +721,73 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             body.integer_binary(*operation, *destination, *left, *right, *target);
             Lowering::Template
         }
-        // Sends, returns, the initializers' invocations and the lexical
-        // walk an implicit receiver makes: stage 3, with the caches.
-        Instruction::SendLexical { .. } => Lowering::Exit,
-        Instruction::SendPublic { .. } => Lowering::Exit,
+        Instruction::SendPublic {
+            selector,
+            receiver_register,
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+        } => sends::send_public(
+            body,
+            *selector,
+            *receiver_register,
+            *argument_base,
+            argument_sources,
+            *destination,
+            *call_site,
+        ),
+        // Only the reference lowering emits it, always uncached: an exit,
+        // so that the oracle stays interpreted at its sends.
         Instruction::SendInlinable { .. } => Lowering::Exit,
-        Instruction::SendSuper { .. } => Lowering::Exit,
-        Instruction::SendMirror { .. } => Lowering::Exit,
-        Instruction::Return { .. } => Lowering::Exit,
-        Instruction::ImplicitReturn { .. } => Lowering::Exit,
+        Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
+            sends::return_from(body, *register)
+        }
+        Instruction::SendLexical {
+            selector,
+            depth,
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+            ..
+        } => sends::send_lexical(
+            body,
+            *selector,
+            *depth,
+            *argument_base,
+            argument_sources,
+            *destination,
+            *call_site,
+        ),
+        Instruction::SendSuper {
+            selector,
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+            ..
+        } => sends::send_super(
+            body,
+            *selector,
+            *argument_base,
+            argument_sources,
+            *destination,
+            *call_site,
+        ),
+        // A leaf-safe row's leaf through the shim; every other row's send
+        // the interpreter's.
+        Instruction::SendMirror {
+            primitive, failure, ..
+        } => match mirror_entry(*primitive).machine_call {
+            MachineCall::Leaf => {
+                body.send_mirror(*failure);
+                Lowering::Transfer
+            }
+            MachineCall::Exit => Lowering::Exit,
+        },
+        // The initializers' invocations and the lexical walk an implicit
+        // receiver makes: the rest of stage 3.
         Instruction::InitializeInstance { .. } => Lowering::Exit,
         Instruction::CheckAppliedClause { .. } => Lowering::Exit,
         Instruction::InitializeSuperclass { .. } => Lowering::Exit,
@@ -628,6 +818,7 @@ mod tests {
     use crate::builtins::numbers::checked_floor_divide;
     use crate::bytecode::{CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
     use crate::heap::{fits_small_integer, Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+    use crate::interpreter::FeedbackBase;
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
     use crate::jit::stubs::testing::Machine;
     use crate::jit::stubs::MachineExit;
@@ -655,7 +846,7 @@ mod tests {
                     destination: 14,
                     source: 13,
                 },
-                Instruction::Return { register: 14 },
+                Instruction::SignalNonBoolean { register: 14 },
             ],
             0,
         )
@@ -667,12 +858,91 @@ mod tests {
     fn run(code: &CompiledCode, frame: &mut [u64], safepoint_requested: bool) -> MachineExit {
         let mut macro_assembler = MacroAssembler::new(Abi::host());
         macro_assembler.set_exit_at_every_poll(false);
-        let body = super::compile(code, macro_assembler).expect("compiled");
+        let body = compiled(code, macro_assembler);
         let mut machine = Machine::new();
-        let entry = machine.install(&body.code);
+        let entry = interpreter_entry(&body, machine.install(&body.code));
         machine
             .run(entry, frame, 0, safepoint_requested, &mut (), &[])
             .0
+    }
+
+    /// `code` compiled with `macro_assembler`, its sends uncached.
+    fn compiled(code: &CompiledCode, macro_assembler: MacroAssembler) -> super::BaselineBody {
+        super::compile(code, macro_assembler, FeedbackBase::NOT_ASSIGNED).expect("compiled")
+    }
+
+    /// Where the run loop enters `body`, installed at `start`: its first
+    /// instruction, past the prologue a compiled call enters at.
+    fn interpreter_entry(
+        body: &super::BaselineBody,
+        start: ns_memory::CodeOffset,
+    ) -> ns_memory::CodeOffset {
+        ns_memory::CodeOffset(start.0 + body.map.machine_offset(0).expect("mapped"))
+    }
+
+    /// The bytes of `call rax` and `call rcx`: `FF /2` with the register
+    /// in the ModRM byte's r/m field and mode 3 (Intel SDM, Volume 2A,
+    /// "CALL -- Call Procedure"), neither needing a REX prefix.
+    const CALL_RAX: [u8; 2] = [0xFF, 0xD0];
+    const CALL_RCX: [u8; 2] = [0xFF, 0xD1];
+
+    /// Where a call whose encoding is `call` ends in `bytes`, the one place
+    /// it occurs.
+    fn end_of_the_one(bytes: &[u8], call: [u8; 2]) -> u32 {
+        let ends: Vec<usize> = bytes
+            .windows(2)
+            .enumerate()
+            .filter(|(_, window)| *window == call)
+            .map(|(start, _)| start + 2)
+            .collect();
+        assert_eq!(ends.len(), 1, "the call occurs once");
+        u32::try_from(ends[0]).expect("small")
+    }
+
+    #[test]
+    fn a_sends_call_maps_its_return_address_to_the_send() {
+        use crate::jit::stubs::ExitKind;
+        use ns_assembler::x64::{RAX, RCX};
+
+        let mut macro_assembler = MacroAssembler::new(Abi::host());
+        let starts = (0..2)
+            .map(|_| macro_assembler.assembler().label())
+            .collect();
+        let mut body = super::BodyAssembler {
+            macro_assembler,
+            starts,
+            argument_count: 0,
+            program_counter: 0,
+            declaration_code: false,
+            backward_branches: Vec::new(),
+            call_returns: Vec::new(),
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
+            family_size: 0,
+            window_end: 0,
+        };
+        // Each call is followed by more code of its instruction, so that a
+        // label bound anywhere but right after the call would show.
+        for (program_counter, target) in [(0u32, RAX), (1, RCX)] {
+            body.program_counter = program_counter;
+            let start = body.starts[program_counter as usize];
+            body.macro_assembler.assembler().bind(start);
+            body.call_send(target);
+            body.macro_assembler.store_frame_register(3, target);
+        }
+        body.macro_assembler.exit(ExitKind::Reexecute, 1);
+        let assembled = body.macro_assembler.finish().expect("assembled");
+        let map = super::program_counter_map(&assembled, &body.starts, &body.call_returns);
+        let first = end_of_the_one(&assembled.bytes, CALL_RAX);
+        let second = end_of_the_one(&assembled.bytes, CALL_RCX);
+        assert_eq!(map.program_counter_of_return(first), Some(0));
+        assert_eq!(map.program_counter_of_return(second), Some(1));
+        assert_eq!(map.program_counter_of_return(first + 1), None, "past it");
+        assert_eq!(
+            map.program_counter_of_return(first - 1),
+            None,
+            "inside the call"
+        );
+        assert_eq!(map.program_counter_of_return(0), None);
     }
 
     fn integer(value: i64) -> u64 {
@@ -687,12 +957,11 @@ mod tests {
 
     #[test]
     fn every_instruction_starts_at_its_own_offset_in_order() {
-        let body = super::compile(&three_instructions(), MacroAssembler::new(Abi::host()))
-            .expect("compiled");
+        let body = compiled(&three_instructions(), MacroAssembler::new(Abi::host()));
         let starts: Vec<u32> = (0..3)
             .map(|program_counter| body.map.machine_offset(program_counter).expect("mapped"))
             .collect();
-        assert_eq!(starts[0], 0);
+        assert!(starts[0] > 0, "the prologue comes first");
         assert!(starts[0] < starts[1] && starts[1] < starts[2]);
         assert!(starts[2] < u32::try_from(body.code.bytes.len()).expect("small"));
         for (program_counter, start) in (0..).zip(&starts) {
@@ -733,7 +1002,7 @@ mod tests {
                 literal: literal.clone(),
             })
             .collect();
-        instructions.push(Instruction::Return { register: 0 });
+        instructions.push(Instruction::SignalNonBoolean { register: 0 });
         let mut frame = [0u64; 24];
         let exit = run(&method(instructions, 0), &mut frame, false);
         assert_eq!(exit, MachineExit::Reexecute { program_counter: 5 });
@@ -764,7 +1033,7 @@ mod tests {
         let code = method(
             vec![
                 Instruction::LoadSelf { destination: 16 },
-                Instruction::Return { register: 16 },
+                Instruction::SignalNonBoolean { register: 16 },
             ],
             2,
         );
@@ -778,14 +1047,15 @@ mod tests {
         assert_eq!(frame[16], 0x1230);
     }
 
-    /// A body that runs `instruction` at 0, returns at 1 when it falls
-    /// through and at 2 when it jumps to its target, 2.
+    /// A body that runs `instruction` at 0 and exits at 1 when it falls
+    /// through and at 2 when it jumps to its target, 2: at an instruction
+    /// that always exits.
     fn branching(instruction: Instruction) -> CompiledCode {
         method(
             vec![
                 instruction,
-                Instruction::Return { register: 0 },
-                Instruction::Return { register: 0 },
+                Instruction::SignalNonBoolean { register: 0 },
+                Instruction::SignalNonBoolean { register: 0 },
             ],
             0,
         )
@@ -871,19 +1141,19 @@ mod tests {
     fn a_backward_branch_taken_polls_and_one_not_taken_falls_through() {
         let code = method(
             vec![
-                Instruction::Return { register: 0 },
+                Instruction::SignalNonBoolean { register: 0 },
                 Instruction::BranchIfTrue {
                     register: 0,
                     target: 0,
                 },
-                Instruction::Return { register: 0 },
+                Instruction::SignalNonBoolean { register: 0 },
             ],
             0,
         );
         let compiled = |word: u64| {
             let mut macro_assembler = MacroAssembler::new(Abi::host());
             macro_assembler.set_exit_at_every_poll(false);
-            let body = super::compile(&code, macro_assembler).expect("compiled");
+            let body = compiled(&code, macro_assembler);
             let start = body.map.machine_offset(1).expect("mapped");
             let mut machine = Machine::new();
             let entry = machine.install(&body.code);
@@ -990,9 +1260,9 @@ mod tests {
             });
             let mut macro_assembler = MacroAssembler::new(Abi::host());
             macro_assembler.set_exit_at_every_poll(false);
-            let body = super::compile(&code, macro_assembler).expect("compiled");
+            let body = compiled(&code, macro_assembler);
             let mut machine = Machine::new();
-            let entry = machine.install(&body.code);
+            let entry = interpreter_entry(&body, machine.install(&body.code));
             for &left in &operands {
                 for &right in &operands {
                     let mut frame = [0u64; 24];
@@ -1052,10 +1322,15 @@ mod tests {
     #[test]
     fn a_loop_reachable_only_past_an_exit_is_no_reason_to_enter() {
         let (code, exits) = loop_past_an_instruction(true);
-        assert!(!super::takes_a_backward_jump_before_an_exit(&code, &exits));
+        assert!(!super::reaches_before_an_exit(
+            &code,
+            &exits,
+            &[false; 6],
+            true
+        ));
         let (code, exits) = loop_past_an_instruction(false);
         assert!(
-            super::takes_a_backward_jump_before_an_exit(&code, &exits),
+            super::reaches_before_an_exit(&code, &exits, &[false; 6], true),
             "the same loop through a template is"
         );
     }
@@ -1086,6 +1361,59 @@ mod tests {
             0,
         );
         let exits = [false, false, false, false, false, true];
-        assert!(!super::takes_a_backward_jump_before_an_exit(&code, &exits));
+        assert!(!super::reaches_before_an_exit(
+            &code,
+            &exits,
+            &[false; 6],
+            true
+        ));
+    }
+
+    /// A body that runs to its return reaches a transfer, so a compiled
+    /// call of it pays, but does not loop, so a push does not enter it;
+    /// one that loops past a transfer -- a compiled send -- does both.
+    #[test]
+    fn a_return_is_a_transfer_but_no_loop() {
+        let (code, _) = loop_past_an_instruction(true);
+        let transfers = [false, false, false, true];
+        let exits_but_the_return = [false, false, false, false];
+        assert!(super::reaches_before_an_exit(
+            &code,
+            &exits_but_the_return,
+            &transfers,
+            true
+        ));
+        let straight = method(
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 13,
+                    literal: Literal::SmallInteger(1),
+                },
+                Instruction::Return { register: 13 },
+            ],
+            0,
+        );
+        assert!(super::reaches_before_an_exit(
+            &straight,
+            &[false, false],
+            &[false, true],
+            true
+        ));
+        assert!(!super::reaches_before_an_exit(
+            &straight,
+            &[false, false],
+            &[false, true],
+            false
+        ));
+        let (looping, looping_exits) = loop_past_an_instruction(false);
+        assert!(
+            super::reaches_before_an_exit(
+                &looping,
+                &looping_exits,
+                &[false, true, false, false],
+                false
+            ),
+            "a loop through a compiled send is entered at a push"
+        );
     }
 }

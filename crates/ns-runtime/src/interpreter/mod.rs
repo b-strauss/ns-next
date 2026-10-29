@@ -46,7 +46,7 @@ pub use inline_cache::FeedbackBase;
 // (`Interpreter::cache_statistics`), public through `interpreter` for the
 // same reason.
 pub use inline_cache::{
-    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteState, MethodSide,
+    CacheStatistics, CachedTarget, CachedTargetKind, CallSiteCell, CallSiteState, MethodSide,
 };
 
 pub(crate) enum Signal<'gc> {
@@ -548,6 +548,9 @@ pub struct Mutator<'gc> {
     /// `Interpreter::resume_unhandled_exceptions`, standing in for the
     /// debugger. Zero outside a test that asks.
     pub(crate) unhandled_exceptions_to_resume: usize,
+    /// The live activations when the last unhandled exception ended a run,
+    /// innermost first (`Interpreter::stack_trace`).
+    pub(crate) last_unhandled_stack: Vec<String>,
     /// The depth limit's reserve (`DEPTH_RESERVE`), while it is held: the
     /// frame of the activation a VM error arose in, whose `signal` -- or,
     /// for a message nothing understood, whose `Object>>doesNotUnderstand:`
@@ -869,7 +872,7 @@ impl Interpreter {
                 // Every activation of the run has been popped, so whatever
                 // held the reserve is gone: released here rather than left
                 // to the next check to find so.
-                self.enter(|mutator| mutator.depth_reserve = None);
+                self.enter(|mutator| mutator.set_depth_reserve(None));
                 result
             }
         };
@@ -912,25 +915,33 @@ impl Interpreter {
         sent: Symbol,
     ) -> Vec<CallSiteState> {
         self.enter(|mutator| {
-            let Some(object) = mutator.fetch(class).as_object() else {
-                return Vec::new();
-            };
-            let Some(application) = mutator.heap.class_application(object) else {
-                return Vec::new();
-            };
-            let mixin = match side {
-                MethodSide::Instance => Some(application.mixin.clone()),
-                MethodSide::Class => application.mixin.class_side.clone(),
-            };
-            let Some(code) = mixin.and_then(|mixin| {
-                mixin
-                    .compiled_method(method)
-                    .map(|found| found.code.clone())
-            }) else {
-                return Vec::new();
-            };
-            mutator.caches.states_of(&code, sent)
+            method_code(mutator, class, side, method)
+                .map_or_else(Vec::new, |code| mutator.caches.states_of(&code, sent))
         })
+    }
+
+    /// The cells of `method`'s sends of `sent` (`call_site_states`'s
+    /// sites): the words machine code reads beside each entry. A test hook.
+    #[doc(hidden)]
+    pub fn call_site_cells(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+        sent: Symbol,
+    ) -> Vec<CallSiteCell> {
+        self.enter(|mutator| {
+            method_code(mutator, class, side, method)
+                .map_or_else(Vec::new, |code| mutator.caches.cells_of(&code, sent))
+        })
+    }
+
+    /// Whether every inline-cache entry's machine-readable cell agrees with
+    /// the entry (`docs/design/execution.md`, "Inline caches"); the first
+    /// disagreement, described, otherwise. A test hook.
+    #[doc(hidden)]
+    pub fn verify_cells(&mut self) -> Result<(), String> {
+        self.enter(|mutator| mutator.caches.verify_cells(&mutator.heap, &mutator.jit))
     }
 
     /// The `platform` object, rooted for a host.
@@ -986,20 +997,30 @@ impl Interpreter {
     /// the JIT on later does not revive it.
     #[doc(hidden)]
     pub fn set_jit_enabled(&mut self, enabled: bool) {
-        self.enter(|mutator| mutator.jit.set_enabled(enabled));
+        self.enter(|mutator| {
+            if mutator.jit.set_enabled(enabled) {
+                mutator.caches.invalidate();
+            }
+        });
     }
 
     /// Gives the JIT a fresh code zone that holds at most `bytes` of code,
-    /// stubs included, so that a test can fill it. A test hook.
+    /// stubs included, so that a test can fill it. A test hook. The
+    /// caches are vacated with the old zone, since their cells name
+    /// addresses in it.
     #[doc(hidden)]
     pub fn set_jit_zone_bytes(&mut self, bytes: usize) {
-        self.enter(|mutator| mutator.jit.replace_zone(bytes));
+        self.enter(|mutator| {
+            mutator.jit.replace_zone(bytes);
+            mutator.caches.invalidate();
+        });
     }
 
     /// Turns the JIT stress mode (`NS_NEXT_STRESS_JIT`) on or off for this
-    /// interpreter: every body compiled at its first entry, and one whose
-    /// machine code leaves before a loop entered all the same. A test
-    /// hook, set before the code it is meant for runs.
+    /// interpreter: every body compiled at its first entry, installed and
+    /// entered at every push and every frame returned to -- one that exits
+    /// at once and one otherwise called only among them -- and never
+    /// abandoned. A test hook, set before the code it is meant for runs.
     #[doc(hidden)]
     pub fn set_jit_stress(&mut self, stress: bool) {
         self.enter(|mutator| mutator.jit.set_stress(stress));
@@ -1044,6 +1065,16 @@ impl Interpreter {
     #[doc(hidden)]
     pub fn resume_unhandled_exceptions(&mut self, count: usize) {
         self.enter(|mutator| mutator.unhandled_exceptions_to_resume = count);
+    }
+
+    /// The live activations when the last unhandled exception ended a
+    /// run, innermost first, each a line naming what it runs -- a method's
+    /// selector, or its kind -- and its stored program counter: what a
+    /// debugger would show of the stack. A test hook, as
+    /// `resume_unhandled_exceptions` is; empty before any such exception.
+    #[doc(hidden)]
+    pub fn stack_trace(&mut self) -> Vec<String> {
+        self.enter(|mutator| mutator.last_unhandled_stack.clone())
     }
 
     /// How many of the exceptions `resume_unhandled_exceptions` asked for
@@ -1111,11 +1142,28 @@ impl<'gc> Mutator<'gc> {
             instances(self, BuiltinClass::Float),
         ];
         self.heap.set_immediate_dispatch_ids(ids);
+        self.rewrite_immediate_classes();
         let guards = crate::heap::BuiltinGuards {
             closure: instances(self, BuiltinClass::Closure),
             frame: instances(self, BuiltinClass::Activation),
         };
         self.heap.set_builtin_guards(guards);
+    }
+
+    /// Writes the immediates' class objects into their machine words, from
+    /// the builtin classes: at the bootstrap and again after every mover
+    /// (`World::scavenge`, `collect`, `move_everything`, `forward_identity`),
+    /// since a word a heap object stores is a handle the collector does not
+    /// trace.
+    pub(crate) fn rewrite_immediate_classes(&mut self) {
+        let classes = [
+            self.builtin_class(BuiltinClass::UndefinedObject),
+            self.builtin_class(BuiltinClass::False),
+            self.builtin_class(BuiltinClass::True),
+            self.builtin_class(BuiltinClass::Integer),
+            self.builtin_class(BuiltinClass::Float),
+        ];
+        self.heap.set_immediate_classes(classes);
     }
 
     /// The smallest freed dispatch id, else the next never minted, or
@@ -1532,7 +1580,7 @@ impl<'gc> Mutator<'gc> {
                     .activation_above_frame(frame)
                     .is_some_and(|above| self.holds_the_depth_reserve(above)));
         if !held {
-            self.depth_reserve = None;
+            self.set_depth_reserve(None);
         }
         held
     }
@@ -1626,7 +1674,41 @@ impl<'gc> Mutator<'gc> {
             return;
         }
         if let Some(top) = self.heap.top_activation() {
-            self.depth_reserve = Some(self.heap.reify(top));
+            let frame = self.heap.reify(top);
+            // The handler returns by an ordinary pop, which no hook can
+            // see, so the reserve it holds never raises the limit word:
+            // machine code leaves a push at the limit to the interpreter,
+            // which knows the reserve is held.
+            self.depth_reserve = Some(frame);
+            self.heap.set_depth_limit(MAX_ACTIVATION_DEPTH);
+        }
+    }
+
+    /// Takes or gives back the depth limit's reserve for a VM error's
+    /// `signal`: `depth_reserve` and the `DepthLimit` machine word change
+    /// together, so that the limit machine code compares a push against is
+    /// the one the reserve implies. A `signal` never returns -- it leaves
+    /// by an unwind, which pops through `pop_for_unwind`, and that gives the
+    /// reserve back (`release_depth_reserve_if_ended`) the moment it is no
+    /// longer held -- so the word is the higher limit exactly while the
+    /// reserve is held.
+    pub(crate) fn set_depth_reserve(&mut self, frame: Option<FrameReference<'gc>>) {
+        self.depth_reserve = frame;
+        let limit = if frame.is_some() {
+            MAX_ACTIVATION_DEPTH + DEPTH_RESERVE
+        } else {
+            MAX_ACTIVATION_DEPTH
+        };
+        self.heap.set_depth_limit(limit);
+    }
+
+    /// Gives the reserve back as soon as an unwind's pop has ended it, so
+    /// that the `DepthLimit` word does not wait for the next slow-path
+    /// question (`depth_reserve_held` forgets a reserve it finds ended).
+    #[inline]
+    fn release_depth_reserve_if_ended(&mut self) {
+        if self.depth_reserve.is_some() {
+            self.depth_reserve_held();
         }
     }
 
@@ -2116,6 +2198,7 @@ impl<'gc> Mutator<'gc> {
             }
             then => self.abandon(then),
         }
+        self.release_depth_reserve_if_ended();
     }
 
     /// Pushes the activation a continuation decided (`resume`), in place of
@@ -2932,6 +3015,27 @@ fn build_self_referential_object_class<'gc>(
         superclass: None,
         builtin: Some(BuiltinClass::Object),
     })
+}
+
+/// The body of `method` on `class`'s own mixin, `side` choosing the class
+/// side: what the cache test hooks (`Interpreter::call_site_states`,
+/// `Interpreter::call_site_cells`) read the sites of. `None` when `class`
+/// is no class object or has no such method.
+fn method_code(
+    mutator: &Mutator<'_>,
+    class: &Root,
+    side: MethodSide,
+    method: Symbol,
+) -> Option<Rc<crate::bytecode::CompiledCode>> {
+    let object = mutator.fetch(class).as_object()?;
+    let application = mutator.heap.class_application(object)?;
+    let mixin = match side {
+        MethodSide::Instance => Some(application.mixin.clone()),
+        MethodSide::Class => application.mixin.class_side.clone(),
+    }?;
+    mixin
+        .compiled_method(method)
+        .map(|found| found.code.clone())
 }
 
 #[cfg(test)]

@@ -60,6 +60,54 @@ impl<'gc> Mutator<'gc> {
         Err(self.no_field_for_slot_accessor(receiver, selector, field))
     }
 
+    /// `act`'s arm for `resolved`, a slot accessor of any chain but a
+    /// `doesNotUnderstand:` handler's, for machine code's leaf stub: the
+    /// guard check a private or `super` accessor makes, then the read or
+    /// the write, answering the accessor's value, or `None` where `act`
+    /// would raise an error, having written nothing, so that the
+    /// interpreter runs the send and raises it.
+    pub(crate) fn slot_for_machine_code(
+        &mut self,
+        resolved: &Resolved<'gc>,
+        receiver: Value<'gc>,
+        arguments: Arguments<'_, 'gc>,
+    ) -> Option<Value<'gc>> {
+        let Resolved::Slot {
+            kind,
+            field,
+            chain,
+            level,
+            recorded_guard,
+        } = *resolved
+        else {
+            return None;
+        };
+        match chain {
+            Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand => None,
+            Chain::Private | Chain::Super
+                if !self.slot_level_holds(receiver, level, recorded_guard) =>
+            {
+                None
+            }
+            // `decide_slot_accessor`'s read or write, its error left to
+            // the interpreter. Written out here rather than shared with
+            // it: a helper both called slowed the interpreter's accessors,
+            // `bench_loop.ns` 2% with the JIT off.
+            _ => {
+                let object = receiver.as_object()?;
+                match kind {
+                    AccessorKind::Getter => self.heap.instance_field(object, field),
+                    AccessorKind::Setter => {
+                        let value = arguments.first(&self.heap)?;
+                        self.heap
+                            .instance_set_field(object, field, value)
+                            .then_some(receiver)
+                    }
+                }
+            }
+        }
+    }
+
     /// Whether `receiver` still has the slots of `level`, the application
     /// whose own slot a private or super accessor addresses -- by a field
     /// the lookup decided from N's or `current_class`'s chain, never from
