@@ -15,21 +15,16 @@ when they were written.
 
 ## Next
 
-**First, the cost of an entry into machine code**, decided before stage
-4 begins: where the fourteen nanoseconds of an entry at an interpreter's
-push go, and an entry designed against the prior art, which enters
-compiled code at every call, so that `jit::CALLED_ONLY` goes and a
-recursion rooted in an interpreted frame without a loop runs in machine
-code ("The road to a high-performance VM", step 8, "An entry into machine
-code costs too much").
-
-**Then road step 8's fourth stage: closures, non-local return, allocation and
+**Road step 8's fourth stage: closures, non-local return, allocation and
 the write barrier in machine code** ([execution.md](design/execution.md),
 "Planned: the baseline JIT", "What the templates emit inline", "Stages"):
 `MakeClosure` and a closure's activation as a compiled call, a non-local
 return and the unwinder from compiled frames, bump allocation in eden and
 the write barrier with its early outs inline, so that a setter, `at:put:`
-and the other stores run without a leaf call. Its first three stages are
+and the other stores run without a leaf call. A closure's activation as
+a compiled call also removes the cost a short block an interpreted
+`value:` pushes pays at the bridge ("A block an interpreted `value:`
+pushes pays the bridge" below). Its first three stages are
 built ("The baseline JIT's foundation", "Sends, returns and the exit that
 materializes"): `ns-memory`'s doubly mapped code zone and the entry into
 machine code, `ns-assembler` with the x64 encoder, and in `jit/` the
@@ -38,7 +33,13 @@ the baseline compiler's one exhaustive `match`; a cached send calls
 through a machine-readable cell beside its cache entry into the callee's
 machine code or a stub, the callee returns by `ret`, the miss leaf
 compiles a callee from inside machine code and heals the cells it went
-through, and an exit at any depth materializes every compiled frame.
+through, and an exit at any depth materializes every compiled frame. So
+is the entry at its cost ("The entry at a send"): an interpreter's send
+calls a compiled callee's machine code through a call stub, every other
+entry crosses a bridge whose block lasts between entries, and every
+compiled body is entered wherever it runs, which measured the geometric
+mean 24.2% faster than `master` and a recursion rooted in an interpreted
+frame fourteen times as fast ("What the entry at a send moved").
 What stage 3 measured is "What sends in machine code moved": where
 machine code runs whole -- loops of sends, accessors and arithmetic --
 it is several times the interpreter's speed; where it meets a block, an
@@ -380,7 +381,10 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   "The baseline JIT's foundation"), its third, sends and the caches in
   machine code, built (2026-10-29,
   [its plan](superpowers/plans/2026-10-28-1928-jit-sends.md); "Sends,
-  returns and the exit that materializes"), stage 4 next ("Next" above).
+  returns and the exit that materializes"), the entry into machine code
+  at its cost built (2026-10-29,
+  [its plan](superpowers/plans/2026-10-29-2030-jit-entry-cost.md); "The
+  entry at a send"), stage 4 next ("Next" above).
   Left to it, and measured: whether the depth count lives in a machine
   register while machine code runs, written back at the exit, or stays in
   memory ("Planned: the deoptimization contract", "Safepoints and the
@@ -400,34 +404,30 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     interpreted. Once stage 4 runs closures in machine code most exits go;
     whether a budget per entries (a rate), a decaying count, or nothing is
     right is to be measured then.
-  - **An entry into machine code costs too much, so a body that cannot
-    loop is called only** (`jit::CALLED_ONLY`). An entry at an
-    interpreter's push leaves the run loop through `CodeZone::enter` and
-    comes back through the return or exit stub, about fourteen
-    nanoseconds a push, more than a short body's interpreted run, so a
-    body that cannot take a backward jump before its first exit is entered
-    only by a compiled call. The consequence: a recursion, or any chain of
-    sends, whose root is an interpreted frame without a loop never runs in
-    machine code -- `fib: 20` sent once from a host runs all 6,765 of its
-    activations interpreted in every round, its code installed and never
-    entered, while the same recursion under a compiled loop runs wholly in
-    machine code from its second turn (probed by the stage's final
-    review); on-stack replacement does not cover it, since the root has no
-    back edge. No golden or benchmark exercises it. The prior art makes
-    the entry cheap instead of avoiding it, and enters compiled code at
-    every call once it exists: HotSpot's `Method::set_code` points the
-    interpreter's entry at a frameless i2c adapter
-    (`prior-art/jdk/src/hotspot/share/oops/method.cpp`, `set_code`); V8's
-    Sparkplug shares Ignition's frame layout and
-    `InterpreterEntryTrampoline` jumps to baseline code where it exists
-    (`prior-art/v8/src/builtins/x64/builtins-x64.cc`); Cog's interpreter
-    activates a method's machine code at any send once it has some
-    (`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c`,
-    `executeNewMethod`), compiles at the second send, and compiles a doit
-    eagerly. Where the fourteen nanoseconds go is to be found, and the entry's design decided against
-    the prior art, before stage 4; with an entry that
-    costs about a call, every compiled body is entered at every push and
-    `CALLED_ONLY` goes.
+  - **A block an interpreted `value:` pushes pays the bridge**
+    (accepted with the user on 2026-10-29 until stage 4): no rule leaves a
+    compiled body unentered, so a block is entered at an interpreter's
+    push, and the entry costs about 8.5 ns more than interpreting a
+    one-instruction block -- the switch, `jit::run_machine_code`,
+    `jit::entered`, the entry stub saving and restoring eight registers --
+    and a block that reaches its indirection vector, as `bench_block`'s
+    `[:y | acc:: acc + y]` does, runs those loads and stores through
+    `Leaf::Step`, about 18 ns more an entry. `bench_block` is 10.3%
+    slower than `master` with its builds separated, an interpreted `do:`
+    over `[:each | each]` about 12% ([execution.md](design/execution.md),
+    "What the entry at a send moved"). Stage 4 closes it by making a
+    closure's activation a compiled call, as a method's is.
+  - **A call refused at the depth bound is counted nowhere.** A call the
+    callee's own prologue refuses -- at the depth limit's bound, which
+    the machine words' `DepthLimit` keeps at L while a
+    `doesNotUnderstand:` handler holds the reserve -- answers
+    `Called::Refused`, and the interpreter pushes the callee; neither the
+    exit budget nor any statistic counts it (`jit::called`). So a
+    recursion that stays at the bound pays a round trip through the call
+    stub on every send that no budget stops: correct, only slow
+    ([execution.md](design/execution.md), "The entry at a send", "A
+    refusal is the push's"). Whether such a refusal should spend the
+    callee's exit budget, or the bound be read before the call, is open.
   - **A leaf call costs more than the interpreter's step for the same
     target**: the leaf stub's leaf decides the send again
     (`inline_cache::act_at`) for every target but a slot accessor its send
@@ -441,10 +441,11 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     argument count where the leaf can read them without a lookup, and the
     store, `at:` and `at:put:` in machine code with stage 4's write
     barrier would remove most of it.
-  - **`jit::entered` is `#[cold]`**, right while almost every push of a
-    compiled body only counts; once templates make entering the common
-    path of a compiled body's push, its placement is to be measured
-    again.
+  - **`jit::entered` is `#[cold]`**, though every push of a compiled
+    body that is no send -- a block an interpreted `value:` pushes among
+    them -- now enters through it; its placement is to be measured again
+    once stage 4 has made a closure's activation a compiled call, which
+    leaves the bridge to fewer pushes.
   - **A body shared by two interpreters would ping-pong between their
     zones.** A body's `JitSlot` names one zone, and `jit::note_entry`
     compiles a body whose slot names another into the running

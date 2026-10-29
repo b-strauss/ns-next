@@ -1,6 +1,6 @@
 /// An unbounded recursion without a loop, sent from `main:args:`, which
-/// runs interpreted: its body is compiled to be called only, so that the
-/// interpreted frames' sends call its machine code
+/// runs interpreted: its body is compiled at its second entry, so that
+/// the interpreted frames' sends call its machine code
 /// (`docs/design/execution.md`, "The entry at a send"), and it overflows
 /// the depth limit where the interpreter's recursion does -- the compiled
 /// prologue counts as the interpreter's push does, and at the limit it

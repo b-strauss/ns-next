@@ -2102,8 +2102,9 @@ impl<'gc> Mutator<'gc> {
     /// whose body is compiled: the run loop's send calls its machine code
     /// instead (`call_sent`; `docs/design/execution.md`, "The entry at a
     /// send"), which answers its value or where an exit left the run
-    /// loop. The test of the body's slot is one load and one compare,
-    /// inline; everything else is out of line.
+    /// loop. The test is inline: three loads, from the method to its code
+    /// to the code's slot, and one compare; everything else is out of
+    /// line.
     ///
     /// The step is lent to the call and moved only into the one push
     /// below, so that it reaches `push_sent` from the place the decision
@@ -2157,7 +2158,10 @@ impl<'gc> Mutator<'gc> {
     /// little native stack, its prologue's refusal -- is the push's, which
     /// raises the overflow or grows the stack as for any push; so is every
     /// send that does not name the slots and arguments a call needs.
-    /// `Call::Push` names where the push takes the arguments from.
+    /// `Call::Push` names where the push takes the arguments from. A
+    /// refused call's push resolves an unassigned feedback base again,
+    /// which `InlineCaches::base_for` answers the same, since nothing ran
+    /// between the two.
     #[allow(
         clippy::too_many_arguments,
         reason = "the step's parts, lent apart so that the step itself is moved only into the push"

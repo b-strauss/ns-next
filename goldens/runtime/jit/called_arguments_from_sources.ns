@@ -1,5 +1,5 @@
-/// Sends of two and three arguments from an interpreted frame to methods
-/// compiled to be called only, each argument a local of `main:args:`, so
+/// Sends of two and three arguments from an interpreted frame to compiled
+/// methods without a loop, each argument a local of `main:args:`, so
 /// that the arguments lie in consecutive registers that are not the
 /// send's slots: the interpreter places them into the slots before it
 /// calls the callee's machine code, as its push places them

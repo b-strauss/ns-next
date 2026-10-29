@@ -482,7 +482,16 @@ between two leaf calls: the depth count and its limit, the activation
 stack's ordinary end, each immediate's class and guard, the generation
 counter of a debug build, the receiver and class handed between machine
 code and a leaf, and the application id table's address and bound ("The
-application id table" below). Its one handle-like word is an immediate's
+application id table" below). Beside it, and for the same reason, the
+entry block machine code is entered with (`ns_memory::EntryBlock`) is
+`Cell`s behind an `Rc` of its own, held by the JIT's state outside the
+mutator: its lasting words -- the object space's, the activation stack's
+and the machine words' addresses, the stubs, the cells, the global
+cache's mask -- are written when `JitState::mark_block_stale` says what
+they name changed (a zone made or replaced, the global cache resized),
+not at every entry, and only a debug build's check at every entry
+catches a missed mark ([execution.md](execution.md), "The entry at a
+send"). The machine words' one handle-like word is an immediate's
 class, a stored word the collector does not trace, so
 `Mutator::rewrite_immediate_classes` writes them afresh after every
 scavenge, compaction, move and bulk forward; the hand-over words are read
@@ -2260,9 +2269,11 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   most 128 MiB mapped twice, one view executable and one writable
   (`MAP_JIT` with its per-thread switch on Apple AArch64), the one writer
   of code, which commits pages as code is installed and flushes the
-  instruction cache over what it wrote, the entry, and the shim through
-  which machine code calls Rust ([execution.md](execution.md), "The
-  baseline JIT's foundation", "Executable memory"). Only the x64 Windows
+  instruction cache over what it wrote, the entry, the block the entry
+  hands machine code (`EntryBlock`, `Cell`s behind an `Rc`, kept from
+  one entry to the next), and the shim through which machine code calls
+  Rust ([execution.md](execution.md), "The baseline JIT's foundation",
+  "The entry at a send", "Executable memory"). Only the x64 Windows
   path runs here; the Linux, BSD and Apple AArch64 paths are checked by
   clippy alone (the `memory` gate). The bounds of the running thread's
   native stack are read there too (`native_stack.rs`), for the entry's

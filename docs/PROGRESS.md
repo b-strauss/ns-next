@@ -6451,9 +6451,9 @@ exit at any depth of compiled frames walks their return addresses and
 materializes them; the depth count, the stack's end, the callee
 hand-over and the application id table's address are machine words.
 Every register the sends and the stubs use is a named role of the macro
-assembler, held by a source scan. A body that cannot loop is entered only
-by compiled calls, and one that keeps leaving its machine code is
-abandoned. Measured with three builds a side against `master`
+assembler, held by a source scan. A body that could not loop was entered
+only by compiled calls until the next milestone made the entry cheap, and
+one that keeps leaving its machine code is abandoned. Measured with three builds a side against `master`
 ([execution.md](design/execution.md), "What sends in machine code
 moved"): the geometric mean over twenty-two sources -14.84% with the JIT
 on, `bench_send` -75.8%, `bench_loop` -60.6%, List -56.5%, Mandelbrot
@@ -6493,8 +6493,55 @@ outcome changed; eight goldens were added under `goldens/runtime/jit/`.
   which it had not: Havlak -6.1% and Richards -2.1% afterwards.
 - The documents' commit after them.
 
-What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the cost
-of an entry into machine code, which keeps a body that cannot loop to
-compiled calls, first, then road step 8's fourth stage, closures, non-local return, allocation and the write
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+8's fourth stage, closures, non-local return, allocation and the write
 barrier in machine code, next, and what stage 3's measurement and reviews
-left.
+left. The cost of an entry into machine code, which kept a body that
+could not loop to compiled calls, the next milestone closed.
+
+## The entry into machine code at its cost (2026-10-29)
+
+An interpreter's send whose decided step is a compiled method's
+activation on the send's own slots calls the body's machine code
+through a call stub, as a compiled send calls it, and the callee's
+`ret` delivers its value into the send's destination: no frame is
+pushed or popped by the interpreter, the run loop goes on at the next
+instruction, a refusal of the callee's prologue is the interpreter's
+push, and an exit materializes the callee above its interpreted sender
+from a walk the call seeds ([execution.md](design/execution.md), "The
+entry at a send"). Every other entry crosses a bridge whose entry block
+lasts from one entry to the next, its lasting words written only when
+what they name changes ([memory.md](design/memory.md), "The memory
+layer"). With both, every compiled body is entered at a send, a push and
+a frame returned to, and `CALLED_ONLY` is gone; a body whose code exits
+at once is still never installed. Measured with three builds a side
+against `master` ([execution.md](design/execution.md), "What the entry
+at a send moved"): the geometric mean over twenty-three sources -24.2%,
+fifteen faster with their builds separated -- a recursion rooted in an
+interpreted frame (`bench_recursion`, new) fourteen times as fast, List
+-52.2%, Bounce -38.4%, Towers -36.1%, DeltaBlueTon80 -33.5%, Richards
+-27.1%, Json -26.5%; `bench_block` 10.3% slower, a short block an
+interpreted `value:` pushes paying the bridge, accepted with the user
+until stage 4 makes a closure's activation a compiled call. The first
+run of the measurement found Sieve 5.3% slower, the interpreter's push
+of a method copying the decided step; the call is lent the step's parts
+since, and Sieve is level. The measurement protocol was shortened: a
+final measurement takes three builds a side over three rounds in one
+sitting. No golden, `run-corpus` output or benchmark outcome changed;
+two goldens were added under `goldens/runtime/jit/` and the
+microbenchmark `bench_recursion`.
+
+- `7d0021c5` -- the design and the plan.
+- `d3f665bf` -- the entry block prepared once, not at every entry.
+- `82e14890` -- an interpreter's send calls a compiled callee's machine
+  code.
+- `a8f96b90` -- every compiled body entered, `CALLED_ONLY` gone,
+  `bench_recursion`.
+- `522dc546`, `3618f4a6`, `335d44b2` -- the JIT tests' debug output
+  removed, the shorter measurement protocol.
+- `df21be83` -- the interpreter's push of a method costs what it did.
+- The documents' commit after them.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+8's fourth stage next, which also removes the block's cost at the
+bridge, and a call refused at the depth bound that nothing counts.

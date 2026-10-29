@@ -247,10 +247,10 @@ impl JitSlot {
     }
 
     /// Whether the body is compiled, whether or not into this
-    /// interpreter's zone: the one load and compare an interpreter's send
-    /// of a method makes before it calls the body's machine code
-    /// (`Mutator::enter_sent`); everything else is `called`'s, out of
-    /// line.
+    /// interpreter's zone: the compare an interpreter's send of a method
+    /// makes, after the loads that reach the slot from the method, before
+    /// it calls the body's machine code (`Mutator::enter_sent`);
+    /// everything else is `called`'s, out of line.
     #[inline(always)]
     pub(crate) fn is_compiled(&self) -> bool {
         self.state.get() == COMPILED
