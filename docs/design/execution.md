@@ -1180,11 +1180,13 @@ compared, the current tree included, built with the same explicit
 `RUSTFLAGS` that pin function alignment, several builds per tree pooled
 ("What removing the re-entries moved" below). The five programs that take
 seconds per run -- CD, Havlak, Mandelbrot, NBody and DeltaBlue -- are
-timed with `bench --iterations 3`, every other program with
-`--iterations 10` (decided with the user on 2026-10-02): a run of seconds
-varies by far less than the changes measured, and ten of them made a
-comparison of three builds a side take an hour and a half, three bring it
-to about half an hour. A comparison of two ns-next trees uses `bench`
+timed with `bench --iterations 3`, every other program and every
+microbenchmark with `--iterations 5`, and a final comparison takes three
+builds a side over three rounds in one sitting, an interim one a build a
+side with `--iterations 5` (decided with the user on 2026-10-02 and
+2026-10-29): a run of seconds varies by far less than the changes
+measured, and ten of them made a comparison of three builds a side take
+an hour and a half, three bring it to about half an hour. A comparison of two ns-next trees uses `bench`
 alone (decided with the user on 2026-10-02): on the eleven programs whose
 `--timed` score is a throughput it agreed with `bench` ("What the
 eight-byte value moved"), on the five slow ones it is one run's rate to one
