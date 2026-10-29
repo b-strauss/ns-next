@@ -31,6 +31,13 @@ pub(crate) struct BaselineBody {
     /// would have run for less than the entry and the exit cost
     /// (`jit::note_entry`).
     pub(crate) exits_at_once: bool,
+    /// Whether the code can take a backward jump before its first exit,
+    /// a return or a compiled send passed through: only such code runs a
+    /// loop in machine code that pays for an entry at an interpreter's
+    /// push; any other body is entered only by a compiled call
+    /// (`jit::CALLED_ONLY`), which costs no more than the interpreter's
+    /// push of it.
+    pub(crate) loops_before_an_exit: bool,
 }
 
 /// What `lower` did with one instruction, and what `compile` still emits
@@ -42,7 +49,7 @@ pub(super) enum Lowering {
     /// The arm emitted the template of a return or of a compiled send: a
     /// template like `Template`, but one that does the work of a call, which
     /// pays for entering the body
-    /// (`reaches_a_return_a_send_or_a_loop_before_an_exit`).
+    /// (`reaches_before_an_exit`).
     Transfer,
     /// A call of `leaf` with `arguments`, the instruction's own
     /// interpreter step, which answers 0 when it ran the instruction and
@@ -542,7 +549,8 @@ pub(crate) fn compile(
             }
         }
     }
-    let exits_at_once = !reaches_a_return_a_send_or_a_loop_before_an_exit(code, &exits, &transfers);
+    let exits_at_once = !reaches_before_an_exit(code, &exits, &transfers, true);
+    let loops_before_an_exit = reaches_before_an_exit(code, &exits, &transfers, false);
     body.emit_backward_branches();
     let assembled = body
         .macro_assembler
@@ -553,6 +561,7 @@ pub(crate) fn compile(
         code: assembled,
         map,
         exits_at_once,
+        loops_before_an_exit,
     })
 }
 
@@ -581,17 +590,21 @@ fn program_counter_map(
 
 /// Whether the code of `code`, whose instructions at the program counters
 /// `exits` marks lower to exits and `transfers` marks lower to a return or
-/// a compiled send, can reach a transfer or take a backward jump before its
-/// first exit: whether some instruction reachable from the first through
-/// templates and leaves alone is a transfer or jumps back. Only such code
-/// does work in machine code that pays for entering it; a body that exits
-/// after a few straight-line instructions costs an entry and an exit on
-/// every push. A leaf that declines exits, but is counted as falling
-/// through, since it declines only what the interpreter must run.
-fn reaches_a_return_a_send_or_a_loop_before_an_exit(
+/// a compiled send, can take a backward jump -- or, when
+/// `transfer_suffices`, reach a transfer -- before its first exit: whether
+/// some instruction reachable from the first through templates, leaves
+/// and, unless a transfer suffices, transfers is one or jumps back. Only
+/// code that reaches a transfer or a loop does work in machine code that
+/// pays for a compiled call of it; a body that exits after a few
+/// straight-line instructions costs an entry and an exit on every push.
+/// Only code that loops pays for an entry at an interpreter's push. A
+/// leaf that declines exits, but is counted as falling through, since it
+/// declines only what the interpreter must run.
+fn reaches_before_an_exit(
     code: &CompiledCode,
     exits: &[bool],
     transfers: &[bool],
+    transfer_suffices: bool,
 ) -> bool {
     let mut reached = vec![false; exits.len()];
     let mut pending = Vec::new();
@@ -603,7 +616,7 @@ fn reaches_a_return_a_send_or_a_loop_before_an_exit(
         if exits[program_counter as usize] {
             continue;
         }
-        if transfers[program_counter as usize] {
+        if transfer_suffices && transfers[program_counter as usize] {
             return true;
         }
         let instruction = code.instruction(program_counter as usize);
@@ -1308,14 +1321,15 @@ mod tests {
     #[test]
     fn a_loop_reachable_only_past_an_exit_is_no_reason_to_enter() {
         let (code, exits) = loop_past_an_instruction(true);
-        assert!(!super::reaches_a_return_a_send_or_a_loop_before_an_exit(
+        assert!(!super::reaches_before_an_exit(
             &code,
             &exits,
-            &[false; 6]
+            &[false; 6],
+            true
         ));
         let (code, exits) = loop_past_an_instruction(false);
         assert!(
-            super::reaches_a_return_a_send_or_a_loop_before_an_exit(&code, &exits, &[false; 6]),
+            super::reaches_before_an_exit(&code, &exits, &[false; 6], true),
             "the same loop through a template is"
         );
     }
@@ -1346,10 +1360,59 @@ mod tests {
             0,
         );
         let exits = [false, false, false, false, false, true];
-        assert!(!super::reaches_a_return_a_send_or_a_loop_before_an_exit(
+        assert!(!super::reaches_before_an_exit(
             &code,
             &exits,
-            &[false; 6]
+            &[false; 6],
+            true
         ));
+    }
+
+    /// A body that runs to its return reaches a transfer, so a compiled
+    /// call of it pays, but does not loop, so a push does not enter it;
+    /// one that loops past a transfer -- a compiled send -- does both.
+    #[test]
+    fn a_return_is_a_transfer_but_no_loop() {
+        let (code, _) = loop_past_an_instruction(true);
+        let transfers = [false, false, false, true];
+        let exits_but_the_return = [false, false, false, false];
+        assert!(super::reaches_before_an_exit(
+            &code,
+            &exits_but_the_return,
+            &transfers,
+            true
+        ));
+        let straight = method(
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 13,
+                    literal: Literal::SmallInteger(1),
+                },
+                Instruction::Return { register: 13 },
+            ],
+            0,
+        );
+        assert!(super::reaches_before_an_exit(
+            &straight,
+            &[false, false],
+            &[false, true],
+            true
+        ));
+        assert!(!super::reaches_before_an_exit(
+            &straight,
+            &[false, false],
+            &[false, true],
+            false
+        ));
+        let (looping, looping_exits) = loop_past_an_instruction(false);
+        assert!(
+            super::reaches_before_an_exit(
+                &looping,
+                &looping_exits,
+                &[false, true, false, false],
+                false
+            ),
+            "a loop through a compiled send is entered at a push"
+        );
     }
 }

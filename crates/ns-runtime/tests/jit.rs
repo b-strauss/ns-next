@@ -312,19 +312,22 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// The default trigger, without the stress setting: `run` has no
     /// loop, but its code runs to a compiled send and a return before it
-    /// exits, so the second run compiles it and enters its machine code.
-    /// The reference lowering sends uncached, so there `run` exits at once.
-    fn a_straight_line_method_with_a_send_is_entered(lowering) {
+    /// exits, so the second run compiles it, for a compiled call to enter;
+    /// a push does not, since it cannot loop, so every run of it stays
+    /// interpreted. The reference lowering sends uncached, so there `run`
+    /// exits at once.
+    fn a_straight_line_method_with_a_send_is_compiled_for_calls_only(lowering) {
         let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
         interpreter.set_jit_counting(true);
         assert_eq!(run(&mut interpreter, &class), 42);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 42);
+        assert_eq!(run(&mut interpreter, &class), 42);
         let done = since(interpreter.jit_statistics(), before);
-        if lowering == Lowering::Optimized {
-            assert!(done.machine_entries > 0, "`run` runs in machine code");
-            assert!(done.compiled_bodies >= 1, "`run`, at its second entry");
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(done.compiled_bodies, 1, "`run`, at its second entry");
             assert_eq!(done.bodies_exiting_at_once, 0);
+            assert_eq!(done.machine_entries, 0, "no push enters `run`");
         }
     }
 }
@@ -769,9 +772,99 @@ ns_runtime::for_each_lowering! {
             assert_eq!(done.miss_leaf_calls, 1, "the one send that found no machine entry");
             assert!(done.compiled_calls >= 9_000, "{}", done.compiled_calls);
             assert_eq!(
-                done.machine_entries, 2,
-                "`run:`, which sends and returns, and `sumWith:count:` are entered by the host \nand the interpreter; `add:` only through compiled calls"
+                done.machine_entries, 1,
+                "`sumWith:count:`, which loops, is entered by the interpreter's push; `run:`, \
+                 which sends and returns, and `add:` only through compiled calls"
             );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A loop that sends `value:` to a block, which machine code does not
+    /// run, leaves its machine code on every turn: the refused call exits,
+    /// the interpreter runs the block, and the frame returned to resumes
+    /// in machine code. Once the body has spent its exit budget the
+    /// interpreter enters it no more, so the rest of the loop runs
+    /// interpreted rather than paying an exit and an entry per turn.
+    fn a_body_that_keeps_leaving_is_entered_no_more(lowering) {
+        let source = indoc! {"
+            class Subject = Object new (
+              |
+                increment = [:value | value + 1].
+              |
+            ) (
+              public run = (
+                |
+                  sum ::= 0.
+                  index ::= 0.
+                |
+                [index < 1000] whileTrue: [
+                  sum:: sum + (increment value: index).
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        assert_eq!(run(&mut interpreter, &class), 500_500);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 500_500);
+        assert_eq!(run(&mut interpreter, &class), 500_500);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.machine_entries >= 1, "`run`, which loops, is entered");
+            assert!(
+                done.resumed_entries < 100,
+                "resumed only until its budget is spent: {}",
+                done.resumed_entries
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A setter's call stores through the setter stub's leaf, which writes
+    /// the field through the heap's store accessor and answers the
+    /// receiver, so that a cascade's next message goes to it.
+    fn a_setter_runs_in_the_setter_stub(lowering) {
+        let source = indoc! {"
+            class Subject = Object new (
+              |
+                box = Box new.
+              |
+            ) (
+              class Box = (
+                |
+                  public contents ::= 0.
+                |
+              ) ()
+              public run = (
+                |
+                  index ::= 0.
+                |
+                [index < 100] whileTrue: [
+                  (box contents: box contents + index) contents: box contents + 1.
+                  index:: index + 1.
+                ].
+                ^box contents.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_counting(true);
+        assert_eq!(run(&mut interpreter, &class), 5050);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 5050);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.act_leaf_calls >= 200,
+                "both setters of every turn store through the leaf: {}",
+                done.act_leaf_calls
+            );
+            assert_eq!(done.send_exits, 0, "no setter's call is refused");
         }
     }
 }
@@ -1418,6 +1511,10 @@ fn every_leaf_row_is_audited() {
 /// read before it was marked, and a row marked since must be read and
 /// added here.
 const AUDITED_LEAF_ROWS: &[(&str, &[&str])] = &[
+    (
+        "a value's derived equality and hash read the states on a bounded work stack of their own, allocate no object and send nothing, or decline having written nothing",
+        &["value:sameAs:ifFail:", "valueHash:ifFail:"],
+    ),
     (
         "answers the class, an identity, the identity hash or a new String, or declines for a future, having written nothing",
         &[

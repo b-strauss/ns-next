@@ -29,8 +29,9 @@
 //! N -- `nil` where N does not exist.
 //!
 //! Beside them lie the stubs a cell names for a target that is no method
-//! with code (`assemble_accessor_stubs`): a getter, a quick method, and
-//! the leaf stub, which runs `act`'s arm through the leaf shim.
+//! with code (`assemble_accessor_stubs`): a getter, a setter, a quick
+//! method, and the leaf stub, which runs `act`'s arm through the leaf
+//! shim.
 
 use ns_assembler::{Assembled, Condition, Label, Memory, Width};
 
@@ -331,6 +332,10 @@ pub(super) fn emit_group(macro_assembler: &mut MacroAssembler, mask: Memory) {
 /// past them runs through the leaf stub, as `act` runs it.
 pub(crate) const GETTER_STUBS: u32 = 64;
 
+/// How many fields have a setter stub of their own: a setter of a field
+/// past them runs through the leaf stub, as `act` runs it.
+pub(crate) const SETTER_STUBS: u32 = 64;
+
 /// How many parameter positions have a stub of their own: a quick
 /// method answering a parameter past them runs through the leaf stub.
 pub(crate) const PARAMETER_STUBS: u8 = 16;
@@ -340,6 +345,8 @@ pub(crate) const PARAMETER_STUBS: u8 = 16;
 pub(crate) struct AccessorEntries {
     /// The getter of field `index`, by index.
     pub(crate) getters: Vec<u32>,
+    /// The setter of field `index`, by index.
+    pub(crate) setters: Vec<u32>,
     /// The quick method answering parameter `position`, by position.
     pub(crate) parameters: Vec<u32>,
     /// The quick methods answering `nil`, `true` and `false`.
@@ -364,18 +371,24 @@ pub(crate) struct AccessorEntries {
 ///   one the lookup found the field in: the receiver's field, once the
 ///   receiver is checked to be an instance holding it, as
 ///   `Heap::instance_field` checks it;
+/// - a setter of a public or protected chain, whose cell's guard is the
+///   receiver's dispatch id as a getter's is: the store leaf
+///   (`Leaf::StoreField`) writes the send's one argument into the field
+///   through the heap's store accessor and its write barrier, which check
+///   the receiver as `Mutator::decide_slot_accessor`'s setter does, and
+///   the stub answers the receiver;
 /// - a quick method's constant, its receiver or its parameter
 ///   (`MethodFastPath::Constant`, `Receiver`, `Parameter`);
 /// - the leaf stub, for every other target machine code runs this way --
-///   a setter, a private or `super` slot accessor, whose
+///   a private or `super` slot accessor, a setter past `SETTER_STUBS`, whose
 ///   `Mutator::slot_level_holds` is the guard check, a primitive method
 ///   or a mirror send of a leaf-safe row, a builtin class's accessor: the
 ///   leaf runs `act`'s arm through the shim (`Leaf::Act`) and answers its
 ///   value, or the word no value is when the arm would answer anything
 ///   else, before it changed anything.
 ///
-/// Every decline -- a receiver the getter's check refuses, the leaf
-/// stub's word that is no value -- refuses the call, before anything is
+/// Every decline -- a receiver the getter's check refuses, the store
+/// leaf's or the leaf stub's word that is no value -- refuses the call, before anything is
 /// written, so that the caller re-executes the send and the interpreter
 /// runs it.
 pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) {
@@ -385,13 +398,22 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     let (field, answer, address) = (roles.accessor_field, roles.leaf_result, roles.idiom_scratch);
     let receiver = roles.callee_receiver();
     let assembler = macro_assembler.assembler();
-    let (decline, getter) = (assembler.label(), assembler.label());
+    let (decline, getter, setter) = (assembler.label(), assembler.label(), assembler.label());
     let getters: Vec<Label> = (0..GETTER_STUBS)
         .map(|index| {
             let entry = assembler.label();
             assembler.bind(entry);
             assembler.move_immediate(field, u64::from(index));
             assembler.jump(getter);
+            entry
+        })
+        .collect();
+    let setters: Vec<Label> = (0..SETTER_STUBS)
+        .map(|index| {
+            let entry = assembler.label();
+            assembler.bind(entry);
+            assembler.move_immediate(field, u64::from(index));
+            assembler.jump(setter);
             entry
         })
         .collect();
@@ -459,6 +481,29 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         },
     );
     assembler.return_();
+    // The setter: the send's argument, in its slot 0, stored by the
+    // store leaf, which answers the receiver.
+    assembler.bind(setter);
+    assembler.load(
+        Width::Word64,
+        answer,
+        Memory {
+            base: roles.frame,
+            displacement: 0,
+        },
+    );
+    macro_assembler.call_leaf(
+        Leaf::StoreField.index(),
+        [
+            Operand::Register(receiver),
+            Operand::Register(field),
+            Operand::Register(answer),
+        ],
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(answer, NO_VALUE_IMMEDIATE);
+    assembler.jump_if(Condition::Equal, decline);
+    assembler.return_();
     // The leaf stub.
     let act = assembler.label();
     assembler.bind(act);
@@ -491,6 +536,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     };
     let entries = AccessorEntries {
         getters: getters.into_iter().map(offset).collect(),
+        setters: setters.into_iter().map(offset).collect(),
         parameters: parameters.into_iter().map(offset).collect(),
         nil: offset(nil),
         true_constant: offset(true_constant),

@@ -1065,16 +1065,21 @@ pub const MIRROR: &[MirrorEntry] = &[
         "printString",
         Primitive::Object(ObjectPrimitive::PrintString),
     )),
-    mirror(
+    // Leaf: the derived equality and hash only read the two values' states,
+    // on a work stack of their own, bounded, allocate no object, send
+    // nothing, and decline -- for a shape they do not serve, or a future --
+    // having written nothing (`builtins::value`).
+    leaf(mirror(
         "value:sameAs:ifFail:",
         "=",
         Primitive::Value(ValuePrimitive::SameAs),
-    ),
-    mirror(
+    )),
+    // Leaf: as `value:sameAs:ifFail:`.
+    leaf(mirror(
         "valueHash:ifFail:",
         "hash",
         Primitive::Value(ValuePrimitive::Hash),
-    ),
+    )),
     mirror(
         "valueSlotCount:ifFail:",
         "slotCount",

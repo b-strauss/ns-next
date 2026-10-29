@@ -16,6 +16,7 @@ use std::hash::BuildHasher;
 use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
+use crate::bytecode::{CachedSend, CachedSendKind};
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
 use crate::dispatch::{self, LexicalOrigin};
 use crate::hash::IdentityMap;
@@ -1933,16 +1934,19 @@ fn decision_at<'gc>(
     let code = mutator.heap.activation_code(activation);
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     let family_size = code.family_size;
-    let (resolved, base, receiver, guard, index, global_key, selector, arguments) = match code
-        .instruction(program_counter as usize)
-    {
-        Instruction::SendPublic {
-            selector,
-            receiver_register,
-            argument_base,
-            argument_sources,
-            call_site,
-            ..
+    let Some(CachedSend {
+        kind,
+        selector,
+        call_site,
+        argument_base,
+        argument_count,
+    }) = code.cached_send(program_counter as usize)
+    else {
+        unreachable!("internal: only a cached send calls through its cell");
+    };
+    let (resolved, base, receiver, guard, index, global_key) = match kind {
+        CachedSendKind::Public {
+            receiver: receiver_register,
         } => {
             let index = site_index(feedback_base, family_size, call_site)?;
             let register_base = mutator.heap.activation_register_base(activation);
@@ -1957,19 +1961,9 @@ fn decision_at<'gc>(
                 |mutator, _| mutator.resolve_public(receiver, selector),
             );
             let global_key = Some((selector, CacheRule::Public));
-            let arguments = (argument_base, argument_sources.len());
-            (
-                resolved, base, receiver, key.guard, index, global_key, selector, arguments,
-            )
+            (resolved, base, receiver, key.guard, index, global_key)
         }
-        Instruction::SendLexical {
-            depth,
-            selector,
-            argument_base,
-            argument_sources,
-            call_site,
-            ..
-        } => {
+        CachedSendKind::Lexical { depth } => {
             let (index, privacy) = lexical_site(
                 &mutator.caches,
                 feedback_base,
@@ -1984,10 +1978,7 @@ fn decision_at<'gc>(
                     // could have reached.
                     let (resolved, base, guard) =
                         decided_lexical_first(mutator, index, enclosing, origin, depth, selector);
-                    let arguments = (argument_base, argument_sources.len());
-                    (
-                        resolved, base, enclosing, guard, index, None, selector, arguments,
-                    )
+                    (resolved, base, enclosing, guard, index, None)
                 }
                 Some(private) => {
                     let key = lexical_key(&mutator.heap, &enclosing, origin, depth, private);
@@ -2014,19 +2005,11 @@ fn decision_at<'gc>(
                         key.guard,
                         index,
                         Some((selector, rule)),
-                        selector,
-                        (argument_base, argument_sources.len()),
                     )
                 }
             }
         }
-        Instruction::SendSuper {
-            selector,
-            argument_base,
-            argument_sources,
-            call_site,
-            ..
-        } => {
+        CachedSendKind::Super => {
             let (index, current_class, superclass) =
                 super_site(mutator, activation, feedback_base, family_size, call_site)?;
             let self_value = mutator.heap.activation_receiver(activation);
@@ -2040,14 +2023,9 @@ fn decision_at<'gc>(
                 |mutator, _| mutator.resolve_super(superclass, selector),
             );
             let global_key = Some((selector, CacheRule::Super));
-            let arguments = (argument_base, argument_sources.len());
-            (
-                resolved, base, self_value, key.guard, index, global_key, selector, arguments,
-            )
+            (resolved, base, self_value, key.guard, index, global_key)
         }
-        _ => unreachable!("internal: only a cached send calls through its cell"),
     };
-    let (argument_base, argument_count) = arguments;
     Some(Decision {
         resolved,
         base,

@@ -40,6 +40,9 @@ pub(crate) enum Leaf {
     Act = 4,
     /// Runs a `SendMirror` of a leaf-safe row (`mirror`).
     Mirror = 5,
+    /// Stores a setter's argument into its receiver's field
+    /// (`store_field`).
+    StoreField = 6,
 }
 
 impl Leaf {
@@ -51,7 +54,7 @@ impl Leaf {
 
 /// The leaves, in `Leaf` order, each handed the mutator the code was
 /// entered with.
-pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 6] {
+pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 7] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -62,6 +65,7 @@ pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 6] {
         materialize_innermost as ns_memory::Leaf<Mutator<'gc>>,
         act as ns_memory::Leaf<Mutator<'gc>>,
         mirror as ns_memory::Leaf<Mutator<'gc>>,
+        store_field as ns_memory::Leaf<Mutator<'gc>>,
     ]
 }
 
@@ -248,6 +252,31 @@ fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         });
     materialize::release_leaf_frame(mutator, frame);
     answer
+}
+
+/// The setter stub's leaf (`targets::assemble_accessor_stubs`): stores
+/// the value `arguments[2]` into field `arguments[1]` of the receiver
+/// `arguments[0]` through the heap's store accessor and its write barrier
+/// (`Heap::instance_set_field`), and answers the receiver, as the setter
+/// `Mutator::decide_slot_accessor` runs does; or, for a receiver without
+/// that field, `Word::NO_VALUE_BITS`, having written nothing, so that the
+/// stub refuses the call and the interpreter raises the error. A leaf of
+/// its own, which reads nothing of the send: the cell decided the target,
+/// and the stub's entry names the field.
+fn store_field(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [receiver_bits, field, value_bits] = arguments;
+    mutator.jit.statistics.act_leaf_calls += 1;
+    let receiver = mutator.heap.machine_value(receiver_bits);
+    let value = mutator.heap.machine_value(value_bits);
+    let stored = receiver.as_object().is_some_and(|object| {
+        usize::try_from(field)
+            .is_ok_and(|field| mutator.heap.instance_set_field(object, field, value))
+    });
+    if stored {
+        receiver_bits
+    } else {
+        Word::NO_VALUE_BITS
+    }
 }
 
 /// The leaf of a `SendMirror` of a leaf-safe row: the instruction at
