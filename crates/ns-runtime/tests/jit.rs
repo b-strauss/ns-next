@@ -7,8 +7,8 @@
 
 use indoc::{formatdoc, indoc};
 use ns_runtime::{
-    HostResult, HostSignal, Interpreter, JitStatistics, Lowering, Root, SourceOrigin, Symbol,
-    ValueKind,
+    CallSiteState, HostResult, HostSignal, Interpreter, JitStatistics, Lowering, MethodSide, Root,
+    SourceOrigin, Symbol, ValueKind,
 };
 
 fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
@@ -1941,76 +1941,110 @@ ns_runtime::for_each_lowering! {
                 "the private getter and setter of every turn run from their sites' own entries: {}",
                 done.site_slot_hits
             );
+            assert_eq!(done.send_exits, 0, "no accessor's call is refused");
+            assert_eq!(done.machine_entries, 1, "`run` runs whole in machine code");
         }
     }
 }
 
-/// Five classes whose `step:` makes a block, which machine code does not
-/// do, sent at one site of a loop: the site goes polymorphic, then
-/// megamorphic, so that its callees are reached through a block's cells
-/// and the global cache's rows.
-const LEAVING_EVERYWHERE: &str = indoc! {"
-    class Subject = Object new (
-      |
-        steppers = Array new: 5.
-      |
-      steppers at: 1 put: One new.
-      steppers at: 2 put: Two new.
-      steppers at: 3 put: Three new.
-      steppers at: 4 put: Four new.
-      steppers at: 5 put: Five new.
-    ) (
-      class One = () (
-        twice: value = (
-          ^value + value
-        )
-        public step: value = (
+/// `count` classes whose `step:` makes a block, which machine code does
+/// not do, sent at one site of a loop in turn: with two to four the site
+/// is polymorphic, its callee reached through its block's cells; with five
+/// or more it is megamorphic, reached through the global cache's rows.
+fn leaving_through(count: usize) -> String {
+    let fills: String = (1..=count)
+        .map(|index| {
+            format!(
+                "      steppers at: {index} put: Stepper{index} new.
+"
+            )
+        })
+        .collect();
+    let classes: String = (2..=count)
+        .map(|index| {
+            format!(
+                "      class Stepper{index} = Stepper1 () ()
+"
+            )
+        })
+        .collect();
+    formatdoc! {"
+        class Subject = Object new (
           |
-            doubled = self twice: value.
+            steppers = Array new: {count}.
           |
-          ^[doubled + 1] value.
-        )
-      )
-      class Two = One () ()
-      class Three = One () ()
-      class Four = One () ()
-      class Five = One () ()
-      public run = (
-        |
-          sum ::= 0.
-          index ::= 0.
-        |
-        [index < 1000] whileTrue: [
-          sum:: sum + ((steppers at: index \\\\ 5 + 1) step: index).
-          index:: index + 1.
-        ].
-        ^sum.
-      )
-    ) : ()
-"};
+        {fills}    ) (
+              class Stepper1 = () (
+                twice: value = (
+                  ^value + value
+                )
+                public step: value = (
+                  |
+                    doubled = self twice: value.
+                  |
+                  ^[doubled + 1] value.
+                )
+              )
+        {classes}      public run = (
+                |
+                  sum ::= 0.
+                  index ::= 0.
+                |
+                [index < 1000] whileTrue: [
+                  sum:: sum + ((steppers at: index \\\\ {count} + 1) step: index).
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+            ) : ()
+    "}
+}
 
 ns_runtime::for_each_lowering! {
-    /// Callees that keep leaving, reached through a polymorphic block's
-    /// cells and through the global cache's rows, are abandoned like one
-    /// reached through a site's own cell, and every cell that named their
-    /// machine entry is written afresh from its entry, so that the cells
-    /// still agree with the entries (`Interpreter::verify_cells`).
+    /// A callee that keeps leaving, reached through a polymorphic site's
+    /// block cells (three classes) and through a megamorphic site's global
+    /// rows (five), is abandoned while the site is in that state, like one
+    /// reached through a site's own cell, and every cell that named its
+    /// machine entry -- the block's cells, the global rows -- is written
+    /// afresh from its entry, so that every cell still agrees with its
+    /// entry afterwards (`Interpreter::verify_cells`, which reads every
+    /// site's cell, every block's cells and every global row).
     fn abandoned_bodies_leave_no_cell_naming_them(lowering) {
-        let (mut interpreter, class) = load_with(LEAVING_EVERYWHERE, lowering);
-        assert_eq!(run(&mut interpreter, &class), 1_000_000);
-        let before = interpreter.jit_statistics();
-        for _ in 0..10 {
+        for (count, polymorphic) in [(3, true), (5, false)] {
+            let source = leaving_through(count);
+            let (mut interpreter, class) = load_with(&source, lowering);
             assert_eq!(run(&mut interpreter, &class), 1_000_000);
-        }
-        let done = since(interpreter.jit_statistics(), before);
-        if let Err(message) = interpreter.verify_cells() {
-            panic!("after the abandonment: {message}");
-        }
-        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            assert!(
-                done.abandoned_bodies >= 1,
-                "`step:`, whose block exits on every call"
-            );
+            let before = interpreter.jit_statistics();
+            for _ in 0..10 {
+                assert_eq!(run(&mut interpreter, &class), 1_000_000);
+            }
+            let done = since(interpreter.jit_statistics(), before);
+            if let Err(message) = interpreter.verify_cells() {
+                panic!("{count} classes, after the abandonment: {message}");
+            }
+            if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+                assert!(
+                    done.abandoned_bodies >= 1,
+                    "{count} classes: `step:`, whose block exits on every call"
+                );
+                let states = interpreter.call_site_states(
+                    &class,
+                    MethodSide::Instance,
+                    Symbol::intern("run"),
+                    Symbol::intern("step:"),
+                );
+                let expected = |state: &CallSiteState| {
+                    if polymorphic {
+                        matches!(state, CallSiteState::Polymorphic(entries) if entries.len() == count)
+                    } else {
+                        matches!(state, CallSiteState::Megamorphic)
+                    }
+                };
+                assert!(
+                    states.iter().any(expected),
+                    "{count} classes: the site's state"
+                );
+            }
         }
     }
 }

@@ -283,7 +283,6 @@ fn act_on_a_site_slot(
     cell_address: u64,
 ) -> Option<u64> {
     let resolved = mutator.caches.site_slot_hit(cell_address)?;
-    mutator.jit.statistics.site_slot_hits += 1;
     let receiver = mutator.heap.machine_callee_receiver();
     let setter = matches!(
         resolved,
@@ -304,11 +303,14 @@ fn act_on_a_site_slot(
     } else {
         &[]
     };
-    let answer = mutator
-        .slot_for_machine_code(&resolved, receiver, Arguments::Values(&given))
-        .map_or(Word::NO_VALUE_BITS, |value| {
+    let answer = match mutator.slot_for_machine_code(&resolved, receiver, Arguments::Values(&given))
+    {
+        Some(value) => {
+            mutator.jit.statistics.site_slot_hits += 1;
             mutator.heap.machine_word_of(value)
-        });
+        }
+        None => Word::NO_VALUE_BITS,
+    };
     Some(answer)
 }
 

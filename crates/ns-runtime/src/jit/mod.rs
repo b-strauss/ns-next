@@ -136,7 +136,9 @@ pub struct JitStatistics {
     /// primitive -- as the interpreter's `act` does.
     pub act_leaf_calls: u64,
     /// Calls of the leaf stub's leaf that ran a slot accessor straight
-    /// from the entry of the send's own site, whose cell the send hit.
+    /// from the entry of the send's own site, whose cell the send hit, and
+    /// answered its value; a decline, which refuses the call, is not
+    /// counted.
     pub site_slot_hits: u64,
 }
 
