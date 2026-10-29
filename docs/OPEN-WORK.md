@@ -416,7 +416,12 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     slower than `master` with its builds separated, an interpreted `do:`
     over `[:each | each]` about 12% ([execution.md](design/execution.md),
     "What the entry at a send moved"). Stage 4 closes it by making a
-    closure's activation a compiled call, as a method's is.
+    closure's activation a compiled call, as a method's is. Of the
+    bridge itself, `run_machine_code` still clones two `Rc`s at every
+    entry, the zone's and the entry block's; and `vm::run_stretch`'s
+    `Transfer::Stopped` arm repeats the five reloads of its `Switched`
+    arm, left as it is since a change there costs a codegen round for
+    nothing measured.
   - **A call refused at the depth bound is counted nowhere.** A call the
     callee's own prologue refuses -- at the depth limit's bound, which
     the machine words' `DepthLimit` keeps at L while a
