@@ -424,6 +424,39 @@ impl InlineCaches {
         self.cells.site_address(0)
     }
 
+    /// The slot accessor site `index`'s own entry records, when its target
+    /// is one and its cell lies at `cell_address`: the cell machine code's
+    /// send hit, which the leaf stub hands its leaf. A cell copies its
+    /// entry and the two are written together, so the hit on the site's
+    /// own cell is a hit on this entry, for this key; a hit on a block's
+    /// cell or a global row answers `None`, and the leaf decides the send
+    /// as the interpreter's cached send does.
+    pub(crate) fn site_slot_hit<'gc>(
+        &self,
+        index: usize,
+        cell_address: u64,
+    ) -> Option<Resolved<'gc>> {
+        if self.cells.site_address(index) as u64 != cell_address {
+            return None;
+        }
+        match self.sites.get(index)?.target {
+            Target::Slot {
+                field,
+                kind,
+                chain,
+                level,
+                recorded_guard,
+            } => Some(Resolved::Slot {
+                kind,
+                field: field as usize,
+                chain,
+                level,
+                recorded_guard,
+            }),
+            _ => None,
+        }
+    }
+
     /// The address of polymorphic block 0's cells, which the polymorphic
     /// stub finds a site's block from (`jit::stubs::BlockWord::PolymorphicBlocks`).
     pub(crate) fn block_cells_address(&self) -> usize {
@@ -492,6 +525,33 @@ impl InlineCaches {
             self.global
                 .refresh(&mut self.cells, guard, selector, rule, jit);
         }
+    }
+
+    /// Writes afresh from its entry every cell whose entry address is
+    /// `address`, its entry address from the JIT's state: a site's own, a
+    /// polymorphic block's, a global row. The JIT abandoned the body whose
+    /// machine entry `address` is (`jit::abandon`), so that a cell of an
+    /// entry for its method now names the stub that refuses the call
+    /// instead.
+    pub(crate) fn refresh_cells_entering(&mut self, address: u64, jit: &JitState) {
+        for (index, entry) in self.sites.iter().enumerate() {
+            let cell = self.cells.site(index);
+            if cell.entry == address {
+                let entry = jit::cell_entry(jit, &entry.target);
+                self.cells.write_site(index, Cell { entry, ..cell });
+            }
+        }
+        for (block, slots) in (0..).zip(&self.pool) {
+            for (position, slot) in slots.iter().enumerate() {
+                let cell = self.cells.block_cell(block, position);
+                if cell.entry == address {
+                    let entry = jit::cell_entry(jit, &slot.target);
+                    self.cells
+                        .write_block_cell(block, position, Cell { entry, ..cell });
+                }
+            }
+        }
+        self.global.refresh_entering(&mut self.cells, address, jit);
     }
 
     /// Moves site `index` on after a miss found `target` for `guard`
@@ -962,6 +1022,23 @@ impl GlobalCache {
                     row,
                     GlobalRow {
                         entry: jit::cell_entry(jit, &self.entries[row].target),
+                        ..found
+                    },
+                );
+            }
+        }
+    }
+
+    /// Writes afresh every mirror row whose entry address is `address`:
+    /// `InlineCaches::refresh_cells_entering`'s global part.
+    fn refresh_entering(&self, cells: &mut Cells, address: u64, jit: &JitState) {
+        for (row, entry) in self.entries.iter().enumerate() {
+            let found = cells.global_row(row);
+            if found.entry == address {
+                cells.write_global_row(
+                    row,
+                    GlobalRow {
+                        entry: jit::cell_entry(jit, &entry.target),
                         ..found
                     },
                 );

@@ -127,6 +127,10 @@ pub struct JitStatistics {
     /// stub's decline -- and an exit at a send instruction, which runs it
     /// again.
     pub send_exits: u64,
+    /// Bodies the JIT abandoned once their machine code had handed their
+    /// frames to the interpreter too often (`EXIT_BUDGET`): refused since,
+    /// and called by no cell.
+    pub abandoned_bodies: u64,
     /// Calls of the leaf stub's leaf (`jit::leaves`'s `act`), which runs a
     /// target that is no method with code -- a setter, a leaf-safe
     /// primitive -- as the interpreter's `act` does.
@@ -148,14 +152,18 @@ const EXITS_AT_ONCE: u32 = u32::MAX - 1;
 /// What a body's `JitSlot` says once it will never be compiled.
 const REFUSED: u32 = u32::MAX;
 
-/// How many times a body entered at a push may hand its frame to the
+/// How many times a body's machine code may hand its frame to the
 /// interpreter -- an exit at an instruction or a refused call, not a
-/// poll -- before the interpreter stops entering it, at a push or at a
-/// frame returned to, and it is called only (`CALLED_ONLY`). An exit and
-/// the entry that resumes the frame cost about as much as a hundred
-/// interpreted instructions, so a loop that leaves on every turn -- one
-/// that sends `value:` to a block, which machine code does not run --
-/// ran more slowly in machine code than interpreted.
+/// poll -- before the JIT abandons it (`abandon`): it is refused, so that
+/// neither a push nor a frame returned to enters it, and every cell that
+/// called it refuses the call instead, so that its callers, refused in
+/// turn, spend their own budgets. An exit and the entry that resumes the
+/// frame cost about as much as a hundred interpreted instructions, so a
+/// loop that leaves on every turn -- one that sends `value:` to a block,
+/// which machine code does not run, or calls a body that makes one --
+/// ran more slowly in machine code than interpreted; a region of bodies
+/// that keep leaving ends up interpreted, and one that does not stays in
+/// machine code.
 const EXIT_BUDGET: u32 = 64;
 
 /// A body's state in the JIT: *counting* its entries (`state` below
@@ -240,14 +248,12 @@ impl JitSlot {
     }
 
     /// Counts an exit of the body's machine code that handed its frame to
-    /// the interpreter, and makes a body entered at a push one called
-    /// only once it has spent `EXIT_BUDGET`.
-    fn note_exit(&self) {
+    /// the interpreter, answering whether the body has just spent its
+    /// `EXIT_BUDGET`.
+    fn note_exit(&self) -> bool {
         let exits = self.exits.get().saturating_add(1);
         self.exits.set(exits);
-        if exits >= EXIT_BUDGET && self.state.get() == COMPILED {
-            self.state.set(CALLED_ONLY);
-        }
+        exits == EXIT_BUDGET && matches!(self.state.get(), COMPILED | CALLED_ONLY)
     }
 
     fn settle(&self, state: u32) {
@@ -434,6 +440,9 @@ struct ReturnSite {
     argument_count: u16,
     /// The send's selector.
     selector: crate::Symbol,
+    /// The send's site in the inline caches, which the body's feedback
+    /// base and its call site name (`inline_cache::site_index`).
+    cache_index: Option<u32>,
 }
 
 /// What a call's return address says of its send, for the leaves a callee
@@ -444,6 +453,7 @@ pub(crate) struct CallSiteOperands {
     pub(crate) argument_base: u16,
     pub(crate) argument_count: u16,
     pub(crate) selector: crate::Symbol,
+    pub(crate) cache_index: Option<usize>,
 }
 
 struct InstalledBody {
@@ -712,6 +722,7 @@ impl JitState {
             argument_base: site.argument_base,
             argument_count: site.argument_count,
             selector: site.selector,
+            cache_index: site.cache_index.map(|index| index as usize),
         })
     }
 
@@ -1320,6 +1331,12 @@ fn compile(
                 argument_base: send.argument_base,
                 argument_count: crate::heap::register_number(send.argument_count),
                 selector: send.selector,
+                cache_index: crate::interpreter::inline_cache::site_index(
+                    feedback_base,
+                    code.family_size,
+                    send.call_site,
+                )
+                .and_then(|index| u32::try_from(index).ok()),
             },
         );
     }
@@ -1505,7 +1522,10 @@ fn run_machine_code(
         MachineExit::Reexecute { .. } | MachineExit::PushRefused
     ) && !mutator.jit.install_bodies_exiting_at_once
     {
-        mutator.heap.activation_code(innermost).jit.note_exit();
+        let code = mutator.heap.activation_code(innermost);
+        if code.jit.note_exit() {
+            abandon(mutator, &code);
+        }
     }
     // The innermost frame goes on interpreted from here: it no longer
     // stands in machine code, which only the frames below it still do.
@@ -1538,6 +1558,29 @@ fn run_machine_code(
         MachineExit::DeadRegister { register, .. } => {
             mutator.heap.refuse_dead_register(innermost, register)
         }
+    }
+}
+
+/// Abandons `code`, whose machine code has spent its `EXIT_BUDGET`: its
+/// body is refused, so that no push and no frame returned to enters it
+/// again, and every cell that names its machine entry is written afresh
+/// from its entry, which now names the stub that refuses the call. Its
+/// machine code stays in the zone, which only appends, so that a frame
+/// stopped in it is still materialized from its return address.
+#[cfg(ns_jit)]
+fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    let entry = mutator
+        .jit
+        .installed(code)
+        .map(|body| CodeOffset(body.start));
+    code.jit.refuse();
+    mutator.jit.statistics.abandoned_bodies += 1;
+    let Some(zone) = mutator.jit.zone.as_ref() else {
+        return;
+    };
+    if let Some(entry) = entry {
+        let address = zone.writer.zone().executable_address(entry) as u64;
+        mutator.caches.refresh_cells_entering(address, &mutator.jit);
     }
 }
 

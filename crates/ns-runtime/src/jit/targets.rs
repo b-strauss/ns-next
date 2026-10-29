@@ -555,9 +555,14 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     assembler.compare_immediate(answer, NO_VALUE_IMMEDIATE);
     assembler.jump_if(Condition::Equal, decline);
     assembler.return_();
-    // The leaf stub.
+    // The leaf stub: the receiver handed over in the machine words, the
+    // cell the send hit in `send_cells`, which the send left there.
     let act = assembler.label();
     assembler.bind(act);
+    macro_assembler.load_machine_words(address);
+    let handed = MacroAssembler::machine_word(address, MachineWord::CalleeReceiver);
+    let assembler = macro_assembler.assembler();
+    assembler.store(Width::Word64, handed, receiver);
     assembler.load(
         Width::Word64,
         roles.return_address,
@@ -571,7 +576,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         [
             Operand::Register(roles.frame),
             Operand::Register(roles.return_address),
-            Operand::Immediate(0),
+            Operand::Register(roles.send_cells),
         ],
     );
     let assembler = macro_assembler.assembler();

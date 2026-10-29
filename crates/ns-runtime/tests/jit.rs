@@ -73,6 +73,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         materialized_frames: after.materialized_frames - before.materialized_frames,
         send_exits: after.send_exits - before.send_exits,
         act_leaf_calls: after.act_leaf_calls - before.act_leaf_calls,
+        abandoned_bodies: after.abandoned_bodies - before.abandoned_bodies,
     }
 }
 
@@ -783,26 +784,33 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A loop that sends `value:` to a block, which machine code does not
-    /// run, leaves its machine code on every turn: the refused call exits,
-    /// the interpreter runs the block, and the frame returned to resumes
-    /// in machine code. Once the body has spent its exit budget the
-    /// interpreter enters it no more, so the rest of the loop runs
-    /// interpreted rather than paying an exit and an entry per turn.
-    fn a_body_that_keeps_leaving_is_entered_no_more(lowering) {
+    /// A loop whose callee makes a block, which machine code does not do,
+    /// leaves its machine code on every turn: the callee exits there, the
+    /// exit materializes it and the loop's frame, the interpreter runs the
+    /// rest of the callee, and the loop's frame, returned to, resumes in
+    /// machine code. Once the callee has spent its exit budget the JIT
+    /// abandons it, and the loop's call of it, refused since, spends the
+    /// loop's, so that the program goes on interpreted rather than paying
+    /// an exit and an entry per turn.
+    fn a_body_that_keeps_leaving_is_abandoned(lowering) {
         let source = indoc! {"
-            class Subject = Object new (
-              |
-                increment = [:value | value + 1].
-              |
-            ) (
+            class Subject = Object new () (
+              twice: value = (
+                ^value + value
+              )
+              step: value = (
+                |
+                  doubled = self twice: value.
+                |
+                ^[doubled + 1] value.
+              )
               public run = (
                 |
                   sum ::= 0.
                   index ::= 0.
                 |
                 [index < 1000] whileTrue: [
-                  sum:: sum + (increment value: index).
+                  sum:: sum + (self step: index).
                   index:: index + 1.
                 ].
                 ^sum.
@@ -810,18 +818,19 @@ ns_runtime::for_each_lowering! {
             ) : ()
         "};
         let (mut interpreter, class) = load_with(source, lowering);
-        assert_eq!(run(&mut interpreter, &class), 500_500);
+        assert_eq!(run(&mut interpreter, &class), 1_000_000);
         let before = interpreter.jit_statistics();
-        assert_eq!(run(&mut interpreter, &class), 500_500);
-        assert_eq!(run(&mut interpreter, &class), 500_500);
+        for _ in 0..80 {
+            assert_eq!(run(&mut interpreter, &class), 1_000_000);
+        }
         let done = since(interpreter.jit_statistics(), before);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            assert!(done.machine_entries >= 1, "`run`, which loops, is entered");
             assert!(
-                done.resumed_entries < 100,
-                "resumed only until its budget is spent: {}",
+                done.resumed_entries < 200,
+                "resumed only until the budgets are spent: {}",
                 done.resumed_entries
             );
+            assert_eq!(done.abandoned_bodies, 2, "`step:`, then `run`");
         }
     }
 }

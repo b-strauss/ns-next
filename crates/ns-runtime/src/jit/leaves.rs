@@ -15,6 +15,7 @@ use crate::interpreter::inline_cache::{self, MissAnswer};
 use crate::interpreter::locals::store_vector;
 use crate::interpreter::mirror::{self, MachineMirrorAnswer};
 use crate::interpreter::{Arguments, Mutator};
+use crate::types::Value;
 use crate::vm::{
     argument_window, load_literal_into, load_vector_into, make_array_into, make_vector_into,
 };
@@ -236,15 +237,23 @@ fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 
 /// The leaf stub's leaf (`targets::assemble_accessor_stubs`), which a send
 /// whose cell names the leaf stub calls: the callee's register 0 at
-/// `arguments[0]`, the send's slots, and the send's return address
+/// `arguments[0]`, the send's slots, the send's return address
 /// `arguments[1]`, which names the send and so the sending frame, as the
-/// miss leaf's do. Runs the target the send's cell recorded as the
-/// interpreter's `act` runs it (`inline_cache::act_at`) and answers its
-/// value, or `Word::NO_VALUE_BITS`, at which the stub refuses the call
-/// with nothing changed, so that the interpreter runs the send.
+/// miss leaf's do, and the address of the cell the send hit,
+/// `arguments[2]`, its receiver handed over in the machine words. Runs the
+/// target the send's cell recorded as the interpreter's `act` runs it and
+/// answers its value, or `Word::NO_VALUE_BITS`, at which the stub refuses
+/// the call with nothing changed, so that the interpreter runs the send:
+/// a slot accessor its site's own cell records straight from the entry
+/// (`InlineCaches::site_slot_hit`), every other target as the send's
+/// decision finds it (`inline_cache::act_at`).
 fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    let [callee_address, return_address, _] = arguments;
+    let [callee_address, return_address, cell_address] = arguments;
     mutator.jit.statistics.act_leaf_calls += 1;
+    if let Some(answer) = act_on_a_site_slot(mutator, callee_address, return_address, cell_address)
+    {
+        return answer;
+    }
     let Some((sender_address, program_counter)) =
         mutator.jit.sender_of(callee_address, return_address)
     else {
@@ -257,6 +266,39 @@ fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         });
     materialize::release_leaf_frame(mutator, frame);
     answer
+}
+
+/// `act` for a slot accessor the send's site's own cell recorded: the
+/// accessor run on the receiver handed over in the machine words and, for
+/// a setter, the value in the send's one slot, as `act` runs it -- its
+/// guard's check for a private or `super` one included -- without a frame
+/// for the sender or a decision of the send. `None` for any other hit.
+fn act_on_a_site_slot(
+    mutator: &mut Mutator<'_>,
+    callee_address: u64,
+    return_address: u64,
+    cell_address: u64,
+) -> Option<u64> {
+    let site = mutator.jit.call_site(return_address)?;
+    let resolved = mutator
+        .caches
+        .site_slot_hit(site.cache_index?, cell_address)?;
+    let receiver = mutator.heap.machine_callee_receiver();
+    // A getter's call places no argument, so its slot is read only for a
+    // setter's.
+    let slot;
+    let given: &[Value<'_>] = if site.argument_count == 0 {
+        &[]
+    } else {
+        slot = [mutator.heap.machine_frame_value(callee_address)];
+        &slot
+    };
+    let answer = mutator
+        .act_for_machine_code(resolved, receiver, site.selector, Arguments::Values(&given))
+        .map_or(Word::NO_VALUE_BITS, |value| {
+            mutator.heap.machine_word_of(value)
+        });
+    Some(answer)
 }
 
 /// The setter stub's leaf (`targets::assemble_accessor_stubs`): stores
@@ -308,6 +350,29 @@ fn mirror_method(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     let Ok(row) = u16::try_from(row) else {
         unreachable!("internal: a mirror row is numbered in 16 bits");
     };
+    let row = MirrorPrimitive::from_index(row);
+    let receiver = mutator.heap.machine_callee_receiver();
+    // A send of a few arguments hands them over as values, read off its
+    // slots, so that no frame is written for the sender.
+    if usize::from(site.argument_count) <= HANDED_ARGUMENTS {
+        let mut values = [Value::nil(); HANDED_ARGUMENTS];
+        for (position, value) in (0..u64::from(site.argument_count)).zip(values.iter_mut()) {
+            *value = mutator
+                .heap
+                .machine_frame_value(callee_address + position * 8);
+        }
+        let given: &[Value<'_>] = &values[..usize::from(site.argument_count)];
+        return mirror::execute_method_for_machine_code(
+            mutator,
+            row,
+            receiver,
+            site.selector,
+            Arguments::Values(&given),
+        )
+        .map_or(Word::NO_VALUE_BITS, |value| {
+            mutator.heap.machine_word_of(value)
+        });
+    }
     let frame = materialize::leaf_frame(
         mutator,
         sender_address,
@@ -315,25 +380,23 @@ fn mirror_method(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         site.program_counter,
     );
     let register_base = mutator.heap.activation_register_base(frame.activation);
-    let receiver = mutator.heap.machine_callee_receiver();
     let slots = Arguments::Slots(ArgumentSlots::new(
         register_base,
         site.argument_base,
         site.argument_count,
     ));
-    let answer = mirror::execute_method_for_machine_code(
-        mutator,
-        MirrorPrimitive::from_index(row),
-        receiver,
-        site.selector,
-        slots,
-    )
-    .map_or(Word::NO_VALUE_BITS, |value| {
-        mutator.heap.machine_word_of(value)
-    });
+    let answer =
+        mirror::execute_method_for_machine_code(mutator, row, receiver, site.selector, slots)
+            .map_or(Word::NO_VALUE_BITS, |value| {
+                mutator.heap.machine_word_of(value)
+            });
     materialize::release_leaf_frame(mutator, frame);
     answer
 }
+
+/// How many arguments the mirror method leaf reads off a send's slots as
+/// values; a send of more lays a frame for its sender.
+const HANDED_ARGUMENTS: usize = 4;
 
 /// The leaf of a `SendMirror` of a leaf-safe row: the instruction at
 /// `arguments[1]`, the program counter, of the frame `arguments[0]` and
