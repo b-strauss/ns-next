@@ -681,7 +681,7 @@ impl JitState {
 
     /// For each installed body, a return address into it -- the address
     /// one past its start -- and the body, while it lives.
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn installed_bodies_for_test(&self) -> Vec<(usize, Option<Rc<CompiledCode>>)> {
         let Some(zone) = self.zone.as_ref() else {
             return Vec::new();

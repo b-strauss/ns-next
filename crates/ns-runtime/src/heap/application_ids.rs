@@ -115,7 +115,7 @@ impl ApplicationIds {
     }
 
     /// The id row `row` records; `None` past the bound.
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn id(&self, row: usize) -> Option<u64> {
         if row >= self.rows {
             return None;

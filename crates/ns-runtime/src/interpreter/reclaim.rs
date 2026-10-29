@@ -406,6 +406,8 @@ mod tests {
     /// (`heap/application_ids.rs`) follows the application table through
     /// registration, a collection's freeing of a hundred dead rows, the
     /// trailing ones given back, and their minting again.
+    // `collect_now` is a debug build's.
+    #[cfg(debug_assertions)]
     #[test]
     fn the_application_id_table_follows_the_application_table() {
         let (mut interpreter, churn) = load(CHURN);
@@ -741,7 +743,7 @@ mod tests {
     /// every installed body's return address answers that body, under the
     /// id the heap has for it now, or nothing once it died -- never another
     /// body, though ids are minted again.
-    #[cfg(ns_jit)]
+    #[cfg(all(ns_jit, debug_assertions))]
     #[test]
     fn a_return_address_never_names_a_body_that_took_a_freed_id() {
         let (mut interpreter, outer) = load(OUTER);

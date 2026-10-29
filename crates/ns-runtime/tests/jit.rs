@@ -635,6 +635,13 @@ fn three_deep_stack(lowering: Lowering, jit: bool) -> (Vec<String>, JitStatistic
 
 ns_runtime::for_each_lowering! {
     fn an_exit_in_a_callee_materializes_every_frame(lowering) {
+        // The suspension stress mode suspends the frames below a
+        // safepoint into their frame objects, which the trace
+        // (`Interpreter::stack_trace`, the activations on the stack) does
+        // not walk, with the JIT off as on.
+        if std::env::var_os("NS_NEXT_STRESS_SUSPEND").is_some_and(|value| !value.is_empty() && value != "0") {
+            return;
+        }
         let (compiled, statistics) = three_deep_stack(lowering, true);
         let (interpreted, _) = three_deep_stack(lowering, false);
         assert_eq!(compiled, interpreted);

@@ -79,7 +79,7 @@ pub(crate) enum MachineWord {
     /// next push, the heap's or a compiled callee's prologue, takes one
     /// past it (`Heap::peek_next_generation`). Unused in a release build.
     #[cfg_attr(
-        not(debug_assertions),
+        all(not(debug_assertions), not(test)),
         expect(dead_code, reason = "only a debug build's generation reads it")
     )]
     NextGeneration,

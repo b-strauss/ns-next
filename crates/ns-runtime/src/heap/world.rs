@@ -381,12 +381,15 @@ impl World {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(debug_assertions)]
     use crate::heap::machine_words::MachineWord;
     use crate::types::Value;
 
     /// The immediates' class words name the classes `class_of` answers
     /// after each mover: a scavenge that tenures everything, a full
     /// collection and the move stress mode's move.
+    // `collect_now` and `scavenge_now` are a debug build's.
+    #[cfg(debug_assertions)]
     #[test]
     fn an_immediate_class_word_survives_a_compaction() {
         let mut interpreter = crate::Interpreter::bootstrap();

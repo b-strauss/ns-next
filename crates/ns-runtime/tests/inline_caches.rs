@@ -961,6 +961,8 @@ fn a_fresh_bootstrap_leaves_twenty_seven_sites_and_twenty_two_global_entries() {
 /// `super` site under two applications, a private lexical site, slot
 /// accessors -- and again after a full collection, which scrubs the
 /// entries naming freed ids and drops the families nothing runs.
+/// `collect_now` is a debug build's.
+#[cfg(debug_assertions)]
 #[test]
 fn every_cell_agrees_with_its_entry() {
     let private_lexical = indoc! {"

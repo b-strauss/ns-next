@@ -5135,7 +5135,7 @@ impl<'gc> Heap<'gc> {
     /// application table and nothing past it, that row's instances id --
     /// `NONE`'s 0 for a free row -- and the machine words its address and
     /// bound.
-    #[cfg(test)]
+    #[cfg(all(test, debug_assertions))]
     pub(crate) fn verify_application_ids(&self) -> Result<(), String> {
         let rows = self.tables.applications.len();
         if self.application_ids.rows() != rows
