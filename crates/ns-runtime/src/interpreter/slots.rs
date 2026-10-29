@@ -41,33 +41,23 @@ impl<'gc> Mutator<'gc> {
         field: usize,
         arguments: Arguments<'_, 'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        match self.access_slot(receiver, kind, field, arguments) {
-            Some(value) => Ok(Step::Value(value)),
-            None => Err(self.no_field_for_slot_accessor(receiver, selector, field)),
-        }
-    }
-
-    /// `decide_slot_accessor`'s read or write, answering the value the
-    /// accessor answers, or `None`, having written nothing, for a receiver
-    /// without the field or a setter without an argument.
-    #[inline(always)]
-    fn access_slot(
-        &mut self,
-        receiver: Value<'gc>,
-        kind: AccessorKind,
-        field: usize,
-        arguments: Arguments<'_, 'gc>,
-    ) -> Option<Value<'gc>> {
-        let object = receiver.as_object()?;
-        match kind {
-            AccessorKind::Getter => self.heap.instance_field(object, field),
-            AccessorKind::Setter => {
-                let value = arguments.first(&self.heap)?;
-                self.heap
-                    .instance_set_field(object, field, value)
-                    .then_some(receiver)
+        if let Some(object) = receiver.as_object() {
+            match kind {
+                AccessorKind::Getter => {
+                    if let Some(value) = self.heap.instance_field(object, field) {
+                        return Ok(Step::Value(value));
+                    }
+                }
+                AccessorKind::Setter => {
+                    if let Some(value) = arguments.first(&self.heap) {
+                        if self.heap.instance_set_field(object, field, value) {
+                            return Ok(Step::Value(receiver));
+                        }
+                    }
+                }
             }
         }
+        Err(self.no_field_for_slot_accessor(receiver, selector, field))
     }
 
     /// `act`'s arm for `resolved`, a slot accessor of any chain but a
@@ -99,7 +89,22 @@ impl<'gc> Mutator<'gc> {
             {
                 None
             }
-            _ => self.access_slot(receiver, kind, field, arguments),
+            // `decide_slot_accessor`'s read or write, its error left to
+            // the interpreter. Written out here rather than shared with
+            // it: a helper both called slowed the interpreter's accessors,
+            // `bench_loop.ns` 2% with the JIT off.
+            _ => {
+                let object = receiver.as_object()?;
+                match kind {
+                    AccessorKind::Getter => self.heap.instance_field(object, field),
+                    AccessorKind::Setter => {
+                        let value = arguments.first(&self.heap)?;
+                        self.heap
+                            .instance_set_field(object, field, value)
+                            .then_some(receiver)
+                    }
+                }
+            }
         }
     }
 
