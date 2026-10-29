@@ -3698,7 +3698,8 @@ executed per send — the step's 18 extra instructions, on a path every send
 runs. It is not entry size: `GlobalEntry` is 32 bytes and `CacheEntry` 24 at
 the parent, at the control and at the commit alike, the fourth component
 having fitted in padding the struct already had. Two limits worth stating.
-The control also deletes a cold function, `global_hit`, which no longer has a
+The control also deletes a cold function, `global_hit` (the global cache's
+hit, since folded into `inline_cache::decided_miss`), which no longer has a
 caller, so code placement differs between the control and the commit as well
 as the probes; the conclusion rests on that pair measuring *null*, which a
 placement effect could in principle have cancelled, and on the parent
@@ -5059,7 +5060,8 @@ debug information of each tree, `dumpbin -disasm`: one function label matching
 `vm::run` in each and no `vm::run::closure`. The base has **6,507
 instructions**, the head **6,626**, 119 more although an arm was removed. `act`
 has no label of its own in either listing, so it is inlined, and the functions
-it is inlined into grew alike: `inline_cache::global_hit` from 909 to 926,
+it is inlined into grew alike: `inline_cache::global_hit` (the global
+cache's hit, since folded into `inline_cache::decided_miss`) from 909 to 926,
 `send_lexical_first` from 577 to 601, and each of the three
 `inline_cache::miss` instances by 60 to 63. The likely cause of `vm::run`'s
 growth is the same one, the new `fast_path` arm at each place `act` is inlined
@@ -5309,7 +5311,8 @@ instructions**, `f6e2b64` **6,989** and `1c1f624` **6,741**. From the base
 to `f6e2b64`, `resolve_public` grew from 148 to 178 instructions and
 `resolve_lexical` from 319 to 377, both now reaching `resolved_for`, which
 has no label of its own and so is inlined into each,
-`inline_cache::global_hit` shrank from 1,040 to 1,004, and each of the three
+`inline_cache::global_hit` (since folded into `inline_cache::decided_miss`)
+shrank from 1,040 to 1,004, and each of the three
 `inline_cache::miss` instances grew by 135 to 144; `resolve_class_side` is
 gone.
 

@@ -489,6 +489,23 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       comment, part of it false for each; `application_ids.rs`'s rationale
       for the table's bound is imprecise; `jit::baseline::lower`'s
       documentation does not name `Lowering::Transfer`.
+    - *The stress verification's cost*: a debug build checks every cell
+      against its entry before every `NS_NEXT_STRESS_SCAVENGE` scavenge
+      (`InlineCaches::verify_cells`), about 1.2 µs a check, which made the
+      slowest golden under that mode 32% slower (34 s to 45 s,
+      `runtime/jit/counting_loop` under the reference lowering); pacing it
+      by the cells checked, as `StressSchedule` paces collections by the
+      bytes traced, would cut the stress gate's time if it comes to
+      matter.
+    - *Trivia*: `GlobalCache::group` is `pub(crate)` for one test, where a
+      `#[cfg(test)]` accessor would keep it private;
+      `goldens/runtime/jit/mixin_applied_twice.ns` covers the
+      implicit-receiver form of an outer send but not the `outer`
+      keyword's lowering; `ns-memory`'s Windows stack bounds read a failed
+      `SetThreadStackGuarantee` as a guarantee of 0 rather than as no
+      answer (`platform/windows.rs`); `the_ordinary_end_follows_growth`
+      does not say why three distinct ends prove that the end follows a
+      growth.
     - *Smaller costs*: the cells' vacate helpers build a temporary `Vec`;
       `describe_activations` runs on every unhandled error for a test
       hook; `emit_group` uses `multiply_checked` as a plain multiply,

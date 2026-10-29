@@ -1203,7 +1203,9 @@ compiled since the cell was written, or a body abandoned -- the cells it
 reached are written afresh from their entries (`refresh_cells`,
 `refresh_cells_entering`). In a debug build every
 `NS_NEXT_STRESS_SCAVENGE` scavenge first checks every cell against its
-entry (`InlineCaches::verify_cells`), allowing only a miss stub's
+entry (`InlineCaches::verify_cells`) -- a vacant entry's cell whole, its
+entry word 0 as well as its guard, since the polymorphic stub jumps to
+the entry of a cell whose guard is vacant -- allowing only a miss stub's
 address where the callee has been compiled since. Past 6,291,456 sites a
 family runs uncached, and the mirror holds at most 2^20 entries.
 
