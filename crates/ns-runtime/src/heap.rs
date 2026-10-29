@@ -8855,10 +8855,11 @@ impl<'gc> Heap<'gc> {
 
     /// The value in the activation stack's word at `address`, which machine
     /// code handed a leaf as a callee's register 0 -- the first of its
-    /// send's slots -- or `nil` for an address outside the stack's
-    /// committed words.
+    /// send's slots -- or `None` for an address outside the stack's
+    /// committed words, at which the leaf declines rather than run on a
+    /// value machine code never handed it.
     #[cfg(ns_jit)]
-    pub(crate) fn machine_frame_value(&self, address: u64) -> Value<'gc> {
+    pub(crate) fn machine_frame_value(&self, address: u64) -> Option<Value<'gc>> {
         let base = self.stack.frames.base_address() as u64;
         let word = address
             .checked_sub(base)
@@ -8866,7 +8867,7 @@ impl<'gc> Heap<'gc> {
             .and_then(|bytes| usize::try_from(bytes / 8).ok())
             .filter(|index| *index < self.stack.frames.committed_words())
             .map(|index| self.stack.frames.committed_word(index));
-        word.map_or(Value::nil(), |bits| self.load(Word::from_bits(bits)))
+        word.map(|bits| self.load(Word::from_bits(bits)))
     }
 
     /// The value machine code answered as the word `bits`

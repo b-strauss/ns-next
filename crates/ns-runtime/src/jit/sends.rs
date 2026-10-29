@@ -489,6 +489,9 @@ fn send_through_cell(
     macro_assembler.walk_superclasses(class, level, missed_own);
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, entry, cell_word(CELL_ENTRY));
+    // The callee is entered with its site's own cell, which the leaf
+    // stub's leaf runs a slot accessor straight from.
+    assembler.add_immediate(cells, cell);
     macro_assembler.count_compiled_call();
     macro_assembler.assembler().jump(call);
     let nil = Immediate::NIL.bits();

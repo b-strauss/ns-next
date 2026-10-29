@@ -556,7 +556,8 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     assembler.jump_if(Condition::Equal, decline);
     assembler.return_();
     // The leaf stub: the receiver handed over in the machine words, the
-    // cell the send hit in `send_cells`, which the send left there.
+    // cell the send hit in `send_cells` -- its site's own on a direct hit,
+    // a block's cell or a global row from a stub, 0 after the miss leaf.
     let act = assembler.label();
     assembler.bind(act);
     macro_assembler.load_machine_words(address);

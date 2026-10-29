@@ -375,6 +375,12 @@ pub(super) fn emit_miss(macro_assembler: &mut MacroAssembler) {
     let answer = roles.leaf_result;
     macro_assembler.assembler().compare_immediate(answer, 0);
     macro_assembler.exit_if(Condition::Equal, ExitKind::PushRefused, 0);
+    // No cell: after a miss the site's own entry need not be the decision
+    // for this receiver, so the leaf stub, if that is what is entered,
+    // decides the send rather than run the entry.
+    macro_assembler
+        .assembler()
+        .move_immediate(roles.send_cells, 0);
     let machine_words = roles.idiom_scratch;
     macro_assembler.load_machine_words(machine_words);
     let receiver = MacroAssembler::machine_word(machine_words, MachineWord::CalleeReceiver);

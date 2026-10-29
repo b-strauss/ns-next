@@ -135,6 +135,9 @@ pub struct JitStatistics {
     /// target that is no method with code -- a setter, a leaf-safe
     /// primitive -- as the interpreter's `act` does.
     pub act_leaf_calls: u64,
+    /// Calls of the leaf stub's leaf that ran a slot accessor straight
+    /// from the entry of the send's own site, whose cell the send hit.
+    pub site_slot_hits: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled and entered at a
@@ -1007,9 +1010,12 @@ pub(crate) enum Stubbed<'method> {
 /// or protected chain, whose guard is the receiver's own, through its
 /// field's getter stub; a quick method's constant, receiver or parameter
 /// through its stub, read off the method, which is immutable, as `act`
-/// reads it on every hit; a setter, a private or `super` slot accessor,
-/// a builtin class's accessor, and a primitive method or a mirror send of
-/// a leaf-safe row (`MachineCall::Leaf`) through the leaf stub. `None` for
+/// reads it on every hit; a setter on a public or protected chain through
+/// its field's setter stub; a method whose fast path is a leaf-safe mirror
+/// row (`MachineCall::Leaf`) through its row's mirror method stub; a
+/// private or `super` slot accessor, a getter or setter past the stubs'
+/// fields, a builtin class's accessor and a primitive that is a mirror
+/// send of a leaf-safe row through the leaf stub. `None` for
 /// every other -- a fast path that activates a block, a row that is not
 /// leaf-safe, a `doesNotUnderstand:` handler -- and where there is no
 /// zone: the interpreter runs the send.

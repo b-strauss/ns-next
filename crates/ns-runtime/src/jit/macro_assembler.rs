@@ -86,9 +86,11 @@ pub(crate) struct Roles {
     /// A send's cells' address (`BlockWord::Cells`), from its load before
     /// the guard's compare to the load of the cell's entry, across
     /// `load_guard`, `load_class`, `load_lexical_class` and
-    /// `walk_superclasses`; on a miss its site's cell's address, which the
-    /// polymorphic stub is entered with, then in the stubs the block cell
-    /// or the global row they read.
+    /// `walk_superclasses`; then its site's own cell's address, which a
+    /// hit enters the callee with and a miss the polymorphic stub; in the
+    /// stubs the block cell or the global row they read, and 0 after the
+    /// miss leaf. The leaf stub hands it to its leaf, which runs a slot
+    /// accessor straight from the site's entry when it is a site's cell.
     pub(crate) send_cells: Register,
     /// The guard a send compares with its cell's: the receiver's, or a
     /// class object's application word; kept into the stubs, which compare

@@ -239,8 +239,11 @@ fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// whose cell names the leaf stub calls: the callee's register 0 at
 /// `arguments[0]`, the send's slots, the send's return address
 /// `arguments[1]`, which names the send and so the sending frame, as the
-/// miss leaf's do, and the address of the cell the send hit,
-/// `arguments[2]`, its receiver handed over in the machine words. Runs the
+/// miss leaf's do, and `arguments[2]`, the address of the send's site's
+/// own cell when the send hit it directly, a block's cell or a global
+/// row when a stub found the entry, 0 after the miss leaf
+/// (`Roles::send_cells`), its receiver handed over in the machine words.
+/// Runs the
 /// target the send's cell recorded as the interpreter's `act` runs it and
 /// answers its value, or `Word::NO_VALUE_BITS`, at which the stub refuses
 /// the call with nothing changed, so that the interpreter runs the send:
@@ -280,6 +283,7 @@ fn act_on_a_site_slot(
     cell_address: u64,
 ) -> Option<u64> {
     let resolved = mutator.caches.site_slot_hit(cell_address)?;
+    mutator.jit.statistics.site_slot_hits += 1;
     let receiver = mutator.heap.machine_callee_receiver();
     let setter = matches!(
         resolved,
@@ -292,7 +296,10 @@ fn act_on_a_site_slot(
     // setter's.
     let slot;
     let given: &[Value<'_>] = if setter {
-        slot = [mutator.heap.machine_frame_value(callee_address)];
+        let Some(value) = mutator.heap.machine_frame_value(callee_address) else {
+            return Some(Word::NO_VALUE_BITS);
+        };
+        slot = [value];
         &slot
     } else {
         &[]
@@ -361,9 +368,13 @@ fn mirror_method(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     if usize::from(site.argument_count) <= HANDED_ARGUMENTS {
         let mut values = [Value::nil(); HANDED_ARGUMENTS];
         for (position, value) in (0..u64::from(site.argument_count)).zip(values.iter_mut()) {
-            *value = mutator
+            let Some(read) = mutator
                 .heap
-                .machine_frame_value(callee_address + position * 8);
+                .machine_frame_value(callee_address + position * 8)
+            else {
+                return Word::NO_VALUE_BITS;
+            };
+            *value = read;
         }
         let given: &[Value<'_>] = &values[..usize::from(site.argument_count)];
         return mirror::execute_method_for_machine_code(

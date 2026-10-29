@@ -74,6 +74,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         send_exits: after.send_exits - before.send_exits,
         act_leaf_calls: after.act_leaf_calls - before.act_leaf_calls,
         abandoned_bodies: after.abandoned_bodies - before.abandoned_bodies,
+        site_slot_hits: after.site_slot_hits - before.site_slot_hits,
     }
 }
 
@@ -891,8 +892,9 @@ ns_runtime::for_each_lowering! {
     /// `Array>>at:` and `at:put:`, methods whose fast path is a leaf-safe
     /// mirror row, run in the mirror method stub's leaf, which runs the
     /// row's leaf on the receiver and the send's arguments without
-    /// deciding the send again; an index out of range declines, and the
-    /// interpreter, running the send, raises the error.
+    /// deciding the send again; an index out of range, the eleventh turn's,
+    /// declines, and the interpreter, running the send, raises the error
+    /// it raises with the JIT off.
     fn a_mirror_method_runs_in_its_stub(lowering) {
         let source = indoc! {"
             class Subject = Object new (
@@ -907,6 +909,17 @@ ns_runtime::for_each_lowering! {
                 |
                 [index <= 10] whileTrue: [
                   elements at: index put: index.
+                  sum:: sum + (elements at: index).
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+              public overrun = (
+                |
+                  index ::= 1.
+                  sum ::= 0.
+                |
+                [index <= 11] whileTrue: [
                   sum:: sum + (elements at: index).
                   index:: index + 1.
                 ].
@@ -927,6 +940,32 @@ ns_runtime::for_each_lowering! {
                 done.act_leaf_calls
             );
             assert_eq!(done.send_exits, 0, "no call is refused");
+        }
+        let overrun = |interpreter: &mut Interpreter| {
+            let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            match interpreter.send(&instance, Symbol::intern("overrun"), &[]) {
+                Err(HostSignal::Error(error)) => error.message,
+                _ => panic!("overrun: expected the index error"),
+            }
+        };
+        let first = overrun(&mut interpreter);
+        let before = interpreter.jit_statistics();
+        let compiled = overrun(&mut interpreter);
+        let done = since(interpreter.jit_statistics(), before);
+        assert_eq!(compiled, first);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.machine_entries >= 1, "`overrun`, which loops, is entered");
+            assert_eq!(
+                done.send_exits, 1,
+                "the eleventh `at:` declines and its call is refused"
+            );
+        }
+        let (mut interpreted, interpreted_class) = load_with(source, lowering);
+        interpreted.set_jit_enabled(false);
+        let instance = expect_ok(interpreted.instantiate(&interpreted_class, &[]), "instantiate");
+        match interpreted.send(&instance, Symbol::intern("overrun"), &[]) {
+            Err(HostSignal::Error(error)) => assert_eq!(error.message, compiled),
+            _ => panic!("overrun: expected the index error"),
         }
     }
 }
@@ -1840,3 +1879,138 @@ const AUDITED_LEAF_ROWS: &[(&str, &[&str])] = &[
         ],
     ),
 ];
+
+ns_runtime::for_each_lowering! {
+    /// A private slot's accessors, sent in a loop, run in the leaf stub's
+    /// leaf straight from the entry of the send's own site: the cell the
+    /// send hit is its own, at a site of the body's family, never site 0.
+    /// Two subjects with private slots at different fields share no site,
+    /// so a leaf that read another site's entry would answer the other's
+    /// field.
+    fn a_private_accessor_runs_from_its_own_sites_entry(lowering) {
+        let source = indoc! {"
+            class Subject = Object new (
+              |
+                counter = Counter new.
+                other = Other new.
+              |
+            ) (
+              class Counter = (
+                |
+                  private padding ::= 0.
+                  private count ::= 0.
+                |
+              ) (
+                public step: index = (
+                  count: count + index.
+                  ^count
+                )
+              )
+              class Other = (
+                |
+                  private count ::= 1000.
+                |
+              ) (
+                public peek = (
+                  ^count
+                )
+              )
+              public run = (
+                |
+                  index ::= 0.
+                  sum ::= 0.
+                |
+                [index < 200] whileTrue: [
+                  sum:: sum + (counter step: index) + other peek.
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_counting(true);
+        let expected = (0..200i64).map(|index| index * (index + 1) / 2 + 1000).sum::<i64>();
+        assert_eq!(run(&mut interpreter, &class), expected);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), expected);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.site_slot_hits >= 400,
+                "the private getter and setter of every turn run from their sites' own entries: {}",
+                done.site_slot_hits
+            );
+        }
+    }
+}
+
+/// Five classes whose `step:` makes a block, which machine code does not
+/// do, sent at one site of a loop: the site goes polymorphic, then
+/// megamorphic, so that its callees are reached through a block's cells
+/// and the global cache's rows.
+const LEAVING_EVERYWHERE: &str = indoc! {"
+    class Subject = Object new (
+      |
+        steppers = Array new: 5.
+      |
+      steppers at: 1 put: One new.
+      steppers at: 2 put: Two new.
+      steppers at: 3 put: Three new.
+      steppers at: 4 put: Four new.
+      steppers at: 5 put: Five new.
+    ) (
+      class One = () (
+        twice: value = (
+          ^value + value
+        )
+        public step: value = (
+          |
+            doubled = self twice: value.
+          |
+          ^[doubled + 1] value.
+        )
+      )
+      class Two = One () ()
+      class Three = One () ()
+      class Four = One () ()
+      class Five = One () ()
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          sum:: sum + ((steppers at: index \\\\ 5 + 1) step: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Callees that keep leaving, reached through a polymorphic block's
+    /// cells and through the global cache's rows, are abandoned like one
+    /// reached through a site's own cell, and every cell that named their
+    /// machine entry is written afresh from its entry, so that the cells
+    /// still agree with the entries (`Interpreter::verify_cells`).
+    fn abandoned_bodies_leave_no_cell_naming_them(lowering) {
+        let (mut interpreter, class) = load_with(LEAVING_EVERYWHERE, lowering);
+        assert_eq!(run(&mut interpreter, &class), 1_000_000);
+        let before = interpreter.jit_statistics();
+        for _ in 0..10 {
+            assert_eq!(run(&mut interpreter, &class), 1_000_000);
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        if let Err(message) = interpreter.verify_cells() {
+            panic!("after the abandonment: {message}");
+        }
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.abandoned_bodies >= 1,
+                "`step:`, whose block exits on every call"
+            );
+        }
+    }
+}
