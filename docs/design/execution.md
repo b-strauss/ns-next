@@ -10267,6 +10267,101 @@ the stack they expect -- Cog abandoned `longjmp` because MSVC's unwinder
 - **A panic never unwinds through machine code**: a leaf returns its
   failure as a value, and a panic in one aborts.
 
+### The entry at a send
+
+Decided with the user on 2026-10-29. **An interpreter's send whose
+target is a method with machine code calls that code as a compiled send
+does**, through a call stub, and the callee's `ret` delivers its value
+into the send's destination, the run loop going on at the next
+instruction; **every other entry -- a push that is no send, a frame
+returned to -- crosses a thin bridge** whose block is prepared once,
+not built at every entry. With both, every compiled body is entered
+wherever it runs, and `CALLED_ONLY` goes.
+
+**What an entry cost.** Measured on 2026-10-29 at `d2f7e9bc`, one pinned
+release build with debug information, with every compiled body entered at
+every push: an interpreted `do:` pushing the block `[:each | each]` a
+million times a run took 75.3 ms against 64.4 ms interpreted, about 11 ns
+more an entry than the block's interpreted run. A profile (`samply` at 8
+kHz, its frames named through `llvm-symbolizer` against the PDB) split an
+entry's roughly 17 ns: `jit::run_machine_code` 3.6 ns -- the room check,
+the sixteen words of the block written afresh, the leaf table built, the
+zone's `Rc` cloned, the exit decoded and counted -- `jit::entered` 2.0 ns
+(counting a compiled body's entry, the program-counter map searched for
+offset 0), `vm::machine_code_switch` 1.9 ns, the return 7.8 ns --
+`finish`, `pop_activation` and `resume_caller`, which reads the caller's
+send again to find its destination -- and the machine code with its
+stubs 1.6 ns; `CodeZone::enter` itself 0.15 ns. On top of all of it the
+interpreter's own push of the frame had already run. So the cost is the
+bookkeeping on either side of the crossing, not the crossing.
+
+**What the prior art does.** None of the three pays a crossing of the
+platform convention per call; each pays it only where its runtime calls
+in. HotSpot's `Method::set_code` swaps the pointer every interpreted
+invoke jumps through (`share/oops/method.cpp:1448-1488`,
+`cpu/x86/interp_masm_x86.cpp:731`); the frameless i2c adapter, 12 to 20
+instructions, loads the arguments into the compiled convention and jumps
+(`cpu/x86/sharedRuntime_x86_64.cpp:1099-1263`), so no interpreter frame
+is ever built for the callee, whose `ret` lands in an interpreter return
+entry that has the value in its top-of-stack register and decodes
+nothing (`cpu/x86/templateInterpreterGenerator_x86.cpp:176-221`); its
+`call_stub`, which saves every callee-saved register, runs only where
+C++ calls Java (`cpu/x86/stubGenerator_x86_64.cpp:186-379`). V8's
+Ignition and Sparkplug share one frame layout, one slot apart
+(`src/execution/frame-constants.h:744-837`); every caller jumps through
+the function's dispatch entry, which `UpdateCodeImpl` points at the
+baseline code (`src/objects/js-function-inl.h:142-157`), and a return
+lands in the interpreter's trampoline with the value in its accumulator,
+which reads the call's opcode for its length alone
+(`src/builtins/x64/builtins-x64.cc:1262-1276`); `JSEntry` crosses only
+from C++ (`:347-553`). Cog's interpreter, a C loop as this one is a Rust
+loop, builds the callee's frame itself and jumps into the method past
+its frame-building prologue (`cointerp.c:11322-11395`); machine code
+returns to an interpreted caller through a trampoline that resets the C
+stack and jumps into `interpret()` afresh
+(`cogitX64SysV.c:8334-8393`), so no C frame ever waits for machine code.
+
+**Why a call stub and not Cog's switch.** Cog never returns into the C
+frame that entered machine code; here the run loop's frames hold `Rc`s
+and the protected `&mut Mutator`, and skipping a Rust frame without
+returning through it is undefined behaviour, so every entry returns to
+the Rust that made it ("The native stack carries the return addresses"
+above). What is kept of the prior art is what makes its transitions
+cheap without that: the callee builds its own frame -- the compiled
+prologue does already ("The callee writes its own header places"), and
+the overlapping windows lay a send's callee on its sender's slots in
+the interpreter as in machine code, the role V8's shared layout plays --
+and the value comes back to where the caller goes on, with no pop and no
+second reading of the send.
+
+- **The call** (`jit::called`): when the decided step is a method's
+  activation on the send's own slots and its body has machine code in
+  this zone compiled against the step's feedback base, the interpreter
+  places the arguments in the slots as its push does, hands the receiver
+  and the defining class over in the machine words (`CalleeReceiver`,
+  `CalleeClass`) and calls the body's machine entry through the call
+  stub with the callee's register 0 at the send's argument base. The
+  prologue checks the depth, the stack's room and the safepoint request
+  as for any compiled call, and a refusal there pushes the callee in the
+  interpreter, which raises the overflow or grows the stack. The callee's
+  `Return` took its count off; nothing is popped, so nothing is added
+  back. The deciding stays in `interpreter/`; `vm.rs` only delivers what
+  the send answers: a value, a pushed activation, or where an exit left
+  the run loop.
+- **The exit's walk starts at the send**: the call seeds the walk with
+  the sender's send as if the sender were a compiled frame stopped at
+  it, so that the callee is materialized as any compiled callee is and
+  the sender, interpreted, goes on after it as after any callee.
+- **The bridge** (`jit::entered`, `jit::resumed`): the entry block lives
+  beside the machine words, outside the mutator, its words written when
+  what they name changes -- the zone, the global cache's size -- rather
+  than at every entry; a compiled body's entry counts nothing and finds
+  its offset 0 without a search; the leaf table is built once; a return
+  is decoded first.
+- **Every compiled body is entered** at a send, at a push and at a frame
+  returned to; a body whose code exits at once is still never installed,
+  since an entry of it buys nothing.
+
 ### Fixed registers and the calling convention
 
 The internal convention is ns-next's own; only the entry and the leaf
