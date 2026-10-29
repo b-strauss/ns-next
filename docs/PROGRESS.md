@@ -6493,7 +6493,8 @@ outcome changed; eight goldens were added under `goldens/runtime/jit/`.
   which it had not: Havlak -6.1% and Richards -2.1% afterwards.
 - The documents' commit after them.
 
-What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
-8's fourth stage, closures, non-local return, allocation and the write
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the cost
+of an entry into machine code, which keeps a body that cannot loop to
+compiled calls, first, then road step 8's fourth stage, closures, non-local return, allocation and the write
 barrier in machine code, next, and what stage 3's measurement and reviews
 left.
