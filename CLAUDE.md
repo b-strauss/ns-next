@@ -111,7 +111,8 @@ Rust 1.98.0, edition 2021, seven crates:
   and the JIT's code zone (`code_zone.rs`): one reservation mapped twice,
   an executable view and a writable one its one writer stores through, the
   entry into machine code and the shim through which machine code calls a
-  Rust leaf. The only crate with `unsafe`; `ns-runtime`, `ns-assembler`,
+  Rust leaf; and the native stack's remaining room, which every entry into
+  machine code checks (`native_stack.rs`). The only crate with `unsafe`; `ns-runtime`, `ns-assembler`,
   `ns-tooling` and `ns-analyzer` forbid it.
   The heap's object space is its user (`docs/design/memory.md`, "The memory
   layer", "The object space"), and the JIT (`execution.md`, "Executable
