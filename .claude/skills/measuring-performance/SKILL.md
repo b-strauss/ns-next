@@ -58,7 +58,7 @@ the re-entries moved", has the full measurement protocol and its history.
    a bisection probe or an experiment, is an *interim* measurement: one
    pinned build a side, only the sources the change can move (the micro
    sources and `bench_new*` for a send or instantiation change), `--iterations
-   5`, three rounds, no seconds-long Are We Fast Yet program. It answers
+   15`, three rounds, no seconds-long Are We Fast Yet program. It answers
    "did this move it, roughly"; a difference within the 16% build spread of
    point 3 is no verdict. The numbers a design document records, and the
    decision whether a batch regressed, are the *final* measurement: point 3's
@@ -68,7 +68,7 @@ the re-entries moved", has the full measurement protocol and its history.
 5. **Three runs of the slow programs.** Of the Are We Fast Yet programs, CD,
    Havlak, Mandelbrot, NBody and DeltaBlue take seconds per run: time them
    with `bench --iterations 3`, every other program and every micro source
-   with `--iterations 5` (`execution.md`, "The Are We Fast Yet
+   with `--iterations 8` (`execution.md`, "The Are We Fast Yet
    benchmarks"). Ten runs of them made a three-builds-a-side comparison
    take an hour and a half. Two
    ns-next trees are compared with `bench` alone; the harness's `--timed`

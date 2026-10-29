@@ -1181,9 +1181,9 @@ compared, the current tree included, built with the same explicit
 ("What removing the re-entries moved" below). The five programs that take
 seconds per run -- CD, Havlak, Mandelbrot, NBody and DeltaBlue -- are
 timed with `bench --iterations 3`, every other program and every
-microbenchmark with `--iterations 5`, and a final comparison takes three
+microbenchmark with `--iterations 8`, and a final comparison takes three
 builds a side over three rounds in one sitting, an interim one a build a
-side with `--iterations 5` (decided with the user on 2026-10-02 and
+side with `--iterations 15` (decided with the user on 2026-10-02 and
 2026-10-29): a run of seconds varies by far less than the changes
 measured, and ten of them made a comparison of three builds a side take
 an hour and a half, three bring it to about half an hour. A comparison of two ns-next trees uses `bench`
