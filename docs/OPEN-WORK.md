@@ -392,6 +392,34 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     interpreted. Once stage 4 runs closures in machine code most exits go;
     whether a budget per entries (a rate), a decaying count, or nothing is
     right is to be measured then.
+  - **An entry into machine code costs too much, so a body that cannot
+    loop is called only** (`jit::CALLED_ONLY`). An entry at an
+    interpreter's push leaves the run loop through `CodeZone::enter` and
+    comes back through the return or exit stub, about fourteen
+    nanoseconds a push, more than a short body's interpreted run, so a
+    body that cannot take a backward jump before its first exit is entered
+    only by a compiled call. The consequence: a recursion, or any chain of
+    sends, whose root is an interpreted frame without a loop never runs in
+    machine code -- `fib: 20` sent once from a host runs all 6,765 of its
+    activations interpreted in every round, its code installed and never
+    entered, while the same recursion under a compiled loop runs wholly in
+    machine code from its second turn (probed by the stage's final
+    review); on-stack replacement does not cover it, since the root has no
+    back edge. No golden or benchmark exercises it. The prior art makes
+    the entry cheap instead of avoiding it, and enters compiled code at
+    every call once it exists: HotSpot's `Method::set_code` points the
+    interpreter's entry at a frameless i2c adapter
+    (`prior-art/jdk/src/hotspot/share/oops/method.cpp`, `set_code`); V8's
+    Sparkplug shares Ignition's frame layout and
+    `InterpreterEntryTrampoline` jumps to baseline code where it exists
+    (`prior-art/v8/src/builtins/x64/builtins-x64.cc`); Cog's interpreter
+    activates a method's machine code at any send once it has some
+    (`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c`,
+    `executeNewMethod`), compiles at the second send, and compiles a doit
+    eagerly. Where the fourteen nanoseconds go is to be found, and the entry's design decided against
+    the prior art, before stage 4; with an entry that
+    costs about a call, every compiled body is entered at every push and
+    `CALLED_ONLY` goes.
   - **A leaf call costs more than the interpreter's step for the same
     target**: the leaf stub's leaf decides the send again
     (`inline_cache::act_at`) for every target but a slot accessor its send

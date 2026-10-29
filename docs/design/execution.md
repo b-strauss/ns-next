@@ -9855,7 +9855,11 @@ foundation moved" that of the first two.
     an exit cost about fourteen nanoseconds, more than a straight run to
     the return buys; entering every such body cost Richards 2.6 times its
     time and most of the other programs twice theirs ("What sends in
-    machine code moved");
+    machine code moved"). So a recursion whose root is an interpreted
+    frame without a loop runs interpreted throughout; the prior art makes
+    the entry cheap and enters compiled code at every call instead, which
+    is left open (`OPEN-WORK.md`, "An entry into machine code costs too
+    much");
   - a body whose code can loop before it exits is installed and entered
     at a push and at a frame returned to;
   - a body whose machine code has handed its frame to the interpreter
