@@ -30,7 +30,7 @@ pub(crate) struct BaselineBody {
     /// code runs at most a few straight-line instructions the interpreter
     /// would have run for less than the entry and the exit cost
     /// (`jit::note_entry`).
-    pub(crate) leaves_before_a_loop: bool,
+    pub(crate) exits_at_once: bool,
 }
 
 /// What `lower` did with one instruction, and what `compile` still emits
@@ -39,6 +39,11 @@ pub(crate) struct BaselineBody {
 pub(super) enum Lowering {
     /// The arm emitted the instruction's template itself.
     Template,
+    /// The arm emitted the template of a return or of a compiled send: a
+    /// template like `Template`, but one that does the work of a call, which
+    /// pays for entering the body
+    /// (`reaches_a_return_a_send_or_a_loop_before_an_exit`).
+    Transfer,
     /// A call of `leaf` with `arguments`, the instruction's own
     /// interpreter step, which answers 0 when it ran the instruction and
     /// anything else, having changed nothing, to have the interpreter run
@@ -510,6 +515,7 @@ pub(crate) fn compile(
     };
     sends::prologue(&mut body, code);
     let mut exits = Vec::with_capacity(usize::from(count));
+    let mut transfers = Vec::with_capacity(usize::from(count));
     for program_counter in 0..u32::from(count) {
         let start = body.starts[program_counter as usize];
         body.macro_assembler.assembler().bind(start);
@@ -520,8 +526,9 @@ pub(crate) fn compile(
         // instruction: the instruction was decided by `lower`'s arm.
         let lowering = lower(&instruction, &mut body);
         exits.push(lowering == Lowering::Exit);
+        transfers.push(lowering == Lowering::Transfer);
         match lowering {
-            Lowering::Template => {}
+            Lowering::Template | Lowering::Transfer => {}
             Lowering::Leaf { leaf, arguments } => {
                 let macro_assembler = &mut body.macro_assembler;
                 macro_assembler.call_leaf(leaf, arguments);
@@ -535,7 +542,7 @@ pub(crate) fn compile(
             }
         }
     }
-    let leaves_before_a_loop = !takes_a_backward_jump_before_an_exit(code, &exits);
+    let exits_at_once = !reaches_a_return_a_send_or_a_loop_before_an_exit(code, &exits, &transfers);
     body.emit_backward_branches();
     let assembled = body
         .macro_assembler
@@ -545,7 +552,7 @@ pub(crate) fn compile(
     Ok(BaselineBody {
         code: assembled,
         map,
-        leaves_before_a_loop,
+        exits_at_once,
     })
 }
 
@@ -573,13 +580,19 @@ fn program_counter_map(
 }
 
 /// Whether the code of `code`, whose instructions at the program counters
-/// `exits` marks lower to exits, can take a backward jump before its
+/// `exits` marks lower to exits and `transfers` marks lower to a return or
+/// a compiled send, can reach a transfer or take a backward jump before its
 /// first exit: whether some instruction reachable from the first through
-/// templates and leaves alone jumps back. Only such code does work in
-/// machine code that pays for entering it; a leaf that declines exits,
-/// but is counted as falling through, since it declines only what the
-/// interpreter must run.
-fn takes_a_backward_jump_before_an_exit(code: &CompiledCode, exits: &[bool]) -> bool {
+/// templates and leaves alone is a transfer or jumps back. Only such code
+/// does work in machine code that pays for entering it; a body that exits
+/// after a few straight-line instructions costs an entry and an exit on
+/// every push. A leaf that declines exits, but is counted as falling
+/// through, since it declines only what the interpreter must run.
+fn reaches_a_return_a_send_or_a_loop_before_an_exit(
+    code: &CompiledCode,
+    exits: &[bool],
+    transfers: &[bool],
+) -> bool {
     let mut reached = vec![false; exits.len()];
     let mut pending = Vec::new();
     if let Some(first) = reached.first_mut() {
@@ -589,6 +602,9 @@ fn takes_a_backward_jump_before_an_exit(code: &CompiledCode, exits: &[bool]) -> 
     while let Some(program_counter) = pending.pop() {
         if exits[program_counter as usize] {
             continue;
+        }
+        if transfers[program_counter as usize] {
+            return true;
         }
         let instruction = code.instruction(program_counter as usize);
         for successor in successors(program_counter, &instruction) {
@@ -752,7 +768,7 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
         } => match mirror_entry(*primitive).machine_call {
             MachineCall::Leaf => {
                 body.send_mirror(*failure);
-                Lowering::Template
+                Lowering::Transfer
             }
             MachineCall::Exit => Lowering::Exit,
         },
@@ -1292,10 +1308,14 @@ mod tests {
     #[test]
     fn a_loop_reachable_only_past_an_exit_is_no_reason_to_enter() {
         let (code, exits) = loop_past_an_instruction(true);
-        assert!(!super::takes_a_backward_jump_before_an_exit(&code, &exits));
+        assert!(!super::reaches_a_return_a_send_or_a_loop_before_an_exit(
+            &code,
+            &exits,
+            &[false; 6]
+        ));
         let (code, exits) = loop_past_an_instruction(false);
         assert!(
-            super::takes_a_backward_jump_before_an_exit(&code, &exits),
+            super::reaches_a_return_a_send_or_a_loop_before_an_exit(&code, &exits, &[false; 6]),
             "the same loop through a template is"
         );
     }
@@ -1326,6 +1346,10 @@ mod tests {
             0,
         );
         let exits = [false, false, false, false, false, true];
-        assert!(!super::takes_a_backward_jump_before_an_exit(&code, &exits));
+        assert!(!super::reaches_a_return_a_send_or_a_loop_before_an_exit(
+            &code,
+            &exits,
+            &[false; 6]
+        ));
     }
 }

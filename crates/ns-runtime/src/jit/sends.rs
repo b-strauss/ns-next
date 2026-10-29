@@ -186,7 +186,7 @@ pub(super) fn return_from(body: &mut BodyAssembler, register: u16) -> Lowering {
     assembler.add_immediate(count, -1);
     assembler.store(Width::Word64, depth, count);
     assembler.return_();
-    Lowering::Template
+    Lowering::Transfer
 }
 
 /// The argument placement of a send whose sources are not all its slots:
@@ -541,7 +541,7 @@ fn send_through_cell(
     let _ = count;
     let macro_assembler = &mut body.macro_assembler;
     macro_assembler.store_frame_register(destination, roles.leaf_result);
-    Lowering::Template
+    Lowering::Transfer
 }
 
 /// A debug build's poison over the registers a callee that lay on the

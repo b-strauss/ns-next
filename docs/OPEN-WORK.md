@@ -375,13 +375,14 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   patched direct call; and the code zone's default size, 16 MiB today
   (`jit::DEFAULT_ZONE_BYTES`), a first guess. What the foundation leaves
   to the stages after it (noted in its reviews, 2026-10-27):
-  - **Which bodies are entered, once sends and returns have templates.**
-    A body is entered only when its code can take a backward jump before
-    its first exit (`jit/baseline.rs`, `takes_a_backward_jump_before_an_exit`),
-    since code that exits after a few straight-line instructions cost up
-    to 31% on the send benchmarks ("What the baseline JIT's foundation
-    moved"). Once a body's code runs to its return, the rule has to admit
-    it; stage 3 decides and measures the rule then.
+  - **Which bodies are entered, measured.** A body is entered when its
+    code can reach a return, a compiled send or a backward jump before its
+    first exit (`jit/baseline.rs`,
+    `reaches_a_return_a_send_or_a_loop_before_an_exit`); code that exits
+    after a few straight-line instructions cost up to 31% on the send
+    benchmarks ("What the baseline JIT's foundation moved"). Whether the
+    rule is the right one for the stage's benchmarks is still to be
+    measured.
   - **`jit::entered` is `#[cold]`**, right while almost every push of a
     compiled body only counts; once templates make entering the common
     path of a compiled body's push, its placement is to be measured

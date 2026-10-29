@@ -91,11 +91,11 @@ pub struct JitStatistics {
     /// out, or no room left in the zone -- which stay interpreted for
     /// good.
     pub refused_bodies: u64,
-    /// Bodies whose machine code would leave before it can take a
-    /// backward jump, so that it would run at most a few straight-line
+    /// Bodies whose machine code would exit before it reaches a return, a
+    /// compiled send or a backward jump, so that it would run at most a few straight-line
     /// instructions for the price of an entry and an exit: neither
     /// installed nor entered, and interpreted for good.
-    pub bodies_leaving_before_a_loop: u64,
+    pub bodies_exiting_at_once: u64,
     /// Backward jumps machine code took, counted only by the code compiled
     /// while `Interpreter::set_jit_counting` is on, and only while it is
     /// on, so that a loop in machine code compiled otherwise pays nothing
@@ -135,17 +135,18 @@ pub struct JitStatistics {
 /// What a body's `JitSlot` says once it is compiled.
 const COMPILED: u32 = u32::MAX - 2;
 /// What a body's `JitSlot` says once its machine code is known to leave
-/// before it can take a backward jump, so that it is never entered.
-const LEAVES_BEFORE_A_LOOP: u32 = u32::MAX - 1;
+/// before it reaches a return, a compiled send or a backward jump, so that
+/// it is never entered.
+const EXITS_AT_ONCE: u32 = u32::MAX - 1;
 /// What a body's `JitSlot` says once it will never be compiled.
 const REFUSED: u32 = u32::MAX;
 
 /// A body's state in the JIT: *counting* its entries (`state` below
 /// `COMPILED`), *compiled* (`COMPILED`; `zone` names the zone its machine
-/// code lies in, `offset` where, `map` its program-counter map), *leaving
-/// before a loop* (`LEAVES_BEFORE_A_LOOP`: its code would leave before it
-/// can take a backward jump, so entering it would cost every push more
-/// than the few instructions it runs), or
+/// code lies in, `offset` where, `map` its program-counter map), *exiting
+/// at once* (`EXITS_AT_ONCE`: its code would exit before it reaches a
+/// return, a compiled send or a backward jump, so entering it would cost
+/// every push more than the few instructions it runs), or
 /// *refused* (`REFUSED`). A body in either of the last two is never looked
 /// at again, so the two are the top values, which one compare tells from
 /// the others (`is_armed`).
@@ -184,7 +185,7 @@ impl std::fmt::Debug for JitSlot {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.state.get() {
             REFUSED => formatter.write_str("JitSlot::Refused"),
-            LEAVES_BEFORE_A_LOOP => formatter.write_str("JitSlot::LeavesBeforeALoop"),
+            EXITS_AT_ONCE => formatter.write_str("JitSlot::ExitsAtOnce"),
             COMPILED => formatter
                 .debug_struct("JitSlot::Compiled")
                 .field("zone", &self.zone.get())
@@ -198,12 +199,12 @@ impl std::fmt::Debug for JitSlot {
 
 impl JitSlot {
     /// Whether an entry into the body has anything to do with the JIT:
-    /// false once the body is refused or leaves before a loop. The one load and
+    /// false once the body is refused or exits at once. The one load and
     /// compare the run loop makes on a push (`vm::run_stretch`);
     /// everything else is `entered`'s, out of line.
     #[inline(always)]
     pub(crate) fn is_armed(&self) -> bool {
-        self.state.get() < LEAVES_BEFORE_A_LOOP
+        self.state.get() < EXITS_AT_ONCE
     }
 
     fn refuse(&self) {
@@ -362,8 +363,8 @@ pub(crate) enum Refusal {
     /// No room left in the zone, or its memory could not be committed.
     ZoneFull,
     /// The code leaves before it can take a backward jump
-    /// (`JitStatistics::bodies_leaving_before_a_loop`).
-    LeavesBeforeALoop,
+    /// (`JitStatistics::bodies_exiting_at_once`).
+    ExitsAtOnce,
 }
 
 /// A body installed in the zone: which body, where its code lies, and its
@@ -407,11 +408,11 @@ pub(crate) struct JitState {
     /// (`JitStatistics::machine_back_edges`).
     counting: bool,
     statistics: JitStatistics,
-    /// Whether a body leaving before a loop is installed all the same, so
+    /// Whether a body exiting at once is installed all the same, so
     /// that a test fills a zone, or compiles a body anew, and the JIT
     /// stress mode runs the entry stub and the exit on every push, whatever
     /// the body's code.
-    install_bodies_leaving_before_a_loop: bool,
+    install_bodies_exiting_at_once: bool,
     /// The entry that compiles a body: its first under the JIT stress mode.
     compile_at_entry: u32,
     /// The exit's walk over the compiled frames' return addresses, while
@@ -426,7 +427,7 @@ pub(crate) struct JitState {
 /// neither empty nor `0`. Debug builds only, like the other stress modes;
 /// read once per process. It forces the JIT on where it is available,
 /// compiles every body at its first entry and installs a body whose
-/// machine code leaves before a loop, so that every program runs
+/// machine code exits at once, so that every program runs
 /// the entry stub, the exit and the resumption on every push rather than
 /// the interpreter alone (`docs/design/README.md`, "Gates").
 fn stress_jit_from_env() -> bool {
@@ -471,7 +472,7 @@ impl JitState {
             bodies: Vec::new(),
             counting: false,
             statistics: JitStatistics::default(),
-            install_bodies_leaving_before_a_loop: stress_jit,
+            install_bodies_exiting_at_once: stress_jit,
             compile_at_entry: if stress_jit { 1 } else { COMPILE_AT_ENTRY },
             walk: materialize::Walk::default(),
             walked: None,
@@ -517,11 +518,11 @@ impl JitState {
 
     /// Turns the JIT stress mode on or off for this state, as
     /// `NS_NEXT_STRESS_JIT` does at its creation: every body compiled at
-    /// its first entry, and one whose machine code leaves before a loop
+    /// its first entry, and one whose machine code exits at once
     /// installed and entered all the same. Set before the code it is meant
     /// for runs.
     pub(crate) fn set_stress(&mut self, stress: bool) {
-        self.install_bodies_leaving_before_a_loop = stress;
+        self.install_bodies_exiting_at_once = stress;
         self.compile_at_entry = if stress { 1 } else { COMPILE_AT_ENTRY };
     }
 
@@ -663,9 +664,9 @@ impl JitState {
 
     /// A state with the JIT on and a zone of `bytes`, whatever the
     /// environment says, installing bodies that leave before a loop when
-    /// `install_bodies_leaving_before_a_loop` is set.
+    /// `install_bodies_exiting_at_once` is set.
     #[cfg(all(test, ns_jit))]
-    fn for_test(bytes: usize, install_bodies_leaving_before_a_loop: bool) -> JitState {
+    fn for_test(bytes: usize, install_bodies_exiting_at_once: bool) -> JitState {
         let zone = reserve_zone(bytes).expect("a zone");
         JitState {
             zone: Some(zone),
@@ -673,7 +674,7 @@ impl JitState {
             enabled: true,
             counting: false,
             statistics: JitStatistics::default(),
-            install_bodies_leaving_before_a_loop,
+            install_bodies_exiting_at_once,
             compile_at_entry: COMPILE_AT_ENTRY,
             walk: materialize::Walk::default(),
             walked: None,
@@ -1079,7 +1080,7 @@ pub(crate) fn note_entry(
         return;
     }
     match slot.state.get() {
-        REFUSED | LEAVES_BEFORE_A_LOOP => {}
+        REFUSED | EXITS_AT_ONCE => {}
         COMPILED if slot.zone.get() == state.zone_identity() => {}
         // A body two interpreters ran in turn would be compiled again at
         // every switch, each time leaving its old code in the other's
@@ -1112,7 +1113,7 @@ pub(crate) fn note_entry_by_call(
 ) {
     let compiles = state.enabled
         && match code.jit.state.get() {
-            REFUSED | LEAVES_BEFORE_A_LOOP => false,
+            REFUSED | EXITS_AT_ONCE => false,
             COMPILED => code.jit.zone.get() != state.zone_identity(),
             entries => entries + 1 >= state.compile_at_entry,
         };
@@ -1134,9 +1135,9 @@ fn compile_into_slot(
             code.jit.compiled(state.zone_identity(), offset, map);
             state.statistics.compiled_bodies += 1;
         }
-        Err(Refusal::LeavesBeforeALoop) => {
-            code.jit.settle(LEAVES_BEFORE_A_LOOP);
-            state.statistics.bodies_leaving_before_a_loop += 1;
+        Err(Refusal::ExitsAtOnce) => {
+            code.jit.settle(EXITS_AT_ONCE);
+            state.statistics.bodies_exiting_at_once += 1;
         }
         Err(_) => {
             code.jit.refuse();
@@ -1161,8 +1162,8 @@ fn compile(
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(state.counting);
     let body = baseline::compile(code, macro_assembler, feedback_base)?;
-    if body.leaves_before_a_loop && !state.install_bodies_leaving_before_a_loop {
-        return Err(Refusal::LeavesBeforeALoop);
+    if body.exits_at_once && !state.install_bodies_exiting_at_once {
+        return Err(Refusal::ExitsAtOnce);
     }
     let map = u32::try_from(state.bodies.len()).map_err(|_| Refusal::ZoneFull)?;
     let offset = install(zone, &body.code.bytes)?;
@@ -1491,11 +1492,31 @@ mod tests {
             ))
         }
 
-        /// A body whose first instruction, a return, has no template yet.
-        fn body_returning_at_once() -> Rc<CompiledCode> {
+        /// A body whose first instruction, an error the interpreter raises,
+        /// is an exit.
+        fn body_exiting_at_once() -> Rc<CompiledCode> {
             Rc::new(CompiledCode::new(
                 CodeKind::Method,
-                vec![Instruction::Return { register: 13 }],
+                vec![Instruction::SignalNonBoolean { register: 13 }],
+                0,
+                14,
+                0,
+                Vec::new(),
+                ns_syntax::Span::new(0, 0),
+            ))
+        }
+
+        /// A body whose template is followed by an exit.
+        fn body_exiting_after_a_template() -> Rc<CompiledCode> {
+            Rc::new(CompiledCode::new(
+                CodeKind::Method,
+                vec![
+                    Instruction::LoadLiteral {
+                        destination: 13,
+                        literal: Literal::SmallInteger(3),
+                    },
+                    Instruction::SignalNonBoolean { register: 13 },
+                ],
                 0,
                 14,
                 0,
@@ -1534,18 +1555,28 @@ mod tests {
         }
 
         #[test]
-        fn a_body_leaving_before_a_loop_is_never_entered() {
+        fn a_body_that_runs_to_a_return_is_compiled() {
             let mut state = JitState::for_test(1 << 16, false);
-            let returning_at_once = body_returning_at_once();
-            let returning_after_a_template = body();
-            for code in [&returning_at_once, &returning_after_a_template] {
+            let code = body();
+            enter_twice(&mut state, &code);
+            assert!(machine_entry(&state, &code).is_some());
+            assert_eq!(state.statistics().compiled_bodies, 1);
+            assert_eq!(state.statistics().bodies_exiting_at_once, 0);
+        }
+
+        #[test]
+        fn a_body_exiting_at_once_is_never_entered() {
+            let mut state = JitState::for_test(1 << 16, false);
+            let exiting_at_once = body_exiting_at_once();
+            let exiting_after_a_template = body_exiting_after_a_template();
+            for code in [&exiting_at_once, &exiting_after_a_template] {
                 enter_twice(&mut state, code);
-                assert_eq!(format!("{:?}", code.jit), "JitSlot::LeavesBeforeALoop");
+                assert_eq!(format!("{:?}", code.jit), "JitSlot::ExitsAtOnce");
                 assert!(!code.jit.is_armed(), "a push leaves it alone");
                 assert_eq!(machine_entry(&state, code), None);
             }
             let statistics = state.statistics();
-            assert_eq!(statistics.bodies_leaving_before_a_loop, 2);
+            assert_eq!(statistics.bodies_exiting_at_once, 2);
             assert_eq!(statistics.compiled_bodies, 0);
             assert_eq!(statistics.refused_bodies, 0);
         }
@@ -1557,7 +1588,7 @@ mod tests {
             enter_twice(&mut state, &code);
             assert!(machine_entry(&state, &code).is_some());
             assert_eq!(state.statistics().compiled_bodies, 1);
-            assert_eq!(state.statistics().bodies_leaving_before_a_loop, 0);
+            assert_eq!(state.statistics().bodies_exiting_at_once, 0);
         }
 
         #[test]

@@ -9597,8 +9597,8 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   `jit::entered`, out of line and `#[cold]`. A run's base activation,
   which the host pushed, is entered at `vm::run`'s start like any push,
   or a host's entry send would never run compiled. **A body whose machine
-  code cannot take a backward jump before its first exit is neither
-  installed nor entered** (`JitStatistics::bodies_leaving_before_a_loop`):
+  code cannot reach a return, a compiled send or a backward jump before
+  its first exit is neither installed nor entered** (`JitStatistics::bodies_exiting_at_once`):
   such code runs a few straight-line instructions the interpreter runs as
   fast, for an entry and an exit on every push, which measured
   `bench_block` 31.5% and `bench_send` 21.7% slower ("What the baseline
@@ -9616,7 +9616,7 @@ zone, the AArch64 encoder -- is stages 3 to 7, still planned.
   rather than failing one test.
 - **Two stress modes** run every golden through machine code: under
   `NS_NEXT_STRESS_JIT` every body is compiled at its first entry and
-  entered even when its machine code leaves before a loop, and under
+  entered even when its machine code exits at once, and under
   `NS_NEXT_STRESS_EXIT` every poll takes its exit as if a safepoint were
   requested ([README.md](README.md), "Gates").
   `crates/ns-runtime/tests/jit.rs` pins the trigger, the zone's identity,

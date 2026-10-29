@@ -63,8 +63,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
     JitStatistics {
         compiled_bodies: after.compiled_bodies - before.compiled_bodies,
         refused_bodies: after.refused_bodies - before.refused_bodies,
-        bodies_leaving_before_a_loop: after.bodies_leaving_before_a_loop
-            - before.bodies_leaving_before_a_loop,
+        bodies_exiting_at_once: after.bodies_exiting_at_once - before.bodies_exiting_at_once,
         machine_back_edges: after.machine_back_edges - before.machine_back_edges,
         safepoint_exits: after.safepoint_exits - before.safepoint_exits,
         machine_entries: after.machine_entries - before.machine_entries,
@@ -77,10 +76,10 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
     }
 }
 
-/// The bodies the JIT compiled or found leaving before a loop: those it
+/// The bodies the JIT compiled or found exiting at once: those it
 /// took up at their second entry.
 fn taken_up(statistics: JitStatistics) -> u64 {
-    statistics.compiled_bodies + statistics.bodies_leaving_before_a_loop
+    statistics.compiled_bodies + statistics.bodies_exiting_at_once
 }
 
 ns_runtime::for_each_lowering! {
@@ -96,7 +95,7 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// The JIT stress mode's setting compiles every body at its first
-    /// entry and enters machine code that leaves before a loop, so that a program
+    /// entry and enters machine code that exits at once, so that a program
     /// runs the entry stub, the exit and the resumption on every push and
     /// still answers right. The optimized lowering's `self answer` is a
     /// cached lexical send, which `run`'s machine code makes itself, so
@@ -129,7 +128,7 @@ ns_runtime::for_each_lowering! {
                  do the two base activations the host pushes, the factory's and `run`'s"
             );
         }
-        assert_eq!(done.bodies_leaving_before_a_loop, 0, "installed, not left out");
+        assert_eq!(done.bodies_exiting_at_once, 0, "installed, not left out");
         assert!(done.compiled_bodies >= 1);
         assert_eq!(done.refused_bodies, 0);
     }
@@ -278,10 +277,10 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// The default trigger, without the stress setting: `run`'s counting
-    /// loop is all templates, so its code can jump back before it leaves,
+    /// loop is all templates, so its code can jump back before it exits,
     /// and the second run -- `run`'s second entry -- compiles it and enters
     /// its machine code. The reference lowering's loop starts with a send,
-    /// so there `run` leaves before a loop and is never entered.
+    /// so there `run` exits at once and is never entered.
     fn a_body_that_loops_is_entered_at_its_second_entry(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -306,6 +305,26 @@ ns_runtime::for_each_lowering! {
         if lowering == Lowering::Optimized {
             assert!(done.machine_entries > 0, "the loop runs in machine code");
             assert!(done.compiled_bodies >= 1, "`run`, at its second entry");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The default trigger, without the stress setting: `run` has no
+    /// loop, but its code runs to a compiled send and a return before it
+    /// exits, so the second run compiles it and enters its machine code.
+    /// The reference lowering sends uncached, so there `run` exits at once.
+    fn a_straight_line_method_with_a_send_is_entered(lowering) {
+        let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
+        interpreter.set_jit_counting(true);
+        assert_eq!(run(&mut interpreter, &class), 42);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 42);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized {
+            assert!(done.machine_entries > 0, "`run` runs in machine code");
+            assert!(done.compiled_bodies >= 1, "`run`, at its second entry");
+            assert_eq!(done.bodies_exiting_at_once, 0);
         }
     }
 }
@@ -749,7 +768,10 @@ ns_runtime::for_each_lowering! {
             assert!(done.compiled_bodies >= 2, "`sumWith:count:`, then `add:` by the miss");
             assert_eq!(done.miss_leaf_calls, 1, "the one send that found no machine entry");
             assert!(done.compiled_calls >= 9_000, "{}", done.compiled_calls);
-            assert_eq!(done.machine_entries, 1, "only `sumWith:count:` is entered by the loop");
+            assert_eq!(
+                done.machine_entries, 2,
+                "`run:`, which sends and returns, and `sumWith:count:` are entered by the host \nand the interpreter; `add:` only through compiled calls"
+            );
         }
     }
 }
