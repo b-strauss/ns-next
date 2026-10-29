@@ -822,8 +822,6 @@ ns_runtime::for_each_lowering! {
         }
         let (compiled, statistics) = three_deep_stack(lowering, true);
         let (interpreted, _) = three_deep_stack(lowering, false);
-        eprintln!("COMPILED {compiled:?}
-INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         assert!(
             compiled.iter().any(|frame| frame.starts_with("third:with:")),
@@ -1238,8 +1236,6 @@ ns_runtime::for_each_lowering! {
         let (compiled, statistics) = run_compiled(LEXICAL_DEPTHS, lowering, true);
         let (interpreted, _) = run_compiled(LEXICAL_DEPTHS, lowering, false);
         assert_eq!(interpreted, 2_009_257_000);
-        eprintln!("COMPILED {compiled:?}
-INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(
@@ -1302,8 +1298,6 @@ ns_runtime::for_each_lowering! {
         let (compiled, statistics) = run_compiled(SUPER_AT_TWO_LEVELS, lowering, true);
         let (interpreted, _) = run_compiled(SUPER_AT_TWO_LEVELS, lowering, false);
         assert_eq!(interpreted, 5_509_500);
-        eprintln!("COMPILED {compiled:?}
-INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(
@@ -1384,8 +1378,6 @@ ns_runtime::for_each_lowering! {
     fn a_scavenge_inside_a_three_deep_compiled_stretch_matches_the_interpreter(lowering) {
         let (compiled, statistics) = collected_deep(lowering, true);
         let (interpreted, _) = collected_deep(lowering, false);
-        eprintln!("COMPILED {compiled:?}
-INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized {
             assert!(statistics.safepoint_exits >= 1, "a back edge took the held request");
@@ -1651,8 +1643,6 @@ ns_runtime::for_each_lowering! {
         // Per index 4 index + 7 plus its class's offset, for six classes.
         let expected = 6 * (4 * 499_500 + 7000) + 111_111_000;
         assert_eq!(interpreted, [expected, expected]);
-        eprintln!("COMPILED {compiled:?}
-INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             let [_, second] = statistics;
@@ -1735,8 +1725,6 @@ ns_runtime::for_each_lowering! {
         let (compiled, statistics) = run_thrice_on_one_instance(GETTERS, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(GETTERS, lowering, false);
         assert_eq!(interpreted, [3000, 3000, 3000]);
-        eprintln!("COMPILED {compiled:?}
-INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
@@ -1792,8 +1780,6 @@ ns_runtime::for_each_lowering! {
         let (compiled, statistics) = run_thrice_on_one_instance(ROWS, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(ROWS, lowering, false);
         assert_eq!(interpreted, [500_500, 500_500, 500_500]);
-        eprintln!("COMPILED {compiled:?}
-INTERPRETED {interpreted:?}");
         assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
