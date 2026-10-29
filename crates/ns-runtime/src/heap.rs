@@ -30,6 +30,7 @@ use std::num::NonZeroU64;
 use std::ops::Range;
 use std::rc::Rc;
 
+mod application_ids;
 mod compaction;
 mod frames;
 #[cfg(test)]
@@ -1862,6 +1863,10 @@ pub struct Heap<'gc> {
     /// The mixins, applications and compiled bodies objects of this heap
     /// name by index (`tables.rs`).
     tables: Tables,
+    /// Each application's instances dispatch id by index, for machine
+    /// code (`application_ids.rs`), written wherever `tables` writes an
+    /// application's row.
+    application_ids: application_ids::ApplicationIds,
     /// What a body's `CodeIdCache` must carry for its id to name a row of
     /// `tables` (`next_code_table_epoch`).
     code_table_epoch: u64,
@@ -2189,6 +2194,11 @@ impl<'gc> Heap<'gc> {
             MachineWord::DepthLimit,
             crate::interpreter::MAX_ACTIVATION_DEPTH as u64,
         );
+        let application_ids = application_ids::ApplicationIds::new();
+        machine_words.set(
+            MachineWord::ApplicationIds,
+            application_ids.address() as u64,
+        );
         let mut heap = Heap {
             next_identity_hash: 1,
             stack: ActivationStack::new(&machine_words),
@@ -2225,6 +2235,7 @@ impl<'gc> Heap<'gc> {
             immediate_dispatch_ids: [DispatchId::NONE; 5],
             builtin_guards: BuiltinGuards::NONE,
             tables: Tables::default(),
+            application_ids,
             code_table_epoch: next_code_table_epoch(),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
@@ -5081,7 +5092,62 @@ impl<'gc> Heap<'gc> {
         );
         let application = Rc::new(application);
         self.tables.applications[row] = Some(application.clone());
+        self.record_application_id(row, application.dispatch_ids.instances);
         application
+    }
+
+    /// Writes `id` as row `row`'s in the application id table machine code
+    /// reads (`heap/application_ids.rs`), and its bound, the application
+    /// table's length.
+    pub(crate) fn record_application_id(&mut self, row: usize, id: DispatchId) {
+        self.application_ids
+            .record(row, id, self.tables.applications.len());
+        self.machine_words.set(
+            MachineWord::ApplicationIdRows,
+            self.application_ids.rows() as u64,
+        );
+    }
+
+    /// The application id table's bound taken to the application table's
+    /// length, after its trailing free rows were given back.
+    pub(crate) fn record_application_rows(&mut self) {
+        self.application_ids
+            .set_rows(self.tables.applications.len());
+        self.machine_words.set(
+            MachineWord::ApplicationIdRows,
+            self.application_ids.rows() as u64,
+        );
+    }
+
+    /// Whether the application id table records, for every row of the
+    /// application table and nothing past it, that row's instances id --
+    /// `NONE`'s 0 for a free row -- and the machine words its address and
+    /// bound.
+    #[cfg(test)]
+    pub(crate) fn verify_application_ids(&self) -> Result<(), String> {
+        let rows = self.tables.applications.len();
+        if self.application_ids.rows() != rows
+            || self.machine_words.get(MachineWord::ApplicationIdRows) != rows as u64
+            || self.machine_words.get(MachineWord::ApplicationIds)
+                != self.application_ids.address() as u64
+        {
+            return Err(format!("the table's bound is not the {rows} rows"));
+        }
+        for (row, application) in self.tables.applications.iter().enumerate() {
+            let expected = application
+                .as_ref()
+                .map_or(0, |application| application.dispatch_ids.instances.bits());
+            if self.application_ids.id(row) != Some(u64::from(expected)) {
+                return Err(format!(
+                    "row {row} records {:?}, its application's id is {expected}",
+                    self.application_ids.id(row)
+                ));
+            }
+        }
+        if self.application_ids.id(rows).is_some() {
+            return Err("the table records a row past its bound".to_owned());
+        }
+        Ok(())
     }
 
     /// Records `new` as the application that took `old`'s place and

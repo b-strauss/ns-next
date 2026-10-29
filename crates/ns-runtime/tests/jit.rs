@@ -988,3 +988,239 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+/// One site, `sendStep:to:`'s, sent receivers of `count` classes in turn
+/// from `sumWith:`'s loop, each class's `step:` its argument plus a
+/// distinct power of ten, so that a receiver sent the wrong method changes
+/// the sum.
+fn polymorphic_source(count: usize) -> String {
+    let names = ["First", "Second", "Third", "Fourth", "Fifth", "Sixth"];
+    let classes: String = names[..count]
+        .iter()
+        .zip([1, 10, 100, 1000, 10_000, 100_000])
+        .map(|(name, offset)| {
+            formatdoc! {"
+                  class {name} = () (
+                    public step: value = (
+                      ^value + {offset}
+                    )
+                  )
+            "}
+        })
+        .collect();
+    let keyword = |position: usize| if position == 0 { "sumWith" } else { "with" };
+    let parameters: Vec<String> = names[..count]
+        .iter()
+        .enumerate()
+        .map(|(position, name)| format!("{}: {}", keyword(position), name.to_lowercase()))
+        .collect();
+    let sends: Vec<String> = names[..count]
+        .iter()
+        .map(|name| format!("(sendStep: {} to: index)", name.to_lowercase()))
+        .collect();
+    let arguments: Vec<String> = names[..count]
+        .iter()
+        .enumerate()
+        .map(|(position, name)| format!("{}: {name} new", keyword(position)))
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {classes}  sendStep: receiver to: value = (
+            ^receiver step: value
+          )
+          {parameters} = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 1000] whileTrue: [
+              sum:: sum + {sends}.
+              index:: index + 1.
+            ].
+            ^sum.
+          )
+          public run = (
+            ^{arguments}
+          )
+        ) : ()
+        ",
+        parameters = parameters.join(" "),
+        sends = sends.join(" + "),
+        arguments = arguments.join(" "),
+    }
+}
+
+/// `source`'s `run` twice with the JIT on, every body compiled at its
+/// first entry and the compiled calls counted, or with the JIT off: the
+/// answers, and what the JIT did in each run.
+fn run_twice_compiled(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+) -> ([i64; 2], [JitStatistics; 2]) {
+    let (mut interpreter, class) = load_with(source, lowering);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_stress(jit);
+    interpreter.set_jit_counting(jit);
+    let before = interpreter.jit_statistics();
+    let first = run(&mut interpreter, &class);
+    let middle = interpreter.jit_statistics();
+    let second = run(&mut interpreter, &class);
+    let after = interpreter.jit_statistics();
+    (
+        [first, second],
+        [since(middle, before), since(after, middle)],
+    )
+}
+
+/// `polymorphic_source(count)` compiled and interpreted: the answers are
+/// the interpreter's; in the first run the polymorphic site meets the
+/// miss leaf once per receiver class, beside `run`'s first send, which
+/// leaves machine code, and the first send of each of `sumWith:`'s
+/// `count` sites; and in the second, which sends each class a thousand
+/// times more, not at all -- every send hits in machine code -- while
+/// `sumWith:` calls `sendStep:to:`'s machine code at every send.
+fn assert_hits_in_machine_code(count: usize, lowering: Lowering) {
+    let source = polymorphic_source(count);
+    let (compiled, statistics) = run_twice_compiled(&source, lowering, true);
+    let (interpreted, _) = run_twice_compiled(&source, lowering, false);
+    let offsets: i64 = [1, 10, 100, 1000, 10_000, 100_000][..count].iter().sum();
+    let classes = i64::try_from(count).expect("a few classes");
+    let expected = classes * 499_500 + 1000 * offsets;
+    assert_eq!(interpreted, [expected, expected]);
+    assert_eq!(compiled, interpreted);
+    if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+        let [first, second] = statistics;
+        let classes = classes.unsigned_abs();
+        assert_eq!(
+            first.miss_leaf_calls,
+            classes + 1 + classes,
+            "the polymorphic site met the miss leaf once per class"
+        );
+        assert_eq!(
+            second.miss_leaf_calls, 0,
+            "every send of the second run hit in machine code"
+        );
+        assert!(
+            second.compiled_calls >= 1000 * classes,
+            "`sumWith:` calls `sendStep:to:` through its cells: {}",
+            second.compiled_calls
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Four receiver classes at one site: its block of four cells, which
+    /// the polymorphic stub scans.
+    fn a_polymorphic_site_hits_in_machine_code(lowering) {
+        assert_hits_in_machine_code(4, lowering);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Six receiver classes at one site, which has gone megamorphic: the
+    /// global cache's mirror, which the megamorphic stub probes.
+    fn a_megamorphic_site_hits_in_machine_code(lowering) {
+        assert_hits_in_machine_code(6, lowering);
+    }
+}
+
+/// A mixin applied over six superclasses, whose one compiled `step:`
+/// makes a `super` send to six S, a private lexical send under six N and
+/// a public lexical one to receivers of six classes: three megamorphic
+/// sites, keyed by S's application, by N's, and by the receiver's with
+/// N's in the rule.
+const MARKED_SIX: &str = indoc! {"
+    class Subject = Object new () (
+      class First = () (
+        public step: value = (
+          ^value + 1
+        )
+      )
+      class Second = () (
+        public step: value = (
+          ^value + 10
+        )
+      )
+      class Third = () (
+        public step: value = (
+          ^value + 100
+        )
+      )
+      class Fourth = () (
+        public step: value = (
+          ^value + 1000
+        )
+      )
+      class Fifth = () (
+        public step: value = (
+          ^value + 10000
+        )
+      )
+      class Sixth = () (
+        public step: value = (
+          ^value + 100000
+        )
+      )
+      class Marker = () (
+        private secret: value = (
+          ^value * 2
+        )
+        public bump: value = (
+          ^value + 7
+        )
+        public step: value = (
+          ^(super step: value) + (secret: value) + (bump: value)
+        )
+      )
+      class MarkedFirst = First new <: Marker () ()
+      class MarkedSecond = Second new <: Marker () ()
+      class MarkedThird = Third new <: Marker () ()
+      class MarkedFourth = Fourth new <: Marker () ()
+      class MarkedFifth = Fifth new <: Marker () ()
+      class MarkedSixth = Sixth new <: Marker () ()
+      sumWith: first with: second with: third with: fourth with: fifth with: sixth = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          sum:: sum + (first step: index) + (second step: index) + (third step: index)
+              + (fourth step: index) + (fifth step: index) + (sixth step: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+      public run = (
+        ^sumWith: MarkedFirst new with: MarkedSecond new with: MarkedThird new
+            with: MarkedFourth new with: MarkedFifth new with: MarkedSixth new
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `Marker`'s `super`, private and public lexical sites, each
+    /// megamorphic, hit in machine code: the megamorphic stub finds S's
+    /// and N's dispatch ids from their application words, and the second
+    /// run meets the miss leaf nowhere.
+    fn a_megamorphic_super_or_lexical_site_hits_in_machine_code(lowering) {
+        let (compiled, statistics) = run_twice_compiled(MARKED_SIX, lowering, true);
+        let (interpreted, _) = run_twice_compiled(MARKED_SIX, lowering, false);
+        // Per index 4 index + 7 plus its class's offset, for six classes.
+        let expected = 6 * (4 * 499_500 + 7000) + 111_111_000;
+        assert_eq!(interpreted, [expected, expected]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            let [_, second] = statistics;
+            assert_eq!(
+                second.miss_leaf_calls, 0,
+                "every send of the second run hit in machine code"
+            );
+            assert!(
+                second.compiled_calls >= 6000,
+                "`sumWith:with:with:with:with:with:` calls `step:` through its cells: {}",
+                second.compiled_calls
+            );
+        }
+    }
+}

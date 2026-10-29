@@ -1,7 +1,8 @@
 //! The baseline JIT: machine code for a body, written against the macro
 //! assembler's idioms (`macro_assembler`) and entered and left through the
-//! entry and exit stubs (`stubs`) (`docs/design/execution.md`, "Planned:
-//! the baseline JIT"). This module holds what lies around the code: the
+//! entry and exit stubs (`stubs`), its sends finding what their cells do
+//! not hold through the polymorphic and megamorphic stubs (`targets`)
+//! (`docs/design/execution.md`, "Planned: the baseline JIT"). This module holds what lies around the code: the
 //! slot on each body that counts its entries and names its machine code
 //! (`JitSlot`), the per-interpreter state with the code zone (`JitState`),
 //! the compile trigger (`note_entry`), and the run loop's one way into
@@ -31,6 +32,8 @@ pub(crate) mod materialize;
 pub(crate) mod sends;
 #[cfg(ns_jit)]
 pub(crate) mod stubs;
+#[cfg(ns_jit)]
+pub(crate) mod targets;
 
 use std::cell::Cell;
 use std::rc::{Rc, Weak};
@@ -308,12 +311,17 @@ struct Zone {
     entry_stub: CodeOffset,
     exit_stub: CodeOffset,
     /// The stub a cell names for a method whose body has no machine code
-    /// yet, and the one a send whose guard is not its cell's calls
-    /// (`stubs::assemble_miss_stub`).
+    /// yet (`stubs::assemble_miss_stub`).
     miss_stub: CodeOffset,
     /// The stub a cell names for a target machine code does not run
     /// (`stubs::assemble_refusing_stub`).
     refusing_stub: CodeOffset,
+    /// The stub a send whose guard is not its cell's calls, and which a
+    /// polymorphic site's cell names (`targets::assemble_polymorphic_stub`).
+    polymorphic_stub: CodeOffset,
+    /// The stub a megamorphic site's cell names
+    /// (`targets::assemble_megamorphic_stub`).
+    megamorphic_stub: CodeOffset,
 }
 
 /// Why a body was not compiled. It stays interpreted for good.
@@ -683,12 +691,24 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
         exit_stub: CodeOffset(0),
         miss_stub: CodeOffset(0),
         refusing_stub: CodeOffset(0),
+        polymorphic_stub: CodeOffset(0),
+        megamorphic_stub: CodeOffset(0),
     };
     zone.entry_stub = install(&mut zone, &stubs::assemble_entry_stub(Abi::host()).bytes).ok()?;
     zone.exit_stub = install(&mut zone, &stubs::assemble_exit_stub(Abi::host()).bytes).ok()?;
     zone.miss_stub = install(&mut zone, &stubs::assemble_miss_stub(Abi::host()).bytes).ok()?;
     zone.refusing_stub =
         install(&mut zone, &stubs::assemble_refusing_stub(Abi::host()).bytes).ok()?;
+    zone.polymorphic_stub = install(
+        &mut zone,
+        &targets::assemble_polymorphic_stub(Abi::host()).bytes,
+    )
+    .ok()?;
+    zone.megamorphic_stub = install(
+        &mut zone,
+        &targets::assemble_megamorphic_stub(Abi::host()).bytes,
+    )
+    .ok()?;
     Some(zone)
 }
 
@@ -720,8 +740,11 @@ fn install(zone: &mut Zone, bytes: &[u8]) -> Result<CodeOffset, Refusal> {
 /// word (`inline_cache::cells::Cell`): a function of the target and of
 /// this interpreter's JIT state, never of the send or the receiver, so
 /// that the cell copies what the lookup decided. A site state that holds
-/// no target of its own -- vacant, megamorphic -- answers 0, as every
-/// target does where there is no zone. A method machine code can run --
+/// no target of its own names the stub that finds one -- a polymorphic
+/// site the polymorphic stub, which scans its block, a megamorphic one
+/// the megamorphic stub, which probes the global cache's mirror
+/// (`targets`) -- and a vacant one answers 0, as every target does where
+/// there is no zone. A method machine code can run --
 /// one with no fast path, found on any chain but a `doesNotUnderstand:`
 /// handler's, whose body takes the method's arguments -- is reached
 /// through its body's machine entry once its body has machine code in
@@ -740,8 +763,9 @@ pub(crate) fn cell_entry(
     };
     let address = |offset: CodeOffset| zone.writer.zone().executable_address(offset) as u64;
     match target {
-        Target::Vacant | Target::Megamorphic { .. } => 0,
-        Target::Polymorphic { .. } => address(zone.miss_stub),
+        Target::Vacant => 0,
+        Target::Polymorphic { .. } => address(zone.polymorphic_stub),
+        Target::Megamorphic { .. } => address(zone.megamorphic_stub),
         Target::Method {
             method,
             feedback_base,
@@ -777,10 +801,11 @@ pub(crate) fn runs_in_machine_code(
 
 impl JitState {
     /// The address of the stub a send whose guard is not its cell's
-    /// calls: the miss stub until the polymorphic stub exists; 0 where
-    /// there is no zone.
+    /// calls, the polymorphic stub; 0 where there is no zone.
     pub(crate) fn polymorphic_stub_address(&self) -> u64 {
-        self.miss_stub_address()
+        self.zone.as_ref().map_or(0, |zone| {
+            zone.writer.zone().executable_address(zone.polymorphic_stub) as u64
+        })
     }
 
     /// The address of the miss stub, 0 where there is no zone.
@@ -1112,6 +1137,9 @@ fn run_machine_code(
     block[BlockWord::ExitStub.index()] = code.executable_address(exit_stub) as u64;
     block[BlockWord::Cells.index()] = mutator.caches.site_cells_address() as u64;
     block[BlockWord::PolymorphicStub.index()] = mutator.jit.polymorphic_stub_address();
+    block[BlockWord::PolymorphicBlocks.index()] = mutator.caches.block_cells_address() as u64;
+    block[BlockWord::GlobalRows.index()] = mutator.caches.global_rows_address() as u64;
+    block[BlockWord::GlobalMask.index()] = mutator.caches.global_mask();
     let leaves = leaves::table();
     mutator.jit.statistics.machine_entries += 1;
     mutator.jit.walked = None;

@@ -95,7 +95,7 @@ pub struct Memory {
 ///   compares zero with zero, clearing V, and otherwise sets the flags
 ///   to V alone. So the contract holds as x64's `imul` sets it, and the
 ///   operation needs no other condition.
-/// - **Clobbers**, the flags undefined afterwards: `and_immediate`,
+/// - **Clobbers**, the flags undefined afterwards: `and`, `and_immediate`,
 ///   `or_immediate`, `shift_left`, `shift_right_arithmetic` -- x64's
 ///   instructions set the flags, AArch64's plain `and`, `orr`, `lsl` and
 ///   `asr` keep them, so neither may be relied on -- `divide_signed`,
@@ -195,6 +195,8 @@ pub enum Operation {
         remainder: Register,
         divisor: Register,
     },
+    /// `target := target & source`.
+    And { target: Register, source: Register },
     /// `target := target & value` sign-extended.
     AndImmediate { target: Register, value: i32 },
     /// `target := target | value` sign-extended.
@@ -515,6 +517,11 @@ impl<E: Encoder> Assembler<E> {
             remainder,
             divisor,
         });
+    }
+
+    /// `target := target & source`. Clobbers the flags.
+    pub fn and(&mut self, target: Register, source: Register) {
+        self.emit(Operation::And { target, source });
     }
 
     /// `target := target & value` sign-extended. Clobbers the flags.

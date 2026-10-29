@@ -86,18 +86,36 @@ pub(crate) struct Roles {
     /// A send's cells' address (`BlockWord::Cells`), from its load before
     /// the guard's compare to the load of the cell's entry, across
     /// `load_guard`, `load_class`, `load_lexical_class` and
-    /// `walk_superclasses`.
+    /// `walk_superclasses`; on a miss its site's cell's address, which the
+    /// polymorphic stub is entered with, then in the stubs the block cell
+    /// or the global row they read.
     pub(crate) send_cells: Register,
     /// The guard a send compares with its cell's: the receiver's, or a
-    /// class object's application word.
+    /// class object's application word; kept into the stubs, which compare
+    /// it with a block's cells, and in the megamorphic stub the dispatch
+    /// id it keys the global cache with.
     pub(crate) send_guard: Register,
     /// A lexical send's cell's chain start, then the cell's level, which
     /// `walk_superclasses` counts down.
     pub(crate) send_level: Register,
-    /// The address a send calls: the polymorphic stub's, replaced by the
-    /// cell's entry on a hit, from its first load to the call, across the
-    /// guard's compare and `walk_superclasses`.
+    /// On a send's miss, its key past the guard, which the stubs are
+    /// entered with: the selector's index above the rule's two-bit tag,
+    /// the tag of `inline_cache::rule_word`; in the megamorphic stub the
+    /// selector alone, once the tag is split off. The stubs' hit then
+    /// counts the level down in it, as `send_level`.
+    pub(crate) send_key: Register,
+    /// The address a send calls: the polymorphic stub's on a miss, the
+    /// cell's entry on a hit, from its load to the call; in the stubs the
+    /// multiplier of the megamorphic stub's hash, then the entry it jumps
+    /// to.
     pub(crate) send_entry: Register,
+    /// The stubs' rule word, as a global row holds it
+    /// (`inline_cache::rule_word`): the tag the stubs are entered with in
+    /// `send_key`'s low two bits, and for a lexical rule N's dispatch id
+    /// above it.
+    pub(crate) lookup_rule: Register,
+    /// The megamorphic stub's hash of its key, then the group it picks.
+    pub(crate) lookup_hash: Register,
     /// The activation count (`MachineWord::DepthCount`) while a prologue,
     /// a return or the entry stub counts it.
     pub(crate) depth_count: Register,
@@ -146,7 +164,10 @@ impl Roles {
                 send_cells: R8,
                 send_guard: R9,
                 send_level: R10,
+                send_key: R10,
                 send_entry: RCX,
+                lookup_rule: RDX,
+                lookup_hash: RAX,
                 depth_count: RCX,
                 frame_extent: RAX,
                 stack_end: RDX,
@@ -845,21 +866,95 @@ impl MacroAssembler {
         cell_guard: Memory,
         missed: Label,
     ) {
+        self.load_application_word(guard, class);
+        self.assembler.compare_memory(guard, cell_guard);
+        self.assembler.jump_if(Condition::NotEqual, missed);
+    }
+
+    /// `target :=` the instances dispatch id of the application whose class
+    /// objects hold `word`, the register's application word
+    /// (`Heap::class_application_word`), as the application id table
+    /// records it (`heap/application_ids.rs`) -- `DispatchId::NONE`'s 0 for
+    /// a row that holds no application; `target` may be `word`. Jumps to
+    /// `not_an_application` for a word that is no `SmallInteger`, which
+    /// names no application -- `nil`, a crafted image's class -- and to
+    /// `unrecorded` for an index at or past the table's bound, which no
+    /// class object of the heap holds unless the table ran out of room.
+    /// Clobbers the flags and the idiom scratch register.
+    pub(crate) fn load_application_id(
+        &mut self,
+        target: Register,
+        word: Register,
+        not_an_application: Label,
+        unrecorded: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let scratch = self.roles.idiom_scratch;
+        debug_assert!(
+            target != scratch && word != scratch,
+            "internal: the application id's idiom uses the idiom scratch register"
+        );
+        let machine_words = self.block_word(BlockWord::MachineWords);
+        let assembler = &mut self.assembler;
+        assembler.test_immediate(word, layout.small_integer_tag);
+        assembler.jump_if(Condition::Equal, not_an_application);
+        assembler.move_register(target, word);
+        assembler.shift_right_arithmetic(target, layout.tag_bits);
+        assembler.load(Width::Word64, scratch, machine_words);
+        // Unsigned, so that a negative index is past the bound too.
+        assembler.compare_memory(
+            target,
+            Memory {
+                base: scratch,
+                displacement: MachineWords::offset(MachineWord::ApplicationIdRows),
+            },
+        );
+        assembler.jump_if(Condition::AboveOrEqual, unrecorded);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: scratch,
+                displacement: MachineWords::offset(MachineWord::ApplicationIds),
+            },
+        );
+        assembler.shift_left(target, WORD_SHIFT);
+        assembler.add(target, scratch);
+        assembler.load(
+            Width::Word64,
+            target,
+            Memory {
+                base: target,
+                displacement: 0,
+            },
+        );
+    }
+
+    /// Jumps to `label` unless the word in `value` names an object -- an
+    /// immediate, `nil` among them. Clobbers the flags.
+    pub(crate) fn jump_unless_object(&mut self, value: Register, label: Label) {
+        let layout = crate::heap::Heap::machine_layout();
+        self.assembler.test_immediate(value, layout.tag_mask);
+        self.assembler.jump_if(Condition::NotEqual, label);
+    }
+
+    /// `target :=` the application word of the class object in `class`
+    /// (`Heap::class_application_word`). Clobbers the flags; `class` is
+    /// kept unless it is `target`.
+    pub(crate) fn load_application_word(&mut self, target: Register, class: Register) {
         let layout = crate::heap::Heap::machine_layout();
         let object_space = self.roles.object_space;
         let assembler = &mut self.assembler;
-        assembler.move_register(guard, class);
-        assembler.add(guard, object_space);
+        assembler.move_register(target, class);
+        assembler.add(target, object_space);
         assembler.load(
             Width::Word64,
-            guard,
+            target,
             Memory {
-                base: guard,
+                base: target,
                 displacement: layout.application_displacement,
             },
         );
-        assembler.compare_memory(guard, cell_guard);
-        assembler.jump_if(Condition::NotEqual, missed);
     }
 
     /// A debug build's flags word of a frame a compiled prologue pushes,

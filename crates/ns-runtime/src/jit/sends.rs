@@ -12,13 +12,15 @@
 //! class, which nothing can derive later. Every other header word is
 //! written when an exit materializes the frame (`jit::materialize`).
 
-use ns_assembler::{Condition, Memory, Register, Width};
+use ns_assembler::{Condition, Label, Memory, Register, Width};
 
 use crate::bytecode::{CallSite, CompiledCode, HEADER_REGISTERS};
 use crate::heap::machine_words::MachineWord;
 use crate::heap::{Heap, Immediate};
 use crate::interpreter::inline_cache::cells::{ChainStart, CELL_BYTES, CELL_WORDS};
-use crate::interpreter::inline_cache::site_index;
+use crate::interpreter::inline_cache::{rule_tag, site_index, CacheRule, RULE_TAG_BITS};
+use crate::mixin::DispatchId;
+use crate::Symbol;
 
 use super::baseline::{BodyAssembler, Lowering};
 use super::macro_assembler::MacroAssembler;
@@ -240,7 +242,9 @@ enum Receiver {
 /// guard compared with the cell's; on a match the callee's current class,
 /// `level` superclass steps up the receiver's class, then a call of the
 /// cell's entry address; otherwise a call of the polymorphic stub
-/// (`BlockWord::PolymorphicStub`), which decides the send itself. The
+/// (`BlockWord::PolymorphicStub`), which finds the site's entry for the
+/// guard in its block or the global cache's mirror, or has the miss leaf
+/// decide the send (`jit::targets`). The
 /// frame register moves to the callee's register 0 on the send's slots
 /// for the call and back after it, the receiver and the current class
 /// travelling in the roles' `callee_receiver` and `callee_class`, and the
@@ -250,6 +254,7 @@ enum Receiver {
 /// without a register to spare.
 pub(super) fn send_public(
     body: &mut BodyAssembler,
+    selector: Symbol,
     receiver_register: u16,
     argument_base: u16,
     argument_sources: &[u16],
@@ -258,6 +263,7 @@ pub(super) fn send_public(
 ) -> Lowering {
     send_through_cell(
         body,
+        selector,
         Receiver::Register(receiver_register),
         argument_base,
         argument_sources,
@@ -280,6 +286,7 @@ pub(super) fn send_public(
 /// uncached site.
 pub(super) fn send_lexical(
     body: &mut BodyAssembler,
+    selector: Symbol,
     depth: u16,
     argument_base: u16,
     argument_sources: &[u16],
@@ -291,6 +298,7 @@ pub(super) fn send_lexical(
     }
     send_through_cell(
         body,
+        selector,
         Receiver::Lexical(depth),
         argument_base,
         argument_sources,
@@ -309,6 +317,7 @@ pub(super) fn send_lexical(
 /// an uncached site.
 pub(super) fn send_super(
     body: &mut BodyAssembler,
+    selector: Symbol,
     argument_base: u16,
     argument_sources: &[u16],
     destination: u16,
@@ -316,6 +325,7 @@ pub(super) fn send_super(
 ) -> Lowering {
     send_through_cell(
         body,
+        selector,
         Receiver::Super,
         argument_base,
         argument_sources,
@@ -324,14 +334,38 @@ pub(super) fn send_super(
     )
 }
 
+/// What a send's miss hands the polymorphic stub besides the cell and the
+/// guard (`jit::targets`): its key past the guard -- the selector's index
+/// above the rule's tag -- in `send_key`, and in `callee_class` N or S.
+#[derive(Clone, Copy)]
+enum MissBlock {
+    /// The key alone: `callee_class` already holds what the stub needs --
+    /// S, a private site's N -- or nothing it reads, at a public site.
+    Key(u64),
+    /// A lexical site that is not private: its key, and N at `depth`,
+    /// which the global cache's `Lexical` rule carries and which only the
+    /// miss needs, so that a hit never computes it; `nil` where N does
+    /// not exist.
+    Lexical { depth: u16, key: u64 },
+    /// A private lexical site whose N does not exist: `nil` for the guard,
+    /// which no cell holds, and for N, and the key.
+    NoLexicalClass(u64),
+}
+
 /// The send through its site's cell that `send_public`, `send_lexical`
 /// and `send_super` lower: the receiver found -- and for `super` S --
 /// before any argument is placed, so that an exit leaves the frame as it
 /// was; the arguments placed; the guard `receiver` says compared with the
 /// cell's; then the call of the cell's entry on a match whose level
-/// exists, of the polymorphic stub otherwise.
+/// exists, of the polymorphic stub otherwise, entered with what it needs
+/// to find the send's entry itself (`MissBlock`): the cell's address, the
+/// guard compared, the selector and the rule's tag, and N or S. A level
+/// that does not exist is the miss of the site's own entry, whose cell
+/// holds a guard, so that the stub goes to the miss leaf before it reads
+/// anything but the cell.
 fn send_through_cell(
     body: &mut BodyAssembler,
+    selector: Symbol,
     receiver: Receiver,
     argument_base: u16,
     argument_sources: &[u16],
@@ -361,12 +395,14 @@ fn send_through_cell(
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     let (value, class) = (roles.callee_receiver(), roles.callee_class());
-    let (guard, cells, level, entry) = (
+    let (guard, cells, level, entry, key) = (
         roles.send_guard,
         roles.send_cells,
         roles.send_level,
         roles.send_entry,
+        roles.send_key,
     );
+    let key_of = |rule: CacheRule| ((selector.index() as u64) << RULE_TAG_BITS) | rule_tag(rule);
     match receiver {
         Receiver::Register(register) => macro_assembler.load_frame_register(value, register),
         Receiver::Lexical(depth) => {
@@ -385,41 +421,113 @@ fn send_through_cell(
         displacement: cell + displacement,
     };
     let assembler = macro_assembler.assembler();
-    let (call, hit) = (assembler.label(), assembler.label());
+    let (call, hit, missed) = (assembler.label(), assembler.label(), assembler.label());
     assembler.load(Width::Word64, cells, cells_word);
-    assembler.load(Width::Word64, entry, polymorphic_stub);
+    // The miss blocks, laid out after the hit.
+    let mut misses: Vec<(Label, MissBlock)> = Vec::new();
     match receiver {
         Receiver::Register(_) => {
-            macro_assembler.compare_receiver_guard(guard, value, cell_word(CELL_GUARD), call);
+            let public = macro_assembler.assembler().label();
+            misses.push((public, MissBlock::Key(key_of(CacheRule::Public))));
+            macro_assembler.compare_receiver_guard(guard, value, cell_word(CELL_GUARD), public);
             macro_assembler.load_class(class, value);
         }
         Receiver::Lexical(depth) => {
             let assembler = macro_assembler.assembler();
-            let private = assembler.label();
+            let (private, lexical, private_missed, no_lexical_class) = (
+                assembler.label(),
+                assembler.label(),
+                assembler.label(),
+                assembler.label(),
+            );
+            misses.push((
+                lexical,
+                MissBlock::Lexical {
+                    depth,
+                    key: key_of(CacheRule::Lexical(DispatchId::NONE)),
+                },
+            ));
+            misses.push((
+                private_missed,
+                MissBlock::Key(key_of(CacheRule::LexicalPrivate)),
+            ));
+            misses.push((
+                no_lexical_class,
+                MissBlock::NoLexicalClass(key_of(CacheRule::LexicalPrivate)),
+            ));
             assembler.load(Width::Word64, level, cell_word(CELL_CHAIN_START));
             assembler.compare_immediate(level, ChainStart::LexicalClass as i32);
             assembler.jump_if(Condition::Equal, private);
-            macro_assembler.compare_receiver_guard(guard, value, cell_word(CELL_GUARD), call);
+            macro_assembler.compare_receiver_guard(guard, value, cell_word(CELL_GUARD), lexical);
             macro_assembler.load_class(class, value);
             let assembler = macro_assembler.assembler();
             assembler.jump(hit);
             assembler.bind(private);
-            macro_assembler.load_lexical_class(class, argument_count, depth, call);
-            macro_assembler.compare_application_word(guard, class, cell_word(CELL_GUARD), call);
+            macro_assembler.load_lexical_class(class, argument_count, depth, no_lexical_class);
+            macro_assembler.compare_application_word(
+                guard,
+                class,
+                cell_word(CELL_GUARD),
+                private_missed,
+            );
         }
         Receiver::Super => {
-            macro_assembler.compare_application_word(guard, class, cell_word(CELL_GUARD), call);
+            let superclass = macro_assembler.assembler().label();
+            misses.push((superclass, MissBlock::Key(key_of(CacheRule::Super))));
+            macro_assembler.compare_application_word(
+                guard,
+                class,
+                cell_word(CELL_GUARD),
+                superclass,
+            );
         }
     }
     let assembler = macro_assembler.assembler();
+    let missed_own = assembler.label();
     assembler.bind(hit);
     assembler.load(Width::Word64, level, cell_word(CELL_LEVEL));
-    macro_assembler.walk_superclasses(class, level, call);
+    macro_assembler.walk_superclasses(class, level, missed_own);
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, entry, cell_word(CELL_ENTRY));
     macro_assembler.count_compiled_call();
-    let slots = i32::from(argument_base) * REGISTER_BYTES;
+    macro_assembler.assembler().jump(call);
+    let nil = Immediate::NIL.bits();
+    for (label, block) in misses {
+        macro_assembler.assembler().bind(label);
+        match block {
+            MissBlock::Key(word) => macro_assembler.assembler().move_immediate(key, word),
+            MissBlock::Lexical { depth, key: word } => {
+                let (absent, found) = {
+                    let assembler = macro_assembler.assembler();
+                    (assembler.label(), assembler.label())
+                };
+                macro_assembler.load_lexical_class(class, argument_count, depth, absent);
+                let assembler = macro_assembler.assembler();
+                assembler.jump(found);
+                assembler.bind(absent);
+                assembler.move_immediate(class, nil);
+                assembler.bind(found);
+                assembler.move_immediate(key, word);
+            }
+            MissBlock::NoLexicalClass(word) => {
+                let assembler = macro_assembler.assembler();
+                assembler.move_immediate(guard, nil);
+                assembler.move_immediate(class, nil);
+                assembler.move_immediate(key, word);
+            }
+        }
+        macro_assembler.assembler().jump(missed);
+    }
     let assembler = macro_assembler.assembler();
+    // A level the chain of the site's own entry lacks: that entry's cell
+    // holds a guard, so the stub goes to the miss leaf before it reads
+    // the key.
+    assembler.bind(missed_own);
+    assembler.move_immediate(key, 0);
+    assembler.bind(missed);
+    assembler.add_immediate(cells, cell);
+    assembler.load(Width::Word64, entry, polymorphic_stub);
+    let slots = i32::from(argument_base) * REGISTER_BYTES;
     assembler.bind(call);
     assembler.add_immediate(roles.frame, slots);
     body.call_send(entry);

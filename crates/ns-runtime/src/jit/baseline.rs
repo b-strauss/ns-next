@@ -655,14 +655,15 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             Lowering::Template
         }
         Instruction::SendPublic {
+            selector,
             receiver_register,
             argument_base,
             argument_sources,
             destination,
             call_site,
-            ..
         } => sends::send_public(
             body,
+            *selector,
             *receiver_register,
             *argument_base,
             argument_sources,
@@ -676,6 +677,7 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             sends::return_from(body, *register)
         }
         Instruction::SendLexical {
+            selector,
             depth,
             argument_base,
             argument_sources,
@@ -684,6 +686,7 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             ..
         } => sends::send_lexical(
             body,
+            *selector,
             *depth,
             *argument_base,
             argument_sources,
@@ -691,6 +694,7 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             *call_site,
         ),
         Instruction::SendSuper {
+            selector,
             argument_base,
             argument_sources,
             destination,
@@ -698,6 +702,7 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             ..
         } => sends::send_super(
             body,
+            *selector,
             *argument_base,
             argument_sources,
             *destination,

@@ -423,23 +423,74 @@ impl InlineCaches {
         self.cells.site_address(0)
     }
 
-    /// Writes site `index`'s cell afresh from its entry, when the entry is
-    /// one for `guard`: the cell copies what the entry records, and its
-    /// entry address follows the JIT's state, which the miss leaf found
-    /// changed -- a body compiled since the entry was filled, so that the
-    /// site's next send calls it directly (`decide_at`).
-    fn refresh_site_cell(&mut self, index: usize, guard: DispatchId, jit: &JitState) {
+    /// The address of polymorphic block 0's cells, which the polymorphic
+    /// stub finds a site's block from (`jit::stubs::BlockWord::PolymorphicBlocks`).
+    pub(crate) fn block_cells_address(&self) -> usize {
+        self.cells.block_address(0)
+    }
+
+    /// The address of the global cache's mirror, which the megamorphic
+    /// stub probes (`jit::stubs::BlockWord::GlobalRows`).
+    pub(crate) fn global_rows_address(&self) -> usize {
+        self.cells.global_address()
+    }
+
+    /// The global cache's group mask (`GlobalCache::group`), which the
+    /// megamorphic stub hashes a key with (`jit::stubs::BlockWord::GlobalMask`).
+    pub(crate) fn global_mask(&self) -> u64 {
+        self.global.mask as u64
+    }
+
+    /// Writes afresh from their entries the cells through which machine
+    /// code found the decision the miss leaf just made for `guard` at site
+    /// `index` (`decide_at`): the site's own, the slot of its polymorphic
+    /// block that holds `guard`, and, when `rule` names the key the global
+    /// cache files it under, the mirror's row of that key. Each cell copies
+    /// what its entry records, its entry address from the JIT's state,
+    /// which the miss leaf found changed -- a body compiled since the
+    /// entry was filled -- so that the site's next send calls the body
+    /// directly, from the site's cell, the polymorphic stub's scan or the
+    /// megamorphic stub's probe alike.
+    fn refresh_cells(
+        &mut self,
+        index: usize,
+        guard: DispatchId,
+        global_key: Option<(Symbol, CacheRule)>,
+        jit: &JitState,
+    ) {
         let Some(entry) = self.sites.get(index) else {
             return;
         };
-        if entry.guard != guard || matches!(entry.target, Target::Vacant) {
-            return;
+        match entry.target {
+            Target::Vacant | Target::Megamorphic { .. } => {}
+            Target::Polymorphic { block, .. } => {
+                let slot = self.pool.get(block as usize).and_then(|slots| {
+                    slots
+                        .iter()
+                        .position(|slot| slot.guard == guard)
+                        .map(|position| (position, jit::cell_entry(jit, &slots[position].target)))
+                });
+                if let Some((position, address)) = slot {
+                    let cell = Cell {
+                        entry: address,
+                        ..self.cells.block_cell(block, position)
+                    };
+                    self.cells.write_block_cell(block, position, cell);
+                }
+            }
+            _ if entry.guard == guard => {
+                let cell = Cell {
+                    entry: jit::cell_entry(jit, &entry.target),
+                    ..self.cells.site(index)
+                };
+                self.cells.write_site(index, cell);
+            }
+            _ => {}
         }
-        let cell = Cell {
-            entry: jit::cell_entry(jit, &entry.target),
-            ..self.cells.site(index)
-        };
-        self.cells.write_site(index, cell);
+        if let Some((selector, rule)) = global_key {
+            self.global
+                .refresh(&mut self.cells, guard, selector, rule, jit);
+        }
     }
 
     /// Moves site `index` on after a miss found `target` for `guard`
@@ -799,12 +850,13 @@ pub(crate) struct GlobalCache {
 }
 
 impl GlobalCache {
-    /// The first of the key's group's two adjacent slots.
+    /// The first of the key's group's two adjacent slots, which the
+    /// megamorphic stub computes as this does (`jit::targets`).
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the hash only picks a group, so folding it to the target's width keeps all the mask reads"
     )]
-    fn group(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> usize {
+    pub(crate) fn group(&self, guard: DispatchId, selector: Symbol, rule: CacheRule) -> usize {
         let hash = crate::hash::IdentityBuildHasher::default().hash_one((guard, selector, rule));
         (hash as usize & self.mask) * 2
     }
@@ -889,6 +941,31 @@ impl GlobalCache {
             cells.write_global_row(second, cells.global_row(first));
         }
         cells.write_global_row(first, row);
+    }
+
+    /// Writes the mirror row of the key's entry afresh, its entry address
+    /// from the JIT's state: `InlineCaches::refresh_cells`'s global part.
+    fn refresh(
+        &mut self,
+        cells: &mut Cells,
+        guard: DispatchId,
+        selector: Symbol,
+        rule: CacheRule,
+        jit: &JitState,
+    ) {
+        let first = self.group(guard, selector, rule);
+        for row in [first, first + 1] {
+            if self.entries[row].holds(guard, selector, rule) && !self.entries[row].is_vacant() {
+                let found = cells.global_row(row);
+                cells.write_global_row(
+                    row,
+                    GlobalRow {
+                        entry: jit::cell_entry(jit, &self.entries[row].target),
+                        ..found
+                    },
+                );
+            }
+        }
     }
 
     /// Vacates every entry: `InlineCaches::invalidate`'s global half.
@@ -1833,7 +1910,9 @@ pub(crate) enum MissAnswer {
 /// code runs (`jit::runs_in_machine_code`) is its callee: its body is
 /// compiled when this entry is the one that compiles it
 /// (`jit::note_entry_by_call`), and once the body has machine code the
-/// site's cell is written afresh, so that its next send calls the body
+/// cells the send reached its decision through -- the site's, its
+/// polymorphic block's slot, the global cache's row -- are written afresh
+/// (`InlineCaches::refresh_cells`), so that its next send calls the body
 /// straight, and the answer is the body's machine entry, the callee's
 /// receiver and current class handed over for its machine entry to
 /// store. Every other decision refuses the call, and the interpreter,
@@ -1847,7 +1926,8 @@ pub(crate) fn decide_at<'gc>(
     let code = mutator.heap.activation_code(activation);
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     let family_size = code.family_size;
-    let (resolved, base, receiver, guard, index) = match code.instruction(program_counter as usize)
+    let (resolved, base, receiver, guard, index, global_key) = match code
+        .instruction(program_counter as usize)
     {
         Instruction::SendPublic {
             selector,
@@ -1869,7 +1949,8 @@ pub(crate) fn decide_at<'gc>(
                 |_mutator| None,
                 |mutator, _| mutator.resolve_public(receiver, selector),
             );
-            (resolved, base, receiver, key.guard, index)
+            let global_key = Some((selector, CacheRule::Public));
+            (resolved, base, receiver, key.guard, index, global_key)
         }
         Instruction::SendLexical {
             depth,
@@ -1889,9 +1970,11 @@ pub(crate) fn decide_at<'gc>(
             let (enclosing, origin) = lexical_receiver(&mutator.heap, activation, depth);
             match privacy {
                 None => {
+                    // The site's own cell is the only one its first send
+                    // could have reached.
                     let (resolved, base, guard) =
                         decided_lexical_first(mutator, index, enclosing, origin, depth, selector);
-                    (resolved, base, enclosing, guard, index)
+                    (resolved, base, enclosing, guard, index, None)
                 }
                 Some(private) => {
                     let key = lexical_key(&mutator.heap, &enclosing, origin, depth, private);
@@ -1903,7 +1986,22 @@ pub(crate) fn decide_at<'gc>(
                         lexical_class_of(&origin, &depth),
                         resolve_lexical_send(&enclosing, &origin, &depth, &selector),
                     );
-                    (resolved, base, enclosing, key.guard, index)
+                    // The rule as `decided_miss` filled its payload in.
+                    let rule = if private {
+                        CacheRule::LexicalPrivate
+                    } else {
+                        let lexical_class =
+                            dispatch::kth_lexical_class(&mutator.heap, origin, depth);
+                        CacheRule::Lexical(lexical_dispatch_id(&mutator.heap, lexical_class))
+                    };
+                    (
+                        resolved,
+                        base,
+                        enclosing,
+                        key.guard,
+                        index,
+                        Some((selector, rule)),
+                    )
                 }
             }
         }
@@ -1927,7 +2025,8 @@ pub(crate) fn decide_at<'gc>(
                 |_mutator| None,
                 |mutator, _| mutator.resolve_super(superclass, selector),
             );
-            (resolved, base, self_value, key.guard, index)
+            let global_key = Some((selector, CacheRule::Super));
+            (resolved, base, self_value, key.guard, index, global_key)
         }
         _ => unreachable!("internal: only a cached send calls through its cell"),
     };
@@ -1951,7 +2050,9 @@ pub(crate) fn decide_at<'gc>(
     let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
         return MissAnswer::Refuse;
     };
-    mutator.caches.refresh_site_cell(index, guard, &mutator.jit);
+    mutator
+        .caches
+        .refresh_cells(index, guard, global_key, &mutator.jit);
     mutator.heap.hand_machine_callee(receiver, defining_class);
     MissAnswer::Enter(address)
 }
@@ -2068,12 +2169,35 @@ fn chain_start_of(chain: Chain) -> ChainStart {
     }
 }
 
-/// A global row's `rule` word: the rule in the low two bits, and a
-/// `Lexical` rule's N -- its application's dispatch id -- above them.
-fn rule_word(rule: CacheRule) -> u64 {
+/// A global row's `rule` word: the rule's tag in the low
+/// `RULE_TAG_BITS` bits, and a `Lexical` rule's N -- its application's
+/// dispatch id -- above them.
+pub(crate) fn rule_word(rule: CacheRule) -> u64 {
+    match rule {
+        CacheRule::Lexical(lexical) => {
+            rule_tag(rule) | (u64::from(lexical.bits()) << RULE_TAG_BITS)
+        }
+        CacheRule::Public | CacheRule::LexicalPrivate | CacheRule::Super => rule_tag(rule),
+    }
+}
+
+/// How many low bits of a rule word its tag takes.
+pub(crate) const RULE_TAG_BITS: u8 = 2;
+
+/// The mask of a rule word's tag.
+pub(crate) const RULE_TAG_MASK: i32 = (1 << RULE_TAG_BITS) - 1;
+
+/// A `Lexical` rule's tag, beneath its N.
+pub(crate) const RULE_TAG_LEXICAL: i32 = 1;
+
+/// The tag of `rule`, which a send in machine code hands the stubs
+/// (`jit::targets`): its discriminant, in `CacheRule`'s order, which is
+/// also what the rule's derived `Hash` writes first -- the megamorphic
+/// stub hashes the tag where `GlobalCache::group` hashes the rule.
+pub(crate) const fn rule_tag(rule: CacheRule) -> u64 {
     match rule {
         CacheRule::Public => 0,
-        CacheRule::Lexical(lexical) => 1 | (u64::from(lexical.bits()) << 2),
+        CacheRule::Lexical(_) => RULE_TAG_LEXICAL as u64,
         CacheRule::LexicalPrivate => 2,
         CacheRule::Super => 3,
     }

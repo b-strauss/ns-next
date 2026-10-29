@@ -271,6 +271,7 @@ impl Heap<'_> {
         self.tables
             .free_applications
             .free(u32::try_from(index.index()).expect("an application index is 32 bits"));
+        self.record_application_id(index.index(), DispatchId::NONE);
         application
     }
 
@@ -287,6 +288,7 @@ impl Heap<'_> {
             &mut self.tables.applications,
             &mut self.tables.free_applications,
         );
+        self.record_application_rows();
     }
 
     /// The id of every live application's mixin, a superseded version's

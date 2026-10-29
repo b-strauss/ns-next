@@ -48,7 +48,8 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// The words of the area. Every word's index is fixed: the fieldless words
 /// 0 to 3, the immediates' classes 4 to 8 and their guards 9 to 13, the
 /// next generation 14, the callee's receiver and class 15 and 16, the
-/// rest free for the later stages.
+/// application id table's address and bound 17 and 18, the rest free for
+/// the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -89,6 +90,12 @@ pub(crate) enum MachineWord {
     CalleeReceiver,
     /// The current class the miss leaf decided, as `CalleeReceiver` is.
     CalleeClass,
+    /// The address of the application id table's row 0
+    /// (`heap/application_ids.rs`), fixed for the heap's life.
+    ApplicationIds,
+    /// How many rows of the application id table are recorded: an
+    /// application index at or past it is read nowhere.
+    ApplicationIdRows,
 }
 
 impl MachineWord {
@@ -111,6 +118,8 @@ impl MachineWord {
             MachineWord::NextGeneration => IMMEDIATE_GUARDS + IMMEDIATE_COUNT,
             MachineWord::CalleeReceiver => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 1,
             MachineWord::CalleeClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 2,
+            MachineWord::ApplicationIds => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 3,
+            MachineWord::ApplicationIdRows => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 4,
         }
     }
 }
@@ -119,7 +128,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 32;
 
-const _: () = assert!(MachineWord::CalleeClass.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::ApplicationIdRows.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -188,9 +197,11 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::NextGeneration));
         offsets.push(MachineWords::offset(MachineWord::CalleeReceiver));
         offsets.push(MachineWords::offset(MachineWord::CalleeClass));
+        offsets.push(MachineWords::offset(MachineWord::ApplicationIds));
+        offsets.push(MachineWords::offset(MachineWord::ApplicationIdRows));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 7 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 9 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

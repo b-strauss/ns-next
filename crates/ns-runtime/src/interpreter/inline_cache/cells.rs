@@ -144,9 +144,9 @@ impl GlobalRow {
 
 pub(crate) const CELL_WORDS: usize = 4;
 pub(crate) const CELL_BYTES: usize = CELL_WORDS * 8;
-const BLOCK_BYTES: usize = CELL_BYTES * POLYMORPHIC_WIDTH;
+pub(crate) const BLOCK_BYTES: usize = CELL_BYTES * POLYMORPHIC_WIDTH;
 pub(crate) const ROW_WORDS: usize = 8;
-const ROW_BYTES: usize = ROW_WORDS * 8;
+pub(crate) const ROW_BYTES: usize = ROW_WORDS * 8;
 
 /// The global cache's mirror: room for 2^20 rows, far past the 1024 the
 /// cache has unless a test asks for another size.
@@ -221,22 +221,16 @@ impl Cells {
     }
 
     /// The address of polymorphic block `block`'s four cells, in the order
-    /// of its slots.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the polymorphic stub scans a block from it")
-    )]
+    /// of its slots: block 0's is where the polymorphic stub finds a block
+    /// from (`jit::stubs::BlockWord::PolymorphicBlocks`).
     pub(crate) fn block_address(&self, block: u32) -> usize {
         self.reservation.base_address() + self.blocks.start + block as usize * BLOCK_BYTES
     }
 
     /// The address of the global cache's mirror: row `index` lies `index`
     /// rows past it, so group `group`'s two ways are rows `2 * group` and
-    /// `2 * group + 1`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the megamorphic stub probes the mirror from it")
-    )]
+    /// `2 * group + 1`, where the megamorphic stub probes them
+    /// (`jit::stubs::BlockWord::GlobalRows`).
     pub(crate) fn global_address(&self) -> usize {
         self.reservation.base_address() + self.global.start
     }
@@ -265,6 +259,16 @@ impl Cells {
             range.start * CELL_BYTES,
             &cells,
         );
+    }
+
+    /// The cell of slot `slot` of polymorphic block `block`;
+    /// `Cell::VACANT` for one never written.
+    pub(crate) fn block_cell(&self, block: u32, slot: usize) -> Cell {
+        read_cell(
+            &self.reservation,
+            &self.blocks,
+            block as usize * BLOCK_BYTES + slot * CELL_BYTES,
+        )
     }
 
     /// Writes the cell of slot `slot` of polymorphic block `block`.

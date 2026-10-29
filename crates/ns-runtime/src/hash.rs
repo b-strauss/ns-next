@@ -12,8 +12,14 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 /// An odd constant whose bits are spread evenly, so that consecutive keys
-/// land far apart.
-const MULTIPLIER: u64 = 0xf135_7aea_2e62_a9c5;
+/// land far apart. The megamorphic stub multiplies by it too
+/// (`jit::targets`), so that machine code finds a key's global-cache
+/// group where `GlobalCache::group` does.
+pub(crate) const MULTIPLIER: u64 = 0xf135_7aea_2e62_a9c5;
+
+/// How far `finish` rotates the product left, bringing its well-mixed high
+/// bits down: what the megamorphic stub's shift mirrors.
+pub(crate) const FINISH_ROTATION: u32 = 26;
 
 #[derive(Default, Clone, Copy)]
 pub struct IdentityHasher {
@@ -48,7 +54,7 @@ impl Hasher for IdentityHasher {
     }
 
     fn finish(&self) -> u64 {
-        self.hash.rotate_left(26)
+        self.hash.rotate_left(FINISH_ROTATION)
     }
 }
 

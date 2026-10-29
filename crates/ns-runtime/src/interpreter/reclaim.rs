@@ -351,6 +351,9 @@ mod tests {
         drop(send_with(&mut interpreter, &instance, "run:", &[second]));
         interpreter.collect_now();
         assert_eq!(id_counts(&mut interpreter), counts);
+        interpreter.enter(|mutator| {
+            assert_eq!(mutator.heap.verify_application_ids(), Ok(()));
+        });
         // Between runs no activation is live, so the stack roots nothing.
         interpreter.enter(|mutator| {
             let stack = mutator.heap.stack_roots();
@@ -398,6 +401,32 @@ mod tests {
           )
         )
     "};
+
+    /// The application id table machine code reads
+    /// (`heap/application_ids.rs`) follows the application table through
+    /// registration, a collection's freeing of a hundred dead rows, the
+    /// trailing ones given back, and their minting again.
+    #[test]
+    fn the_application_id_table_follows_the_application_table() {
+        let (mut interpreter, churn) = load(CHURN);
+        let verify = |interpreter: &mut Interpreter| {
+            interpreter.enter(|mutator| {
+                assert_eq!(mutator.heap.verify_application_ids(), Ok(()));
+            });
+        };
+        verify(&mut interpreter);
+        let instance = expect_ok(interpreter.instantiate(&churn, &[]), "a Churn");
+        let first = send(&mut interpreter, &instance, "First");
+        let second = send(&mut interpreter, &instance, "Second");
+        drop(send_with(&mut interpreter, &instance, "run:", &[first]));
+        verify(&mut interpreter);
+        interpreter.collect_now();
+        verify(&mut interpreter);
+        drop(send_with(&mut interpreter, &instance, "run:", &[second]));
+        verify(&mut interpreter);
+        interpreter.collect_now();
+        verify(&mut interpreter);
+    }
 
     /// An initializer whose class an install re-applied, keeping its
     /// slots, runs on at the level it was entered at across a later full

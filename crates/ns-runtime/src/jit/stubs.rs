@@ -17,12 +17,13 @@ use crate::heap::machine_words::MachineWord;
 /// The words of the entry block, by index. `CodeZone::enter` writes the
 /// first four on every entry; the caller of `enter` writes the inputs
 /// (`ObjectSpaceBase` … `MachineEntry`, `MachineWords`, `ExitStub`,
-/// `Cells`, `PolymorphicStub`, and the counters' zero) before it, the exit stub the
+/// `Cells`, `PolymorphicStub`, `PolymorphicBlocks` … `GlobalMask`, and
+/// the counters' zero) before it, the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
 /// dead register's exit), a leaf call `LeafStackPointer`, and code that
 /// counts its back edges `BackEdges`.
 ///
-/// Words 13 and 19 to 28 are free, kept for what the later stages enter
+/// Words 13 and 22 to 28 are free, kept for what the later stages enter
 /// machine code with, so the three words only a debug build or a test
 /// uses sit at the top.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -62,7 +63,8 @@ pub(crate) enum BlockWord {
     /// send's cell lies its site's index cells past it.
     Cells = 15,
     /// The address of the stub a send whose guard is not its cell's calls
-    /// (`JitState::polymorphic_stub_address`).
+    /// (`JitState::polymorphic_stub_address`), which a polymorphic site's
+    /// cell names as its entry too.
     PolymorphicStub = 16,
     /// The exit's walk over the return addresses on the native stack: the
     /// address of the next one to materialize the frame of.
@@ -70,6 +72,18 @@ pub(crate) enum BlockWord {
     /// An address inside the code an exit left, which names the body of
     /// the innermost frame (`Roles::exit_code_address`).
     ExitCodeAddress = 18,
+    /// The address of polymorphic block 0's cells
+    /// (`InlineCaches::block_cells_address`): a block lies its number of
+    /// blocks past it.
+    PolymorphicBlocks = 19,
+    /// The address of the global cache's mirror
+    /// (`InlineCaches::global_rows_address`), which the megamorphic stub
+    /// probes.
+    GlobalRows = 20,
+    /// The global cache's group mask (`InlineCaches::global_mask`), which
+    /// the megamorphic stub picks a group with: a word of the entry, since
+    /// a test may resize the cache between two entries.
+    GlobalMask = 21,
     /// The sends code compiled to count them called compiled code through
     /// (`JitStatistics::compiled_calls`).
     CompiledCalls = 29,
@@ -220,7 +234,7 @@ pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
 }
 
 /// A stub's code, whose few short branches always lay out.
-fn finish_stub(macro_assembler: MacroAssembler) -> Assembled {
+pub(super) fn finish_stub(macro_assembler: MacroAssembler) -> Assembled {
     match macro_assembler.finish() {
         Ok(assembled) => assembled,
         Err(error) => panic!("internal: a stub failed to lay out: {error}"),
@@ -324,17 +338,23 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
 const RETURN_ADDRESS_BYTES: i32 = 8;
 
 /// The miss stub, which a send's cell names for a method whose body has no
-/// machine code yet, and which a send whose guard is not its cell's calls
-/// until the polymorphic stub exists (`BlockWord::PolymorphicStub`). It is
-/// called as the callee is, the frame register at the callee's register 0
-/// and the send's return address on top of the native stack, which names
-/// the send: the miss leaf decides it (`Leaf::Miss`) and answers the
-/// callee's machine entry, which the stub jumps to as though the send had
-/// called it, the callee's receiver and current class the leaf handed over
-/// in the roles' `callee_receiver` and `callee_class`, or 0, at which the stub refuses the call so that the caller
-/// re-executes the send.
+/// machine code yet, and which the polymorphic and megamorphic stubs end
+/// in where they find no entry for the send (`emit_miss`).
 pub(crate) fn assemble_miss_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
+    emit_miss(&mut macro_assembler);
+    finish_stub(macro_assembler)
+}
+
+/// The miss: code entered as the callee is, the frame register at the
+/// callee's register 0 and the send's return address on top of the
+/// native stack, which names the send. The miss leaf decides it
+/// (`Leaf::Miss`) and answers the callee's machine entry, which the code
+/// jumps to as though the send had called it, the callee's receiver and
+/// current class the leaf handed over in the roles' `callee_receiver` and
+/// `callee_class`, or 0, at which it refuses the call so that the caller
+/// re-executes the send.
+pub(super) fn emit_miss(macro_assembler: &mut MacroAssembler) {
     let roles = macro_assembler.roles();
     macro_assembler.assembler().load(
         Width::Word64,
@@ -363,7 +383,6 @@ pub(crate) fn assemble_miss_stub(abi: Abi) -> Assembled {
     assembler.load(Width::Word64, roles.callee_receiver(), receiver);
     assembler.load(Width::Word64, roles.callee_class(), class);
     assembler.jump_register(answer);
-    finish_stub(macro_assembler)
 }
 
 /// The stub a send's cell names for a target machine code does not run: a

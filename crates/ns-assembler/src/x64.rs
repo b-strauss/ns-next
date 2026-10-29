@@ -276,6 +276,11 @@ const SIGNED_DIVIDE: [u8; 1] = [0xF7];
 /// Intel SDM Vol. 2A, IDIV—Signed Divide.
 const SIGNED_DIVIDE_EXTENSION: u8 = 7;
 
+/// `AND r/m64, r64` (`21 /r`) — AND a register into a register.
+///
+/// Intel SDM Vol. 2A, AND—Logical AND.
+const AND_REGISTER_TO_RM: [u8; 1] = [0x21];
+
 /// `SUB r/m64, r64` (`29 /r`) — subtract a register from a register.
 ///
 /// Intel SDM Vol. 2B, SUB—Subtract.
@@ -789,6 +794,9 @@ impl Encoder for X64 {
                 rex(code, true, 0, divisor, false);
                 code.extend_from_slice(&SIGNED_DIVIDE);
                 code.push(modrm(MODRM_MODE_REGISTER, SIGNED_DIVIDE_EXTENSION, divisor));
+            }
+            Operation::And { target, source } => {
+                register_register(code, &AND_REGISTER_TO_RM, source, target);
             }
             Operation::AndImmediate { target, value } => {
                 immediate_group(code, GROUP_ONE_AND, target, value);
