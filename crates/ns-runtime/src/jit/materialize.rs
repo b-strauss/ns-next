@@ -44,6 +44,41 @@ pub(crate) struct Walk {
     added: usize,
 }
 
+impl Walk {
+    /// Seeds the walk for a call from an interpreter's send (`jit::called`):
+    /// the sender, whose header lies at `sender` and register 0 at
+    /// `sender_registers`, both word offsets from the stack's base, stands
+    /// as the last frame materialized, its send's callee placed on its
+    /// slots from register `argument_base` with `argument_count`
+    /// arguments, the stack's top at `top`. So the callee is the walk's
+    /// first frame, materialized as any compiled callee is, and the
+    /// sender, interpreted and stopped at its send already, its caller; a
+    /// refused call leaves the sender the innermost frame, with nothing
+    /// added. An entry at a push leaves the walk unseeded, starting at the
+    /// entry's frame.
+    pub(crate) fn seed_call(
+        &mut self,
+        sender: u32,
+        sender_registers: u32,
+        argument_base: u16,
+        argument_count: u16,
+        top: usize,
+    ) {
+        let start = sender_registers + u32::from(argument_base);
+        *self = Walk {
+            last: Some((sender, sender_registers)),
+            callee: Some(Callee {
+                start,
+                offset: start + u32::from(argument_count),
+                caller: sender,
+                top,
+            }),
+            top,
+            added: 0,
+        };
+    }
+}
+
 /// The callee a send places on its argument slots: its first argument's
 /// and its header's word offsets, its caller's header offset, and the top
 /// its push stood at.
@@ -117,8 +152,9 @@ fn callee_of_send(code: &CompiledCode, program_counter: u32, register_base: u32)
 /// `Leaf::MaterializeFrame`: the frame the return address
 /// `return_address` lies in, stopped at the send whose call returns there,
 /// written -- for the stretch's entry frame, which the run loop pushed or
-/// resumed, its program counter and compiled bit alone -- and its send's
-/// callee placed for the next.
+/// resumed, its program counter and compiled bit alone; a called callee,
+/// the first frame of a seeded walk (`Walk::seed_call`), whole -- and its
+/// send's callee placed for the next.
 pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) {
     let mut walk = std::mem::take(&mut mutator.jit.walk);
     let Some((installed, program_counter)) =
@@ -234,8 +270,10 @@ pub(crate) struct LeafFrame {
 /// running the body `code_address` lies in, stopped at `program_counter`,
 /// as a leaf it calls reads it: the stretch's entry frame as it is, a
 /// frame machine code pushed with its header written as the walk writes
-/// it, its caller left out, which no leaf reads. `release_leaf_frame`
-/// puts the stack back.
+/// it, its caller left out, which no leaf reads -- a callee an
+/// interpreter's send called among them, whose sender, the innermost
+/// frame of the stack, runs no machine code. `release_leaf_frame` puts the
+/// stack back.
 pub(crate) fn leaf_frame(
     mutator: &mut Mutator<'_>,
     frame_address: u64,

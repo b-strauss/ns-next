@@ -1,6 +1,7 @@
 //! The entry stub, which crosses from the platform's C calling convention
 //! into machine code and takes the return of the frame it called, the
-//! exit stub, through which machine code leaves once every compiled frame
+//! call stub, which crosses the same way into a compiled callee an
+//! interpreter's send calls, the exit stub, through which machine code leaves once every compiled frame
 //! is materialized (`docs/design/execution.md`, "The native stack carries
 //! the return addresses", "The exit materializes"), and the stubs a send's
 //! cell names for a target without machine code of its own; the entry
@@ -24,9 +25,10 @@ use crate::heap::machine_words::MachineWord;
 /// (`JitState::mark_block_stale`) -- the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
 /// dead register's exit), a leaf call `LeafStackPointer`, and code that
-/// counts its back edges `BackEdges`.
+/// counts its back edges `BackEdges`; the entry and the call stub each
+/// write `EnteredByCall`.
 ///
-/// Words 13 and 22 to 28 are free, kept for what the later stages enter
+/// Words 22 to 28 are free, kept for what the later stages enter
 /// machine code with, so the three words only a debug build or a test
 /// uses sit at the top.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,6 +59,11 @@ pub(crate) enum BlockWord {
     /// rather than an address of its own, so its code holds no absolute
     /// address and can be moved within the zone.
     ExitStub = 12,
+    /// 1 when the call stub entered the body, 0 when the entry stub did:
+    /// a body the call stub called is a callee no frame of the
+    /// interpreter's stands for, which the exit materializes even when no
+    /// compiled frame lies above it (`assemble_exit_stub`).
+    EnteredByCall = 13,
     /// The stack pointer a leaf call aligned away from, restored after
     /// it: a word rather than a register, since it is needed only across
     /// the call, and a callee-saved register is worth more to the register
@@ -200,28 +207,7 @@ pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
 pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
     let roles = macro_assembler.roles();
-    let stack_base = macro_assembler.block_word(BlockWord::StackBase);
-    let register_base = macro_assembler.block_word(BlockWord::RegisterBase);
-    let object_space_base = macro_assembler.block_word(BlockWord::ObjectSpaceBase);
-    let machine_entry = macro_assembler.block_word(BlockWord::MachineEntry);
-    let saved_stack_pointer = macro_assembler.block_word(BlockWord::SavedStackPointer);
-    let assembler = macro_assembler.assembler();
-    for register in abi.callee_saved() {
-        assembler.push(*register);
-    }
-    assembler.move_register(roles.context, abi.first_argument());
-    assembler.load(Width::Word64, roles.frame, stack_base);
-    assembler.load(Width::Word64, roles.idiom_scratch, register_base);
-    assembler.shift_left(roles.idiom_scratch, 3);
-    assembler.add(roles.frame, roles.idiom_scratch);
-    assembler.load(Width::Word64, roles.object_space, object_space_base);
-    assembler.load(Width::Word64, roles.idiom_scratch, machine_entry);
-    assembler.store(Width::Word64, saved_stack_pointer, roles.stack_pointer);
-    assembler.call_register(roles.idiom_scratch);
-    let returned_value = macro_assembler.block_word(BlockWord::ExitProgramCounter);
-    let exit_kind = macro_assembler.block_word(BlockWord::ExitKind);
-    let assembler = macro_assembler.assembler();
-    assembler.store(Width::Word64, returned_value, roles.leaf_result);
+    emit_entry(&mut macro_assembler, abi, false);
     macro_assembler.load_machine_words(roles.idiom_scratch);
     let depth = MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::DepthCount);
     let assembler = macro_assembler.assembler();
@@ -229,13 +215,90 @@ pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
     assembler.load(Width::Word64, count, depth);
     assembler.add_immediate(count, 1);
     assembler.store(Width::Word64, depth, count);
+    emit_returned(&mut macro_assembler, abi);
+    finish_stub(macro_assembler)
+}
+
+/// The call stub, through which an interpreter's send calls a compiled
+/// callee (`jit::called`; `docs/design/execution.md`, "The entry at a
+/// send"): entered as the entry stub is, the frame register at the
+/// callee's register 0 on the send's slots, it hands the callee the
+/// receiver and the current class the interpreter left in the machine
+/// words (`MachineWord::CalleeReceiver`, `MachineWord::CalleeClass`) and 0
+/// in `send_cells`, as the miss stub hands a callee over, and calls the
+/// body's machine entry, its prologue, which checks and counts the push
+/// and writes the header places a compiled call leaves to it. A `ret`
+/// answers `ExitKind::Returned` with the value in `ExitProgramCounter`;
+/// unlike the entry stub's, nothing pops the callee, whose `Return` took
+/// its count off, so nothing is added back. An exit inside leaves through
+/// the exit stub, which materializes the callee as well
+/// (`BlockWord::EnteredByCall`).
+pub(crate) fn assemble_call_stub(abi: Abi) -> Assembled {
+    let mut macro_assembler = MacroAssembler::new(abi);
+    emit_entry(&mut macro_assembler, abi, true);
+    emit_returned(&mut macro_assembler, abi);
+    finish_stub(macro_assembler)
+}
+
+/// The entry and the call stub up to the body's return: the registers the
+/// convention has its callee preserve saved, the roles pinned from the
+/// block, for a call (`by_call`) the callee's receiver, current class and
+/// `send_cells` handed over, `EnteredByCall` written, the stack pointer
+/// saved for the exit stub, the body called, and its value stored into
+/// `ExitProgramCounter`.
+fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, by_call: bool) {
+    let roles = macro_assembler.roles();
+    let stack_base = macro_assembler.block_word(BlockWord::StackBase);
+    let register_base = macro_assembler.block_word(BlockWord::RegisterBase);
+    let object_space_base = macro_assembler.block_word(BlockWord::ObjectSpaceBase);
+    let machine_entry = macro_assembler.block_word(BlockWord::MachineEntry);
+    let saved_stack_pointer = macro_assembler.block_word(BlockWord::SavedStackPointer);
+    let entered_by_call = macro_assembler.block_word(BlockWord::EnteredByCall);
+    let assembler = macro_assembler.assembler();
+    for register in abi.callee_saved() {
+        assembler.push(*register);
+    }
+    // First: under the System V convention the block's address arrives in
+    // the register the callee's current class is handed in.
+    assembler.move_register(roles.context, abi.first_argument());
+    assembler.store_immediate32(entered_by_call, i32::from(by_call));
+    assembler.load(Width::Word64, roles.frame, stack_base);
+    assembler.load(Width::Word64, roles.idiom_scratch, register_base);
+    assembler.shift_left(roles.idiom_scratch, 3);
+    assembler.add(roles.frame, roles.idiom_scratch);
+    assembler.load(Width::Word64, roles.object_space, object_space_base);
+    if by_call {
+        let machine_words = roles.idiom_scratch;
+        macro_assembler.load_machine_words(machine_words);
+        let receiver = MacroAssembler::machine_word(machine_words, MachineWord::CalleeReceiver);
+        let class = MacroAssembler::machine_word(machine_words, MachineWord::CalleeClass);
+        let assembler = macro_assembler.assembler();
+        assembler.load(Width::Word64, roles.callee_receiver(), receiver);
+        assembler.load(Width::Word64, roles.callee_class(), class);
+        assembler.move_immediate(roles.send_cells, 0);
+    }
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, roles.idiom_scratch, machine_entry);
+    assembler.store(Width::Word64, saved_stack_pointer, roles.stack_pointer);
+    assembler.call_register(roles.idiom_scratch);
+    let returned_value = macro_assembler.block_word(BlockWord::ExitProgramCounter);
+    macro_assembler
+        .assembler()
+        .store(Width::Word64, returned_value, roles.leaf_result);
+}
+
+/// The entry and the call stub after the body's return: `ExitKind::Returned`
+/// written and answered, the saved registers restored.
+fn emit_returned(macro_assembler: &mut MacroAssembler, abi: Abi) {
+    let roles = macro_assembler.roles();
+    let exit_kind = macro_assembler.block_word(BlockWord::ExitKind);
+    let assembler = macro_assembler.assembler();
     assembler.move_immediate(roles.leaf_result, ExitKind::Returned as u64);
     assembler.store(Width::Word64, exit_kind, roles.leaf_result);
     for register in abi.callee_saved().iter().rev() {
         assembler.pop(*register);
     }
     assembler.return_();
-    finish_stub(macro_assembler)
 }
 
 /// A stub's code, whose few short branches always lay out.
@@ -254,7 +317,10 @@ pub(super) fn finish_stub(macro_assembler: MacroAssembler) -> Assembled {
 /// walks their return addresses, outermost first, materializing each
 /// frame (`Leaf::MaterializeFrame`), then the innermost
 /// (`Leaf::MaterializeInnermost`), so that every frame reads as an
-/// interpreted one before the run loop or any observer runs; then it
+/// interpreted one before the run loop or any observer runs. The callee
+/// the call stub called is a compiled frame too, whose walk `jit::called`
+/// seeded: the walk starts at the return address of its own send, or,
+/// with none above it, materializes it as the innermost. Then it
 /// resets the stack pointer to the one the entry stub saved -- dropping
 /// every return address a body pushed -- restores the registers the entry
 /// stub saved and returns the kind to `enter`'s caller.
@@ -287,7 +353,16 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     assembler.move_register(scratch, roles.stack_pointer);
     assembler.add_immediate(scratch, RETURN_ADDRESS_BYTES);
     assembler.compare_memory(scratch, saved_stack_pointer);
+    assembler.jump_if(Condition::NotEqual, walk);
+    // Nothing above the body the stub called: the entry stub's is the
+    // frame the run loop entered, interpreted already, while the call
+    // stub's is a callee no frame stands for yet, which is the innermost.
+    let entered_by_call = macro_assembler.block_word(BlockWord::EnteredByCall);
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, scratch, entered_by_call);
+    assembler.compare_immediate(scratch, 0);
     assembler.jump_if(Condition::Equal, done);
+    assembler.jump(innermost);
     assembler.bind(walk);
     // The outermost compiled return address, the entry's body's call, lies
     // two words below the saved stack pointer.

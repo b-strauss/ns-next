@@ -42,7 +42,7 @@ use ns_memory::{CodeOffset, CodeWriter, EntryBlock};
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
-use crate::heap::{ActivationReference, CodeId, Heap, RegisterBase};
+use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBase, Value};
 use crate::interpreter::{FeedbackBase, Mutator, DEPTH_RESERVE, MAX_ACTIVATION_DEPTH};
 use crate::mixin::MixinMethod;
 
@@ -140,6 +140,10 @@ pub struct JitStatistics {
     /// answered its value; a decline, which refuses the call, is not
     /// counted.
     pub site_slot_hits: u64,
+    /// Entries into machine code at an interpreter's send, which called a
+    /// compiled callee's machine entry through the call stub (`called`),
+    /// whatever the callee's checks then did.
+    pub called_entries: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled and entered at a
@@ -252,6 +256,16 @@ impl JitSlot {
     #[inline(always)]
     pub(crate) fn is_armed(&self) -> bool {
         self.state.get() < CALLED_ONLY
+    }
+
+    /// Whether the body is compiled, whether or not into this
+    /// interpreter's zone: the one load and compare an interpreter's send
+    /// of a method makes before it calls the body's machine code
+    /// (`Mutator::enter_sent`); everything else is `called`'s, out of
+    /// line.
+    #[inline(always)]
+    pub(crate) fn is_compiled(&self) -> bool {
+        matches!(self.state.get(), COMPILED | CALLED_ONLY)
     }
 
     fn refuse(&self) {
@@ -387,6 +401,9 @@ struct Zone {
     /// Where the next body goes.
     next_offset: u32,
     entry_stub: CodeOffset,
+    /// The stub through which an interpreter's send calls a compiled
+    /// callee (`stubs::assemble_call_stub`).
+    call_stub: CodeOffset,
     exit_stub: CodeOffset,
     /// The stub a cell names for a method whose body has no machine code
     /// yet (`stubs::assemble_miss_stub`).
@@ -603,7 +620,10 @@ impl JitState {
 
     /// Makes the next entry write every word of the entry block afresh:
     /// called wherever what one of them names changes -- the zone made or
-    /// replaced, the global cache resized.
+    /// replaced, the global cache resized. A new lasting word of the block
+    /// (`lasting_block_words`), or a new way to replace what one names,
+    /// must call it too: only a debug build's check at every entry
+    /// catches a miss, which a release build runs on with the stale word.
     pub(crate) fn mark_block_stale(&mut self) {
         self.block_stale = true;
     }
@@ -869,6 +889,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
         limit,
         next_offset: 0,
         entry_stub: CodeOffset(0),
+        call_stub: CodeOffset(0),
         exit_stub: CodeOffset(0),
         miss_stub: CodeOffset(0),
         refusing_stub: CodeOffset(0),
@@ -887,6 +908,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
         },
     };
     zone.entry_stub = install(&mut zone, &stubs::assemble_entry_stub(Abi::host()).bytes).ok()?;
+    zone.call_stub = install(&mut zone, &stubs::assemble_call_stub(Abi::host()).bytes).ok()?;
     zone.exit_stub = install(&mut zone, &stubs::assemble_exit_stub(Abi::host()).bytes).ok()?;
     zone.miss_stub = install(&mut zone, &stubs::assemble_miss_stub(Abi::host()).bytes).ok()?;
     zone.refusing_stub =
@@ -1375,9 +1397,11 @@ fn compile(
         return Err(Refusal::ExitsAtOnce);
     }
     let map = u32::try_from(state.bodies.len()).map_err(|_| Refusal::ZoneFull)?;
-    // Every body has an instruction, its last a return or a jump; one
-    // without would have nowhere for a push to enter.
-    let first_instruction = body.map.machine_offset(0).ok_or(Refusal::Unassembled)?;
+    // Every body has an instruction, its last a return or a jump, so a
+    // map without program counter 0 is the JIT's own defect.
+    let Some(first_instruction) = body.map.machine_offset(0) else {
+        panic!("internal: a compiled body has no code for its first instruction");
+    };
     let offset = install(zone, &body.code.bytes)?;
     let length = u32::try_from(body.code.bytes.len()).map_err(|_| Refusal::ZoneFull)?;
     for call in &body.map.returns {
@@ -1505,12 +1529,7 @@ pub(crate) fn resumed(
 /// registers start at `register_base`, and answers where the interpreter
 /// goes on: at 0, running nothing, when the thread's native stack has less
 /// than `NATIVE_STACK_NEED` left, since compiled frames' return addresses
-/// lie there. The entry block's words that name the frame and the code
-/// are written at every entry; the others name what does not move between
-/// entries -- reservations, the stubs, the global cache's mask -- and are
-/// written afresh only once something marked the block stale
-/// (`JitState::mark_block_stale`), which a debug build checks at every
-/// entry.
+/// lie there.
 ///
 /// # Panics
 ///
@@ -1523,7 +1542,7 @@ fn run_machine_code(
     register_base: RegisterBase,
     entry: CodeOffset,
 ) -> Resumption {
-    use stubs::{BlockWord, ExitKind, MachineExit};
+    use stubs::{BlockWord, ExitKind};
 
     if !native_stack_has_room() {
         return Resumption::Interpreted {
@@ -1534,49 +1553,18 @@ fn run_machine_code(
     let Some(zone) = mutator.jit.zone.as_ref() else {
         panic!("internal: machine code is entered without a zone");
     };
-    // The zone and the block are held apart from the mutator, which
-    // `enter` lends to the code as its context.
+    // The zone is held apart from the mutator, which `enter` lends to the
+    // code as its context.
     let code = Rc::clone(zone.writer.zone());
-    let (entry_stub, exit_stub) = (zone.entry_stub, zone.exit_stub);
-    let exit_stub = || code.executable_address(exit_stub) as u64;
-    let block = mutator.jit.block.clone();
-    if mutator.jit.block_stale {
-        for (word, value) in lasting_block_words(mutator, exit_stub()) {
-            block.set(word.index(), value);
-        }
-        mutator.jit.block_stale = false;
-    } else {
-        debug_assert!(
-            lasting_block_words(mutator, exit_stub())
-                .iter()
-                .all(|(word, value)| block.get(word.index()) == *value),
-            "internal: a word of the entry block changed and nothing marked it stale"
-        );
-    }
-    block.set(
-        BlockWord::RegisterBase.index(),
-        crate::heap::Heap::register_base_words(register_base),
-    );
-    block.set(
-        BlockWord::MachineEntry.index(),
+    let entry_stub = zone.entry_stub;
+    let block = prepared_block(
+        mutator,
+        Heap::register_base_words(register_base),
         code.executable_address(entry) as u64,
     );
-    if mutator.jit.counting {
-        block.set(BlockWord::BackEdges.index(), 0);
-        block.set(BlockWord::CompiledCalls.index(), 0);
-    }
     mutator.jit.statistics.machine_entries += 1;
     mutator.jit.walked = None;
-    let kind = code.enter(entry_stub, &block, mutator, leaves::table());
-    debug_assert_eq!(
-        kind,
-        block.get(BlockWord::ExitKind.index()),
-        "internal: the exit stub answers the kind it wrote"
-    );
-    if mutator.jit.counting {
-        mutator.jit.statistics.machine_back_edges += block.get(BlockWord::BackEdges.index());
-        mutator.jit.statistics.compiled_calls += block.get(BlockWord::CompiledCalls.index());
-    }
+    let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
     // was materialized, none goes on interpreted and nothing exited.
     if kind == ExitKind::Returned as u64 {
@@ -1587,7 +1575,216 @@ fn run_machine_code(
     // The innermost frame the exit materialized, or the entry's when no
     // compiled frame lay above it.
     let innermost = mutator.jit.take_walked().unwrap_or(activation);
-    let exit = stubs::decode_exit(&block, kind);
+    resumption_after_exit(mutator, &block, kind, innermost)
+}
+
+/// What an interpreter's send answers once it called a compiled
+/// callee's machine code (`called`).
+pub(crate) enum Called {
+    /// Nothing ran: the body has no machine code in this zone for the
+    /// step's feedback base, the native stack has too little room, or the
+    /// callee's prologue refused the call before it wrote anything -- at
+    /// the depth limit's bound, past the stack's room, or with a safepoint
+    /// requested. The interpreter pushes the callee as it pushes a body
+    /// without machine code, and so raises the overflow, grows the stack
+    /// or takes the safepoint.
+    Refused,
+    /// The callee returned the value whose word this is, for the send's
+    /// destination.
+    Returned { value: u64 },
+    /// Machine code exited above the interpreted sender: the run loop goes
+    /// on at the innermost frame the exit materialized, interpreted or at
+    /// a safepoint; never `Resumption::Returned`.
+    Stopped(Resumption),
+}
+
+/// An interpreter's send of `sender`, whose registers start at
+/// `register_base`, decided to activate `code`'s method on `receiver`
+/// with `defining_class` as its current class, the arguments in the
+/// send's slots from register `argument_base`, at `feedback_base`: calls
+/// the body's machine entry through the call stub, as a compiled send
+/// calls it, when it has machine code in this zone compiled against
+/// `feedback_base` and the native stack has room
+/// (`docs/design/execution.md`, "The entry at a send"). The callee's
+/// prologue checks and counts the push and writes the frame as a
+/// compiled call's callee does, so no frame is pushed here, and none is
+/// popped once it returns. Out of line, so that the run loop pays only
+/// the test of the slot (`JitSlot::is_compiled`) on a send.
+///
+/// # Panics
+///
+/// On a debug build's read of a dead register, as `run_machine_code`.
+#[cfg(ns_jit)]
+#[cold]
+#[inline(never)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what the interpreter's push takes, as the send decided it, apart"
+)]
+pub(crate) fn called<'gc>(
+    mutator: &mut Mutator<'gc>,
+    sender: ActivationReference,
+    register_base: RegisterBase,
+    argument_base: u16,
+    receiver: Value<'gc>,
+    defining_class: ClassReference<'gc>,
+    code: &Rc<CompiledCode>,
+    feedback_base: FeedbackBase,
+) -> Called {
+    use stubs::{BlockWord, ExitKind};
+
+    let Some(machine_entry) = machine_entry_address(&mutator.jit, code, feedback_base) else {
+        return Called::Refused;
+    };
+    if !native_stack_has_room() {
+        return Called::Refused;
+    }
+    let Some(zone) = mutator.jit.zone.as_ref() else {
+        unreachable!("internal: a body has machine code only in a zone");
+    };
+    let zone_code = Rc::clone(zone.writer.zone());
+    let call_stub = zone.call_stub;
+    mutator.heap.hand_machine_callee(receiver, defining_class);
+    let sender_registers = Heap::register_base_index(register_base);
+    let top = mutator.heap.activation_stack_top();
+    mutator.jit.walk.seed_call(
+        Heap::activation_offset(sender),
+        sender_registers,
+        argument_base,
+        code.argument_count,
+        top,
+    );
+    let block = prepared_block(
+        mutator,
+        Heap::register_base_words(register_base) + u64::from(argument_base),
+        machine_entry,
+    );
+    mutator.jit.statistics.called_entries += 1;
+    mutator.jit.walked = None;
+    let kind = enter_block(mutator, &zone_code, call_stub, &block);
+    if kind == ExitKind::Returned as u64 {
+        // No exit took the seed.
+        mutator.jit.walk = materialize::Walk::default();
+        return Called::Returned {
+            value: block.get(BlockWord::ExitProgramCounter.index()),
+        };
+    }
+    let Some(innermost) = mutator.jit.take_walked() else {
+        unreachable!("internal: an exit of a called body materializes its innermost frame");
+    };
+    // A refused call that left the sender the innermost was refused by the
+    // callee's own prologue: the interpreter pushes the callee rather than
+    // run the send again, which would only call it again.
+    if kind == ExitKind::PushRefused as u64
+        && Heap::activation_offset(innermost) == Heap::activation_offset(sender)
+    {
+        return Called::Refused;
+    }
+    Called::Stopped(resumption_after_exit(mutator, &block, kind, innermost))
+}
+
+#[cfg(not(ns_jit))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what the interpreter's push takes, as the send decided it, apart"
+)]
+pub(crate) fn called<'gc>(
+    _mutator: &mut Mutator<'gc>,
+    _sender: ActivationReference,
+    _register_base: RegisterBase,
+    _argument_base: u16,
+    _receiver: Value<'gc>,
+    _defining_class: ClassReference<'gc>,
+    _code: &Rc<CompiledCode>,
+    _feedback_base: FeedbackBase,
+) -> Called {
+    unreachable!("internal: no body has machine code without an encoder")
+}
+
+/// The entry block for an entry into the frame whose registers start
+/// `register_base_words` words into the activation stack, at
+/// `machine_entry`. The words that name the frame and the code are
+/// written at every entry; the others name what does not move between
+/// entries -- reservations, the stubs, the global cache's mask -- and are
+/// written afresh only once something marked the block stale
+/// (`JitState::mark_block_stale`), which a debug build checks at every
+/// entry.
+#[cfg(ns_jit)]
+fn prepared_block(
+    mutator: &mut Mutator<'_>,
+    register_base_words: u64,
+    machine_entry: u64,
+) -> EntryBlock {
+    use stubs::BlockWord;
+
+    let Some(zone) = mutator.jit.zone.as_ref() else {
+        panic!("internal: machine code is entered without a zone");
+    };
+    let exit_stub = zone.writer.zone().executable_address(zone.exit_stub) as u64;
+    // Held apart from the mutator, which `enter` lends to the code.
+    let block = mutator.jit.block.clone();
+    if mutator.jit.block_stale {
+        for (word, value) in lasting_block_words(mutator, exit_stub) {
+            block.set(word.index(), value);
+        }
+        mutator.jit.block_stale = false;
+    } else {
+        debug_assert!(
+            lasting_block_words(mutator, exit_stub)
+                .iter()
+                .all(|(word, value)| block.get(word.index()) == *value),
+            "internal: a word of the entry block changed and nothing marked it stale"
+        );
+    }
+    block.set(BlockWord::RegisterBase.index(), register_base_words);
+    block.set(BlockWord::MachineEntry.index(), machine_entry);
+    if mutator.jit.counting {
+        block.set(BlockWord::BackEdges.index(), 0);
+        block.set(BlockWord::CompiledCalls.index(), 0);
+    }
+    block
+}
+
+/// Enters `zone`'s machine code at `stub`, the entry or the call stub,
+/// with `block`, and answers the kind of exit or return it left with, the
+/// counters the code kept added to the statistics.
+#[cfg(ns_jit)]
+fn enter_block(
+    mutator: &mut Mutator<'_>,
+    zone: &ns_memory::CodeZone,
+    stub: CodeOffset,
+    block: &EntryBlock,
+) -> u64 {
+    use stubs::BlockWord;
+
+    let kind = zone.enter(stub, block, mutator, leaves::table());
+    debug_assert_eq!(
+        kind,
+        block.get(BlockWord::ExitKind.index()),
+        "internal: the exit stub answers the kind it wrote"
+    );
+    if mutator.jit.counting {
+        mutator.jit.statistics.machine_back_edges += block.get(BlockWord::BackEdges.index());
+        mutator.jit.statistics.compiled_calls += block.get(BlockWord::CompiledCalls.index());
+    }
+    kind
+}
+
+/// Where the run loop goes on after machine code exited with `kind`, no
+/// return, as `block` describes the exit, `innermost` the innermost frame
+/// the exit materialized or the entry's: the exit counted, a body that
+/// has spent its budget abandoned, and the innermost frame interpreted
+/// from here.
+#[cfg(ns_jit)]
+fn resumption_after_exit(
+    mutator: &mut Mutator<'_>,
+    block: &EntryBlock,
+    kind: u64,
+    innermost: ActivationReference,
+) -> Resumption {
+    use stubs::MachineExit;
+
+    let exit = stubs::decode_exit(block, kind);
     // Counted on every exit, not only while counting, since the abandonment
     // and the tests read it: a match on the exit's slot, which decodes
     // nothing (`CompiledCode::is_send`), on a path that has just left

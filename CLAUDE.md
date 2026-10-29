@@ -431,8 +431,11 @@ interpreter does and which nothing reads after the send but the send
 re-executed. A new instruction is one arm of
 `jit::baseline::lower` plus the macro-assembler idioms it lacks, never a
 second dispatch; the run loop enters machine code only through
-`jit::entered` and `jit::resumed` (`mod.rs`), every address it needs asked
-of the heap afresh at each entry, and it holds no handle. A cache cell is
+`jit::entered`, `jit::resumed` and, at a send, `jit::called` (`mod.rs`);
+the entry block's lasting words -- what does not move between entries --
+are written when what they name changes, which marks the block stale
+(`JitState::mark_block_stale`), every other address it needs asked of
+the heap afresh at each entry, and it holds no handle. A cache cell is
 written only from its entry -- beside it, or afresh when the JIT's state
 under it changes -- its entry address a function of the entry's target
 and the JIT's state, and a stub does what

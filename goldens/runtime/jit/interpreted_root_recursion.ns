@@ -1,0 +1,51 @@
+/// An unbounded recursion without a loop, sent from `main:args:`, which
+/// runs interpreted: its body is compiled to be called only, so that the
+/// interpreted frames' sends call its machine code
+/// (`docs/design/execution.md`, "The entry at a send"), and it overflows
+/// the depth limit where the interpreter's recursion does -- the compiled
+/// prologue counts as the interpreter's push does, and at the limit it
+/// refuses the call, which the interpreter then raises. `probe:` records
+/// every depth it reaches; `descend:to:` installs a handler near the
+/// limit, and the overflow of the recursion above it is caught there.
+class InterpretedRootRecursion = Object new () (
+  class Recursion = (
+    |
+      public deepest ::= 0.
+    |
+  ) (
+    public probe: depth = (
+      deepest:: depth.
+      ^self probe: depth + 1.
+    )
+
+    public climb: depth = (
+      ^self climb: depth + 1.
+    )
+
+    public descend: depth to: bottom = (
+      depth = bottom ifTrue: [
+        ^[self climb: depth] on: Error do: [:error | depth printString , ' ' , error messageText].
+      ].
+      ^self descend: depth + 1 to: bottom.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      recursion = Recursion new.
+    |
+    transcript
+        show: ([recursion probe: 1] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: recursion deepest printString;
+        newLine.
+    transcript
+        show: (recursion descend: 1 to: recursion deepest - 500);
+        newLine.
+    transcript
+        show: ([recursion climb: 1] on: Error do: [:error | 'caught again']);
+        newLine.
+  )
+)

@@ -75,6 +75,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         act_leaf_calls: after.act_leaf_calls - before.act_leaf_calls,
         abandoned_bodies: after.abandoned_bodies - before.abandoned_bodies,
         site_slot_hits: after.site_slot_hits - before.site_slot_hits,
+        called_entries: after.called_entries - before.called_entries,
     }
 }
 
@@ -100,9 +101,10 @@ ns_runtime::for_each_lowering! {
     /// entry and enters machine code that exits at once, so that a program
     /// runs the entry stub, the exit and the resumption on every push and
     /// still answers right. The optimized lowering's `self answer` is a
-    /// cached lexical send, which `run`'s machine code makes itself, so
-    /// that the interpreter pushes `answer` only where the reference
-    /// lowering leaves every send uncached.
+    /// cached lexical send, which `run`'s machine code makes itself; the
+    /// reference lowering leaves every send uncached, so that `run` leaves
+    /// its machine code at its first send and the interpreter's sends call
+    /// `answer`'s (`jit::called`).
     fn the_stress_setting_enters_machine_code_on_every_push(lowering) {
         let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
         interpreter.set_jit_stress(true);
@@ -125,9 +127,13 @@ ns_runtime::for_each_lowering! {
             }
         } else {
             assert_eq!(
-                done.machine_entries, 5,
-                "`answer`, entered three times, runs its machine code from the first, and so \
-                 do the two base activations the host pushes, the factory's and `run`'s"
+                done.machine_entries, 3,
+                "the two base activations the host pushes, the factory's and `run`'s, and \
+                 `answer`'s first push, which compiles it, run their machine code from the first"
+            );
+            assert_eq!(
+                done.called_entries, 2,
+                "the interpreter's next two sends of `answer` call its machine code"
             );
         }
         assert_eq!(done.bodies_exiting_at_once, 0, "installed, not left out");
@@ -548,6 +554,137 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+ns_runtime::for_each_lowering! {
+    /// `fib:` recurses without a loop, so its body is compiled to be
+    /// called only. `run`, entered once, stays interpreted, and so does
+    /// the first `fib:`, whose sends' pushes compile the body; from then
+    /// on an interpreted frame's send of `fib:` calls its machine code
+    /// (`jit::called`), whose own sends call it through their cells, so
+    /// that the recursion runs in machine code below an interpreted root.
+    fn a_recursion_rooted_in_an_interpreted_frame_runs_in_machine_code(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              public fib: n = (
+                n < 2 ifTrue: [^1].
+                ^(self fib: n - 1) + (self fib: n - 2).
+              )
+              public run = (
+                ^self fib: 20.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_counting(true);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 10_946);
+        let done = since(interpreter.jit_statistics(), before);
+        let (mut interpreted, class) = load_with(source, lowering);
+        interpreted.set_jit_enabled(false);
+        assert_eq!(run(&mut interpreted, &class), 10_946);
+        // The reference lowering's sends are uncached and leave machine
+        // code; a stress mode leaves it far more often than the program
+        // needs to.
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.called_entries > 0,
+                "an interpreted send called `fib:`'s machine code"
+            );
+            assert!(
+                done.compiled_calls > 10_000,
+                "the recursion ran in machine code: {}",
+                done.compiled_calls
+            );
+        }
+    }
+}
+
+/// An interpreted `run:`'s send of `first:with:`, called in machine code
+/// once `first:with:` is compiled, whose own send of `second:with:`
+/// reaches, at the run's last round, the closure `second:with:` makes
+/// there, which machine code does not make: the exit materializes
+/// `second:with:`'s frame and `first:with:`'s above the interpreted
+/// sender, and the unhandled error the closure raises records the stack.
+const CALLED_THEN_CLOSURE: &str = indoc! {"
+    class Subject = Object new () (
+      class Chain = () (
+        public first: value with: chain = (
+          ^(chain second: value + 1 with: chain) + 1
+        )
+        public second: value with: chain = (
+          value > 100 ifTrue: [^[nil frobnicate] value].
+          ^value * 2
+        )
+        public run: chain = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 200] whileTrue: [
+            sum:: sum + (chain first: index with: chain).
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+      public run = (
+        |
+          chain = Chain new.
+        |
+        ^chain run: chain.
+      )
+    ) : ()
+"};
+
+/// The stack `CALLED_THEN_CLOSURE`'s unhandled error recorded, with the JIT
+/// on or off, and what the JIT did meanwhile.
+fn called_then_closure_stack(lowering: Lowering, jit: bool) -> (Vec<String>, JitStatistics) {
+    let (mut interpreter, class) = load_with(CALLED_THEN_CLOSURE, lowering);
+    interpreter.set_jit_enabled(jit);
+    let before = interpreter.jit_statistics();
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Err(HostSignal::Error(error)) => {
+            assert!(error.message.contains("frobnicate"), "{}", error.message);
+        }
+        _ => panic!("run: expected the unhandled error"),
+    }
+    let done = since(interpreter.jit_statistics(), before);
+    (interpreter.stack_trace(), done)
+}
+
+ns_runtime::for_each_lowering! {
+    fn an_exit_in_a_called_body_materializes_it_above_its_interpreted_sender(lowering) {
+        // The suspension stress mode suspends the frames below a
+        // safepoint into their frame objects, which the trace does not
+        // walk, with the JIT off as on.
+        if std::env::var_os("NS_NEXT_STRESS_SUSPEND").is_some_and(|value| !value.is_empty() && value != "0") {
+            return;
+        }
+        let (compiled, statistics) = called_then_closure_stack(lowering, true);
+        let (interpreted, _) = called_then_closure_stack(lowering, false);
+        assert_eq!(compiled, interpreted);
+        assert!(
+            compiled.iter().any(|frame| frame.starts_with("second:with:")),
+            "the innermost method's frame: {compiled:?}"
+        );
+        assert!(
+            compiled.iter().any(|frame| frame.starts_with("first:with:")),
+            "the called body's frame: {compiled:?}"
+        );
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                statistics.called_entries > 0,
+                "`run:`'s send called `first:with:`'s machine code"
+            );
+            assert!(
+                statistics.materialized_frames >= 2,
+                "`first:with:` and `second:with:` were compiled frames: {}",
+                statistics.materialized_frames
+            );
+        }
+    }
+}
+
 /// Whether the environment turns a stress mode on (`NS_NEXT_STRESS_*`
 /// set, and neither empty nor `0`), under which machine code leaves for
 /// the interpreter far more often than a program needs it to.
@@ -792,14 +929,15 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A loop whose callee makes a block, which machine code does not do,
-    /// leaves its machine code on every turn: the callee exits there, the
-    /// exit materializes it and the loop's frame, the interpreter runs the
-    /// rest of the callee, and the loop's frame, returned to, resumes in
-    /// machine code. Once the callee has spent its exit budget the JIT
-    /// abandons it, and the loop's call of it, refused since, spends the
-    /// loop's, so that the program goes on interpreted rather than paying
-    /// an exit and an entry per turn.
+    /// A callee that makes a block, which machine code does not do, leaves
+    /// its machine code on every call: the interpreted loop of the first
+    /// run calls it once it is compiled (`jit::called`), the exit
+    /// materializes it and the interpreter runs the rest of it. Once it
+    /// has spent its exit budget the JIT abandons it, and the loop's call
+    /// of it in the loop's own machine code, compiled at its second entry
+    /// and refused since, leaves at that send on every run and spends the
+    /// loop's budget, so that the program goes on interpreted rather than
+    /// paying an exit and an entry per turn.
     fn a_body_that_keeps_leaving_is_abandoned(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -826,8 +964,8 @@ ns_runtime::for_each_lowering! {
             ) : ()
         "};
         let (mut interpreter, class) = load_with(source, lowering);
-        assert_eq!(run(&mut interpreter, &class), 1_000_000);
         let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 1_000_000);
         for _ in 0..80 {
             assert_eq!(run(&mut interpreter, &class), 1_000_000);
         }
@@ -2034,11 +2172,11 @@ fn leaving_through(count: usize) -> String {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A callee that keeps leaving, reached through a polymorphic site's
-    /// block cells (three classes) and through a megamorphic site's global
-    /// rows (five), is abandoned while the site is in that state, like one
-    /// reached through a site's own cell, and every cell that named its
-    /// machine entry -- the block's cells, the global rows -- is written
+    /// A callee that keeps leaving, sent from a polymorphic site (three
+    /// classes) and from a megamorphic one (five), is abandoned while the
+    /// site is in that state, like one sent from a site with a cell of its
+    /// own, and every cell that named its machine entry -- the site's
+    /// block cells, the global rows -- is written
     /// afresh from its entry, so that every cell still agrees with its
     /// entry afterwards (`Interpreter::verify_cells`, which reads every
     /// site's cell, every block's cells and every global row).
@@ -2046,8 +2184,8 @@ ns_runtime::for_each_lowering! {
         for (count, polymorphic) in [(3, true), (5, false)] {
             let source = leaving_through(count);
             let (mut interpreter, class) = load_with(&source, lowering);
-            assert_eq!(run(&mut interpreter, &class), 1_000_000);
             let before = interpreter.jit_statistics();
+            assert_eq!(run(&mut interpreter, &class), 1_000_000);
             for _ in 0..10 {
                 assert_eq!(run(&mut interpreter, &class), 1_000_000);
             }

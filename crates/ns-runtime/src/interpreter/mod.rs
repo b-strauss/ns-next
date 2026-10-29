@@ -198,6 +198,17 @@ pub(crate) enum Step<'gc> {
     MethodThen(Box<MethodThen<'gc>>),
 }
 
+/// What a run loop's send ran once it was decided
+/// (`Mutator::enter_sent`): the value a compiled callee returned, for the
+/// send's destination; the activation pushed and the instruction to start
+/// it at; or, once a called body's machine code exited, where the run
+/// loop goes on.
+pub(crate) enum Sent<'gc> {
+    Value(Value<'gc>),
+    Pushed(ActivationReference, usize),
+    Stopped(crate::jit::Resumption),
+}
+
 /// What `Step::MethodThen` activates: a kernel method on `receiver` with
 /// `arguments`, `defining_class` its current class, and the continuation
 /// its activation returns to.
@@ -2078,6 +2089,129 @@ impl<'gc> Mutator<'gc> {
                 self.enter_factory_body(pushed, class, registers, Arguments::Slots(arguments))
             }
             None => Ok((pushed, 0)),
+        }
+    }
+
+    /// `push_sent`, but for a method's activation on the send's own slots
+    /// whose body is compiled: the run loop's send calls its machine code
+    /// instead (`call_sent`; `docs/design/execution.md`, "The entry at a
+    /// send"), which answers its value or where an exit left the run
+    /// loop. The test of the body's slot is one load and one compare,
+    /// inline; everything else is out of line.
+    #[inline(always)]
+    pub(crate) fn enter_sent(
+        &mut self,
+        step: Step<'gc>,
+        send_arguments: Arguments<'_, 'gc>,
+        sender: Option<ActivationReference>,
+        inlinable: bool,
+        slots: Option<u16>,
+    ) -> Result<Sent<'gc>, Signal<'gc>> {
+        if let Step::Method {
+            method,
+            arguments: StepArguments::Send,
+            ..
+        } = &step
+        {
+            if slots.is_some() && method.code.jit.is_compiled() {
+                return self.call_sent(step, send_arguments, sender, inlinable, slots);
+            }
+        }
+        self.push_sent(step, send_arguments, sender, inlinable, slots)
+            .map(|(activation, program_counter)| Sent::Pushed(activation, program_counter))
+    }
+
+    /// `enter_sent`'s call of a compiled method's machine code, the
+    /// method's activation on the send's own slots: the arity checked as
+    /// the push checks it, the arguments placed into the slots and the
+    /// feedback base resolved as the push places and resolves them, and
+    /// the body called (`jit::called`). A call the JIT refuses -- the body
+    /// compiled into another zone or against another feedback base, too
+    /// little native stack, its prologue's refusal -- is the push's, which
+    /// raises the overflow or grows the stack as for any push; so is every
+    /// send that does not name the slots and arguments a call needs.
+    #[cold]
+    #[inline(never)]
+    fn call_sent(
+        &mut self,
+        step: Step<'gc>,
+        send_arguments: Arguments<'_, 'gc>,
+        sender: Option<ActivationReference>,
+        inlinable: bool,
+        slots: Option<u16>,
+    ) -> Result<Sent<'gc>, Signal<'gc>> {
+        let pushed = |mutator: &mut Self, step, send_arguments| {
+            mutator
+                .push_sent(step, send_arguments, sender, inlinable, slots)
+                .map(|(activation, program_counter)| Sent::Pushed(activation, program_counter))
+        };
+        let (Arguments::Slots(window), Some(sender_activation), Some(argument_base)) =
+            (send_arguments, sender, slots)
+        else {
+            return pushed(self, step, send_arguments);
+        };
+        let Step::Method {
+            receiver,
+            method,
+            defining_class,
+            arguments: StepArguments::Send,
+            feedback_base,
+        } = step
+        else {
+            unreachable!("internal: a call is made only for a method's activation");
+        };
+        // A body that stands for too many arguments takes another count
+        // than its method's; only the push lays such a frame out.
+        if method.argument_count != usize::from(method.code.argument_count) {
+            let step = Step::Method {
+                receiver,
+                method,
+                defining_class,
+                arguments: StepArguments::Send,
+                feedback_base,
+            };
+            return pushed(self, step, send_arguments);
+        }
+        check_method_arity(&method, receiver, usize::from(window.count()))?;
+        let feedback_base = if feedback_base == FeedbackBase::NOT_ASSIGNED {
+            self.caches.base_for(&method.code)
+        } else {
+            feedback_base
+        };
+        let register_base = window.register_base();
+        if window.start() != argument_base {
+            self.heap.place_in_slots(window, argument_base);
+        }
+        match crate::jit::called(
+            self,
+            sender_activation,
+            register_base,
+            argument_base,
+            receiver,
+            defining_class,
+            &method.code,
+            feedback_base,
+        ) {
+            crate::jit::Called::Returned { value } => {
+                Ok(Sent::Value(self.heap.machine_value(value)))
+            }
+            crate::jit::Called::Stopped(resumption) => Ok(Sent::Stopped(resumption)),
+            crate::jit::Called::Refused => {
+                // From the slots, where the arguments now are.
+                let placed = Arguments::Slots(ArgumentSlots::new(
+                    register_base,
+                    argument_base,
+                    window.count(),
+                ));
+                let step = Step::Method {
+                    receiver,
+                    method,
+                    defining_class,
+                    arguments: StepArguments::Send,
+                    feedback_base,
+                };
+                pushed(self, step, placed)
+            }
         }
     }
 
