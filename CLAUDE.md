@@ -400,9 +400,11 @@ records a `MirrorSend` binding.
 **A cache records what the lookup decided; it never decides.** An inline-cache
 hit is `act` on the resolution `resolve_*` answered for the same key; an entry
 holds no handle. Anything the key does not cover is read afresh on every
-send — today a primitive's payload check and a method's `MethodFastPath`, in
-`act`, and the class object's builtin field (`Heap::class_builtin`), which the
-factory body's `AllocateInstance` reads on every instantiation. Add such a read and its per-send re-check goes with
+send — today a primitive's payload check, in `act`, and the class object's
+builtin field (`Heap::class_builtin`), which the factory body's
+`AllocateInstance` reads on every instantiation; a method's `MethodFastPath`
+is read off the entry's method, which is immutable, on every hit, by the
+interpreter's `act` and machine code's stub alike. Add such a read and its per-send re-check goes with
 it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
 instead). The reference lowering runs every send uncached and is the oracle
 (`dispatch.md`, "Primitive methods", "3b — The caches").

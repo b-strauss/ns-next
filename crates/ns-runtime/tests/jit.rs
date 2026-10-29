@@ -72,6 +72,8 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         miss_leaf_calls: after.miss_leaf_calls - before.miss_leaf_calls,
         resumed_entries: after.resumed_entries - before.resumed_entries,
         materialized_frames: after.materialized_frames - before.materialized_frames,
+        send_exits: after.send_exits - before.send_exits,
+        act_leaf_calls: after.act_leaf_calls - before.act_leaf_calls,
     }
 }
 
@@ -630,8 +632,8 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// `step:`'s send of `printString`, a primitive machine code does not
-    /// run, leaves machine code inside the callee at every call: the exit
+    /// `step:`'s block, a closure machine code does not make yet, leaves
+    /// machine code inside the callee at every call: the exit
     /// materializes `loop:`'s frame too, and once `step:` returns, `loop:`
     /// is resumed in its machine code, so that its loop goes on there
     /// rather than in the interpreter.
@@ -640,7 +642,7 @@ ns_runtime::for_each_lowering! {
             class Subject = Object new () (
               class Stepper = () (
                 public step: value = (
-                  ^value printString size
+                  ^[value printString size] value
                 )
                 public loop: stepper = (
                   |
@@ -1224,3 +1226,436 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+/// `run` sent three times to one instance of `source`'s `Subject`, with the
+/// JIT on -- every body compiled at its first entry, the compiled calls
+/// counted -- or off: the answers, and what the JIT did in the third run,
+/// once every site the program reaches was filled by the two before. The
+/// instance is made once, so that no factory's exit falls into the runs.
+fn run_thrice_on_one_instance(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+) -> ([i64; 3], JitStatistics) {
+    let (mut interpreter, class) = load_with(source, lowering);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_stress(jit);
+    interpreter.set_jit_counting(jit);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let mut answers = [0; 3];
+    let mut before = interpreter.jit_statistics();
+    for answer in &mut answers {
+        before = interpreter.jit_statistics();
+        let result = expect_ok(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run",
+        );
+        *answer = interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+            ValueKind::SmallInteger(integer) => integer,
+            _ => panic!("run: expected a small integer"),
+        });
+    }
+    (answers, since(interpreter.jit_statistics(), before))
+}
+
+/// A getter sent a thousand times from a compiled loop, and a quick
+/// method of the kernel's -- `yourself`, answering the receiver -- beside
+/// it: its cell names the getter stub, which loads the field.
+const GETTERS: &str = indoc! {"
+    class Subject = Object new (
+      | holder = Holder new. |
+    ) (
+      class Holder = Object new (
+        | public count ::= 3. |
+      ) ()
+      sumOver: aHolder = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          sum:: sum + aHolder yourself count.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+      public run = (
+        ^sumOver: holder
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A public getter runs in its stub: the third run's thousand sends of
+    /// `count` and `yourself` leave machine code for nothing and call no
+    /// leaf, and the sum is the interpreter's.
+    fn a_getter_runs_in_its_stub(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(GETTERS, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(GETTERS, lowering, false);
+        assert_eq!(interpreted, [3000, 3000, 3000]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.act_leaf_calls, 0, "the getter and `yourself` called no leaf");
+            assert_eq!(statistics.miss_leaf_calls, 0);
+            assert!(
+                statistics.compiled_calls >= 2000,
+                "`sumOver:` calls through its cells: {}",
+                statistics.compiled_calls
+            );
+        }
+    }
+}
+
+/// `Array>>do:` over a thousand elements, filled by `at:put:` first: the
+/// size is `do:`'s `SendMirror` of a leaf-safe row, each element `at:`, a
+/// kernel method forwarding to one, and each `value:` a compiled method
+/// whose getter and setter run in their stubs.
+const ROWS: &str = indoc! {"
+    class Subject = Object new (
+      | elements = Array new: 1000. summer = Summer new. |
+    ) (
+      class Summer = Object new (
+        | public total ::= 0. |
+      ) (
+        public value: element = (
+          self total: self total + element.
+        )
+      )
+      fill: array summing: aSummer = (
+        |
+          index ::= 1.
+        |
+        [index <= 1000] whileTrue: [
+          array at: index put: index.
+          index:: index + 1.
+        ].
+        aSummer total: 0.
+        array do: aSummer.
+        ^aSummer total.
+      )
+      public run = (
+        ^fill: elements summing: summer
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A leaf-safe row runs without an exit: in the third run `do:`,
+    /// `at:`, `at:put:`, `value:` and the accessors all stay in machine
+    /// code, and the sum is the interpreter's.
+    fn a_leaf_row_runs_without_an_exit(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(ROWS, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(ROWS, lowering, false);
+        assert_eq!(interpreted, [500_500, 500_500, 500_500]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.miss_leaf_calls, 0);
+            assert!(
+                statistics.act_leaf_calls >= 3000,
+                "`at:`, `at:put:` and the setter ran through the leaf stub: {}",
+                statistics.act_leaf_calls
+            );
+        }
+    }
+}
+
+/// The rows marked `MachineCall::Leaf` are exactly those this list names,
+/// each with why its leaf is leaf-safe: a row marked without being read
+/// fails here, and so does one the list names that is not marked.
+#[test]
+fn every_leaf_row_is_audited() {
+    use ns_runtime::builtins::primitive::{MachineCall, MIRROR};
+    let marked: std::collections::BTreeSet<&str> = MIRROR
+        .iter()
+        .filter(|entry| entry.machine_call == MachineCall::Leaf)
+        .map(|entry| entry.selector)
+        .collect();
+    let mut audited = std::collections::BTreeSet::new();
+    for (why, selectors) in AUDITED_LEAF_ROWS {
+        assert!(!why.is_empty());
+        for selector in *selectors {
+            assert!(audited.insert(*selector), "{selector} is listed twice");
+        }
+    }
+    let unaudited: Vec<_> = marked.difference(&audited).collect();
+    let unmarked: Vec<_> = audited.difference(&marked).collect();
+    assert!(
+        unaudited.is_empty(),
+        "marked Leaf but not audited: {unaudited:?}"
+    );
+    assert!(
+        unmarked.is_empty(),
+        "audited but not marked Leaf: {unmarked:?}"
+    );
+}
+
+/// Every mirror row machine code runs through the leaf shim, by why its
+/// leaf is leaf-safe (`builtins::primitive::MachineCall::Leaf`): each was
+/// read before it was marked, and a row marked since must be read and
+/// added here.
+const AUDITED_LEAF_ROWS: &[(&str, &[&str])] = &[
+    (
+        "answers the class, an identity, the identity hash or a new String, or declines for a future, having written nothing",
+        &[
+            "objectClass:ifFail:",
+            "object:identicalTo:ifFail:",
+            "object:equals:ifFail:",
+            "objectHash:ifFail:",
+            "objectPrintString:ifFail:",
+        ],
+    ),
+    (
+        "a number's leaf reads its operands and allocates at most what it answers",
+        &[
+            "integer:add:ifFail:",
+            "integer:subtract:ifFail:",
+            "integer:multiply:ifFail:",
+            "integer:floorDivide:ifFail:",
+            "integer:lessThan:ifFail:",
+            "integer:greaterThan:ifFail:",
+            "integer:lessOrEqual:ifFail:",
+            "integer:greaterOrEqual:ifFail:",
+            "integer:equals:ifFail:",
+            "integerNegated:ifFail:",
+            "integerAbsolute:ifFail:",
+            "integerPrintString:ifFail:",
+            "integerAsString:ifFail:",
+            "largeInteger:add:ifFail:",
+            "largeInteger:subtract:ifFail:",
+            "largeInteger:multiply:ifFail:",
+            "largeInteger:floorDivide:ifFail:",
+            "largeInteger:lessThan:ifFail:",
+            "largeInteger:greaterThan:ifFail:",
+            "largeInteger:lessOrEqual:ifFail:",
+            "largeInteger:greaterOrEqual:ifFail:",
+            "largeInteger:equals:ifFail:",
+            "largeIntegerHash:ifFail:",
+            "largeIntegerNegated:ifFail:",
+            "largeIntegerAbsolute:ifFail:",
+            "largeIntegerPrintString:ifFail:",
+            "largeIntegerAsString:ifFail:",
+            "float:add:ifFail:",
+            "float:subtract:ifFail:",
+            "float:multiply:ifFail:",
+            "float:divide:ifFail:",
+            "float:lessThan:ifFail:",
+            "float:greaterThan:ifFail:",
+            "float:equals:ifFail:",
+            "floatHash:ifFail:",
+            "floatPrintString:ifFail:",
+            "floatAsString:ifFail:",
+            "float:lessOrEqual:ifFail:",
+            "float:greaterOrEqual:ifFail:",
+            "integer:modulo:ifFail:",
+            "largeInteger:modulo:ifFail:",
+            "integer:bitAnd:ifFail:",
+            "largeInteger:bitAnd:ifFail:",
+            "integerAsFloat:ifFail:",
+            "largeIntegerAsFloat:ifFail:",
+            "float:asStringFixed:ifFail:",
+            "float:asStringExponential:ifFail:",
+            "float:asStringPrecision:ifFail:",
+            "floatClass:parse:ifFail:",
+            "integer:bitOr:ifFail:",
+            "largeInteger:bitOr:ifFail:",
+            "integer:bitXor:ifFail:",
+            "largeInteger:bitXor:ifFail:",
+            "integer:shiftLeft:ifFail:",
+            "largeInteger:shiftLeft:ifFail:",
+            "integer:gcd:ifFail:",
+            "integer:shiftRight:ifFail:",
+            "integer:digitAt:ifFail:",
+            "integerDigitLength:ifFail:",
+            "integer:asStringRadix:ifFail:",
+            "integerClass:parse:radix:ifFail:",
+            "floatSquareRoot:ifFail:",
+            "floatSine:ifFail:",
+            "floatCosine:ifFail:",
+            "floatTangent:ifFail:",
+            "floatArcSine:ifFail:",
+            "floatArcCosine:ifFail:",
+            "floatArcTangent:ifFail:",
+            "float:arcTangent:ifFail:",
+            "floatExponential:ifFail:",
+            "floatNaturalLogarithm:ifFail:",
+            "floatLogarithm:ifFail:",
+            "float:raisedTo:ifFail:",
+            "floatFloor:ifFail:",
+            "floatCeiling:ifFail:",
+            "floatRounded:ifFail:",
+            "floatTruncated:ifFail:",
+            "floatNegated:ifFail:",
+            "floatAbsolute:ifFail:",
+            "floatIsNaN:ifFail:",
+            "floatIsFinite:ifFail:",
+            "floatIsInfinite:ifFail:",
+            "floatAsInteger:ifFail:",
+            "fractionNumerator:ifFail:",
+            "fractionDenominator:ifFail:",
+            "fractionClass:numerator:denominator:ifFail:",
+            "fractionClass:reducedNumerator:denominator:ifFail:",
+            "number:lessThan:ifFail:",
+            "number:greaterThan:ifFail:",
+            "number:lessOrEqual:ifFail:",
+            "number:greaterOrEqual:ifFail:",
+            "number:equals:ifFail:",
+            "numberHash:ifFail:",
+            "number:add:ifFail:",
+            "number:subtract:ifFail:",
+            "number:multiply:ifFail:",
+            "number:divide:ifFail:",
+            "number:floorDivide:ifFail:",
+            "number:modulo:ifFail:",
+            "number:quotient:ifFail:",
+            "number:remainder:ifFail:",
+            "numberAsFloat:ifFail:",
+        ],
+    ),
+    (
+        "reads the text and allocates at most what it answers, writing no object",
+        &[
+            "stringSize:ifFail:",
+            "string:concatenate:ifFail:",
+            "string:equals:ifFail:",
+            "stringHash:ifFail:",
+            "stringAsSymbol:ifFail:",
+            "stringPrintString:ifFail:",
+            "symbolAsString:ifFail:",
+            "symbol:equals:ifFail:",
+            "symbolHash:ifFail:",
+            "symbolPrintString:ifFail:",
+            "string:at:ifFail:",
+            "string:copyFrom:to:ifFail:",
+            "string:indexOf:startingAt:ifFail:",
+            "string:lastIndexOf:startingAt:ifFail:",
+            "stringClass:withAll:ifFail:",
+            "stringClass:with:ifFail:",
+            "stringAsUtf8:ifFail:",
+            "stringClass:fromUtf8:from:to:ifFail:",
+            "stringUtf8Size:ifFail:",
+        ],
+    ),
+    (
+        "reads or allocates an Array, and stores into one only once the index or the range is checked",
+        &[
+            "collectionSize:ifFail:",
+            "collection:at:ifFail:",
+            "collection:at:put:ifFail:",
+            "collection:copyFrom:to:ifFail:",
+            "collection:replaceFrom:to:with:startingAt:ifFail:",
+            "arrayClass:new:ifFail:",
+        ],
+    ),
+    (
+        "reads a closure's parameter count",
+        &[
+            "blockNumArgs:ifFail:",
+        ],
+    ),
+    (
+        "reads a class object's parts, allocating at most the name's String",
+        &[
+            "className:ifFail:",
+            "metaclassThisClass:ifFail:",
+            "behavior:sharesApplicationWith:ifFail:",
+            "behaviorEnclosing:ifFail:",
+            "behaviorSuperclass:ifFail:",
+            "behaviorLevelEnclosing:ifFail:",
+        ],
+    ),
+    (
+        "reads or allocates a ByteArray, and writes its bytes only once every index, range and value is checked",
+        &[
+            "byteArrayClass:new:ifFail:",
+            "byteArrayClass:fits:ifFail:",
+            "byteArraySize:ifFail:",
+            "byteArray:at:ifFail:",
+            "byteArray:at:put:ifFail:",
+            "byteArray:copyFrom:to:ifFail:",
+            "byteArray:replaceFrom:to:with:startingAt:ifFail:",
+            "byteArray:concatenate:ifFail:",
+            "byteArray:indexOf:startingAt:ifFail:",
+            "byteArray:lastIndexOf:startingAt:ifFail:",
+            "byteArray:startsWith:ifFail:",
+            "byteArray:endsWith:ifFail:",
+            "byteArray:at:putCodePoint:ifFail:",
+        ],
+    ),
+    (
+        "reads or writes one element of a ByteArray once the offset and the element are checked",
+        &[
+            "byteArray:int8ElementAt:ifFail:",
+            "byteArray:int8ElementAt:put:ifFail:",
+            "byteArray:int16ElementAt:ifFail:",
+            "byteArray:int16ElementAt:put:ifFail:",
+            "byteArray:uint16ElementAt:ifFail:",
+            "byteArray:uint16ElementAt:put:ifFail:",
+            "byteArray:int32ElementAt:ifFail:",
+            "byteArray:int32ElementAt:put:ifFail:",
+            "byteArray:uint32ElementAt:ifFail:",
+            "byteArray:uint32ElementAt:put:ifFail:",
+            "byteArray:int64ElementAt:ifFail:",
+            "byteArray:int64ElementAt:put:ifFail:",
+            "byteArray:uint64ElementAt:ifFail:",
+            "byteArray:uint64ElementAt:put:ifFail:",
+            "byteArray:float32ElementAt:ifFail:",
+            "byteArray:float32ElementAt:put:ifFail:",
+            "byteArray:float64ElementAt:ifFail:",
+            "byteArray:float64ElementAt:put:ifFail:",
+            "byteArray:int8At:ifFail:",
+            "byteArray:int8At:put:ifFail:",
+            "byteArray:uint8At:ifFail:",
+            "byteArray:uint8At:put:ifFail:",
+            "byteArray:littleEndianInt16At:ifFail:",
+            "byteArray:littleEndianInt16At:put:ifFail:",
+            "byteArray:littleEndianUint16At:ifFail:",
+            "byteArray:littleEndianUint16At:put:ifFail:",
+            "byteArray:littleEndianInt32At:ifFail:",
+            "byteArray:littleEndianInt32At:put:ifFail:",
+            "byteArray:littleEndianUint32At:ifFail:",
+            "byteArray:littleEndianUint32At:put:ifFail:",
+            "byteArray:littleEndianInt64At:ifFail:",
+            "byteArray:littleEndianInt64At:put:ifFail:",
+            "byteArray:littleEndianUint64At:ifFail:",
+            "byteArray:littleEndianUint64At:put:ifFail:",
+            "byteArray:littleEndianFloat32At:ifFail:",
+            "byteArray:littleEndianFloat32At:put:ifFail:",
+            "byteArray:littleEndianFloat64At:ifFail:",
+            "byteArray:littleEndianFloat64At:put:ifFail:",
+            "byteArray:bigEndianInt16At:ifFail:",
+            "byteArray:bigEndianInt16At:put:ifFail:",
+            "byteArray:bigEndianUint16At:ifFail:",
+            "byteArray:bigEndianUint16At:put:ifFail:",
+            "byteArray:bigEndianInt32At:ifFail:",
+            "byteArray:bigEndianInt32At:put:ifFail:",
+            "byteArray:bigEndianUint32At:ifFail:",
+            "byteArray:bigEndianUint32At:put:ifFail:",
+            "byteArray:bigEndianInt64At:ifFail:",
+            "byteArray:bigEndianInt64At:put:ifFail:",
+            "byteArray:bigEndianUint64At:ifFail:",
+            "byteArray:bigEndianUint64At:put:ifFail:",
+            "byteArray:bigEndianFloat32At:ifFail:",
+            "byteArray:bigEndianFloat32At:put:ifFail:",
+            "byteArray:bigEndianFloat64At:ifFail:",
+            "byteArray:bigEndianFloat64At:put:ifFail:",
+        ],
+    ),
+    (
+        "reads, allocates or stores into a WeakArray or an Ephemeron, a store only once it is checked",
+        &[
+            "weakArrayClass:new:ifFail:",
+            "weakArraySize:ifFail:",
+            "weakArray:at:ifFail:",
+            "weakArray:at:put:ifFail:",
+            "objectIsValue:ifFail:",
+            "ephemeronKey:ifFail:",
+            "ephemeron:key:ifFail:",
+            "ephemeronValue:ifFail:",
+            "ephemeron:value:ifFail:",
+            "ephemeronFinalizer:ifFail:",
+            "ephemeron:finalizer:ifFail:",
+        ],
+    ),
+];

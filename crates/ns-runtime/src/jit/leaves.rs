@@ -3,16 +3,20 @@
 //! pushes one (`docs/design/execution.md`, "The foundation and the one
 //! extension point", the leaf call): an instruction's own interpreter
 //! step, the miss of a send's cell -- the one leaf that may compile and
-//! install a body -- and the exit's materialization of the frames machine
-//! code pushed. A template or a stub names one by its index in `table`
+//! install a body -- the leaf stub's run of a target that is no method
+//! with code, a leaf-safe mirror send, and the exit's materialization of
+//! the frames machine code pushed. A template or a stub names one by its index in `table`
 //! (`Leaf::index`).
 
 use crate::bytecode::{CompactInstruction, Instruction};
-use crate::heap::ActivationReference;
+use crate::heap::{register_number, ActivationReference, ArgumentSlots, Word};
 use crate::interpreter::inline_cache::{self, MissAnswer};
 use crate::interpreter::locals::store_vector;
-use crate::interpreter::Mutator;
-use crate::vm::{load_literal_into, load_vector_into, make_array_into, make_vector_into};
+use crate::interpreter::mirror::{self, MachineMirrorAnswer};
+use crate::interpreter::{Arguments, Mutator};
+use crate::vm::{
+    argument_window, load_literal_into, load_vector_into, make_array_into, make_vector_into,
+};
 
 use super::macro_assembler::LeafIndex;
 use super::materialize;
@@ -31,6 +35,11 @@ pub(crate) enum Leaf {
     /// Materializes the frame an exit left, and makes the walk's frames
     /// the stack's (`materialize::materialize_innermost`).
     MaterializeInnermost = 3,
+    /// Runs the target a send's cell named the leaf stub for, as `act`
+    /// runs it (`act`).
+    Act = 4,
+    /// Runs a `SendMirror` of a leaf-safe row (`mirror`).
+    Mirror = 5,
 }
 
 impl Leaf {
@@ -42,7 +51,7 @@ impl Leaf {
 
 /// The leaves, in `Leaf` order, each handed the mutator the code was
 /// entered with.
-pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 4] {
+pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 6] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -51,6 +60,8 @@ pub(crate) fn table<'gc>() -> [ns_memory::Leaf<Mutator<'gc>>; 4] {
         miss as ns_memory::Leaf<Mutator<'gc>>,
         materialize_frame as ns_memory::Leaf<Mutator<'gc>>,
         materialize_innermost as ns_memory::Leaf<Mutator<'gc>>,
+        act as ns_memory::Leaf<Mutator<'gc>>,
+        mirror as ns_memory::Leaf<Mutator<'gc>>,
     ]
 }
 
@@ -60,6 +71,9 @@ const DONE: u64 = 0;
 /// anything, so that the interpreter runs it again and raises the error
 /// itself.
 const REFUSED: u64 = 1;
+/// What `mirror` answers when the row's leaf declined, so that the send
+/// goes on at its failure block.
+pub(super) const FAILED: u64 = 2;
 
 /// The generic leaf: runs the straight-line instruction at
 /// `arguments[1]`, the program counter, of the frame whose register 0
@@ -208,6 +222,119 @@ fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     match answer {
         MissAnswer::Enter(address) => address,
         MissAnswer::Refuse => 0,
+    }
+}
+
+/// The leaf stub's leaf (`targets::assemble_accessor_stubs`), which a send
+/// whose cell names the leaf stub calls: the callee's register 0 at
+/// `arguments[0]`, the send's slots, and the send's return address
+/// `arguments[1]`, which names the send and so the sending frame, as the
+/// miss leaf's do. Runs the target the send's cell recorded as the
+/// interpreter's `act` runs it (`inline_cache::act_at`) and answers its
+/// value, or `Word::NO_VALUE_BITS`, at which the stub refuses the call
+/// with nothing changed, so that the interpreter runs the send.
+fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [callee_address, return_address, _] = arguments;
+    mutator.jit.statistics.act_leaf_calls += 1;
+    let Some((sender_address, program_counter)) =
+        mutator.jit.sender_of(callee_address, return_address)
+    else {
+        unreachable!("internal: a send's call returns into an installed body");
+    };
+    let frame = materialize::leaf_frame(mutator, sender_address, return_address, program_counter);
+    let answer = inline_cache::act_at(mutator, frame.activation, program_counter)
+        .map_or(Word::NO_VALUE_BITS, |value| {
+            mutator.heap.machine_word_of(value)
+        });
+    materialize::release_leaf_frame(mutator, frame);
+    answer
+}
+
+/// The leaf of a `SendMirror` of a leaf-safe row: the instruction at
+/// `arguments[1]`, the program counter, of the frame `arguments[0]` and
+/// `arguments[2]` name, as for `step`, run as the interpreter's
+/// `vm::send_mirror` runs it -- its arguments placed by `argument_window`,
+/// the leaf run by `mirror::send_inlined_for_machine_code` -- answering
+/// `DONE` with the leaf's value in the instruction's destination,
+/// `FAILED` with nothing written when the leaf declined, so that the code
+/// goes on at the failure block, and `REFUSED` for anything else, the
+/// destination unwritten, so that the exit after the call re-executes the
+/// instruction and the interpreter runs it.
+fn mirror(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [frame_address, program_counter, code_address] = arguments;
+    let Ok(program_counter) = u32::try_from(program_counter) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
+    let answer = mirror_in(mutator, frame.activation, program_counter as usize);
+    materialize::release_leaf_frame(mutator, frame);
+    answer
+}
+
+/// `mirror`, in `activation`.
+fn mirror_in(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    program_counter: usize,
+) -> u64 {
+    let register_base = mutator.heap.activation_register_base(activation);
+    let code = mutator.heap.activation_code(activation);
+    let body = code.body();
+    let (primitive, mirror, subject, argument_base, sources, destination) =
+        match code.slot(program_counter) {
+            CompactInstruction::SendMirror {
+                destination,
+                mirror,
+                subject,
+                primitive,
+                site,
+            } => {
+                let site = body.mirror_site(usize::from(site));
+                (
+                    primitive,
+                    u16::from(mirror),
+                    u16::from(subject),
+                    site.argument_base(),
+                    site.arguments(),
+                    u16::from(destination),
+                )
+            }
+            CompactInstruction::Wide { index } => match body.wide(index as usize) {
+                Instruction::SendMirror {
+                    primitive,
+                    mirror_register,
+                    subject_register,
+                    argument_base,
+                    argument_sources,
+                    destination,
+                    ..
+                } => (
+                    *primitive,
+                    *mirror_register,
+                    *subject_register,
+                    *argument_base,
+                    argument_sources.as_slice(),
+                    *destination,
+                ),
+                other => unreachable!("internal: the mirror leaf is handed {other:?}"),
+            },
+            other => unreachable!("internal: the mirror leaf is handed {other:?}"),
+        };
+    let mirror = mutator.heap.register(register_base, mirror);
+    let subject = mutator.heap.register(register_base, subject);
+    let window = argument_window(mutator, register_base, argument_base, sources);
+    let arguments = Arguments::Slots(ArgumentSlots::new(
+        register_base,
+        window,
+        register_number(sources.len()),
+    ));
+    match mirror::send_inlined_for_machine_code(mutator, primitive, mirror, subject, arguments) {
+        MachineMirrorAnswer::Value(value) => {
+            mutator.heap.set_register(register_base, destination, value);
+            DONE
+        }
+        MachineMirrorAnswer::Failed => FAILED,
+        MachineMirrorAnswer::Exit => REFUSED,
     }
 }
 

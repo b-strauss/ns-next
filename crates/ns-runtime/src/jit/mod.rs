@@ -121,6 +121,15 @@ pub struct JitStatistics {
     /// Frames machine code pushed that an exit materialized
     /// (`jit::materialize`).
     pub materialized_frames: u64,
+    /// Exits of machine code that handed a send to the interpreter: a
+    /// compiled call refused -- by a callee's checks, a stub, or a leaf
+    /// stub's decline -- and an exit at a send instruction, which runs it
+    /// again.
+    pub send_exits: u64,
+    /// Calls of the leaf stub's leaf (`jit::leaves`'s `act`), which runs a
+    /// target that is no method with code -- a setter, a leaf-safe
+    /// primitive -- as the interpreter's `act` does.
+    pub act_leaf_calls: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled.
@@ -322,6 +331,25 @@ struct Zone {
     /// The stub a megamorphic site's cell names
     /// (`targets::assemble_megamorphic_stub`).
     megamorphic_stub: CodeOffset,
+    /// The stubs a cell names for a target that is no method with code
+    /// (`targets::assemble_accessor_stubs`).
+    accessors: AccessorStubs,
+}
+
+/// Where each accessor stub lies in the zone
+/// (`targets::assemble_accessor_stubs`).
+struct AccessorStubs {
+    /// The getter of each field that has one, by field.
+    getters: Vec<CodeOffset>,
+    /// The quick method answering each parameter position that has one,
+    /// by position.
+    parameters: Vec<CodeOffset>,
+    nil: CodeOffset,
+    true_constant: CodeOffset,
+    false_constant: CodeOffset,
+    receiver: CodeOffset,
+    /// The leaf stub, which runs `act`'s arm through the leaf shim.
+    act: CodeOffset,
 }
 
 /// Why a body was not compiled. It stays interpreted for good.
@@ -693,6 +721,15 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
         refusing_stub: CodeOffset(0),
         polymorphic_stub: CodeOffset(0),
         megamorphic_stub: CodeOffset(0),
+        accessors: AccessorStubs {
+            getters: Vec::new(),
+            parameters: Vec::new(),
+            nil: CodeOffset(0),
+            true_constant: CodeOffset(0),
+            false_constant: CodeOffset(0),
+            receiver: CodeOffset(0),
+            act: CodeOffset(0),
+        },
     };
     zone.entry_stub = install(&mut zone, &stubs::assemble_entry_stub(Abi::host()).bytes).ok()?;
     zone.exit_stub = install(&mut zone, &stubs::assemble_exit_stub(Abi::host()).bytes).ok()?;
@@ -709,6 +746,26 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
         &targets::assemble_megamorphic_stub(Abi::host()).bytes,
     )
     .ok()?;
+    let (accessors, entries) = targets::assemble_accessor_stubs(Abi::host());
+    let base = install(&mut zone, &accessors.bytes).ok()?.0;
+    let placed = |offset: u32| CodeOffset(base + offset);
+    zone.accessors = AccessorStubs {
+        getters: entries
+            .getters
+            .iter()
+            .map(|offset| placed(*offset))
+            .collect(),
+        parameters: entries
+            .parameters
+            .iter()
+            .map(|offset| placed(*offset))
+            .collect(),
+        nil: placed(entries.nil),
+        true_constant: placed(entries.true_constant),
+        false_constant: placed(entries.false_constant),
+        receiver: placed(entries.receiver),
+        act: placed(entries.act),
+    };
     Some(zone)
 }
 
@@ -750,9 +807,10 @@ fn install(zone: &mut Zone, bytes: &[u8]) -> Result<CodeOffset, Refusal> {
 /// through its body's machine entry once its body has machine code in
 /// this zone compiled against the entry's feedback base, and through the
 /// miss stub while its body may still be compiled, which compiles it and
-/// rewrites the site's cell (`inline_cache::decide_at`); every other target, for now,
-/// through the stub that refuses the call, so that the interpreter runs
-/// the send.
+/// rewrites the site's cell (`inline_cache::decide_at`).
+///
+/// A target that is no method with code is reached through the stub
+/// `stub_entry` chooses for it.
 pub(crate) fn cell_entry(
     state: &JitState,
     target: &crate::interpreter::inline_cache::Target,
@@ -762,23 +820,138 @@ pub(crate) fn cell_entry(
         return 0;
     };
     let address = |offset: CodeOffset| zone.writer.zone().executable_address(offset) as u64;
-    match target {
-        Target::Vacant => 0,
-        Target::Polymorphic { .. } => address(zone.polymorphic_stub),
-        Target::Megamorphic { .. } => address(zone.megamorphic_stub),
+    let stubbed = match target {
+        Target::Vacant => return 0,
+        Target::Polymorphic { .. } => return address(zone.polymorphic_stub),
+        Target::Megamorphic { .. } => return address(zone.megamorphic_stub),
         Target::Method {
             method,
             feedback_base,
             chain,
             ..
         } if runs_in_machine_code(method, *chain) => {
-            match state.machine_entry_of(&method.code, *feedback_base) {
+            return match state.machine_entry_of(&method.code, *feedback_base) {
                 Some(entry) => address(entry),
                 None if state.may_compile(&method.code) => address(zone.miss_stub),
                 None => address(zone.refusing_stub),
-            }
+            };
         }
-        _ => address(zone.refusing_stub),
+        Target::Method { method, chain, .. } => Stubbed::Method {
+            method,
+            chain: *chain,
+        },
+        Target::Slot {
+            kind, chain, field, ..
+        } => Stubbed::Slot {
+            kind: *kind,
+            chain: *chain,
+            field: usize::try_from(*field).unwrap_or(usize::MAX),
+        },
+        Target::Primitive {
+            primitive, chain, ..
+        } => Stubbed::Primitive {
+            primitive: *primitive,
+            chain: *chain,
+        },
+        Target::NestedClass { .. } | Target::Factory { .. } => {
+            return address(zone.refusing_stub);
+        }
+    };
+    stub_entry(state, &stubbed).unwrap_or_else(|| address(zone.refusing_stub))
+}
+
+/// A target that is no method with code, as a cache entry records it or
+/// the lookup resolves it, for `stub_entry`.
+pub(crate) enum Stubbed<'method> {
+    /// A method with a fast path, or a `doesNotUnderstand:` handler.
+    Method {
+        method: &'method MixinMethod,
+        chain: crate::interpreter::resolve::Chain,
+    },
+    Slot {
+        kind: crate::mixin::AccessorKind,
+        chain: crate::interpreter::resolve::Chain,
+        field: usize,
+    },
+    Primitive {
+        primitive: crate::builtins::primitive::Primitive,
+        chain: crate::interpreter::resolve::Chain,
+    },
+}
+
+/// The stub that does what `Mutator::act_with_base` does for `stubbed`
+/// (`targets::assemble_accessor_stubs`; `docs/design/execution.md`,
+/// "Sends in machine code"), chosen from it alone: a getter on a public
+/// or protected chain, whose guard is the receiver's own, through its
+/// field's getter stub; a quick method's constant, receiver or parameter
+/// through its stub, read off the method, which is immutable, as `act`
+/// reads it on every hit; a setter, a private or `super` slot accessor,
+/// a builtin class's accessor, and a primitive method or a mirror send of
+/// a leaf-safe row (`MachineCall::Leaf`) through the leaf stub. `None` for
+/// every other -- a fast path that activates a block, a row that is not
+/// leaf-safe, a `doesNotUnderstand:` handler -- and where there is no
+/// zone: the interpreter runs the send.
+pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64> {
+    use crate::builtins::primitive::{mirror_entry, MachineCall, Primitive};
+    use crate::interpreter::resolve::Chain;
+    use crate::mixin::{AccessorKind, MethodFastPath, QuickConstant};
+    let zone = state.zone.as_ref()?;
+    let address = |offset: CodeOffset| zone.writer.zone().executable_address(offset) as u64;
+    let act = address(zone.accessors.act);
+    let handler = |chain: Chain| {
+        matches!(
+            chain,
+            Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand
+        )
+    };
+    let leaf_safe = |row| mirror_entry(row).machine_call == MachineCall::Leaf;
+    match stubbed {
+        Stubbed::Method { chain, .. }
+        | Stubbed::Slot { chain, .. }
+        | Stubbed::Primitive { chain, .. }
+            if handler(*chain) =>
+        {
+            None
+        }
+        Stubbed::Method { method, .. } => match method.fast_path {
+            Some(MethodFastPath::Constant(constant)) => Some(address(match constant {
+                QuickConstant::Nil => zone.accessors.nil,
+                QuickConstant::True => zone.accessors.true_constant,
+                QuickConstant::False => zone.accessors.false_constant,
+            })),
+            Some(MethodFastPath::Receiver) => Some(address(zone.accessors.receiver)),
+            // A position past the send's arguments activates the method,
+            // which no compiled send of the method's selector reaches.
+            Some(MethodFastPath::Parameter(position))
+                if usize::from(position) < method.argument_count =>
+            {
+                Some(
+                    zone.accessors
+                        .parameters
+                        .get(usize::from(position))
+                        .map_or(act, |entry| address(*entry)),
+                )
+            }
+            Some(MethodFastPath::BuiltinClass(_)) => Some(act),
+            Some(MethodFastPath::Mirror(row)) if leaf_safe(row) => Some(act),
+            _ => None,
+        },
+        Stubbed::Slot {
+            kind: AccessorKind::Getter,
+            chain: Chain::Public | Chain::Protected,
+            field,
+        } => Some(
+            zone.accessors
+                .getters
+                .get(*field)
+                .map_or(act, |entry| address(*entry)),
+        ),
+        Stubbed::Slot { .. } => Some(act),
+        Stubbed::Primitive {
+            primitive: Primitive::Mirror(row),
+            ..
+        } if leaf_safe(*row) => Some(act),
+        Stubbed::Primitive { .. } => None,
     }
 }
 
@@ -1157,6 +1330,24 @@ fn run_machine_code(
     // compiled frame lay above it.
     let innermost = mutator.jit.take_walked().unwrap_or(activation);
     let exit = stubs::decode_exit(&block, kind);
+    let at_a_send = match exit {
+        MachineExit::PushRefused => true,
+        MachineExit::Reexecute { program_counter } => matches!(
+            mutator
+                .heap
+                .activation_code(innermost)
+                .instruction(program_counter as usize),
+            crate::bytecode::Instruction::SendPublic { .. }
+                | crate::bytecode::Instruction::SendLexical { .. }
+                | crate::bytecode::Instruction::SendSuper { .. }
+                | crate::bytecode::Instruction::SendInlinable { .. }
+                | crate::bytecode::Instruction::SendMirror { .. }
+        ),
+        _ => false,
+    };
+    if at_a_send {
+        mutator.jit.statistics.send_exits += 1;
+    }
     // The innermost frame goes on interpreted from here: it no longer
     // stands in machine code, which only the frames below it still do.
     if !matches!(exit, MachineExit::Returned { .. }) {

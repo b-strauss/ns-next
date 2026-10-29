@@ -942,6 +942,31 @@ pub struct MirrorEntry {
     /// How many arguments `reported` takes, counted once when the table is
     /// built rather than on every mirror send that checks its arguments.
     leaf_arity: usize,
+    /// How machine code runs the row (`MachineCall`): `Exit` unless the
+    /// row's leaf was read and found leaf-safe.
+    pub machine_call: MachineCall,
+}
+
+/// How machine code runs a mirror row -- a `SendMirror` of it, a kernel
+/// method forwarding to it (`MethodFastPath::Mirror`), a send to the
+/// mirror object (`Primitive::Mirror`) -- (`docs/design/execution.md`,
+/// "Sends in machine code").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineCall {
+    /// Through the leaf shim: the row's leaf answers a value, or declines
+    /// or raises before it changed anything, runs no Newspeak code, pushes
+    /// nothing and reads no other activation. Its answer, a value, is the
+    /// send's; anything else -- a decline, an error, a future seen
+    /// through -- leaves machine code, and the interpreter runs the send
+    /// again from the start, the leaf included, as though machine code had
+    /// never tried it. Allocating is allowed: nothing collects outside a
+    /// safepoint.
+    Leaf,
+    /// Through an exit: the interpreter runs the send. Every row's
+    /// default, and the only call for a row whose leaf answers a step
+    /// other than a value, reads or changes an activation, or depends on
+    /// a safepoint the send's return reaches.
+    Exit,
 }
 
 impl MirrorEntry {
@@ -981,6 +1006,17 @@ const fn mirror(
         reported,
         primitive,
         leaf_arity: selector_arity(reported),
+        machine_call: MachineCall::Exit,
+    }
+}
+
+/// `entry`, run by machine code through the leaf shim
+/// (`MachineCall::Leaf`): only for a row whose leaf was read and found
+/// leaf-safe; the comment above each use says why it is.
+const fn leaf(entry: MirrorEntry) -> MirrorEntry {
+    MirrorEntry {
+        machine_call: MachineCall::Leaf,
+        ..entry
     }
 }
 
@@ -989,31 +1025,46 @@ const fn mirror(
 /// position here, which `MirrorPrimitive` carries. The rows here are
 /// `Array`'s.
 pub const MIRROR: &[MirrorEntry] = &[
-    mirror(
+    // Leaf: answers the receiver's class, an identity, the identity hash --
+    // drawn once and kept -- or a new String, or declines for a future, having
+    // written nothing (`builtins::object_class`).
+    leaf(mirror(
         "objectClass:ifFail:",
         "class",
         Primitive::Object(ObjectPrimitive::Class),
-    ),
-    mirror(
+    )),
+    // Leaf: answers the receiver's class, an identity, the identity hash --
+    // drawn once and kept -- or a new String, or declines for a future, having
+    // written nothing (`builtins::object_class`).
+    leaf(mirror(
         "object:identicalTo:ifFail:",
         "==",
         Primitive::Object(ObjectPrimitive::Identical),
-    ),
-    mirror(
+    )),
+    // Leaf: answers the receiver's class, an identity, the identity hash --
+    // drawn once and kept -- or a new String, or declines for a future, having
+    // written nothing (`builtins::object_class`).
+    leaf(mirror(
         "object:equals:ifFail:",
         "=",
         Primitive::Object(ObjectPrimitive::Equal),
-    ),
-    mirror(
+    )),
+    // Leaf: answers the receiver's class, an identity, the identity hash --
+    // drawn once and kept -- or a new String, or declines for a future, having
+    // written nothing (`builtins::object_class`).
+    leaf(mirror(
         "objectHash:ifFail:",
         "hash",
         Primitive::Object(ObjectPrimitive::Hash),
-    ),
-    mirror(
+    )),
+    // Leaf: answers the receiver's class, an identity, the identity hash --
+    // drawn once and kept -- or a new String, or declines for a future, having
+    // written nothing (`builtins::object_class`).
+    leaf(mirror(
         "objectPrintString:ifFail:",
         "printString",
         Primitive::Object(ObjectPrimitive::PrintString),
-    ),
+    )),
     mirror(
         "value:sameAs:ifFail:",
         "=",
@@ -1034,266 +1085,422 @@ pub const MIRROR: &[MirrorEntry] = &[
         "slotAt:",
         Primitive::Value(ValuePrimitive::SlotAt),
     ),
-    mirror(
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:add:ifFail:",
         "+",
         Primitive::Integer(IntegerPrimitive::Add),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:subtract:ifFail:",
         "-",
         Primitive::Integer(IntegerPrimitive::Subtract),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:multiply:ifFail:",
         "*",
         Primitive::Integer(IntegerPrimitive::Multiply),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:floorDivide:ifFail:",
         "//",
         Primitive::Integer(IntegerPrimitive::FloorDivide),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:lessThan:ifFail:",
         "<",
         Primitive::Integer(IntegerPrimitive::Less),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:greaterThan:ifFail:",
         ">",
         Primitive::Integer(IntegerPrimitive::Greater),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:lessOrEqual:ifFail:",
         "<=",
         Primitive::Integer(IntegerPrimitive::LessOrEqual),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:greaterOrEqual:ifFail:",
         ">=",
         Primitive::Integer(IntegerPrimitive::GreaterOrEqual),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:equals:ifFail:",
         "=",
         Primitive::Integer(IntegerPrimitive::Equal),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integerNegated:ifFail:",
         "negated",
         Primitive::Integer(IntegerPrimitive::Negated),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integerAbsolute:ifFail:",
         "abs",
         Primitive::Integer(IntegerPrimitive::Absolute),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integerPrintString:ifFail:",
         "printString",
         Primitive::Integer(IntegerPrimitive::PrintString),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integerAsString:ifFail:",
         "asString",
         Primitive::Integer(IntegerPrimitive::PrintString),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:add:ifFail:",
         "+",
         Primitive::LargeInteger(LargeIntegerPrimitive::Add),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:subtract:ifFail:",
         "-",
         Primitive::LargeInteger(LargeIntegerPrimitive::Subtract),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:multiply:ifFail:",
         "*",
         Primitive::LargeInteger(LargeIntegerPrimitive::Multiply),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:floorDivide:ifFail:",
         "//",
         Primitive::LargeInteger(LargeIntegerPrimitive::FloorDivide),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:lessThan:ifFail:",
         "<",
         Primitive::LargeInteger(LargeIntegerPrimitive::Less),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:greaterThan:ifFail:",
         ">",
         Primitive::LargeInteger(LargeIntegerPrimitive::Greater),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:lessOrEqual:ifFail:",
         "<=",
         Primitive::LargeInteger(LargeIntegerPrimitive::LessOrEqual),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:greaterOrEqual:ifFail:",
         ">=",
         Primitive::LargeInteger(LargeIntegerPrimitive::GreaterOrEqual),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:equals:ifFail:",
         "=",
         Primitive::LargeInteger(LargeIntegerPrimitive::Equal),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeIntegerHash:ifFail:",
         "hash",
         Primitive::LargeInteger(LargeIntegerPrimitive::Hash),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeIntegerNegated:ifFail:",
         "negated",
         Primitive::LargeInteger(LargeIntegerPrimitive::Negated),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeIntegerAbsolute:ifFail:",
         "abs",
         Primitive::LargeInteger(LargeIntegerPrimitive::Absolute),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeIntegerPrintString:ifFail:",
         "printString",
         Primitive::LargeInteger(LargeIntegerPrimitive::PrintString),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeIntegerAsString:ifFail:",
         "asString",
         Primitive::LargeInteger(LargeIntegerPrimitive::PrintString),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:add:ifFail:",
         "+",
         Primitive::Float(FloatPrimitive::Add),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:subtract:ifFail:",
         "-",
         Primitive::Float(FloatPrimitive::Subtract),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:multiply:ifFail:",
         "*",
         Primitive::Float(FloatPrimitive::Multiply),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:divide:ifFail:",
         "/",
         Primitive::Float(FloatPrimitive::Divide),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:lessThan:ifFail:",
         "<",
         Primitive::Float(FloatPrimitive::Less),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:greaterThan:ifFail:",
         ">",
         Primitive::Float(FloatPrimitive::Greater),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:equals:ifFail:",
         "=",
         Primitive::Float(FloatPrimitive::Equal),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatHash:ifFail:",
         "hash",
         Primitive::Float(FloatPrimitive::Hash),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatPrintString:ifFail:",
         "printString",
         Primitive::Float(FloatPrimitive::PrintString),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatAsString:ifFail:",
         "asString",
         Primitive::Float(FloatPrimitive::PrintString),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "stringSize:ifFail:",
         "size",
         Primitive::String(StringPrimitive::Size),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "string:concatenate:ifFail:",
         ",",
         Primitive::String(StringPrimitive::Concatenate),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "string:equals:ifFail:",
         "=",
         Primitive::String(StringPrimitive::Equal),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "stringHash:ifFail:",
         "hash",
         Primitive::String(StringPrimitive::Hash),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "stringAsSymbol:ifFail:",
         "asSymbol",
         Primitive::String(StringPrimitive::AsSymbol),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "stringPrintString:ifFail:",
         "printString",
         Primitive::String(StringPrimitive::PrintString),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "symbolAsString:ifFail:",
         "asString",
         Primitive::Symbol(SymbolPrimitive::AsString),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "symbol:equals:ifFail:",
         "=",
         Primitive::Symbol(SymbolPrimitive::Equal),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "symbolHash:ifFail:",
         "hash",
         Primitive::Symbol(SymbolPrimitive::Hash),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "symbolPrintString:ifFail:",
         "printString",
         Primitive::Symbol(SymbolPrimitive::PrintString),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates an Array, and stores into one, through the
+    // write barrier, only once the index or the range is checked, so that a
+    // decline and every error write nothing (`builtins::collections`).
+    leaf(mirror(
         "collectionSize:ifFail:",
         "size",
         Primitive::Collection(CollectionPrimitive::Size),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates an Array, and stores into one, through the
+    // write barrier, only once the index or the range is checked, so that a
+    // decline and every error write nothing (`builtins::collections`).
+    leaf(mirror(
         "collection:at:ifFail:",
         "at:",
         Primitive::Collection(CollectionPrimitive::ElementAt),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates an Array, and stores into one, through the
+    // write barrier, only once the index or the range is checked, so that a
+    // decline and every error write nothing (`builtins::collections`).
+    leaf(mirror(
         "collection:at:put:ifFail:",
         "at:put:",
         Primitive::Collection(CollectionPrimitive::ElementAtPut),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates an Array, and stores into one, through the
+    // write barrier, only once the index or the range is checked, so that a
+    // decline and every error write nothing (`builtins::collections`).
+    leaf(mirror(
         "collection:copyFrom:to:ifFail:",
         "copyFrom:to:",
         Primitive::Collection(CollectionPrimitive::CopyRange),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates an Array, and stores into one, through the
+    // write barrier, only once the index or the range is checked, so that a
+    // decline and every error write nothing (`builtins::collections`).
+    leaf(mirror(
         "collection:replaceFrom:to:with:startingAt:ifFail:",
         "replaceFrom:to:with:startingAt:",
         Primitive::Collection(CollectionPrimitive::Replace),
-    ),
+    )),
     mirror(
         "blockValue:ifFail:",
         "value",
@@ -1314,11 +1521,12 @@ pub const MIRROR: &[MirrorEntry] = &[
         "value:value:value:",
         Primitive::Block(BlockPrimitive::Value),
     ),
-    mirror(
+    // Leaf: reads a closure's parameter count (`builtins::block`).
+    leaf(mirror(
         "blockNumArgs:ifFail:",
         "numArgs",
         Primitive::Block(BlockPrimitive::ArgumentCount),
-    ),
+    )),
     mirror(
         "transcript:show:ifFail:",
         "show:",
@@ -1332,31 +1540,41 @@ pub const MIRROR: &[MirrorEntry] = &[
     // A row's index never reaches an artifact -- `SendMirror` has no wire tag
     // and a decoded method carries no fast path -- so a row may be removed;
     // new rows are appended all the same, so a diff shows what was added.
-    mirror(
+    // Leaf: reads a class object's name, application, enclosing object or
+    // superclass, allocating at most the name's String (`builtins::behavior`).
+    leaf(mirror(
         "className:ifFail:",
         "name",
         Primitive::Behavior(BehaviorPrimitive::Name),
-    ),
-    mirror(
+    )),
+    // Leaf: reads a class object's name, application, enclosing object or
+    // superclass, allocating at most the name's String (`builtins::behavior`).
+    leaf(mirror(
         "metaclassThisClass:ifFail:",
         "thisClass",
         Primitive::Behavior(BehaviorPrimitive::ThisClass),
-    ),
-    mirror(
+    )),
+    // Leaf: reads a class object's name, application, enclosing object or
+    // superclass, allocating at most the name's String (`builtins::behavior`).
+    leaf(mirror(
         "behavior:sharesApplicationWith:ifFail:",
         "sharesApplicationWith:",
         Primitive::Behavior(BehaviorPrimitive::SharesApplication),
-    ),
-    mirror(
+    )),
+    // Leaf: reads a class object's name, application, enclosing object or
+    // superclass, allocating at most the name's String (`builtins::behavior`).
+    leaf(mirror(
         "behaviorEnclosing:ifFail:",
         "enclosingObject",
         Primitive::Behavior(BehaviorPrimitive::Enclosing),
-    ),
-    mirror(
+    )),
+    // Leaf: reads a class object's name, application, enclosing object or
+    // superclass, allocating at most the name's String (`builtins::behavior`).
+    leaf(mirror(
         "behaviorSuperclass:ifFail:",
         "superclass",
         Primitive::Behavior(BehaviorPrimitive::Superclass),
-    ),
+    )),
     mirror(
         "currentActivation:ifFail:",
         "currentActivation",
@@ -1419,11 +1637,14 @@ pub const MIRROR: &[MirrorEntry] = &[
         "sendTo:",
         Primitive::Message(MessagePrimitive::SendTo),
     ),
-    mirror(
+    // Leaf: reads or allocates an Array, and stores into one, through the
+    // write barrier, only once the index or the range is checked, so that a
+    // decline and every error write nothing (`builtins::collections`).
+    leaf(mirror(
         "arrayClass:new:ifFail:",
         "new:",
         Primitive::Collection(CollectionPrimitive::Allocate),
-    ),
+    )),
     mirror(
         "moduleInstanceNamed:ifFail:",
         // Unary: the module's name is the row's subject.
@@ -1449,366 +1670,579 @@ pub const MIRROR: &[MirrorEntry] = &[
         "value",
         Primitive::Future(FuturePrimitive::Value),
     ),
-    mirror(
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:lessOrEqual:ifFail:",
         "<=",
         Primitive::Float(FloatPrimitive::LessOrEqual),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:greaterOrEqual:ifFail:",
         ">=",
         Primitive::Float(FloatPrimitive::GreaterOrEqual),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:modulo:ifFail:",
         "\\\\",
         Primitive::Integer(IntegerPrimitive::Modulo),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:modulo:ifFail:",
         "\\\\",
         Primitive::LargeInteger(LargeIntegerPrimitive::Modulo),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:bitAnd:ifFail:",
         "bitAnd:",
         Primitive::Integer(IntegerPrimitive::BitAnd),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:bitAnd:ifFail:",
         "bitAnd:",
         Primitive::LargeInteger(LargeIntegerPrimitive::BitAnd),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integerAsFloat:ifFail:",
         "asFloat",
         Primitive::Integer(IntegerPrimitive::AsFloat),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeIntegerAsFloat:ifFail:",
         "asFloat",
         Primitive::LargeInteger(LargeIntegerPrimitive::AsFloat),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:asStringFixed:ifFail:",
         "asStringFixed:",
         Primitive::Float(FloatPrimitive::AsStringFixed),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:asStringExponential:ifFail:",
         "asStringExponential:",
         Primitive::Float(FloatPrimitive::AsStringExponential),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:asStringPrecision:ifFail:",
         "asStringPrecision:",
         Primitive::Float(FloatPrimitive::AsStringPrecision),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatClass:parse:ifFail:",
         "parse:",
         Primitive::Float(FloatPrimitive::Parse),
-    ),
+    )),
     mirror(
         "clockMonotonicNanoseconds:ifFail:",
         "currentMonotonicNanoseconds",
         Primitive::Platform(PlatformPrimitive::MonotonicNanoseconds),
     ),
-    mirror(
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:bitOr:ifFail:",
         "bitOr:",
         Primitive::Integer(IntegerPrimitive::BitOr),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:bitOr:ifFail:",
         "bitOr:",
         Primitive::LargeInteger(LargeIntegerPrimitive::BitOr),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:bitXor:ifFail:",
         "bitXor:",
         Primitive::Integer(IntegerPrimitive::BitXor),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:bitXor:ifFail:",
         "bitXor:",
         Primitive::LargeInteger(LargeIntegerPrimitive::BitXor),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:shiftLeft:ifFail:",
         "<<",
         Primitive::Integer(IntegerPrimitive::ShiftLeft),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "largeInteger:shiftLeft:ifFail:",
         "<<",
         Primitive::LargeInteger(LargeIntegerPrimitive::ShiftLeft),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:gcd:ifFail:",
         "gcd:",
         Primitive::AnyInteger(AnyIntegerPrimitive::Gcd),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:shiftRight:ifFail:",
         ">>",
         Primitive::AnyInteger(AnyIntegerPrimitive::ShiftRight),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:digitAt:ifFail:",
         "digitAt:",
         Primitive::AnyInteger(AnyIntegerPrimitive::DigitAt),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integerDigitLength:ifFail:",
         "digitLength",
         Primitive::AnyInteger(AnyIntegerPrimitive::DigitLength),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integer:asStringRadix:ifFail:",
         "asStringRadix:",
         Primitive::AnyInteger(AnyIntegerPrimitive::AsStringRadix),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "integerClass:parse:radix:ifFail:",
         "parse:radix:",
         Primitive::AnyInteger(AnyIntegerPrimitive::Parse),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatSquareRoot:ifFail:",
         "sqrt",
         Primitive::Float(FloatPrimitive::SquareRoot),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "string:at:ifFail:",
         "at:",
         Primitive::String(StringPrimitive::ElementAt),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "string:copyFrom:to:ifFail:",
         "copyFrom:to:",
         Primitive::String(StringPrimitive::CopyRange),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "string:indexOf:startingAt:ifFail:",
         "indexOf:startingAt:",
         Primitive::String(StringPrimitive::IndexOf),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "string:lastIndexOf:startingAt:ifFail:",
         "lastIndexOf:startingAt:",
         Primitive::String(StringPrimitive::LastIndexOf),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "stringClass:withAll:ifFail:",
         "withAll:",
         Primitive::String(StringPrimitive::FromCodePoints),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "stringClass:with:ifFail:",
         "with:",
         Primitive::String(StringPrimitive::FromCodePoint),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatSine:ifFail:",
         "sin",
         Primitive::Float(FloatPrimitive::Sine),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatCosine:ifFail:",
         "cos",
         Primitive::Float(FloatPrimitive::Cosine),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatTangent:ifFail:",
         "tan",
         Primitive::Float(FloatPrimitive::Tangent),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatArcSine:ifFail:",
         "asin",
         Primitive::Float(FloatPrimitive::ArcSine),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatArcCosine:ifFail:",
         "acos",
         Primitive::Float(FloatPrimitive::ArcCosine),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatArcTangent:ifFail:",
         "atan",
         Primitive::Float(FloatPrimitive::ArcTangent),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:arcTangent:ifFail:",
         "atan:",
         Primitive::Float(FloatPrimitive::ArcTangentOf),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatExponential:ifFail:",
         "exp",
         Primitive::Float(FloatPrimitive::Exponential),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatNaturalLogarithm:ifFail:",
         "ln",
         Primitive::Float(FloatPrimitive::NaturalLogarithm),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatLogarithm:ifFail:",
         "log",
         Primitive::Float(FloatPrimitive::Logarithm),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "float:raisedTo:ifFail:",
         "raisedTo:",
         Primitive::Float(FloatPrimitive::RaisedTo),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatFloor:ifFail:",
         "floor",
         Primitive::Float(FloatPrimitive::Floor),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatCeiling:ifFail:",
         "ceiling",
         Primitive::Float(FloatPrimitive::Ceiling),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatRounded:ifFail:",
         "rounded",
         Primitive::Float(FloatPrimitive::Rounded),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatTruncated:ifFail:",
         "truncated",
         Primitive::Float(FloatPrimitive::Truncated),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatNegated:ifFail:",
         "negated",
         Primitive::Float(FloatPrimitive::Negated),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatAbsolute:ifFail:",
         "abs",
         Primitive::Float(FloatPrimitive::Absolute),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatIsNaN:ifFail:",
         "isNaN",
         Primitive::Float(FloatPrimitive::IsNaN),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatIsFinite:ifFail:",
         "isFinite",
         Primitive::Float(FloatPrimitive::IsFinite),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatIsInfinite:ifFail:",
         "isInfinite",
         Primitive::Float(FloatPrimitive::IsInfinite),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "floatAsInteger:ifFail:",
         "asInteger",
         Primitive::Float(FloatPrimitive::AsInteger),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "fractionNumerator:ifFail:",
         "numerator",
         Primitive::Fraction(FractionPrimitive::Numerator),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "fractionDenominator:ifFail:",
         "denominator",
         Primitive::Fraction(FractionPrimitive::Denominator),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "fractionClass:numerator:denominator:ifFail:",
         "numerator:denominator:",
         Primitive::Fraction(FractionPrimitive::Make),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "fractionClass:reducedNumerator:denominator:ifFail:",
         "reducedNumerator:denominator:",
         Primitive::Fraction(FractionPrimitive::MakeReduced),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:lessThan:ifFail:",
         "<",
         Primitive::Number(NumberPrimitive::Less),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:greaterThan:ifFail:",
         ">",
         Primitive::Number(NumberPrimitive::Greater),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:lessOrEqual:ifFail:",
         "<=",
         Primitive::Number(NumberPrimitive::LessOrEqual),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:greaterOrEqual:ifFail:",
         ">=",
         Primitive::Number(NumberPrimitive::GreaterOrEqual),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:equals:ifFail:",
         "=",
         Primitive::Number(NumberPrimitive::Equal),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "numberHash:ifFail:",
         "hash",
         Primitive::Number(NumberPrimitive::Hash),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:add:ifFail:",
         "+",
         Primitive::Number(NumberPrimitive::Add),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:subtract:ifFail:",
         "-",
         Primitive::Number(NumberPrimitive::Subtract),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:multiply:ifFail:",
         "*",
         Primitive::Number(NumberPrimitive::Multiply),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:divide:ifFail:",
         "/",
         Primitive::Number(NumberPrimitive::Divide),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:floorDivide:ifFail:",
         "//",
         Primitive::Number(NumberPrimitive::FloorDivide),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:modulo:ifFail:",
         "\\\\",
         Primitive::Number(NumberPrimitive::Modulo),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:quotient:ifFail:",
         "quo:",
         Primitive::Number(NumberPrimitive::Quotient),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "number:remainder:ifFail:",
         "rem:",
         Primitive::Number(NumberPrimitive::Remainder),
-    ),
-    mirror(
+    )),
+    // Leaf: reads its operands and allocates at most the number or the String
+    // it answers; a decline and every error write nothing
+    // (`builtins::numbers`).
+    leaf(mirror(
         "numberAsFloat:ifFail:",
         "asFloat",
         Primitive::Number(NumberPrimitive::AsFloat),
-    ),
+    )),
     mirror(
         "futureMade:ifFail:",
         // Unary: the new future is the row's subject, as the future is
@@ -1817,161 +2251,254 @@ pub const MIRROR: &[MirrorEntry] = &[
         "computing",
         Primitive::Future(FuturePrimitive::Made),
     ),
-    mirror(
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArrayClass:new:ifFail:",
         "new:",
         Primitive::Bytes(BytePrimitive::Allocate),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArrayClass:fits:ifFail:",
         // It never fails -- it answers a Boolean or declines -- so the
         // selector names the message whose allocation it answers for.
         "new:",
         Primitive::Bytes(BytePrimitive::Fits),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArraySize:ifFail:",
         "size",
         Primitive::Bytes(BytePrimitive::Size),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:at:ifFail:",
         "at:",
         Primitive::Bytes(BytePrimitive::ElementAt),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:at:put:ifFail:",
         "at:put:",
         Primitive::Bytes(BytePrimitive::ElementAtPut),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:copyFrom:to:ifFail:",
         "copyFrom:to:",
         Primitive::Bytes(BytePrimitive::CopyRange),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:replaceFrom:to:with:startingAt:ifFail:",
         "replaceFrom:to:with:startingAt:",
         Primitive::Bytes(BytePrimitive::Replace),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:concatenate:ifFail:",
         ",",
         Primitive::Bytes(BytePrimitive::Concatenate),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:indexOf:startingAt:ifFail:",
         "indexOf:startingAt:",
         Primitive::Bytes(BytePrimitive::IndexOf),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:lastIndexOf:startingAt:ifFail:",
         "lastIndexOf:startingAt:",
         Primitive::Bytes(BytePrimitive::LastIndexOf),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:startsWith:ifFail:",
         "startsWith:",
         Primitive::Bytes(BytePrimitive::StartsWith),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:endsWith:ifFail:",
         "endsWith:",
         Primitive::Bytes(BytePrimitive::EndsWith),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "stringAsUtf8:ifFail:",
         "asUtf8",
         Primitive::String(StringPrimitive::AsUtf8),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "stringClass:fromUtf8:from:to:ifFail:",
         "fromUtf8:from:to:",
         Primitive::String(StringPrimitive::FromUtf8),
-    ),
-    mirror(
+    )),
+    // Leaf: reads the text and allocates at most what it answers -- a String,
+    // an interned Symbol, a ByteArray -- writing no object; a decline and
+    // every error write nothing (`builtins::text`).
+    leaf(mirror(
         "stringUtf8Size:ifFail:",
         "utf8Size",
         Primitive::String(StringPrimitive::Utf8Size),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or allocates a ByteArray, and writes its bytes only once
+    // every index, range and value is checked, so that a decline and every
+    // error write nothing (`builtins::bytes`).
+    leaf(mirror(
         "byteArray:at:putCodePoint:ifFail:",
         "at:putCodePoint:",
         Primitive::Bytes(BytePrimitive::WriteCodePoint),
-    ),
+    )),
     // The typed arrays' elements, little-endian at a 1-based element
     // index; `Uint8Array` uses `ByteArray`'s own `at:` and `at:put:`.
-    mirror(
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int8ElementAt:ifFail:",
         "at:",
         Primitive::Element(ElementAccess::new(ElementKind::Int8, false, false, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int8ElementAt:put:ifFail:",
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int8, false, false, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int16ElementAt:ifFail:",
         "at:",
         Primitive::Element(ElementAccess::new(ElementKind::Int16, false, false, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int16ElementAt:put:ifFail:",
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int16, false, false, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:uint16ElementAt:ifFail:",
         "at:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, false, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:uint16ElementAt:put:ifFail:",
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, false, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int32ElementAt:ifFail:",
         "at:",
         Primitive::Element(ElementAccess::new(ElementKind::Int32, false, false, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int32ElementAt:put:ifFail:",
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int32, false, false, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:uint32ElementAt:ifFail:",
         "at:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, false, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:uint32ElementAt:put:ifFail:",
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, false, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int64ElementAt:ifFail:",
         "at:",
         Primitive::Element(ElementAccess::new(ElementKind::Int64, false, false, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int64ElementAt:put:ifFail:",
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int64, false, false, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:uint64ElementAt:ifFail:",
         "at:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, false, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:uint64ElementAt:put:ifFail:",
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, false, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:float32ElementAt:ifFail:",
         "at:",
         Primitive::Element(ElementAccess::new(
@@ -1980,13 +2507,19 @@ pub const MIRROR: &[MirrorEntry] = &[
             false,
             false,
         )),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:float32ElementAt:put:ifFail:",
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Float32, false, false, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:float64ElementAt:ifFail:",
         "at:",
         Primitive::Element(ElementAccess::new(
@@ -1995,214 +2528,337 @@ pub const MIRROR: &[MirrorEntry] = &[
             false,
             false,
         )),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:float64ElementAt:put:ifFail:",
         "at:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Float64, false, false, true)),
-    ),
+    )),
     // `DataView`'s accessors at a 1-based byte position: a single byte
     // has no order, every wider kind a row for each.
-    mirror(
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int8At:ifFail:",
         "int8At:",
         Primitive::Element(ElementAccess::new(ElementKind::Int8, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:int8At:put:ifFail:",
         "int8At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int8, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:uint8At:ifFail:",
         "uint8At:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint8, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:uint8At:put:ifFail:",
         "uint8At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint8, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianInt16At:ifFail:",
         "int16At:",
         Primitive::Element(ElementAccess::new(ElementKind::Int16, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianInt16At:put:ifFail:",
         "int16At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int16, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianUint16At:ifFail:",
         "uint16At:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianUint16At:put:ifFail:",
         "uint16At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianInt32At:ifFail:",
         "int32At:",
         Primitive::Element(ElementAccess::new(ElementKind::Int32, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianInt32At:put:ifFail:",
         "int32At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int32, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianUint32At:ifFail:",
         "uint32At:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianUint32At:put:ifFail:",
         "uint32At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianInt64At:ifFail:",
         "int64At:",
         Primitive::Element(ElementAccess::new(ElementKind::Int64, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianInt64At:put:ifFail:",
         "int64At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int64, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianUint64At:ifFail:",
         "uint64At:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianUint64At:put:ifFail:",
         "uint64At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianFloat32At:ifFail:",
         "float32At:",
         Primitive::Element(ElementAccess::new(ElementKind::Float32, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianFloat32At:put:ifFail:",
         "float32At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Float32, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianFloat64At:ifFail:",
         "float64At:",
         Primitive::Element(ElementAccess::new(ElementKind::Float64, false, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:littleEndianFloat64At:put:ifFail:",
         "float64At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Float64, false, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianInt16At:ifFail:",
         "int16At:",
         Primitive::Element(ElementAccess::new(ElementKind::Int16, true, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianInt16At:put:ifFail:",
         "int16At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int16, true, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianUint16At:ifFail:",
         "uint16At:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint16, true, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianUint16At:put:ifFail:",
         "uint16At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint16, true, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianInt32At:ifFail:",
         "int32At:",
         Primitive::Element(ElementAccess::new(ElementKind::Int32, true, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianInt32At:put:ifFail:",
         "int32At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int32, true, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianUint32At:ifFail:",
         "uint32At:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint32, true, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianUint32At:put:ifFail:",
         "uint32At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint32, true, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianInt64At:ifFail:",
         "int64At:",
         Primitive::Element(ElementAccess::new(ElementKind::Int64, true, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianInt64At:put:ifFail:",
         "int64At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Int64, true, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianUint64At:ifFail:",
         "uint64At:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint64, true, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianUint64At:put:ifFail:",
         "uint64At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Uint64, true, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianFloat32At:ifFail:",
         "float32At:",
         Primitive::Element(ElementAccess::new(ElementKind::Float32, true, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianFloat32At:put:ifFail:",
         "float32At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Float32, true, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianFloat64At:ifFail:",
         "float64At:",
         Primitive::Element(ElementAccess::new(ElementKind::Float64, true, true, false)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads or writes one element of a ByteArray's bytes once the offset
+    // and the element are checked, allocating at most the number it answers
+    // (`builtins::elements`).
+    leaf(mirror(
         "byteArray:bigEndianFloat64At:put:ifFail:",
         "float64At:put:",
         Primitive::Element(ElementAccess::new(ElementKind::Float64, true, true, true)),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "weakArrayClass:new:ifFail:",
         "new:",
         Primitive::Weak(WeakPrimitive::Allocate),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "weakArraySize:ifFail:",
         "size",
         Primitive::Weak(WeakPrimitive::Size),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "weakArray:at:ifFail:",
         "at:",
         Primitive::Weak(WeakPrimitive::ElementAt),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "weakArray:at:put:ifFail:",
         "at:put:",
         Primitive::Weak(WeakPrimitive::ElementAtPut),
-    ),
+    )),
     mirror(
         "garbageCollect:ifFail:",
         "garbageCollect",
@@ -2211,41 +2867,62 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Reported `isValue`, no kernel selector: a row's arity is its
     // reported selector's, this leaf takes its subject alone, and it
     // raises nothing whose text the selector would name.
-    mirror(
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "objectIsValue:ifFail:",
         "isValue",
         Primitive::Weak(WeakPrimitive::IsValue),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "ephemeronKey:ifFail:",
         "key",
         Primitive::Weak(WeakPrimitive::EphemeronKey),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "ephemeron:key:ifFail:",
         "key:",
         Primitive::Weak(WeakPrimitive::EphemeronSetKey),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "ephemeronValue:ifFail:",
         "value",
         Primitive::Weak(WeakPrimitive::EphemeronValue),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "ephemeron:value:ifFail:",
         "value:",
         Primitive::Weak(WeakPrimitive::EphemeronSetValue),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "ephemeronFinalizer:ifFail:",
         "finalizer",
         Primitive::Weak(WeakPrimitive::EphemeronFinalizer),
-    ),
-    mirror(
+    )),
+    // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
+    // store only once the index or the field is checked, through the write
+    // barrier (`builtins::weak`).
+    leaf(mirror(
         "ephemeron:finalizer:ifFail:",
         "finalizer:",
         Primitive::Weak(WeakPrimitive::EphemeronSetFinalizer),
-    ),
+    )),
     mirror(
         "reflectionMixinOf:ifFail:",
         "mixin",
@@ -2362,11 +3039,13 @@ pub const MIRROR: &[MirrorEntry] = &[
         "installEdit:",
         Primitive::Reflection(ReflectionPrimitive::InstallEdit),
     ),
-    mirror(
+    // Leaf: reads a class object's name, application, enclosing object or
+    // superclass, allocating at most the name's String (`builtins::behavior`).
+    leaf(mirror(
         "behaviorLevelEnclosing:ifFail:",
         "levelEnclosingObject",
         Primitive::Behavior(BehaviorPrimitive::LevelEnclosing),
-    ),
+    )),
 ];
 
 const _: () = assert!(MIRROR.len() <= u16::MAX as usize + 1);

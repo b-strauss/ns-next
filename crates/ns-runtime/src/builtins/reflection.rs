@@ -1843,6 +1843,116 @@ mod tests {
         }
     }
 
+    /// `point x` sent a thousand times from one site of a compiled loop,
+    /// with the JIT on -- every body compiled at its first entry -- or
+    /// off, `point` forwarded halfway to a `Wide`, whose `x` is its third
+    /// field where a `Point`'s is its first, by a callee whose exit the
+    /// loop's frame is resumed in machine code after; twice, so that the
+    /// second run finds both classes' getters at the site: the answers,
+    /// and the backward jumps machine code took, the resumptions in machine
+    /// code and the leaf stub's calls of the second run.
+    #[cfg(ns_jit)]
+    fn sum_across_a_forward(lowering: crate::Lowering, jit: bool) -> ([i64; 2], [u64; 3]) {
+        let source = indoc! {"
+            class Forwarding = Object new () (
+              public class Point = (
+                | public x ::= 1. public y ::= 2. |
+              ) ()
+              public class Wide = (
+                | public z ::= 30. public y ::= 20. public x ::= 10. |
+              ) ()
+              public sumWith: mirror = (
+                ^sum: Point new forwardedTo: Wide new with: mirror
+              )
+              sum: point forwardedTo: wide with: mirror = (
+                | sum index |
+                sum:: 0.
+                index:: 0.
+                [index < 1000] whileTrue: [
+                  sum:: sum + point x.
+                  index = 500 ifTrue: [forward: point to: wide with: mirror].
+                  index:: index + 1.
+                ].
+                ^sum
+              )
+              forward: point to: wide with: mirror = (
+                mirror elementsOf: {point} forwardIdentityToElementsOf: {wide} ifFail: [^-1].
+              )
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("the fixture parses");
+        let resolved = match crate::resolve(
+            module,
+            std::rc::Rc::from(source),
+            crate::SourceOrigin::File(std::path::PathBuf::from("getter_forward.ns")),
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) => panic!("the fixture resolves"),
+        };
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        interpreter.set_jit_enabled(jit);
+        interpreter.set_jit_stress(jit);
+        interpreter.set_jit_counting(jit);
+        let class = interpreter.load_module(&resolved);
+        let fixture = expect_ok(interpreter.instantiate(&class, &[]), "Forwarding new");
+        let mirror = the_vm_mirror(&mut interpreter);
+        let mut sums = [0; 2];
+        let mut before = interpreter.jit_statistics();
+        for sum in &mut sums {
+            before = interpreter.jit_statistics();
+            let answer = expect_ok(
+                interpreter.send(
+                    &fixture,
+                    Symbol::intern("sumWith:"),
+                    std::slice::from_ref(&mirror),
+                ),
+                "sumWith:",
+            );
+            *sum = interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+                ValueKind::SmallInteger(sum) => sum,
+                _ => panic!("sumWith: answers an Integer"),
+            });
+        }
+        let after = interpreter.jit_statistics();
+        (
+            sums,
+            [
+                after.machine_back_edges - before.machine_back_edges,
+                after.resumed_entries - before.resumed_entries,
+                after.act_leaf_calls - before.act_leaf_calls,
+            ],
+        )
+    }
+
+    #[cfg(ns_jit)]
+    crate::for_each_lowering! {
+        /// A getter stub after a forward reads the new layout: the site's
+        /// guard, the receiver's own, misses the `Wide` the `Point` became,
+        /// so its getter reads the `Wide`'s `x` rather than its first field,
+        /// and the sum -- 501 ones, then 499 tens -- is the interpreter's.
+        /// In the second run the loop reads both in machine code, the
+        /// `Wide`'s once its frame is resumed there after the forward.
+        fn a_getter_stub_after_a_forward_reads_the_new_layout(lowering) {
+            let (compiled, [back_edges, resumed, act_calls]) = sum_across_a_forward(lowering, true);
+            let (interpreted, _) = sum_across_a_forward(lowering, false);
+            assert_eq!(interpreted, [501 + 4990, 501 + 4990]);
+            assert_eq!(compiled, interpreted);
+            let stressed = std::env::vars_os().any(|(name, value)| {
+                name.to_string_lossy().starts_with("NS_NEXT_STRESS_")
+                    && !value.is_empty()
+                    && value != "0"
+            });
+            if lowering == crate::Lowering::Optimized && !stressed {
+                assert!(resumed >= 1, "the loop resumed in machine code after the forward");
+                assert!(
+                    back_edges >= 1000,
+                    "the whole loop ran in machine code: {back_edges}"
+                );
+                assert_eq!(act_calls, 0, "both getters ran in their stubs");
+            }
+        }
+    }
+
     /// Every refused forward declines, and leaves both sides as they were:
     /// each old object is still itself, no root names its replacement, and
     /// each `Point` and `Wide` still answers its own `sum`.

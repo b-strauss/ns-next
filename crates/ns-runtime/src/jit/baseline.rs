@@ -9,6 +9,7 @@
 
 use ns_assembler::{Condition, Label, Register};
 
+use crate::builtins::primitive::{mirror_entry, MachineCall};
 use crate::bytecode::{successors, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{value_bits, Immediate};
 use crate::interpreter::FeedbackBase;
@@ -371,6 +372,34 @@ impl BodyAssembler {
             .push((return_address, self.program_counter));
     }
 
+    /// `SendMirror` of a leaf-safe row: the mirror leaf's call, which runs
+    /// the send as `vm::send_mirror` does and writes its destination itself
+    /// (`leaves::mirror`), then on at the next instruction when it ran the
+    /// send, at `failure` when the row's leaf declined, and an exit that
+    /// re-executes the send, nothing written, for anything else.
+    fn send_mirror(&mut self, failure: u32) {
+        let program_counter = self.program_counter;
+        let frame = self.macro_assembler.roles().frame;
+        self.macro_assembler.call_leaf(
+            Leaf::Mirror.index(),
+            [
+                Operand::Register(frame),
+                Operand::Immediate(u64::from(program_counter)),
+                Operand::CodeAddress,
+            ],
+        );
+        let answer = self.macro_assembler.roles().leaf_result;
+        self.macro_assembler
+            .assembler()
+            .compare_immediate(answer, MIRROR_FAILED);
+        self.jump_to_if(Condition::Equal, failure);
+        self.macro_assembler
+            .assembler()
+            .compare_immediate(answer, 0);
+        self.macro_assembler
+            .exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
+    }
+
     /// The call of the generic leaf, which runs the instruction being
     /// lowered through the interpreter's own effect function in the frame
     /// whose register 0 the frame register points at, whichever frame of
@@ -386,6 +415,14 @@ impl BodyAssembler {
         }
     }
 }
+
+/// The mirror leaf's answer for a row's decline (`leaves::FAILED`), as an
+/// immediate operand.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the answer is a small constant"
+)]
+const MIRROR_FAILED: i32 = super::leaves::FAILED as i32;
 
 /// The `SmallInteger` tag, as an immediate operand.
 fn small_integer_tag() -> i32 {
@@ -708,9 +745,19 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             *destination,
             *call_site,
         ),
-        // The mirror's send, the initializers' invocations and the lexical
-        // walk an implicit receiver makes: the rest of stage 3.
-        Instruction::SendMirror { .. } => Lowering::Exit,
+        // A leaf-safe row's leaf through the shim; every other row's send
+        // the interpreter's.
+        Instruction::SendMirror {
+            primitive, failure, ..
+        } => match mirror_entry(*primitive).machine_call {
+            MachineCall::Leaf => {
+                body.send_mirror(*failure);
+                Lowering::Template
+            }
+            MachineCall::Exit => Lowering::Exit,
+        },
+        // The initializers' invocations and the lexical walk an implicit
+        // receiver makes: the rest of stage 3.
         Instruction::InitializeInstance { .. } => Lowering::Exit,
         Instruction::CheckAppliedClause { .. } => Lowering::Exit,
         Instruction::InitializeSuperclass { .. } => Lowering::Exit,

@@ -1897,47 +1897,54 @@ pub(crate) enum MissAnswer {
     Refuse,
 }
 
+/// A send's decision as `decision_at` makes it for machine code's leaves:
+/// what it resolved to and the activation's base, its receiver, the guard
+/// and site it was decided at, the global key its cells are refreshed
+/// under (`InlineCaches::refresh_cells`), and its selector and argument
+/// slots.
+struct Decision<'gc> {
+    resolved: Resolved<'gc>,
+    base: FeedbackBase,
+    receiver: Value<'gc>,
+    guard: DispatchId,
+    index: usize,
+    global_key: Option<(Symbol, CacheRule)>,
+    selector: Symbol,
+    argument_base: u16,
+    argument_count: u16,
+}
+
 /// The decision of the send at `program_counter` of `activation` -- a
-/// `SendPublic`, `SendLexical` or `SendSuper` -- for machine code
-/// (`jit::leaves`'s miss leaf): the decision the interpreter's cached
-/// send makes (`send_public`, `send_lexical`, `send_super`), through the
-/// same functions -- its site and key (`public_key`, `lexical_site`,
-/// `lexical_receiver` and `lexical_key`, `super_site` and `super_key`), the site's entry
-/// (`site_target`, materialized), the rest (`decided_miss`, or a vacant lexical site's
-/// `decided_lexical_first`), filling the caches as they fill them -- but
-/// no `act`. Only a cached site calls through its cell, so an uncached
-/// one, which the interpreter decides uncached, refuses. A method machine
-/// code runs (`jit::runs_in_machine_code`) is its callee: its body is
-/// compiled when this entry is the one that compiles it
-/// (`jit::note_entry_by_call`), and once the body has machine code the
-/// cells the send reached its decision through -- the site's, its
-/// polymorphic block's slot, the global cache's row -- are written afresh
-/// (`InlineCaches::refresh_cells`), so that its next send calls the body
-/// straight, and the answer is the body's machine entry, the callee's
-/// receiver and current class handed over for its machine entry to
-/// store. Every other decision refuses the call, and the interpreter,
-/// running the send again, finds the entry the fill made, or raises the
-/// error a `super` send without a current class or a superclass raises.
-pub(crate) fn decide_at<'gc>(
+/// `SendPublic`, `SendLexical` or `SendSuper` -- for machine code's
+/// leaves: the decision the interpreter's cached send makes
+/// (`send_public`, `send_lexical`, `send_super`), through the same
+/// functions -- its site and key (`public_key`, `lexical_site`,
+/// `lexical_receiver` and `lexical_key`, `super_site` and `super_key`),
+/// the site's entry (`site_target`, materialized), the rest
+/// (`decided_miss`, or a vacant lexical site's `decided_lexical_first`),
+/// filling the caches as they fill them -- but no `act`. `None` for an
+/// uncached site, which only the interpreter decides, and for a `super`
+/// send without a current class or a superclass, whose error it raises.
+fn decision_at<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     program_counter: u32,
-) -> MissAnswer {
+) -> Option<Decision<'gc>> {
     let code = mutator.heap.activation_code(activation);
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     let family_size = code.family_size;
-    let (resolved, base, receiver, guard, index, global_key) = match code
+    let (resolved, base, receiver, guard, index, global_key, selector, arguments) = match code
         .instruction(program_counter as usize)
     {
         Instruction::SendPublic {
             selector,
             receiver_register,
+            argument_base,
+            argument_sources,
             call_site,
             ..
         } => {
-            let Some(index) = site_index(feedback_base, family_size, call_site) else {
-                return MissAnswer::Refuse;
-            };
+            let index = site_index(feedback_base, family_size, call_site)?;
             let register_base = mutator.heap.activation_register_base(activation);
             let receiver = mutator.heap.register(register_base, receiver_register);
             let key = public_key(&mutator.heap, &receiver);
@@ -1950,23 +1957,26 @@ pub(crate) fn decide_at<'gc>(
                 |mutator, _| mutator.resolve_public(receiver, selector),
             );
             let global_key = Some((selector, CacheRule::Public));
-            (resolved, base, receiver, key.guard, index, global_key)
+            let arguments = (argument_base, argument_sources.len());
+            (
+                resolved, base, receiver, key.guard, index, global_key, selector, arguments,
+            )
         }
         Instruction::SendLexical {
             depth,
             selector,
+            argument_base,
+            argument_sources,
             call_site,
             ..
         } => {
-            let Some((index, privacy)) = lexical_site(
+            let (index, privacy) = lexical_site(
                 &mutator.caches,
                 feedback_base,
                 family_size,
                 call_site,
                 code.is_declaration_code(),
-            ) else {
-                return MissAnswer::Refuse;
-            };
+            )?;
             let (enclosing, origin) = lexical_receiver(&mutator.heap, activation, depth);
             match privacy {
                 None => {
@@ -1974,7 +1984,10 @@ pub(crate) fn decide_at<'gc>(
                     // could have reached.
                     let (resolved, base, guard) =
                         decided_lexical_first(mutator, index, enclosing, origin, depth, selector);
-                    (resolved, base, enclosing, guard, index, None)
+                    let arguments = (argument_base, argument_sources.len());
+                    (
+                        resolved, base, enclosing, guard, index, None, selector, arguments,
+                    )
                 }
                 Some(private) => {
                     let key = lexical_key(&mutator.heap, &enclosing, origin, depth, private);
@@ -2001,20 +2014,21 @@ pub(crate) fn decide_at<'gc>(
                         key.guard,
                         index,
                         Some((selector, rule)),
+                        selector,
+                        (argument_base, argument_sources.len()),
                     )
                 }
             }
         }
         Instruction::SendSuper {
             selector,
+            argument_base,
+            argument_sources,
             call_site,
             ..
         } => {
-            let Some((index, current_class, superclass)) =
-                super_site(mutator, activation, feedback_base, family_size, call_site)
-            else {
-                return MissAnswer::Refuse;
-            };
+            let (index, current_class, superclass) =
+                super_site(mutator, activation, feedback_base, family_size, call_site)?;
             let self_value = mutator.heap.activation_receiver(activation);
             let key = super_key(&mutator.heap, &self_value, current_class, superclass);
             let (resolved, base) = decided(
@@ -2026,21 +2040,102 @@ pub(crate) fn decide_at<'gc>(
                 |mutator, _| mutator.resolve_super(superclass, selector),
             );
             let global_key = Some((selector, CacheRule::Super));
-            (resolved, base, self_value, key.guard, index, global_key)
+            let arguments = (argument_base, argument_sources.len());
+            (
+                resolved, base, self_value, key.guard, index, global_key, selector, arguments,
+            )
         }
         _ => unreachable!("internal: only a cached send calls through its cell"),
     };
-    let Resolved::Method {
-        method,
-        defining_class,
-        chain,
-    } = resolved
+    let (argument_base, argument_count) = arguments;
+    Some(Decision {
+        resolved,
+        base,
+        receiver,
+        guard,
+        index,
+        global_key,
+        selector,
+        argument_base,
+        argument_count: crate::heap::register_number(argument_count),
+    })
+}
+
+/// The miss leaf's decision (`jit::leaves`'s `miss`) of the send at
+/// `program_counter` of `activation`: `decision_at`'s, and so an uncached
+/// site, which only the interpreter decides, refuses. A method machine
+/// code runs (`jit::runs_in_machine_code`) is its callee: its body is
+/// compiled when this entry is the one that compiles it
+/// (`jit::note_entry_by_call`), and once the body has machine code the
+/// cells the send reached its decision through -- the site's, its
+/// polymorphic block's slot, the global cache's row -- are written afresh
+/// (`InlineCaches::refresh_cells`), so that its next send calls the body
+/// straight, and the answer is the body's machine entry, the callee's
+/// receiver and current class handed over for its machine entry to
+/// store. A target that is no method with code is entered at the stub
+/// its cell names (`jit::stub_entry`), which runs it as `act` does, the
+/// receiver handed over. Every other decision refuses the call, and the interpreter,
+/// running the send again, finds the entry the fill made, or raises the
+/// error a `super` send without a current class or a superclass raises.
+pub(crate) fn decide_at<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: u32,
+) -> MissAnswer {
+    let Some(Decision {
+        resolved,
+        base,
+        receiver,
+        guard,
+        index,
+        global_key,
+        ..
+    }) = decision_at(mutator, activation, program_counter)
     else {
         return MissAnswer::Refuse;
     };
-    if !jit::runs_in_machine_code(&method, chain) {
-        return MissAnswer::Refuse;
+    let stubbed = match &resolved {
+        Resolved::Method { method, chain, .. } if !jit::runs_in_machine_code(method, *chain) => {
+            Some(jit::Stubbed::Method {
+                method,
+                chain: *chain,
+            })
+        }
+        Resolved::Method { .. } => None,
+        Resolved::Slot {
+            kind, field, chain, ..
+        } => Some(jit::Stubbed::Slot {
+            kind: *kind,
+            chain: *chain,
+            field: *field,
+        }),
+        Resolved::Primitive {
+            primitive, chain, ..
+        } => Some(jit::Stubbed::Primitive {
+            primitive: *primitive,
+            chain: *chain,
+        }),
+        Resolved::NestedClass { .. } | Resolved::Factory { .. } | Resolved::Unhandled => {
+            return MissAnswer::Refuse;
+        }
+    };
+    if let Some(stubbed) = stubbed {
+        return match jit::stub_entry(&mutator.jit, &stubbed) {
+            Some(entry) => {
+                mutator.heap.hand_machine_receiver(receiver);
+                MissAnswer::Enter(entry)
+            }
+            None => MissAnswer::Refuse,
+        };
     }
+    let Resolved::Method {
+        method,
+        defining_class,
+        chain: _,
+    } = resolved
+    else {
+        unreachable!("internal: every other resolution was answered above");
+    };
     let base = if base == FeedbackBase::NOT_ASSIGNED {
         mutator.caches.base_for(&method.code)
     } else {
@@ -2055,6 +2150,33 @@ pub(crate) fn decide_at<'gc>(
         .refresh_cells(index, guard, global_key, &mutator.jit);
     mutator.heap.hand_machine_callee(receiver, defining_class);
     MissAnswer::Enter(address)
+}
+
+/// The leaf stub's run (`jit::leaves`'s `act`) of the send at
+/// `program_counter` of `activation`, whose cell named the leaf stub for
+/// the target it records: `decision_at`'s decision -- which finds that
+/// entry, since a cell and its entry are written together -- acted on by
+/// `Mutator::act_for_machine_code`, on the send's arguments in its slots,
+/// where the call placed them. The value the send answers, or `None`
+/// where the interpreter must run the send, nothing having changed.
+pub(crate) fn act_at<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    program_counter: u32,
+) -> Option<Value<'gc>> {
+    let decision = decision_at(mutator, activation, program_counter)?;
+    let register_base = mutator.heap.activation_register_base(activation);
+    let arguments = Arguments::Slots(crate::heap::ArgumentSlots::new(
+        register_base,
+        decision.argument_base,
+        decision.argument_count,
+    ));
+    mutator.act_for_machine_code(
+        decision.resolved,
+        decision.receiver,
+        decision.selector,
+        arguments,
+    )
 }
 
 /// `cached`'s decision, without `act`: the site's own entry

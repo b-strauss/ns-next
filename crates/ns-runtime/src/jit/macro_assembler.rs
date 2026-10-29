@@ -116,6 +116,10 @@ pub(crate) struct Roles {
     pub(crate) lookup_rule: Register,
     /// The megamorphic stub's hash of its key, then the group it picks.
     pub(crate) lookup_hash: Register,
+    /// In the getter stub, the field its entry names, from the entry to
+    /// the field's load: entered after the send, whose level and key it
+    /// shares a register with, is done with both.
+    pub(crate) accessor_field: Register,
     /// The activation count (`MachineWord::DepthCount`) while a prologue,
     /// a return or the entry stub counts it.
     pub(crate) depth_count: Register,
@@ -168,6 +172,7 @@ impl Roles {
                 send_entry: RCX,
                 lookup_rule: RDX,
                 lookup_hash: RAX,
+                accessor_field: R10,
                 depth_count: RCX,
                 frame_extent: RAX,
                 stack_end: RDX,

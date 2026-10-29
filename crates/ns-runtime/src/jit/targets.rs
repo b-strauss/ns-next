@@ -27,11 +27,16 @@
 //! above the rule's tag (`inline_cache::rule_tag`), `callee_receiver` the
 //! receiver and `callee_class`, at a `super` site S and at a lexical one
 //! N -- `nil` where N does not exist.
+//!
+//! Beside them lie the stubs a cell names for a target that is no method
+//! with code (`assemble_accessor_stubs`): a getter, a quick method, and
+//! the leaf stub, which runs `act`'s arm through the leaf shim.
 
 use ns_assembler::{Assembled, Condition, Label, Memory, Width};
 
-use super::macro_assembler::{Abi, MacroAssembler};
-use super::stubs::{emit_miss, finish_stub, BlockWord};
+use super::leaves::Leaf;
+use super::macro_assembler::{Abi, MacroAssembler, Operand};
+use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};
 use crate::interpreter::inline_cache::cells::{
     BLOCK_BYTES, CELL_BYTES, CELL_WORDS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES, ROW_WORDS, VACANT_GUARD,
 };
@@ -321,6 +326,195 @@ pub(super) fn emit_group(macro_assembler: &mut MacroAssembler, mask: Memory) {
     assembler.load(Width::Word64, scratch, mask);
     assembler.and(hash, scratch);
 }
+
+/// How many fields have a getter stub of their own: a getter of a field
+/// past them runs through the leaf stub, as `act` runs it.
+pub(crate) const GETTER_STUBS: u32 = 64;
+
+/// How many parameter positions have a stub of their own: a quick
+/// method answering a parameter past them runs through the leaf stub.
+pub(crate) const PARAMETER_STUBS: u8 = 16;
+
+/// Where each entry of the accessor stubs lies in their code, as offsets
+/// from its start (`assemble_accessor_stubs`).
+pub(crate) struct AccessorEntries {
+    /// The getter of field `index`, by index.
+    pub(crate) getters: Vec<u32>,
+    /// The quick method answering parameter `position`, by position.
+    pub(crate) parameters: Vec<u32>,
+    /// The quick methods answering `nil`, `true` and `false`.
+    pub(crate) nil: u32,
+    pub(crate) true_constant: u32,
+    pub(crate) false_constant: u32,
+    /// The quick method answering its receiver.
+    pub(crate) receiver: u32,
+    /// The leaf stub (`Leaf::Act`).
+    pub(crate) act: u32,
+}
+
+/// The stubs a cell names for a target that is no method with code
+/// (`jit::cell_entry`), each what `Mutator::act_with_base` does for it and
+/// nothing more, entered as a callee is -- the frame register at the
+/// callee's register 0 on the send's slots, its arguments there, the
+/// receiver in `callee_receiver` -- and answering the send's value by
+/// `ret`, as a compiled callee's return does, having pushed nothing:
+///
+/// - a getter of a public or protected chain, whose cell's guard is the
+///   receiver's own dispatch id, so that the receiver's layout is the
+///   one the lookup found the field in: the receiver's field, once the
+///   receiver is checked to be an instance holding it, as
+///   `Heap::instance_field` checks it;
+/// - a quick method's constant, its receiver or its parameter
+///   (`MethodFastPath::Constant`, `Receiver`, `Parameter`);
+/// - the leaf stub, for every other target machine code runs this way --
+///   a setter, a private or `super` slot accessor, whose
+///   `Mutator::slot_level_holds` is the guard check, a primitive method
+///   or a mirror send of a leaf-safe row, a builtin class's accessor: the
+///   leaf runs `act`'s arm through the shim (`Leaf::Act`) and answers its
+///   value, or the word no value is when the arm would answer anything
+///   else, before it changed anything.
+///
+/// Every decline -- a receiver the getter's check refuses, the leaf
+/// stub's word that is no value -- refuses the call, before anything is
+/// written, so that the caller re-executes the send and the interpreter
+/// runs it.
+pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) {
+    let mut macro_assembler = MacroAssembler::new(abi);
+    let roles = macro_assembler.roles();
+    let layout = crate::heap::Heap::machine_layout();
+    let (field, answer, address) = (roles.accessor_field, roles.leaf_result, roles.idiom_scratch);
+    let receiver = roles.callee_receiver();
+    let assembler = macro_assembler.assembler();
+    let (decline, getter) = (assembler.label(), assembler.label());
+    let getters: Vec<Label> = (0..GETTER_STUBS)
+        .map(|index| {
+            let entry = assembler.label();
+            assembler.bind(entry);
+            assembler.move_immediate(field, u64::from(index));
+            assembler.jump(getter);
+            entry
+        })
+        .collect();
+    let parameters: Vec<Label> = (0..PARAMETER_STUBS)
+        .map(|position| {
+            let entry = assembler.label();
+            assembler.bind(entry);
+            assembler.load(
+                Width::Word64,
+                answer,
+                Memory {
+                    base: roles.frame,
+                    displacement: i32::from(position) * WORD_BYTES,
+                },
+            );
+            assembler.return_();
+            entry
+        })
+        .collect();
+    let mut constant = |word: u64| {
+        let entry = assembler.label();
+        assembler.bind(entry);
+        assembler.move_immediate(answer, word);
+        assembler.return_();
+        entry
+    };
+    let nil = constant(crate::heap::Immediate::NIL.bits());
+    let true_constant = constant(crate::heap::Immediate::boolean(true).bits());
+    let false_constant = constant(crate::heap::Immediate::boolean(false).bits());
+    let receiver_entry = assembler.label();
+    assembler.bind(receiver_entry);
+    assembler.move_register(answer, receiver);
+    assembler.return_();
+    // The getter: `instance_field`'s checks, then the load.
+    assembler.bind(getter);
+    macro_assembler.jump_unless_object(receiver, decline);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(address, receiver);
+    assembler.add(address, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        answer,
+        Memory {
+            base: address,
+            displacement: layout.header_displacement,
+        },
+    );
+    assembler.test_immediate(answer, layout.instance_format_bits);
+    assembler.jump_if(Condition::NotEqual, decline);
+    // The count of the words after the header, the class word first:
+    // the fields are one fewer.
+    assembler.shift_right_arithmetic(answer, layout.word_count_shift);
+    assembler.and_immediate(answer, WORD_COUNT_FIELD_MASK);
+    assembler.add_immediate(answer, -1);
+    assembler.compare(answer, field);
+    assembler.jump_if(Condition::BelowOrEqual, decline);
+    assembler.shift_left(field, WORD_SHIFT);
+    assembler.add(address, field);
+    assembler.load(
+        Width::Word64,
+        answer,
+        Memory {
+            base: address,
+            displacement: layout.fields_displacement,
+        },
+    );
+    assembler.return_();
+    // The leaf stub.
+    let act = assembler.label();
+    assembler.bind(act);
+    assembler.load(
+        Width::Word64,
+        roles.return_address,
+        Memory {
+            base: roles.stack_pointer,
+            displacement: 0,
+        },
+    );
+    macro_assembler.call_leaf(
+        Leaf::Act.index(),
+        [
+            Operand::Register(roles.frame),
+            Operand::Register(roles.return_address),
+            Operand::Immediate(0),
+        ],
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(answer, NO_VALUE_IMMEDIATE);
+    assembler.jump_if(Condition::Equal, decline);
+    assembler.return_();
+    assembler.bind(decline);
+    macro_assembler.exit(ExitKind::PushRefused, 0);
+    let assembled = finish_stub(macro_assembler);
+    let offset = |label: Label| match assembled.label_offsets[label.index()] {
+        Some(offset) => offset,
+        None => unreachable!("internal: every accessor entry is bound"),
+    };
+    let entries = AccessorEntries {
+        getters: getters.into_iter().map(offset).collect(),
+        parameters: parameters.into_iter().map(offset).collect(),
+        nil: offset(nil),
+        true_constant: offset(true_constant),
+        false_constant: offset(false_constant),
+        receiver: offset(receiver_entry),
+        act: offset(act),
+    };
+    (assembled, entries)
+}
+
+/// The eight bits of the header's word count, once shifted down.
+const WORD_COUNT_FIELD_MASK: i32 = 0xFF;
+
+/// How far a field's index is shifted to be its byte offset.
+const WORD_SHIFT: u8 = 3;
+
+/// The word no value is (`Word::NO_VALUE_BITS`), as an immediate operand.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the word is a tag over a payload of 0, asserted below"
+)]
+const NO_VALUE_IMMEDIATE: i32 = crate::heap::Word::NO_VALUE_BITS as i32;
+
+const _: () = assert!(crate::heap::Word::NO_VALUE_BITS < 8);
 
 /// These run machine code, so they are x64's whatever `cfg(ns_jit)` says.
 #[cfg(all(test, target_arch = "x86_64"))]

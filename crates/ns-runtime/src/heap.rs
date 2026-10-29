@@ -773,7 +773,19 @@ pub(crate) struct MachineLayout {
     pub(crate) small_float_index: u64,
     /// How far a constant's payload lies above its tag: its index.
     pub(crate) tag_bits: u8,
+    /// The header word's format bits, all clear exactly for an instance's
+    /// format, whose fields `Heap::instance_field` reads.
+    pub(crate) instance_format_bits: i32,
+    /// How far the header word's count of the words after it -- the class
+    /// word and the fields -- is shifted up; 255 there says the count is
+    /// in an overflow word, and is past every field a stub reads.
+    pub(crate) word_count_shift: u8,
+    /// An object's field 0's displacement from its offset.
+    pub(crate) fields_displacement: i32,
 }
+
+// `instance_format_bits` is a test for all-clear bits.
+const _: () = assert!(Format::FixedPointers as u64 == 0);
 
 /// Where a debug build's generation lies in a flags word, for machine
 /// code (`Heap::machine_flags`).
@@ -8429,6 +8441,13 @@ impl<'gc> Heap<'gc> {
         self.machine_words.get(MachineWord::SafepointRequested) != 0
     }
 
+    /// Whether a real request is pending -- a collection's, an
+    /// interrupt's -- rather than a stress mode's hold (`STRESS_HOLD`),
+    /// which the run loop takes at its next poll all the same.
+    pub(crate) fn real_safepoint_requested(&self) -> bool {
+        self.machine_words.get(MachineWord::SafepointRequested) == 1
+    }
+
     /// A request served (`Interpreter::safepoint`).
     pub(crate) fn clear_safepoint_request(&mut self) {
         self.machine_words.set(MachineWord::SafepointRequested, 0);
@@ -8540,6 +8559,9 @@ impl<'gc> Heap<'gc> {
             small_integer_index: SMALL_INTEGER_DISPATCH_INDEX as u64,
             small_float_index: FLOAT_DISPATCH_INDEX as u64,
             tag_bits: small_count(value::machine::TAG_BITS),
+            instance_format_bits: small(header::FORMAT_BITS),
+            word_count_shift: small_count(header::WORD_COUNT_SHIFT),
+            fields_displacement: displacement(FIELDS),
         }
     }
 
@@ -8793,6 +8815,19 @@ impl<'gc> Heap<'gc> {
         self.stack.innermost = innermost;
     }
 
+    /// Hands machine code the receiver of the send the miss leaf decided
+    /// to a target that is no method with code, for the stub that runs it
+    /// (`jit::stub_entry`), which reads no current class: `nil` stands in
+    /// for one.
+    #[cfg(ns_jit)]
+    pub(crate) fn hand_machine_receiver(&self, receiver: Value<'gc>) {
+        let receiver = self.store(receiver);
+        self.machine_words
+            .set(MachineWord::CalleeReceiver, receiver.bits());
+        self.machine_words
+            .set(MachineWord::CalleeClass, Word::NIL.bits());
+    }
+
     /// Hands machine code the receiver and the current class of the
     /// callee the miss leaf decided (`MachineWord::CalleeReceiver`,
     /// `MachineWord::CalleeClass`), which the miss stub passes to the
@@ -8813,6 +8848,13 @@ impl<'gc> Heap<'gc> {
     #[cfg(ns_jit)]
     pub(crate) fn machine_value(&self, bits: u64) -> Value<'gc> {
         self.load(Word::from_bits(bits))
+    }
+
+    /// The word `value` is in a frame register, which a leaf answers
+    /// machine code (`jit::leaves`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_word_of(&self, value: Value<'gc>) -> u64 {
+        self.store(value).bits()
     }
 
     /// Refuses machine code's read of `activation`'s dead register

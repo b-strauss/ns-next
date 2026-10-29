@@ -1335,6 +1335,17 @@ fn run_stretch<'gc>(
                 // machine code it resumes (`jit::resumed`).
                 let resume = std::mem::take(&mut handoff.resume_in_machine_code);
                 if resume || (program_counter == 0 && code.jit.is_armed()) {
+                    // A switch is a safepoint: a real request made meanwhile
+                    // -- the collection `garbageCollect` asks for before its
+                    // method returns -- is taken before machine code runs
+                    // again, which polls only at its loops and pushes, as it
+                    // is taken before the interpreter's next instruction.
+                    if mutator.heap.real_safepoint_requested() {
+                        if resume {
+                            mutator.heap.clear_compiled(activation);
+                        }
+                        break 'run;
+                    }
                     let switched = machine_code_switch(
                         mutator,
                         &mut handoff,
@@ -2221,7 +2232,7 @@ struct Sender {
 /// (`compiler::lower`'s `lower_setter_assign`; `docs/design/execution.md`,
 /// "Overlapping register windows").
 #[inline(always)]
-fn argument_window(
+pub(crate) fn argument_window(
     mutator: &mut Mutator<'_>,
     register_base: RegisterBase,
     argument_base: u16,

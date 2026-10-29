@@ -555,6 +555,74 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// `act_with_base`, as machine code's leaf stub runs it
+    /// (`inline_cache::act_at`): the value `act`'s arm answers for a target
+    /// the stub is named for (`jit::cell_entry`) -- a slot accessor on any
+    /// chain but a handler's, a quick method or a builtin class's accessor,
+    /// a primitive method or a send to the mirror of a leaf-safe row
+    /// (`MachineCall::Leaf`) -- and `None` for anything else the arm would
+    /// answer, a step to push or an error, and for every other target,
+    /// which the stub is never named for. Each arm it runs answers its
+    /// value or `None` before it changed anything, so that the interpreter
+    /// runs the send again as though machine code had not tried it: a
+    /// row's failure path, the futures seen through
+    /// (`future::after_a_failed_leaf`) among them, is the interpreter's.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn act_for_machine_code(
+        &mut self,
+        resolved: Resolved<'gc>,
+        receiver: Value<'gc>,
+        selector: Symbol,
+        arguments: Arguments<'_, 'gc>,
+    ) -> Option<Value<'gc>> {
+        use crate::builtins::primitive::{mirror_entry, MachineCall};
+        let handler = |chain: Chain| {
+            matches!(
+                chain,
+                Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand
+            )
+        };
+        let leaf_safe = |row| mirror_entry(row).machine_call == MachineCall::Leaf;
+        match &resolved {
+            Resolved::Method { method, chain, .. } if !handler(*chain) => match method.fast_path {
+                Some(MethodFastPath::Mirror(row)) if leaf_safe(row) => {
+                    return crate::interpreter::mirror::execute_method_for_machine_code(
+                        self, row, receiver, selector, arguments,
+                    );
+                }
+                Some(
+                    MethodFastPath::Constant(_)
+                    | MethodFastPath::Receiver
+                    | MethodFastPath::Parameter(_)
+                    | MethodFastPath::BuiltinClass(_),
+                ) => {}
+                _ => return None,
+            },
+            Resolved::Slot { chain, .. } if !handler(*chain) => {}
+            Resolved::Primitive {
+                primitive: Primitive::Mirror(row),
+                chain,
+                ..
+            } if !handler(*chain) && leaf_safe(*row) => {
+                return crate::interpreter::mirror::execute_sent_for_machine_code(
+                    self, *row, arguments,
+                );
+            }
+            _ => return None,
+        }
+        match self.act_with_base(
+            resolved,
+            FeedbackBase::NOT_ASSIGNED,
+            receiver,
+            selector,
+            arguments,
+        ) {
+            Ok(Step::Value(value)) => Some(value),
+            _ => None,
+        }
+    }
+
     /// A `doesNotUnderstand:` handler that is a method: activated on the
     /// message. `#[cold]` for the reason `resolve_does_not_understand` gives.
     #[cold]

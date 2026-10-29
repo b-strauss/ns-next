@@ -87,6 +87,13 @@ const DEAD_REGISTER_TAG: u64 = 0b110;
 impl Word {
     pub(crate) const NIL: Word = Word(NIL_WORD);
 
+    /// A word no `Value` is in any build -- the never-made tag `0b110`
+    /// over a payload of 0, which is not the debug build's dead register
+    /// either -- that a leaf answering a value or nothing answers for
+    /// nothing (`jit::leaves`).
+    #[cfg(ns_jit)]
+    pub(crate) const NO_VALUE_BITS: u64 = 0b110;
+
     /// What a debug build writes into a register no instruction has
     /// written since its frame was pushed or its callee returned
     /// (`heap.rs`'s `dead_register`): a word no `Value` can be, under the

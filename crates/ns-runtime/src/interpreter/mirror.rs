@@ -175,6 +175,82 @@ pub(crate) fn execute_method<'gc>(
     }
 }
 
+/// What a mirror send's leaf answers machine code
+/// (`send_inlined_for_machine_code`).
+pub(crate) enum MachineMirrorAnswer<'gc> {
+    /// The leaf's value, the send's.
+    Value(Value<'gc>),
+    /// The leaf declined: the send goes on at its failure block.
+    Failed,
+    /// Anything else -- a receiver that is not the mirror, an error, a
+    /// step, a decline once a future exists -- which the interpreter
+    /// runs, the send again from the start.
+    Exit,
+}
+
+/// `send_inlined`, for machine code's leaf (`jit::leaves`'s `mirror`) of a
+/// leaf-safe row (`MachineCall::Leaf`): its leaf's value, its decline
+/// while no future exists, and for everything else `Exit`, before
+/// anything changed -- the row's leaf declines or raises before it changes
+/// anything, and a decline once a program has made a future is seen
+/// through by the interpreter (`see_through_a_failed_row`), never here.
+pub(crate) fn send_inlined_for_machine_code<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: MirrorPrimitive,
+    mirror: Value<'gc>,
+    subject: Value<'gc>,
+    leaf_arguments: Arguments<'_, 'gc>,
+) -> MachineMirrorAnswer<'gc> {
+    if !mutator.is_vm_mirror(mirror) {
+        return MachineMirrorAnswer::Exit;
+    }
+    match run_leaf(mutator, primitive, subject, leaf_arguments) {
+        Some(Ok(Step::Value(value))) => MachineMirrorAnswer::Value(value),
+        None if !mutator.futures_made => MachineMirrorAnswer::Failed,
+        _ => MachineMirrorAnswer::Exit,
+    }
+}
+
+/// `execute_method`, for machine code's leaf stub: the leaf's value, and
+/// `None` for anything else -- a decline, whose activation of the method
+/// and whose futures seen through are the interpreter's, an error, a
+/// step.
+pub(crate) fn execute_method_for_machine_code<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: MirrorPrimitive,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: Arguments<'_, 'gc>,
+) -> Option<Value<'gc>> {
+    let leaf = mirror_entry(primitive).primitive;
+    match crate::builtins::execute(mutator, leaf, receiver, selector, arguments) {
+        Some(Ok(Step::Value(value))) => Some(value),
+        _ => None,
+    }
+}
+
+/// `execute_sent`, for machine code's leaf stub: the leaf's value, and
+/// `None` for anything else -- a wrong argument count's error, a decline,
+/// whose failure block and futures seen through are the interpreter's, an
+/// error, a step.
+pub(crate) fn execute_sent_for_machine_code<'gc>(
+    mutator: &mut Mutator<'gc>,
+    row: MirrorPrimitive,
+    arguments: Arguments<'_, 'gc>,
+) -> Option<Value<'gc>> {
+    let entry = mirror_entry(row);
+    if arguments.len() < 2 || arguments.len() - 2 != entry.leaf_arity() {
+        return None;
+    }
+    let subject = arguments.get(&mutator.heap, 0);
+    let mut view: &[Value<'gc>] = &[];
+    let rest = arguments.slice(1..arguments.len() - 1, &mut view);
+    match run_leaf(mutator, row, subject, rest) {
+        Some(Ok(Step::Value(value))) => Some(value),
+        _ => None,
+    }
+}
+
 /// A leaf that activates a block with "the send's own arguments" means the
 /// kernel send's -- the leaf's arguments -- not the mirror send's, which
 /// also carry the subject and the failure block.
