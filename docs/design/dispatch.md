@@ -1199,7 +1199,8 @@ cell's entry address is a function of its entry's `Target` and the JIT's
 state alone ([execution.md](execution.md), "Sends, returns and the exit
 that materializes"), so a cell copies what the lookup decided and decides
 nothing; when the JIT's state changes under an entry -- its callee
-compiled since the cell was written, or a body abandoned -- the cells it
+compiled since the cell was written, found never to be compiled, or a
+body abandoned -- the cells it
 reached are written afresh from their entries (`refresh_cells`,
 `refresh_cells_entering`). In a debug build every
 `NS_NEXT_STRESS_SCAVENGE` scavenge first checks every cell against its

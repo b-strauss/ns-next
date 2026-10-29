@@ -10007,11 +10007,13 @@ sends and the inline caches in machine code.
   handed over in the machine words (`CalleeReceiver`, `CalleeClass`); for
   a target that is no method with code it answers the stub its cell
   names; for everything else it refuses the call. **A site filled while
-  its callee had no code heals at its next miss** (decided on 2026-10-28): once the
-  callee has machine code the leaf writes afresh every cell the decision
-  went through -- the site's, its block's slot, the global row
-  (`InlineCaches::refresh_cells`) -- so that the next send calls the body
-  directly, as Cog links a send at `ceSend`.
+  its callee had no code heals at its next miss** (decided on 2026-10-28): the
+  leaf writes afresh every cell the decision went through -- the site's,
+  its block's slot, the global row (`InlineCaches::refresh_cells`) -- once
+  the callee has machine code, so that the next send calls the body
+  directly, as Cog links a send at `ceSend`, and once it never will --
+  refused, or exiting at once -- so that they name the refusing stub and
+  the next send exits at once rather than calling the miss leaf again.
 - **The exit materializes** (`jit/materialize.rs`): an exit at any depth
   of compiled frames jumps to the exit stub, which walks the return
   addresses above the entry's on the native stack, outermost first,
