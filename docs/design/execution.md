@@ -7378,11 +7378,15 @@ With the JIT on, the geometric mean over the twenty-two sources is
 `bench_send` -75.8%, `bench_loop` -60.6%, List -56.5%, Mandelbrot -29.8%,
 Json -21.6%, Sieve -4.5% -- the programs whose hot code runs whole in
 machine code: loops of sends to compiled methods, accessors, mirror
-methods and `SmallInteger` arithmetic. Thirteen are slower with their
-builds separated, by 0.9% to 3.7%: Havlak, DeltaBlue, NBody,
-DeltaBlueTon80, Bounce, Permute, Richards, RichardsTon80, Storage and the
-micro sources `bench_block`, `bench_megamorphic`, `bench_signal` and
-`bench_while`. Their hot code makes blocks, allocates or returns
+methods and `SmallInteger` arithmetic. In the tables, measured at
+`cbe7908f`, thirteen are slower with their builds separated, by 0.9% to 3.7%: Havlak, DeltaBlue,
+NBody, DeltaBlueTon80, Bounce, Permute, Richards, RichardsTon80, Storage
+and the micro sources `bench_block`, `bench_megamorphic`, `bench_signal`
+and `bench_while`. Havlak and Richards are no longer among them: with the
+leaf stub's slot path running (`ec531abe`, below), Havlak measures
+3,070 ms against `master`'s 3,176, 3.3% faster, and Richards 61.54 ms
+against 61.43, level -- three builds a side, five rounds. The others'
+hot code makes blocks, allocates or returns
 non-locally, which stage 4 is to bring into machine code; until then
 their bodies are called only or abandoned and run interpreted, so they run
 at the interpreter's speed -- and that is what is slower than `master`'s

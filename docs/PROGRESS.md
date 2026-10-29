@@ -6457,9 +6457,10 @@ abandoned. Measured with three builds a side against `master`
 ([execution.md](design/execution.md), "What sends in machine code
 moved"): the geometric mean over twenty-two sources -14.84% with the JIT
 on, `bench_send` -75.8%, `bench_loop` -60.6%, List -56.5%, Mandelbrot
--29.8% and Json -21.6%; thirteen sources slower by 0.9% to 3.7% with
-their builds separated, all programs whose hot code makes blocks or
-allocates and so runs interpreted, at the interpreter's speed -- which,
+-29.8%, Json -21.6% and Havlak -3.3%, Richards level; eleven sources
+slower by 0.9% to 3.7% with their builds separated, all programs whose
+hot code makes blocks or allocates and so runs interpreted, at the
+interpreter's speed -- which,
 with the JIT off, is 1.35% slower than `master`'s on the geometric mean,
 a cost of the stage's additions to the run loop and the push that is
 left open. The batch as first built ran Richards 2.6 times as long as
