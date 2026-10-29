@@ -15,7 +15,15 @@ when they were written.
 
 ## Next
 
-**Road step 8's fourth stage: closures, non-local return, allocation and
+**First, the cost of an entry into machine code**, decided before stage
+4 begins: where the fourteen nanoseconds of an entry at an interpreter's
+push go, and an entry designed against the prior art, which enters
+compiled code at every call, so that `jit::CALLED_ONLY` goes and a
+recursion rooted in an interpreted frame without a loop runs in machine
+code ("The road to a high-performance VM", step 8, "An entry into machine
+code costs too much").
+
+**Then road step 8's fourth stage: closures, non-local return, allocation and
 the write barrier in machine code** ([execution.md](design/execution.md),
 "Planned: the baseline JIT", "What the templates emit inline", "Stages"):
 `MakeClosure` and a closure's activation as a compiled call, a non-local
