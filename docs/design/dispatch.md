@@ -1145,7 +1145,11 @@ the second, so no group can come to hold one key twice — rather than
 asserted against on the send path. The two together keep the more recently
 *used*, not merely the more recently inserted, of two colliding keys — the
 property 3b's insertion did not have: it evicted the first probe whatever
-its use. Rejected: writing both probes, as Primordial Soup's
+its use. Only a `get` promotes, the interpreter's and the miss leaf's:
+machine code's megamorphic stub reads the cache's mirror and writes no
+row, so a second-slot hit there leaves the group's order as it was, and a
+key used only from machine code ages as though it were unused (below,
+"The cells beside the entries"). Rejected: writing both probes, as Primordial Soup's
 `InsertOrdinary` does (half the capacity); zapping the other probe on
 insert, as Cog does (discards other keys for a reason particular to Cog).
 `bench_megamorphic.ns` measures the probe this buys — one hash and one
@@ -1164,6 +1168,44 @@ number of groups is a power of two, 512; a debug build takes a size in
 entries from `NS_NEXT_GLOBAL_CACHE_ENTRIES`, which the suite uses to run
 every fixture with a cache of one group, where every insertion contends for
 the same two slots.
+
+#### The cells beside the entries
+
+Machine code reads the caches as data, not as the entries themselves, which
+lie in `Vec`s inside the mutator: every site's entry, every slot of a
+polymorphic block and every global cache entry has a **cell**
+(`inline_cache/cells.rs`), in a reservation of its own at a fixed address
+([memory.md](memory.md), "The cells' reservation"), written in the same
+function that writes its entry -- `advance`, `fill`, `invalidate`,
+`forget_freed`, `forget_families`, the global cache's `get` (whose
+promotion swaps the two rows with their entries), `insert`, `clear` and
+`retain`. A site's or a block slot's cell is four words: the guard the
+send compares -- the receiver's dispatch id, but for a `super` and a
+private lexical site S's or N's *application word*, the word the class
+object holds, which machine code reads without a table -- the entry
+address machine code calls, the `level` the hit walks up and the chain's
+start (`ChainStart`: the receiver's class, N or S, from the rule). A
+vacant, polymorphic or megamorphic site's cell guards nothing:
+`VACANT_GUARD` is all ones, which no compared word is (a header's guard
+has 22 bits, an application field a `SmallInteger` or `nil`), not
+`DispatchId::VACANT`'s 1, which a class of application 0 holds; a
+polymorphic site's cell names its block in `level`. The **global cache's
+mirror** is one row of eight words per entry -- guard (the key's dispatch
+id, for every rule, since that is what `GlobalCache::group` hashes),
+selector, rule word (`rule_word`: the rule's two-bit tag, a `Lexical`
+rule's N id above it), entry, level, chain start -- in the order of the
+entries, so the megamorphic stub probes the group the cache would. A
+cell's entry address is a function of its entry's `Target` and the JIT's
+state alone ([execution.md](execution.md), "Sends, returns and the exit
+that materializes"), so a cell copies what the lookup decided and decides
+nothing; when the JIT's state changes under an entry -- its callee
+compiled since the cell was written, or a body abandoned -- the cells it
+reached are written afresh from their entries (`refresh_cells`,
+`refresh_cells_entering`). In a debug build every
+`NS_NEXT_STRESS_SCAVENGE` scavenge first checks every cell against its
+entry (`InlineCaches::verify_cells`), allowing only a miss stub's
+address where the callee has been compiled since. Past 6,291,456 sites a
+family runs uncached, and the mirror holds at most 2^20 entries.
 
 #### Code families
 

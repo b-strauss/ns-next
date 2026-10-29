@@ -15,30 +15,32 @@ when they were written.
 
 ## Next
 
-**Road step 8's third stage: sends and the caches in machine code**
-([execution.md](design/execution.md), "Planned: the baseline JIT",
-"Inline caches", "Stages"): a machine-readable cell beside every
-`CacheEntry`, the send, miss, polymorphic and megamorphic stubs, a
-send's template that compares the receiver's guard with the cell's and
-calls through it, returns in machine code, and with them the native
-stack's room checked at the entry and the exit that walks the return
-addresses of nested compiled frames and materializes them. Its first two
-stages are built ("The baseline JIT's foundation"): `ns-memory`'s doubly
-mapped code zone and the entry into machine code, `ns-assembler` with
-the x64 encoder, and in `jit/` the macro assembler of the VM's idioms,
-the entry and exit stubs and the baseline compiler's one exhaustive
-`match`, whose templates cover moves, immediate literals, jumps with a
-poll on every back edge and `SmallInteger` arithmetic, and whose generic
-leaf runs the straight-line instructions that allocate. Every program
-measured level with `master` or faster ("What the baseline JIT's
-foundation moved"), since a body runs compiled only up to its first
-instruction without a template, usually its first send, and is entered
-only when its code can loop before it: stage 3 is where the JIT starts
-to pay. The stages after it, each measured against the tree before it:
-closures, non-local return, allocation and the write barrier; on-stack
-replacement, the polls and the depth count's measurement; the register
-cache; the AArch64 encoder under QEMU. Road step 8 as a whole, Cog's
-class, for x64 and arm64, is "The road to a high-performance VM" below.
+**Road step 8's fourth stage: closures, non-local return, allocation and
+the write barrier in machine code** ([execution.md](design/execution.md),
+"Planned: the baseline JIT", "What the templates emit inline", "Stages"):
+`MakeClosure` and a closure's activation as a compiled call, a non-local
+return and the unwinder from compiled frames, bump allocation in eden and
+the write barrier with its early outs inline, so that a setter, `at:put:`
+and the other stores run without a leaf call. Its first three stages are
+built ("The baseline JIT's foundation", "Sends, returns and the exit that
+materializes"): `ns-memory`'s doubly mapped code zone and the entry into
+machine code, `ns-assembler` with the x64 encoder, and in `jit/` the
+macro assembler of the VM's idioms and its register roles, the stubs and
+the baseline compiler's one exhaustive `match`; a cached send calls
+through a machine-readable cell beside its cache entry into the callee's
+machine code or a stub, the callee returns by `ret`, the miss leaf
+compiles a callee from inside machine code and heals the cells it went
+through, and an exit at any depth materializes every compiled frame.
+What stage 3 measured is "What sends in machine code moved": where
+machine code runs whole -- loops of sends, accessors and arithmetic --
+it is several times the interpreter's speed; where it meets a block, an
+allocation or a non-local return it exits, and a body that keeps exiting
+is abandoned to the interpreter, so that those programs run at about the
+interpreter's speed until stage 4 removes the exits. The stages after it,
+each measured against the tree before it: on-stack replacement, the polls
+and the depth count's measurement; the register cache; the AArch64
+encoder under QEMU. Road step 8 as a whole, Cog's class, for x64 and
+arm64, is "The road to a high-performance VM" below.
 Road step 7 is complete: 7c wrote the contract the JIT tiers build
 to ([execution.md](design/execution.md), "Planned: the deoptimization
 contract"). The step between 7 and 8 is built: `Closure>>whileTrue:` and
@@ -367,22 +369,39 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   contract of 7c, designed ([execution.md](design/execution.md),
   "Planned: the baseline JIT"), its first two stages built (2026-10-27,
   [their plan](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md);
-  "The baseline JIT's foundation"), stage 3 next ("Next" above). Left to
-  it, and measured: whether the depth count lives in a machine register
-  while machine code runs, written back at the exit, or stays in memory
-  ("Planned: the deoptimization contract", "Safepoints and the depth
-  limit"); whether a send calls through its cache cell or through a
-  patched direct call; and the code zone's default size, 16 MiB today
-  (`jit::DEFAULT_ZONE_BYTES`), a first guess. What the foundation leaves
-  to the stages after it (noted in its reviews, 2026-10-27):
-  - **Which bodies are entered, measured.** A body is entered when its
-    code can reach a return, a compiled send or a backward jump before its
-    first exit (`jit/baseline.rs`,
-    `reaches_a_return_a_send_or_a_loop_before_an_exit`); code that exits
-    after a few straight-line instructions cost up to 31% on the send
-    benchmarks ("What the baseline JIT's foundation moved"). Whether the
-    rule is the right one for the stage's benchmarks is still to be
-    measured.
+  "The baseline JIT's foundation"), its third, sends and the caches in
+  machine code, built (2026-10-29,
+  [its plan](superpowers/plans/2026-10-28-1928-jit-sends.md); "Sends,
+  returns and the exit that materializes"), stage 4 next ("Next" above).
+  Left to it, and measured: whether the depth count lives in a machine
+  register while machine code runs, written back at the exit, or stays in
+  memory ("Planned: the deoptimization contract", "Safepoints and the
+  depth limit"); whether a send calls through its cache cell or through a
+  patched direct call, which stage 3's measurement could not isolate
+  ("What sends in machine code moved"); and the code zone's default size,
+  16 MiB today (`jit::DEFAULT_ZONE_BYTES`), a first guess. What the
+  stages so far leave to the ones after them (noted in their reviews,
+  2026-10-27 to 2026-10-29):
+  - **The exit budget is a constant** (`jit::EXIT_BUDGET`, 64), chosen,
+    not measured: a body abandoned after 64 exits stays interpreted for
+    good, even where the exits came from a phase of the program that has
+    passed, and a body that exits less often than that but on most of its
+    entries keeps paying. Once stage 4 runs closures in machine code, most
+    exits go, and whether the budget, a rate, or nothing is right is to be
+    measured again.
+  - **A leaf call costs more than the interpreter's step for the same
+    target**: the leaf stub's leaf decides the send again
+    (`inline_cache::act_at`) for every target but a slot accessor hit on
+    its site's own cell -- a private or `super` accessor reached through a
+    block's cell or a global row, a builtin class's accessor, a leaf-safe
+    mirror send -- writing a frame for a sender machine code pushed, and
+    the mirror method leaf finds its send's selector and argument count by
+    a hash lookup of the call's return address (`JitState::call_site`),
+    which with the leaf's own work is about 6% of Havlak's time. A private
+    accessor's own stub, its guard check in machine code, the selector and
+    argument count where the leaf can read them without a lookup, and the
+    store, `at:` and `at:put:` in machine code with stage 4's write
+    barrier would remove most of it.
   - **`jit::entered` is `#[cold]`**, right while almost every push of a
     compiled body only counts; once templates make entering the common
     path of a compiled body's push, its placement is to be measured
@@ -397,9 +416,10 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     the slot holds code per zone or the stale copy is reclaimed.
   - **`load_frame_register` has no unchecked variant.** Every frame
     register a template loads is checked against the dead-register poison
-    in a debug build, as the interpreter checks a read; a copy the
-    interpreter does not treat as a read -- placing a send's argument
-    slots -- needs a load without the check, with stage 3's sends.
+    in a debug build, as the interpreter checks a read; a send's argument
+    placement reads only registers the interpreter reads, so stage 3
+    needed none, but a copy the interpreter does not treat as a read
+    would.
   - **The idioms' scratch register is guarded by a `debug_assert!` alone**
     (`r11`, `load_frame_register`): a template that kept a value in it
     across an idiom would be found only by a debug build that reaches it.
@@ -417,6 +437,61 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     its safety section asks nothing of its caller; the leaf shim could be
     `unsafe extern "C"`; `crates/ns-assembler/tests/encoding_sources.rs`
     reads a raw string as an ordinary one.
+  - **What stage 3's reviews left** (2026-10-28 and 2026-10-29), none of
+    them a wrong outcome:
+    - *The architecture scan's blind spots*: `tests/jit_architecture_split.rs`
+      sees an `x64` path or `use`, not a `Register(n)` built directly, a
+      register re-exported from `macro_assembler.rs`, or an alias declared
+      outside `jit/`.
+    - *The compiled bit outlives its meaning*: a frame resumed in machine
+      code that exits at its own instruction, or a switch that returns for
+      a requested safepoint, keeps the bit, so the frame re-enters machine
+      code at its next send's return; valid, since a baseline frame is the
+      interpreter's at every boundary, but `FrameFlags::compiled`'s
+      documentation says "stopped in machine code" (`heap/frames.rs`).
+    - *The miss leaf counts an entry the interpreter counts again* when it
+      refuses a callee without code, so a body first reached from machine
+      code is compiled at its first real entry.
+    - *Verification is loose in two places*: `verify_cells` accepts the miss
+      stub's address for any expected entry, not only for a method that may
+      be compiled; `verify_application_ids`'s check past the bound is
+      vacuous; and no test pins why `VACANT_GUARD` is all ones.
+    - *The polymorphic stub jumps to any entry but its own* on a
+      `VACANT_GUARD` cell; only the megamorphic stub's can be there today.
+    - *A non-private lexical site computes N on every guard mismatch*,
+      though only the megamorphic probe needs it, and the miss block takes
+      the receiver by value (a possible store-forwarding stall); neither is
+      measured. `vm::run` gained 48 instructions in its miss blocks.
+    - *Statistics*: a stub's hit is not counted in `compiled_calls`, and
+      `compiled_calls` counts calls a prologue then refused.
+    - *A switch gives up one resumption* just after a served collection,
+      since `Heap::real_safepoint_requested` still answers `true` before
+      the request is cleared.
+    - *A host that toggles a stress mode* overwrites a pending real
+      safepoint request (debug builds only).
+    - *The depth words rest on convention*: `Mutator::depth_reserve` is
+      still `pub(crate)`, so that every change goes through
+      `set_depth_reserve`, which writes `DepthLimit`, is a rule no type
+      holds; the immediates' arrays are typed `[_; 5]` beside
+      `IMMEDIATE_COUNT`; and `an_immediate_class_word_survives_a_compaction`
+      says it covers the move stress mode's move, which it does not run.
+    - *Tests*: `send_recursion_overflow.ns` pins the overflow depth to the
+      nearest thousand; no test pins that an uncached send, a
+      declaration's own lexical send or an exit row's `SendMirror` does not
+      count as a transfer; no JIT test pins that a requested safepoint is
+      taken at a compiled push and return; the miss leaf's compile on the
+      native stack within `NATIVE_STACK_NEED`'s 64 KiB leaf allowance is
+      not measured at depth in a debug build.
+    - *Wording*: the five object rows of `builtins/primitive.rs` share one
+      comment, part of it false for each; `application_ids.rs`'s rationale
+      for the table's bound is imprecise; `jit::baseline::lower`'s
+      documentation does not name `Lowering::Transfer`.
+    - *Smaller costs*: the cells' vacate helpers build a temporary `Vec`;
+      `describe_activations` runs on every unhandled error for a test
+      hook; `emit_group` uses `multiply_checked` as a plain multiply,
+      four instructions on AArch64; the BSD stack-bounds path is built by
+      no gate; the global mirror reserves 64 MiB of address space for
+      2^20 rows where 1,024 is the default.
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class.
   - **The home of a closure created in an inlined scope** (noted with the
@@ -1285,6 +1360,23 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **The interpreter is 1.35% slower than before stage 3** (2026-10-29),
+  with the JIT off, on the geometric mean over twenty-two sources, twelve
+  of them slower with their builds separated, `bench_megamorphic.ns` the
+  most at +3.6%, then Sieve +3.1%, `bench_while.ns` +2.8%, Permute +2.5%,
+  Json +2.2%, DeltaBlue and Bounce +2.0% ([execution.md](design/execution.md),
+  "What sends in machine code moved"); with the JIT on, the programs whose
+  hot code runs interpreted carry the same cost. Two causes were found and
+  fixed (the miss path's store-forwarding stall, a shared accessor
+  helper); a bisection of `bench_while.ns` with three builds a side puts
+  the rest across tasks 5 to 8 of the stage's plan -- 50.05 ms at
+  `master`, 50.50 at `c395299e`, 51.28 at `ad3b9eb7`, 51.82 at
+  `cbe7908f` -- where the run loop's switch gained the resumption flag and
+  the real-safepoint test, the push and the pop count the depth in the
+  machine words, the return reads the caller's compiled bit, and `vm::run`
+  grew from 8,065 to 8,073 instructions; none of it was isolated. A
+  bisection commit by commit with `cargo asm` of `vm::run`, `push_sent`
+  and `pop_activation` at each is the next step.
 - **`vm::run`'s stack frame grew from 744 to 904 bytes** (2026-10-26)
   when every raising instruction came to store its program counter
   before it unwinds (`vm::raise`, which passes the index through the
