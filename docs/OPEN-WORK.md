@@ -382,17 +382,20 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   16 MiB today (`jit::DEFAULT_ZONE_BYTES`), a first guess. What the
   stages so far leave to the ones after them (noted in their reviews,
   2026-10-27 to 2026-10-29):
-  - **The exit budget is a constant** (`jit::EXIT_BUDGET`, 64), chosen,
-    not measured: a body abandoned after 64 exits stays interpreted for
-    good, even where the exits came from a phase of the program that has
-    passed, and a body that exits less often than that but on most of its
-    entries keeps paying. Once stage 4 runs closures in machine code, most
-    exits go, and whether the budget, a rate, or nothing is right is to be
-    measured again.
+  - **The exit budget is a lifetime count** (`jit::EXIT_BUDGET`, 64),
+    chosen, not measured, and it never decays: a hot body that exits once
+    in ten thousand entries is abandoned for good after its sixty-fourth
+    exit, however rare, and abandonment cascades -- every compiled caller's
+    call of it is refused from then on, an exit of the caller's, so the
+    callers spend their budgets and are abandoned in turn, up the region,
+    until a long-running program whose one rare slow path exits ends
+    interpreted. Once stage 4 runs closures in machine code most exits go;
+    whether a budget per entries (a rate), a decaying count, or nothing is
+    right is to be measured then.
   - **A leaf call costs more than the interpreter's step for the same
     target**: the leaf stub's leaf decides the send again
-    (`inline_cache::act_at`) for every target but a slot accessor hit on
-    its site's own cell -- a private or `super` accessor reached through a
+    (`inline_cache::act_at`) for every target but a slot accessor its send
+    hit on its site's own cell directly -- a private or `super` accessor reached through a
     block's cell or a global row, a builtin class's accessor, a leaf-safe
     mirror send -- writing a frame for a sender machine code pushed, and
     the mirror method leaf finds its send's selector and argument count by

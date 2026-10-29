@@ -6488,6 +6488,8 @@ outcome changed; eight goldens were added under `goldens/runtime/jit/`.
   stub's lookup, `Value`'s leaf-safe rows, the mirror method stub, the
   abandoned body, the miss path's stall and the interpreter's accessors.
 - `fb4a18f5` -- the tests under `release-checks` and every stress mode.
+- `ec531abe` -- the leaf stub's slot path reads its own send's site,
+  which it had not: Havlak -6.1% and Richards -2.1% afterwards.
 - The documents' commit after them.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step

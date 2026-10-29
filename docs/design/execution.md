@@ -7474,9 +7474,19 @@ measurement above:
   list, and the cache's decision of it. The setter stub's store leaf takes
   the receiver, the field and the value, and stores through the heap's
   store accessor: `bench_loop` from 5.15 ms to 0.81. The leaf stub's leaf
-  finds its send by a table of every call's return address, reads it
-  without decoding, and runs a slot accessor hit on its site's own cell
-  straight from the entry.
+  finds its send by a table of every call's return address and reads it
+  without decoding, which is what the gains of this item and of the
+  abandonment below owe to the leaf stub's leaf: its path for a slot
+  accessor hit on the site's own cell, as first built, read the
+  `send_cells` role, which a direct hit left at site 0's cell and the miss
+  leaf clobbered, so it never ran but at site 0 (where no slot accessor
+  lay) and could have run another site's entry. With the send entering
+  its callee with its own site's cell and the miss stub clearing the role
+  (`ec531abe`), the path runs: measured afterwards, three builds a side,
+  five rounds, against the tree without it working, Havlak 3,269 ms to
+  3,070 (-6.1%, now 3.4% faster than `master`'s 3,176), Richards 62.88 to
+  61.54 (-2.1%, level with `master`), `bench_loop` 0.813 to 0.806,
+  DeltaBlue level (616.8 and 616.6).
 - **Exits on every turn of a loop**: `nil == x`, Richards's most frequent
   test, reached `Value>>=`, whose mirror row was not leaf-safe, so the
   call was refused and the caller materialized and resumed, 95,000 times
@@ -9966,13 +9976,16 @@ sends and the inline caches in machine code.
   arguments read off the send's slots; the leaf stub (`Leaf::Act`) for
   every other target machine code runs this way -- a private or `super`
   slot accessor, whose guard check runs as `act` runs it, straight from
-  the site's entry when the hit was on the site's own cell, a primitive
+  the site's entry when the send hit its site's own cell directly, a primitive
   that is a leaf-safe mirror send, a builtin class's accessor; and the
   refusing stub, which exits so that the interpreter runs the send. Every
   decline refuses the call before anything is written. A stub stores
-  into no frame. The leaf stub's leaf finds a slot accessor hit on its
-  site's own cell from the cell's address, which the send leaves in its
-  role; every other leaf a callee calls finds the send by its call's
+  into no frame. A send enters its callee with its own site's cell's
+  address in the `send_cells` role, a stub with the block's cell or the
+  global row it found, and the miss stub with 0, since after a miss the
+  site's entry need not be the decision for this receiver; the leaf
+  stub's leaf runs a slot accessor straight from the entry only for a
+  site's own cell. Every other leaf a callee calls finds the send by its call's
   return address in a table of every installed call
   (`JitState::returns`), reading it without decoding the instruction.
 - **The miss leaf** (`Leaf::Miss`, `inline_cache::decide_at`): decides the
