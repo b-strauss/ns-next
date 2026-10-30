@@ -1401,7 +1401,7 @@ impl<'code> LastSet<'code> {
     }
 
     /// Checks that a callee lies on the frame's slots, where `callee`, its
-    /// first word and its header, says one does, only while the frame
+    /// first word, its header and whether it runs a block, says one does, only while the frame
     /// stands at the send whose slots end at that header -- or, for a
     /// block a compiled send's closure stub placed past the slots, whose
     /// first word is where they end (`jit::targets::ClosureStub`) --
@@ -1410,8 +1410,8 @@ impl<'code> LastSet<'code> {
     /// costs a comparison.
     #[cfg(debug_assertions)]
     #[inline(always)]
-    fn check_callee(&mut self, start: usize, callee: Option<(usize, usize)>) {
-        let Some((callee_start, callee_header)) = callee else {
+    fn check_callee(&mut self, start: usize, callee: Option<(usize, usize, bool)>) {
+        let Some((callee_start, callee_header, block)) = callee else {
             return;
         };
         let slot_end = match self.slot_end {
@@ -1419,9 +1419,8 @@ impl<'code> LastSet<'code> {
             None => self.decode_slot_end(),
         };
         debug_assert!(
-            slot_end
-                .is_some_and(|slot_end| start + slot_end == callee_header
-                    || start + slot_end == callee_start),
+            slot_end.is_some_and(|slot_end| start + slot_end == callee_header
+                || (block && start + slot_end == callee_start)),
             "internal: a callee lies on its sender's slots only while the sender stands at \
              the send"
         );
@@ -6531,6 +6530,14 @@ impl<'gc> Heap<'gc> {
         self.stack.frames.ordinary_end()
     }
 
+    /// Makes every push of the run loop's seat the ordinary end at the
+    /// stack's new top, the pushed frame's window end, for a test of what
+    /// machine code does at that edge (`frames::FrameStack`).
+    #[cfg(test)]
+    pub(crate) fn set_seat_ordinary_end_at_top(&mut self, seat: bool) {
+        self.stack.frames.set_seat_ordinary_end_at_top(seat);
+    }
+
     /// The guards a closure's and a frame's headers carry, read off the
     /// `Closure` and `Activation` classes, so a fast bump writes them
     /// without looking them up (`Mutator::refresh_immediate_dispatch_ids`,
@@ -10049,6 +10056,10 @@ impl<'gc> Heap<'gc> {
         // The start and the header of the frame walked just before: the
         // callee of the frame walked now.
         let mut callee: Option<(usize, usize)> = None;
+        // Whether that callee runs a block, which a closure stub may lay
+        // past its sender's slots.
+        #[cfg(debug_assertions)]
+        let mut callee_is_block = false;
         let mut last: Option<LastSet<'_>> = None;
         let mut offset = stack.innermost;
         loop {
@@ -10073,7 +10084,9 @@ impl<'gc> Heap<'gc> {
             #[cfg(debug_assertions)]
             set.check_callee(
                 start,
-                callee.filter(|(callee_start, _)| *callee_start < end),
+                callee.filter(|(callee_start, _)| *callee_start < end).map(
+                    |(callee_start, callee_header)| (callee_start, callee_header, callee_is_block),
+                ),
             );
             match &set.tainted {
                 Some(tainted) => {
@@ -10099,6 +10112,10 @@ impl<'gc> Heap<'gc> {
             }
             claim(&mut claimed, start..end);
             callee = Some((start, header));
+            #[cfg(debug_assertions)]
+            {
+                callee_is_block = stack.flags(offset).kind_tag == frames::kind_tag::CLOSURE;
+            }
             match caller {
                 Some(caller) => offset = caller,
                 None => break,

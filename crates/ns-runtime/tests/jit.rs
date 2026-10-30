@@ -3827,7 +3827,7 @@ const SHAPES: &str = indoc! {"
 
 ns_runtime::for_each_lowering! {
     /// A block a quick method activates is called by a closure stub, its
-    /// frame shifted past the slots it takes no argument from: by the
+    /// frame shifted past all the send's slots: by the
     /// third run no send of `SHAPES` leaves machine code, and every one
     /// answers what the interpreter's does.
     fn every_block_a_quick_method_activates_runs_without_an_exit(lowering) {

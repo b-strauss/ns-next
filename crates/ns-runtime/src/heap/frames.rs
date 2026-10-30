@@ -455,6 +455,10 @@ pub(super) struct FrameStack {
     /// The machine words, whose `OrdinaryStackEnd` mirrors `ordinary_end`
     /// for machine code (`set_ordinary_end`).
     machine_words: MachineWords,
+    /// Whether every push seats `ordinary_end` at the new top, for a test
+    /// that puts a frame's window end exactly at the ordinary end.
+    #[cfg(test)]
+    seat_ordinary_end_at_top: bool,
 }
 
 impl FrameStack {
@@ -479,6 +483,8 @@ impl FrameStack {
             ordinary_limit: limit - limit / RESERVE_FRACTION,
             ordinary_end: 0,
             machine_words,
+            #[cfg(test)]
+            seat_ordinary_end_at_top: false,
         })
     }
 
@@ -489,6 +495,22 @@ impl FrameStack {
         self.ordinary_end = end;
         self.machine_words
             .set(MachineWord::OrdinaryStackEnd, end as u64);
+    }
+
+    /// Makes every push from now on seat the ordinary end at the new top
+    /// (`true`), or leave it at the committed end, for a test. A push past
+    /// a seated end grows the stack as any push past it does.
+    #[cfg(test)]
+    pub(super) fn set_seat_ordinary_end_at_top(&mut self, seat: bool) {
+        self.seat_ordinary_end_at_top = seat;
+    }
+
+    /// The test's seat of the ordinary end at the top after a push.
+    #[cfg(test)]
+    fn seat_if_asked(&mut self) {
+        if self.seat_ordinary_end_at_top {
+            self.set_ordinary_end(self.top);
+        }
     }
 
     /// `ordinary_end`, for a test that holds it to its machine word.
@@ -537,6 +559,8 @@ impl FrameStack {
             self.grow(words, self.ordinary_limit)?;
         }
         self.top = end;
+        #[cfg(test)]
+        self.seat_if_asked();
         let (below, frame) = self.reservation.accessible_mut()[..end].split_at_mut(start);
         Ok((start, below, frame))
     }
@@ -566,6 +590,8 @@ impl FrameStack {
             self.grow_to(end, self.ordinary_limit)?;
         }
         self.top = self.top.max(end);
+        #[cfg(test)]
+        self.seat_if_asked();
         Ok(&mut self.reservation.accessible_mut()[start..end])
     }
 

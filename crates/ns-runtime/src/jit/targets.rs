@@ -1024,10 +1024,10 @@ fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, d
         class,
         field(row, layout.frame_current_class_displacement),
     );
-    // Nothing declines past here: the frame register past the send's
-    // slots, which the flags word records beside `counted`, so that the
-    // block writes none of them (`ClosureStub`).
-    let copied = assembler.label();
+    // The frame register past the send's slots, which the flags word
+    // records beside `counted`, so that the block writes none of them
+    // (`ClosureStub`).
+    let (copied, copy) = (assembler.label(), assembler.label());
     assembler.move_register(address, counted);
     assembler.shift_left(address, WORD_SHIFT);
     assembler.add(address, roles.frame);
@@ -1035,6 +1035,32 @@ fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, d
     // `cull:`'s receiver its prologue places.
     assembler.compare_immediate(argument, small_demand(no_value));
     assembler.jump_if(Condition::NotEqual, copied);
+    // The copies lie past the sender's window, where nothing has made sure
+    // the stack is committed: only the block's prologue checks its frame's
+    // room. So they are made only where they end at or below the ordinary
+    // end, which never lies past the committed end, and the call declines
+    // otherwise, before anything is written, so that the interpreter's
+    // push grows the stack.
+    assembler.move_register(row, word);
+    assembler.shift_left(row, WORD_SHIFT);
+    assembler.add(row, address);
+    let stack_base = macro_assembler.block_word(BlockWord::StackBase);
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, roles.idiom_scratch, stack_base);
+    assembler.subtract(row, roles.idiom_scratch);
+    macro_assembler.load_machine_words(roles.idiom_scratch);
+    let assembler = macro_assembler.assembler();
+    assembler.load(
+        Width::Word64,
+        roles.idiom_scratch,
+        MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::OrdinaryStackEnd),
+    );
+    assembler.shift_left(roles.idiom_scratch, WORD_SHIFT);
+    assembler.compare(row, roles.idiom_scratch);
+    assembler.jump_if(Condition::BelowOrEqual, copy);
+    assembler.jump(decline);
+    // Nothing declines past here.
+    assembler.bind(copy);
     for position in 0..i32::from(CLOSURE_VALUE_ARITIES) - 1 {
         assembler.compare_immediate(word, position);
         assembler.jump_if(Condition::LessOrEqual, copied);

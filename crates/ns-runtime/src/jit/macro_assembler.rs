@@ -410,6 +410,11 @@ impl MacroAssembler {
         self.body_words_label
     }
 
+    /// How many data words the body has taken.
+    pub(crate) fn body_word_count(&self) -> usize {
+        self.body_words
+    }
+
     /// `target :=` the body's data word `index`. Keeps the flags.
     pub(crate) fn load_body_word(&mut self, target: Register, index: usize) {
         let (label, displacement) = self.body_word(index);

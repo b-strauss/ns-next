@@ -11077,10 +11077,24 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
     in two bits of the flags word past every field the interpreter reads
     (`frames::CALL_SHIFT_BITS`), a leaf's view of the frame keeps them,
     and the block's return shifts the frame register back before its
-    `ret`. The block's arguments lie right past the slots: a block row's,
-    the send's own, copied there from the slots, `cull:`'s one, the
-    receiver, which the prologue places once its checks have passed, so
-    that a refused call writes nothing. The walk places a block a compiled
+    `ret`. The block's arguments lie right past the slots: `cull:`'s one,
+    the receiver, which the prologue places once its checks have passed;
+    a block row's, the send's own, copied there from the slots by the
+    stub, before the prologue's check of the frame's room. So the stub
+    copies them only where they end at or below the ordinary end
+    (`MachineWord::OrdinaryStackEnd`, never past the committed end), and
+    declines otherwise, before anything is written, so that the
+    interpreter's push grows the stack. A call the prologue then refuses
+    has written nothing the sender reads: only those copies, past the
+    slots, in registers whose words the callee's window covers and the
+    leftover analysis counts dead after any send (`compiler.md`, "What a
+    callee leaves"), and which the interpreter's push of the block,
+    re-executing the send, overwrites. A block frame a stub lays reaches
+    up to three words higher than the interpreter's push of the same
+    block on the slots -- the arguments it takes, copied or placed past
+    them -- so no argument about the stack's room may assume the
+    interpreter's layout for a frame machine code called; the block's
+    prologue checks the room of the frame where it lies. The walk places a block a compiled
     send called past the slots and its arguments, and one an interpreter's
     send called (`jit::called_closure`), whose arguments are the slots, on
     them (`materialize`'s `Callee`). No second return address lies on the

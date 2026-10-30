@@ -50,7 +50,9 @@ const _: () = assert!(
 
 /// The callee's prologue, at its machine entry -- the body's first byte --
 /// where a compiled call enters it, the frame register at the callee's
-/// register 0 on the send's slots and the call's return address on top of
+/// register 0 -- on the send's slots, or for a block a closure stub calls
+/// past them, where the stub copied a block row's arguments
+/// (`targets::ClosureStub`) -- and the call's return address on top of
 /// the native stack: the checks the interpreter's push makes, each of
 /// which, failing, refuses the call before anything is written, so that
 /// the caller re-executes the send and the interpreter decides what the

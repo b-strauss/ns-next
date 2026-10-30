@@ -35,9 +35,11 @@ pub(crate) struct BaselineBody {
     pub(crate) exits_at_once: bool,
     /// Whether the code reifies its frame (`reifies_its_frame`).
     pub(crate) reifies: bool,
-    /// The offset in the code of its first data word, past its last
-    /// instruction, if it has any (`MacroAssembler::take_body_words`).
-    pub(crate) words: Option<u32>,
+    /// The offsets in the code of its first data word, past its last
+    /// instruction, and of the byte past its last, if it has any
+    /// (`MacroAssembler::take_body_words`): the alignment padding after
+    /// them is no word's.
+    pub(crate) words: Option<std::ops::Range<u32>>,
 }
 
 /// Whether `code` reifies its frame: whether it makes a closure, whose
@@ -1048,11 +1050,15 @@ pub(crate) fn compile(
     let exits_at_once = !reaches_before_an_exit(code, &exits, &transfers);
     body.emit_backward_branches();
     let words = body.macro_assembler.body_words_label();
+    let word_bytes =
+        u32::try_from(body.macro_assembler.body_word_count() * 8).map_err(|_| Refusal::ZoneFull)?;
     let assembled = body
         .macro_assembler
         .finish()
         .map_err(|_| Refusal::Unassembled)?;
-    let words = words.and_then(|label| assembled.label_offsets[label.index()]);
+    let words = words
+        .and_then(|label| assembled.label_offsets[label.index()])
+        .map(|start| start..start + word_bytes);
     let map = program_counter_map(&assembled, &body.starts, &body.call_returns);
     Ok(BaselineBody {
         code: assembled,

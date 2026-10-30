@@ -528,9 +528,11 @@ struct InstalledBody {
     /// The offsets of its first byte and of the byte past its last.
     start: u32,
     end: u32,
-    /// The offset of its first data word (`MacroAssembler::take_body_words`),
-    /// past its last instruction; `end` for a body that has none.
+    /// The offsets of its first data word (`MacroAssembler::take_body_words`),
+    /// past its last instruction, and of the byte past its last word, short
+    /// of the padding after them; both `end` for a body that has none.
     words: u32,
+    words_end: u32,
     map: ProgramCounterMap,
 }
 
@@ -857,7 +859,7 @@ impl JitState {
         let Some(body) = self.installed_body_at(code_address) else {
             unreachable!("internal: body words are written for an installed body");
         };
-        let (start, end) = (body.words, body.end);
+        let (start, end) = (body.words, body.words_end);
         let Some(zone) = self.zone.as_mut() else {
             unreachable!("internal: an installed body lies in a zone");
         };
@@ -1368,11 +1370,12 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
     }
 }
 
-/// The most arguments a send activating a block that takes fewer may
-/// place: a closure stub shifts the block's frame up by the slots it
-/// takes none from, which its flags word holds in two bits
-/// (`frames::CALL_SHIFT_BITS`). Every such quick method of the core
-/// library takes at most two.
+/// The most arguments a send whose quick method activates a block may
+/// place: a closure stub shifts the block's frame up past all the send's
+/// slots, which its flags word holds in two bits
+/// (`frames::CALL_SHIFT_BITS`), and so does the stub of a block row, whose
+/// arities `targets::CLOSURE_VALUE_ARITIES` keeps within the same bound.
+/// Every such quick method of the core library takes at most two.
 pub(crate) const SHIFTED_SLOTS: u8 = 3;
 
 /// The index of the closure stub of `^<parameter> value` or
@@ -1659,7 +1662,8 @@ fn compile(
         reifies: body.reifies,
         start: offset.0,
         end: offset.0 + length,
-        words: offset.0 + body.words.unwrap_or(length),
+        words: offset.0 + body.words.as_ref().map_or(length, |words| words.start),
+        words_end: offset.0 + body.words.as_ref().map_or(length, |words| words.end),
         map: body.map,
     });
     let first_instruction = CodeOffset(offset.0 + first_instruction);
@@ -2849,6 +2853,7 @@ mod tests {
             let (first, second) = (&state.bodies[0], &state.bodies[1]);
             let alignment = crate::jit::macro_assembler::BODY_WORDS_ALIGNMENT;
             assert!(first.words < first.end, "the body has data words");
+            assert_eq!(first.words_end - first.words, 24, "one site's three words");
             assert_eq!(first.words % alignment, 0, "the words start a line");
             assert_eq!(first.end % alignment, 0, "the words end a line");
             let last_instruction = first
@@ -2892,6 +2897,87 @@ mod tests {
                     "a zone of {bytes} bytes, the body's words at {words}, its end at {end}"
                 );
             }
+        }
+
+        /// `call:` sends `value:value:value:`, whose closure stub copies
+        /// the three arguments past the send's slots, which end one word
+        /// below `call:`'s window end. With every push seating the
+        /// ordinary end at the pushed frame's window end -- where the
+        /// committed stack may end -- the copies would reach past it: the
+        /// stub declines before it writes them, the interpreter's push of
+        /// the block grows the stack, and `run` answers what it answers
+        /// with the JIT off.
+        const AT_THE_ORDINARY_END: &str = indoc::indoc! {"
+            class Subject = Object new () (
+              call: block = (
+                ^block value: 1 value: 2 value: 3
+              )
+              public run = (
+                |
+                  index ::= 0.
+                  sum ::= 0.
+                |
+                [index < 20] whileTrue: [
+                  sum:: sum + (self call: [:first :second :third | first + second + third + index]).
+                  index:: index + 1.
+                ].
+                ^sum
+              )
+            ) : ()
+        "};
+
+        fn run_at_the_ordinary_end(jit: bool) -> (i64, crate::jit::JitStatistics) {
+            let module = ns_syntax::parse(AT_THE_ORDINARY_END).expect("parse");
+            let resolved = crate::resolve(
+                module,
+                std::rc::Rc::from(AT_THE_ORDINARY_END),
+                crate::SourceOrigin::File(std::path::PathBuf::from("edge.ns")),
+            )
+            .expect("resolve");
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(jit);
+            let class = interpreter.load_module(&resolved);
+            let subject = match interpreter.instantiate(&class, &[]) {
+                Ok(subject) => subject,
+                Err(_) => panic!("instantiate"),
+            };
+            interpreter.enter(|mutator| mutator.heap.set_seat_ordinary_end_at_top(true));
+            let mut answer = 0;
+            let mut before = interpreter.jit_statistics();
+            for round in 0..4 {
+                if round == 3 {
+                    before = interpreter.jit_statistics();
+                }
+                let Ok(result) = interpreter.send(&subject, crate::Symbol::intern("run"), &[])
+                else {
+                    panic!("run raised");
+                };
+                answer = interpreter.enter(|mutator| {
+                    mutator
+                        .fetch(&result)
+                        .as_small_integer()
+                        .expect("a small integer")
+                });
+            }
+            let after = interpreter.jit_statistics();
+            let mut statistics = after;
+            statistics.exits = after.exits - before.exits;
+            statistics.machine_entries = after.machine_entries - before.machine_entries;
+            (answer, statistics)
+        }
+
+        /// A closure stub's copies of a block row's arguments, which lie
+        /// past the sender's window before the block's prologue checks its
+        /// frame's room, are made only below the ordinary end: at it the
+        /// call declines, and the program answers the interpreter's value.
+        #[test]
+        fn a_closure_stub_declines_copies_past_the_ordinary_end() {
+            let (expected, _) = run_at_the_ordinary_end(false);
+            assert_eq!(expected, 20 * 6 + 190);
+            let (answer, statistics) = run_at_the_ordinary_end(true);
+            assert_eq!(answer, expected, "the interpreter's answer");
+            assert!(statistics.machine_entries > 0, "machine code ran");
+            assert!(statistics.exits > 0, "the calls at the edge are refused");
         }
 
         #[test]
