@@ -8,8 +8,8 @@
 //! leaf-safe mirror send, an allocation past the inline bump's limit, the
 //! write barrier's remembering of an old object, the cold check of an
 //! own-slot instruction, the divorce of a reified frame that retains its
-//! registers at its return, and the exit's materialization of the frames
-//! machine code pushed. A
+//! registers at its return, the refill of a `MakeClosure`'s code ids, and
+//! the exit's materialization of the frames machine code pushed. A
 //! template or a stub names one by its index in `table` (`Leaf::index`),
 //! and every call through the table is counted once
 //! (`JitStatistics::leaf_calls`).
@@ -68,6 +68,9 @@ pub(crate) enum Leaf {
     /// Divorces a reified frame that retains its registers at its return
     /// (`divorce`).
     Divorce = 11,
+    /// Records a `MakeClosure`'s code ids in its closure site afresh
+    /// (`closure_site`).
+    ClosureSite = 12,
 }
 
 impl Leaf {
@@ -94,7 +97,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 12] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 13] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -111,6 +114,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 12] {
         counted!(own_slots),
         counted!(initializer),
         counted!(divorce),
+        counted!(closure_site),
     ]
 }
 
@@ -726,6 +730,19 @@ fn divorce(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
     mutator.heap.divorce_at_machine_return(frame.activation);
     materialize::release_leaf_frame(mutator, frame);
+    DONE
+}
+
+/// The closure site leaf, which a `MakeClosure`'s template calls when its
+/// site records another epoch of the code table than the heap's
+/// (`jit::closures`): site `arguments[0]` of the `MakeClosure` at
+/// `arguments[1]`, the program counter, of the body `arguments[2]` names,
+/// written afresh with the code ids of the body and of the block in the
+/// heap's current epoch, which registers each body that has none. It
+/// reads and writes no frame, and cannot fail: answers 0.
+fn closure_site(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [site, program_counter, code_address] = arguments;
+    jit::closures::refill_site(mutator, site, program_counter, code_address);
     DONE
 }
 

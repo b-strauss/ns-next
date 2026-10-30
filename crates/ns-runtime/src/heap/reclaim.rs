@@ -567,8 +567,13 @@ impl Heap<'_> {
         }
         super::ids::truncate_trailing(&mut self.tables.codes, &mut self.tables.free_codes);
         if freed {
-            // Every body's cached id may name a freed row now.
+            // Every body's cached id may name a freed row now, and so may
+            // every closure site's in machine code (`jit::closures`).
             self.code_table_epoch = super::next_code_table_epoch();
+            self.machine_words.set(
+                super::machine_words::MachineWord::CodeTableEpoch,
+                self.code_table_epoch,
+            );
         }
     }
 }

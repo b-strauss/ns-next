@@ -432,23 +432,27 @@ activation and never pushes; only the miss leaf and the initializer leaf
 compile and install a callee; and a leaf answers "re-execute" only
 before it changed anything but a send's argument slots, which the mirror
 leaf places as the interpreter does and which nothing reads after the
-send but the send re-executed. A new instruction is one arm of
-`jit::baseline::lower` plus the macro-assembler idioms it lacks, never a
-second dispatch; the run loop enters machine code through `jit::entered`
-and `jit::resumed`, a send it delivers through `jit::called` (`mod.rs`);
-the entry block's lasting words -- what does not move between entries --
-are written only when what they name changes, which must mark the block
-stale (`JitState::mark_block_stale`; only a debug build's check at every
-entry catches a missed mark), the frame's and the code's words at each
-entry, and it holds no handle. A cache cell is written only from its
-entry -- beside it, or afresh when the JIT's state under it changes --
-its entry address a function of the entry's target and the JIT's state,
-and a stub does what `Mutator::act_with_base` does for its target and
-nothing more. No word machine code reads or writes between two leaf
-calls lives inline in `Mutator`: frame registers and object fields lie
-in the activation stack's and the object space's reservations, the cells
-and the application id table in reservations of their own, all outside
-it, and every other such word lives in the heap's machine words
+send but the send re-executed. No leaf reifies a frame machine code
+pushed whose code reifies none (`MachineFrame::reifies`), whose return
+divorces nothing, or its frame object stays married to a popped offset;
+a debug build asserts it as the leaf's view is released. A new
+instruction is one arm of `jit::baseline::lower` plus the
+macro-assembler idioms it lacks, never a second dispatch; the run loop
+enters machine code through `jit::entered` and `jit::resumed`, a send it
+delivers through `jit::called` (`mod.rs`); the entry block's lasting
+words -- what does not move between entries -- are written only when
+what they name changes, which must mark the block stale
+(`JitState::mark_block_stale`; only a debug build's check at every entry
+catches a missed mark), the frame's and the code's words at each entry,
+and it holds no handle. A cache cell is written only from its entry --
+beside it, or afresh when the JIT's state under it changes -- its entry
+address a function of the entry's target and the JIT's state, and a stub
+does what `Mutator::act_with_base` does for its target and nothing more.
+No word machine code reads or writes between two leaf calls lives inline
+in `Mutator`: frame registers and object fields lie in the activation
+stack's and the object space's reservations, the cells, the closure
+sites and the application id table in reservations of their own, all
+outside it, and every other such word lives in the heap's machine words
 (`heap/machine_words.rs`) or the entry block (`ns_memory::EntryBlock`),
 `Cell`s behind an `Rc` each. `CodeZone::enter` holds the mutator as a
 protected `&mut`, so machine code's access to a word inside it is

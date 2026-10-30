@@ -360,7 +360,7 @@ fn register_number(count: usize) -> i32 {
 }
 
 /// The frame's register `register`.
-fn frame_slot(frame: Register, register: u16) -> Memory {
+pub(super) fn frame_slot(frame: Register, register: u16) -> Memory {
     Memory {
         base: frame,
         displacement: i32::from(register) * REGISTER_BYTES,
@@ -408,7 +408,8 @@ fn divorce_if_reified(body: &mut BodyAssembler) {
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
-    let (frame_object, word) = (roles.frame_extent, roles.stack_end);
+    // Two of the scratch registers, which the return is free to use.
+    let (frame_object, word) = (roles.scratch[0], roles.scratch[1]);
     let field = |displacement: i32| Memory {
         base: frame_object,
         displacement,
@@ -463,13 +464,14 @@ fn divorce_if_reified(body: &mut BodyAssembler) {
 /// For code that reifies its frame, the program counter of the
 /// instruction being lowered stored into the frame's header, as the
 /// interpreter stores it at the send that instruction is (`vm::send`,
-/// `vm::send_mirror`), so that the frame's divorce records the one the
-/// interpreter's would: right before the call of a send through its
-/// cell, after its every exit, and before the leaf of an initializer
-/// invocation or a mirror send, whose refusal exits after it -- harmless
-/// there, since the interpreter's run of the instruction stores the same
-/// word before anything else. Code that reifies no frame stores nothing:
-/// no divorce reads its frame's.
+/// `vm::send_mirror`) and at a `MakeClosure` (`vm::make_closure_into`),
+/// so that the frame's divorce records the one the interpreter's would:
+/// after every exit of the instruction, as every store a template makes
+/// into its frame -- right before the call of a send through its cell, on
+/// the paths that go on past an initializer invocation's leaf or a
+/// mirror send's, neither of which reads it, and first in a
+/// `MakeClosure`, which has no exit. Code that reifies no frame stores
+/// nothing: no divorce reads its frame's.
 pub(super) fn store_program_counter(body: &mut BodyAssembler) {
     if !body.reifies {
         return;
@@ -688,7 +690,6 @@ pub(super) fn initialize(
             (argument_base, argument_count)
         }
     };
-    store_program_counter(body);
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     macro_assembler.call_leaf(
@@ -703,6 +704,10 @@ pub(super) fn initialize(
     let assembler = macro_assembler.assembler();
     assembler.compare_immediate(roles.leaf_result, 0);
     macro_assembler.exit_if(Condition::Equal, ExitKind::Reexecute, program_counter);
+    // After the last exit, as every template's store into its frame: the
+    // leaf decided without reading it.
+    store_program_counter(body);
+    let macro_assembler = &mut body.macro_assembler;
     let machine_words = roles.idiom_scratch;
     macro_assembler.load_machine_words(machine_words);
     let assembler = macro_assembler.assembler();

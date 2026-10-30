@@ -20,7 +20,7 @@ use crate::heap::machine_words::MachineWord;
 /// before it -- `RegisterBase`, `MachineEntry` and, while counting, the
 /// counters' zero at every entry, and `ObjectSpaceBase`, `StackBase`,
 /// `MachineWords`, `ExitStub`, `Cells`, `PolymorphicStub`,
-/// `PolymorphicBlocks` … `GlobalMask`, which name what lasts from one
+/// `PolymorphicBlocks` … `ClosureSites`, which name what lasts from one
 /// entry to the next, only when the block is stale
 /// (`JitState::mark_block_stale`) -- the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
@@ -28,7 +28,7 @@ use crate::heap::machine_words::MachineWord;
 /// counts its back edges `BackEdges`; the entry and the call stub each
 /// write `EnteredByCall`.
 ///
-/// Words 22 to 28 are free, kept for what the later stages enter
+/// Words 24 to 28 are free, kept for what the later stages enter
 /// machine code with, so the three words only a debug build or a test
 /// uses sit at the top.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -100,6 +100,9 @@ pub(crate) enum BlockWord {
     /// word (`Heap::eden_cursor_address`), which an allocation in machine
     /// code bumps in place (`MacroAssembler::bump_allocate`).
     EdenCursor = 22,
+    /// The address of closure site 0's words (`closures::ClosureSites`):
+    /// a `MakeClosure`'s site lies its index sites past it.
+    ClosureSites = 23,
     /// The sends code compiled to count them called compiled code through
     /// (`JitStatistics::compiled_calls`).
     CompiledCalls = 29,

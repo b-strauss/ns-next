@@ -1172,8 +1172,9 @@ impl<'gc> Mutator<'gc> {
         self.heap.set_builtin_guards(guards);
     }
 
-    /// Writes the immediates' class objects, and the `Array` class an
-    /// allocation in machine code writes, into their machine words, from
+    /// Writes the immediates' class objects, and the `Array`, `Closure`
+    /// and `Activation` classes an allocation in machine code writes, into
+    /// their machine words, from
     /// the builtin classes: at the bootstrap and again after every mover
     /// (`World::scavenge`, `collect`, `move_everything`, `forward_identity`),
     /// since a word a heap object stores is a handle the collector does not
@@ -1189,6 +1190,8 @@ impl<'gc> Mutator<'gc> {
         self.heap.set_immediate_classes(classes);
         self.heap
             .set_array_class(self.builtin_class(BuiltinClass::Array));
+        self.heap
+            .set_reification_classes(self.builtin_class(BuiltinClass::Closure));
     }
 
     /// The smallest freed dispatch id, else the next never minted, or

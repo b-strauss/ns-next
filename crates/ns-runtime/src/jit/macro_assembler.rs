@@ -639,22 +639,42 @@ impl MacroAssembler {
         class_word: Register,
         word_count: usize,
     ) {
+        self.load_header_and_class(
+            (header, MachineWord::ArrayHeader),
+            (class_word, MachineWord::ArrayClass),
+            word_count,
+        );
+    }
+
+    /// `header.0 :=` the machine word `header.1`, the header word of an
+    /// object of no words, with the bits of `word_count` words after it
+    /// added, and `class_word.0 :=` the machine word `class_word.1`, its
+    /// class's word: `load_array_header_and_class` for any class whose
+    /// header and class word the machine words hold -- a closure's and a
+    /// frame object's (`jit::closures`). Clobbers the flags and the idiom
+    /// scratch register.
+    pub(crate) fn load_header_and_class(
+        &mut self,
+        header: (Register, MachineWord),
+        class_word: (Register, MachineWord),
+        word_count: usize,
+    ) {
         let machine_words = self.roles.idiom_scratch;
         self.load_machine_words(machine_words);
         let count_bits = crate::heap::Heap::machine_word_count_bits(word_count);
         let assembler = &mut self.assembler;
-        assembler.move_immediate(class_word, count_bits);
+        assembler.move_immediate(class_word.0, count_bits);
         assembler.load(
             Width::Word64,
-            header,
-            Self::machine_word(machine_words, MachineWord::ArrayHeader),
+            header.0,
+            Self::machine_word(machine_words, header.1),
         );
         // The machine word's count is 0, so the addition sets the count.
-        assembler.add(header, class_word);
+        assembler.add(header.0, class_word.0);
         assembler.load(
             Width::Word64,
-            class_word,
-            Self::machine_word(machine_words, MachineWord::ArrayClass),
+            class_word.0,
+            Self::machine_word(machine_words, class_word.1),
         );
     }
 

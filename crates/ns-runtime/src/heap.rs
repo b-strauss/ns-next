@@ -838,6 +838,49 @@ pub(crate) struct MachineLayout {
     /// offset (`Heap::class_has_value_refusal`): nil for a class whose
     /// instantiation nothing refuses there.
     pub(crate) value_class_refusal_displacement: i32,
+    /// A frame object's fixed fields' displacements from its offset
+    /// (`object.rs`'s `frame_field`), which `MakeClosure` fills in machine
+    /// code as `Heap::reify` fills them (`jit::closures`).
+    pub(crate) frame_sender_displacement: i32,
+    pub(crate) frame_home_displacement: i32,
+    pub(crate) frame_receiver_displacement: i32,
+    pub(crate) frame_current_class_displacement: i32,
+    pub(crate) frame_program_counter_displacement: i32,
+    pub(crate) frame_code_id_displacement: i32,
+    pub(crate) frame_kind_displacement: i32,
+    pub(crate) frame_kind_operand_displacement: i32,
+    pub(crate) frame_uncontinuable_displacement: i32,
+    pub(crate) frame_married_displacement: i32,
+    /// How many fixed fields a frame object has: its registers follow.
+    pub(crate) frame_fixed_fields: usize,
+    /// A closure's fixed fields' displacements from its offset
+    /// (`object.rs`'s `closure_field`), as `allocate_closure_from_registers`
+    /// writes them.
+    pub(crate) closure_code_id_displacement: i32,
+    pub(crate) closure_captured_frame_displacement: i32,
+    pub(crate) closure_feedback_base_displacement: i32,
+    /// How many fixed fields a closure has: its copied values follow.
+    pub(crate) closure_fixed_fields: usize,
+}
+
+/// The kind words of the frame objects `MakeClosure` reifies in machine
+/// code (`Heap::machine_frame_kinds`): each kind's wire tag as the
+/// `SmallInteger` word `frame_fixed_words` writes, and, for an
+/// initializer's frame, whose kind its code does not say, the tag its
+/// flags word holds for each of its bodies beside the word that tag
+/// stands for.
+#[cfg(ns_jit)]
+pub(crate) struct MachineFrameKinds {
+    pub(crate) method: u64,
+    pub(crate) closure: u64,
+    pub(crate) factory: u64,
+    pub(crate) superclass_clause: u64,
+    /// Each initializer body's kind tag in a flags word, and its kind word.
+    pub(crate) initializers: [(u8, u64); 3],
+    /// The kind tag's bits in a flags word's payload.
+    pub(crate) kind_tag_mask: i32,
+    /// `false`'s word, which a running frame's `uncontinuable` holds.
+    pub(crate) false_word: i32,
 }
 
 /// The block of an object machine code allocates (`Heap::machine_block`).
@@ -2444,6 +2487,8 @@ impl<'gc> Heap<'gc> {
         };
         heap.space
             .set_young_threshold(Some(heap.scavenge_threshold));
+        heap.machine_words
+            .set(MachineWord::CodeTableEpoch, heap.code_table_epoch);
         heap
     }
 
@@ -6276,6 +6321,56 @@ impl<'gc> Heap<'gc> {
         self.machine_words.set(MachineWord::ArrayHeader, header.0);
     }
 
+    /// Records the kernel's `Closure` class and the `Activation` class
+    /// every frame object is an instance of (`set_activation_class`) as
+    /// the `ClosureClass` and `FrameClass` words, and the header of an
+    /// object of no words of each, guarding on its application, as the
+    /// `ClosureHeader` and `FrameHeader` words: what `MakeClosure` writes
+    /// in machine code, as `allocate_closure` and `allocate_frame` write
+    /// them. Called with `set_array_class`, for the same reason; nothing
+    /// is recorded for a class the bootstrap has not built yet.
+    pub(crate) fn set_reification_classes(&self, closure: ClassReference<'gc>) {
+        let classes = [
+            (
+                Some(closure),
+                Format::Closure,
+                MachineWord::ClosureClass,
+                MachineWord::ClosureHeader,
+            ),
+            (
+                self.activation_class,
+                Format::Frame,
+                MachineWord::FrameClass,
+                MachineWord::FrameHeader,
+            ),
+        ];
+        for (class, format, class_word, header_word) in classes {
+            let Some(class) = class else {
+                continue;
+            };
+            let word = self.store(Value::object(class));
+            self.machine_words.set(class_word, word.bits());
+            let header = Header::new(self.header_dispatch_id(class), format, 0, 0);
+            self.machine_words.set(header_word, header.0);
+        }
+    }
+
+    /// The epoch of the code table, renewed whenever a full collection
+    /// frees a code id (`free_unnamed_codes`): a code id recorded in an
+    /// epoch names its body while the epoch lasts.
+    #[cfg(ns_jit)]
+    pub(crate) fn code_table_epoch(&self) -> u64 {
+        self.code_table_epoch
+    }
+
+    /// The `SmallInteger` word of `count`, as an object's count fields --
+    /// a closure's or a frame object's code id, a closure's feedback base
+    /// -- hold it (`closure_fixed_words`, `frame_fixed_words`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_count_word(count: usize) -> u64 {
+        count_word(count).bits()
+    }
+
     /// Sets the depth limit's word: the limit with the reserve free, or
     /// past the reserve while it is held (`Mutator::set_depth_reserve`).
     pub(crate) fn set_depth_limit(&self, limit: usize) {
@@ -8844,6 +8939,18 @@ impl<'gc> Heap<'gc> {
         argument_count + current_class
     }
 
+    /// The register number machine code reads a frame's operand at: the
+    /// header word `OPERAND` -- a block's frame's closure, a superclass
+    /// clause's class -- placed as `receiver_register` places the
+    /// receiver.
+    #[cfg(ns_jit)]
+    pub(crate) fn operand_register(argument_count: u16) -> u16 {
+        let Ok(operand) = u16::try_from(frame_header::OPERAND) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        argument_count + operand
+    }
+
     /// The register numbers of a frame's recorded guard and entered level
     /// (`frame_header::GUARD`, `frame_header::ENTERED_LEVEL`), placed as
     /// `receiver_register` places the receiver: what a compiled prologue
@@ -8951,6 +9058,54 @@ impl<'gc> Heap<'gc> {
             value_class_refusal_displacement: displacement(
                 FIELDS + class_field::VALUE_CLASS_REFUSAL,
             ),
+            frame_sender_displacement: displacement(FIELDS + frame_field::SENDER),
+            frame_home_displacement: displacement(FIELDS + frame_field::HOME),
+            frame_receiver_displacement: displacement(FIELDS + frame_field::RECEIVER),
+            frame_current_class_displacement: displacement(FIELDS + frame_field::CURRENT_CLASS),
+            frame_program_counter_displacement: displacement(FIELDS + frame_field::PROGRAM_COUNTER),
+            frame_code_id_displacement: displacement(FIELDS + frame_field::CODE_ID),
+            frame_kind_displacement: displacement(FIELDS + frame_field::KIND),
+            frame_kind_operand_displacement: displacement(FIELDS + frame_field::KIND_OPERAND),
+            frame_uncontinuable_displacement: displacement(FIELDS + frame_field::UNCONTINUABLE),
+            frame_married_displacement: displacement(FIELDS + frame_field::MARRIED),
+            frame_fixed_fields: frame_field::COUNT,
+            closure_code_id_displacement: displacement(FIELDS + closure_field::CODE_ID),
+            closure_captured_frame_displacement: displacement(
+                FIELDS + closure_field::CAPTURED_FRAME,
+            ),
+            closure_feedback_base_displacement: displacement(FIELDS + closure_field::FEEDBACK_BASE),
+            closure_fixed_fields: closure_field::COUNT,
+        }
+    }
+
+    /// The kind words `MakeClosure` writes into the frame objects it
+    /// reifies in machine code, as `frame_fixed_words` writes them
+    /// (`MachineFrameKinds`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_frame_kinds() -> MachineFrameKinds {
+        use crate::image::opcodes::{
+            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_SUPERCLASS_CLAUSE,
+        };
+        let word = |tag: u8| count_word(usize::from(tag)).bits();
+        let initializer = |tag: u8, body: InitializerBody| (tag, word(body.frame_tag()));
+        let Ok(false_word) = i32::try_from(Value::boolean(false).word().bits()) else {
+            unreachable!("internal: false's word is a small constant");
+        };
+        MachineFrameKinds {
+            method: word(FRAME_METHOD),
+            closure: word(FRAME_CLOSURE),
+            factory: word(FRAME_FACTORY),
+            superclass_clause: word(FRAME_SUPERCLASS_CLAUSE),
+            initializers: [
+                initializer(kind_tag::INITIALIZER_FULL, InitializerBody::Full),
+                initializer(kind_tag::INITIALIZER_OWN_PART, InitializerBody::OwnPart),
+                initializer(
+                    kind_tag::INITIALIZER_STANDALONE,
+                    InitializerBody::Standalone,
+                ),
+            ],
+            kind_tag_mask: i32::from(u8::MAX),
+            false_word,
         }
     }
 

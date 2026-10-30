@@ -23,6 +23,8 @@
 #[cfg(ns_jit)]
 pub(crate) mod baseline;
 #[cfg(ns_jit)]
+pub(crate) mod closures;
+#[cfg(ns_jit)]
 pub(crate) mod leaves;
 #[cfg(ns_jit)]
 pub(crate) mod macro_assembler;
@@ -410,6 +412,10 @@ struct Zone {
     /// The stubs a cell names for a target that is no method with code
     /// (`targets::assemble_accessor_stubs`).
     accessors: AccessorStubs,
+    /// The closure sites of the `MakeClosure`s compiled into the zone,
+    /// which go with it (`closures::ClosureSites`).
+    #[cfg(ns_jit)]
+    closure_sites: closures::ClosureSites,
 }
 
 /// Where each accessor stub lies in the zone
@@ -820,6 +826,12 @@ impl JitState {
         Some((sender, site.program_counter))
     }
 
+    /// The closure sites of the zone, where there is one.
+    #[cfg(ns_jit)]
+    pub(crate) fn closure_sites_mut(&mut self) -> Option<&mut closures::ClosureSites> {
+        self.zone.as_mut().map(|zone| &mut zone.closure_sites)
+    }
+
     /// The innermost frame the last exit's walk materialized, taken.
     pub(crate) fn take_walked(&mut self) -> Option<ActivationReference> {
         self.walked.take()
@@ -896,6 +908,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
     let mut zone = Zone {
         writer,
         limit,
+        closure_sites: closures::ClosureSites::new()?,
         next_offset: 0,
         entry_stub: CodeOffset(0),
         call_stub: CodeOffset(0),
@@ -1484,10 +1497,19 @@ fn compile(
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(state.counting);
     let role = baseline::BodyRole::of(code, method.is_some());
-    let body = baseline::compile(code, macro_assembler, feedback_base, role)?;
+    let body = baseline::compile(
+        code,
+        macro_assembler,
+        feedback_base,
+        role,
+        zone.closure_sites.next(),
+    )?;
     if body.exits_at_once && !state.install_bodies_exiting_at_once {
         return Err(Refusal::ExitsAtOnce);
     }
+    // Before the code is installed, so that every site it names is there
+    // to read at its first run.
+    zone.closure_sites.take(body.closure_sites)?;
     let map = u32::try_from(state.bodies.len()).map_err(|_| Refusal::ZoneFull)?;
     // Every body has an instruction, its last a return or a jump, so a
     // map without program counter 0 is the JIT's own defect.
@@ -1947,7 +1969,7 @@ fn resumption_after_exit(
 /// and writes, the stubs it reaches through the block -- the exit stub at
 /// `exit_stub` -- and the global cache's mask.
 #[cfg(ns_jit)]
-fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 10] {
+fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 11] {
     use stubs::BlockWord;
     [
         (
@@ -1980,6 +2002,14 @@ fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockW
         (
             BlockWord::EdenCursor,
             mutator.heap.eden_cursor_address() as u64,
+        ),
+        (
+            BlockWord::ClosureSites,
+            mutator
+                .jit
+                .zone
+                .as_ref()
+                .map_or(0, |zone| zone.closure_sites.address() as u64),
         ),
     ]
 }

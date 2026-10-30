@@ -655,7 +655,7 @@ ns_runtime::for_each_lowering! {
 /// An interpreted `run:`'s send of `first:with:`, called in machine code
 /// once `first:with:` is compiled, whose own send of `second:with:`
 /// reaches, at the run's last round, the closure `second:with:` makes
-/// there, which machine code does not make: the exit materializes
+/// there and runs, which machine code does not run: the exit materializes
 /// `second:with:`'s frame and `first:with:`'s above the interpreted
 /// sender, and the unhandled error the closure raises records the stack.
 const CALLED_THEN_CLOSURE: &str = indoc! {"
@@ -861,8 +861,8 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// `step:`'s block, a closure machine code does not make yet, leaves
-    /// machine code inside the callee at every call: the exit
+    /// `step:`'s block, a closure machine code makes but does not run yet,
+    /// leaves machine code inside the callee at every call: the exit
     /// materializes `loop:`'s frame too, and once `step:` returns, `loop:`
     /// is resumed in its machine code, so that its loop goes on there
     /// rather than in the interpreter.
@@ -2809,6 +2809,7 @@ fn machine_code_allocates_past_eden_as_the_interpreter_does() {
 /// between two sends tenures it. The host sends the writer `value:`
 /// itself, since a send of it from machine code leaves for the
 /// interpreter until closures run in machine code.
+#[cfg(debug_assertions)]
 const BARRIER_SOURCE: &str = indoc! {"
     class Subject = Object new (
       | writer reader |
@@ -2837,6 +2838,7 @@ const BARRIER_SOURCE: &str = indoc! {"
 /// How many stores of each array `BARRIER_SOURCE`'s writer makes in one
 /// measured send: far fewer bytes than eden's limit holds, so that no
 /// allocation asks for a scavenge.
+#[cfg(debug_assertions)]
 const BARRIER_STORES: i64 = 1000;
 
 /// `BARRIER_SOURCE`'s subject and its writer, prepared, the writer run
@@ -2862,6 +2864,7 @@ fn tenured_writer() -> (Interpreter, Root, Root) {
 /// Sends `selector` to `subject` with the `SmallInteger` `argument`, or
 /// with none for a unary selector, answering the `SmallInteger` it
 /// answers.
+#[cfg(debug_assertions)]
 fn send_integer(
     interpreter: &mut Interpreter,
     subject: &Root,
@@ -2944,6 +2947,7 @@ fn a_store_into_a_remembered_holder_calls_no_leaf() {
 
 /// A holder of a slot and an Array, written by `store:` through the
 /// setter stub and the `at:put:` stub, and read back by `read`.
+#[cfg(debug_assertions)]
 const OLD_HOLDERS: &str = indoc! {"
     class Subject = Object new (
       |
@@ -3550,6 +3554,278 @@ ns_runtime::for_each_lowering! {
                 statistics.compiled_calls >= 4000,
                 "`run` calls both accessors and both factories through their cells: {}",
                 statistics.compiled_calls
+            );
+        }
+    }
+}
+
+/// A thousand closures made in a compiled loop, each by a compiled call of
+/// `make:`, whose `MakeClosure` reifies its frame and allocates the
+/// closure in machine code, kept in an array the host then sums through:
+/// `run` answers how many it made, `total` what they answer.
+const CLOSURES: &str = indoc! {"
+    class Subject = Object new (
+      |
+        blocks = Array new: 1000.
+      |
+    ) (
+      make: value = (
+        |
+          doubled = value * 2.
+        |
+        ^[doubled + value]
+      )
+      public run = (
+        |
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          blocks at: index + 1 put: (self make: index).
+          index:: index + 1.
+        ].
+        ^index.
+      )
+      public total = (
+        |
+          sum ::= 0.
+        |
+        blocks do: [:block | sum:: sum + block value].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// Sends `selector` to `subject`, answering the `SmallInteger` it answers.
+fn send_unary(interpreter: &mut Interpreter, subject: &Root, selector: &str) -> i64 {
+    let answer = expect_ok(
+        interpreter.send(subject, Symbol::intern(selector), &[]),
+        selector,
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("{selector}: expected a small integer"),
+    })
+}
+
+ns_runtime::for_each_lowering! {
+    /// `MakeClosure` runs in machine code: in the third run of the loop
+    /// every closure is made with no exit, its frame reified and the
+    /// closure allocated inline, and the closures answer what the
+    /// interpreter's do.
+    fn make_closure_runs_without_an_exit(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(CLOSURES, lowering);
+            interpreter.set_jit_enabled(jit);
+            interpreter.set_jit_counting(jit);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let mut statistics = interpreter.jit_statistics();
+            for _ in 0..3 {
+                let before = interpreter.jit_statistics();
+                assert_eq!(send_unary(&mut interpreter, &subject, "run"), 1000);
+                statistics = since(interpreter.jit_statistics(), before);
+            }
+            (send_unary(&mut interpreter, &subject, "total"), statistics)
+        };
+        let (compiled, statistics) = run(true);
+        let (interpreted, _) = run(false);
+        assert_eq!(interpreted, 3 * (999 * 1000 / 2));
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert!(
+                statistics.compiled_calls >= 1000,
+                "`run` calls `make:` through its cell: {}",
+                statistics.compiled_calls
+            );
+            assert_eq!(
+                statistics.leaf_calls, 0,
+                "every frame object and closure is bumped inline, its site filled before"
+            );
+        }
+    }
+}
+
+/// `make:` makes a closure, and `churn` registers bodies of its own --
+/// each of its methods and blocks -- after a full collection freed the
+/// ids of `make:`'s body and block, which nothing names once the closures
+/// are gone.
+#[cfg(debug_assertions)]
+const CODE_IDS: &str = indoc! {"
+    class Subject = Object new () (
+      make: value = (
+        ^[value + 1]
+      )
+      public run = (
+        |
+          index ::= 0.
+          last
+        |
+        [index < 10] whileTrue: [
+          last:: self make: index.
+          index:: index + 1.
+        ].
+        ^last value.
+      )
+      first = (
+        ^[:x | x * 3]
+      )
+      second = (
+        ^[:x :y | x * y]
+      )
+      third = (
+        ^[:x | x - 5]
+      )
+      fourth = (
+        ^[nil]
+      )
+      public churn = (
+        ^(self first value: 1) + (self second value: 2 value: 3) + (self third value: 4)
+          + (self fourth value isNil ifTrue: [1] ifFalse: [2])
+      )
+    ) : ()
+"};
+
+#[cfg(debug_assertions)]
+ns_runtime::for_each_lowering! {
+    /// A compiled `MakeClosure` names its body and its block by the ids
+    /// the heap has for them now, not the ones it had when its site was
+    /// first filled: a full collection frees the ids nothing names, and
+    /// the bodies `churn` runs take them, but the closures `run` makes
+    /// after it still run `make:`'s block.
+    fn a_full_collection_keeps_a_compiled_closures_code_id(lowering) {
+        let (mut interpreter, class) = load_with(CODE_IDS, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 10);
+        interpreter.collect_now();
+        assert_eq!(send_unary(&mut interpreter, &subject, "churn"), 3 + 6 - 1 + 1);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 10);
+    }
+}
+
+/// `make:`, which makes a closure and sends after it, so that the
+/// interpreter stores a later program counter than the `MakeClosure`'s,
+/// and `nest:`, whose block makes a closure in turn, whose frame's home is
+/// `nest:`'s: called from a loop, so that both bodies and the outer block
+/// run in machine code by the last round, whose closures `run` answers.
+const DIVORCED: &str = indoc! {"
+    class Subject = Object new () (
+      make: value = (
+        |
+          block = [value + 1].
+        |
+        self touch: value.
+        ^block
+      )
+      nest: value = (
+        ^[[value + 2]]
+      )
+      touch: value = (
+        ^value
+      )
+      public run = (
+        |
+          index ::= 0.
+          made
+          nested
+        |
+        [index < 10] whileTrue: [
+          made:: self make: index.
+          nested:: (self nest: index) value.
+          index:: index + 1.
+        ].
+        ^{made. nested}.
+      )
+    ) : ()
+"};
+
+/// The frame objects `DIVORCED`'s closures keep, each described by what
+/// its divorce left -- its program counter, whether it is continuable,
+/// running or has a sender, its kind and receiver -- and its home's, with
+/// the JIT on or off, and what the JIT did meanwhile.
+///
+/// The program counter is left out under a stress mode that holds the
+/// safepoint request: the interpreter stores the one it goes on at when
+/// it takes a safepoint at a return, which machine code, polling at its
+/// backward jumps and its calls' prologues alone, never takes there, so
+/// that the counter a returned frame records depends on when a safepoint
+/// fell, with the JIT on as off.
+fn divorced_frames(lowering: Lowering, jit: bool) -> (Vec<String>, JitStatistics) {
+    let (mut interpreter, class) = load_with(DIVORCED, lowering);
+    interpreter.set_jit_enabled(jit);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let before = interpreter.jit_statistics();
+    let closures = expect_ok(
+        interpreter.send(&subject, Symbol::intern("run"), &[]),
+        "run",
+    );
+    let statistics = since(interpreter.jit_statistics(), before);
+    let described = interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let array = mutator.fetch(&closures).as_object().expect("an Array");
+        let describe = |frame| {
+            let record = heap.frame_record(frame);
+            let kind = match &record.kind {
+                ns_runtime::FrameKind::Method(method) => method.selector.to_string(),
+                ns_runtime::FrameKind::Closure(_) => "block".to_owned(),
+                _ => "other".to_owned(),
+            };
+            let program_counter = if a_stress_mode_polls_out() {
+                "-".to_owned()
+            } else {
+                record.program_counter.to_string()
+            };
+            format!(
+                "{kind} at {program_counter} uncontinuable {} running {} sender {} receiver {}",
+                record.uncontinuable,
+                heap.frame_activation(frame).is_some(),
+                record.sender.is_some(),
+                heap.describe(record.receiver),
+            )
+        };
+        (0..2)
+            .flat_map(|index| {
+                let closure = heap
+                    .array_element(array, index)
+                    .and_then(|element| element.as_object())
+                    .expect("a closure");
+                let frame = heap
+                    .closure_captured_frame(closure)
+                    .expect("a captured frame");
+                let home = heap.frame_home(frame).map_or("no home".to_owned(), |home| {
+                    format!("home {}", describe(home))
+                });
+                [describe(frame), home]
+            })
+            .collect()
+    });
+    (described, statistics)
+}
+
+ns_runtime::for_each_lowering! {
+    /// A compiled callee that makes a closure -- its frame reified by its
+    /// `MakeClosure` in machine code -- and returns by `ret` leaves its
+    /// frame object divorced as the interpreter's pop leaves it: at the
+    /// program counter the interpreter stored last, uncontinuable, married
+    /// to nothing and without a sender; and a block's frame, reified in
+    /// machine code too, has the home the interpreter's has.
+    fn a_compiled_closures_frame_is_divorced_as_the_interpreter_divorces_it(lowering) {
+        let (compiled, statistics) = divorced_frames(lowering, true);
+        let (interpreted, _) = divorced_frames(lowering, false);
+        assert_eq!(compiled, interpreted);
+        assert_eq!(compiled.len(), 4);
+        assert!(
+            compiled[0].starts_with("make: at ")
+                && compiled[0].contains("uncontinuable true running false sender false"),
+            "{compiled:?}"
+        );
+        assert_eq!(compiled[1], "no home");
+        assert!(compiled[2].starts_with("block at "), "{compiled:?}");
+        assert!(compiled[3].starts_with("home nest: at "), "{compiled:?}");
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                statistics.called_entries > 0,
+                "an interpreted send called a compiled body"
             );
         }
     }

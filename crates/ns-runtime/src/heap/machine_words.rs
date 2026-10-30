@@ -51,7 +51,9 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// next generation 14, the callee's receiver and class 15 and 16, the
 /// application id table's address and bound 17 and 18, the objects
 /// machine code allocated 19, an `Array`'s class word and header 20 and
-/// 21, the callee's kind 22, the rest free for the later stages.
+/// 21, the callee's kind 22, a closure's class word and header 23 and 24,
+/// a frame object's 25 and 26, the code table's epoch 27, the rest free
+/// for the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -122,6 +124,24 @@ pub(crate) enum MachineWord {
     /// as (`jit::sends::prologue`). Read only right after it was written,
     /// as `CalleeReceiver` is.
     CalleeKind,
+    /// The kernel's `Closure` class object, as `ArrayClass` holds the
+    /// `Array` class: the class word of a closure `MakeClosure` makes in
+    /// machine code (`jit::closures`).
+    ClosureClass,
+    /// The header word of a closure of no words, as `ArrayHeader` is an
+    /// `Array`'s.
+    ClosureHeader,
+    /// The kernel-private `Activation` class object, the class word of a
+    /// frame object `MakeClosure` reifies in machine code.
+    FrameClass,
+    /// The header word of a frame object of no words.
+    FrameHeader,
+    /// The epoch of the heap's code table (`Heap::code_table_epoch`),
+    /// renewed whenever a full collection frees a code id: a closure
+    /// site's code ids, which machine code stores into the frame objects
+    /// and closures it makes, name their bodies only while the site
+    /// records this epoch (`jit::closures`).
+    CodeTableEpoch,
 }
 
 impl MachineWord {
@@ -150,6 +170,11 @@ impl MachineWord {
             MachineWord::ArrayClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 6,
             MachineWord::ArrayHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 7,
             MachineWord::CalleeKind => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 8,
+            MachineWord::ClosureClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 9,
+            MachineWord::ClosureHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 10,
+            MachineWord::FrameClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 11,
+            MachineWord::FrameHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 12,
+            MachineWord::CodeTableEpoch => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 13,
         }
     }
 }
@@ -158,7 +183,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 32;
 
-const _: () = assert!(MachineWord::CalleeKind.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::CodeTableEpoch.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -233,9 +258,14 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::ArrayClass));
         offsets.push(MachineWords::offset(MachineWord::ArrayHeader));
         offsets.push(MachineWords::offset(MachineWord::CalleeKind));
+        offsets.push(MachineWords::offset(MachineWord::ClosureClass));
+        offsets.push(MachineWords::offset(MachineWord::ClosureHeader));
+        offsets.push(MachineWords::offset(MachineWord::FrameClass));
+        offsets.push(MachineWords::offset(MachineWord::FrameHeader));
+        offsets.push(MachineWords::offset(MachineWord::CodeTableEpoch));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 13 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 18 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

@@ -10,10 +10,11 @@
 use ns_assembler::{Condition, Label, Register};
 
 use crate::builtins::primitive::{mirror_entry, MachineCall};
-use crate::bytecode::{successors, CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::bytecode::{successors, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{value_bits, Immediate};
 use crate::interpreter::FeedbackBase;
 
+use super::closures;
 use super::leaves::Leaf;
 use super::macro_assembler::{LeafIndex, MacroAssembler, ObjectSize, Operand};
 use super::sends;
@@ -34,6 +35,9 @@ pub(crate) struct BaselineBody {
     pub(crate) exits_at_once: bool,
     /// Whether the code reifies its frame (`reifies_its_frame`).
     pub(crate) reifies: bool,
+    /// How many closure sites its `MakeClosure`s took, from the first the
+    /// compile was handed (`closures::ClosureSites`).
+    pub(crate) closure_sites: usize,
 }
 
 /// Whether `code` reifies its frame: whether it makes a closure, whose
@@ -154,6 +158,16 @@ pub(super) struct BodyAssembler {
     pub(super) role: BodyRole,
     /// Whether the body reifies its frame (`reifies_its_frame`).
     pub(super) reifies: bool,
+    /// What kind of code the body is, which says, with `role`, the kind of
+    /// the frame it runs in.
+    pub(super) code_kind: CodeKind,
+    /// How many registers a frame object of the body holds
+    /// (`CompiledCode::frame_register_count`).
+    pub(super) frame_register_count: usize,
+    /// The closure site the next `MakeClosure` takes, and how many the
+    /// body has taken (`closures::ClosureSites`).
+    next_closure_site: usize,
+    closure_sites: usize,
 }
 
 /// The scratch registers a template uses, by role.
@@ -167,6 +181,13 @@ struct TemplateRegisters {
 }
 
 impl BodyAssembler {
+    /// The closure site of the `MakeClosure` being lowered, its own.
+    pub(super) fn take_closure_site(&mut self) -> usize {
+        let site = self.next_closure_site + self.closure_sites;
+        self.closure_sites += 1;
+        site
+    }
+
     /// A jump to the instruction at `target`. A backward one closes a
     /// loop, so it polls first, as the interpreter's backward jump tests
     /// the safepoint, so that a loop that makes no send still reaches one;
@@ -849,7 +870,6 @@ impl BodyAssembler {
     /// re-executes the send, nothing written, for anything else.
     fn send_mirror(&mut self, failure: u32) {
         let program_counter = self.program_counter;
-        sends::store_program_counter(self);
         let frame = self.macro_assembler.roles().frame;
         self.macro_assembler.call_leaf(
             Leaf::Mirror.index(),
@@ -860,15 +880,36 @@ impl BodyAssembler {
             ],
         );
         let answer = self.macro_assembler.roles().leaf_result;
+        // The program counter, which the interpreter stores before the
+        // row's leaf decides, is stored on both paths that go on, after the
+        // exit: no leaf-safe row reads it.
         self.macro_assembler
             .assembler()
             .compare_immediate(answer, MIRROR_FAILED);
-        self.jump_to_if(Condition::Equal, failure);
+        let declined = if self.reifies {
+            let declined = self.macro_assembler.assembler().label();
+            self.macro_assembler
+                .assembler()
+                .jump_if(Condition::Equal, declined);
+            Some(declined)
+        } else {
+            self.jump_to_if(Condition::Equal, failure);
+            None
+        };
         self.macro_assembler
             .assembler()
             .compare_immediate(answer, 0);
         self.macro_assembler
             .exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
+        if let Some(declined) = declined {
+            sends::store_program_counter(self);
+            let ran = self.macro_assembler.assembler().label();
+            self.macro_assembler.assembler().jump(ran);
+            self.macro_assembler.assembler().bind(declined);
+            sends::store_program_counter(self);
+            self.jump_to(failure);
+            self.macro_assembler.assembler().bind(ran);
+        }
     }
 
     /// The call of the generic leaf, which runs the instruction being
@@ -953,7 +994,8 @@ fn allocated_literal(literal: &Literal) -> bool {
 }
 
 /// Compiles `code` with `macro_assembler`, its sends' cells found from
-/// `feedback_base`: the prologue a compiled call enters at, then each
+/// `feedback_base` and its `MakeClosure`s' sites numbered from
+/// `first_closure_site`: the prologue a compiled call enters at, then each
 /// instruction in turn, at a label whose offset the program-counter map
 /// records.
 pub(crate) fn compile(
@@ -961,6 +1003,7 @@ pub(crate) fn compile(
     mut macro_assembler: MacroAssembler,
     feedback_base: FeedbackBase,
     role: BodyRole,
+    first_closure_site: usize,
 ) -> Result<BaselineBody, Refusal> {
     // A program counter of the map, and an exit's, is a `u32`; the bound
     // is the zone's layout's, which a later stage's tables index by
@@ -983,6 +1026,10 @@ pub(crate) fn compile(
         window_end: sends::window_end(code),
         role,
         reifies: reifies_its_frame(code),
+        code_kind: code.kind,
+        frame_register_count: code.frame_register_count(),
+        next_closure_site: first_closure_site,
+        closure_sites: 0,
     };
     sends::prologue(&mut body, code);
     let mut exits = Vec::with_capacity(usize::from(count));
@@ -1025,6 +1072,7 @@ pub(crate) fn compile(
         map,
         exits_at_once,
         reifies: body.reifies,
+        closure_sites: body.closure_sites,
     })
 }
 
@@ -1286,9 +1334,14 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
         Instruction::LoadEnclosingObject { destination, depth } => {
             body.load_enclosing_object(*destination, *depth)
         }
-        // Closures, what reads another activation, and non-local return:
-        // stage 4.
-        Instruction::MakeClosure { .. } => Lowering::Exit,
+        // A closure, its frame reified inline (`closures::make_closure`).
+        Instruction::MakeClosure {
+            destination,
+            code,
+            copied,
+            ..
+        } => closures::make_closure(body, *destination, code, copied),
+        // What reads another activation, and non-local return: stage 4.
         Instruction::LoadOuterLocal { .. } => Lowering::Exit,
         Instruction::StoreOuterLocal { .. } => Lowering::Exit,
         Instruction::NonLocalReturn { .. } => Lowering::Exit,
@@ -1374,6 +1427,7 @@ mod tests {
             macro_assembler,
             FeedbackBase::NOT_ASSIGNED,
             super::BodyRole::Method,
+            0,
         )
         .expect("compiled")
     }
@@ -1428,6 +1482,10 @@ mod tests {
             window_end: 0,
             role: super::BodyRole::Method,
             reifies: false,
+            code_kind: CodeKind::Method,
+            frame_register_count: 0,
+            next_closure_site: 0,
+            closure_sites: 0,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.

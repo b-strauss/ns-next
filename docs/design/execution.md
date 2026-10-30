@@ -11008,14 +11008,27 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   `:19271-19560`): the frame's reified word is tested inline, and a frame
   not yet reified has its frame object bump-allocated and filled by
   machine code -- its receiver and current class from the frame, its
-  home from the closure of a block's frame, its program counter and code
-  as constants of the body, every register field nil -- and the header's
+  home from the closure of a block's frame, its program counter as a
+  constant of the body, every register field nil -- and the header's
   reified word written. Every closure keeps the frame that created it
   ("The closure keeps its defining activation"), so a frame is reified
   once per closure-creating activation, as often as closures are made;
   a leaf there would cost a call on that path. The return of code that
   reifies its frame divorces it inline, and calls a leaf only for a
   frame that retains its registers.
+- **A `MakeClosure`'s code ids are read from a site of its own, never
+  compiled in.** A full collection frees the code id of a body nothing
+  names -- no closure, frame or activation -- and mints it again for
+  another, while the body's machine code lives on with its mixin, so an
+  id compiled into the code would name another body after the next full
+  collection. Each `MakeClosure` has a closure site
+  (`jit/closures.rs`'s `ClosureSites`, a reservation of its own): the
+  code ids of its body and of its block with the code table's epoch they
+  were asked in, which a full collection that frees an id renews
+  (`MachineWord::CodeTableEpoch`). The template compares the site's
+  epoch with the heap's and, where they differ -- at the site's first
+  run, and after such a collection -- calls a leaf that asks the heap for
+  both ids afresh, registering each body that has none.
 - **A closure's activation is a compiled call, as a method's is.** A send
   of `value` and its kin to a closure calls through a stub that does what
   the interpreter's push of the closure does -- the arity, the code, the

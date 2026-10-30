@@ -98,7 +98,7 @@ impl Callee {
 /// The id of `code` in `heap`, registered with `method` when it is one's
 /// body: a method's frame finds its method through its code's row
 /// (`Heap::reify`).
-fn code_id(
+pub(super) fn code_id(
     heap: &mut Heap<'_>,
     code: &Rc<CompiledCode>,
     method: Option<&Rc<MixinMethod>>,
@@ -277,6 +277,10 @@ pub(crate) struct LeafFrame {
     /// frame is one machine code pushed, which reads as the innermost only
     /// for the leaf's length.
     restore: Option<(usize, u32)>,
+    /// Whether the frame is one machine code pushed whose code reifies no
+    /// frame, which no leaf may reify (`release_leaf_frame`).
+    #[cfg(debug_assertions)]
+    unreified: bool,
 }
 
 /// The frame whose register 0 machine code holds at `frame_address`,
@@ -304,6 +308,8 @@ pub(crate) fn leaf_frame(
         return LeafFrame {
             activation: entry,
             restore: None,
+            #[cfg(debug_assertions)]
+            unreified: false,
         };
     }
     let Some(installed) = mutator.jit.body_of(return_address_of(code_address)) else {
@@ -322,11 +328,22 @@ pub(crate) fn leaf_frame(
     LeafFrame {
         activation,
         restore,
+        #[cfg(debug_assertions)]
+        unreified: !frame.reifies,
     }
 }
 
-/// Puts the stack back after a leaf ran in `frame`.
+/// Puts the stack back after a leaf ran in `frame`. A debug build first
+/// holds the leaf to having reified no frame machine code pushed whose
+/// code reifies none: such a frame's code keeps no reified word and its
+/// return divorces nothing (`MachineFrame::reifies`), so its frame object
+/// would stay married to an offset popped under it.
 pub(crate) fn release_leaf_frame(mutator: &mut Mutator<'_>, frame: LeafFrame) {
+    #[cfg(debug_assertions)]
+    assert!(
+        !frame.unreified || mutator.heap.activation_reified(frame.activation).is_none(),
+        "internal: a leaf reified a frame whose code reifies none"
+    );
     if let Some(extent) = frame.restore {
         mutator.heap.restore_stack_extent(extent);
     }
