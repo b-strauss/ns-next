@@ -11039,19 +11039,26 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   frame's operand, which no return address derives. An interpreter's
   send of a closure whose body has machine code calls it through a call
   stub of its own, as its send of a method does (`jit::called_closure`).
-  - The closure stubs (`jit/targets.rs`'s `ClosureStub`) serve the
-    methods whose fast path activates a block on the send's own slots:
-    `Closure`'s `value` to `value:value:value:`, whose rows activate
-    the receiver, and `^<parameter> cull: self` of one argument, whose
-    block of one parameter takes the receiver in that slot, which its
-    prologue places once its checks have passed, so that a refused call
-    leaves the slot as it was. A block's frame lies on the slots as a
-    method's does, its header right past them, which the collector's trace
-    checks of every frame and the exit's walk derives from a call's return
-    address; so `^<parameter> value` and a `cull:` of a block of no
-    parameter, which activate a block taking fewer arguments than the send
-    places, stay the interpreter's, which pushes them above the sender's
-    window.
+  - The closure stubs (`jit/targets.rs`'s `ClosureStub`) serve every
+    method whose fast path activates a block: `Closure`'s `value` to
+    `value:value:value:`, whose rows activate the receiver, and the quick
+    methods `^<parameter> value` -- `ifTrue:`, `and:` and their
+    relatives -- and `^<parameter> cull: self` -- `ifNotNil:` and its
+    relatives -- of up to three arguments. A frame on a send's slots has
+    its header right past them, which the collector's trace checks of
+    every frame and the exit's walk derives from a call's return address,
+    so a block taking fewer arguments than the send places -- none for
+    `value`, none or one for `cull:` -- lies that many slots higher: the
+    stub shifts the frame register up by them before it jumps into the
+    block, the prologue records the shift in two bits of the flags word
+    past every field the interpreter reads (`frames::CALL_SHIFT_BITS`),
+    a leaf's view of the frame keeps them, and the block's return shifts
+    the frame register back before its `ret`; the walk places a block's
+    header right past the send's slots (`materialize`'s `Callee`). No
+    second return address lies on the native stack, so the native stack a
+    recursion takes is a method's. `cull:`'s argument, the receiver, goes
+    into the block's one slot, which its prologue writes once its checks
+    have passed, so that a refused call leaves the slot as it was.
   - A stub finds the block's machine entry by the closure's code id in a
     table of the heap's (`heap/machine_entries.rs`, the entry block's
     `MachineEntries`): each row the machine entry, the feedback base the

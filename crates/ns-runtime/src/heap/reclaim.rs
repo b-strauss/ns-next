@@ -564,6 +564,7 @@ impl Heap<'_> {
                 self.tables.free_codes.free(number);
                 // The id may name another body next: no machine code is
                 // entered through it until the JIT records that body's.
+                #[cfg(ns_jit)]
                 self.machine_entries.clear(row);
                 freed = true;
             }

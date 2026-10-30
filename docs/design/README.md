@@ -456,7 +456,11 @@ the size the hot path was measured at run only without debug assertions;
 `cargo xtask gates release-checks` runs the suite so, in the profile
 `release-checks`, which is `release` without its fat LTO and single codegen
 unit -- a type's size does not depend on either, and the build takes well
-under a minute instead of minutes. Nothing is measured with it.
+under a minute instead of minutes. Nothing is measured with it. The same
+group lints `ns-runtime` for `aarch64-apple-darwin`, a target without
+an encoder, where nothing under `cfg(ns_jit)` is compiled, so that the
+interpreter keeps building where the JIT is not; no other gate builds
+that configuration.
 
 `cargo xtask gates codegen` reads the machine code instead of running it:
 `cargo asm` (`cargo-show-asm`) writes the listing of `ns-runtime`'s lib in

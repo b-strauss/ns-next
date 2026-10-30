@@ -408,22 +408,19 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     bridge** (accepted with the user on 2026-10-29 until stage 4): an
     interpreted `value` send and its kin call a block's machine code
     through the closure call stub, as a method's (`jit::called_closure`),
-    and a compiled one through a closure stub, but every other activation
-    of a block -- `ifTrue:` and its relatives sent a block that is no
-    literal, `ifNotNil:` sent a block of no parameter, a mirror row's
-    failure block, a future's computation -- is pushed by
-    the interpreter and entered at its push, an entry that costs about
-    8.5 ns more than interpreting a one-instruction block -- the switch,
-    `jit::run_machine_code`, `jit::entered`, the entry stub saving and
-    restoring eight registers ([execution.md](design/execution.md), "What
-    the entry at a send moved"). Machine code calls none of them: their
-    block takes fewer arguments than the send places, and a block's frame
-    lies on the slots with its header right past them, as the trace's
-    check and the exit's walk require (`jit::targets`'s `ClosureStub`).
-    A block that reaches its indirection vector, as `bench_block`'s
-    `[:y | acc:: acc + y]` does, runs those loads and stores through
-    `Leaf::Step`, about 18 ns more an activation, until the outer locals
-    run in machine code. Of the bridge itself, `run_machine_code` still clones two `Rc`s at every
+    and every compiled send that activates a block calls it through a
+    closure stub, but the interpreter's own pushes of a block -- for
+    `ifTrue:` and its relatives sent a block that is no literal,
+    `ifNotNil:` and its relatives, a mirror row's failure block, a
+    future's computation -- are entered at the push, an entry that costs
+    about 8.5 ns more than interpreting a one-instruction block -- the
+    switch, `jit::run_machine_code`, `jit::entered`, the entry stub saving
+    and restoring eight registers ([execution.md](design/execution.md),
+    "What the entry at a send moved"). A block that reaches its
+    indirection vector, as `bench_block`'s `[:y | acc:: acc + y]` does,
+    runs those loads and stores through `Leaf::Step`, about 18 ns more an
+    activation, until the outer locals run in machine code. Of the bridge
+    itself, `run_machine_code` still clones two `Rc`s at every
     entry, the zone's and the entry block's; and `vm::run_stretch`'s
     `Transfer::Stopped` arm repeats the five reloads of its `Switched`
     arm, left as it is since a change there costs a codegen round for

@@ -3,13 +3,16 @@
 /// the later rounds call each block through the closure stubs, as a
 /// method is called (`docs/design/execution.md`, "Stage 4: closures,
 /// non-local return, allocation and the barrier"): `value` to
-/// `value:value:value:`, whose arity the stub checks; `value:value:value:value:`,
-/// which no closure understands; `cull:` and `ifNotNil:`, which hand a
-/// block of no parameter nothing and one of one parameter the receiver;
-/// `ifTrue:` and `ifTrue:ifFalse:` sent blocks held in locals, which no
-/// lowering inlines; `ifTrue:` sent a value that is no block, which the
-/// method sends `value`; a block of the wrong arity, whose error the
-/// interpreter raises; and blocks reading copied values.
+/// `value:value:value:`, whose arity the stub checks;
+/// `value:value:value:value:`, which no closure understands; `cull:`,
+/// `ifNotNil:` and its two relatives of two arguments, which hand a block
+/// of no parameter nothing and one of one parameter the receiver;
+/// `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:`, `and:` and `or:` sent blocks
+/// held in locals, which no lowering inlines and a closure stub shifts
+/// past the slots they take no argument from; `ifTrue:` sent a value
+/// that is no block, which the method sends `value`; a block of the wrong
+/// arity, whose error the interpreter raises; and blocks reading copied
+/// values.
 class ClosureCalls = Object new () (
   /// Answers `action`'s value, or the message text of the Error it
   /// signals.
@@ -27,6 +30,7 @@ class ClosureCalls = Object new () (
       three = [:first :second :third | first + second + third + base].
       copies = [base + index + 1].
       even = index \\ 2 = 0.
+      truth = [index > 1].
     |
     ^{
       none value.
@@ -44,6 +48,12 @@ class ClosureCalls = Object new () (
       even ifTrue: copies ifFalse: none.
       self guarded: [even ifTrue: 7].
       copies value.
+      even ifFalse: copies.
+      even and: truth.
+      even or: truth.
+      index ifNil: none ifNotNil: one.
+      index ifNotNil: none ifNil: one.
+      index ifNil: one ifNotNil: none.
     }.
   )
 

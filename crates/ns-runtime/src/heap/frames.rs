@@ -169,7 +169,8 @@ pub(super) mod kind_tag {
 /// Where each field of `FrameFlags` sits in the flags word's
 /// `SmallInteger`: the kind tag in bits 0-7, the argument count in bits
 /// 8-23, `counted` at 24, `retains_registers` at 25, `compiled` at 26 and,
-/// in a debug build, the 31-bit generation in bits 27-57; 58 bits, inside
+/// in a debug build, the 31-bit generation in bits 27-57, and a compiled
+/// block's call shift in bits 58-59 (`CALL_SHIFT_BITS`); 60 bits, inside
 /// 61.
 pub(crate) const KIND_TAG_MASK: u64 = 0xFF;
 pub(crate) const ARGUMENT_COUNT_SHIFT: u32 = 8;
@@ -177,6 +178,15 @@ const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
 pub(crate) const COUNTED_BIT: u64 = 1 << 24;
 pub(crate) const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
 pub(crate) const COMPILED_BIT: u64 = 1 << 26;
+/// Past every field of `FrameFlags`, which reads none of them: the slots a
+/// compiled call shifted a block's frame up by, so that its header lies
+/// right past the send's slots though the block takes fewer arguments
+/// than the send places (`jit::targets`'s closure stubs). Written by the
+/// block's prologue, kept by a leaf's view of the frame
+/// (`Heap::write_machine_frame`) and read by its machine code's return,
+/// which shifts the frame register back before it returns to the send.
+#[cfg(ns_jit)]
+pub(crate) const CALL_SHIFT_BITS: u64 = 0b11 << 58;
 #[cfg(debug_assertions)]
 pub(crate) const GENERATION_SHIFT: u32 = 27;
 #[cfg(debug_assertions)]

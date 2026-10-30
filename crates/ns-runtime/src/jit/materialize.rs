@@ -49,7 +49,8 @@ impl Walk {
     /// the sender, whose header lies at `sender` and register 0 at
     /// `sender_registers`, both word offsets from the stack's base, stands
     /// as the last frame materialized, its send's callee placed on its
-    /// slots from register `argument_base`, the stack's top at `top`. So the callee is the walk's
+    /// slots from register `argument_base` -- `slots` of them -- the stack's
+    /// top at `top`. So the callee is the walk's
     /// first frame, materialized as any compiled callee is, and the
     /// sender, interpreted and stopped at its send already, its caller; a
     /// refused call leaves the sender the innermost frame, with nothing
@@ -60,6 +61,7 @@ impl Walk {
         sender: u32,
         sender_registers: u32,
         argument_base: u16,
+        slots: u16,
         top: usize,
     ) {
         let start = sender_registers + u32::from(argument_base);
@@ -67,6 +69,7 @@ impl Walk {
             last: Some((sender, sender_registers)),
             callee: Some(Callee {
                 start,
+                slots: u32::from(slots),
                 caller: sender,
                 top,
             }),
@@ -76,14 +79,18 @@ impl Walk {
     }
 }
 
-/// The callee a send places on its argument slots: its first argument's
-/// word offset, its caller's header offset, and the top its push stood
-/// at. Its header lies past as many arguments as its own code takes
-/// (`Callee::offset`): an initializer a passed level decided takes none,
-/// whatever its invocation placed.
+/// The callee a send places on its argument slots: its first slot's word
+/// offset, how many slots the send placed, its caller's header offset,
+/// and the top its push stood at. Its header lies past as many arguments
+/// as its own code takes (`Callee::offset`) -- an initializer a passed
+/// level decided takes none, whatever its invocation placed -- but for a
+/// block's, which lies right past the slots: a closure stub shifts a block
+/// taking fewer arguments than the send places up by the rest
+/// (`targets::ClosureStub`).
 #[derive(Clone, Copy)]
 struct Callee {
     start: u32,
+    slots: u32,
     caller: u32,
     top: usize,
 }
@@ -91,7 +98,10 @@ struct Callee {
 impl Callee {
     /// Its header's word offset, for a callee running `code`.
     fn offset(self, code: &CompiledCode) -> u32 {
-        self.start + u32::from(code.argument_count)
+        match code.kind {
+            CodeKind::Block => self.start + self.slots,
+            _ => self.start + u32::from(code.argument_count),
+        }
     }
 }
 
@@ -152,13 +162,17 @@ pub(crate) fn machine_frame(
 }
 
 /// Where the call at `program_counter` of `code` places its callee's
-/// first argument, the calling frame's register 0 at `register_base`: on
-/// its argument slots, or above the window (`sends::call_slots`).
-fn callee_of_call(code: &CompiledCode, program_counter: u32, register_base: u32) -> u32 {
+/// first argument, the calling frame's register 0 at `register_base` --
+/// on its argument slots, or above the window (`sends::call_slots`) --
+/// and how many it places.
+fn callee_of_call(code: &CompiledCode, program_counter: u32, register_base: u32) -> (u32, u32) {
     let Some(slots) = super::sends::call_slots(code, program_counter) else {
         unreachable!("internal: a compiled call's return address names a send or an initializer's");
     };
-    register_base + u32::from(slots.argument_base)
+    (
+        register_base + u32::from(slots.argument_base),
+        u32::from(slots.argument_count),
+    )
 }
 
 /// `Leaf::MaterializeFrame`: the frame the return address
@@ -200,13 +214,14 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
             let _ = mutator.heap.write_machine_frame(&frame);
             walk.top = walk.top.max(frame.window_end());
             walk.added += 1;
-            (offset, callee.start)
+            (offset, offset - u32::from(code.argument_count))
         }
     };
-    let start = callee_of_call(code, program_counter, register_base);
+    let (start, slots) = callee_of_call(code, program_counter, register_base);
     walk.last = Some((offset, register_base));
     walk.callee = Some(Callee {
         start,
+        slots,
         caller: offset,
         top: walk.top,
     });

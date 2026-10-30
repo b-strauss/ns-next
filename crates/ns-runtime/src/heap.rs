@@ -37,6 +37,7 @@ mod frames;
 pub(crate) use frames::with_stack_reservation;
 mod header;
 mod ids;
+#[cfg(ns_jit)]
 mod machine_entries;
 pub(crate) mod machine_words;
 pub(crate) mod mark;
@@ -738,6 +739,12 @@ const _: () = assert!(crate::bytecode::HEADER_REGISTERS as usize == frame_header
 const _: () = assert!(frame_field::COUNT == 10 && frame_field::MARRIED == frame_field::COUNT - 1);
 const _: () =
     assert!(closure_field::COUNT == 3 && closure_field::FEEDBACK_BASE == closure_field::COUNT - 1);
+
+/// The most slots a compiled call may shift a block's frame up by, which
+/// its flags word records (`frames::CALL_SHIFT_BITS`).
+#[cfg(ns_jit)]
+pub(crate) const MAXIMUM_CALL_SHIFT: u64 =
+    frames::CALL_SHIFT_BITS >> frames::CALL_SHIFT_BITS.trailing_zeros();
 
 /// A shift count machine code takes, which is below 64.
 #[cfg(ns_jit)]
@@ -2147,7 +2154,8 @@ pub struct Heap<'gc> {
     application_ids: application_ids::ApplicationIds,
     /// Each block body's machine entry by code id, for machine code
     /// (`machine_entries.rs`), which the JIT writes and the free of a code
-    /// id clears.
+    /// id clears. Only where machine code runs.
+    #[cfg(ns_jit)]
     machine_entries: machine_entries::MachineEntries,
     /// What a body's `CodeIdCache` must carry for its id to name a row of
     /// `tables` (`next_code_table_epoch`).
@@ -2518,6 +2526,7 @@ impl<'gc> Heap<'gc> {
             builtin_guards: BuiltinGuards::NONE,
             tables: Tables::default(),
             application_ids,
+            #[cfg(ns_jit)]
             machine_entries: machine_entries::MachineEntries::new(),
             code_table_epoch: next_code_table_epoch(),
             #[cfg(debug_assertions)]
@@ -6429,6 +6438,7 @@ impl<'gc> Heap<'gc> {
     /// `entry`, compiled against `feedback_base`, and takes `parameters`
     /// parameters (`jit::note_block_entry`): the row is written only when
     /// it says something else, and the bound grows with it.
+    #[cfg(ns_jit)]
     pub(crate) fn record_machine_entry(
         &mut self,
         id: CodeId,
@@ -6466,6 +6476,7 @@ impl<'gc> Heap<'gc> {
     /// Clears every machine entry: the code zone they lie in was replaced
     /// (`Interpreter::set_jit_zone_bytes`).
     pub(crate) fn forget_machine_entries(&mut self) {
+        #[cfg(ns_jit)]
         self.machine_entries.clear_all();
     }
 
@@ -9271,12 +9282,25 @@ impl<'gc> Heap<'gc> {
         .bits()
     }
 
-    /// How far a frame's flags word is shifted to bring its `counted` bit
-    /// down to bit 0: a block's prologue writes the bit the call handed it
-    /// (`jit::sends::prologue`).
+    /// How far a frame's flags word is shifted to bring the shift its call
+    /// made down to bit 0 (`frames::CALL_SHIFT_BITS`).
     #[cfg(ns_jit)]
-    pub(crate) fn machine_counted_shift() -> u8 {
-        small_count(frames::COUNTED_BIT.trailing_zeros() + frames::SMALL_INTEGER_TAG_BITS)
+    pub(crate) fn machine_call_shift_shift() -> u8 {
+        small_count(frames::CALL_SHIFT_BITS.trailing_zeros() + frames::SMALL_INTEGER_TAG_BITS)
+    }
+
+    /// The bits of a flags word that hold the shift its call made.
+    #[cfg(ns_jit)]
+    fn machine_call_shift_mask() -> u64 {
+        frames::CALL_SHIFT_BITS << frames::SMALL_INTEGER_TAG_BITS
+    }
+
+    /// The amount a frame's flags word grows by when its `counted` bit is
+    /// set: what an interpreter's call hands a counted block's prologue
+    /// (`MachineWord::CalleeCounted`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_counted_word() -> u64 {
+        frames::number_word(frames::COUNTED_BIT).bits() - frames::number_word(0).bits()
     }
 
     /// The flags word's register number past a frame's arguments.
@@ -9384,6 +9408,17 @@ impl<'gc> Heap<'gc> {
         };
         #[cfg(debug_assertions)]
         let flags = flags.with_generation(written.generation);
+        // A leaf's view keeps how far the frame's call shifted it, which
+        // its machine code's return reads (`frames::CALL_SHIFT_BITS`); a
+        // frame the walk materializes returns through the interpreter.
+        let flags_word = match frame.caller {
+            Some(_) => flags.word(),
+            None => Word::from_bits(
+                flags.word().bits()
+                    | (header_word(self, frame_header::FLAGS).bits()
+                        & Self::machine_call_shift_mask()),
+            ),
+        };
         let caller = match frame.caller {
             Some((caller, top)) => frames::caller_link_word(caller, frame.start(), top),
             None => Word::NIL,
@@ -9410,7 +9445,7 @@ impl<'gc> Heap<'gc> {
         let words = [
             (frame_header::OPERAND, operand),
             (frame_header::REIFIED, reified),
-            (frame_header::FLAGS, flags.word()),
+            (frame_header::FLAGS, flags_word),
             (
                 frame_header::CODE,
                 frames::number_word(frame.code.index() as u64),
@@ -9632,7 +9667,6 @@ impl<'gc> Heap<'gc> {
     /// to a target that is no method with code, for the stub that runs it
     /// (`jit::stub_entry`), which reads no current class: `nil` stands in
     /// for one.
-    #[cfg(ns_jit)]
     pub(crate) fn hand_machine_receiver(&self, receiver: Value<'gc>) {
         let receiver = self.store(receiver);
         self.machine_words
@@ -9646,7 +9680,6 @@ impl<'gc> Heap<'gc> {
     /// `MachineWord::CalleeClass`), which the miss stub passes to the
     /// callee's machine entry as a compiled call passes them: nothing is
     /// written into the callee's frame before its checks pass.
-    #[cfg(ns_jit)]
     pub(crate) fn hand_machine_callee(&self, receiver: Value<'gc>, class: ClassReference<'gc>) {
         let receiver = self.store(receiver);
         let class = self.store(Value::object(class));
@@ -9679,8 +9712,14 @@ impl<'gc> Heap<'gc> {
             .set(MachineWord::CalleeClass, class.bits());
         self.machine_words
             .set(MachineWord::CalleeClosure, closure.bits());
-        self.machine_words
-            .set(MachineWord::CalleeCounted, u64::from(counted));
+        self.machine_words.set(
+            MachineWord::CalleeCounted,
+            if counted {
+                Self::machine_counted_word()
+            } else {
+                0
+            },
+        );
     }
 
     /// Hands machine code the receiver, the level and the body of the
@@ -9736,7 +9775,6 @@ impl<'gc> Heap<'gc> {
 
     /// The value machine code answered as the word `bits`
     /// (`jit::Resumption::Returned`): a word a frame register held.
-    #[cfg(ns_jit)]
     pub(crate) fn machine_value(&self, bits: u64) -> Value<'gc> {
         self.load(Word::from_bits(bits))
     }

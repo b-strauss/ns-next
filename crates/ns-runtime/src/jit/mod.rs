@@ -454,9 +454,12 @@ struct AccessorStubs {
     /// The closure stub of a block row of each arity, by arity
     /// (`targets::ClosureStub::ClosureValue`).
     closure_values: Vec<CodeOffset>,
-    /// The closure stub of `^<parameter> cull: self` of one argument
-    /// (`targets::ClosureStub::CullParameter`).
-    cull: CodeOffset,
+    /// The closure stub of `^<parameter> value`, by
+    /// `targets::parameter_stub_index` (`targets::ClosureStub::ValueOfParameter`).
+    values_of_parameters: Vec<CodeOffset>,
+    /// The closure stub of `^<parameter> cull: self`, by
+    /// `targets::parameter_stub_index` (`targets::ClosureStub::CullParameter`).
+    culls: Vec<CodeOffset>,
 }
 
 /// Why a body was not compiled. It stays interpreted for good.
@@ -565,6 +568,7 @@ pub(crate) struct JitState {
     compile_at_entry: u32,
     /// The exit's walk over the compiled frames' return addresses, while
     /// the exit stub makes it (`materialize`).
+    #[cfg(ns_jit)]
     pub(crate) walk: materialize::Walk,
     /// The innermost frame the last walk materialized, for the run loop to
     /// go on with (`take_walked`).
@@ -632,6 +636,7 @@ impl JitState {
             statistics: JitStatistics::default(),
             install_bodies_exiting_at_once: stress_jit,
             compile_at_entry: if stress_jit { 1 } else { COMPILE_AT_ENTRY },
+            #[cfg(ns_jit)]
             walk: materialize::Walk::default(),
             walked: None,
             block: EntryBlock::new(),
@@ -881,6 +886,7 @@ impl JitState {
             statistics: JitStatistics::default(),
             install_bodies_exiting_at_once,
             compile_at_entry: COMPILE_AT_ENTRY,
+            #[cfg(ns_jit)]
             walk: materialize::Walk::default(),
             walked: None,
             block: EntryBlock::new(),
@@ -950,7 +956,8 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             guarded_setters: Vec::new(),
             nested_classes: Vec::new(),
             closure_values: Vec::new(),
-            cull: CodeOffset(0),
+            values_of_parameters: Vec::new(),
+            culls: Vec::new(),
         },
     };
     zone.entry_stub = install(&mut zone, &stubs::assemble_entry_stub(Abi::host()).bytes).ok()?;
@@ -1028,7 +1035,12 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             .iter()
             .map(|offset| placed(*offset))
             .collect(),
-        cull: placed(entries.cull),
+        values_of_parameters: entries
+            .values_of_parameters
+            .iter()
+            .map(|offset| placed(*offset))
+            .collect(),
+        culls: entries.culls.iter().map(|offset| placed(*offset)).collect(),
     };
     Some(zone)
 }
@@ -1179,19 +1191,18 @@ pub(crate) enum Stubbed<'method> {
 /// its field's setter stub; a method whose fast path is a leaf-safe mirror
 /// row through its row's own stub (`MachineCall::Stub`) or, without one
 /// (`MachineCall::Leaf`), its row's mirror method stub; a method whose
-/// fast path activates a block on the send's slots -- a row that
-/// activates its receiver (`BlockPrimitive::Value`), `^<parameter> cull:
-/// self` of one argument -- through its closure stub
-/// (`targets::ClosureStub`); a private or
+/// fast path activates a block -- a row that activates its receiver
+/// (`BlockPrimitive::Value`), `^<parameter> value` and `^<parameter>
+/// cull: self` of at most `SHIFTED_SLOTS` arguments -- through
+/// its closure stub (`targets::ClosureStub`); a private or
 /// `super` slot accessor through its field's guarded stub, which makes
 /// the guard check's first compare inline and goes on to the leaf stub
 /// for the rest; a getter or setter past the stubs' fields, a builtin
 /// class's accessor and a primitive that is a mirror send of a leaf-safe
 /// row through the leaf stub. `None` for every other -- a row that is not
-/// leaf-safe, `^<parameter> value` and every other fast path that
-/// activates a block taking fewer arguments than the send places, a
-/// `doesNotUnderstand:` handler -- and where there is no zone: the
-/// interpreter runs the send.
+/// leaf-safe, a quick method activating a block at a send of more
+/// arguments than a closure stub shifts past, a `doesNotUnderstand:`
+/// handler -- and where there is no zone: the interpreter runs the send.
 pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64> {
     use crate::builtins::primitive::{mirror_entry, BlockPrimitive, MachineCall, Primitive};
     use crate::interpreter::resolve::Chain;
@@ -1244,9 +1255,17 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
                     .and_then(|arity| zone.accessors.closure_values.get(usize::from(arity)))
                     .map(|entry| address(*entry))
             }
-            // The block in the one slot, which the receiver takes over.
-            Some(MethodFastPath::CullParameter(0)) if method.argument_count == 1 => {
-                Some(address(zone.accessors.cull))
+            // A position past the send's arguments activates the method,
+            // as `Parameter`'s does.
+            Some(MethodFastPath::ValueOfParameter(position)) => {
+                parameter_stub_index(method.argument_count, usize::from(position))
+                    .and_then(|index| zone.accessors.values_of_parameters.get(index))
+                    .map(|entry| address(*entry))
+            }
+            Some(MethodFastPath::CullParameter(position)) => {
+                parameter_stub_index(method.argument_count, usize::from(position))
+                    .and_then(|index| zone.accessors.culls.get(index))
+                    .map(|entry| address(*entry))
             }
             Some(MethodFastPath::Mirror(row)) => match mirror_entry(row).machine_call {
                 MachineCall::Stub(stub) => Some(address(zone.accessors.row_stubs[stub.index()])),
@@ -1310,6 +1329,22 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
             .map(|entry| address(*entry)),
         Stubbed::NestedClass { .. } => None,
     }
+}
+
+/// The most arguments a send activating a block that takes fewer may
+/// place: a closure stub shifts the block's frame up by the slots it
+/// takes none from, which its flags word holds in two bits
+/// (`frames::CALL_SHIFT_BITS`). Every such quick method of the core
+/// library takes at most two.
+pub(crate) const SHIFTED_SLOTS: u8 = 3;
+
+/// The index of the closure stub of `^<parameter> value` or
+/// `^<parameter> cull: self` for a send of `slots` arguments whose block
+/// is the one at `position` (`targets::ClosureStub`): the entries of one
+/// slot count, then of the next.
+pub(crate) fn parameter_stub_index(slots: usize, position: usize) -> Option<usize> {
+    (slots >= 1 && slots <= usize::from(SHIFTED_SLOTS) && position < slots)
+        .then(|| slots * (slots - 1) / 2 + position)
 }
 
 /// Whether machine code runs `method`, found on `chain`, as an activation
@@ -1664,10 +1699,15 @@ pub(crate) fn entered(
         }
         let method = mutator.heap.activation_method(activation);
         note_entry(&mut mutator.jit, code, feedback_base, method.as_ref());
-        if code.kind == crate::bytecode::CodeKind::Block {
-            let id = mutator.heap.activation_code_id(activation);
-            note_block_entry(mutator, id, code);
-        }
+    }
+    // Every push of a block keeps its row current, the compiling one and
+    // each after it: a full collection may have minted its id again, and
+    // a block only `cull:` or `ifTrue:` activates is never called by the
+    // interpreter (`called_closure`), which would write it too.
+    #[cfg(ns_jit)]
+    if code.kind == crate::bytecode::CodeKind::Block {
+        let id = mutator.heap.activation_code_id(activation);
+        note_block_entry(mutator, id, code);
     }
     // A body compiled at another push stays a body no top-level
     // activation runs: only a host pushes one, of code of its own.
@@ -1838,7 +1878,7 @@ pub(crate) fn called<'gc>(
         |zone| zone.call_stub,
         sender,
         register_base,
-        argument_base,
+        (argument_base, code.argument_count),
         machine_entry,
     )
 }
@@ -1904,7 +1944,7 @@ pub(crate) fn called_closure<'gc>(
         |zone| zone.closure_call_stub,
         sender,
         register_base,
-        argument_base,
+        (argument_base, code.argument_count),
         machine_entry,
     );
     if !counted && !matches!(called, Called::Stopped(_)) {
@@ -1916,14 +1956,15 @@ pub(crate) fn called_closure<'gc>(
 /// The call `called` and `called_closure` make, once the callee's machine
 /// entry is known and what its prologue is handed lies in the machine
 /// words: through the stub `stub` picks, its walk seeded with the sender,
-/// whose send's callee lies on its slots from register `argument_base`.
+/// whose send's callee lies on its slots from register `argument_base`,
+/// as many as the callee takes (`slots`).
 #[cfg(ns_jit)]
 fn call_through(
     mutator: &mut Mutator<'_>,
     stub: impl FnOnce(&Zone) -> CodeOffset,
     sender: ActivationReference,
     register_base: RegisterBase,
-    argument_base: u16,
+    (argument_base, slots): (u16, u16),
     machine_entry: u64,
 ) -> Called {
     use stubs::{BlockWord, ExitKind};
@@ -1939,6 +1980,7 @@ fn call_through(
         Heap::activation_offset(sender),
         sender_registers,
         argument_base,
+        slots,
         top,
     );
     let block = prepared_block(
@@ -2018,6 +2060,7 @@ pub(crate) fn called_closure<'gc>(
 /// the closure stubs from the next call on. A body compiled against no
 /// feedback base is left out: a closure that has none is given its own at
 /// its first activation, which only the interpreter's push does.
+#[cfg(ns_jit)]
 pub(crate) fn note_block_entry(mutator: &mut Mutator<'_>, id: CodeId, code: &CompiledCode) {
     let Some(body) = mutator.jit.installed(code) else {
         return;

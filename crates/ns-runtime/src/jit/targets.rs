@@ -38,6 +38,7 @@ use ns_assembler::{Assembled, Condition, Label, Memory, Register, Width};
 use super::leaves::Leaf;
 use super::macro_assembler::{Abi, MacroAssembler, Operand, Roles};
 use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};
+use super::SHIFTED_SLOTS;
 use crate::builtins::primitive::{MachineCall, RowStub, MIRROR};
 use crate::heap::machine_words::MachineWord;
 use crate::interpreter::inline_cache::cells::{
@@ -375,27 +376,35 @@ pub(crate) const PARAMETER_STUBS: u8 = 16;
 pub(crate) const CLOSURE_VALUE_ARITIES: u8 = 4;
 
 /// A closure stub (`emit_closure_stub_entry`): what a method whose fast path
-/// activates a block on the send's own slots does, as
-/// `Mutator::act_with_base` does it.
+/// activates a block does, as `Mutator::act_with_base` does it, the
+/// block's frame laid on the send's slots.
 ///
-/// A block's frame lies on the slots as a method's does, its header right
-/// past them, which the collector's trace checks of every frame on the
-/// stack (`Heap::trace_stack`) and the exit's walk derives from a call's
-/// return address (`jit::materialize`): so a block takes as many
-/// arguments as the send places, and no stub serves a fast path that
-/// activates one taking fewer -- `^<parameter> value`, which hands a
-/// block none, and `^<parameter> cull: self` with a block of none, whose
-/// activations the interpreter pushes above the sender's window.
+/// A frame on a send's slots has its header right past them, which the
+/// collector's trace checks of every frame on the stack (`Heap::trace_stack`)
+/// and the exit's walk derives from a call's return address
+/// (`jit::materialize`). A block taking fewer arguments than the send
+/// places -- `^<parameter> value`'s, which takes none, `cull:`'s of none,
+/// or of one at a send of two -- lies that many slots higher: the stub
+/// shifts the frame register up by them before it enters the block, the
+/// block's prologue records the shift in its flags word
+/// (`frames::CALL_SHIFT_BITS`), and its return shifts the frame register
+/// back before it returns to the send. Its arguments are then the last
+/// slots, `cull:`'s one the receiver, which the prologue places.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ClosureStub {
     /// A method whose fast path is a mirror row that activates its
     /// receiver, a closure, with the send's `arity` arguments
     /// (`MethodFastPath::Mirror` of a `BlockPrimitive::Value` row).
     ClosureValue { arity: u8 },
-    /// A quick method `^<parameter> cull: self` of one argument, the
-    /// closure: a block of one parameter, activated with the receiver as
-    /// its argument in the send's slot (`MethodFastPath::CullParameter`).
-    CullParameter,
+    /// A quick method `^<parameter> value` of `slots` arguments: the
+    /// closure at `position`, activated with none
+    /// (`MethodFastPath::ValueOfParameter`).
+    ValueOfParameter { position: u8, slots: u8 },
+    /// A quick method `^<parameter> cull: self` of `slots` arguments: the
+    /// closure at `position`, activated with the receiver when it takes
+    /// one and with none when it takes none
+    /// (`MethodFastPath::CullParameter`).
+    CullParameter { position: u8, slots: u8 },
 }
 
 /// Where each entry of the accessor stubs lies in their code, as offsets
@@ -431,8 +440,12 @@ pub(crate) struct AccessorEntries {
     pub(crate) nested_classes: Vec<u32>,
     /// The closure stub of a block row of each arity, by arity.
     pub(crate) closure_values: Vec<u32>,
-    /// The closure stub of `^<parameter> cull: self` of one argument.
-    pub(crate) cull: u32,
+    /// The closure stub of `^<parameter> value`, by
+    /// `parameter_stub_index`.
+    pub(crate) values_of_parameters: Vec<u32>,
+    /// The closure stub of `^<parameter> cull: self`, by
+    /// `parameter_stub_index`.
+    pub(crate) culls: Vec<u32>,
 }
 
 /// The stubs a cell names for a target that is no method with code
@@ -710,11 +723,17 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
             )
         })
         .collect();
-    let cull = emit_closure_stub_entry(
-        &mut macro_assembler,
-        ClosureStub::CullParameter,
-        closure_body,
-    );
+    let mut parameter_stubs = |stub: fn(u8, u8) -> ClosureStub| -> Vec<Label> {
+        (1..=SHIFTED_SLOTS)
+            .flat_map(|slots| (0..slots).map(move |position| (position, slots)))
+            .map(|(position, slots)| {
+                emit_closure_stub_entry(&mut macro_assembler, stub(position, slots), closure_body)
+            })
+            .collect()
+    };
+    let values_of_parameters =
+        parameter_stubs(|position, slots| ClosureStub::ValueOfParameter { position, slots });
+    let culls = parameter_stubs(|position, slots| ClosureStub::CullParameter { position, slots });
     emit_closure_stub_body(&mut macro_assembler, closure_body, decline);
     let row_stubs: Vec<Label> = RowStub::ALL
         .into_iter()
@@ -805,18 +824,29 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         guarded_setters: guarded_setters.into_iter().map(offset).collect(),
         nested_classes: nested_classes.into_iter().map(offset).collect(),
         closure_values: closure_values.into_iter().map(offset).collect(),
-        cull: offset(cull),
+        values_of_parameters: values_of_parameters.into_iter().map(offset).collect(),
+        culls: culls.into_iter().map(offset).collect(),
     };
     (assembled, entries)
 }
 
-/// The arity a closure stub's entry hands its shared body for `cull:`,
-/// whose block takes one, the receiver: no arity a block has.
-const CULL_ARITY: i32 = -1;
+/// What a closure stub's entry asks of the block's parameter count, in
+/// the bits above the slot count it hands the shared body: as many as the
+/// send's slots, none, or none or one, the receiver (`ClosureStub`).
+const TAKES_THE_SLOTS: u64 = 0;
+const TAKES_NONE: u64 = 1;
+const TAKES_THE_RECEIVER: u64 = 2;
+
+/// How far the entry's demand lies above the slot count.
+const DEMAND_SHIFT: u8 = 8;
+
+/// The slot count's bits.
+const SLOTS_MASK: i32 = 0xFF;
 
 /// The entry of the closure stub `stub`, which loads the closure -- the
-/// receiver, or `cull:`'s argument -- and the arity its block must take,
-/// or `CULL_ARITY`, then goes on at `shared`, the body every closure stub
+/// receiver, or the argument at the stub's position -- and the send's
+/// slot count with what the block must take above it (`TAKES_THE_SLOTS`
+/// and its kin), then goes on at `shared`, the body every closure stub
 /// shares (`emit_closure_stub_body`), at the label it answers.
 fn emit_closure_stub_entry(
     macro_assembler: &mut MacroAssembler,
@@ -824,23 +854,33 @@ fn emit_closure_stub_entry(
     shared: Label,
 ) -> Label {
     let roles = macro_assembler.roles();
-    // The arity rides in the register that hands the prologue the count,
+    // The demand rides in the register that hands the prologue its flags,
     // which the shared body writes last.
-    let (closure, arity) = (roles.callee_closure(), roles.callee_counted());
+    let (closure, demand) = (roles.callee_closure(), roles.callee_counted());
     let assembler = macro_assembler.assembler();
     let start = assembler.label();
     assembler.bind(start);
-    let expected = match stub {
+    let (slots, takes) = match stub {
         ClosureStub::ClosureValue { arity } => {
             assembler.move_register(closure, roles.callee_receiver());
-            i64::from(arity)
+            (arity, TAKES_THE_SLOTS)
         }
-        ClosureStub::CullParameter => {
-            assembler.load(Width::Word64, closure, argument_slot(roles, 0));
-            i64::from(CULL_ARITY)
+        ClosureStub::ValueOfParameter { position, slots }
+        | ClosureStub::CullParameter { position, slots } => {
+            assembler.load(
+                Width::Word64,
+                closure,
+                argument_slot(roles, i32::from(position)),
+            );
+            let takes = if matches!(stub, ClosureStub::CullParameter { .. }) {
+                TAKES_THE_RECEIVER
+            } else {
+                TAKES_NONE
+            };
+            (slots, takes)
         }
     };
-    assembler.move_immediate(arity, expected.cast_unsigned());
+    assembler.move_immediate(demand, u64::from(slots) | (takes << DEMAND_SHIFT));
     assembler.jump(shared);
     start
 }
@@ -852,18 +892,20 @@ fn emit_closure_stub_entry(
 /// entry loaded must be a closure whose code id names a row of the machine
 /// entry table (`BlockWord::MachineEntries`) with a machine entry,
 /// compiled against the closure's feedback base, whose parameter count is
-/// the arity its entry handed over, the send's, or for `cull:` one, the
-/// receiver, which the prologue places once its checks have passed
-/// (`Roles::callee_argument`); then the block's prologue is handed the receiver and the
-/// current class of the frame the closure captured, the closure, and that
+/// what its entry demands -- the send's, none, or for `cull:` none or one,
+/// the receiver, which the prologue places once its checks have passed
+/// (`Roles::callee_argument`). Then the block's prologue is handed the
+/// receiver and the current class of the frame the closure captured, the
+/// closure, and what its flags word adds (`Roles::callee_counted`): that
 /// its activation counts, which every activation a compiled send pushes
-/// does: only a `SendInlinable` decides an exempt one, and machine code
-/// runs none. Anything else -- no closure, a body without machine code
-/// here, an arity the interpreter refuses, a closure an image decoded,
-/// whose feedback base is assigned at its first activation -- declines at
-/// `decline` before anything is written, so that the caller re-executes
-/// the send and the interpreter decides it -- a block of no parameter
-/// `cull:` sends among them (`ClosureStub`).
+/// does -- only a `SendInlinable` decides an exempt one, and machine code
+/// runs none -- and the slots it takes no argument from, by which the
+/// frame register is shifted up (`ClosureStub`). Anything else -- no
+/// closure, a body without machine code here, an arity the interpreter
+/// refuses, a closure an image decoded, whose feedback base is assigned at
+/// its first activation -- declines at `decline` before anything is
+/// written, so that the caller re-executes the send and the interpreter
+/// decides it.
 fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, decline: Label) {
     let roles = macro_assembler.roles();
     let layout = crate::heap::Heap::machine_layout();
@@ -886,6 +928,8 @@ fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, d
     let field = |base: Register, displacement: i32| Memory { base, displacement };
     let entries = macro_assembler.block_word(BlockWord::MachineEntries);
     let no_value = crate::heap::Word::NO_VALUE_BITS;
+    let counted_word = i32::try_from(crate::heap::Heap::machine_counted_word())
+        .expect("internal: the counted bit lies in the flags word's low half");
     macro_assembler.assembler().bind(shared);
     macro_assembler.jump_unless_object(closure, decline);
     let assembler = macro_assembler.assembler();
@@ -931,19 +975,33 @@ fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, d
         word,
         field(row, rows.parameters_displacement),
     );
-    let (cull, placed) = (assembler.label(), assembler.label());
-    assembler.move_immediate(argument, no_value);
-    assembler.compare_immediate(counted, CULL_ARITY);
-    assembler.jump_if(Condition::Equal, cull);
+    // The demand split: what the block must take into `argument`, the
+    // slot count stays.
+    let (none_or_receiver, receiver_taken, no_argument) =
+        (assembler.label(), assembler.label(), assembler.label());
+    assembler.move_register(argument, counted);
+    assembler.shift_right_logical(argument, DEMAND_SHIFT);
+    assembler.and_immediate(counted, SLOTS_MASK);
+    assembler.compare_immediate(argument, small_demand(TAKES_THE_SLOTS));
+    assembler.jump_if(Condition::NotEqual, none_or_receiver);
     assembler.compare(word, counted);
     assembler.jump_if(Condition::NotEqual, decline);
-    assembler.jump(placed);
-    // `cull:`'s: a block of one parameter, which takes the receiver.
-    assembler.bind(cull);
+    assembler.jump(no_argument);
+    assembler.bind(none_or_receiver);
+    assembler.compare_immediate(word, 0);
+    assembler.jump_if(Condition::Equal, no_argument);
+    // Only `cull:` takes a block of one, its argument the receiver.
+    assembler.compare_immediate(argument, small_demand(TAKES_THE_RECEIVER));
+    assembler.jump_if(Condition::NotEqual, decline);
     assembler.compare_immediate(word, 1);
     assembler.jump_if(Condition::NotEqual, decline);
     assembler.move_register(argument, receiver);
-    assembler.bind(placed);
+    assembler.jump(receiver_taken);
+    assembler.bind(no_argument);
+    assembler.move_immediate(argument, no_value);
+    assembler.bind(receiver_taken);
+    // The slots the block takes no argument from.
+    assembler.subtract(counted, word);
     // The receiver and the current class of the frame the closure
     // captured, as `Heap::closure_activation` reads them.
     assembler.load(
@@ -964,9 +1022,26 @@ fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, d
         class,
         field(word, layout.frame_current_class_displacement),
     );
-    assembler.move_immediate(counted, 1);
+    // Nothing declines past here: the frame register shifted up by the
+    // slots, which the flags word records beside `counted`.
+    assembler.move_register(word, counted);
+    assembler.shift_left(word, WORD_SHIFT);
+    assembler.add(roles.frame, word);
+    assembler.shift_left(counted, crate::heap::Heap::machine_call_shift_shift());
+    assembler.add_immediate(counted, counted_word);
     assembler.jump_register(entry);
 }
+
+/// A demand as the immediate it is compared with.
+fn small_demand(demand: u64) -> i32 {
+    i32::try_from(demand).expect("internal: a demand is a small constant")
+}
+
+// A frame shifted by a stub's slots fits its flags word's bits.
+const _: () = assert!(
+    SHIFTED_SLOTS as u64 <= crate::heap::MAXIMUM_CALL_SHIFT
+        && CLOSURE_VALUE_ARITIES as u64 <= 1 << DEMAND_SHIFT
+);
 
 /// The shared part of a getter's or a setter's stub of a private or
 /// `super` chain, the field in the field's role: `act`'s guard check made

@@ -394,6 +394,9 @@ ns_runtime::for_each_lowering! {
                 ran >= ELEMENTS as u64,
                 "every activation of the block runs its machine code: {ran}"
             );
+            if lowering == Lowering::Optimized {
+                assert_eq!(done.send_exits, 0, "no closure stub declined");
+            }
         }
     }
 }
@@ -863,9 +866,9 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// `step:`'s `ifTrue:`, sent a block in a local, which no lowering
-    /// inlines and machine code leaves to the interpreter, leaves machine
-    /// code inside the callee at every call: the exit materializes
+    /// `step:`'s send of a message its class answers in its own
+    /// `doesNotUnderstand:`, whose handler machine code leaves to the
+    /// interpreter, leaves machine code inside the callee at every call: the exit materializes
     /// `loop:`'s frame too, and once `step:` returns, `loop:` is resumed in
     /// its machine code, so that its loop goes on there rather than in the
     /// interpreter.
@@ -874,10 +877,10 @@ ns_runtime::for_each_lowering! {
             class Subject = Object new () (
               class Stepper = () (
                 public step: value = (
-                  |
-                    size = [value printString size].
-                  |
-                  ^true ifTrue: size
+                  ^value printString size + self nothing
+                )
+                public doesNotUnderstand: message = (
+                  ^0
                 )
                 public loop: stepper = (
                   |
@@ -1013,9 +1016,9 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A callee whose `ifTrue:`, sent a block in a local, which no
-    /// lowering inlines and machine code leaves to the interpreter, leaves
-    /// its machine code on every call: the interpreted loop of the first
+    /// A callee whose send of a message its class answers in its own
+    /// `doesNotUnderstand:`, whose handler machine code leaves to the
+    /// interpreter, leaves its machine code on every call: the interpreted loop of the first
     /// run calls it once it is compiled (`jit::called`), the exit
     /// materializes it and the interpreter runs the rest of it. Once it
     /// has spent its exit budget the JIT abandons it, and the loop's call
@@ -1032,9 +1035,11 @@ ns_runtime::for_each_lowering! {
               step: value = (
                 |
                   doubled = self twice: value.
-                  next = [doubled + 1].
                 |
-                ^true ifTrue: next.
+                ^doubled + self one.
+              )
+              public doesNotUnderstand: message = (
+                ^1
               )
               public run = (
                 |
@@ -2466,9 +2471,9 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// `count` classes whose `step:` sends `ifTrue:` a block in a local,
-/// which machine code leaves to the interpreter, sent at one site of a
-/// loop in turn: with two to four the site
+/// `count` classes whose `step:` sends a message their
+/// `doesNotUnderstand:` answers, whose handler machine code leaves to the
+/// interpreter, sent at one site of a loop in turn: with two to four the site
 /// is polymorphic, its callee reached through its block's cells; with five
 /// or more it is megamorphic, reached through the global cache's rows.
 fn leaving_through(count: usize) -> String {
@@ -2501,9 +2506,11 @@ fn leaving_through(count: usize) -> String {
                 public step: value = (
                   |
                     doubled = self twice: value.
-                    next = [doubled + 1].
                   |
-                  ^true ifTrue: next.
+                  ^doubled + self one.
+                )
+                public doesNotUnderstand: message = (
+                  ^1
                 )
               )
         {classes}      public run = (
@@ -2573,7 +2580,8 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// A callee found never compilable -- its body makes a future at once,
     /// which machine code leaves to the interpreter, so it exits at once
-    /// -- is refused by the miss leaf, which writes the
+    /// -- is refused by the miss leaf, (Task 12 of the plan compiles
+    /// futures: this body then needs another instruction that exits.) which writes the
     /// cells the decision went through afresh, naming the refusing stub:
     /// the site's later sends exit at once rather than calling the miss
     /// leaf again.
@@ -2613,7 +2621,9 @@ ns_runtime::for_each_lowering! {
 }
 
 /// `count` classes sharing a `step:` whose body makes a future at once, so
-/// that it exits at once and is never compiled, sent at one site of a
+/// that it exits at once and is never compiled -- until futures run in
+/// machine code (Task 12 of the plan), which needs another instruction
+/// that exits here -- sent at one site of a
 /// loop in turn, each run starting at the next class: with two to four the
 /// site is polymorphic, its callee reached through its block's slots; with
 /// five or more megamorphic, reached through the global cache's rows.
@@ -3276,10 +3286,12 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// `POINTS` with an `ifTrue:` in `Point`'s initializer sent a block a
-/// slot holds, which machine code leaves to the interpreter, and, past the
-/// hundredth instance, a message nothing understands: every instantiation leaves machine code inside the
-/// initializers the compiled factory calls, and the last one ends the run.
+/// `POINTS` with a send in `Point`'s initializer of a message `Point`
+/// answers in its own `doesNotUnderstand:`, whose handler machine code
+/// leaves to the interpreter, and, past the hundredth instance, a message
+/// nothing understands: every instantiation leaves machine code inside
+/// the initializers the compiled factory calls, and the last one ends the
+/// run.
 const POINTS_LEAVING: &str = indoc! {"
     class Subject = Object new (
       |
@@ -3289,12 +3301,15 @@ const POINTS_LEAVING: &str = indoc! {"
     ) (
       class Point x: ax y: ay = Object new (
         |
-          later = [ax].
-          public x = true ifTrue: later.
+          public x = ax + self zero.
           public y = ay.
           public checked = ax > 100 ifTrue: [nil frobnicate].
         |
-      ) ()
+      ) (
+        public doesNotUnderstand: message = (
+          ^0
+        )
+      )
       class Point3 x: ax y: ay z: az = Point x: ax y: ay (
         |
           public z = az.
@@ -3771,6 +3786,117 @@ fn an_exit_inside_an_exempt_closure_call_materializes_it_exempt() {
         statistics.materialized_frames > 0,
         "an exit materialized a called block's frame"
     );
+}
+
+/// Every quick method that activates a block, sent blocks held in locals
+/// -- which no lowering inlines -- of no parameter and of one, reading a
+/// copied value: `ifTrue:`, `ifFalse:`, `ifTrue:ifFalse:`, `and:`,
+/// `or:`, which hand a block nothing, and `ifNotNil:`, `ifNil:ifNotNil:`
+/// and `ifNotNil:ifNil:`, which hand a block of one parameter the
+/// receiver.
+const SHAPES: &str = indoc! {"
+    class Subject = Object new () (
+      shapes: index = (
+        |
+          base = index * 2.
+          none = [base].
+          other = [base + 3].
+          one = [:value | value + base].
+          truth = [index > 50].
+          even = index \\\\ 2 = 0.
+        |
+        ^(true ifTrue: none) + (false ifFalse: other) + (even ifTrue: none ifFalse: other)
+          + ((even and: truth) ifTrue: [1] ifFalse: [0])
+          + ((even or: truth) ifTrue: [1] ifFalse: [0]) + (index ifNotNil: one)
+          + (index ifNotNil: none) + (index ifNil: none ifNotNil: one)
+          + (index ifNotNil: none ifNil: one) + (index ifNil: one ifNotNil: none)
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + (self shapes: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A block a quick method activates is called by a closure stub, its
+    /// frame shifted past the slots it takes no argument from: by the
+    /// third run no send of `SHAPES` leaves machine code, and every one
+    /// answers what the interpreter's does.
+    fn every_block_a_quick_method_activates_runs_without_an_exit(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(SHAPES, lowering);
+            interpreter.set_jit_enabled(jit);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let mut answer = 0;
+            let mut statistics = interpreter.jit_statistics();
+            for _ in 0..3 {
+                let before = interpreter.jit_statistics();
+                answer = send_unary(&mut interpreter, &subject, "run");
+                statistics = since(interpreter.jit_statistics(), before);
+            }
+            (answer, statistics)
+        };
+        let (compiled, statistics) = run(true);
+        let (interpreted, _) = run(false);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.send_exits, 0, "every block is called in machine code");
+        }
+    }
+}
+
+/// A block only `ifNotNil:` activates, which the interpreter pushes above
+/// its sender's window and never calls (`jit::called_closure`).
+#[cfg(debug_assertions)]
+const CULLED: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + (index ifNotNil: [:value | value + 1]).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// A full collection frees the id of `CULLED`'s block, which nothing
+/// names between runs, and the next run mints it again: the first push of
+/// the block after it, the interpreter's once its closure stub found no
+/// row, records the block's machine entry under the new id, so that the
+/// run after it calls the block in machine code at every send.
+#[cfg(debug_assertions)]
+#[test]
+fn a_culled_blocks_row_is_recorded_again_after_a_full_collection() {
+    let (mut interpreter, class) = load_with(CULLED, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for _ in 0..3 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5050);
+    }
+    interpreter.collect_now();
+    assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5050);
+    let before = interpreter.jit_statistics();
+    assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5050);
+    let statistics = since(interpreter.jit_statistics(), before);
+    if !a_stress_mode_is_on() {
+        assert_eq!(
+            statistics.send_exits, 0,
+            "every `ifNotNil:` calls the block in machine code"
+        );
+    }
 }
 
 /// `make:` makes a closure, and `churn` registers bodies of its own --

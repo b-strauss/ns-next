@@ -194,10 +194,11 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
 /// registers after the header, in order, as `Heap::fill_copied_values`
 /// copies them -- after a debug build's dead register's word, which a
 /// copied value past the named locals overwrites as the push's does; and
-/// the flags word's `counted` bit, 1 or 0 as the call said
-/// (`Roles::callee_counted`), which a frame the exit materializes keeps
-/// (`Heap::write_machine_frame`). Clobbers the flags, `frame_extent`,
-/// `stack_end`, the idiom scratch register and `callee_counted`.
+/// what the call adds to the flags word (`Roles::callee_counted`): the
+/// `counted` bit as the call said, which a frame the exit materializes
+/// keeps (`Heap::write_machine_frame`), and the slots it shifted the frame
+/// by, which the block's return reads (`unshift_block_frame`). Clobbers
+/// the flags, `frame_extent`, `stack_end` and the idiom scratch register.
 fn block_frame_words(macro_assembler: &mut MacroAssembler, code: &CompiledCode) {
     let roles = macro_assembler.roles();
     let layout = Heap::machine_layout();
@@ -254,17 +255,18 @@ fn block_frame_words(macro_assembler: &mut MacroAssembler, code: &CompiledCode) 
     record_counted(macro_assembler, argument_count);
 }
 
-/// The `counted` bit of the flags word of a block's frame taking
-/// `argument_count` arguments set to what `callee_counted` holds, 1 or 0:
-/// over the word a debug build's generation was written into, or a
-/// release build's constant flags. Clobbers the idiom scratch register and
-/// `callee_counted`.
+/// The flags word of a block's frame taking `argument_count` arguments
+/// with what `callee_counted` holds added: the `counted` bit, set or not
+/// as the call said, and the slots the call shifted the frame by
+/// (`frames::CALL_SHIFT_BITS`) -- over the word a debug build's
+/// generation was written into, or a release build's constant flags.
+/// Clobbers the idiom scratch register.
 fn record_counted(macro_assembler: &mut MacroAssembler, argument_count: u16) {
     let roles = macro_assembler.roles();
-    let (flags, counted) = (roles.idiom_scratch, roles.callee_counted());
+    let (flags, addend) = (roles.idiom_scratch, roles.callee_counted());
     let place = frame_slot(roles.frame, argument_count + Heap::flags_register());
-    let shift = Heap::machine_counted_shift();
-    let counted_bit = 1_i32 << shift;
+    let counted_bit = i32::try_from(Heap::machine_counted_word())
+        .expect("internal: the counted bit lies in the flags word's low half");
     let assembler = macro_assembler.assembler();
     #[cfg(debug_assertions)]
     assembler.load(Width::Word64, flags, place);
@@ -272,8 +274,7 @@ fn record_counted(macro_assembler: &mut MacroAssembler, argument_count: u16) {
     assembler.move_immediate(flags, Heap::machine_flags_word(argument_count));
     // Both words say counted: the bit taken off, and the call's put back.
     assembler.add_immediate(flags, -counted_bit);
-    assembler.shift_left(counted, shift);
-    assembler.add(flags, counted);
+    assembler.add(flags, addend);
     assembler.store(Width::Word64, place, flags);
 }
 
@@ -492,11 +493,32 @@ pub(super) fn return_from(body: &mut BodyAssembler, register: u16) -> Lowering {
     if body.reifies {
         divorce_if_reified(body);
     }
+    let argument_count = body.argument_count;
+    let block = body.role == BodyRole::Block;
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     macro_assembler.load_frame_register(roles.leaf_result, register);
+    if block {
+        unshift_block_frame(macro_assembler, argument_count);
+    }
     return_value(macro_assembler);
     Lowering::Transfer
+}
+
+/// The frame register of a block's frame taking `argument_count`
+/// arguments moved back down by the slots its call shifted it up by
+/// (`frames::CALL_SHIFT_BITS`, 0 for a call that shifted nothing, and for
+/// a frame the run loop pushed), so that the send it returns to finds its
+/// own frame where it left it. Clobbers the flags and `stack_end`.
+fn unshift_block_frame(macro_assembler: &mut MacroAssembler, argument_count: u16) {
+    let roles = macro_assembler.roles();
+    let shift = roles.stack_end;
+    let place = frame_slot(roles.frame, argument_count + Heap::flags_register());
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, shift, place);
+    assembler.shift_right_logical(shift, Heap::machine_call_shift_shift());
+    assembler.shift_left(shift, WORD_SHIFT);
+    assembler.subtract(roles.frame, shift);
 }
 
 /// The divorce of a reified frame at its return, as the pop divorces it

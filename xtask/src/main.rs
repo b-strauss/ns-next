@@ -32,7 +32,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
   stress               the suite under the eight stress modes and without the JIT, then run-corpus plain and under each mode
-  release-checks       the suite without debug assertions (cargo profile release-checks)
+  release-checks       the suite without debug assertions (cargo profile release-checks), and ns-runtime's clippy for aarch64-apple-darwin, a target without an encoder
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
   end-of-batch         images, caches, benchmarks, release-checks, codegen and stress, for a batch that changed the runtime";
@@ -241,17 +241,35 @@ fn group(name: &str) -> Option<Vec<Part>> {
         }
         // The size tests are `cfg(not(debug_assertions))`, so only a build
         // without debug assertions runs them; the profile skips the release
-        // profile's fat LTO, which a test run does not need.
-        "release-checks" => steps(vec![Step::cargo(
-            "release checks",
-            &[
-                "nextest",
-                "run",
-                "--workspace",
-                "--cargo-profile",
-                "release-checks",
-            ],
-        )]),
+        // profile's fat LTO, which a test run does not need. Beside them,
+        // `ns-runtime`'s lint for a target without an encoder, where no
+        // `cfg(ns_jit)` code is compiled, which no other gate builds.
+        "release-checks" => steps(vec![
+            Step::cargo(
+                "release checks",
+                &[
+                    "nextest",
+                    "run",
+                    "--workspace",
+                    "--cargo-profile",
+                    "release-checks",
+                ],
+            ),
+            Step::cargo(
+                "lint without an encoder",
+                &[
+                    "clippy",
+                    "-p",
+                    "ns-runtime",
+                    "--all-targets",
+                    "--target",
+                    "aarch64-apple-darwin",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+            ),
+        ]),
         "codegen" => vec![Part::Codegen],
         "plugin-verification" => steps(vec![Step::gradle(
             "plugin verification",
@@ -609,7 +627,7 @@ mod tests {
     fn the_codegen_group_runs_the_budgets() {
         assert_eq!(group("codegen"), Some(vec![Part::Codegen]));
         let labels = labels_of(&group("end-of-batch").expect("a group")).join(",");
-        assert!(labels.contains("release checks,codegen,stress suites"));
+        assert!(labels.contains("release checks,lint without an encoder,codegen,stress suites"));
     }
 
     #[test]
