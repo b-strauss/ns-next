@@ -1047,6 +1047,16 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.set_stress(stress));
     }
 
+    /// Makes the JIT lower `MakeFuture` to an exit in the bodies it
+    /// compiles from now on, so that a body that makes a future at once
+    /// exits at once and is never compiled, while it still returns as
+    /// any body does. A test hook, set before the code it is meant for is
+    /// compiled.
+    #[doc(hidden)]
+    pub fn set_jit_futures_exit(&mut self, futures_exit: bool) {
+        self.enter(|mutator| mutator.jit.set_futures_exit(futures_exit));
+    }
+
     /// Makes machine code count its backward jumps
     /// (`JitStatistics::machine_back_edges`), which it otherwise leaves
     /// uncounted so that a loop pays nothing for the count. A test hook.
@@ -1175,9 +1185,9 @@ impl<'gc> Mutator<'gc> {
         self.heap.set_builtin_guards(guards);
     }
 
-    /// Writes the immediates' class objects, and the `Array`, `Closure`
-    /// and `Activation` classes an allocation in machine code writes, into
-    /// their machine words, from
+    /// Writes the immediates' class objects, and the `Array`, `Closure`,
+    /// `Activation` and `FutureImplementation` classes an allocation in
+    /// machine code writes, into their machine words, from
     /// the builtin classes: at the bootstrap and again after every mover
     /// (`World::scavenge`, `collect`, `move_everything`, `forward_identity`),
     /// since a word a heap object stores is a handle the collector does not
@@ -1195,6 +1205,21 @@ impl<'gc> Mutator<'gc> {
             .set_array_class(self.builtin_class(BuiltinClass::Array));
         self.heap
             .set_reification_classes(self.builtin_class(BuiltinClass::Closure));
+        self.heap.set_future_class(
+            self.builtin_class(BuiltinClass::FutureImplementation),
+            self.futures_made,
+        );
+    }
+
+    /// Records that this heap has made a future (`futures_made`), here and
+    /// in the `FutureHeader` word, which lets machine code's `MakeFuture`
+    /// make the next ones (`Heap::set_future_class`).
+    pub(crate) fn note_futures_made(&mut self) {
+        if !self.futures_made {
+            self.futures_made = true;
+            self.heap
+                .set_future_class(self.builtin_class(BuiltinClass::FutureImplementation), true);
+        }
     }
 
     /// The smallest freed dispatch id, else the next never minted, or

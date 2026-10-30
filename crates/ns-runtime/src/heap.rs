@@ -6411,6 +6411,29 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Records the kernel-private `FutureImplementation` class as the
+    /// `FutureClass` word, and the header of a future of no words,
+    /// guarding on its application, as the `FutureHeader` word once
+    /// `made` -- the heap has made a future (`Mutator::futures_made`) --
+    /// and 0 before: what `ResolveFuture` compares a value's class word
+    /// with and `MakeFuture` writes in machine code, as
+    /// `Mutator::new_future` writes them. The header stays 0 until then
+    /// so that machine code never makes the first future, which must set
+    /// the flag every check for a future reads. Called with
+    /// `set_array_class`, for the same reason, and once the first future
+    /// is made (`Mutator::note_futures_made`).
+    pub(crate) fn set_future_class(&self, class: ClassReference<'gc>, made: bool) {
+        let word = self.store(Value::object(class));
+        self.machine_words
+            .set(MachineWord::FutureClass, word.bits());
+        let header = if made {
+            Header::new(self.header_dispatch_id(class), Format::FixedPointers, 0, 0).0
+        } else {
+            0
+        };
+        self.machine_words.set(MachineWord::FutureHeader, header);
+    }
+
     /// The epoch of the code table, renewed whenever a full collection
     /// frees a code id (`free_unnamed_codes`): a code id recorded in an
     /// epoch names its body while the epoch lasts.

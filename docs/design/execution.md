@@ -8701,7 +8701,10 @@ pushes any. When the computation returns, `vm::finish` hands its value
 to `Mutator::future_computed`, which records it and answers a
 `FutureOutcome`: `Reexecute`, and `vm::reexecute` switches back to the
 caller at the stored `program_counter`, so the same instruction runs again
-and finds the future resolved; `Deliver`, for a forcing a message to the
+and finds the future resolved -- in the caller's machine code when the
+caller stopped there, as machine code's `ResolveFuture` leaves it ("Stage
+4: closures, non-local return, allocation and the barrier");
+`Deliver`, for a forcing a message to the
 future started (`futureValue:ifFail:`, `AfterForcing::Deliver`), and the
 value goes to that send as any return's does; or `Force`, when the block
 answered another unresolved future, whose forcing is pushed in the popped
@@ -11139,6 +11142,30 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   indirection vectors, which the optimized lowering adopted, so only
   its fallback blocks of an inlined conditional and the reference
   lowering read a frame's registers by reference.
+- **A future is made inline and seen through inline; its forcing is the
+  interpreter's** (`jit::closures`'s `make_future`, `resolve_future`).
+  `MakeFuture` bump-allocates the future as `Mutator::new_future` makes
+  it, under the `FutureImplementation` header and class word the machine
+  words hold (`MachineWord::FutureHeader`, `FutureClass`). The header
+  word stays 0 until the heap has made a future, which only Rust records
+  (`Mutator::futures_made`, the flag every check for a future reads), so
+  the heap's first future, one past eden's limit and an operand that is
+  no closure are the generic leaf's. `ResolveFuture` moves a value that
+  is no future and loads a resolved future's value inline. An unresolved
+  future it exits for: its forcing runs the computation under
+  `Continuation::Future`, which records the value, may chain the forcing
+  of a future the computation answered, and abandons the chain when an
+  unwind passes it ("Running an instruction again after forcing a
+  future") -- a continuation other than `Deliver`, which no compiled call
+  carries and no materialized frame records. Writing the "being forced"
+  mark in a leaf instead would leave a leaf that changed the future
+  answering "re-execute", which a leaf may not. The exit keeps the frame
+  stopped in machine code at the instruction (`jit`'s
+  `resumption_after_exit`), so that once the forcing returns,
+  `vm::reexecute` runs the instruction again in machine code, where it
+  finds the future resolved; and it spends no exit budget, since a slot
+  clause's end takes it once per future it forces
+  (`JitStatistics::forcing_exits`).
 - **Non-local return is cut by a routine of its own, as Cog's
   `ceNonLocalReturn` cuts it** (`cointerp.c:12761-13100`): machine code
   calls the cut, which walks the compiled frames of the current stretch

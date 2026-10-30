@@ -54,7 +54,8 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// 21, the callee's kind 22, a closure's class word and header 23 and 24,
 /// a frame object's 25 and 26, the code table's epoch 27, the machine
 /// entry table's bound 28, the callee closure and whether it counts 29
-/// and 30, the rest free for the later stages.
+/// and 30, a future's class word and header 31 and 32, the rest free for
+/// the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -156,6 +157,17 @@ pub(crate) enum MachineWord {
     /// against the depth limit, 0 when the control flow exempts it
     /// (`Roles::callee_counted`), handed over as `CalleeClosure` is.
     CalleeCounted,
+    /// The kernel-private `FutureImplementation` class object, as
+    /// `ArrayClass` holds the `Array` class: what `ResolveFuture` in
+    /// machine code compares a value's class word with, and the class word
+    /// of a future `MakeFuture` makes there (`jit::closures`).
+    FutureClass,
+    /// The header word of a future of no words, as `ArrayHeader` is an
+    /// `Array`'s -- or 0 until the heap has made a future
+    /// (`Mutator::futures_made`), which only Rust sets, so that machine
+    /// code's `MakeFuture` leaves the first one to the generic leaf, which
+    /// sets it, and never makes a future the runtime would not look for.
+    FutureHeader,
 }
 
 impl MachineWord {
@@ -192,15 +204,17 @@ impl MachineWord {
             MachineWord::MachineEntryRows => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 14,
             MachineWord::CalleeClosure => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 15,
             MachineWord::CalleeCounted => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 16,
+            MachineWord::FutureClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 17,
+            MachineWord::FutureHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 18,
         }
     }
 }
 
 /// The words the area holds: `MachineWord`'s, and room for the words the
 /// later stages put here, so that adding one moves none.
-const WORD_COUNT: usize = 32;
+const WORD_COUNT: usize = 40;
 
-const _: () = assert!(MachineWord::CalleeCounted.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::FutureHeader.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -238,7 +252,7 @@ impl MachineWords {
     #[cfg(any(ns_jit, test))]
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "an index lies below `WORD_COUNT`, 32"
+        reason = "an index lies below `WORD_COUNT`, 40"
     )]
     pub(crate) fn offset(word: MachineWord) -> i32 {
         const BYTES_PER_WORD: i32 = 8;
@@ -283,9 +297,11 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::MachineEntryRows));
         offsets.push(MachineWords::offset(MachineWord::CalleeClosure));
         offsets.push(MachineWords::offset(MachineWord::CalleeCounted));
+        offsets.push(MachineWords::offset(MachineWord::FutureClass));
+        offsets.push(MachineWords::offset(MachineWord::FutureHeader));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 21 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 23 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

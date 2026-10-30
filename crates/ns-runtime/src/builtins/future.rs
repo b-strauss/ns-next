@@ -23,7 +23,7 @@ pub(crate) fn execute<'gc>(
     match primitive {
         FuturePrimitive::Value => Some(force(mutator, future, AfterForcing::Deliver)),
         FuturePrimitive::Made => {
-            mutator.futures_made = true;
+            mutator.note_futures_made();
             Some(Ok(Step::Value(Value::nil())))
         }
     }

@@ -1,0 +1,98 @@
+/// Simultaneous slot clauses once machine code runs their futures
+/// (`docs/design/execution.md`, "Stage 4: closures, non-local return,
+/// allocation and the barrier"): `MakeFuture` makes each future inline,
+/// and `ResolveFuture` moves a value that is no future and loads a
+/// resolved one's value inline, while forcing an unresolved one is the
+/// interpreter's, after which the instruction runs again in machine code.
+/// A clause whose slots refer to each other through data, a clause whose
+/// slot reads a sibling before the clause's end forces it, a clause whose
+/// slot a sibling assigns, so that its end meets no future there, a
+/// clause of temporaries, and a clause whose slots each need the other's
+/// value, which is an error. `round:` runs once a round, so that the
+/// bodies are compiled at their second entry and the later rounds run
+/// them in machine code.
+class SimultaneousSlots = Object new () (
+  /// Two slots each holding an array whose element is the other's
+  /// future: a cycle through data, which no slot reads before the
+  /// clause's end.
+  class Cycle = Object new (
+    ||
+      public first = {second. 1}.
+      public second = {first. 2}.
+    ||
+  ) ()
+
+  /// A slot whose initializer reads its sibling, declared after it, before
+  /// the clause's end forces the sibling.
+  class Reader = Object new (
+    ||
+      public sum = base + 1.
+      public base = 41.
+    ||
+  ) ()
+
+  /// A slot a sibling assigns while the clause's end forces the sibling,
+  /// so that the end then finds a value there rather than a future.
+  class Assigned = Object new (
+    ||
+      public second = first:: 5.
+      public first ::= 1.
+    ||
+  ) ()
+
+  /// Two slots each needing the other's value: forcing one while its own
+  /// computation runs is an error.
+  class Diverging = Object new (
+    ||
+      public first = second + 1.
+      public second = first + 1.
+    ||
+  ) ()
+
+  /// Answers `number` doubled plus `number`, through a clause of
+  /// temporaries one of which reads the other.
+  thrice: number = (
+    ||
+      doubled = half * 2.
+      half = number.
+    ||
+    ^doubled + half.
+  )
+
+  /// Answers one line of what round `index` computes.
+  round: index = (
+    |
+      cycle = Cycle new.
+      reader = Reader new.
+      assigned = Assigned new.
+    |
+    ^{
+      ((cycle first at: 1) at: 2).
+      ((cycle second at: 1) at: 2).
+      reader sum + index.
+      assigned first.
+      assigned second.
+      self thrice: index.
+      [
+        Diverging new.
+        'no error'.
+      ] on: Error do: [:error | error messageText].
+    }.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      index ::= 0.
+    |
+    [index < 4] whileTrue: [
+      (self round: index) do: [:each |
+        transcript show: each printString.
+      ] separatedBy: [
+        transcript show: ' '.
+      ].
+      transcript newLine.
+      index:: index + 1.
+    ].
+  )
+)

@@ -166,6 +166,9 @@ pub(super) struct BodyAssembler {
     /// How many registers a frame object of the body holds
     /// (`CompiledCode::frame_register_count`).
     pub(super) frame_register_count: usize,
+    /// Whether `MakeFuture` lowers to an exit, as it does only for a test
+    /// that needs a body exiting at once (`JitState::set_futures_exit`).
+    futures_exit: bool,
 }
 
 /// The scratch registers a template uses, by role.
@@ -994,6 +997,7 @@ pub(crate) fn compile(
     mut macro_assembler: MacroAssembler,
     feedback_base: FeedbackBase,
     role: BodyRole,
+    futures_exit: bool,
 ) -> Result<BaselineBody, Refusal> {
     // A program counter of the map, and an exit's, is a `u32`; the bound
     // is the zone's layout's, which a later stage's tables index by
@@ -1017,6 +1021,7 @@ pub(crate) fn compile(
         role,
         reifies: reifies_its_frame(code),
         frame_register_count: code.frame_register_count(),
+        futures_exit,
     };
     sends::prologue(&mut body, code);
     let mut exits = Vec::with_capacity(usize::from(count));
@@ -1375,9 +1380,16 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
         } => body.load_own_slot(*destination, *own_index),
         Instruction::ReturnSlotIfFilled { own_index } => body.return_slot_if_filled(*own_index),
         Instruction::AllocateInstance { destination } => body.allocate_instance(*destination),
-        // The futures: stage 4.
-        Instruction::MakeFuture { .. } => Lowering::Exit,
-        Instruction::ResolveFuture { .. } => Lowering::Exit,
+        // The futures (`closures::make_future`, `closures::resolve_future`).
+        Instruction::MakeFuture { .. } if body.futures_exit => Lowering::Exit,
+        Instruction::MakeFuture {
+            destination,
+            closure,
+        } => closures::make_future(body, *destination, *closure),
+        Instruction::ResolveFuture {
+            destination,
+            source,
+        } => closures::resolve_future(body, *destination, *source),
         // An error, which the interpreter raises: an exit in every stage.
         Instruction::SignalNonBoolean { .. } => Lowering::Exit,
     }
@@ -1443,6 +1455,7 @@ mod tests {
             macro_assembler,
             FeedbackBase::NOT_ASSIGNED,
             super::BodyRole::Method,
+            false,
         )
         .expect("compiled")
     }
@@ -1498,6 +1511,7 @@ mod tests {
             role: super::BodyRole::Method,
             reifies: false,
             frame_register_count: 0,
+            futures_exit: false,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.

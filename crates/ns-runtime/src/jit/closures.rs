@@ -29,6 +29,11 @@
 //! frame object once divorced, the argument count that places a divorced
 //! frame's register read from an outer-local site kept as a closure site
 //! is.
+//!
+//! So are the futures of a simultaneous slot clause (`make_future`,
+//! `resolve_future`): a future made by the inline bump, as a closure is,
+//! and seen through once resolved; forcing an unresolved one is the
+//! interpreter's, the instruction then running again in machine code.
 
 use ns_assembler::{Condition, Label, Memory, Register, Width};
 
@@ -583,6 +588,201 @@ fn allocate_closure(
         object,
         placed,
     );
+}
+
+/// The displacement of a future's field `field` from its offset
+/// (`interpreter::future`'s `COMPUTATION_FIELD` and `STATE_FIELD`).
+fn future_field(field: usize) -> i32 {
+    let layout = Heap::machine_layout();
+    i32::try_from(field * 8).expect("internal: a future has two fields")
+        + layout.fields_displacement
+}
+
+/// `MakeFuture`: `vm::make_future_into`'s work, with no exit -- the
+/// destination `:=` a new future of the closure in `closure`, as
+/// `Mutator::new_future` makes it: bump-allocated under the
+/// `FutureImplementation` header and class word
+/// (`MachineWord::FutureHeader`, `FutureClass`), its computation the
+/// closure and its state unresolved, stores into an object the template
+/// has just allocated, which take no barrier. The heap's first future --
+/// while the header word is 0, which says no future was made yet, a flag
+/// only Rust sets -- one past eden's limit and an operand that is no
+/// closure are the generic leaf's, which runs the interpreter's own
+/// effect and, for the error, exits with nothing written, so that the
+/// interpreter raises it. A closure is told by its format alone, as the
+/// closure stubs tell it: every object of that format carries a
+/// closure's fixed fields, which is all `Heap::is_closure` adds.
+pub(super) fn make_future(body: &mut BodyAssembler, destination: u16, closure: u16) -> Lowering {
+    let layout = Heap::machine_layout();
+    let word_count = 1 + crate::interpreter::future::FIELD_COUNT;
+    let unresolved = Heap::machine_count_word(
+        usize::try_from(crate::interpreter::future::UNRESOLVED)
+            .expect("internal: a state is a small count"),
+    );
+    let ClosureRegisters {
+        object,
+        header,
+        class_word,
+        address,
+        value,
+        spare,
+    } = ClosureRegisters::of(&body.macro_assembler);
+    let program_counter = body.program_counter;
+    let macro_assembler = &mut body.macro_assembler;
+    let frame = macro_assembler.roles().frame;
+    let object_space = macro_assembler.roles().object_space;
+    let (slow, done) = (
+        macro_assembler.assembler().label(),
+        macro_assembler.assembler().label(),
+    );
+    macro_assembler.load_frame_register(value, closure);
+    macro_assembler.jump_unless_object_of_format(value, layout.closure_format, spare, slow);
+    macro_assembler.load_machine_words(spare);
+    let assembler = macro_assembler.assembler();
+    assembler.load(
+        Width::Word64,
+        header,
+        MacroAssembler::machine_word(spare, MachineWord::FutureHeader),
+    );
+    assembler.compare_immediate(header, 0);
+    assembler.jump_if(Condition::Equal, slow);
+    macro_assembler.load_header_and_class(
+        (header, MachineWord::FutureHeader),
+        (class_word, MachineWord::FutureClass),
+        word_count,
+    );
+    macro_assembler.bump_allocate(
+        object,
+        ObjectSize::Constant(word_count),
+        header,
+        class_word,
+        slow,
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(address, object);
+    assembler.add(address, object_space);
+    assembler.store(
+        Width::Word64,
+        Memory {
+            base: address,
+            displacement: future_field(crate::interpreter::future::COMPUTATION_FIELD),
+        },
+        value,
+    );
+    assembler.store_immediate32(
+        Memory {
+            base: address,
+            displacement: future_field(crate::interpreter::future::STATE_FIELD),
+        },
+        small(unresolved),
+    );
+    macro_assembler.store_frame_register(destination, object);
+    macro_assembler.assembler().bind(done);
+    macro_assembler.call_leaf_out_of_line_or_exit(
+        slow,
+        Leaf::Step.index(),
+        [
+            Operand::Register(frame),
+            Operand::Immediate(u64::from(program_counter)),
+            Operand::CodeAddress,
+        ],
+        program_counter,
+        done,
+    );
+    Lowering::Template
+}
+
+/// `ResolveFuture`: the destination `:=` the value in `source`, seen
+/// through a future, as `future::resolve_for_instruction` sees it: a value
+/// that is no future -- an immediate, or an object whose class word is not
+/// `FutureImplementation`'s (`MachineWord::FutureClass`), which no program
+/// can subclass -- moved; a resolved future's value loaded. Every other
+/// future exits before anything is written, and the interpreter runs the
+/// instruction again: an unresolved one it forces, whose forcing --
+/// `Continuation::Future` on the computation's activation, which may chain
+/// a further forcing -- is a continuation other than `Deliver`, which no
+/// compiled call carries, after which the instruction runs again in this
+/// frame's machine code (`vm::reexecute`); one being computed, and one
+/// whose fields no forcing wrote, it raises. A future made by the runtime
+/// has its two fields -- the decoder refuses a record with any other
+/// count -- so the template reads them unchecked, and its state compares
+/// equal to the resolved `SmallInteger` word only when it is one.
+pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source: u16) -> Lowering {
+    let layout = Heap::machine_layout();
+    let resolved = Heap::machine_count_word(
+        usize::try_from(crate::interpreter::future::RESOLVED)
+            .expect("internal: a state is a small count"),
+    );
+    let ClosureRegisters {
+        address,
+        value,
+        spare,
+        class_word,
+        ..
+    } = ClosureRegisters::of(&body.macro_assembler);
+    let program_counter = body.program_counter;
+    let macro_assembler = &mut body.macro_assembler;
+    let object_space = macro_assembler.roles().object_space;
+    let (moved, forced) = (
+        macro_assembler.assembler().label(),
+        macro_assembler.assembler().label(),
+    );
+    let class_word_of = |macro_assembler: &mut MacroAssembler, object: Register| {
+        let assembler = macro_assembler.assembler();
+        assembler.move_register(address, object);
+        assembler.add(address, object_space);
+        assembler.load(
+            Width::Word64,
+            class_word,
+            Memory {
+                base: address,
+                displacement: layout.class_word_displacement,
+            },
+        );
+    };
+    macro_assembler.load_frame_register(value, source);
+    macro_assembler.load_machine_words(spare);
+    macro_assembler.jump_unless_object(value, moved);
+    class_word_of(macro_assembler, value);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_memory(
+        class_word,
+        MacroAssembler::machine_word(spare, MachineWord::FutureClass),
+    );
+    assembler.jump_if(Condition::NotEqual, moved);
+    // A future: resolved, or forced by the interpreter.
+    assembler.load(
+        Width::Word64,
+        class_word,
+        Memory {
+            base: address,
+            displacement: future_field(crate::interpreter::future::STATE_FIELD),
+        },
+    );
+    assembler.compare_immediate(class_word, small(resolved));
+    assembler.jump_if(Condition::NotEqual, forced);
+    assembler.load(
+        Width::Word64,
+        value,
+        Memory {
+            base: address,
+            displacement: future_field(crate::interpreter::future::COMPUTATION_FIELD),
+        },
+    );
+    // A resolved future's value is never a future: one that is was
+    // written by crafted code, and the interpreter raises its error.
+    macro_assembler.jump_unless_object(value, moved);
+    class_word_of(macro_assembler, value);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_memory(
+        class_word,
+        MacroAssembler::machine_word(spare, MachineWord::FutureClass),
+    );
+    assembler.jump_if(Condition::Equal, forced);
+    assembler.bind(moved);
+    macro_assembler.store_frame_register(destination, value);
+    macro_assembler.exit_at(forced, ExitKind::Reexecute, program_counter);
+    Lowering::Template
 }
 
 /// The words of an outer-local site, in order: the epoch of the code

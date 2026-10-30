@@ -5232,7 +5232,7 @@ pub fn decode_graph_section<'gc>(
     // Every check for a future stays off a program's paths until one exists
     // (`Mutator::futures_made`); a loaded one exists as surely as a made one.
     if decoded_a_future {
-        context.mutator.futures_made = true;
+        context.mutator.note_futures_made();
     }
     rebuild_applications(context, &objects, pending_classes, &pending_metaclasses)?;
     context.mutator.heap.stamp_dispatch_ids(&objects);

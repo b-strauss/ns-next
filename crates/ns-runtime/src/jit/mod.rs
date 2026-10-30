@@ -153,6 +153,11 @@ pub struct JitStatistics {
     /// Calls machine code made of a leaf (`jit::leaves`), of every kind:
     /// a template's, a stub's and the exit's walk's.
     pub leaf_calls: u64,
+    /// Exits of machine code at a `ResolveFuture` that met a future it
+    /// must force, which the interpreter forces before the instruction
+    /// runs again in machine code: counted among `exits`, and spending no
+    /// exit budget.
+    pub forcing_exits: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled, and so entered at a
@@ -565,6 +570,9 @@ pub(crate) struct JitState {
     /// stress mode runs the entry stub and the exit on every push, whatever
     /// the body's code.
     install_bodies_exiting_at_once: bool,
+    /// Whether `MakeFuture` lowers to an exit in the bodies compiled from
+    /// now on (`set_futures_exit`).
+    futures_exit: bool,
     /// The entry that compiles a body: its first under the JIT stress mode.
     compile_at_entry: u32,
     /// The exit's walk over the compiled frames' return addresses, while
@@ -636,6 +644,7 @@ impl JitState {
             counting: false,
             statistics: JitStatistics::default(),
             install_bodies_exiting_at_once: stress_jit,
+            futures_exit: false,
             compile_at_entry: if stress_jit { 1 } else { COMPILE_AT_ENTRY },
             #[cfg(ns_jit)]
             walk: materialize::Walk::default(),
@@ -711,6 +720,15 @@ impl JitState {
     pub(crate) fn set_stress(&mut self, stress: bool) {
         self.install_bodies_exiting_at_once = stress;
         self.compile_at_entry = if stress { 1 } else { COMPILE_AT_ENTRY };
+    }
+
+    /// Makes `MakeFuture` lower to an exit in the bodies compiled from now
+    /// on (`true`), as no body's does otherwise, so that a body making a
+    /// future at once exits at once: what a test of a body never compiled
+    /// needs, since every other instruction such a body could start with
+    /// runs in machine code (`Interpreter::set_jit_futures_exit`).
+    pub(crate) fn set_futures_exit(&mut self, futures_exit: bool) {
+        self.futures_exit = futures_exit;
     }
 
     /// Makes the bodies compiled from now on count their back edges, and
@@ -915,6 +933,7 @@ impl JitState {
             counting: false,
             statistics: JitStatistics::default(),
             install_bodies_exiting_at_once,
+            futures_exit: false,
             compile_at_entry: COMPILE_AT_ENTRY,
             #[cfg(ns_jit)]
             walk: materialize::Walk::default(),
@@ -1623,7 +1642,13 @@ fn compile(
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(state.counting);
     let role = baseline::BodyRole::of(code, method.is_some());
-    let body = baseline::compile(code, macro_assembler, feedback_base, role)?;
+    let body = baseline::compile(
+        code,
+        macro_assembler,
+        feedback_base,
+        role,
+        state.futures_exit,
+    )?;
     if body.exits_at_once && !state.install_bodies_exiting_at_once {
         return Err(Refusal::ExitsAtOnce);
     }
@@ -2193,6 +2218,7 @@ fn resumption_after_exit(
     kind: u64,
     innermost: ActivationReference,
 ) -> Resumption {
+    use crate::bytecode::Instruction;
     use stubs::MachineExit;
 
     let exit = stubs::decode_exit(block, kind);
@@ -2212,12 +2238,35 @@ fn resumption_after_exit(
     if at_a_send {
         mutator.jit.statistics.send_exits += 1;
     }
+    // A `ResolveFuture` that met a future it must force: the forcing, a
+    // continuation other than `Deliver`, is the interpreter's
+    // (`closures::resolve_future`), and once it is done the instruction
+    // runs again in the frame's machine code (`vm::reexecute`), so the
+    // frame stands stopped in machine code at the instruction -- the
+    // stretch's entry frame too, which no walk marked -- and the exit,
+    // which a slot clause takes once per future its end forces, spends
+    // no budget.
+    let forcing = match exit {
+        MachineExit::Reexecute { program_counter } => matches!(
+            mutator
+                .heap
+                .activation_code(innermost)
+                .instruction(program_counter as usize),
+            Instruction::ResolveFuture { .. }
+        )
+        .then_some(program_counter),
+        _ => None,
+    };
+    if forcing.is_some() {
+        mutator.jit.statistics.forcing_exits += 1;
+    }
     // The stress mode enters every body at every push, however often it
     // leaves.
     if matches!(
         exit,
         MachineExit::Reexecute { .. } | MachineExit::PushRefused
-    ) && !mutator.jit.install_bodies_exiting_at_once
+    ) && forcing.is_none()
+        && !mutator.jit.install_bodies_exiting_at_once
     {
         let code = mutator.heap.activation_code(innermost);
         if code.jit.note_exit() {
@@ -2225,8 +2274,14 @@ fn resumption_after_exit(
         }
     }
     // The innermost frame goes on interpreted from here: it no longer
-    // stands in machine code, which only the frames below it still do.
-    mutator.heap.clear_compiled(innermost);
+    // stands in machine code, which only the frames below it still do --
+    // but for a forcing's, which the instruction run again resumes.
+    match forcing {
+        Some(program_counter) => mutator
+            .heap
+            .mark_stopped_in_machine_code(innermost, program_counter),
+        None => mutator.heap.clear_compiled(innermost),
+    }
     match exit {
         MachineExit::Returned { .. } => {
             unreachable!("internal: a return is answered before the exit is decoded")

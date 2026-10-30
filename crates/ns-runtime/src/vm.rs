@@ -2661,7 +2661,11 @@ fn machine_code_switch<'gc>(
 /// resolved (`interpreter::future`, `AfterForcing::Reexecute`). It wrote
 /// nothing before it forced the future, so running it again is running it
 /// once. A host's send has no instruction to run again; a future it passes
-/// in straight to a leaf ends the run.
+/// in straight to a leaf ends the run. A caller that stopped in machine code
+/// -- machine code's `ResolveFuture`, which leaves a forcing to the
+/// interpreter and keeps its frame compiled (`jit::resumption_after_exit`)
+/// -- runs the instruction again in its machine code, as a caller returned
+/// to resumes there (`resume_caller`).
 fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handoff) -> Transfer {
     if mutator.heap.activation_stack_top() == floor {
         let error = crate::interpreter::future::host_passed_a_future();
@@ -2672,6 +2676,7 @@ fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handof
         .top_activation()
         .expect("internal: an activation above the run's floor has a caller");
     let program_counter = mutator.heap.activation_program_counter(caller);
+    handoff.resume_in_machine_code = mutator.heap.activation_is_compiled(caller);
     handoff.switch_to(mutator, caller, program_counter)
 }
 
@@ -2945,18 +2950,26 @@ fn make_future<'gc>(
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
+    match make_future_into(mutator, activation, destination, closure) {
+        Ok(()) => Transfer::Next,
+        Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
+    }
+}
+
+/// `MakeFuture`'s effect, shared with machine code's generic leaf
+/// (`jit::leaves`), which makes a future the inline bump does not: the
+/// future of the closure in `closure` into `destination`, or the error of
+/// an operand that is no closure, before anything is written.
+pub(crate) fn make_future_into<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    destination: u16,
+    closure: u16,
+) -> Result<(), Signal<'gc>> {
     let operand = read_local(&mutator.heap, activation, closure);
     let closure = match operand.as_object() {
         Some(object) if mutator.heap.is_closure(object) => object,
-        _ => {
-            return raise(
-                mutator,
-                program_counter,
-                not_a_closure(operand),
-                floor,
-                handoff,
-            )
-        }
+        _ => return Err(not_a_closure(operand)),
     };
     let future = mutator.new_future(closure);
     write_local(
@@ -2965,7 +2978,7 @@ fn make_future<'gc>(
         destination,
         Value::object(future),
     );
-    Transfer::Next
+    Ok(())
 }
 
 /// `ResolveFuture`: the value `source` holds, seen through a future --

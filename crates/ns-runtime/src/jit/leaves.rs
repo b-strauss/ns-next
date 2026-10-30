@@ -26,7 +26,7 @@ use crate::mixin::DispatchId;
 use crate::types::Value;
 use crate::vm::{
     allocate_instance_into, argument_window, initialize_slot, load_enclosing_object_into,
-    load_literal_into,
+    load_literal_into, make_future_into,
 };
 
 use super::macro_assembler::LeafIndex;
@@ -141,8 +141,11 @@ pub(super) const FAILED: u64 = 2;
 /// the two cannot drift: an allocated literal's load, and an
 /// `InitializeSlot` whose value §3.1.1's check of a value's slot
 /// must look at (`jit::baseline`'s own-slot templates), an
-/// `AllocateInstance` the inline bump does not make, a `CheckAppliedClause`,
-/// and a body-less declaration's own `LoadEnclosingObject`. Answers `DONE`, or
+/// `AllocateInstance` the inline bump does not make, a `MakeFuture` the
+/// inline bump does not make -- the heap's first future, which sets the
+/// flag every check for a future reads, one past eden's limit, and one of
+/// an operand that is no closure -- a `CheckAppliedClause`, and a
+/// body-less declaration's own `LoadEnclosingObject`. Answers `DONE`, or
 /// `REFUSED` for an instruction the interpreter refuses -- which fails
 /// before it writes anything -- so that the exit after the call
 /// re-executes the instruction and the interpreter raises the error, or
@@ -200,6 +203,16 @@ fn step_in(
         CompactInstruction::CheckAppliedClause { steps, selector } => mutator
             .check_applied_clause(activation, steps, selector)
             .is_ok(),
+        CompactInstruction::MakeFuture {
+            destination,
+            closure,
+        } => make_future_into(
+            mutator,
+            activation,
+            u16::from(destination),
+            u16::from(closure),
+        )
+        .is_ok(),
         CompactInstruction::LoadEnclosingObject { destination, depth } => {
             load_enclosing_object_into(
                 mutator,
@@ -227,6 +240,10 @@ fn step_in(
             Instruction::CheckAppliedClause { steps, selector } => mutator
                 .check_applied_clause(activation, *steps, *selector)
                 .is_ok(),
+            Instruction::MakeFuture {
+                destination,
+                closure,
+            } => make_future_into(mutator, activation, *destination, *closure).is_ok(),
             Instruction::LoadEnclosingObject { destination, depth } => {
                 load_enclosing_object_into(
                     mutator,

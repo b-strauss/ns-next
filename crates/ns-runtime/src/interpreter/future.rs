@@ -16,16 +16,16 @@ use crate::types::*;
 use crate::{Mutator, Symbol};
 
 /// The `state` slot's three values, as `Kernel.ns` documents them.
-const UNRESOLVED: i64 = 0;
+pub(crate) const UNRESOLVED: i64 = 0;
 const RESOLVING: i64 = 1;
-const RESOLVED: i64 = 2;
+pub(crate) const RESOLVED: i64 = 2;
 
 /// The position of each of `FutureImplementation`'s two slots in its field
 /// vector: the declaration order in `Kernel.ns`, behind `Proxy` and
 /// `Object`, which declare none.
 /// `a_futures_slots_are_where_this_module_reads_them` pins both.
-const COMPUTATION_FIELD: usize = 0;
-const STATE_FIELD: usize = 1;
+pub(crate) const COMPUTATION_FIELD: usize = 0;
+pub(crate) const STATE_FIELD: usize = 1;
 /// How many fields a future has, and so how many a decoded record under the
 /// `FutureImplementation` header must carry: the image decoder refuses any
 /// other count before it allocates the record (`decode::decode_graph_section`).
@@ -180,7 +180,7 @@ impl<'gc> Mutator<'gc> {
             self.heap.is_closure(closure),
             "internal: a future computes a closure"
         );
-        self.futures_made = true;
+        self.note_futures_made();
         let class = self.builtin_class(BuiltinClass::FutureImplementation);
         let future = self.heap.allocate_instance(class, FIELD_COUNT);
         if !self

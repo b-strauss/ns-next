@@ -95,6 +95,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         called_entries: after.called_entries - before.called_entries,
         exits: after.exits - before.exits,
         leaf_calls: after.leaf_calls - before.leaf_calls,
+        forcing_exits: after.forcing_exits - before.forcing_exits,
     }
 }
 
@@ -2579,12 +2580,11 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// A callee found never compilable -- its body makes a future at once,
-    /// which machine code leaves to the interpreter, so it exits at once
-    /// -- is refused by the miss leaf, which writes the cells the decision
-    /// went through afresh, naming the refusing stub: the site's later
-    /// sends exit at once rather than calling the miss leaf again. (Task
-    /// 12 of the plan compiles futures: this body then needs another
-    /// instruction that exits.)
+    /// which the test hook has machine code leave to the interpreter
+    /// (`Interpreter::set_jit_futures_exit`), so it exits at once -- is
+    /// refused by the miss leaf, which writes the cells the decision went
+    /// through afresh, naming the refusing stub: the site's later sends
+    /// exit at once rather than calling the miss leaf again.
     fn a_callee_never_compiled_is_refused_without_the_miss_leaf(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -2608,6 +2608,7 @@ ns_runtime::for_each_lowering! {
             ) : ()
         "};
         let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_futures_exit(true);
         assert_eq!(run(&mut interpreter, &class), 5050);
         assert_eq!(run(&mut interpreter, &class), 5050);
         let (answer, done) = run_measured(&mut interpreter, &class);
@@ -2621,9 +2622,9 @@ ns_runtime::for_each_lowering! {
 }
 
 /// `count` classes sharing a `step:` whose body makes a future at once, so
-/// that it exits at once and is never compiled -- until futures run in
-/// machine code (Task 12 of the plan), which needs another instruction
-/// that exits here -- sent at one site of a
+/// that it exits at once and is never compiled once the test hook has
+/// machine code leave a future's making to the interpreter
+/// (`Interpreter::set_jit_futures_exit`) -- sent at one site of a
 /// loop in turn, each run starting at the next class: with two to four the
 /// site is polymorphic, its callee reached through its block's slots; with
 /// five or more megamorphic, reached through the global cache's rows.
@@ -2679,6 +2680,7 @@ ns_runtime::for_each_lowering! {
         for count in [3, 5] {
             let source = refused_through(count);
             let (mut interpreter, class) = load_with(&source, lowering);
+            interpreter.set_jit_futures_exit(true);
             let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
             let run_once = |interpreter: &mut Interpreter| {
                 let answer = expect_ok(
@@ -4263,6 +4265,98 @@ ns_runtime::for_each_lowering! {
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_ran_in_machine_code(&statistics, "run");
             assert_eq!(statistics.send_exits, 0, "every block is called in machine code");
+        }
+    }
+}
+
+/// Simultaneous slot clauses whose ends force seven futures a turn: two
+/// for each `Cycle`, whose `first` holds `second`'s future unforced; one
+/// for `Assigned`, whose `second` writes `first`, so that the end then
+/// finds a value there; two for `thrice:`'s temporaries.
+const SIMULTANEOUS: &str = indoc! {"
+    class Subject = Object new () (
+      class Cycle = Object new (
+        ||
+          public first = {second}.
+          public second = 2.
+        ||
+      ) ()
+      class Assigned = Object new (
+        ||
+          public second = first:: 5.
+          public first ::= 1.
+        ||
+      ) ()
+      thrice: number = (
+        ||
+          doubled = {half. number * 2}.
+          half = number.
+        ||
+        ^(doubled at: 2) + half.
+      )
+      public run = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < 10] whileTrue: [
+          total:: total + Cycle new second + Cycle new first size.
+          total:: total + Assigned new first + (self thrice: index).
+          index:: index + 1.
+        ].
+        ^total.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `MakeFuture` and `ResolveFuture` run in machine code: by the fifth
+    /// run, once `run` too is compiled, every future is made inline, and
+    /// every exit but a safepoint's is a `ResolveFuture`'s forcing of an
+    /// unresolved future, one per future a clause's end forces, after
+    /// which the instruction runs again in machine code and finds it
+    /// resolved -- or, for `Assigned`'s `first`, finds no future at all.
+    /// No body is abandoned, and both lowerings answer what the
+    /// interpreter does. The reference lowering's uncached sends exit, so
+    /// that `thrice:` exits at once and is interpreted whole: only the
+    /// optimized lowering forces all seven futures in machine code.
+    fn simultaneous_slots_leave_machine_code_only_to_force(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(SIMULTANEOUS, lowering);
+            interpreter.set_jit_enabled(jit);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let mut answer = 0;
+            let mut statistics = interpreter.jit_statistics();
+            for _ in 0..5 {
+                let before = interpreter.jit_statistics();
+                answer = send_unary(&mut interpreter, &subject, "run");
+                statistics = since(interpreter.jit_statistics(), before);
+            }
+            (answer, statistics)
+        };
+        let (compiled, statistics) = run(true);
+        let (interpreted, _) = run(false);
+        assert_eq!(compiled, interpreted);
+        assert_eq!(compiled, 215);
+        if !a_stress_mode_is_on() {
+            assert!(statistics.forcing_exits > 0, "a clause's end forces in machine code");
+            assert_eq!(
+                statistics.exits,
+                statistics.safepoint_exits + statistics.forcing_exits,
+                "every other exit is a safepoint's"
+            );
+            assert_eq!(statistics.abandoned_bodies, 0, "a forcing spends no budget");
+            assert!(
+                statistics.resumed_entries >= statistics.forcing_exits,
+                "each forcing's instruction runs again in machine code: {}",
+                statistics.resumed_entries
+            );
+        }
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(
+                statistics.forcing_exits, 70,
+                "seven forcings a turn, ten turns"
+            );
         }
     }
 }

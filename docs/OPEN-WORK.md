@@ -863,6 +863,21 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   its forcing path. How a future's forcing becomes code the compiler
   emits is open.
   [object-model.md](design/object-model.md), "Simultaneous slots".
+  So machine code makes a future and sees through a resolved one, but
+  leaves every forcing to the interpreter (2026-10-30): a
+  `ResolveFuture` that meets an unresolved future exits, once per future
+  a clause's end forces -- in practice every slot clause exits at least
+  once per run of it -- and the instruction runs again in machine code
+  once the forcing returns ([execution.md](design/execution.md), "Stage
+  4: closures, non-local return, allocation and the barrier"). Forcing
+  in machine code needs a compiled call that carries
+  `Continuation::Future` -- recording the value, chaining the forcing of
+  a future the computation answered, abandoning the chain at an unwind
+  -- which the exit's materialization would then have to write into the
+  computation's frame. `InitializeSlot` handed a future for a value's
+  slot exits through the generic leaf's refusal as before, and its frame
+  goes on interpreted. Whether a clause's exit costs enough to matter is
+  unmeasured.
 - **A private nested class sent from a subclass instance never takes the
   cached field** (noted 2026-10-22). A private site's entry is guarded by
   N's application, and its hidden-slot index is that application's, so a
