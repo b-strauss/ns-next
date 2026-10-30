@@ -84,12 +84,20 @@ impl Walk {
     /// copied a partly written temporary, its `Option<Callee>`'s payload
     /// undefined, and read it back wider than it was written -- a
     /// store-forwarding stall on every call an interpreter's send made of
-    /// machine code.
+    /// machine code. The destructure names every field, so that a field
+    /// added to the walk cannot be left out of the reset and carry one
+    /// call's state into the next exit's walk.
     pub(crate) fn clear(&mut self) {
-        self.last = None;
-        self.callee = None;
-        self.top = 0;
-        self.added = 0;
+        let Walk {
+            last,
+            callee,
+            top,
+            added,
+        } = self;
+        *last = None;
+        *callee = None;
+        *top = 0;
+        *added = 0;
     }
 }
 
