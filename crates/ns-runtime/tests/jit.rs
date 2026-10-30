@@ -2781,12 +2781,13 @@ fn machine_code_allocates_past_eden_as_the_interpreter_does() {
     let last = i64::try_from(VECTORS).expect("a small count");
     assert_eq!(interpreted, 3 + 3 * last);
     assert_eq!(compiled, interpreted);
-    assert!(
-        interpreted_scavenges >= 2,
-        "the vectors fill eden more than once: {interpreted_scavenges}"
-    );
     assert!(statistics.compiled_bodies > 0, "`fill:` is compiled");
+    // A stress mode's collections empty eden before the vectors fill it.
     if !a_stress_mode_is_on() {
+        assert!(
+            interpreted_scavenges >= 2,
+            "the vectors fill eden more than once: {interpreted_scavenges}"
+        );
         assert_eq!(compiled_scavenges, interpreted_scavenges);
         assert_eq!(compiled_heap, interpreted_heap);
         // `fill:` runs to its return, but for its call that finds a
