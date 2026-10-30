@@ -179,9 +179,8 @@ pub(crate) const COUNTED_BIT: u64 = 1 << 24;
 pub(crate) const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
 pub(crate) const COMPILED_BIT: u64 = 1 << 26;
 /// Past every field of `FrameFlags`, which reads none of them: the slots a
-/// compiled call shifted a block's frame up by, so that its header lies
-/// right past the send's slots though the block takes fewer arguments
-/// than the send places (`jit::targets`'s closure stubs). Written by the
+/// compiled call shifted a block's frame up by, so that the block writes
+/// none of the send's slots (`jit::targets`'s closure stubs). Written by the
 /// block's prologue, kept by a leaf's view of the frame
 /// (`Heap::write_machine_frame`) and read by its machine code's return,
 /// which shifts the frame register back before it returns to the send.

@@ -2580,11 +2580,11 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// A callee found never compilable -- its body makes a future at once,
     /// which machine code leaves to the interpreter, so it exits at once
-    /// -- is refused by the miss leaf, (Task 12 of the plan compiles
-    /// futures: this body then needs another instruction that exits.) which writes the
-    /// cells the decision went through afresh, naming the refusing stub:
-    /// the site's later sends exit at once rather than calling the miss
-    /// leaf again.
+    /// -- is refused by the miss leaf, which writes the cells the decision
+    /// went through afresh, naming the refusing stub: the site's later
+    /// sends exit at once rather than calling the miss leaf again. (Task
+    /// 12 of the plan compiles futures: this body then needs another
+    /// instruction that exits.)
     fn a_callee_never_compiled_is_refused_without_the_miss_leaf(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -3896,6 +3896,73 @@ fn a_culled_blocks_row_is_recorded_again_after_a_full_collection() {
             statistics.send_exits, 0,
             "every `ifNotNil:` calls the block in machine code"
         );
+    }
+}
+
+/// `assign` sends `ifNotNil:`, whose method in `Object` is the quick
+/// method `^<parameter> cull: self`, as a setter: `ifNotNil:: [...]`'s
+/// value is the setter's argument slot, the block, whatever `ifNotNil:`
+/// answers (`compiler::lower`'s `lower_setter_assign`). The block takes
+/// one argument, which `cull:` makes the receiver: never in the slot the
+/// assignment's value is read from. `run` answers 1 for each block
+/// `assign` answers, which answers 1 for its receiver.
+const CULLED_BY_A_SETTER: &str = indoc! {"
+    class Subject = Object new () (
+      assign = (
+        ^ifNotNil:: [:value | value == self ifTrue: [1] ifFalse: [-2]]
+      )
+      public run = (
+        |
+          index ::= 0.
+          sum ::= 0.
+          last
+        |
+        [index < 100] whileTrue: [
+          last:: self assign.
+          sum:: sum + (last == self ifTrue: [-1000] ifFalse: [last value: self]).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A setter send `ifNotNil:: [...]` that the closure stub of `cull:`
+    /// serves answers the block as the assignment's value, as the
+    /// interpreter's does, whose push of a culled block lands above the
+    /// sender's window: the stub places the block's frame past the send's
+    /// slots, so that the receiver it hands the block as its argument
+    /// lands in none of them. The reference lowering's sends are
+    /// uncached, so no stub serves them there; its outcome is held to the
+    /// interpreter's all the same.
+    fn a_setter_send_culled_in_machine_code_keeps_its_value(lowering) {
+        let (mut interpreted, interpreted_class) = load_with(CULLED_BY_A_SETTER, lowering);
+        interpreted.set_jit_enabled(false);
+        let interpreted_subject =
+            expect_ok(interpreted.instantiate(&interpreted_class, &[]), "instantiate");
+        let expected = send_unary(&mut interpreted, &interpreted_subject, "run");
+        assert_eq!(expected, 100, "the interpreter answers the block's value");
+        let (mut interpreter, class) = load_with(CULLED_BY_A_SETTER, lowering);
+        interpreter.set_jit_counting(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), expected);
+        }
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), expected);
+        let statistics = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "the setter sends");
+            assert_eq!(
+                statistics.send_exits, 0,
+                "every `ifNotNil:` is served by the closure stub"
+            );
+            assert!(
+                statistics.compiled_calls >= 100,
+                "every culled block is a compiled call"
+            );
+        }
     }
 }
 

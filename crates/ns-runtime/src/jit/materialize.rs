@@ -72,6 +72,7 @@ impl Walk {
                 slots: u32::from(slots),
                 caller: sender,
                 top,
+                by_machine_code: false,
             }),
             top,
             added: 0,
@@ -81,24 +82,30 @@ impl Walk {
 
 /// The callee a send places on its argument slots: its first slot's word
 /// offset, how many slots the send placed, its caller's header offset,
-/// and the top its push stood at. Its header lies past as many arguments
-/// as its own code takes (`Callee::offset`) -- an initializer a passed
-/// level decided takes none, whatever its invocation placed -- but for a
-/// block's, which lies right past the slots: a closure stub shifts a block
-/// taking fewer arguments than the send places up by the rest
-/// (`targets::ClosureStub`).
+/// the top its push stood at, and whether a compiled send called it
+/// rather than an interpreter's (`Walk::seed_call`). Its header lies past
+/// as many arguments as its own code takes (`Callee::offset`) -- an
+/// initializer a passed level decided takes none, whatever its invocation
+/// placed -- but for a block's: a block an interpreter's send called lies
+/// on the slots, its arguments the send's, and one a compiled send called
+/// lies past them, where its closure stub placed it
+/// (`targets::ClosureStub`), its arguments after the slots.
 #[derive(Clone, Copy)]
 struct Callee {
     start: u32,
     slots: u32,
     caller: u32,
     top: usize,
+    by_machine_code: bool,
 }
 
 impl Callee {
     /// Its header's word offset, for a callee running `code`.
     fn offset(self, code: &CompiledCode) -> u32 {
         match code.kind {
+            CodeKind::Block if self.by_machine_code => {
+                self.start + self.slots + u32::from(code.argument_count)
+            }
             CodeKind::Block => self.start + self.slots,
             _ => self.start + u32::from(code.argument_count),
         }
@@ -224,6 +231,7 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
         slots,
         caller: offset,
         top: walk.top,
+        by_machine_code: true,
     });
     mutator.jit.walk = walk;
 }

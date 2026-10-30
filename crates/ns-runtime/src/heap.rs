@@ -1400,15 +1400,18 @@ impl<'code> LastSet<'code> {
         });
     }
 
-    /// Checks that a callee lies on the frame's slots, where
-    /// `callee_header` says one does, only while the frame stands at the
-    /// send whose slots end at that header -- decoding the instruction
-    /// once per body and program counter, never once per frame. Inline,
-    /// so that a frame whose answer is decoded costs a comparison.
+    /// Checks that a callee lies on the frame's slots, where `callee`, its
+    /// first word and its header, says one does, only while the frame
+    /// stands at the send whose slots end at that header -- or, for a
+    /// block a compiled send's closure stub placed past the slots, whose
+    /// first word is where they end (`jit::targets::ClosureStub`) --
+    /// decoding the instruction once per body and program counter, never
+    /// once per frame. Inline, so that a frame whose answer is decoded
+    /// costs a comparison.
     #[cfg(debug_assertions)]
     #[inline(always)]
-    fn check_callee(&mut self, start: usize, callee_header: Option<usize>) {
-        let Some(callee_header) = callee_header else {
+    fn check_callee(&mut self, start: usize, callee: Option<(usize, usize)>) {
+        let Some((callee_start, callee_header)) = callee else {
             return;
         };
         let slot_end = match self.slot_end {
@@ -1416,7 +1419,9 @@ impl<'code> LastSet<'code> {
             None => self.decode_slot_end(),
         };
         debug_assert!(
-            slot_end.is_some_and(|slot_end| start + slot_end == callee_header),
+            slot_end
+                .is_some_and(|slot_end| start + slot_end == callee_header
+                    || start + slot_end == callee_start),
             "internal: a callee lies on its sender's slots only while the sender stands at \
              the send"
         );
@@ -10066,7 +10071,10 @@ impl<'gc> Heap<'gc> {
             };
             let set = LastSet::of(&mut last, tables, code_index, program_counter);
             #[cfg(debug_assertions)]
-            set.check_callee(start, window.callee_header);
+            set.check_callee(
+                start,
+                callee.filter(|(callee_start, _)| *callee_start < end),
+            );
             match &set.tainted {
                 Some(tainted) => {
                     let words = stack.frames.words_mut();
@@ -13597,6 +13605,60 @@ mod tests {
             .set_header_word(activation.offset, frame_header::REIFIED, kept_reified);
         heap.pop_activation(activation);
         assert!(heap.frame_activation(frame).is_none());
+    }
+
+    /// A leaf's view of a frame (no caller) keeps the call shift its
+    /// prologue recorded, which its machine code's return reads after the
+    /// leaf; a frame the exit's walk materializes (a caller) returns
+    /// through the interpreter, whose pop knows no shift, and drops it
+    /// (`frames::CALL_SHIFT_BITS`).
+    #[cfg(ns_jit)]
+    #[test]
+    fn a_leaf_s_view_keeps_the_call_shift_and_a_materialized_frame_drops_it() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Shifted");
+        let activation = heap
+            .push_activation(
+                suspendable_header(class, 1, first_above_header(1) + 1),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                1,
+            )
+            .expect("the stack holds the frame");
+        let (kept_flags, kept_caller) = (
+            heap.stack
+                .header_word(activation.offset, frame_header::FLAGS),
+            heap.stack
+                .header_word(activation.offset, frame_header::CALLER),
+        );
+        let shift_bits = Heap::machine_call_shift_mask();
+        let call_shift = |heap: &Heap<'_>| {
+            heap.stack
+                .header_word(activation.offset, frame_header::FLAGS)
+                .bits()
+                & shift_bits
+        };
+        for (caller, kept) in [(None, true), (Some((0, 0)), false)] {
+            // The prologue's flags word, its call shift the most two bits
+            // hold.
+            heap.stack.set_header_word(
+                activation.offset,
+                frame_header::FLAGS,
+                Word::from_bits(kept_flags.bits() | shift_bits),
+            );
+            let frame = machine_frame_of(&mut heap, activation, false, caller);
+            let _ = heap.write_machine_frame(&frame);
+            assert_eq!(
+                call_shift(&heap),
+                if kept { shift_bits } else { 0 },
+                "the call shift of a frame written with the caller {caller:?}"
+            );
+        }
+        // As the push left them, for the pop.
+        heap.stack
+            .set_header_word(activation.offset, frame_header::FLAGS, kept_flags);
+        heap.stack
+            .set_header_word(activation.offset, frame_header::CALLER, kept_caller);
+        heap.pop_activation(activation);
     }
 
     /// A frame of a block's code machine code pushed is written as a

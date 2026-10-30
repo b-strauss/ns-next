@@ -377,19 +377,22 @@ pub(crate) const CLOSURE_VALUE_ARITIES: u8 = 4;
 
 /// A closure stub (`emit_closure_stub_entry`): what a method whose fast path
 /// activates a block does, as `Mutator::act_with_base` does it, the
-/// block's frame laid on the send's slots.
+/// block's frame laid past the send's slots.
 ///
-/// A frame on a send's slots has its header right past them, which the
-/// collector's trace checks of every frame on the stack (`Heap::trace_stack`)
-/// and the exit's walk derives from a call's return address
-/// (`jit::materialize`). A block taking fewer arguments than the send
-/// places -- `^<parameter> value`'s, which takes none, `cull:`'s of none,
-/// or of one at a send of two -- lies that many slots higher: the stub
-/// shifts the frame register up by them before it enters the block, the
-/// block's prologue records the shift in its flags word
-/// (`frames::CALL_SHIFT_BITS`), and its return shifts the frame register
-/// back before it returns to the send. Its arguments are then the last
-/// slots, `cull:`'s one the receiver, which the prologue places.
+/// No send writes its slots: a setter send's slot is the assignment's
+/// value, read after the send (`compiler::lower`'s `lower_setter_assign`),
+/// and the interpreter lays a block that takes anything but the send's
+/// own arguments -- `cull:`'s, the receiver -- above its sender's window.
+/// So the stub shifts the frame register up past the slots before it
+/// enters the block, the block's prologue records the shift in its flags
+/// word (`frames::CALL_SHIFT_BITS`), and its return shifts the frame
+/// register back before it returns to the send. The block's arguments lie
+/// right past the slots, its header past them, which the collector's
+/// trace checks of every frame on the stack (`Heap::trace_stack`) and the
+/// exit's walk derives from a call's return address (`jit::materialize`):
+/// a block row's, the send's own arguments, copied there from the slots;
+/// `cull:`'s one, the receiver, which the prologue places; none for
+/// `^<parameter> value`'s and `cull:`'s of none.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ClosureStub {
     /// A method whose fast path is a mirror row that activates its
@@ -899,8 +902,9 @@ fn emit_closure_stub_entry(
 /// closure, and what its flags word adds (`Roles::callee_counted`): that
 /// its activation counts, which every activation a compiled send pushes
 /// does -- only a `SendInlinable` decides an exempt one, and machine code
-/// runs none -- and the slots it takes no argument from, by which the
-/// frame register is shifted up (`ClosureStub`). Anything else -- no
+/// runs none -- and the send's slots, past which the frame register is
+/// shifted, a block row's arguments copied after them (`ClosureStub`).
+/// Anything else -- no
 /// closure, a body without machine code here, an arity the interpreter
 /// refuses, a closure an image decoded, whose feedback base is assigned at
 /// its first activation -- declines at `decline` before anything is
@@ -1000,33 +1004,53 @@ fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, d
     assembler.bind(no_argument);
     assembler.move_immediate(argument, no_value);
     assembler.bind(receiver_taken);
-    // The slots the block takes no argument from.
-    assembler.subtract(counted, word);
     // The receiver and the current class of the frame the closure
     // captured, as `Heap::closure_activation` reads them.
     assembler.load(
         Width::Word64,
-        word,
+        row,
         field(address, layout.closure_captured_frame_displacement),
     );
-    macro_assembler.jump_unless_object(word, decline);
+    macro_assembler.jump_unless_object(row, decline);
     let assembler = macro_assembler.assembler();
-    assembler.add(word, roles.object_space);
+    assembler.add(row, roles.object_space);
     assembler.load(
         Width::Word64,
         receiver,
-        field(word, layout.frame_receiver_displacement),
+        field(row, layout.frame_receiver_displacement),
     );
     assembler.load(
         Width::Word64,
         class,
-        field(word, layout.frame_current_class_displacement),
+        field(row, layout.frame_current_class_displacement),
     );
-    // Nothing declines past here: the frame register shifted up by the
-    // slots, which the flags word records beside `counted`.
-    assembler.move_register(word, counted);
-    assembler.shift_left(word, WORD_SHIFT);
-    assembler.add(roles.frame, word);
+    // Nothing declines past here: the frame register past the send's
+    // slots, which the flags word records beside `counted`, so that the
+    // block writes none of them (`ClosureStub`).
+    let copied = assembler.label();
+    assembler.move_register(address, counted);
+    assembler.shift_left(address, WORD_SHIFT);
+    assembler.add(address, roles.frame);
+    // A block that takes the send's own arguments takes copies of them;
+    // `cull:`'s receiver its prologue places.
+    assembler.compare_immediate(argument, small_demand(no_value));
+    assembler.jump_if(Condition::NotEqual, copied);
+    for position in 0..i32::from(CLOSURE_VALUE_ARITIES) - 1 {
+        assembler.compare_immediate(word, position);
+        assembler.jump_if(Condition::LessOrEqual, copied);
+        assembler.load(
+            Width::Word64,
+            row,
+            field(roles.frame, position * REGISTER_BYTES),
+        );
+        assembler.store(
+            Width::Word64,
+            field(address, position * REGISTER_BYTES),
+            row,
+        );
+    }
+    assembler.bind(copied);
+    assembler.move_register(roles.frame, address);
     assembler.shift_left(counted, crate::heap::Heap::machine_call_shift_shift());
     assembler.add_immediate(counted, counted_word);
     assembler.jump_register(entry);
@@ -1037,11 +1061,16 @@ fn small_demand(demand: u64) -> i32 {
     i32::try_from(demand).expect("internal: a demand is a small constant")
 }
 
-// A frame shifted by a stub's slots fits its flags word's bits.
+// A frame shifted by a stub's slots -- the most a quick method's send or a
+// block row's places -- fits its flags word's bits.
 const _: () = assert!(
     SHIFTED_SLOTS as u64 <= crate::heap::MAXIMUM_CALL_SHIFT
+        && (CLOSURE_VALUE_ARITIES - 1) as u64 <= crate::heap::MAXIMUM_CALL_SHIFT
         && CLOSURE_VALUE_ARITIES as u64 <= 1 << DEMAND_SHIFT
 );
+
+/// A register's bytes, as a displacement.
+const REGISTER_BYTES: i32 = 8;
 
 /// The shared part of a getter's or a setter's stub of a private or
 /// `super` chain, the field in the field's role: `act`'s guard check made

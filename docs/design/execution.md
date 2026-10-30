@@ -10714,8 +10714,10 @@ per-architecture idioms; nothing above changes.
   `src/common/code-memory-access-inl.h:323-332`;
   `os_cpu/bsd_aarch64/os_bsd_aarch64.cpp:515-527`). Since the caches are
   data ("Inline caches" below), code is written only when a body is
-  installed and when the zone is compacted, so strict W^X costs nothing
-  on the hot path. On Windows and Linux the zone is **mapped twice**, one
+  installed and when the zone is compacted -- and a body's data words,
+  its closure sites, when a leaf refills one, each on a cache line no
+  instruction shares ("Stage 4" below) -- so strict W^X costs nothing on
+  the hot path. On Windows and Linux the zone is **mapped twice**, one
   view executable, one writable, as Cog's dual-mapped zone is
   (`prior-art/opensmalltalk-vm/platforms/unix/vm/sqUnixMemory.c:335-373`), which also lets road step
   9 compile on a thread of its own while machine code runs -- V8 turns
@@ -10934,7 +10936,12 @@ that name it. Cog's policy decides what is freed: code with a frame on
 the activation stack stays, the rest by usage, until a quarter of the
 zone is free (`freeOlderMethodsForCompaction`, `:13099-13132`). Code
 dies with its mixin's row when a full collection reclaims it
-(`compiler.md`, "Readers of compiled code take the mixin"). Cog's default
+(`compiler.md`, "Readers of compiled code take the mixin"). A body's
+data words -- its `MakeClosure`s' closure sites ("Stage 4" below) -- lie
+in the zone right after its code, reached relative to the instructions
+that read them, so a move takes them with the body and a free frees them
+with it. None of this is built yet: the zone only appends, and once it is
+full nothing more compiles (`OPEN-WORK.md`). Cog's default
 zone is 2.7 MiB (`:31554-31559`); the default here is chosen by
 measurement within the 128 MiB bound.
 
@@ -11021,14 +11028,30 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   names -- no closure, frame or activation -- and mints it again for
   another, while the body's machine code lives on with its mixin, so an
   id compiled into the code would name another body after the next full
-  collection. Each `MakeClosure` has a closure site
-  (`jit/closures.rs`'s `ClosureSites`, a reservation of its own): the
-  code ids of its body and of its block with the code table's epoch they
-  were asked in, which a full collection that frees an id renews
+  collection. Each `MakeClosure` has a closure site: the code ids of its
+  body and of its block with the code table's epoch they were asked in,
+  which a full collection that frees an id renews
   (`MachineWord::CodeTableEpoch`). The template compares the site's
   epoch with the heap's and, where they differ -- at the site's first
   run, and after such a collection -- calls a leaf that asks the heap for
   both ids afresh, registering each body that has none.
+  - A site lives with its body's code, as Cog keeps a method's data in
+    the method's own code: three of the body's data words
+    (`MacroAssembler::take_body_words`), which the assembler places right
+    after the body's last instruction, zeroed -- no heap's epoch is 0, so
+    each is filled at its first run -- on 64-byte lines of their own, the
+    body placed so that they are lines of the zone too: a refill is a
+    store into the code zone, and a store into a line the processor is
+    executing from costs it a self-modifying-code clear on x64. The
+    template reads the site relative to its own instruction (`mov`/`lea`
+    from `rip`, `ns_assembler`'s label references), so the code holds no
+    address and the entry block no word for it, and the leaf, handed the
+    site's address, writes it through the zone's one writer
+    (`JitState::write_body_words`), which checks that it writes only a
+    body's data words. Sites take their room from the zone's: a zone too
+    full for a body's code and its sites refuses the body, and there is no
+    limit of their own. They go wherever their body's code goes -- a
+    compaction ("The code zone") moves and frees them with it.
 - **A closure's activation is a compiled call, as a method's is.** A send
   of `value` and its kin to a closure calls through a stub that does what
   the interpreter's push of the closure does -- the arity, the code, the
@@ -11044,21 +11067,24 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
     `value:value:value:`, whose rows activate the receiver, and the quick
     methods `^<parameter> value` -- `ifTrue:`, `and:` and their
     relatives -- and `^<parameter> cull: self` -- `ifNotNil:` and its
-    relatives -- of up to three arguments. A frame on a send's slots has
-    its header right past them, which the collector's trace checks of
-    every frame and the exit's walk derives from a call's return address,
-    so a block taking fewer arguments than the send places -- none for
-    `value`, none or one for `cull:` -- lies that many slots higher: the
-    stub shifts the frame register up by them before it jumps into the
-    block, the prologue records the shift in two bits of the flags word
-    past every field the interpreter reads (`frames::CALL_SHIFT_BITS`),
-    a leaf's view of the frame keeps them, and the block's return shifts
-    the frame register back before its `ret`; the walk places a block's
-    header right past the send's slots (`materialize`'s `Callee`). No
-    second return address lies on the native stack, so the native stack a
-    recursion takes is a method's. `cull:`'s argument, the receiver, goes
-    into the block's one slot, which its prologue writes once its checks
-    have passed, so that a refused call leaves the slot as it was.
+    relatives -- of up to three arguments. No send writes its slots: a
+    setter send's one slot is the assignment's value, read after the send
+    (`compiler::lower`'s `lower_setter_assign`), and the interpreter lays
+    a block that takes anything but the send's own arguments -- `cull:`'s,
+    the receiver -- above its sender's window. So a closure stub lays the
+    block past the send's slots: it shifts the frame register up by the
+    slots before it jumps into the block, the prologue records the shift
+    in two bits of the flags word past every field the interpreter reads
+    (`frames::CALL_SHIFT_BITS`), a leaf's view of the frame keeps them,
+    and the block's return shifts the frame register back before its
+    `ret`. The block's arguments lie right past the slots: a block row's,
+    the send's own, copied there from the slots, `cull:`'s one, the
+    receiver, which the prologue places once its checks have passed, so
+    that a refused call writes nothing. The walk places a block a compiled
+    send called past the slots and its arguments, and one an interpreter's
+    send called (`jit::called_closure`), whose arguments are the slots, on
+    them (`materialize`'s `Callee`). No second return address lies on the
+    native stack, so the native stack a recursion takes is a method's.
   - A stub finds the block's machine entry by the closure's code id in a
     table of the heap's (`heap/machine_entries.rs`, the entry block's
     `MachineEntries`): each row the machine entry, the feedback base the
