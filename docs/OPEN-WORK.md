@@ -436,16 +436,13 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   - **A leaf call costs more than the interpreter's step for the same
     target**: the leaf stub's leaf decides the send again
     (`inline_cache::act_at`) for every target but a slot accessor its send
-    hit on its site's own cell directly -- a private or `super` accessor reached through a
-    block's cell or a global row, a builtin class's accessor, a leaf-safe
-    mirror send -- writing a frame for a sender machine code pushed, and
+    hit on its site's own cell directly -- a builtin class's accessor, a
+    slot accessor whose field lies past the stubs `jit::stub_entry`
+    assembles -- writing a frame for a sender machine code pushed, and
     the mirror method leaf finds its send's selector and argument count by
-    a hash lookup of the call's return address (`JitState::call_site`),
-    which with the leaf's own work is about 6% of Havlak's time. A private
-    accessor's own stub, its guard check in machine code, the selector and
-    argument count where the leaf can read them without a lookup, and the
-    store, `at:` and `at:put:` in machine code with stage 4's write
-    barrier would remove most of it.
+    a hash lookup of the call's return address (`JitState::call_site`).
+    Reading the selector and argument count where the leaf can reach them
+    without a lookup would remove most of what remains.
   - **A nested class's accessor on a private or `super` chain exits
     machine code**, as does one whose hidden slot lies past the
     `NESTED_CLASS_STUBS` slots or holds no class yet: only a public or

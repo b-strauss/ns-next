@@ -7488,9 +7488,11 @@ measurement above:
   interpreter's few, two thirds of it spent finding the send again -- a
   binary search over the installed bodies and their returns, two
   decodings of the send's instruction, each allocating its argument
-  list, and the cache's decision of it. The setter stub's store leaf takes
-  the receiver, the field and the value, and stores through the heap's
-  store accessor: `bench_loop` from 5.15 ms to 0.81. The leaf stub's leaf
+  list, and the cache's decision of it. A setter stub of its own,
+  calling a store leaf that took the receiver, the field and the value,
+  brought `bench_loop` from 5.15 ms to 0.81; the setter stub now stores
+  inline through the write barrier, with no leaf ("Stage 4: closures,
+  non-local return, allocation and the barrier"). The leaf stub's leaf
   finds its send by a table of every call's return address and reads it
   without decoding, which is what the gains of this item and of the
   abandonment below owe to the leaf stub's leaf: its path for a slot
@@ -7650,6 +7652,67 @@ a million elements with `[:each | each]` measured about 12% slower in an
 interim measurement. Stage 4 removes the cost: it makes a closure's
 activation a compiled call, as a method's is ([OPEN-WORK.md](../OPEN-WORK.md),
 "A block an interpreted `value:` pushes pays the bridge").
+
+### What allocation and the barrier in machine code moved
+
+**Measured 2026-10-30, `76b6fc85` against `master` (`b96b55ab`)**, by
+the same protocol as "What the entry at a send moved" above: three
+pinned release builds a side with debug information, a, b and c laid
+out as there (`vm::run` spans 51,584, 55,488 and 60,224 bytes at
+`master` and 51,584, 55,488 and 60,288 at `76b6fc85`, and no build has
+a `run_stretch` or a `vm::run` closure of its own); three rounds in one
+sitting, the order of the six binaries rotated each round; `--iterations
+3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue and `--iterations 8`
+for the rest. Each cell is a side's medians per build pooled by
+geometric mean, in milliseconds.
+
+| Program | master (ms) | range | `76b6fc85` (ms) | range | Change | Builds separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.668 | 0.663–0.671 | 0.590 | 0.589–0.590 | -11.7% | faster |
+| `CD` | 3268.816 | 3249.179–3282.343 | 3155.574 | 3144.693–3165.429 | -3.5% | faster |
+| `DeltaBlue` | 544.803 | 543.046–546.897 | 518.487 | 517.102–520.886 | -4.8% | faster |
+| `DeltaBlueTon80` | 4.555 | 4.538–4.586 | 4.179 | 4.166–4.193 | -8.3% | faster |
+| `Havlak` | 2878.475 | 2871.270–2882.932 | 2248.140 | 2231.977–2263.991 | -21.9% | faster |
+| `Json` | 5.572 | 5.521–5.655 | 4.771 | 4.754–4.794 | -14.4% | faster |
+| `List` | 0.196 | 0.193–0.198 | 0.194 | 0.189–0.198 | -1.0% | no |
+| `Mandelbrot` | 1907.964 | 1892.332–1926.026 | 1847.872 | 1838.988–1857.116 | -3.1% | faster |
+| `NBody` | 1688.030 | 1679.378–1699.935 | 1598.810 | 1595.257–1602.163 | -5.3% | faster |
+| `Permute` | 2.005 | 1.995–2.018 | 1.531 | 1.527–1.540 | -23.6% | faster |
+| `Queens` | 1.559 | 1.548–1.567 | 1.211 | 1.200–1.217 | -22.3% | faster |
+| `Richards` | 44.380 | 43.938–44.729 | 40.802 | 40.739–40.913 | -8.1% | faster |
+| `RichardsTon80` | 3.321 | 3.295–3.354 | 3.211 | 3.191–3.231 | -3.3% | faster |
+| `Sieve` | 1.316 | 1.308–1.328 | 1.106 | 1.091–1.114 | -15.9% | faster |
+| `Storage` | 1.331 | 1.329–1.333 | 1.356 | 1.341–1.381 | +1.9% | slower (see below) |
+| `Towers` | 1.947 | 1.937–1.955 | 1.545 | 1.536–1.553 | -20.7% | faster |
+| `bench_block` | 7.771 | 7.689–7.857 | 7.022 | 6.970–7.098 | -9.6% | faster |
+| `bench_loop` | 0.812 | 0.809–0.819 | 0.517 | 0.517–0.517 | -36.4% | faster |
+| `bench_megamorphic` | 4.662 | 4.606–4.726 | 4.625 | 4.592–4.677 | -0.8% | no |
+| `bench_send` | 0.773 | 0.773–0.774 | 0.509 | 0.507–0.510 | -34.2% | faster |
+| `bench_signal` | 21.998 | 21.660–22.300 | 21.821 | 21.738–21.870 | -0.8% | no |
+| `bench_while` | 46.901 | 46.733–47.227 | 44.455 | 44.124–44.788 | -5.2% | faster |
+| `bench_recursion` | 0.666 | 0.664–0.667 | 0.665 | 0.662–0.668 | -0.1% | no |
+
+The geometric mean over the twenty-three sources is -11.7%, and
+eighteen are faster with their builds separated. The largest gains are
+where an instruction or a send left machine code or called a leaf at
+`master` and now runs inline: `bench_loop` and `bench_send` (-36.4%,
+-34.2%) read and write their own slots `n` and `sum`, which no longer
+exit; Permute, Queens, Towers and Sieve (-15.9% to -23.6%) index arrays,
+whose `at:` and `at:put:` are row stubs now, the store through the
+inline barrier; Havlak (-21.9%) the same and the setters and private
+accessors its leaf stub's leaf ran; `bench_block` (-9.6%) makes its
+indirection vector inline. Its block's activation still crosses the
+bridge, which part 4b removes.
+
+**Storage's +1.9% did not reproduce.** Its three branch builds spread
+wider in this run (1.341–1.381) than `master`'s (1.329–1.333), two
+rounds of b and c high. A second sitting of Storage alone, the same six
+builds in three rotated rounds, measured -0.3% at `--iterations 8`
+(1.345 against 1.341 ms) and -0.7% at `--iterations 30`, neither
+separated, and an `xperf`-profiled run of 1,500 iterations a side
+measured 1.174 ms at `master` and 1.165 at `76b6fc85`. Storage's first
+iterations after the warm-up are still about 15% slower than its steady
+state on both sides, which is what `--iterations 8` samples.
 
 ## The trampoline
 
