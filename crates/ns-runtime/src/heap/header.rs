@@ -18,7 +18,7 @@ const FORMAT_SHIFT: u32 = 22;
 const FORMAT_MASK: u64 = 0b1_1111;
 const AGE_SHIFT: u32 = 27;
 const AGE_MASK: u64 = 0b1111;
-const REMEMBERED_BIT: u64 = 1 << 31;
+pub(super) const REMEMBERED_BIT: u64 = 1 << 31;
 /// The widest age the header's four bits hold: an object this old is
 /// tenured at its next scavenge whatever the threshold says.
 pub(super) const MAX_AGE: u8 = 15;
@@ -30,6 +30,9 @@ pub(super) const WORD_COUNT_SHIFT: u32 = 56;
 /// The header bits that hold the format, all clear exactly for an
 /// instance's (`Format::FixedPointers`), for machine code's test of one.
 pub(super) const FORMAT_BITS: u64 = FORMAT_MASK << FORMAT_SHIFT;
+/// The header bits of an `Array`'s format (`Format::IndexablePointers`)
+/// under `FORMAT_BITS`, for machine code's test of an indirection vector.
+pub(super) const INDEXABLE_POINTERS_BITS: u64 = (Format::IndexablePointers as u64) << FORMAT_SHIFT;
 /// The word count that says the count is in an overflow word.
 pub(super) const WORD_COUNT_OVERFLOW: usize = 255;
 

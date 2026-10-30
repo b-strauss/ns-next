@@ -5,21 +5,18 @@
 //! step, the miss of a send's cell -- the one leaf that may compile and
 //! install a body -- the leaf stub's run of a target that is no method
 //! with code, a leaf-safe mirror send, an allocation past the inline
-//! bump's limit, and the exit's materialization of the frames machine
-//! code pushed. A template or a stub names one by its index in `table`
+//! bump's limit, the write barrier's remembering of an old object, and
+//! the exit's materialization of the frames machine code pushed. A template or a stub names one by its index in `table`
 //! (`Leaf::index`).
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, Instruction};
 use crate::heap::{register_number, ActivationReference, ArgumentSlots, Word};
 use crate::interpreter::inline_cache::{self, MissAnswer};
-use crate::interpreter::locals::store_vector;
 use crate::interpreter::mirror::{self, MachineMirrorAnswer};
 use crate::interpreter::{Arguments, Mutator};
 use crate::types::Value;
-use crate::vm::{
-    argument_window, load_literal_into, load_vector_into, make_array_into, make_vector_into,
-};
+use crate::vm::{argument_window, load_literal_into};
 
 use super::macro_assembler::LeafIndex;
 use super::materialize;
@@ -52,6 +49,9 @@ pub(crate) enum Leaf {
     /// Allocates an object the inline bump found no room for, as the
     /// interpreter's cold path does (`allocate`).
     Allocate = 8,
+    /// Remembers an old object machine code stored a young one into, as
+    /// the interpreter's write barrier does (`remember`).
+    Remember = 9,
 }
 
 impl Leaf {
@@ -64,7 +64,7 @@ impl Leaf {
 /// The leaves, in `Leaf` order, each handed the mutator the code was
 /// entered with: one table for the process, a constant the compiler
 /// promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 9] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 10] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -78,6 +78,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 9] {
         store_field as ns_memory::Leaf<Mutator<'gc>>,
         mirror_method as ns_memory::Leaf<Mutator<'gc>>,
         allocate as ns_memory::Leaf<Mutator<'gc>>,
+        remember as ns_memory::Leaf<Mutator<'gc>>,
     ]
 }
 
@@ -96,16 +97,18 @@ pub(super) const FAILED: u64 = 2;
 /// machine code holds at `arguments[0]` and whose body `arguments[2]`, an
 /// address inside it, names (`materialize::leaf_frame`), through the
 /// interpreter's own effect function, the one `vm::run_stretch` calls, so
-/// the two cannot drift. Answers `DONE`, or `REFUSED` for a vector access
-/// the interpreter refuses -- which fails before it writes anything --
-/// so that the exit after the call re-executes the instruction and the
-/// interpreter raises the error, as no leaf can.
+/// the two cannot drift: an allocated literal's load, the one instruction
+/// lowered to it. Answers `DONE`, or `REFUSED` for a load the interpreter
+/// refuses -- which fails before it writes anything -- so that the exit
+/// after the call re-executes the instruction and the interpreter raises
+/// the error, as no leaf can.
 ///
 /// # Panics
 ///
 /// On an instruction no lowering hands this leaf, which only a defect of
 /// the JIT does; it aborts the process, as every panic in a leaf does.
 fn step(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
     let [frame_address, program_counter, code_address] = arguments;
     let Ok(program_counter) = u32::try_from(program_counter) else {
         unreachable!("internal: a program counter fits 32 bits");
@@ -137,46 +140,6 @@ fn step_in(
             body.literal(usize::from(literal)),
         )
         .is_ok(),
-        CompactInstruction::MakeArray {
-            destination,
-            elements,
-        } => {
-            make_array_into(
-                mutator,
-                register_base,
-                u16::from(destination),
-                body.register_list(usize::from(elements)),
-            );
-            true
-        }
-        CompactInstruction::MakeVector { destination, size } => {
-            make_vector_into(mutator, register_base, u16::from(destination), size);
-            true
-        }
-        CompactInstruction::LoadVector {
-            destination,
-            vector,
-            index,
-        } => load_vector_into(
-            mutator,
-            register_base,
-            u16::from(destination),
-            u16::from(vector),
-            index,
-        )
-        .is_ok(),
-        CompactInstruction::StoreVector {
-            vector,
-            source,
-            index,
-        } => store_vector(
-            &mut mutator.heap,
-            register_base,
-            u16::from(vector),
-            index,
-            u16::from(source),
-        )
-        .is_ok(),
         CompactInstruction::Wide { index } => match body.wide(index as usize) {
             Instruction::LoadLiteral {
                 destination,
@@ -184,27 +147,6 @@ fn step_in(
             } => {
                 load_literal_into(mutator, activation, register_base, *destination, literal).is_ok()
             }
-            Instruction::MakeArray {
-                destination,
-                element_registers,
-            } => {
-                make_array_into(mutator, register_base, *destination, element_registers);
-                true
-            }
-            Instruction::MakeVector { destination, size } => {
-                make_vector_into(mutator, register_base, *destination, *size);
-                true
-            }
-            Instruction::LoadVector {
-                destination,
-                vector,
-                index,
-            } => load_vector_into(mutator, register_base, *destination, *vector, *index).is_ok(),
-            Instruction::StoreVector {
-                vector,
-                index,
-                source,
-            } => store_vector(&mut mutator.heap, register_base, *vector, *index, *source).is_ok(),
             other => unreachable!("internal: the generic leaf is handed {other:?}"),
         },
         other => unreachable!("internal: the generic leaf is handed {other:?}"),
@@ -225,6 +167,7 @@ fn step_in(
 /// jump to -- compiling the callee first if it is due -- or 0, at which the
 /// stub refuses the call so that the interpreter runs the send.
 fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
     let [callee_address, return_address, _] = arguments;
     mutator.jit.statistics.miss_leaf_calls += 1;
     let Some((sender_address, program_counter)) =
@@ -257,6 +200,7 @@ fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// (`InlineCaches::site_slot_hit`), every other target as the send's
 /// decision finds it (`inline_cache::act_at`).
 fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
     let [callee_address, return_address, cell_address] = arguments;
     mutator.jit.statistics.act_leaf_calls += 1;
     if let Some(answer) = act_on_a_site_slot(mutator, callee_address, cell_address) {
@@ -330,6 +274,7 @@ fn act_on_a_site_slot(
 /// its own, which reads nothing of the send: the cell decided the target,
 /// and the stub's entry names the field.
 fn store_field(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
     let [receiver_bits, field, value_bits] = arguments;
     mutator.jit.statistics.act_leaf_calls += 1;
     let receiver = mutator.heap.machine_value(receiver_bits);
@@ -358,6 +303,7 @@ fn store_field(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// cell already decided the target: nothing of the send's lookup is made
 /// again.
 fn mirror_method(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
     let [callee_address, row, return_address] = arguments;
     mutator.jit.statistics.act_leaf_calls += 1;
     let Some(site) = mutator.jit.call_site(return_address) else {
@@ -437,6 +383,7 @@ const HANDED_ARGUMENTS: usize = 4;
 /// send's slots after it but the send itself, which the interpreter
 /// re-executes, so the refusal still changed nothing the program sees.
 fn mirror(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
     let [frame_address, program_counter, code_address] = arguments;
     let Ok(program_counter) = u32::try_from(program_counter) else {
         unreachable!("internal: a program counter fits 32 bits");
@@ -525,15 +472,30 @@ fn mirror_in(
 /// collects: a scavenge it asks for runs at the next poll's exit, as the
 /// interpreter's runs at its next safepoint.
 fn allocate(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
     let [word_count, header, class_word] = arguments;
     mutator
         .heap
         .allocate_for_machine_code(word_count, header, class_word)
 }
 
+/// The write barrier's leaf (`MacroAssembler::store_with_barrier`),
+/// which a store calls only once it has found that the old object whose
+/// word is `arguments[0]` came to name a young one and is not remembered
+/// yet: adds it to the remembered set as the interpreter's barrier does
+/// (`Heap::remember`), asking for the scavenge that tenures everything
+/// once the set is past its limit, which runs at the next poll's exit.
+/// Answers nothing.
+fn remember(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
+    mutator.heap.remember_for_machine_code(arguments[0]);
+    0
+}
+
 /// The exit stub's call for each return address of a compiled frame,
 /// `arguments[0]`, outermost first (`materialize::materialize_frame`).
 fn materialize_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
     materialize::materialize_frame(mutator, arguments[0]);
     0
 }
@@ -541,6 +503,7 @@ fn materialize_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// The exit stub's last call of its walk: the exit's code address, kind
 /// and program counter (`materialize::materialize_innermost`).
 fn materialize_innermost(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    mutator.jit.statistics.leaf_calls += 1;
     let [code_address, kind, program_counter] = arguments;
     materialize::materialize_innermost(mutator, code_address, kind, program_counter);
     0

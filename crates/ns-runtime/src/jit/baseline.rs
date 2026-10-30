@@ -404,6 +404,116 @@ impl BodyAssembler {
         );
     }
 
+    /// `MakeArray`: `make_array_into`'s `Array` of the frame's
+    /// `element_registers`, in order, allocated as `make_vector`'s, its
+    /// word into the frame's `destination`. The elements are stored with
+    /// no barrier, as `Heap::allocate_array_from_registers` stores them:
+    /// the object is new, young, or old and born remembered. Nothing
+    /// declines or exits.
+    fn make_array(&mut self, destination: u16, element_registers: &[u16]) {
+        let registers = self.registers();
+        let (object, header, class_word) = (registers.first, registers.second, registers.third);
+        let (address, element) = (registers.dividend, registers.remainder);
+        let word_count = element_registers.len() + 1;
+        let fields = crate::heap::Heap::machine_layout().fields_displacement;
+        let macro_assembler = &mut self.macro_assembler;
+        let (slow, placed) = (
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+        );
+        macro_assembler.load_array_header_and_class(header, class_word, word_count);
+        macro_assembler.bump_allocate(
+            object,
+            ObjectSize::Constant(word_count),
+            header,
+            class_word,
+            slow,
+        );
+        macro_assembler.assembler().bind(placed);
+        if !element_registers.is_empty() {
+            let object_space = macro_assembler.roles().object_space;
+            macro_assembler.assembler().move_register(address, object);
+            macro_assembler.assembler().add(address, object_space);
+        }
+        for (position, register) in element_registers.iter().enumerate() {
+            let displacement = i32::try_from(position)
+                .ok()
+                .and_then(|position| position.checked_mul(8))
+                .and_then(|bytes| bytes.checked_add(fields))
+                .expect("internal: an array literal's elements lie within 2 GiB of its start");
+            macro_assembler.load_frame_register(element, *register);
+            macro_assembler.assembler().store(
+                ns_assembler::Width::Word64,
+                ns_assembler::Memory {
+                    base: address,
+                    displacement,
+                },
+                element,
+            );
+        }
+        macro_assembler.store_frame_register(destination, object);
+        macro_assembler.call_leaf_out_of_line(
+            slow,
+            Leaf::Allocate.index(),
+            [
+                Operand::Immediate(word_count as u64),
+                Operand::Register(header),
+                Operand::Register(class_word),
+            ],
+            object,
+            placed,
+        );
+    }
+
+    /// `LoadVector`: `load_vector_into`, the frame's `destination :=`
+    /// element `index` of the indirection vector in its `vector`. A
+    /// register that holds no `Array` with that element exits before
+    /// anything is written, and the interpreter raises the error
+    /// (`interpreter::locals::load_vector`).
+    fn load_vector(&mut self, destination: u16, vector: u16, index: u16) {
+        let registers = self.registers();
+        let (object, element) = (registers.first, registers.second);
+        let displacement = element_displacement(index);
+        let program_counter = self.program_counter;
+        let macro_assembler = &mut self.macro_assembler;
+        let failed = macro_assembler.assembler().label();
+        macro_assembler.load_frame_register(object, vector);
+        macro_assembler.check_array_index(object, index, element, failed);
+        let object_space = macro_assembler.roles().object_space;
+        let assembler = macro_assembler.assembler();
+        assembler.add(object, object_space);
+        assembler.load(
+            ns_assembler::Width::Word64,
+            element,
+            ns_assembler::Memory {
+                base: object,
+                displacement,
+            },
+        );
+        macro_assembler.store_frame_register(destination, element);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+    }
+
+    /// `StoreVector`: `store_vector`, element `index` of the indirection
+    /// vector in the frame's `vector` `:=` its `source`, through the write
+    /// barrier, since the vector may be old and the value young. A
+    /// register that holds no `Array` with that element exits before
+    /// anything is written -- the source is read only after the check, as
+    /// the interpreter reads it -- and the interpreter raises the error.
+    fn store_vector(&mut self, vector: u16, index: u16, source: u16) {
+        let registers = self.registers();
+        let (object, value, scratch) = (registers.first, registers.second, registers.third);
+        let displacement = element_displacement(index);
+        let program_counter = self.program_counter;
+        let macro_assembler = &mut self.macro_assembler;
+        let failed = macro_assembler.assembler().label();
+        macro_assembler.load_frame_register(object, vector);
+        macro_assembler.check_array_index(object, index, scratch, failed);
+        macro_assembler.load_frame_register(value, source);
+        macro_assembler.store_with_barrier(object, displacement, value, scratch);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+    }
+
     /// A send's call of the code at the address in `target`, recorded so
     /// that its return address -- the address right after the `call`,
     /// which the processor pushes and the exit's walk over the native
@@ -467,6 +577,11 @@ impl BodyAssembler {
     reason = "the answer is a small constant"
 )]
 const MIRROR_FAILED: i32 = super::leaves::FAILED as i32;
+
+/// The displacement of an `Array`'s element `index` from its offset.
+fn element_displacement(index: u16) -> i32 {
+    crate::heap::Heap::machine_layout().fields_displacement + i32::from(index) * 8
+}
 
 /// The `SmallInteger` tag, as an immediate operand.
 fn small_integer_tag() -> i32 {
@@ -716,9 +831,29 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             body.make_vector(*destination, *size);
             Lowering::Template
         }
-        Instruction::MakeArray { .. }
-        | Instruction::LoadVector { .. }
-        | Instruction::StoreVector { .. } => body.step(),
+        Instruction::MakeArray {
+            destination,
+            element_registers,
+        } => {
+            body.make_array(*destination, element_registers);
+            Lowering::Template
+        }
+        Instruction::LoadVector {
+            destination,
+            vector,
+            index,
+        } => {
+            body.load_vector(*destination, *vector, *index);
+            Lowering::Template
+        }
+        Instruction::StoreVector {
+            vector,
+            index,
+            source,
+        } => {
+            body.store_vector(*vector, *index, *source);
+            Lowering::Template
+        }
         Instruction::Jump { target } => {
             body.jump_to(*target);
             Lowering::Template

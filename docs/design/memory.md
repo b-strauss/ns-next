@@ -486,9 +486,9 @@ application id table" below). Beside it, and for the same reason, the
 entry block machine code is entered with (`ns_memory::EntryBlock`) is
 `Cell`s behind an `Rc` of its own, held by the JIT's state outside the
 mutator: its lasting words -- the object space's, the activation stack's
-and the machine words' addresses, the stubs, the cells, the global
-cache's mask -- are written when `JitState::mark_block_stale` says what
-they name changed (a zone made or replaced, the global cache resized),
+and the machine words' addresses, eden's bump cursor's address, the
+stubs, the cells, the global cache's mask -- are written when
+`JitState::mark_block_stale` says what they name changed (a zone made or replaced, the global cache resized),
 not at every entry, and only a debug build's check at every entry
 catches a missed mark ([execution.md](execution.md), "The entry at a
 send"). The machine words' one handle-like word is an immediate's
@@ -2782,9 +2782,11 @@ stored word names a young object -- and the barrier is forced inline into
 each store accessor; `remember` is out of line, and a holder whose bit is
 set already returns at once.
 
-The barrier sits in `heap.rs`'s store accessors and nowhere else, never in
-`vm.rs`, so the interpreter, the reference lowering and a JIT share one
-rule. Every store into an existing object goes through one of them:
+The barrier sits in `heap.rs`'s store accessors, never in `vm.rs`, so the
+interpreter and the reference lowering share one rule, and machine code's
+inline barrier, below, makes its comparisons and calls its `remember`.
+Every store the interpreter makes into an existing object goes through one
+of them:
 
 - `Heap::set_pointer_word`: an instance's fields, an array's elements and a
   class object's fields;
@@ -2795,6 +2797,15 @@ rule. Every store into an existing object goes through one of them:
   activation's registers into its frame object and remembers an old frame
   that one of them makes name a young object ("Frames, the activation
   stack and the marriage").
+
+Machine code makes the same decision inline. A store into an object it
+did not allocate in the same template -- today `StoreVector`'s -- takes
+`MacroAssembler::store_with_barrier`: the word, then the same two
+comparisons against `NURSERY_END` behind an early out for a value that
+names no object, and one for a holder whose remembered bit is set
+already, which `remember` would answer at once; only past all four does
+it call `Leaf::Remember`, which is `remember` itself
+([execution.md](execution.md), "The baseline JIT's foundation").
 
 `allocate_block` remembers every old object it allocates outside the
 decoder, as above. A married frame's registers live on the activation

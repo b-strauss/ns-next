@@ -77,6 +77,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         site_slot_hits: after.site_slot_hits - before.site_slot_hits,
         called_entries: after.called_entries - before.called_entries,
         exits: after.exits - before.exits,
+        leaf_calls: after.leaf_calls - before.leaf_calls,
     }
 }
 
@@ -2496,6 +2497,154 @@ fn machine_code_allocates_past_eden_as_the_interpreter_does() {
     if !a_stress_mode_is_on() {
         assert_eq!(compiled_scavenges, interpreted_scavenges);
         assert_eq!(compiled_heap, interpreted_heap);
-        assert_eq!(statistics.exits, 0, "`fill:` runs to its return");
+        // `fill:` runs to its return, but for its call that finds a
+        // scavenge requested: its prologue refuses it, and `run` pushes it
+        // and takes the safepoint.
+        assert_eq!(
+            statistics.exits, compiled_scavenges as u64,
+            "only the call at each requested scavenge leaves machine code"
+        );
+        assert_eq!(statistics.safepoint_exits, 0, "`fill:` has no poll");
+    }
+}
+
+/// A closure whose captured variables live in an indirection vector:
+/// `writer`, which `prepare` answers, writes fresh arrays and a count
+/// into them in a loop, which machine code runs once the block is
+/// compiled at its second entry, and `reader` reads them back. The vector
+/// outlives `prepare`'s activation in both closures, so a full collection
+/// between two sends tenures it. The host sends the writer `value:`
+/// itself, since a send of it from machine code leaves for the
+/// interpreter until closures run in machine code.
+const BARRIER_SOURCE: &str = indoc! {"
+    class Subject = Object new (
+      | writer reader |
+    ) (
+      public prepare = (
+        | first second count |
+        count:: 0.
+        writer:: [:limit |
+          | index |
+          index:: 0.
+          [index < limit] whileTrue: [
+            first:: {index. limit}.
+            second:: {limit. index. index + 1}.
+            count:: count + 1.
+            index:: index + 1].
+          count].
+        reader:: [(first at: 1) + (first at: 2) + (second at: 3) + count].
+        ^writer
+      )
+      public read = (
+        ^reader value
+      )
+    ) : ()
+"};
+
+/// How many stores of each array `BARRIER_SOURCE`'s writer makes in one
+/// measured send: far fewer bytes than eden's limit holds, so that no
+/// allocation asks for a scavenge.
+const BARRIER_STORES: i64 = 1000;
+
+/// `BARRIER_SOURCE`'s subject and its writer, prepared, the writer run
+/// three times so that the block is compiled, and everything tenured by
+/// a full collection.
+#[cfg(debug_assertions)]
+fn tenured_writer() -> (Interpreter, Root, Root) {
+    let (mut interpreter, class) = load_with(BARRIER_SOURCE, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let writer = expect_ok(
+        interpreter.send(&subject, Symbol::intern("prepare"), &[]),
+        "prepare",
+    );
+    for _ in 0..3 {
+        send_integer(&mut interpreter, &writer, "value:", 3);
+    }
+    // A full collection between entries compacts both generations into the
+    // old space: the vector is old from here on, and remembered by nothing.
+    interpreter.collect_now();
+    (interpreter, subject, writer)
+}
+
+/// Sends `selector` to `subject` with the `SmallInteger` `argument`, or
+/// with none for a unary selector, answering the `SmallInteger` it
+/// answers.
+fn send_integer(
+    interpreter: &mut Interpreter,
+    subject: &Root,
+    selector: &str,
+    argument: i64,
+) -> i64 {
+    let arguments: Vec<Root> = if selector.ends_with(':') {
+        vec![interpreter.stash(ns_runtime::Value::small_integer(argument))]
+    } else {
+        Vec::new()
+    };
+    let answer = expect_ok(
+        interpreter.send(subject, Symbol::intern(selector), &arguments),
+        selector,
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("{selector}: expected a small integer"),
+    })
+}
+
+/// Asserts that `statistics` show machine code entered and leaving only
+/// at a poll that found a safepoint requested, which any stress mode
+/// holding the request makes every poll do.
+fn assert_ran_in_machine_code(statistics: &JitStatistics, what: &str) {
+    assert!(
+        statistics.machine_entries > 0,
+        "{what}: the writer is entered"
+    );
+    assert_eq!(
+        statistics.exits, statistics.safepoint_exits,
+        "{what}: every exit is a safepoint's"
+    );
+}
+
+/// A store machine code makes of a young array into the vector, which is
+/// old, remembers the vector, as the interpreter's barrier does: the
+/// scavenge after it finds the arrays through the remembered vector, and
+/// they read back as written. A store that missed the barrier leaves the
+/// vector naming nursery memory the scavenge vacated.
+#[cfg(debug_assertions)]
+#[test]
+fn an_inline_store_of_a_young_value_into_an_old_object_remembers_it() {
+    let (mut interpreter, subject, writer) = tenured_writer();
+    let before = interpreter.jit_statistics();
+    let count = send_integer(&mut interpreter, &writer, "value:", BARRIER_STORES);
+    let statistics = since(interpreter.jit_statistics(), before);
+    assert_eq!(count, 9 + BARRIER_STORES);
+    interpreter.scavenge_now();
+    let last = BARRIER_STORES - 1;
+    assert_eq!(
+        send_integer(&mut interpreter, &subject, "read", 0),
+        last + BARRIER_STORES + (last + 1) + count
+    );
+    if !a_stress_mode_is_on() {
+        assert_ran_in_machine_code(&statistics, "value:");
+        assert_eq!(
+            statistics.leaf_calls, 1,
+            "the one store that remembered the vector"
+        );
+    }
+}
+
+/// Once the vector is remembered, a store into it calls no leaf: the
+/// barrier's early out on the header's remembered bit takes every one,
+/// and the arrays are bumped inline.
+#[cfg(debug_assertions)]
+#[test]
+fn a_store_into_a_remembered_holder_calls_no_leaf() {
+    let (mut interpreter, _, writer) = tenured_writer();
+    send_integer(&mut interpreter, &writer, "value:", 1);
+    let before = interpreter.jit_statistics();
+    send_integer(&mut interpreter, &writer, "value:", BARRIER_STORES);
+    let statistics = since(interpreter.jit_statistics(), before);
+    if !a_stress_mode_is_on() {
+        assert_ran_in_machine_code(&statistics, "value:");
+        assert_eq!(statistics.leaf_calls, 0, "no store calls a leaf");
     }
 }

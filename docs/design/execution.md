@@ -7642,8 +7642,9 @@ interpreted `value:` pushes pays the bridge for little: the profile behind
 interpreting a one-instruction block -- the switch
 (`vm::machine_code_switch`), `run_machine_code`, `jit::entered` and the
 entry stub saving and restoring eight registers -- and
-`bench_block`'s block `[:y | acc:: acc + y]` reaches its indirection
-vector through `Leaf::Step`, about 18 ns more an entry. So `bench_block`
+`bench_block`'s block `[:y | acc:: acc + y]` reached its indirection
+vector through `Leaf::Step` then, about 18 ns more an entry, which the
+inline `LoadVector` and `StoreVector` have removed since. So `bench_block`
 is 10.3% slower with its builds separated, and an interpreted `do:` over
 a million elements with `[:each | each]` measured about 12% slower in an
 interim measurement. Stage 4 removes the cost: it makes a closure's
@@ -9918,7 +9919,8 @@ of the first two.
   is a word (`nil`, a Boolean, a `SmallInteger`, an immediate float),
   `LoadSelf`, `Move`, `StoreLocal`, `Jump`, `JumpIfNotBoolean`,
   `BranchIfFalse`, `BranchIfTrue`, the cached sends, `Return` and
-  `ImplicitReturn`, a leaf-safe `SendMirror`, `MakeVector`, and `IntegerBinary`'s `SmallInteger`
+  `ImplicitReturn`, a leaf-safe `SendMirror`, `MakeVector`, `MakeArray`,
+  `LoadVector`, `StoreVector`, and `IntegerBinary`'s `SmallInteger`
   fast path -- add, subtract, multiply, floor divide and the five
   compares, with their tag checks, declining to the send at the
   instruction's target, before anything is written, on an operand that
@@ -9936,13 +9938,29 @@ of the first two.
   object as the interpreter's cold path does (`Heap::allocate_block`'s
   `place_block`: young up to eden's end, asking for the scavenge, else
   old and remembered) and never collects, and rejoins the fill; a
-  scavenge it asks for runs at the next poll's exit. The generic leaf,
-  `Leaf::Step` (`jit/leaves.rs`), runs a
-  straight-line instruction through the interpreter's own function for
-  it -- a `LoadLiteral` that allocates, `MakeArray`,
-  `LoadVector`, `StoreVector` -- and answers "re-execute" only before it
-  has changed anything, so the interpreter raises the error itself. Every
-  other instruction exits and the interpreter runs it.
+  scavenge it asks for runs at the next poll's exit. `MakeArray`
+  allocates as `MakeVector` does and stores its element registers into
+  the new object with no barrier, as `allocate_array_from_registers`
+  does: the object is young, or old and born remembered. `LoadVector`
+  and `StoreVector` check what `interpreter::locals::load_vector` and
+  `store_vector` check -- an object of an `Array`'s format with the
+  element, its count the header's or the overflow word's
+  (`MacroAssembler::check_array_index`) -- and exit to re-execute before
+  anything is written otherwise, so the interpreter raises the error.
+  `StoreVector` stores through the write barrier
+  (`MacroAssembler::store_with_barrier`): the word stored, then Cog's
+  four early outs in Cog's order -- a value that names no object (the
+  tag test, then the word 0), a young holder, an old value (each one
+  compare against `NURSERY_END`, `MachineLayout::nursery_end`), a holder
+  whose header's remembered bit, bit 31, is set -- and only past them,
+  out of line, `Leaf::Remember`, which is `Heap::remember`, the request
+  of a scavenge past the set's limit included. The generic leaf,
+  `Leaf::Step` (`jit/leaves.rs`), runs a `LoadLiteral` that allocates
+  through the interpreter's own function for it, and answers
+  "re-execute" only before it has changed anything, so the interpreter
+  raises the error itself. Every other instruction exits and the
+  interpreter runs it. `JitStatistics::leaf_calls` counts every leaf
+  call machine code makes.
 - **The trigger and the entry** (`jit/mod.rs`): every `CompiledCode`
   carries a `JitSlot`, never encoded, which a clone answers fresh,
   counting its entries; at the second, `note_entry` compiles the body

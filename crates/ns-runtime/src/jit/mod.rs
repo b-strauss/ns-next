@@ -148,6 +148,9 @@ pub struct JitStatistics {
     /// instruction re-executed, a safepoint, a refused push, a dead
     /// register's read -- each handing a frame to the interpreter.
     pub exits: u64,
+    /// Calls machine code made of a leaf (`jit::leaves`), of every kind:
+    /// a template's, a stub's and the exit's walk's.
+    pub leaf_calls: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled, and so entered at a
@@ -1656,6 +1659,9 @@ pub(crate) fn called<'gc>(
     if kind == ExitKind::PushRefused as u64
         && Heap::activation_offset(innermost) == Heap::activation_offset(sender)
     {
+        // An exit all the same, which `resumption_after_exit` would have
+        // counted.
+        mutator.jit.statistics.exits += 1;
         return Called::Refused;
     }
     Called::Stopped(resumption_after_exit(mutator, &block, kind, innermost))

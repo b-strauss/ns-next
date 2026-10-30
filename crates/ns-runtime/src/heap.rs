@@ -782,6 +782,21 @@ pub(crate) struct MachineLayout {
     pub(crate) word_count_shift: u8,
     /// An object's field 0's displacement from its offset.
     pub(crate) fields_displacement: i32,
+    /// The header word's format bits of an `Array`, under
+    /// `instance_format_bits`, whose elements `Heap::array_element` reads.
+    pub(crate) indexable_pointers_format: i32,
+    /// The word count in the header that says the count is in the overflow
+    /// word before it.
+    pub(crate) word_count_overflow: i32,
+    /// Where the old space begins: an object whose offset lies below it
+    /// is young (`space::is_young`).
+    pub(crate) nursery_end: i32,
+    /// The header word's remembered bit, set while the object is in the
+    /// remembered set, as the 32-bit pattern a test of the header's low
+    /// half takes.
+    pub(crate) remembered_bit: i32,
+    /// `nil`'s word.
+    pub(crate) nil_word: i32,
 }
 
 /// The block of an object machine code allocates (`Heap::machine_block`).
@@ -8688,6 +8703,15 @@ impl<'gc> Heap<'gc> {
             instance_format_bits: small(header::FORMAT_BITS),
             word_count_shift: small_count(header::WORD_COUNT_SHIFT),
             fields_displacement: displacement(FIELDS),
+            indexable_pointers_format: small(header::INDEXABLE_POINTERS_BITS),
+            word_count_overflow: small(WORD_COUNT_OVERFLOW as u64),
+            nursery_end: small(NURSERY_END as u64),
+            remembered_bit: u32::try_from(header::REMEMBERED_BIT)
+                .map(u32::cast_signed)
+                .unwrap_or_else(|_| {
+                    unreachable!("internal: the remembered bit lies in the header's low half")
+                }),
+            nil_word: small(Word::NIL.bits()),
         }
     }
 
@@ -9040,6 +9064,23 @@ impl<'gc> Heap<'gc> {
             !self.allocating_old || !word.object_offset().is_some_and(space::is_young),
             "the load tenures everything the graph names before the graph pass"
         );
+    }
+
+    /// `remember` for machine code's write barrier
+    /// (`MacroAssembler::store_with_barrier`), which calls it only for an
+    /// old holder `holder_word`, its word, that came to name a young
+    /// object and whose remembered bit it found clear: the interpreter's
+    /// own decision, its limit's request of a scavenge included.
+    #[cfg(ns_jit)]
+    pub(crate) fn remember_for_machine_code(&mut self, holder_word: u64) {
+        let Some(holder) = Word::from_bits(holder_word).object_offset() else {
+            unreachable!("internal: the write barrier remembers an object");
+        };
+        debug_assert!(
+            !space::is_young(holder),
+            "internal: the write barrier remembers an old object"
+        );
+        self.remember(holder);
     }
 
     /// Adds `holder`, an old object, to the remembered set unless its bit

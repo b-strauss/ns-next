@@ -747,8 +747,7 @@ impl MacroAssembler {
         }
         let layout = crate::heap::Heap::machine_layout();
         let (scratch, object_space) = (self.roles.idiom_scratch, self.roles.object_space);
-        let nil = i32::try_from(crate::heap::Immediate::NIL.bits())
-            .expect("internal: nil is a small word");
+        let nil = layout.nil_word;
         let first = from
             .checked_mul(8)
             .and_then(|bytes| i32::try_from(bytes).ok())
@@ -796,6 +795,164 @@ impl MacroAssembler {
         assembler.jump_if(Condition::Below, step);
         assembler.subtract(object, object_space);
         assembler.add_immediate(object, -(first + bytes));
+    }
+
+    /// Stores `value` into the word at `displacement` from the offset of
+    /// the object `holder` names, an object machine code did not just
+    /// allocate, then applies the write barrier as `Heap::write_barrier`
+    /// does, with Cog's early outs in its order
+    /// (`genStoreCheckReceiverReg:valueReg:scratchReg:inFrame:`): a
+    /// `value` that names no object -- an immediate, `nil` among the
+    /// constants, or the word 0 -- a young `holder`, an old `value`, and a
+    /// `holder` whose remembered bit is set already. Only a store that
+    /// passes all four calls the leaf that remembers `holder`
+    /// (`Leaf::Remember`, `Heap::remember`), out of line. `holder` and
+    /// `value` are kept on the straight line. Clobbers the flags,
+    /// `scratch` and, on the path that calls the leaf, every scratch
+    /// register, as every leaf call does: the caller reads none after the
+    /// store.
+    pub(crate) fn store_with_barrier(
+        &mut self,
+        holder: Register,
+        displacement: i32,
+        value: Register,
+        scratch: Register,
+    ) {
+        debug_assert!(
+            holder != value && holder != scratch && value != scratch,
+            "internal: a barrier's registers are distinct"
+        );
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        let (remember, done) = (assembler.label(), assembler.label());
+        assembler.move_register(scratch, holder);
+        assembler.add(scratch, object_space);
+        assembler.store(
+            Width::Word64,
+            Memory {
+                base: scratch,
+                displacement,
+            },
+            value,
+        );
+        assembler.test_immediate(value, layout.tag_mask);
+        assembler.jump_if(Condition::NotEqual, done);
+        assembler.compare_immediate(value, 0);
+        assembler.jump_if(Condition::Equal, done);
+        assembler.compare_immediate(holder, layout.nursery_end);
+        assembler.jump_if(Condition::Below, done);
+        assembler.compare_immediate(value, layout.nursery_end);
+        assembler.jump_if(Condition::AboveOrEqual, done);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: scratch,
+                displacement: layout.header_displacement,
+            },
+        );
+        assembler.test_immediate_with_width(Width::Word32, scratch, layout.remembered_bit);
+        assembler.jump_if(Condition::Equal, remember);
+        assembler.bind(done);
+        self.call_leaf_out_of_line(
+            remember,
+            super::leaves::Leaf::Remember.index(),
+            [
+                Operand::Register(holder),
+                Operand::Immediate(0),
+                Operand::Immediate(0),
+            ],
+            scratch,
+            done,
+        );
+    }
+
+    /// Jumps to `failed` unless `object` holds an object of an `Array`'s
+    /// format (`Format::IndexablePointers`) with an element `index`, as
+    /// `Heap::array_element` and `Heap::array_set_element` find it: what
+    /// `interpreter::locals::load_vector` and `store_vector` check of an
+    /// indirection vector before they read or write it. The count is the
+    /// header's, or the overflow word's when the header says it is there.
+    /// `object` is kept; clobbers the flags and `scratch`.
+    pub(crate) fn check_array_index(
+        &mut self,
+        object: Register,
+        index: u16,
+        scratch: Register,
+        failed: Label,
+    ) {
+        debug_assert!(object != scratch, "internal: the check keeps its object");
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        // The words after the header an element `index` needs: the class
+        // word and the elements up to it.
+        let needed = i32::from(index) + 2;
+        let assembler = &mut self.assembler;
+        assembler.test_immediate(object, layout.tag_mask);
+        assembler.jump_if(Condition::NotEqual, failed);
+        assembler.compare_immediate(object, 0);
+        assembler.jump_if(Condition::Equal, failed);
+        assembler.add(object, object_space);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: object,
+                displacement: layout.header_displacement,
+            },
+        );
+        assembler.subtract(object, object_space);
+        assembler.and_immediate(scratch, layout.instance_format_bits);
+        assembler.compare_immediate(scratch, layout.indexable_pointers_format);
+        assembler.jump_if(Condition::NotEqual, failed);
+        assembler.add(object, object_space);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: object,
+                displacement: layout.header_displacement,
+            },
+        );
+        assembler.shift_right_logical(scratch, layout.word_count_shift);
+        if needed < layout.word_count_overflow {
+            // A count in the overflow word is at least the header's mark,
+            // which is past `needed`, so the header's alone decides.
+            assembler.subtract(object, object_space);
+            assembler.compare_immediate(scratch, needed);
+            assembler.jump_if(Condition::Below, failed);
+            return;
+        }
+        let in_header = assembler.label();
+        assembler.compare_immediate(scratch, layout.word_count_overflow);
+        assembler.jump_if(Condition::NotEqual, in_header);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: object,
+                displacement: layout.header_displacement - WORD_BYTES,
+            },
+        );
+        // The overflow word's count lies below its mark.
+        let mark_bits = 64 - layout.word_count_shift;
+        assembler.shift_left(scratch, mark_bits);
+        assembler.shift_right_logical(scratch, mark_bits);
+        assembler.bind(in_header);
+        assembler.subtract(object, object_space);
+        assembler.compare_immediate(scratch, needed);
+        assembler.jump_if(Condition::Below, failed);
+    }
+
+    /// Takes `exit(kind, program_counter)` at `label`, out of line: the
+    /// target of a check's jump to `failed`.
+    pub(crate) fn exit_at(&mut self, label: Label, kind: ExitKind, program_counter: u32) {
+        self.cold_paths.push(ColdPath::Exit {
+            label,
+            kind,
+            program_counter,
+        });
     }
 
     /// Adds one to the entry block's `BackEdges` when the code counts its
@@ -1758,5 +1915,172 @@ mod tests {
         eden.cursor[1] = eden.start() - 8;
         assert_eq!(allocate(&eden, ObjectSize::Constant(1), 0).0, SLOW);
         assert_eq!(eden.top(), eden.start());
+    }
+
+    /// A leaf the tests' tables hold where no leaf is expected.
+    fn no_leaf(_: &mut Vec<u64>, _: [u64; 3]) -> u64 {
+        panic!("no leaf is called")
+    }
+
+    /// The write barrier's leaf, standing in for `Heap::remember`: records
+    /// the holder it is handed.
+    fn record_holder(remembered: &mut Vec<u64>, arguments: [u64; 3]) -> u64 {
+        remembered.push(arguments[0]);
+        0
+    }
+
+    /// The leaves the barrier's tests run with: only `Leaf::Remember`'s
+    /// records anything.
+    fn barrier_leaves() -> Vec<ns_memory::Leaf<Vec<u64>>> {
+        let remember = crate::jit::leaves::Leaf::Remember as usize;
+        (0..=remember)
+            .map(|index| {
+                if index == remember {
+                    record_holder as ns_memory::Leaf<Vec<u64>>
+                } else {
+                    no_leaf as ns_memory::Leaf<Vec<u64>>
+                }
+            })
+            .collect()
+    }
+
+    /// Stores `value` into field 0 of a holder of the header `header` that
+    /// lies `holder` bytes into the object space, through the barrier:
+    /// answers the field and the holders the leaf was asked to remember.
+    fn store_through_barrier(holder: u64, header: u64, value: u64) -> (u64, Vec<u64>) {
+        let layout = crate::heap::Heap::machine_layout();
+        let word_index =
+            |displacement: i32| usize::try_from(displacement / 8).expect("after the start");
+        let mut words = [0u64; 4];
+        words[word_index(layout.header_displacement)] = header;
+        let address = words.as_mut_ptr().expose_provenance() as u64;
+        let mut machine = Machine::new();
+        machine.set_block_word(
+            crate::jit::stubs::BlockWord::ObjectSpaceBase,
+            address.wrapping_sub(holder),
+        );
+        let body = machine.body(|macro_assembler| {
+            macro_assembler.load_frame_register(RAX, 0);
+            macro_assembler.load_frame_register(RCX, 1);
+            macro_assembler.store_with_barrier(RAX, layout.fields_displacement, RCX, RDX);
+            macro_assembler.exit(ExitKind::Reexecute, 1);
+        });
+        let mut frame = [holder, value, 0, 0];
+        let mut remembered = Vec::new();
+        let (exit, _) = machine.run(
+            body,
+            &mut frame,
+            0,
+            false,
+            &mut remembered,
+            &barrier_leaves(),
+        );
+        assert_eq!(exit, MachineExit::Reexecute { program_counter: 1 });
+        (words[word_index(layout.fields_displacement)], remembered)
+    }
+
+    /// The barrier stores the word in every case, and calls the leaf only
+    /// past its four early outs, as `Heap::write_barrier` remembers only an
+    /// old holder that came to name a young object and `Heap::remember`
+    /// only one whose bit is clear.
+    #[test]
+    fn the_barrier_remembers_only_an_old_holder_of_a_young_object_not_yet_remembered() {
+        let layout = crate::heap::Heap::machine_layout();
+        let nursery_end = u64::try_from(layout.nursery_end).expect("a positive offset");
+        let remembered_bit = u64::from(layout.remembered_bit.cast_unsigned());
+        let (old, young) = (nursery_end + 0x100, 0x100);
+        let (young_value, old_value) = (0x2000, nursery_end + 0x800);
+        let integer = crate::heap::Immediate::small_integer(5)
+            .expect("a small integer")
+            .bits();
+        assert_eq!(
+            store_through_barrier(old, 0, young_value),
+            (young_value, vec![old]),
+            "an old holder of a young object"
+        );
+        for (holder, header, value, case) in [
+            (old, 0, integer, "an immediate"),
+            (old, 0, NIL, "nil"),
+            (old, 0, 0, "the word 0"),
+            (young, 0, young_value, "a young holder"),
+            (old, 0, old_value, "an old value"),
+            (old, remembered_bit, young_value, "a remembered holder"),
+        ] {
+            assert_eq!(
+                store_through_barrier(holder, header, value),
+                (value, Vec::new()),
+                "{case}"
+            );
+        }
+    }
+
+    /// Whether `check_array_index` lets element `index` of `object`
+    /// through: the object whose header is `words[1]` when `object` is
+    /// `None`, the word `object` otherwise.
+    fn index_checked(words: &[u64], object: Option<u64>, index: u16) -> bool {
+        let address = words.as_ptr().expose_provenance() as u64;
+        let mut machine = Machine::new();
+        machine.set_block_word(crate::jit::stubs::BlockWord::ObjectSpaceBase, address);
+        let body = machine.body(|macro_assembler| {
+            let failed = macro_assembler.assembler().label();
+            macro_assembler.load_frame_register(RAX, 0);
+            macro_assembler.check_array_index(RAX, index, RCX, failed);
+            macro_assembler.store_frame_register(1, RAX);
+            macro_assembler.exit(ExitKind::Reexecute, 1);
+            macro_assembler.assembler().bind(failed);
+            macro_assembler.store_frame_register(1, RAX);
+            macro_assembler.exit(ExitKind::Reexecute, 2);
+        });
+        let word = object.unwrap_or(8);
+        let mut frame = [word, 0];
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
+        assert_eq!(frame[1], word, "the check keeps its object");
+        exit == MachineExit::Reexecute { program_counter: 1 }
+    }
+
+    /// The header of an object of the format bits `format` with `count`
+    /// words after it.
+    fn header_of(format: i32, count: u64) -> u64 {
+        let layout = crate::heap::Heap::machine_layout();
+        u64::try_from(format).expect("format bits") | (count << layout.word_count_shift)
+    }
+
+    /// The check lets through exactly the elements an `Array` has --
+    /// counted by its header or, past 253, by its overflow word -- and
+    /// refuses any other format, an immediate and `nil`.
+    #[test]
+    fn the_array_check_lets_through_exactly_an_arrays_elements() {
+        let layout = crate::heap::Heap::machine_layout();
+        let array = layout.indexable_pointers_format;
+        let mut words = vec![0u64; 4];
+        words[1] = header_of(array, 3);
+        assert!(index_checked(&words, None, 0));
+        assert!(index_checked(&words, None, 1));
+        assert!(!index_checked(&words, None, 2), "past the elements");
+        assert!(!index_checked(&words, None, 300), "far past the elements");
+        words[1] = header_of(0, 3);
+        assert!(!index_checked(&words, None, 0), "an instance's fields");
+        let integer = crate::heap::Immediate::small_integer(8)
+            .expect("a small integer")
+            .bits();
+        assert!(!index_checked(&words, Some(integer), 0), "an immediate");
+        assert!(!index_checked(&words, Some(NIL), 0), "nil");
+        words[1] = header_of(array, 254);
+        assert!(
+            index_checked(&words, None, 252),
+            "the header's last element"
+        );
+        assert!(!index_checked(&words, None, 253), "past the header's count");
+        words[1] = header_of(array, 255);
+        words[0] = (0xFF << 56) | 300;
+        assert!(index_checked(&words, None, 253), "below the overflow mark");
+        assert!(
+            index_checked(&words, None, 298),
+            "the overflow's last element"
+        );
+        assert!(
+            !index_checked(&words, None, 299),
+            "past the overflow's count"
+        );
     }
 }
