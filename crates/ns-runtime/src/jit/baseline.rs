@@ -934,12 +934,13 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             *destination,
             *call_site,
         ),
-        // A leaf-safe row's leaf through the shim; every other row's send
-        // the interpreter's.
+        // A leaf-safe row's leaf through the shim -- a row's own stub
+        // serves only a method whose fast path it is; every other row's
+        // send the interpreter's.
         Instruction::SendMirror {
             primitive, failure, ..
         } => match mirror_entry(*primitive).machine_call {
-            MachineCall::Leaf => {
+            MachineCall::Leaf | MachineCall::Stub(_) => {
                 body.send_mirror(*failure);
                 Lowering::Transfer
             }

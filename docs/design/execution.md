@@ -9948,19 +9948,21 @@ of the first two.
   (`MacroAssembler::check_array_index`) -- and exit to re-execute before
   anything is written otherwise, so the interpreter raises the error.
   `StoreVector` stores through the write barrier
-  (`MacroAssembler::store_with_barrier`): the word stored, then Cog's
+  (`MacroAssembler::store_with_barrier`, or `store_with_barrier_at` an
+  address a stub computed): the word stored, then Cog's
   four early outs in Cog's order -- a value that names no object (the
   tag test, then the word 0), a young holder, an old value (each one
   compare against `NURSERY_END`, `MachineLayout::nursery_end`), a holder
   whose header's remembered bit, bit 31, is set -- and only past them,
   out of line, `Leaf::Remember`, which is `Heap::remember`, the request
-  of a scavenge past the set's limit included. The generic leaf,
-  `Leaf::Step` (`jit/leaves.rs`), runs a `LoadLiteral` that allocates
-  through the interpreter's own function for it, and answers
-  "re-execute" only before it has changed anything, so the interpreter
-  raises the error itself. Every other instruction exits and the
-  interpreter runs it. `JitStatistics::leaf_calls` counts every leaf
-  call machine code makes.
+  of a scavenge past the set's limit included, and answers the holder
+  again, so that a setter finds its receiver after the call. The
+  generic leaf, `Leaf::Step` (`jit/leaves.rs`), runs a `LoadLiteral`
+  that allocates through the interpreter's own function for it, and
+  answers "re-execute" only before it has changed anything, so the
+  interpreter raises the error itself. Every other instruction exits
+  and the interpreter runs it. `JitStatistics::leaf_calls` counts every
+  leaf call machine code makes, once, in the leaf table's wrapper.
 - **The trigger and the entry** (`jit/mod.rs`): every `CompiledCode`
   carries a `JitSlot`, never encoded, which a clone answers fresh,
   counting its entries; at the second, `note_entry` compiles the body
@@ -10126,13 +10128,21 @@ sends and the inline caches in machine code.
   stubs, each doing what `Mutator::act_with_base` does for its target
   and nothing more: a getter of a public or protected chain, which checks
   the receiver as `Heap::instance_field` does and loads the field; a
-  setter of one, whose leaf (`Leaf::StoreField`) stores the argument
-  through the heap's store accessor and its write barrier and answers the
-  receiver; a quick method's constant, receiver or parameter; a method
-  whose fast path is a leaf-safe mirror row, whose leaf
+  setter of one, which checks the receiver as the getter does, stores
+  the argument through the inline write barrier and answers the
+  receiver; a quick method's constant, receiver or parameter; a
+  method whose fast path is a leaf-safe mirror row, whose leaf
   (`Leaf::MirrorMethod`) runs the row's leaf on the receiver and a few
-  arguments read off the send's slots; the leaf stub (`Leaf::Act`) for
-  every other target machine code runs this way -- a private or `super`
+  arguments read off the send's slots; a method whose fast path is a row
+  with a stub of its own (`MachineCall::Stub`) -- an Array's or a
+  ByteArray's `at:` and `at:put:` -- which reads or writes the element a
+  `SmallInteger` index in range names, its bounds the header's count or
+  the overflow word's, a ByteArray's data at the first 32-byte offset at
+  or after its field 0, as `heap/object.rs` computes it, an Array's store
+  through the inline barrier, and goes on to the row's mirror method
+  stub for every other case, so that the row's failures stay its leaf's;
+  the leaf stub (`Leaf::Act`) for every other target machine code runs
+  this way -- a private or `super`
   slot accessor, whose guard check runs as `act` runs it, straight from
   the site's entry when the send hit its site's own cell directly, a primitive
   that is a leaf-safe mirror send, a builtin class's accessor; and the

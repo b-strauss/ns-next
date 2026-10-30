@@ -576,14 +576,14 @@ impl<'gc> Mutator<'gc> {
         selector: Symbol,
         arguments: Arguments<'_, 'gc>,
     ) -> Option<Value<'gc>> {
-        use crate::builtins::primitive::{mirror_entry, MachineCall};
+        use crate::builtins::primitive::mirror_entry;
         let handler = |chain: Chain| {
             matches!(
                 chain,
                 Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand
             )
         };
-        let leaf_safe = |row| mirror_entry(row).machine_call == MachineCall::Leaf;
+        let leaf_safe = |row| mirror_entry(row).machine_call.is_leaf_safe();
         match &resolved {
             Resolved::Method { method, chain, .. } if !handler(*chain) => match method.fast_path {
                 Some(MethodFastPath::Mirror(row)) if leaf_safe(row) => {

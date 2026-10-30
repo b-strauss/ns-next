@@ -488,8 +488,9 @@ entry block machine code is entered with (`ns_memory::EntryBlock`) is
 mutator: its lasting words -- the object space's, the activation stack's
 and the machine words' addresses, eden's bump cursor's address, the
 stubs, the cells, the global cache's mask -- are written when
-`JitState::mark_block_stale` says what they name changed (a zone made or replaced, the global cache resized),
-not at every entry, and only a debug build's check at every entry
+`JitState::mark_block_stale` says what they name changed (a zone made
+or replaced, the global cache resized), not at every entry, and only a
+debug build's check at every entry
 catches a missed mark ([execution.md](execution.md), "The entry at a
 send"). The machine words' one handle-like word is an immediate's
 class, a stored word the collector does not trace, so
@@ -2799,7 +2800,8 @@ of them:
   stack and the marriage").
 
 Machine code makes the same decision inline. A store into an object it
-did not allocate in the same template -- today `StoreVector`'s -- takes
+did not allocate in the same template -- `StoreVector`'s, a setter
+stub's, an Array's `at:put:` stub's -- takes
 `MacroAssembler::store_with_barrier`: the word, then the same two
 comparisons against `NURSERY_END` behind an early out for a value that
 names no object, and one for a holder whose remembered bit is set

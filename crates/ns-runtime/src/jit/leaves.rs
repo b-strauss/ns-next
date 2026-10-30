@@ -6,8 +6,10 @@
 //! install a body -- the leaf stub's run of a target that is no method
 //! with code, a leaf-safe mirror send, an allocation past the inline
 //! bump's limit, the write barrier's remembering of an old object, and
-//! the exit's materialization of the frames machine code pushed. A template or a stub names one by its index in `table`
-//! (`Leaf::index`).
+//! the exit's materialization of the frames machine code pushed. A
+//! template or a stub names one by its index in `table` (`Leaf::index`),
+//! and every call through the table is counted once
+//! (`JitStatistics::leaf_calls`).
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, Instruction};
@@ -40,18 +42,15 @@ pub(crate) enum Leaf {
     Act = 4,
     /// Runs a `SendMirror` of a leaf-safe row (`mirror`).
     Mirror = 5,
-    /// Stores a setter's argument into its receiver's field
-    /// (`store_field`).
-    StoreField = 6,
     /// Runs a method whose fast path is a leaf-safe mirror row
     /// (`mirror_method`).
-    MirrorMethod = 7,
+    MirrorMethod = 6,
     /// Allocates an object the inline bump found no room for, as the
     /// interpreter's cold path does (`allocate`).
-    Allocate = 8,
+    Allocate = 7,
     /// Remembers an old object machine code stored a young one into, as
     /// the interpreter's write barrier does (`remember`).
-    Remember = 9,
+    Remember = 8,
 }
 
 impl Leaf {
@@ -61,24 +60,37 @@ impl Leaf {
     }
 }
 
-/// The leaves, in `Leaf` order, each handed the mutator the code was
-/// entered with: one table for the process, a constant the compiler
-/// promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 10] {
+/// `leaf`, behind the count every call through the table takes
+/// (`JitStatistics::leaf_calls`): a function of its own per leaf, so that
+/// the count is made in one place and a new leaf cannot miss it, and a
+/// constant cast, so that the table is still promoted to a static.
+macro_rules! counted {
+    ($leaf:ident) => {{
+        fn counted(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+            mutator.jit.statistics.leaf_calls += 1;
+            $leaf(mutator, arguments)
+        }
+        counted as ns_memory::Leaf<Mutator<'gc>>
+    }};
+}
+
+/// The leaves, in `Leaf` order, each counted and handed the mutator the
+/// code was entered with: one table for the process, a constant the
+/// compiler promotes to a static, so that no entry builds it.
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 9] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
     &[
-        step as ns_memory::Leaf<Mutator<'gc>>,
-        miss as ns_memory::Leaf<Mutator<'gc>>,
-        materialize_frame as ns_memory::Leaf<Mutator<'gc>>,
-        materialize_innermost as ns_memory::Leaf<Mutator<'gc>>,
-        act as ns_memory::Leaf<Mutator<'gc>>,
-        mirror as ns_memory::Leaf<Mutator<'gc>>,
-        store_field as ns_memory::Leaf<Mutator<'gc>>,
-        mirror_method as ns_memory::Leaf<Mutator<'gc>>,
-        allocate as ns_memory::Leaf<Mutator<'gc>>,
-        remember as ns_memory::Leaf<Mutator<'gc>>,
+        counted!(step),
+        counted!(miss),
+        counted!(materialize_frame),
+        counted!(materialize_innermost),
+        counted!(act),
+        counted!(mirror),
+        counted!(mirror_method),
+        counted!(allocate),
+        counted!(remember),
     ]
 }
 
@@ -108,7 +120,6 @@ pub(super) const FAILED: u64 = 2;
 /// On an instruction no lowering hands this leaf, which only a defect of
 /// the JIT does; it aborts the process, as every panic in a leaf does.
 fn step(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
     let [frame_address, program_counter, code_address] = arguments;
     let Ok(program_counter) = u32::try_from(program_counter) else {
         unreachable!("internal: a program counter fits 32 bits");
@@ -167,7 +178,6 @@ fn step_in(
 /// jump to -- compiling the callee first if it is due -- or 0, at which the
 /// stub refuses the call so that the interpreter runs the send.
 fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
     let [callee_address, return_address, _] = arguments;
     mutator.jit.statistics.miss_leaf_calls += 1;
     let Some((sender_address, program_counter)) =
@@ -200,7 +210,6 @@ fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// (`InlineCaches::site_slot_hit`), every other target as the send's
 /// decision finds it (`inline_cache::act_at`).
 fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
     let [callee_address, return_address, cell_address] = arguments;
     mutator.jit.statistics.act_leaf_calls += 1;
     if let Some(answer) = act_on_a_site_slot(mutator, callee_address, cell_address) {
@@ -264,32 +273,6 @@ fn act_on_a_site_slot(
     Some(answer)
 }
 
-/// The setter stub's leaf (`targets::assemble_accessor_stubs`): stores
-/// the value `arguments[2]` into field `arguments[1]` of the receiver
-/// `arguments[0]` through the heap's store accessor and its write barrier
-/// (`Heap::instance_set_field`), and answers the receiver, as the setter
-/// `Mutator::decide_slot_accessor` runs does; or, for a receiver without
-/// that field, `Word::NO_VALUE_BITS`, having written nothing, so that the
-/// stub refuses the call and the interpreter raises the error. A leaf of
-/// its own, which reads nothing of the send: the cell decided the target,
-/// and the stub's entry names the field.
-fn store_field(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
-    let [receiver_bits, field, value_bits] = arguments;
-    mutator.jit.statistics.act_leaf_calls += 1;
-    let receiver = mutator.heap.machine_value(receiver_bits);
-    let value = mutator.heap.machine_value(value_bits);
-    let stored = receiver.as_object().is_some_and(|object| {
-        usize::try_from(field)
-            .is_ok_and(|field| mutator.heap.instance_set_field(object, field, value))
-    });
-    if stored {
-        receiver_bits
-    } else {
-        Word::NO_VALUE_BITS
-    }
-}
-
 /// The mirror method stub's leaf (`targets::assemble_accessor_stubs`),
 /// which a send whose cell names the stub of mirror row `arguments[1]`
 /// calls: the callee's register 0 at `arguments[0]`, the send's slots,
@@ -303,7 +286,6 @@ fn store_field(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// cell already decided the target: nothing of the send's lookup is made
 /// again.
 fn mirror_method(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
     let [callee_address, row, return_address] = arguments;
     mutator.jit.statistics.act_leaf_calls += 1;
     let Some(site) = mutator.jit.call_site(return_address) else {
@@ -383,7 +365,6 @@ const HANDED_ARGUMENTS: usize = 4;
 /// send's slots after it but the send itself, which the interpreter
 /// re-executes, so the refusal still changed nothing the program sees.
 fn mirror(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
     let [frame_address, program_counter, code_address] = arguments;
     let Ok(program_counter) = u32::try_from(program_counter) else {
         unreachable!("internal: a program counter fits 32 bits");
@@ -472,7 +453,6 @@ fn mirror_in(
 /// collects: a scavenge it asks for runs at the next poll's exit, as the
 /// interpreter's runs at its next safepoint.
 fn allocate(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
     let [word_count, header, class_word] = arguments;
     mutator
         .heap
@@ -485,17 +465,17 @@ fn allocate(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// yet: adds it to the remembered set as the interpreter's barrier does
 /// (`Heap::remember`), asking for the scavenge that tenures everything
 /// once the set is past its limit, which runs at the next poll's exit.
-/// Answers nothing.
+/// Answers the holder's word again, so that the store finds its holder
+/// where it left it on either path: a setter answers it.
 fn remember(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
-    mutator.heap.remember_for_machine_code(arguments[0]);
-    0
+    let [holder_word, _, _] = arguments;
+    mutator.heap.remember_for_machine_code(holder_word);
+    holder_word
 }
 
 /// The exit stub's call for each return address of a compiled frame,
 /// `arguments[0]`, outermost first (`materialize::materialize_frame`).
 fn materialize_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
     materialize::materialize_frame(mutator, arguments[0]);
     0
 }
@@ -503,7 +483,6 @@ fn materialize_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// The exit stub's last call of its walk: the exit's code address, kind
 /// and program counter (`materialize::materialize_innermost`).
 fn materialize_innermost(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    mutator.jit.statistics.leaf_calls += 1;
     let [code_address, kind, program_counter] = arguments;
     materialize::materialize_innermost(mutator, code_address, kind, program_counter);
     0

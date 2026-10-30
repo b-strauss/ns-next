@@ -800,17 +800,9 @@ impl MacroAssembler {
     /// Stores `value` into the word at `displacement` from the offset of
     /// the object `holder` names, an object machine code did not just
     /// allocate, then applies the write barrier as `Heap::write_barrier`
-    /// does, with Cog's early outs in its order
-    /// (`genStoreCheckReceiverReg:valueReg:scratchReg:inFrame:`): a
-    /// `value` that names no object -- an immediate, `nil` among the
-    /// constants, or the word 0 -- a young `holder`, an old `value`, and a
-    /// `holder` whose remembered bit is set already. Only a store that
-    /// passes all four calls the leaf that remembers `holder`
-    /// (`Leaf::Remember`, `Heap::remember`), out of line. `holder` and
-    /// `value` are kept on the straight line. Clobbers the flags,
-    /// `scratch` and, on the path that calls the leaf, every scratch
-    /// register, as every leaf call does: the caller reads none after the
-    /// store.
+    /// does (`barrier`). Clobbers the flags, `scratch` and, on the path
+    /// that calls the leaf, every scratch register but `holder`, as every
+    /// leaf call does.
     pub(crate) fn store_with_barrier(
         &mut self,
         holder: Register,
@@ -822,10 +814,8 @@ impl MacroAssembler {
             holder != value && holder != scratch && value != scratch,
             "internal: a barrier's registers are distinct"
         );
-        let layout = crate::heap::Heap::machine_layout();
         let object_space = self.roles.object_space;
         let assembler = &mut self.assembler;
-        let (remember, done) = (assembler.label(), assembler.label());
         assembler.move_register(scratch, holder);
         assembler.add(scratch, object_space);
         assembler.store(
@@ -836,6 +826,55 @@ impl MacroAssembler {
             },
             value,
         );
+        self.barrier(holder, value, scratch, true);
+    }
+
+    /// `store_with_barrier`, into the word at `target`, an address inside
+    /// the object `holder` names that the caller computed -- an element
+    /// or a field at an index known only at run time. `target`'s base is
+    /// kept on the straight line; clobbers what `store_with_barrier` does.
+    pub(crate) fn store_with_barrier_at(
+        &mut self,
+        holder: Register,
+        target: Memory,
+        value: Register,
+        scratch: Register,
+    ) {
+        debug_assert!(
+            holder != value
+                && holder != scratch
+                && value != scratch
+                && target.base != scratch
+                && target.base != value,
+            "internal: a barrier's registers are distinct"
+        );
+        self.assembler.store(Width::Word64, target, value);
+        self.barrier(holder, value, scratch, false);
+    }
+
+    /// The write barrier after `value` was stored into the object
+    /// `holder` names, with Cog's early outs in its order
+    /// (`genStoreCheckReceiverReg:valueReg:scratchReg:inFrame:`): a
+    /// `value` that names no object -- an immediate, `nil` among the
+    /// constants, or the word 0 -- a young `holder`, an old `value`, and a
+    /// `holder` whose remembered bit is set already. Only a store that
+    /// passes all four calls the leaf that remembers `holder`
+    /// (`Leaf::Remember`, `Heap::remember`), out of line, which answers
+    /// `holder` again, so that `holder` is kept on both paths and `value`
+    /// on the straight line. `scratch` holds `holder`'s address when
+    /// `holds_holder_address` says so, and is computed afresh otherwise,
+    /// past the three early outs that need no header.
+    fn barrier(
+        &mut self,
+        holder: Register,
+        value: Register,
+        scratch: Register,
+        holds_holder_address: bool,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        let (remember, done) = (assembler.label(), assembler.label());
         assembler.test_immediate(value, layout.tag_mask);
         assembler.jump_if(Condition::NotEqual, done);
         assembler.compare_immediate(value, 0);
@@ -844,6 +883,10 @@ impl MacroAssembler {
         assembler.jump_if(Condition::Below, done);
         assembler.compare_immediate(value, layout.nursery_end);
         assembler.jump_if(Condition::AboveOrEqual, done);
+        if !holds_holder_address {
+            assembler.move_register(scratch, holder);
+            assembler.add(scratch, object_space);
+        }
         assembler.load(
             Width::Word64,
             scratch,
@@ -863,7 +906,7 @@ impl MacroAssembler {
                 Operand::Immediate(0),
                 Operand::Immediate(0),
             ],
-            scratch,
+            holder,
             done,
         );
     }
@@ -883,66 +926,216 @@ impl MacroAssembler {
         failed: Label,
     ) {
         debug_assert!(object != scratch, "internal: the check keeps its object");
-        let layout = crate::heap::Heap::machine_layout();
         let object_space = self.roles.object_space;
+        let layout = crate::heap::Heap::machine_layout();
         // The words after the header an element `index` needs: the class
         // word and the elements up to it.
         let needed = i32::from(index) + 2;
+        self.jump_unless_object_word(object, failed);
         let assembler = &mut self.assembler;
-        assembler.test_immediate(object, layout.tag_mask);
-        assembler.jump_if(Condition::NotEqual, failed);
-        assembler.compare_immediate(object, 0);
-        assembler.jump_if(Condition::Equal, failed);
-        assembler.add(object, object_space);
+        assembler.move_register(scratch, object);
+        assembler.add(scratch, object_space);
         assembler.load(
             Width::Word64,
             scratch,
             Memory {
-                base: object,
+                base: scratch,
                 displacement: layout.header_displacement,
             },
         );
-        assembler.subtract(object, object_space);
-        assembler.and_immediate(scratch, layout.instance_format_bits);
-        assembler.compare_immediate(scratch, layout.indexable_pointers_format);
-        assembler.jump_if(Condition::NotEqual, failed);
-        assembler.add(object, object_space);
-        assembler.load(
-            Width::Word64,
-            scratch,
-            Memory {
-                base: object,
-                displacement: layout.header_displacement,
-            },
-        );
-        assembler.shift_right_logical(scratch, layout.word_count_shift);
-        if needed < layout.word_count_overflow {
-            // A count in the overflow word is at least the header's mark,
-            // which is past `needed`, so the header's alone decides.
-            assembler.subtract(object, object_space);
-            assembler.compare_immediate(scratch, needed);
-            assembler.jump_if(Condition::Below, failed);
-            return;
+        self.jump_unless_format(scratch, layout.indexable_pointers_format, failed);
+        self.assembler
+            .shift_right_logical(scratch, layout.word_count_shift);
+        // A count in the overflow word is at least the header's mark, so
+        // when that is past `needed` the header's alone decides.
+        if needed >= layout.word_count_overflow {
+            self.load_overflow_count(object, scratch);
         }
+        let assembler = &mut self.assembler;
+        assembler.compare_immediate(scratch, needed);
+        assembler.jump_if(Condition::Below, failed);
+    }
+
+    /// Jumps to `failed` unless the header word in `header` is of exactly
+    /// the format whose bits are `format`, one bit of the format's five
+    /// set: two tests, which keep `header`, where a mask would clobber it.
+    /// Clobbers the flags.
+    fn jump_unless_format(&mut self, header: Register, format: i32, failed: Label) {
+        let layout = crate::heap::Heap::machine_layout();
+        debug_assert!(
+            format.count_ones() == 1 && format & !layout.instance_format_bits == 0,
+            "internal: the format tested is one bit of the format's"
+        );
+        let assembler = &mut self.assembler;
+        assembler.test_immediate(header, layout.instance_format_bits & !format);
+        assembler.jump_if(Condition::NotEqual, failed);
+        assembler.test_immediate(header, format);
+        assembler.jump_if(Condition::Equal, failed);
+    }
+
+    /// `count :=` the count of the words after the header of the object
+    /// `object` names, `count` holding the header's count when called:
+    /// the overflow word's, below its mark, when the header's says it is
+    /// there, and the header's otherwise. Clobbers the flags.
+    fn load_overflow_count(&mut self, object: Register, count: Register) {
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
         let in_header = assembler.label();
-        assembler.compare_immediate(scratch, layout.word_count_overflow);
+        assembler.compare_immediate(count, layout.word_count_overflow);
         assembler.jump_if(Condition::NotEqual, in_header);
+        assembler.move_register(count, object);
+        assembler.add(count, object_space);
         assembler.load(
             Width::Word64,
-            scratch,
+            count,
             Memory {
-                base: object,
+                base: count,
                 displacement: layout.header_displacement - WORD_BYTES,
             },
         );
         // The overflow word's count lies below its mark.
         let mark_bits = 64 - layout.word_count_shift;
-        assembler.shift_left(scratch, mark_bits);
-        assembler.shift_right_logical(scratch, mark_bits);
+        assembler.shift_left(count, mark_bits);
+        assembler.shift_right_logical(count, mark_bits);
         assembler.bind(in_header);
-        assembler.subtract(object, object_space);
-        assembler.compare_immediate(scratch, needed);
-        assembler.jump_if(Condition::Below, failed);
+    }
+
+    /// `address :=` the address of the element the one-based `index`
+    /// names of the `Array` `object` names, as `collections::element_at`
+    /// and `element_at_put` find it: jumps to `failed`, nothing written,
+    /// unless `object` names an object of an `Array`'s format
+    /// (`Format::IndexablePointers`) and `index` holds a `SmallInteger`
+    /// from 1 to its element count -- the header's count, or the overflow
+    /// word's, less its class word. `object` is kept; clobbers the flags,
+    /// `index` and the idiom scratch register.
+    pub(crate) fn load_element_address(
+        &mut self,
+        object: Register,
+        index: Register,
+        address: Register,
+        failed: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let (scratch, object_space) = (self.roles.idiom_scratch, self.roles.object_space);
+        debug_assert!(
+            distinct(&[object, index, address, scratch]),
+            "internal: an element's registers are distinct and none is the idiom scratch register"
+        );
+        self.jump_unless_object_word(object, failed);
+        let assembler = &mut self.assembler;
+        assembler.test_immediate(index, layout.small_integer_tag);
+        assembler.jump_if(Condition::Equal, failed);
+        assembler.move_register(address, object);
+        assembler.add(address, object_space);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: address,
+                displacement: layout.header_displacement,
+            },
+        );
+        self.jump_unless_format(scratch, layout.indexable_pointers_format, failed);
+        self.assembler
+            .shift_right_logical(scratch, layout.word_count_shift);
+        self.load_overflow_count(object, scratch);
+        // The elements' bytes, the class word's taken off the count, and
+        // the index's byte offset from the first element: a
+        // `SmallInteger`'s word is its value times eight plus its tag, so
+        // the word less eight and the tag is the offset, negative -- past
+        // every offset, unsigned -- for an index below 1.
+        let assembler = &mut self.assembler;
+        assembler.shift_left(scratch, WORD_SHIFT);
+        assembler.add_immediate(scratch, -WORD_BYTES);
+        assembler.add_immediate(index, -(WORD_BYTES + layout.small_integer_tag));
+        assembler.compare(index, scratch);
+        assembler.jump_if(Condition::AboveOrEqual, failed);
+        assembler.add(address, index);
+        assembler.add_immediate(address, layout.fields_displacement);
+    }
+
+    /// `address :=` the address of the byte the one-based `index` names
+    /// of the `ByteArray` `object` names, as `bytes::element_at` and
+    /// `element_at_put` find it: jumps to `failed`, nothing written,
+    /// unless `object` names an object of a ByteArray's format
+    /// (`Format::AlignedBytes`) and `index` holds a `SmallInteger` from 1
+    /// to its size -- its data words' bytes, counted from the header's
+    /// count or the overflow word's, less the unused bytes of the last.
+    /// The data begin at the first `byte_data_alignment` offset at or
+    /// after field 0's, computed from the object's offset as
+    /// `object::aligned_data_start` computes it, never stored, which is
+    /// why every mover realigns them. `object` is kept; clobbers the
+    /// flags, `index`, `size` and the idiom scratch register.
+    pub(crate) fn load_byte_address(
+        &mut self,
+        object: Register,
+        index: Register,
+        address: Register,
+        size: Register,
+        failed: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let (scratch, object_space) = (self.roles.idiom_scratch, self.roles.object_space);
+        debug_assert!(
+            distinct(&[object, index, address, size, scratch]),
+            "internal: a byte's registers are distinct and none is the idiom scratch register"
+        );
+        self.jump_unless_object_word(object, failed);
+        let assembler = &mut self.assembler;
+        assembler.test_immediate(index, layout.small_integer_tag);
+        assembler.jump_if(Condition::Equal, failed);
+        assembler.move_register(address, object);
+        assembler.add(address, object_space);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: address,
+                displacement: layout.header_displacement,
+            },
+        );
+        // Each bit of the format's code a ByteArray's codes share, tested
+        // alone, so that the header is kept.
+        let format = layout.aligned_bytes_format;
+        let low_bit = format.isolate_lowest_one();
+        for bit in [low_bit, format & !low_bit] {
+            assembler.test_immediate(scratch, bit);
+            assembler.jump_if(Condition::Equal, failed);
+        }
+        assembler.move_register(size, scratch);
+        assembler.shift_right_logical(size, layout.unused_bytes_shift);
+        assembler.and_immediate(size, layout.unused_bytes_mask);
+        assembler.shift_right_logical(scratch, layout.word_count_shift);
+        self.load_overflow_count(object, scratch);
+        // The size: the data words' bytes less the unused ones; and the
+        // index's position, below 0 -- past every size, unsigned -- for an
+        // index below 1.
+        let assembler = &mut self.assembler;
+        assembler.shift_left(scratch, WORD_SHIFT);
+        assembler.add_immediate(scratch, -layout.byte_data_reserve_bytes);
+        assembler.subtract(scratch, size);
+        assembler.shift_right_arithmetic(index, layout.tag_bits);
+        assembler.add_immediate(index, -1);
+        assembler.compare(index, scratch);
+        assembler.jump_if(Condition::AboveOrEqual, failed);
+        // The data's offset: field 0's rounded up to the alignment.
+        let alignment = layout.byte_data_alignment;
+        assembler.move_register(address, object);
+        assembler.add_immediate(address, layout.fields_displacement + alignment - 1);
+        assembler.and_immediate(address, -alignment);
+        assembler.add(address, object_space);
+        assembler.add(address, index);
+    }
+
+    /// Jumps to `failed` unless `value` holds the word of an object: an
+    /// object's tag, and not the word 0, which `Word::object_offset`
+    /// refuses. Clobbers the flags.
+    fn jump_unless_object_word(&mut self, value: Register, failed: Label) {
+        self.jump_unless_object(value, failed);
+        let assembler = &mut self.assembler;
+        assembler.compare_immediate(value, 0);
+        assembler.jump_if(Condition::Equal, failed);
     }
 
     /// Takes `exit(kind, program_counter)` at `label`, out of line: the
@@ -1483,6 +1676,19 @@ const WORD_SHIFT: u8 = 3;
 /// A word's bytes, as an immediate operand.
 const WORD_BYTES: i32 = 8;
 
+// `load_element_address` takes a `SmallInteger`'s word, less its tag, for
+// its value's offset in words.
+const _: () = assert!(1 << crate::heap::value_bits::TAG_BITS == WORD_BYTES);
+
+/// Whether no two of `registers` are the same, for an idiom's check of
+/// its operands.
+fn distinct(registers: &[Register]) -> bool {
+    registers
+        .iter()
+        .enumerate()
+        .all(|(position, register)| !registers[position + 1..].contains(register))
+}
+
 /// Where eden's limit word lies past its top word
 /// (`ns_memory::Reservation::bump_cursor_address`).
 const EDEN_LIMIT_DISPLACEMENT: i32 = 8;
@@ -1555,6 +1761,7 @@ fn stack_slot(displacement: i32) -> Memory {
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use ns_assembler::x64::{RAX, RCX, RDX, RSI};
+    use ns_assembler::Memory;
 
     use super::ObjectSize;
     use crate::jit::stubs::testing::Machine;
@@ -1923,10 +2130,10 @@ mod tests {
     }
 
     /// The write barrier's leaf, standing in for `Heap::remember`: records
-    /// the holder it is handed.
+    /// the holder it is handed, and answers it, as the leaf does.
     fn record_holder(remembered: &mut Vec<u64>, arguments: [u64; 3]) -> u64 {
         remembered.push(arguments[0]);
-        0
+        arguments[0]
     }
 
     /// The leaves the barrier's tests run with: only `Leaf::Remember`'s
@@ -1945,9 +2152,18 @@ mod tests {
     }
 
     /// Stores `value` into field 0 of a holder of the header `header` that
-    /// lies `holder` bytes into the object space, through the barrier:
-    /// answers the field and the holders the leaf was asked to remember.
-    fn store_through_barrier(holder: u64, header: u64, value: u64) -> (u64, Vec<u64>) {
+    /// lies `holder` bytes into the object space, through the barrier --
+    /// `store_with_barrier`, or, when `computed` says so,
+    /// `store_with_barrier_at` an address computed beforehand: answers
+    /// the field and the holders the leaf was asked to remember, having
+    /// checked that the holder's register still holds it after the store,
+    /// on either path.
+    fn store_through_barrier(
+        holder: u64,
+        header: u64,
+        value: u64,
+        computed: bool,
+    ) -> (u64, Vec<u64>) {
         let layout = crate::heap::Heap::machine_layout();
         let word_index =
             |displacement: i32| usize::try_from(displacement / 8).expect("after the start");
@@ -1962,7 +2178,24 @@ mod tests {
         let body = machine.body(|macro_assembler| {
             macro_assembler.load_frame_register(RAX, 0);
             macro_assembler.load_frame_register(RCX, 1);
-            macro_assembler.store_with_barrier(RAX, layout.fields_displacement, RCX, RDX);
+            if computed {
+                let object_space = macro_assembler.roles().object_space;
+                let assembler = macro_assembler.assembler();
+                assembler.move_register(RSI, RAX);
+                assembler.add(RSI, object_space);
+                macro_assembler.store_with_barrier_at(
+                    RAX,
+                    Memory {
+                        base: RSI,
+                        displacement: layout.fields_displacement,
+                    },
+                    RCX,
+                    RDX,
+                );
+            } else {
+                macro_assembler.store_with_barrier(RAX, layout.fields_displacement, RCX, RDX);
+            }
+            macro_assembler.store_frame_register(2, RAX);
             macro_assembler.exit(ExitKind::Reexecute, 1);
         });
         let mut frame = [holder, value, 0, 0];
@@ -1976,6 +2209,7 @@ mod tests {
             &barrier_leaves(),
         );
         assert_eq!(exit, MachineExit::Reexecute { program_counter: 1 });
+        assert_eq!(frame[2], holder, "the barrier keeps its holder");
         (words[word_index(layout.fields_displacement)], remembered)
     }
 
@@ -1993,25 +2227,213 @@ mod tests {
         let integer = crate::heap::Immediate::small_integer(5)
             .expect("a small integer")
             .bits();
-        assert_eq!(
-            store_through_barrier(old, 0, young_value),
-            (young_value, vec![old]),
-            "an old holder of a young object"
-        );
-        for (holder, header, value, case) in [
-            (old, 0, integer, "an immediate"),
-            (old, 0, NIL, "nil"),
-            (old, 0, 0, "the word 0"),
-            (young, 0, young_value, "a young holder"),
-            (old, 0, old_value, "an old value"),
-            (old, remembered_bit, young_value, "a remembered holder"),
-        ] {
+        // A header whose bits above and below the remembered bit are set
+        // -- a word count, an identity hash, the mark, the age, a guard --
+        // but not that bit: only the bit decides.
+        let busy_header = !remembered_bit;
+        for computed in [false, true] {
             assert_eq!(
-                store_through_barrier(holder, header, value),
-                (value, Vec::new()),
-                "{case}"
+                store_through_barrier(old, 0, young_value, computed),
+                (young_value, vec![old]),
+                "an old holder of a young object"
+            );
+            assert_eq!(
+                store_through_barrier(old, busy_header, young_value, computed),
+                (young_value, vec![old]),
+                "an old holder whose header has every other bit set"
+            );
+            for (holder, header, value, case) in [
+                (old, 0, integer, "an immediate"),
+                (old, 0, NIL, "nil"),
+                (old, 0, 0, "the word 0"),
+                (young, 0, young_value, "a young holder"),
+                (old, 0, old_value, "an old value"),
+                (old, remembered_bit, young_value, "a remembered holder"),
+            ] {
+                assert_eq!(
+                    store_through_barrier(holder, header, value, computed),
+                    (value, Vec::new()),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    /// The offset from `words`' start of the address `load_element_address`
+    /// or, when `bytes` says so, `load_byte_address` computes for the
+    /// `SmallInteger` word `index` of the object whose word is `object`,
+    /// the object space starting at `words`; `None` where it fails.
+    fn indexed_offset(words: &[u64], object: u64, index: u64, bytes: bool) -> Option<u64> {
+        let address = words.as_ptr().expose_provenance() as u64;
+        let mut machine = Machine::new();
+        machine.set_block_word(crate::jit::stubs::BlockWord::ObjectSpaceBase, address);
+        let body = machine.body(|macro_assembler| {
+            let failed = macro_assembler.assembler().label();
+            macro_assembler.load_frame_register(RAX, 0);
+            macro_assembler.load_frame_register(RCX, 1);
+            if bytes {
+                macro_assembler.load_byte_address(RAX, RCX, RDX, RSI, failed);
+            } else {
+                macro_assembler.load_element_address(RAX, RCX, RDX, failed);
+            }
+            macro_assembler.store_frame_register(2, RDX);
+            macro_assembler.store_frame_register(3, RAX);
+            macro_assembler.exit(ExitKind::Reexecute, 1);
+            macro_assembler.assembler().bind(failed);
+            macro_assembler.store_frame_register(3, RAX);
+            macro_assembler.exit(ExitKind::Reexecute, 2);
+        });
+        let mut frame = [object, index, 0, 0];
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
+        assert_eq!(frame[3], object, "the check keeps its object");
+        (exit == MachineExit::Reexecute { program_counter: 1 }).then(|| frame[2] - address)
+    }
+
+    /// The word of the `SmallInteger` `value`.
+    fn integer(value: i64) -> u64 {
+        crate::heap::Immediate::small_integer(value)
+            .expect("a small integer")
+            .bits()
+    }
+
+    /// An `Array`'s element's address is its field's, for every index
+    /// from 1 to its count -- its header's, or its overflow word's -- and
+    /// nothing else passes: an index out of range, below 1 or not a
+    /// `SmallInteger`, a receiver of another format, an immediate, `nil`.
+    #[test]
+    fn an_element_address_is_found_exactly_for_an_index_in_range() {
+        let layout = crate::heap::Heap::machine_layout();
+        let array = layout.indexable_pointers_format;
+        let fields = u64::try_from(layout.fields_displacement).expect("a positive displacement");
+        let mut words = vec![0u64; 4];
+        // The object at offset 8, its header there, after its overflow word.
+        words[1] = header_of(array, 4);
+        let element = |index: i64| Some(8 + fields + (index.unsigned_abs() - 1) * 8);
+        for index in 1..=3 {
+            assert_eq!(
+                indexed_offset(&words, 8, integer(index), false),
+                element(index)
             );
         }
+        for index in [0, 4, -1, i64::from(i32::MAX), -(1 << 40)] {
+            assert_eq!(
+                indexed_offset(&words, 8, integer(index), false),
+                None,
+                "{index}"
+            );
+        }
+        assert_eq!(
+            indexed_offset(&words, 8, NIL, false),
+            None,
+            "nil as the index"
+        );
+        assert_eq!(
+            indexed_offset(&words, 8, 16, false),
+            None,
+            "an object as the index"
+        );
+        assert_eq!(
+            indexed_offset(&words, integer(8), integer(1), false),
+            None,
+            "an immediate"
+        );
+        assert_eq!(indexed_offset(&words, NIL, integer(1), false), None, "nil");
+        words[1] = header_of(0, 4);
+        assert_eq!(
+            indexed_offset(&words, 8, integer(1), false),
+            None,
+            "an instance"
+        );
+        words[1] = header_of(array, 255);
+        words[0] = (0xFF << 56) | 301;
+        assert_eq!(
+            indexed_offset(&words, 8, integer(300), false),
+            element(300),
+            "the overflow's last"
+        );
+        assert_eq!(
+            indexed_offset(&words, 8, integer(301), false),
+            None,
+            "past the overflow's count"
+        );
+        words[1] = header_of(array, 255) | 0xFFF_FFFF_FFC0_0000 & !(0xFF << 56) & !0x07C0_0000;
+        assert_eq!(
+            indexed_offset(&words, 8, integer(300), false),
+            element(300),
+            "a header with its hash, age and other bits set"
+        );
+    }
+
+    /// A ByteArray's byte lies at its data's aligned start plus the index
+    /// less 1, wherever the object lies, for every index from 1 to its
+    /// size -- its data words' bytes less the unused ones, its count its
+    /// header's or its overflow word's -- and nothing else passes.
+    #[test]
+    fn a_byte_address_is_found_exactly_for_an_index_in_range() {
+        let layout = crate::heap::Heap::machine_layout();
+        let format = layout.aligned_bytes_format;
+        let unused = |count: u64| {
+            i32::try_from(count << layout.unused_bytes_shift).expect("the unused bytes fit 32 bits")
+        };
+        // A ByteArray of `size` bytes: its class word, the alignment
+        // reserve and its data words.
+        let count = |size: u64| 4 + size.div_ceil(8);
+        for object in [8u64, 16, 24, 32] {
+            let mut words = vec![0u64; 512];
+            let header = (object / 8) as usize;
+            let data = (object + 16).next_multiple_of(32);
+            for size in [1u64, 8, 13, 16] {
+                let unused_bytes = (8 - size % 8) % 8;
+                words[header] = header_of(format | unused(unused_bytes), count(size));
+                for index in 1..=size {
+                    assert_eq!(
+                        indexed_offset(&words, object, integer(index as i64), true),
+                        Some(data + index - 1),
+                        "object {object}, size {size}, index {index}"
+                    );
+                }
+                for index in [0, size as i64 + 1, -1] {
+                    assert_eq!(
+                        indexed_offset(&words, object, integer(index), true),
+                        None,
+                        "object {object}, size {size}, index {index}"
+                    );
+                }
+            }
+            // A size past what the header counts, from the overflow word.
+            let size = 2001;
+            words[header - 1] = (0xFF << 56) | count(size);
+            words[header] = header_of(format | unused(7), 255);
+            assert_eq!(
+                indexed_offset(&words, object, integer(2001), true),
+                Some(data + 2000),
+                "the overflow's last byte"
+            );
+            assert_eq!(indexed_offset(&words, object, integer(2002), true), None);
+            assert_eq!(
+                indexed_offset(&words, object, NIL, true),
+                None,
+                "nil as the index"
+            );
+        }
+        let mut words = vec![0u64; 8];
+        for other in [
+            0,
+            layout.indexable_pointers_format,
+            16 << layout.unused_bytes_shift,
+        ] {
+            words[1] = header_of(other, 6);
+            assert_eq!(
+                indexed_offset(&words, 8, integer(1), true),
+                None,
+                "format bits {other}"
+            );
+        }
+        assert_eq!(
+            indexed_offset(&words, integer(8), integer(1), true),
+            None,
+            "an immediate"
+        );
     }
 
     /// Whether `check_array_index` lets element `index` of `object`

@@ -1026,9 +1026,9 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A setter's call stores through the setter stub's leaf, which writes
-    /// the field through the heap's store accessor and answers the
-    /// receiver, so that a cascade's next message goes to it.
+    /// A setter's call stores in the setter stub, which writes the field
+    /// through the inline barrier and answers the receiver, so that the
+    /// next message sent to the setter's answer goes to it.
     fn a_setter_runs_in_the_setter_stub(lowering) {
         let source = indoc! {"
             class Subject = Object new (
@@ -1060,11 +1060,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(run(&mut interpreter, &class), 5050);
         let done = since(interpreter.jit_statistics(), before);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            assert!(
-                done.act_leaf_calls >= 200,
-                "both setters of every turn store through the leaf: {}",
-                done.act_leaf_calls
-            );
+            assert_eq!(done.leaf_calls, 0, "both setters of every turn store in their stub");
             assert_eq!(done.send_exits, 0, "no setter's call is refused");
         }
     }
@@ -1072,11 +1068,11 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// `Array>>at:` and `at:put:`, methods whose fast path is a leaf-safe
-    /// mirror row, run in the mirror method stub's leaf, which runs the
-    /// row's leaf on the receiver and the send's arguments without
-    /// deciding the send again; an index out of range, the eleventh turn's,
-    /// declines, and the interpreter, running the send, raises the error
-    /// it raises with the JIT off.
+    /// mirror row with a stub of its own, run in that stub without
+    /// deciding the send again; an index out of range, the eleventh
+    /// turn's, goes on to the row's leaf, which declines, and the
+    /// interpreter, running the send, raises the error it raises with the
+    /// JIT off.
     fn a_mirror_method_runs_in_its_stub(lowering) {
         let source = indoc! {"
             class Subject = Object new (
@@ -1116,11 +1112,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(run(&mut interpreter, &class), 55);
         let done = since(interpreter.jit_statistics(), before);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            assert!(
-                done.act_leaf_calls >= 20,
-                "both sends of every turn run in the leaf: {}",
-                done.act_leaf_calls
-            );
+            assert_eq!(done.leaf_calls, 0, "both sends of every turn run in their stubs");
             assert_eq!(done.send_exits, 0, "no call is refused");
         }
         let overrun = |interpreter: &mut Interpreter| {
@@ -1787,23 +1779,195 @@ ns_runtime::for_each_lowering! {
             assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
             assert_eq!(statistics.miss_leaf_calls, 0);
             assert!(
-                statistics.act_leaf_calls >= 3000,
-                "`at:`, `at:put:` and the setter ran through the leaf stub: {}",
+                statistics.act_leaf_calls <= 1,
+                "`at:`, `at:put:` and the setter ran in their stubs, and only `do:`'s one \
+                 `size` in its row's leaf: {}",
                 statistics.act_leaf_calls
             );
         }
     }
 }
 
-/// The rows marked `MachineCall::Leaf` are exactly those this list names,
-/// each with why its leaf is leaf-safe: a row marked without being read
+/// A public setter sent a thousand times from a compiled loop, of field
+/// 0 and of a field holding Arrays: its cell names the setter stub, which
+/// stores through the inline barrier.
+const SETTERS: &str = indoc! {"
+    class Subject = Object new (
+      | holder = Holder new. |
+    ) (
+      class Holder = Object new (
+        |
+          public count ::= 0.
+          public item ::= nil.
+        |
+      ) ()
+      bump: aHolder = (
+        |
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          aHolder count: aHolder count + 1.
+          aHolder item: {index}.
+          index:: index + 1.
+        ].
+        ^aHolder count + (aHolder item at: 1).
+      )
+      public run = (
+        ^bump: holder
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A setter stores in its stub: the third run's two thousand setter
+    /// sends call no leaf, and what they stored reads back as the
+    /// interpreter's.
+    fn a_setter_stores_without_a_leaf_call(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(SETTERS, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(SETTERS, lowering, false);
+        assert_eq!(interpreted, [1999, 2999, 3999]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "bump:");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.leaf_calls, 0, "no setter called a leaf");
+            assert!(
+                statistics.compiled_calls >= 2000,
+                "`bump:` calls its setters through their cells: {}",
+                statistics.compiled_calls
+            );
+        }
+    }
+}
+
+/// `at:put:` and `at:` on an Array and on a ByteArray, each sent a
+/// thousand times from a compiled loop at every index, the Array's
+/// elements Arrays themselves.
+const INDEXING: &str = indoc! {"
+    class Subject = Object new (
+      |
+        elements = Array new: 1000.
+        bytes = ByteArray new: 1000.
+      |
+    ) (
+      fill: array and: byteArray = (
+        |
+          index ::= 1.
+          byte ::= 1.
+          sum ::= 0.
+        |
+        [index <= 1000] whileTrue: [
+          array at: index put: {index}.
+          byteArray at: index put: byte.
+          sum:: sum + ((array at: index) at: 1) + (byteArray at: index).
+          index:: index + 1.
+          byte:: byte + 1.
+          byte = 256 ifTrue: [byte:: 0].
+        ].
+        ^sum.
+      )
+      public run = (
+        ^fill: elements and: bytes
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `at:put:` and `at:` run in their stubs: the third run's four
+    /// thousand sends to the Array and the ByteArray call no leaf, and
+    /// the sum is the interpreter's.
+    fn at_put_on_an_array_runs_inline(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(INDEXING, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(INDEXING, lowering, false);
+        let expected = 500_500 + (0..1000).map(|index| (index + 1) % 256).sum::<i64>();
+        assert_eq!(interpreted, [expected; 3]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "fill:and:");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.leaf_calls, 0, "no `at:` or `at:put:` called a leaf");
+            assert!(
+                statistics.compiled_calls >= 4000,
+                "`fill:and:` calls `at:` and `at:put:` through their cells: {}",
+                statistics.compiled_calls
+            );
+        }
+    }
+}
+
+/// `store:at:` compiled by a thousand stores in range, then sent an index
+/// past the Array and one past the ByteArray.
+const OUT_OF_RANGE: &str = indoc! {"
+    class Subject = Object new (
+      |
+        elements = Array new: 10.
+        bytes = ByteArray new: 10.
+      |
+    ) (
+      store: indexable at: index = (
+        indexable at: index put: 7.
+      )
+      public run = (
+        |
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          store: elements at: index \\\\ 10 + 1.
+          store: bytes at: index \\\\ 10 + 1.
+          index:: index + 1.
+        ].
+        ^0
+      )
+      public storePastArray = (
+        store: elements at: 11.
+      )
+      public storePastBytes = (
+        store: bytes at: 0.
+      )
+    ) : ()
+"};
+
+/// The message of the error `selector` raises, sent to a `Subject` of
+/// `OUT_OF_RANGE` once `run` has compiled `store:at:` -- with the JIT on
+/// or off.
+fn out_of_range_message(selector: &str, jit: bool) -> String {
+    let (mut interpreter, class) = load_with(OUT_OF_RANGE, Lowering::Optimized);
+    interpreter.set_jit_enabled(jit);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("run"), &[]),
+        "run",
+    );
+    match interpreter.send(&instance, Symbol::intern(selector), &[]) {
+        Err(HostSignal::Error(error)) => error.message,
+        Err(HostSignal::Return) => panic!("{selector}: a non-local return escaped"),
+        Ok(_) => panic!("{selector}: the store past the end succeeded"),
+    }
+}
+
+/// A store past the end of an Array or a ByteArray from compiled code
+/// raises the interpreter's error: the stub hands every index it does not
+/// store at to the row's leaf, which refuses, and the interpreter runs
+/// the send again and raises it.
+#[test]
+fn at_put_out_of_range_fails_as_the_interpreter_does() {
+    for selector in ["storePastArray", "storePastBytes"] {
+        let compiled = out_of_range_message(selector, true);
+        assert_eq!(compiled, out_of_range_message(selector, false));
+        assert!(compiled.contains("out of range"), "{selector}: {compiled}");
+    }
+}
+
+/// The rows marked leaf-safe -- `MachineCall::Leaf`, or `Stub` with a
+/// stub of their own -- are exactly those this list names, each with why
+/// its leaf is leaf-safe: a row marked without being read
 /// fails here, and so does one the list names that is not marked.
 #[test]
 fn every_leaf_row_is_audited() {
-    use ns_runtime::builtins::primitive::{MachineCall, MIRROR};
+    use ns_runtime::builtins::primitive::MIRROR;
     let marked: std::collections::BTreeSet<&str> = MIRROR
         .iter()
-        .filter(|entry| entry.machine_call == MachineCall::Leaf)
+        .filter(|entry| entry.machine_call.is_leaf_safe())
         .map(|entry| entry.selector)
         .collect();
     let mut audited = std::collections::BTreeSet::new();
@@ -2646,5 +2810,72 @@ fn a_store_into_a_remembered_holder_calls_no_leaf() {
     if !a_stress_mode_is_on() {
         assert_ran_in_machine_code(&statistics, "value:");
         assert_eq!(statistics.leaf_calls, 0, "no store calls a leaf");
+    }
+}
+
+/// A holder of a slot and an Array, written by `store:` through the
+/// setter stub and the `at:put:` stub, and read back by `read`.
+const OLD_HOLDERS: &str = indoc! {"
+    class Subject = Object new (
+      |
+        holder = Holder new.
+        elements = Array new: 10.
+      |
+    ) (
+      class Holder = Object new (
+        |
+          public item ::= nil.
+        |
+      ) ()
+      public store: count = (
+        |
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          holder item: {index}.
+          elements at: 10 put: {index + 1}.
+          index:: index + 1.
+        ].
+        ^index
+      )
+      public read = (
+        ^(holder item at: 1) + ((elements at: 10) at: 1)
+      )
+    ) : ()
+"};
+
+/// A store of a young Array into an old holder by the setter stub, and
+/// into an old Array by the `at:put:` stub, remembers the holder, as the
+/// interpreter's barrier does: the scavenge after them finds the young
+/// Arrays through the remembered holders, and they read back as stored.
+/// A store that missed the barrier leaves a holder naming nursery memory
+/// the scavenge vacated.
+#[cfg(debug_assertions)]
+#[test]
+fn a_stub_storing_into_an_old_holder_remembers_it() {
+    let (mut interpreter, class) = load_with(OLD_HOLDERS, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for _ in 0..3 {
+        send_integer(&mut interpreter, &subject, "store:", 3);
+    }
+    // Everything old from here on, and remembered by nothing.
+    interpreter.collect_now();
+    let before = interpreter.jit_statistics();
+    assert_eq!(
+        send_integer(&mut interpreter, &subject, "store:", BARRIER_STORES),
+        BARRIER_STORES
+    );
+    let statistics = since(interpreter.jit_statistics(), before);
+    interpreter.scavenge_now();
+    assert_eq!(
+        send_integer(&mut interpreter, &subject, "read", 0),
+        2 * BARRIER_STORES - 1
+    );
+    if !a_stress_mode_is_on() {
+        assert_ran_in_machine_code(&statistics, "store:");
+        assert_eq!(
+            statistics.leaf_calls, 2,
+            "the two stores that remembered the holder and the Array"
+        );
     }
 }

@@ -424,6 +424,9 @@ struct AccessorStubs {
     parameters: Vec<CodeOffset>,
     /// The method whose fast path is each mirror row, by row.
     mirror_methods: Vec<CodeOffset>,
+    /// The method whose fast path is a row with a stub of its own, by
+    /// the stub's index (`RowStub::index`).
+    row_stubs: Vec<CodeOffset>,
     nil: CodeOffset,
     true_constant: CodeOffset,
     false_constant: CodeOffset,
@@ -890,6 +893,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             setters: Vec::new(),
             parameters: Vec::new(),
             mirror_methods: Vec::new(),
+            row_stubs: Vec::new(),
             nil: CodeOffset(0),
             true_constant: CodeOffset(0),
             false_constant: CodeOffset(0),
@@ -934,6 +938,11 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             .collect(),
         mirror_methods: entries
             .mirror_methods
+            .iter()
+            .map(|offset| placed(*offset))
+            .collect(),
+        row_stubs: entries
+            .row_stubs
             .iter()
             .map(|offset| placed(*offset))
             .collect(),
@@ -1064,7 +1073,8 @@ pub(crate) enum Stubbed<'method> {
 /// through its stub, read off the method, which is immutable, as `act`
 /// reads it on every hit; a setter on a public or protected chain through
 /// its field's setter stub; a method whose fast path is a leaf-safe mirror
-/// row (`MachineCall::Leaf`) through its row's mirror method stub; a
+/// row through its row's own stub (`MachineCall::Stub`) or, without one
+/// (`MachineCall::Leaf`), its row's mirror method stub; a
 /// private or `super` slot accessor, a getter or setter past the stubs'
 /// fields, a builtin class's accessor and a primitive that is a mirror
 /// send of a leaf-safe row through the leaf stub. `None` for
@@ -1084,7 +1094,7 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
             Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand
         )
     };
-    let leaf_safe = |row| mirror_entry(row).machine_call == MachineCall::Leaf;
+    let leaf_safe = |row| mirror_entry(row).machine_call.is_leaf_safe();
     match stubbed {
         Stubbed::Method { chain, .. }
         | Stubbed::Slot { chain, .. }
@@ -1113,12 +1123,16 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
                 )
             }
             Some(MethodFastPath::BuiltinClass(_)) => Some(act),
-            Some(MethodFastPath::Mirror(row)) if leaf_safe(row) => Some(
-                zone.accessors
-                    .mirror_methods
-                    .get(row.index())
-                    .map_or(act, |entry| address(*entry)),
-            ),
+            Some(MethodFastPath::Mirror(row)) => match mirror_entry(row).machine_call {
+                MachineCall::Stub(stub) => Some(address(zone.accessors.row_stubs[stub.index()])),
+                MachineCall::Leaf => Some(
+                    zone.accessors
+                        .mirror_methods
+                        .get(row.index())
+                        .map_or(act, |entry| address(*entry)),
+                ),
+                MachineCall::Exit => None,
+            },
             _ => None,
         },
         Stubbed::Slot {

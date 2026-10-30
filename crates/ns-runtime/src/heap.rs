@@ -797,6 +797,22 @@ pub(crate) struct MachineLayout {
     pub(crate) remembered_bit: i32,
     /// `nil`'s word.
     pub(crate) nil_word: i32,
+    /// The header word's format bits all of which a ByteArray's format
+    /// sets (`Format::AlignedBytes`), whose bytes `Heap::byte_array_at`
+    /// reads, and no other format sets all of.
+    pub(crate) aligned_bytes_format: i32,
+    /// How far a ByteArray's count of unused bytes in its last data word
+    /// is shifted up in the header word.
+    pub(crate) unused_bytes_shift: u8,
+    /// A ByteArray's count of unused bytes, once shifted down.
+    pub(crate) unused_bytes_mask: i32,
+    /// The alignment in bytes of a ByteArray's data, whose offset is the
+    /// first multiple of it at or after its field 0's
+    /// (`object::aligned_data_start`).
+    pub(crate) byte_data_alignment: i32,
+    /// The bytes of the words after a ByteArray's header that hold no
+    /// data: its class word and the reserve its alignment takes.
+    pub(crate) byte_data_reserve_bytes: i32,
 }
 
 /// The block of an object machine code allocates (`Heap::machine_block`).
@@ -8712,6 +8728,13 @@ impl<'gc> Heap<'gc> {
                     unreachable!("internal: the remembered bit lies in the header's low half")
                 }),
             nil_word: small(Word::NIL.bits()),
+            aligned_bytes_format: small(header::ALIGNED_BYTES_BITS),
+            unused_bytes_shift: small_count(header::UNUSED_SHIFT),
+            unused_bytes_mask: small(header::UNUSED_BYTES_MASK),
+            byte_data_alignment: displacement(object::ALIGNMENT_WORDS),
+            // The words after the header `byte_array_extent` does not count
+            // as data: the block's but the header's own.
+            byte_data_reserve_bytes: displacement(FIELDS - 1 + object::ALIGNMENT_RESERVE),
         }
     }
 
@@ -9047,9 +9070,11 @@ impl<'gc> Heap<'gc> {
     /// scavenge finds the reference without walking the old space -- per
     /// object, as Spur's `storePointer:ofObject:withValue:` and Soup's
     /// `HeapObject::Store` remember, rather than Strongtalk's cards. Every
-    /// store into an existing object comes through here, so the interpreter,
-    /// the reference lowering and a JIT share one rule
-    /// (`docs/design/memory.md`, "The write barrier").
+    /// store the interpreter and the reference lowering make into an
+    /// existing object comes through here, so the two share one rule;
+    /// machine code makes the same comparisons inline and calls only
+    /// `remember` (`remember_for_machine_code`) (`docs/design/memory.md`,
+    /// "The write barrier").
     #[inline(always)]
     fn write_barrier(&mut self, holder: NonZeroU64, word: Word) {
         if !space::is_young(holder) && word.object_offset().is_some_and(space::is_young) {

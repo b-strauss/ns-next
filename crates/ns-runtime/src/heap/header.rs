@@ -33,6 +33,20 @@ pub(super) const FORMAT_BITS: u64 = FORMAT_MASK << FORMAT_SHIFT;
 /// The header bits of an `Array`'s format (`Format::IndexablePointers`)
 /// under `FORMAT_BITS`, for machine code's test of an indirection vector.
 pub(super) const INDEXABLE_POINTERS_BITS: u64 = (Format::IndexablePointers as u64) << FORMAT_SHIFT;
+/// The header bits every code of a `ByteArray`'s format
+/// (`Format::AlignedBytes`, 24 to 31) sets and no other format's code
+/// sets all of, for machine code's test of a ByteArray.
+pub(super) const ALIGNED_BYTES_BITS: u64 = (Format::AlignedBytes as u64) << FORMAT_SHIFT;
+/// How far the format's low bits, a ByteArray's unused bytes in its last
+/// data word (`Header::unused`), are shifted up.
+pub(super) const UNUSED_SHIFT: u32 = FORMAT_SHIFT;
+/// A ByteArray's unused bytes, once shifted down.
+pub(super) const UNUSED_BYTES_MASK: u64 = 0b111;
+
+const _: () = assert!(
+    Format::AlignedBytes as u64 == 0b1_1000 && FORMAT_MASK == 0b1_1111,
+    "the two high bits of the format code are set exactly for AlignedBytes's codes"
+);
 /// The word count that says the count is in an overflow word.
 pub(super) const WORD_COUNT_OVERFLOW: usize = 255;
 

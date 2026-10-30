@@ -33,11 +33,12 @@
 //! method, a method that is a leaf-safe mirror row, and the leaf stub,
 //! which runs `act`'s arm through the leaf shim.
 
-use ns_assembler::{Assembled, Condition, Label, Memory, Width};
+use ns_assembler::{Assembled, Condition, Label, Memory, Register, Width};
 
 use super::leaves::Leaf;
-use super::macro_assembler::{Abi, MacroAssembler, Operand};
+use super::macro_assembler::{Abi, MacroAssembler, Operand, Roles};
 use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};
+use crate::builtins::primitive::{MachineCall, RowStub, MIRROR};
 use crate::heap::machine_words::MachineWord;
 use crate::interpreter::inline_cache::cells::{
     BLOCK_BYTES, CELL_BYTES, CELL_WORDS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES, ROW_WORDS, VACANT_GUARD,
@@ -352,6 +353,9 @@ pub(crate) struct AccessorEntries {
     pub(crate) parameters: Vec<u32>,
     /// The method whose fast path is mirror row `index`, by index.
     pub(crate) mirror_methods: Vec<u32>,
+    /// The method whose fast path is a row with a stub of its own, by
+    /// the stub's index (`RowStub::index`).
+    pub(crate) row_stubs: Vec<u32>,
     /// The quick methods answering `nil`, `true` and `false`.
     pub(crate) nil: u32,
     pub(crate) true_constant: u32,
@@ -375,11 +379,10 @@ pub(crate) struct AccessorEntries {
 ///   receiver is checked to be an instance holding it, as
 ///   `Heap::instance_field` checks it;
 /// - a setter of a public or protected chain, whose cell's guard is the
-///   receiver's dispatch id as a getter's is: the store leaf
-///   (`Leaf::StoreField`) writes the send's one argument into the field
-///   through the heap's store accessor and its write barrier, which check
-///   the receiver as `Mutator::decide_slot_accessor`'s setter does, and
-///   the stub answers the receiver;
+///   receiver's dispatch id as a getter's is: once the receiver is
+///   checked as the getter checks it, the send's one argument stored into
+///   the field through the inline write barrier
+///   (`MacroAssembler::store_with_barrier_at`), and the receiver;
 /// - a quick method's constant, its receiver or its parameter
 ///   (`MethodFastPath::Constant`, `Receiver`, `Parameter`);
 /// - a method whose fast path is a leaf-safe mirror row
@@ -387,6 +390,13 @@ pub(crate) struct AccessorEntries {
 ///   (`Leaf::MirrorMethod`) runs the row's leaf on the receiver, handed
 ///   over in the machine words, and the send's arguments in its slots, as
 ///   `Mutator::act_for_machine_code` runs it;
+/// - a method whose fast path is a row with a stub of its own
+///   (`MachineCall::Stub`): an Array's or a ByteArray's `at:` and
+///   `at:put:`, which read or write the element an index in range names
+///   as the row's leaf does -- an Array's store through the inline write
+///   barrier, a byte's without one, since a byte names no object -- and
+///   continue at the row's mirror method stub for every other case, so
+///   that the row's failures stay its leaf's;
 /// - the leaf stub, for every other target machine code runs this way --
 ///   a private or `super` slot accessor, whose
 ///   `Mutator::slot_level_holds` is the guard check, a setter past
@@ -395,8 +405,8 @@ pub(crate) struct AccessorEntries {
 ///   shim (`Leaf::Act`) and answers its value, or the word no value is
 ///   when the arm would answer anything else, before it changed anything.
 ///
-/// Every decline -- a receiver the getter's check refuses, the word no
-/// value is from the store leaf, the mirror method leaf or the leaf
+/// Every decline -- a receiver the getter's or the setter's check
+/// refuses, the word no value is from the mirror method leaf or the leaf
 /// stub's -- refuses the call before anything is written, so that the
 /// caller re-executes the send and the interpreter runs it.
 pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) {
@@ -406,6 +416,16 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     let (field, answer, address) = (roles.accessor_field, roles.leaf_result, roles.idiom_scratch);
     let receiver = roles.callee_receiver();
     let assembler = macro_assembler.assembler();
+    // Beside the getter's, the registers the setter and the row stubs
+    // hold an index, an element's address and a scratch word in: none
+    // the receiver, the field or the answer is in.
+    let free: Vec<Register> = roles
+        .scratch
+        .iter()
+        .copied()
+        .filter(|register| ![receiver, field, answer].contains(register))
+        .collect();
+    let (index, element, spare) = (free[0], free[1], free[2]);
     let (decline, getter, setter, mirror_method) = (
         assembler.label(),
         assembler.label(),
@@ -510,29 +530,58 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         },
     );
     assembler.return_();
-    // The setter: the send's argument, in its slot 0, stored by the
-    // store leaf, which answers the receiver.
+    // The setter: the getter's checks, then the send's argument, in its
+    // slot 0, stored through the barrier, which keeps the receiver on
+    // both its paths: the setter answers it.
     assembler.bind(setter);
+    macro_assembler.jump_unless_object(receiver, decline);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(element, receiver);
+    assembler.add(element, roles.object_space);
     assembler.load(
         Width::Word64,
-        answer,
+        spare,
         Memory {
-            base: roles.frame,
-            displacement: 0,
+            base: element,
+            displacement: layout.header_displacement,
         },
     );
-    macro_assembler.call_leaf(
-        Leaf::StoreField.index(),
-        [
-            Operand::Register(receiver),
-            Operand::Register(field),
-            Operand::Register(answer),
-        ],
+    assembler.test_immediate(spare, layout.instance_format_bits);
+    assembler.jump_if(Condition::NotEqual, decline);
+    // The count as the getter takes it: a setter stub's field is below
+    // every count the header's mark stands for (`SETTER_STUBS`).
+    assembler.shift_right_arithmetic(spare, layout.word_count_shift);
+    assembler.and_immediate(spare, WORD_COUNT_FIELD_MASK);
+    assembler.add_immediate(spare, -1);
+    assembler.compare(spare, field);
+    assembler.jump_if(Condition::BelowOrEqual, decline);
+    assembler.shift_left(field, WORD_SHIFT);
+    assembler.add(element, field);
+    assembler.load(Width::Word64, answer, argument_slot(roles, 0));
+    macro_assembler.store_with_barrier_at(
+        receiver,
+        Memory {
+            base: element,
+            displacement: layout.fields_displacement,
+        },
+        answer,
+        spare,
     );
     let assembler = macro_assembler.assembler();
-    assembler.compare_immediate(answer, NO_VALUE_IMMEDIATE);
-    assembler.jump_if(Condition::Equal, decline);
+    assembler.move_register(answer, receiver);
     assembler.return_();
+    let row_stubs: Vec<Label> = RowStub::ALL
+        .into_iter()
+        .map(|stub| {
+            emit_row_stub(
+                &mut macro_assembler,
+                stub,
+                [index, element, spare],
+                mirror_method,
+            )
+        })
+        .collect();
+    let assembler = macro_assembler.assembler();
     // The mirror method: the receiver handed over in the machine words,
     // the row in the field's role, the send found by its return address.
     assembler.bind(mirror_method);
@@ -601,6 +650,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         setters: setters.into_iter().map(offset).collect(),
         parameters: parameters.into_iter().map(offset).collect(),
         mirror_methods: mirror_methods.into_iter().map(offset).collect(),
+        row_stubs: row_stubs.into_iter().map(offset).collect(),
         nil: offset(nil),
         true_constant: offset(true_constant),
         false_constant: offset(false_constant),
@@ -610,10 +660,107 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     (assembled, entries)
 }
 
+/// The stub of a method whose fast path is the row `stub` serves
+/// (`MachineCall::Stub`), at the label it answers: the element its
+/// index, in the send's slot 0, names -- read, or written with the value
+/// in slot 1 and the value answered -- once the receiver and the index
+/// are checked as the row's leaf checks them; every other case continues
+/// at `mirror_method` with the row's number in the field's role, so that
+/// the row's leaf decides it. `registers` are three registers it may
+/// clobber: none is the receiver's, the field's or the answer's.
+fn emit_row_stub(
+    macro_assembler: &mut MacroAssembler,
+    stub: RowStub,
+    registers: [Register; 3],
+    mirror_method: Label,
+) -> Label {
+    let roles = macro_assembler.roles();
+    let layout = crate::heap::Heap::machine_layout();
+    let [index, element, spare] = registers;
+    let (receiver, answer) = (roles.callee_receiver(), roles.leaf_result);
+    let Some(row) = MIRROR
+        .iter()
+        .position(|entry| entry.machine_call == MachineCall::Stub(stub))
+    else {
+        unreachable!("internal: every row stub serves a row");
+    };
+    let assembler = macro_assembler.assembler();
+    let (entry, fallback) = (assembler.label(), assembler.label());
+    assembler.bind(entry);
+    assembler.load(Width::Word64, index, argument_slot(roles, 0));
+    match stub {
+        RowStub::ArrayAt => {
+            macro_assembler.load_element_address(receiver, index, element, fallback);
+            let assembler = macro_assembler.assembler();
+            assembler.load(Width::Word64, answer, word_at(element));
+        }
+        RowStub::ArrayAtPut => {
+            macro_assembler.load_element_address(receiver, index, element, fallback);
+            macro_assembler
+                .assembler()
+                .load(Width::Word64, answer, argument_slot(roles, 1));
+            macro_assembler.store_with_barrier_at(receiver, word_at(element), answer, spare);
+            // The barrier's leaf keeps no scratch register: the value
+            // answered is read again.
+            macro_assembler
+                .assembler()
+                .load(Width::Word64, answer, argument_slot(roles, 1));
+        }
+        RowStub::ByteArrayAt => {
+            macro_assembler.load_byte_address(receiver, index, element, spare, fallback);
+            let assembler = macro_assembler.assembler();
+            assembler.load(Width::Byte, answer, word_at(element));
+            assembler.shift_left(answer, layout.tag_bits);
+            assembler.or_immediate(answer, layout.small_integer_tag);
+        }
+        RowStub::ByteArrayAtPut => {
+            macro_assembler.load_byte_address(receiver, index, element, spare, fallback);
+            let assembler = macro_assembler.assembler();
+            assembler.load(Width::Word64, answer, argument_slot(roles, 1));
+            // A `SmallInteger` from 0 to 255: tagged, and its word below
+            // 256's, unsigned, which a negative one's is not.
+            assembler.test_immediate(answer, layout.small_integer_tag);
+            assembler.jump_if(Condition::Equal, fallback);
+            assembler.compare_immediate(answer, BYTE_LIMIT << layout.tag_bits);
+            assembler.jump_if(Condition::AboveOrEqual, fallback);
+            assembler.move_register(spare, answer);
+            assembler.shift_right_logical(spare, layout.tag_bits);
+            assembler.store(Width::Byte, word_at(element), spare);
+        }
+    }
+    let assembler = macro_assembler.assembler();
+    assembler.return_();
+    assembler.bind(fallback);
+    assembler.move_immediate(roles.accessor_field, row as u64);
+    assembler.jump(mirror_method);
+    entry
+}
+
+/// The send's argument slot `position`, where the callee's register 0
+/// and on lie: the frame register points at the first.
+fn argument_slot(roles: Roles, position: i32) -> Memory {
+    Memory {
+        base: roles.frame,
+        displacement: position * WORD_BYTES,
+    }
+}
+
+/// The word at `address`.
+fn word_at(address: Register) -> Memory {
+    Memory {
+        base: address,
+        displacement: 0,
+    }
+}
+
+/// One past the largest byte, which `at:put:` on a ByteArray stores.
+const BYTE_LIMIT: i32 = 256;
+
 /// The eight bits of the header's word count, once shifted down.
 const WORD_COUNT_FIELD_MASK: i32 = 0xFF;
 
 const _: () = assert!((GETTER_STUBS as i32) < WORD_COUNT_FIELD_MASK - 1);
+const _: () = assert!((SETTER_STUBS as i32) < WORD_COUNT_FIELD_MASK - 1);
 
 /// How far a field's index is shifted to be its byte offset.
 const WORD_SHIFT: u8 = 3;
