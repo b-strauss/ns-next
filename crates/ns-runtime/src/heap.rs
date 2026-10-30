@@ -7821,7 +7821,11 @@ impl<'gc> Heap<'gc> {
     /// its registers keeps those below its body's `local_count` only --
     /// the arguments, the copied values and the named temporaries, all a
     /// block reaching them by reference can name -- and nil for every
-    /// scratch register, which may hold a word a callee left.
+    /// scratch register, which may hold a word a callee left. Inline into
+    /// both of its callers, the pop above all: outlined once machine
+    /// code's return became its second caller, it cost every pop of a
+    /// reified frame a call and its spills.
+    #[inline(always)]
     fn divorce(
         &mut self,
         frame: NonZeroU64,
