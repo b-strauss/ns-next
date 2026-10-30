@@ -361,6 +361,10 @@ pub(crate) const GETTER_STUBS: u32 = 64;
 /// past them runs through the leaf stub, as `act` runs it.
 pub(crate) const SETTER_STUBS: u32 = 64;
 
+/// How many hidden slots have a nested class accessor's stub of their
+/// own: an accessor whose slot lies past them is the interpreter's.
+pub(crate) const NESTED_CLASS_STUBS: u32 = 64;
+
 /// How many parameter positions have a stub of their own: a quick
 /// method answering a parameter past them runs through the leaf stub.
 pub(crate) const PARAMETER_STUBS: u8 = 16;
@@ -393,6 +397,9 @@ pub(crate) struct AccessorEntries {
     /// The setter of a private or `super` chain of field `index`, by
     /// index.
     pub(crate) guarded_setters: Vec<u32>,
+    /// The nested class accessor whose class is cached in hidden slot
+    /// `index`, by index.
+    pub(crate) nested_classes: Vec<u32>,
 }
 
 /// The stubs a cell names for a target that is no method with code
@@ -426,6 +433,12 @@ pub(crate) struct AccessorEntries {
 ///   barrier, a byte's without one, since a byte names no object -- and
 ///   continue at the row's mirror method stub for every other case, so
 ///   that the row's failures stay its leaf's;
+/// - a nested class's accessor on a public or protected chain, whose
+///   cell's guard is the receiver's dispatch id, so that the hidden slot
+///   the entry recorded is the receiver's (`nested::nested_class`'s hit):
+///   the getter's checks and load of that slot, and the class it holds;
+///   a slot that holds none yet -- nil, or a creation underway -- declines,
+///   so that the interpreter makes the class;
 /// - a getter or a setter of a private or `super` chain, whose field the
 ///   lookup decided from N's or S's chain, never the receiver's: the
 ///   receiver's guard compared with the one the entry recorded, which the
@@ -500,6 +513,16 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     };
     let guarded_getters = guarded(GETTER_STUBS, guarded_getter);
     let guarded_setters = guarded(SETTER_STUBS, guarded_setter);
+    let nested_class = assembler.label();
+    let nested_classes: Vec<Label> = (0..NESTED_CLASS_STUBS)
+        .map(|index| {
+            let entry = assembler.label();
+            assembler.bind(entry);
+            assembler.move_immediate(field, u64::from(index));
+            assembler.jump(nested_class);
+            entry
+        })
+        .collect();
     let rows = u16::try_from(crate::builtins::primitive::MIRROR.len())
         .expect("internal: the mirror rows are numbered in 16 bits");
     let mirror_methods: Vec<Label> = (0..rows)
@@ -541,45 +564,56 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     assembler.bind(receiver_entry);
     assembler.move_register(answer, receiver);
     assembler.return_();
-    // The getter: `instance_field`'s checks, then the load.
-    assembler.bind(getter);
-    macro_assembler.jump_unless_object(receiver, decline);
+    // The getter: `instance_field`'s checks, then the load; and a nested
+    // class's accessor: the getter's, then whether the slot holds the
+    // class, an object -- not nil, and not the `SmallInteger` of a
+    // creation underway (`nested::is_creation_in_progress`).
+    for (entry, holds_class) in [(getter, false), (nested_class, true)] {
+        let assembler = macro_assembler.assembler();
+        assembler.bind(entry);
+        macro_assembler.jump_unless_object(receiver, decline);
+        let assembler = macro_assembler.assembler();
+        assembler.move_register(address, receiver);
+        assembler.add(address, roles.object_space);
+        assembler.load(
+            Width::Word64,
+            answer,
+            Memory {
+                base: address,
+                displacement: layout.header_displacement,
+            },
+        );
+        assembler.test_immediate(answer, layout.instance_format_bits);
+        assembler.jump_if(Condition::NotEqual, decline);
+        // The count of the words after the header, the class word first:
+        // the fields are one fewer. The header's eight-bit count reads 255
+        // for an object of 255 words or more, whose true count the heap
+        // keeps in an overflow word; the stub takes 255 as it is, so such
+        // an object has at least 254 fields here, more than any getter
+        // stub's field (`GETTER_STUBS`, asserted below), and no field a
+        // stub names is refused for it.
+        assembler.shift_right_arithmetic(answer, layout.word_count_shift);
+        assembler.and_immediate(answer, WORD_COUNT_FIELD_MASK);
+        assembler.add_immediate(answer, -1);
+        assembler.compare(answer, field);
+        assembler.jump_if(Condition::BelowOrEqual, decline);
+        assembler.shift_left(field, WORD_SHIFT);
+        assembler.add(address, field);
+        assembler.load(
+            Width::Word64,
+            answer,
+            Memory {
+                base: address,
+                displacement: layout.fields_displacement,
+            },
+        );
+        if holds_class {
+            assembler.test_immediate(answer, layout.tag_mask);
+            assembler.jump_if(Condition::NotEqual, decline);
+        }
+        assembler.return_();
+    }
     let assembler = macro_assembler.assembler();
-    assembler.move_register(address, receiver);
-    assembler.add(address, roles.object_space);
-    assembler.load(
-        Width::Word64,
-        answer,
-        Memory {
-            base: address,
-            displacement: layout.header_displacement,
-        },
-    );
-    assembler.test_immediate(answer, layout.instance_format_bits);
-    assembler.jump_if(Condition::NotEqual, decline);
-    // The count of the words after the header, the class word first:
-    // the fields are one fewer. The header's eight-bit count reads 255
-    // for an object of 255 words or more, whose true count the heap
-    // keeps in an overflow word; the stub takes 255 as it is, so such an
-    // object has at least 254 fields here, more than any getter stub's
-    // field (`GETTER_STUBS`, asserted below), and no field a stub names
-    // is refused for it.
-    assembler.shift_right_arithmetic(answer, layout.word_count_shift);
-    assembler.and_immediate(answer, WORD_COUNT_FIELD_MASK);
-    assembler.add_immediate(answer, -1);
-    assembler.compare(answer, field);
-    assembler.jump_if(Condition::BelowOrEqual, decline);
-    assembler.shift_left(field, WORD_SHIFT);
-    assembler.add(address, field);
-    assembler.load(
-        Width::Word64,
-        answer,
-        Memory {
-            base: address,
-            displacement: layout.fields_displacement,
-        },
-    );
-    assembler.return_();
     // The setter: the getter's checks, then the send's argument, in its
     // slot 0, stored through the barrier, which keeps the receiver on
     // both its paths: the setter answers it.
@@ -720,6 +754,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         act: offset(act),
         guarded_getters: guarded_getters.into_iter().map(offset).collect(),
         guarded_setters: guarded_setters.into_iter().map(offset).collect(),
+        nested_classes: nested_classes.into_iter().map(offset).collect(),
     };
     (assembled, entries)
 }
@@ -924,6 +959,7 @@ const BYTE_LIMIT: i32 = 256;
 const WORD_COUNT_FIELD_MASK: i32 = 0xFF;
 
 const _: () = assert!((GETTER_STUBS as i32) < WORD_COUNT_FIELD_MASK - 1);
+const _: () = assert!((NESTED_CLASS_STUBS as i32) < WORD_COUNT_FIELD_MASK - 1);
 const _: () = assert!((SETTER_STUBS as i32) < WORD_COUNT_FIELD_MASK - 1);
 
 /// How far a field's index is shifted to be its byte offset.

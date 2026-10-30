@@ -976,7 +976,14 @@ ns_runtime::for_each_lowering! {
         let done = since(interpreter.jit_statistics(), before);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(done.compiled_bodies >= 2, "`sumWith:count:`, then `add:` by the miss");
-            assert_eq!(done.miss_leaf_calls, 1, "the one send that found no machine entry");
+            // `Adder`'s accessor answers the class in its stub; `new`, the
+            // factory's first send from machine code, has the miss count its
+            // body's first entry and refuse the call, so that `run:` leaves
+            // there; `add:`'s miss compiles it.
+            assert_eq!(
+                done.miss_leaf_calls, 2,
+                "the two sends that found no machine entry"
+            );
             assert!(done.compiled_calls >= 9_000, "{}", done.compiled_calls);
             assert_eq!(done.send_exits, 1, "`run:` leaves at the one send it does not make");
             assert_eq!(
@@ -985,6 +992,16 @@ ns_runtime::for_each_lowering! {
                  compiled at the interpreter's push after `run:` left, is entered there; `add:` \
                  only through compiled calls"
             );
+        }
+        // The factory's second send from machine code: its miss counts the
+        // body's second entry, which no interpreter's push counted, and
+        // compiles it, so that nothing leaves machine code.
+        let before = interpreter.jit_statistics();
+        assert_eq!(run_with(&mut interpreter, 10), 55);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(done.send_exits, 0, "the factory is compiled and called");
+            assert_eq!(done.exits, 0, "nothing left machine code");
         }
     }
 }
@@ -3105,8 +3122,8 @@ ns_runtime::for_each_lowering! {
 /// A thousand `Point`s and `Point3`s made in a compiled loop: each factory
 /// send a compiled call of the factory's body, which bumps the instance
 /// inline and calls the class's initializer, `Point3`'s calling `Point`'s.
-/// The classes are read from slots, since a nested class's accessor send
-/// is no compiled call.
+/// The classes are read from slots, so that the factories alone are sent
+/// (`IMPLICIT_POINTS` sends the accessors too).
 const POINTS: &str = indoc! {"
     class Subject = Object new (
       |
@@ -3327,6 +3344,203 @@ ns_runtime::for_each_lowering! {
                 statistics.resumed_entries >= 100,
                 "the frames returned to went on in machine code: {}",
                 statistics.resumed_entries
+            );
+        }
+    }
+}
+
+/// How many slots `Wide` declares: more than a header's count holds, so
+/// that its instances need an overflow word and its row records no
+/// instance header.
+const WIDE_SLOTS: usize = 260;
+
+/// A module instantiating, from a compiled loop, every kind of class whose
+/// instance `AllocateInstance`'s inline bump does not make -- `Array` and
+/// `String`, builtins that make their own, an `Ephemeron`, a class whose
+/// count needs an overflow word -- beside ones it does: a user subclass of
+/// `Array` and of `Ephemeron`, which hold no payload, and a class whose
+/// levels run no code, whose instance the factory answers with no
+/// initializer called; and, sent alone, the instantiations that are
+/// refused: `Symbol new`, a value class whose enclosing object is no
+/// value, and a class whose application refuses instantiation. Every
+/// class is read from a slot.
+fn builtins_and_refusals_source() -> String {
+    let slots: String = (0..WIDE_SLOTS)
+        .map(|index| format!("slot{index} ::= {index}. "))
+        .collect();
+    let last = WIDE_SLOTS - 1;
+    formatdoc! {"
+        class Subject usingPlatform: platform = Object new (
+          |
+            arrayClass = Array.
+            stringClass = String.
+            myArrayClass = MyArray.
+            myStringClass = MyString.
+            symbolClass = Symbol.
+            ephemeronClass = platform kernel Ephemeron.
+            myEphemeronClass = MyEphemeron.
+            wideClass = Wide.
+            oddClass = Odd.
+            emptyClass = Empty.
+          |
+        ) (
+          class MyArray = Array new () ()
+          class MyString = String new () ()
+          class MyEphemeron = ephemeronClass new () ()
+          class Wide = Object new (| {slots}|) (
+            public last = (^slot{last})
+          )
+          class Odd = Value new () (
+            public == other = (^true)
+          )
+          class Empty = Object new () ()
+          public run = (
+            |
+              sum ::= 0.
+              index ::= 0.
+              empty
+              previous
+            |
+            [index < 100] whileTrue: [
+              sum:: sum + arrayClass new size + stringClass new size.
+              myArrayClass new.
+              ephemeronClass new.
+              myEphemeronClass new.
+              sum:: sum + wideClass new last.
+              empty:: emptyClass new.
+              empty == previous ifTrue: [sum:: sum + 1000000].
+              previous:: empty.
+              index:: index + 1.
+            ].
+            ^sum.
+          )
+          public symbol = (^symbolClass new)
+          public myString = (^myStringClass new)
+          public odd = (^oddClass new)
+        ) : ()
+    "}
+}
+
+/// `builtins_and_refusals_source`'s `run`, three times, with the JIT on --
+/// every body compiled at its first entry, the compiled calls counted --
+/// or off: the answers and what the JIT did in the third run; then the
+/// error text of each refused instantiation, sent three times.
+fn builtins_and_refusals(lowering: Lowering, jit: bool) -> ([i64; 3], JitStatistics, Vec<String>) {
+    let source = builtins_and_refusals_source();
+    let (mut interpreter, class) = load_with(&source, lowering);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_stress(jit);
+    interpreter.set_jit_counting(jit);
+    let platform = interpreter.platform();
+    let instance = expect_ok(interpreter.instantiate(&class, &[platform]), "instantiate");
+    let mut answers = [0; 3];
+    let mut statistics = interpreter.jit_statistics();
+    for answer in &mut answers {
+        let before = interpreter.jit_statistics();
+        let result = expect_ok(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run",
+        );
+        statistics = since(interpreter.jit_statistics(), before);
+        *answer = interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+            ValueKind::SmallInteger(integer) => integer,
+            _ => panic!("run: expected a small integer"),
+        });
+    }
+    let mut errors = Vec::new();
+    for selector in ["symbol", "myString", "odd"] {
+        for _ in 0..3 {
+            match interpreter.send(&instance, Symbol::intern(selector), &[]) {
+                Err(HostSignal::Error(error)) => errors.push(error.message.to_string()),
+                _ => panic!("{selector}: expected the instantiation refused"),
+            }
+        }
+    }
+    (answers, statistics, errors)
+}
+
+ns_runtime::for_each_lowering! {
+    /// Each instantiation `AllocateInstance`'s inline bump does not make
+    /// runs through the generic leaf, from the factory's machine code --
+    /// a builtin's own instance, an ephemeron, an overflowing count -- or
+    /// exits there so that the interpreter raises the refusal; a class
+    /// whose levels run no code is answered by the stub answering its
+    /// receiver, a fresh instance each time; all as with the JIT off.
+    fn instantiations_the_inline_bump_does_not_make_answer_as_interpreted(lowering) {
+        let (compiled, statistics, compiled_errors) = builtins_and_refusals(lowering, true);
+        let (interpreted, _, interpreted_errors) = builtins_and_refusals(lowering, false);
+        let last = i64::try_from(WIDE_SLOTS - 1).expect("small");
+        assert_eq!(interpreted, [100 * last; 3]);
+        assert_eq!(compiled, interpreted);
+        assert_eq!(compiled_errors, interpreted_errors);
+        assert!(
+            interpreted_errors[0].contains("Symbol")
+                && interpreted_errors[3].contains("enclosing objects must be values")
+                && interpreted_errors[6].contains("Odd"),
+            "{interpreted_errors:?}"
+        );
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert!(
+                statistics.compiled_calls >= 600,
+                "`run` calls the factories through their cells: {}",
+                statistics.compiled_calls
+            );
+        }
+    }
+}
+
+/// `POINTS` with the classes named by their accessors, the implicit
+/// receiver's sends `Point` and `Point3`: a nested class's accessor send
+/// whose class is cached in its hidden slot answers it in its stub.
+const IMPLICIT_POINTS: &str = indoc! {"
+    class Subject = Object new () (
+      class Point x: ax y: ay = Object new (
+        |
+          public x = ax.
+          public y = ay.
+        |
+      ) ()
+      class Point3 x: ax y: ay z: az = Point x: ax y: ay (
+        |
+          public z = az.
+        |
+      ) ()
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+          point
+          deep
+        |
+        [index < 1000] whileTrue: [
+          point:: Point x: index y: 2.
+          deep:: Point3 x: 1 y: index z: 3.
+          sum:: sum + point x + point y + deep y + deep z.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The nested class accessor's stub: in the third run every `Point`
+    /// and `Point3` send answers the cached class in machine code, and
+    /// nothing leaves it but a safepoint.
+    fn a_nested_class_accessor_answers_its_cached_class_in_its_stub(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(IMPLICIT_POINTS, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(IMPLICIT_POINTS, lowering, false);
+        assert_eq!(interpreted, [1_004_000; 3]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert!(
+                statistics.compiled_calls >= 4000,
+                "`run` calls both accessors and both factories through their cells: {}",
+                statistics.compiled_calls
             );
         }
     }

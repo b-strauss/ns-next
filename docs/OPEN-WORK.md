@@ -446,16 +446,12 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     argument count where the leaf can read them without a lookup, and the
     store, `at:` and `at:put:` in machine code with stage 4's write
     barrier would remove most of it.
-  - **A nested class's accessor send exits machine code.** A cell whose
-    target is `Target::NestedClass` names the refusing stub
-    (`jit::cell_entry`), so `Point x: 1 y: 2` in a compiled body, whose
-    implicit receiver's `Point` is the accessor's send, exits at
-    `Point` before the factory send, which is a compiled call, is made;
-    only a class read from a slot or a local instantiates without an
-    exit (`tests/jit.rs`'s `instantiation_runs_without_an_exit`). The
-    accessor's cache hit, the class in its hidden slot, would be a stub
-    like a getter's; its miss a trampoline step, which machine code
-    would exit for.
+  - **A nested class's accessor on a private or `super` chain exits
+    machine code**, as does one whose hidden slot lies past the
+    `NESTED_CLASS_STUBS` slots or holds no class yet: only a public or
+    protected chain's cell compares the receiver's own guard, which the
+    stub's hidden slot needs (`jit::stub_entry`). A private one would
+    take the guarded accessors' recorded-guard compare.
   - **Every initializer invocation calls a leaf.** `Leaf::Initializer`
     decides the invocation afresh each time (`jit::sends::initialize`),
     so an instantiation calls it once per level that runs code, and once

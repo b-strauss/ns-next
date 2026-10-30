@@ -2179,13 +2179,17 @@ pub(crate) fn decide_at<'gc>(
     // its receiver and its current class: compiled and entered as a
     // method's body is, below. One that stands for too many arguments
     // takes another count than the send places; only the push lays its
-    // frame out.
+    // frame out. Every miss counts the entry: the interpreter's push of a
+    // factory runs its first two instructions itself
+    // (`Mutator::enter_factory_body`) and never enters its body at its
+    // start, where a push counts, so a count left to it would never
+    // compile the body.
     if let Resolved::Factory { level, code, .. } = &resolved {
         if code.argument_count != argument_count {
             return MissAnswer::Refuse;
         }
         let base = mutator.caches.base_for(code);
-        jit::note_entry_by_call(&mut mutator.jit, code, base, None);
+        jit::note_entry(&mut mutator.jit, code, base, None);
         let address = jit::machine_entry_address(&mutator.jit, code, base);
         mutator
             .caches
@@ -2220,7 +2224,11 @@ pub(crate) fn decide_at<'gc>(
         Resolved::Factory { .. } => {
             unreachable!("internal: a factory was answered above")
         }
-        Resolved::NestedClass { .. } | Resolved::Unhandled => {
+        Resolved::NestedClass { chain, field, .. } => Some(jit::Stubbed::NestedClass {
+            chain: *chain,
+            field: *field,
+        }),
+        Resolved::Unhandled => {
             return MissAnswer::Refuse;
         }
     };

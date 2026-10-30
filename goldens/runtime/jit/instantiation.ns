@@ -1,10 +1,13 @@
 /// Instantiation in machine code (`docs/design/execution.md`, "Stage 4:
 /// closures, non-local return, allocation and the barrier"): a factory
-/// send from a compiled loop is a compiled call of the factory's body,
-/// whose `AllocateInstance` bumps an ordinary instance inline and whose
-/// `InitializeInstance` calls the class's initializer; a superclass's
-/// initializer and the level a `<:` clause adds run as compiled calls
-/// too (newspeak-spec.pdf 6.2, 6.3), a level that runs no code is passed;
+/// send from a compiled method, its class answered by the stub of the
+/// nested class's accessor once the class is cached, is a compiled call
+/// of the factory's body, whose `AllocateInstance` bumps an ordinary
+/// instance inline or leaves a builtin's to the interpreter's
+/// allocation, and whose `InitializeInstance` calls the class's
+/// initializer; a superclass's initializer and the level a `<:` clause
+/// adds run as compiled calls too (newspeak-spec.pdf 6.2, 6.3), a level
+/// that runs no code is passed;
 /// a builtin makes its own instances, a user subclass of one an ordinary
 /// instance, unless its value class's enclosing object is no value
 /// (3.1.1); `Symbol new` is refused (5.1.6); and `outer` loads the

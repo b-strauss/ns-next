@@ -10188,7 +10188,13 @@ sends and the inline caches in machine code.
   or after its field 0, as `heap/object.rs` computes it, an Array's store
   through the inline barrier, and goes on to the row's mirror method
   stub for every other case, so that the row's failures stay its leaf's;
-  a getter or setter of a private or `super` chain, whose field the
+  a nested class's accessor on a public or protected chain, whose cell
+  compares the receiver's own guard, so that the hidden slot the entry
+  recorded is the receiver's: the getter's checks and load of that
+  slot, answering the class it caches (`nested::nested_class`'s hit), and
+  declining for a slot that holds none yet -- nil, or a creation's
+  `SmallInteger` -- so that the interpreter makes the class (decided on
+  2026-10-30); a getter or setter of a private or `super` chain, whose field the
   lookup decided from N's or S's chain: `slot_level_holds`'s first
   compare made inline -- the receiver's guard against the one the entry
   recorded, which the cell carries above the chain start in its

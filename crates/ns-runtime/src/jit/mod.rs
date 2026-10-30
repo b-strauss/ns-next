@@ -439,6 +439,9 @@ struct AccessorStubs {
     /// The setter of a private or `super` chain of each field that has
     /// one, by field.
     guarded_setters: Vec<CodeOffset>,
+    /// The nested class accessor of each hidden slot that has one, by
+    /// slot.
+    nested_classes: Vec<CodeOffset>,
 }
 
 /// Why a body was not compiled. It stays interpreted for good.
@@ -907,6 +910,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             act: CodeOffset(0),
             guarded_getters: Vec::new(),
             guarded_setters: Vec::new(),
+            nested_classes: Vec::new(),
         },
     };
     zone.entry_stub = install(&mut zone, &stubs::assemble_entry_stub(Abi::host()).bytes).ok()?;
@@ -966,6 +970,11 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             .collect(),
         guarded_setters: entries
             .guarded_setters
+            .iter()
+            .map(|offset| placed(*offset))
+            .collect(),
+        nested_classes: entries
+            .nested_classes
             .iter()
             .map(|offset| placed(*offset))
             .collect(),
@@ -1069,9 +1078,10 @@ pub(crate) fn cell_entry(
                 None => address(zone.refusing_stub),
             };
         }
-        Target::NestedClass { .. } => {
-            return address(zone.refusing_stub);
-        }
+        Target::NestedClass { field, chain, .. } => Stubbed::NestedClass {
+            chain: *chain,
+            field: *field,
+        },
     };
     stub_entry(state, &stubbed).unwrap_or_else(|| address(zone.refusing_stub))
 }
@@ -1092,6 +1102,12 @@ pub(crate) enum Stubbed<'method> {
     Primitive {
         primitive: crate::builtins::primitive::Primitive,
         chain: crate::interpreter::resolve::Chain,
+    },
+    /// A nested class's accessor, its class cached in hidden slot `field`
+    /// (`nested::NO_CACHED_FIELD` where no slot was recorded).
+    NestedClass {
+        chain: crate::interpreter::resolve::Chain,
+        field: u32,
     },
 }
 
@@ -1204,6 +1220,17 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
             ..
         } if leaf_safe(*row) => Some(act),
         Stubbed::Primitive { .. } => None,
+        // Only on a chain whose cell compares the receiver's own guard is
+        // the recorded slot the receiver's; any other is the interpreter's.
+        Stubbed::NestedClass {
+            chain: Chain::Public | Chain::Protected,
+            field,
+        } => zone
+            .accessors
+            .nested_classes
+            .get(usize::try_from(*field).unwrap_or(usize::MAX))
+            .map(|entry| address(*entry)),
+        Stubbed::NestedClass { .. } => None,
     }
 }
 
