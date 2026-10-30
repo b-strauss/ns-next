@@ -91,7 +91,7 @@ pub(crate) struct MachineEntries {
     /// (`Heap::closure_has_machine_entry`), answered without the commit
     /// check a read of the reservation makes. Rust's alone, kept by every
     /// write of a row.
-    entered: Vec<u64>,
+    named_entries: Vec<u64>,
 }
 
 impl MachineEntries {
@@ -104,7 +104,7 @@ impl MachineEntries {
         MachineEntries {
             reservation,
             rows: 0,
-            entered: Vec::new(),
+            named_entries: Vec::new(),
         }
     }
 
@@ -138,19 +138,19 @@ impl MachineEntries {
     /// Whether row `row` names a machine entry: `row(row)`'s entry word is
     /// not 0.
     pub(crate) fn names_entry(&self, row: usize) -> bool {
-        self.entered
+        self.named_entries
             .get(row / 64)
             .is_some_and(|bits| bits & (1 << (row % 64)) != 0)
     }
 
-    /// Sets or clears row `row`'s bit of `entered`.
-    fn mark_entered(&mut self, row: usize, entered: bool) {
+    /// Sets or clears row `row`'s bit of `named_entries`.
+    fn mark_names_entry(&mut self, row: usize, names_entry: bool) {
         let word = row / 64;
-        if entered && word >= self.entered.len() {
-            self.entered.resize(word + 1, 0);
+        if names_entry && word >= self.named_entries.len() {
+            self.named_entries.resize(word + 1, 0);
         }
-        if let Some(bits) = self.entered.get_mut(word) {
-            if entered {
+        if let Some(bits) = self.named_entries.get_mut(word) {
+            if names_entry {
                 *bits |= 1 << (row % 64);
             } else {
                 *bits &= !(1 << (row % 64));
@@ -172,7 +172,7 @@ impl MachineEntries {
         let offset = row * ROW_BYTES;
         if let Some(slots) = self.reservation.words_mut(offset..offset + ROW_BYTES) {
             slots.copy_from_slice(&words);
-            self.mark_entered(row, words[RowWord::Entry as usize] != 0);
+            self.mark_names_entry(row, words[RowWord::Entry as usize] != 0);
         }
         grew
     }
@@ -184,7 +184,7 @@ impl MachineEntries {
             if let Some(slots) = self.reservation.words_mut(offset..offset + ROW_BYTES) {
                 slots.fill(0);
             }
-            self.mark_entered(row, false);
+            self.mark_names_entry(row, false);
         }
     }
 
@@ -193,7 +193,7 @@ impl MachineEntries {
         if let Some(slots) = self.reservation.words_mut(0..self.rows * ROW_BYTES) {
             slots.fill(0);
         }
-        self.entered.fill(0);
+        self.named_entries.fill(0);
     }
 
     /// Commits the rows through `row`, and a generous margin past it, which
@@ -238,7 +238,7 @@ mod tests {
     /// them all -- so that it never says a block has machine code its row
     /// does not name, nor misses one it does.
     #[test]
-    fn the_entered_bit_follows_every_write_of_a_row() {
+    fn the_names_entry_bit_follows_every_write_of_a_row() {
         let mut entries = MachineEntries::new();
         assert!(!entries.names_entry(0));
         let words = |entry: u64| -> [u64; ROW_WORDS] { [entry, 8, 1, 0] };
