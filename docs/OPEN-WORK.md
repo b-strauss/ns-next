@@ -1457,6 +1457,20 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **A program in machine code measures where its bodies land in the code
+  zone** (2026-10-30). `bench_loop.ns` measured 5% slower after the
+  closures in machine code on machine code identical to the tree before,
+  instruction for instruction, its stubs too: the stubs grew, so the body
+  moved from zone offset 0x2de0 to 0x30a0. Padding the zone before the first
+  body moves the same binary between 48.9 and 52.2 ms on a 5,000,000-step
+  loop by its 16-byte position, and aligning every body to 64 bytes made
+  `bench_loop.ns` level but `bench_while.ns` 9.6% and Richards 1.9% slower.
+  The measurement protocol varies `vm::run`'s block layout across three
+  builds a side but never the zone's placement, so a growth of any stub
+  re-rolls every machine-code program's number. Open: a protocol knob that
+  shifts the zone's first body by several offsets per build, pooled as the
+  three builds are, and then whether a placement policy (aligned loop
+  heads) measures better than the lottery.
 - **The interpreter is 1.35% slower than before stage 3** (2026-10-29),
   with the JIT off, on the geometric mean over twenty-two sources, twelve
   of them slower with their builds separated, `bench_megamorphic.ns` the
