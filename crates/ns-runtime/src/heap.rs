@@ -9371,6 +9371,17 @@ impl<'gc> Heap<'gc> {
         frames::number_word(frames::COUNTED_BIT).bits() - frames::number_word(0).bits()
     }
 
+    /// The register count's number among a frame's header words, which a
+    /// debug build's outer-local template reads to check a married
+    /// frame's window as `register_slot` checks it.
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn register_count_register() -> u16 {
+        let Ok(register) = u16::try_from(frame_header::REGISTER_COUNT) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        register
+    }
+
     /// The flags word's register number past a frame's arguments.
     #[cfg(ns_jit)]
     pub(crate) fn flags_register() -> u16 {

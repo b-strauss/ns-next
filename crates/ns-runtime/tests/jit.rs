@@ -4345,3 +4345,33 @@ fn an_outer_store_into_an_old_divorced_frame_remembers_it() {
         );
     }
 }
+
+#[cfg(debug_assertions)]
+ns_runtime::for_each_lowering! {
+    /// `OUTER_LOCALS` with every safepoint suspending the run's
+    /// activations into their frame objects and resuming only the top
+    /// one: a creator below the running block is suspended, its married
+    /// word the negative `SmallInteger` of its side-table row, and its
+    /// registers lie in its frame object, where the outer-local templates
+    /// read and write them as the interpreter's `frame_local` does --
+    /// never on the activation stack the word does not name.
+    fn outer_locals_reach_a_suspended_creator(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(OUTER_LOCALS, lowering);
+            interpreter.set_jit_enabled(jit);
+            interpreter.set_stress_suspend(true);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let suspensions = interpreter.stress_suspensions();
+            let mut answer = 0;
+            for _ in 0..3 {
+                answer = send_unary(&mut interpreter, &subject, "run");
+            }
+            assert!(
+                interpreter.stress_suspensions() > suspensions,
+                "the run's activations were suspended"
+            );
+            answer
+        };
+        assert_eq!(run(true), run(false));
+    }
+}

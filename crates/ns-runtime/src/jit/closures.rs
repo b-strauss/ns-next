@@ -760,10 +760,16 @@ pub(super) fn outer_local(
             displacement: layout.frame_married_displacement,
         },
     );
+    // Married only to a non-negative `SmallInteger`, as `married_offset`
+    // decides: a suspended frame's word is the negative one of its
+    // side-table row, and its registers lie in its frame object, as a
+    // divorced frame's do.
     assembler.move_register(spare, other);
     assembler.and_immediate(spare, layout.tag_mask);
     assembler.compare_immediate(spare, layout.small_integer_tag);
     assembler.jump_if(Condition::NotEqual, divorced);
+    assembler.compare_immediate(other, 0);
+    assembler.jump_if(Condition::Less, divorced);
     married_local(macro_assembler, index, access, registers, program_counter);
     let assembler = macro_assembler.assembler();
     assembler.jump(done);
@@ -865,6 +871,7 @@ fn further_hops(
 /// word holds below it (`Heap::register_slot`). A debug build refuses a
 /// dead register's read by an exit before anything is written, so that
 /// the interpreter refuses it as its own read is refused.
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 fn married_local(
     macro_assembler: &mut MacroAssembler,
     index: u16,
@@ -895,6 +902,9 @@ fn married_local(
     );
     assembler.shift_right_logical(spare, argument_count_shift);
     assembler.and_immediate(spare, argument_count_mask);
+    #[cfg(debug_assertions)]
+    check_married_window(macro_assembler, index, registers, program_counter);
+    let assembler = macro_assembler.assembler();
     assembler.shift_left(spare, WORD_SHIFT);
     assembler.subtract(address, spare);
     let slot = frame_slot(address, index);
@@ -913,7 +923,52 @@ fn married_local(
         }
         OuterAccess::Store { .. } => assembler.store(Width::Word64, slot, value),
     }
-    let _ = program_counter;
+}
+
+/// A debug build's check that register `index` lies in the married
+/// frame's window, as `Heap::register_slot`'s assertion checks it: an
+/// argument, or a register above the header below the window's end. Any
+/// other exits before anything is written, so that the interpreter's
+/// re-execution of the instruction makes its own assertion fail.
+/// `registers.address` holds the header's address and `registers.spare`
+/// the argument count, both kept; clobbers the flags, `registers.frame`
+/// and `registers.hops`, which the married access no longer reads.
+#[cfg(debug_assertions)]
+fn check_married_window(
+    macro_assembler: &mut MacroAssembler,
+    index: u16,
+    registers: OuterRegisters,
+    program_counter: u32,
+) {
+    let layout = Heap::machine_layout();
+    let header_registers = i32::from(crate::bytecode::HEADER_REGISTERS);
+    let OuterRegisters {
+        frame: above,
+        address,
+        spare: argument_count,
+        hops: window,
+        ..
+    } = registers;
+    let assembler = macro_assembler.assembler();
+    let (inside, outside) = (assembler.label(), assembler.label());
+    assembler.compare_immediate(argument_count, i32::from(index));
+    assembler.jump_if(Condition::Above, inside);
+    // How far above register 0's number past the arguments `index` lies.
+    assembler.move_immediate(above, u64::from(index));
+    assembler.subtract(above, argument_count);
+    assembler.compare_immediate(above, header_registers);
+    assembler.jump_if(Condition::Below, outside);
+    assembler.load(
+        Width::Word64,
+        window,
+        frame_slot(address, Heap::register_count_register()),
+    );
+    assembler.shift_right_logical(window, layout.tag_bits);
+    assembler.add_immediate(window, header_registers);
+    assembler.compare(above, window);
+    assembler.jump_if(Condition::AboveOrEqual, outside);
+    assembler.bind(inside);
+    macro_assembler.exit_at(outside, ExitKind::Reexecute, program_counter);
 }
 
 /// Register `index` of the divorced frame object `registers.frame`
