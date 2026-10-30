@@ -1,0 +1,22 @@
+stdout = '''
+300 201
+600 201
+900 201
+2
+2
+2
+6 point true
+refused
+2 refused
+9 point true
+refused
+2 refused
+12 point true
+refused
+2 refused
+1
+2
+3
+an instance of Subject no longer has the slots of Subject, which the running code was compiled for
+5 1
+'''

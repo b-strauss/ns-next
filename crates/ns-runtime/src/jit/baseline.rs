@@ -514,6 +514,176 @@ impl BodyAssembler {
         macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
     }
 
+    /// The start of every own-slot instruction's template -- `InitializeSlot`,
+    /// `InitializeSlotProvisionally`, `LoadOwnSlot` and
+    /// `ReturnSlotIfFilled` -- which address `own_index`, mixin-relative,
+    /// in the receiver with no send: `interpreter::locals::check_own_slots`,
+    /// then the field's address (`MacroAssembler::load_own_slot_address`).
+    /// The hot path compares the receiver's guard with the frame's
+    /// (`MacroAssembler::check_own_slot_guard`); any other receiver calls
+    /// `Leaf::OwnSlots` out of line, which runs the cold check and records
+    /// the receiver's guard, after which the compare is made again and
+    /// holds, or, having changed nothing, exits so that the interpreter
+    /// raises the error. Answers the receiver's and the address's
+    /// registers and the label a field the receiver lacks jumps to, which
+    /// the caller binds to an exit that re-executes the instruction, and
+    /// `registers.second` is free again; `None`, nothing emitted, for an
+    /// index no displacement holds, which only a crafted image's code has.
+    fn own_slot(
+        &mut self,
+        own_index: u32,
+        registers: TemplateRegisters,
+    ) -> Option<(Register, Register, Label)> {
+        let own_index = i32::try_from(own_index).ok()?;
+        let (receiver, spare, address) = (registers.first, registers.second, registers.third);
+        let program_counter = self.program_counter;
+        let argument_count = self.argument_count;
+        let frame = self.macro_assembler.roles().frame;
+        let macro_assembler = &mut self.macro_assembler;
+        let assembler = macro_assembler.assembler();
+        let (start, cold, failed) = (assembler.label(), assembler.label(), assembler.label());
+        assembler.bind(start);
+        macro_assembler.check_own_slot_guard(argument_count, receiver, spare, cold);
+        macro_assembler.load_own_slot_address(
+            argument_count,
+            own_index,
+            receiver,
+            address,
+            spare,
+            failed,
+        );
+        macro_assembler.call_leaf_out_of_line_or_exit(
+            cold,
+            Leaf::OwnSlots.index(),
+            [
+                Operand::Register(frame),
+                Operand::Immediate(u64::from(program_counter)),
+                Operand::CodeAddress,
+            ],
+            program_counter,
+            start,
+        );
+        Some((receiver, address, failed))
+    }
+
+    /// `InitializeSlot` and `InitializeSlotProvisionally`: the frame's
+    /// `source` stored into the receiver's own slot `own_index`
+    /// (`vm::initialize_slot`, `vm::initialize_slot_provisionally`),
+    /// through the write barrier, since the receiver may be old and the
+    /// value young. `InitializeSlot` first asks §3.1.1's check of a
+    /// value's slot (`value_check`), which only an object stored into a
+    /// slot of a value class's instance can fail (`check_value_slot`):
+    /// such a store is the generic leaf's, which runs the interpreter's own
+    /// `initialize_slot` and, where that refuses -- a value that is no
+    /// value, or a future, which the interpreter forces first -- exits,
+    /// nothing written, so that the interpreter takes its error or future
+    /// path (`vm::initialize_slot_refused`). A future stored into any
+    /// other slot is stored as it is, as the interpreter stores it.
+    fn initialize_slot(&mut self, source: u16, own_index: u32, value_check: bool) -> Lowering {
+        let registers = self.registers();
+        let Some((receiver, address, failed)) = self.own_slot(own_index, registers) else {
+            return Lowering::Exit;
+        };
+        let (value, scratch) = (registers.dividend, registers.second);
+        let program_counter = self.program_counter;
+        let frame = self.macro_assembler.roles().frame;
+        let layout = crate::heap::Heap::machine_layout();
+        let macro_assembler = &mut self.macro_assembler;
+        let (store, done, checked) = (
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+        );
+        macro_assembler.load_frame_register(value, source);
+        if value_check {
+            let assembler = macro_assembler.assembler();
+            assembler.test_immediate(value, layout.tag_mask);
+            assembler.jump_if(Condition::NotEqual, store);
+            macro_assembler.jump_if_value_slots(receiver, scratch, checked);
+        }
+        macro_assembler.assembler().bind(store);
+        macro_assembler.store_with_barrier_at(
+            receiver,
+            ns_assembler::Memory {
+                base: address,
+                displacement: layout.fields_displacement,
+            },
+            value,
+            scratch,
+        );
+        macro_assembler.assembler().bind(done);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+        if value_check {
+            macro_assembler.call_leaf_out_of_line_or_exit(
+                checked,
+                Leaf::Step.index(),
+                [
+                    Operand::Register(frame),
+                    Operand::Immediate(u64::from(program_counter)),
+                    Operand::CodeAddress,
+                ],
+                program_counter,
+                done,
+            );
+        }
+        Lowering::Template
+    }
+
+    /// `LoadOwnSlot`: the frame's `destination :=` the receiver's own slot
+    /// `own_index` (`interpreter::locals::load_own_slot`).
+    fn load_own_slot(&mut self, destination: u16, own_index: u32) -> Lowering {
+        let registers = self.registers();
+        let Some((_, address, failed)) = self.own_slot(own_index, registers) else {
+            return Lowering::Exit;
+        };
+        let value = registers.second;
+        let program_counter = self.program_counter;
+        let fields = crate::heap::Heap::machine_layout().fields_displacement;
+        let macro_assembler = &mut self.macro_assembler;
+        macro_assembler.assembler().load(
+            ns_assembler::Width::Word64,
+            value,
+            ns_assembler::Memory {
+                base: address,
+                displacement: fields,
+            },
+        );
+        macro_assembler.store_frame_register(destination, value);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+        Lowering::Template
+    }
+
+    /// `ReturnSlotIfFilled`: a lazy slot's getter returns the receiver's
+    /// own slot `own_index` as `Return` returns a value once the slot is
+    /// filled, anything but `nil` (`interpreter::locals::filled_own_slot`),
+    /// and goes on to compute it otherwise.
+    fn return_slot_if_filled(&mut self, own_index: u32) -> Lowering {
+        let registers = self.registers();
+        let Some((_, address, failed)) = self.own_slot(own_index, registers) else {
+            return Lowering::Exit;
+        };
+        let program_counter = self.program_counter;
+        let layout = crate::heap::Heap::machine_layout();
+        let macro_assembler = &mut self.macro_assembler;
+        let value = macro_assembler.roles().leaf_result;
+        let assembler = macro_assembler.assembler();
+        let unfilled = assembler.label();
+        assembler.load(
+            ns_assembler::Width::Word64,
+            value,
+            ns_assembler::Memory {
+                base: address,
+                displacement: layout.fields_displacement,
+            },
+        );
+        assembler.compare_immediate(value, layout.nil_word);
+        assembler.jump_if(Condition::Equal, unfilled);
+        sends::return_value(macro_assembler);
+        macro_assembler.assembler().bind(unfilled);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+        Lowering::Transfer
+    }
+
     /// A send's call of the code at the address in `target`, recorded so
     /// that its return address -- the address right after the `call`,
     /// which the processor pushes and the exit's walk over the native
@@ -959,15 +1129,23 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
         Instruction::LoadOuterLocal { .. } => Lowering::Exit,
         Instruction::StoreOuterLocal { .. } => Lowering::Exit,
         Instruction::NonLocalReturn { .. } => Lowering::Exit,
-        // Allocation, and the slots and futures behind the write barrier:
-        // stage 4.
+        // The own-slot instructions, each through the recorded guard
+        // (`BodyAssembler::own_slot`).
+        Instruction::InitializeSlot { source, own_index } => {
+            body.initialize_slot(*source, *own_index, true)
+        }
+        Instruction::InitializeSlotProvisionally { source, own_index } => {
+            body.initialize_slot(*source, *own_index, false)
+        }
+        Instruction::LoadOwnSlot {
+            destination,
+            own_index,
+        } => body.load_own_slot(*destination, *own_index),
+        Instruction::ReturnSlotIfFilled { own_index } => body.return_slot_if_filled(*own_index),
+        // Allocation and the futures: stage 4.
         Instruction::AllocateInstance { .. } => Lowering::Exit,
-        Instruction::InitializeSlot { .. } => Lowering::Exit,
-        Instruction::ReturnSlotIfFilled { .. } => Lowering::Exit,
         Instruction::MakeFuture { .. } => Lowering::Exit,
         Instruction::ResolveFuture { .. } => Lowering::Exit,
-        Instruction::LoadOwnSlot { .. } => Lowering::Exit,
-        Instruction::InitializeSlotProvisionally { .. } => Lowering::Exit,
         // An error, which the interpreter raises: an exit in every stage.
         Instruction::SignalNonBoolean { .. } => Lowering::Exit,
     }

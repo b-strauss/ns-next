@@ -2311,23 +2311,39 @@ no handle, so nothing traces it.
 
 ### The application id table
 
-Machine code reads an application's instances dispatch id by its index
-(`heap/application_ids.rs`): one `Reservation` of 2^22 rows of a word,
-row `index` the bits of application `index`'s instances `DispatchId`, its
-address and the number of rows recorded in the machine words
-(`ApplicationIds`, `ApplicationIdRows`). The megamorphic stub needs it at
-a `super` or private lexical site, whose guard is S's or N's application
-word while the global cache is keyed by dispatch id (decided on
-2026-10-29, so that no site kind is left to the Rust probe). It has three
-writers: `Heap::register_application` records an application's id when
-it is registered, `Heap::free_application` records `DispatchId::NONE`
-when a full collection reclaims the application, and
-`Heap::truncate_application_rows` takes the bound back with the table of
-applications. An application's ids never change after it is built, and a
-class object's application word, which `class_set_application` changes,
-is read afresh by the stub, so nothing else writes it. A word that is no
-`SmallInteger`, or an index at or past the bound, names no application,
-and the stub goes to the miss leaf, which decides.
+Machine code reads what it needs of an application by its index
+(`heap/application_ids.rs`): one `Reservation` of 2^22 rows of four words,
+its address and the number of rows recorded in the machine words
+(`ApplicationIds`, `ApplicationIdRows`). Row `index` holds, of application
+`index`:
+
+1. the bits of its instances `DispatchId`;
+2. its instances' header word, 0 until machine code allocates instances;
+3. its own slot base (`MixinApplication::own_slot_base`);
+4. its flags, bit 0 set when its instances' slots take §3.1.1's
+   check of what a value's slot may hold (`inherits_value`).
+
+The megamorphic stub reads the id at a `super` or private lexical site,
+whose guard is S's or N's application word while the global cache is
+keyed by dispatch id (decided on 2026-10-29, so that no site kind is left
+to the Rust probe). The own-slot instructions read the slot base of the
+level their frame was entered at, as `Heap::activation_slot_base` does,
+and `InitializeSlot` the flags of its receiver's class's application,
+whose `inherits_value` `check_value_slot` reads -- the receiver's, not the
+entered level's, since a `<:` clause can apply `Value` below the level
+(execution.md, "The baseline JIT's foundation", "Own slots in machine
+code"). It has three writers:
+`Heap::register_application` records an application's row when it is
+registered, `Heap::free_application` records zeros -- the id
+`DispatchId::NONE` -- when a full collection reclaims the application,
+and `Heap::truncate_application_rows` takes the bound back with the table
+of applications. An application's row never changes after it is built,
+and a class object's application word, which `class_set_application`
+changes, is read afresh by machine code, so nothing else writes it. A
+word that is no `SmallInteger`, or an index at or past the bound, names
+no application: the stub goes to the miss leaf, an own-slot instruction
+exits and `InitializeSlot` takes the generic leaf, each of which
+decides.
 
 ### The allocator of the Rust side
 

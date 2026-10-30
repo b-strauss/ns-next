@@ -510,6 +510,8 @@ pub(super) mod testing {
         next: u32,
         /// Block words every run sets besides the frame's and the stubs'.
         block_words: Vec<(BlockWord, u64)>,
+        /// Machine words every run sets besides the safepoint request.
+        machine_words: Vec<(MachineWord, u64)>,
     }
 
     impl Machine {
@@ -522,6 +524,7 @@ pub(super) mod testing {
                 exit: CodeOffset(0),
                 next: 0,
                 block_words: Vec::new(),
+                machine_words: Vec::new(),
             };
             machine.entry = machine.install(&assemble_entry_stub(Abi::host()));
             machine.call = machine.install(&assemble_call_stub(Abi::host()));
@@ -544,6 +547,12 @@ pub(super) mod testing {
             self.block_words.push((word, value));
         }
 
+        /// Makes every later run set the machine word `word` to `value`:
+        /// what a body under test reads of the heap there.
+        pub(crate) fn set_machine_word(&mut self, word: MachineWord, value: u64) {
+            self.machine_words.push((word, value));
+        }
+
         /// Installs the body `build` writes and finishes.
         pub(crate) fn body(&mut self, build: impl FnOnce(&mut MacroAssembler)) -> CodeOffset {
             let mut macro_assembler = MacroAssembler::new(Abi::host());
@@ -563,7 +572,7 @@ pub(super) mod testing {
             context: &mut C,
             leaves: &[Leaf<C>],
         ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
-            run_in(
+            run_with(
                 self.zone.zone(),
                 [self.entry, self.exit],
                 body,
@@ -573,6 +582,7 @@ pub(super) mod testing {
                 context,
                 leaves,
                 &self.block_words,
+                &self.machine_words,
             )
         }
 
@@ -585,7 +595,7 @@ pub(super) mod testing {
             context: &mut C,
             leaves: &[Leaf<C>],
         ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
-            run_in(
+            run_with(
                 self.zone.zone(),
                 [self.call, self.exit],
                 body,
@@ -595,6 +605,7 @@ pub(super) mod testing {
                 context,
                 leaves,
                 &self.block_words,
+                &self.machine_words,
             )
         }
     }
@@ -617,6 +628,37 @@ pub(super) mod testing {
         leaves: &[Leaf<C>],
         block_words: &[(BlockWord, u64)],
     ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
+        run_with(
+            zone,
+            stubs,
+            body,
+            frame,
+            register_base,
+            safepoint_requested,
+            context,
+            leaves,
+            block_words,
+            &[],
+        )
+    }
+
+    /// `run_in`, the machine words `machine_word_values` set as well.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a test's one way to run code; each argument is a part of the fake frame"
+    )]
+    fn run_with<C>(
+        zone: &CodeZone,
+        stubs: [CodeOffset; 2],
+        body: CodeOffset,
+        frame: &mut [u64],
+        register_base: u64,
+        safepoint_requested: bool,
+        context: &mut C,
+        leaves: &[Leaf<C>],
+        block_words: &[(BlockWord, u64)],
+        machine_word_values: &[(MachineWord, u64)],
+    ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
         let [entry, exit] = stubs;
         let block = EntryBlock::new();
         let set = |word: BlockWord, value: u64| block.set(word.index(), value);
@@ -635,6 +677,9 @@ pub(super) mod testing {
             MachineWord::SafepointRequested,
             u64::from(safepoint_requested),
         );
+        for (word, value) in machine_word_values {
+            machine_words.set(*word, *value);
+        }
         set(BlockWord::MachineWords, machine_words.address() as u64);
         for (word, value) in block_words {
             set(*word, *value);

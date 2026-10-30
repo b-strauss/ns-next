@@ -2621,6 +2621,11 @@ slot's getter and the entered level's factory selector otherwise, as the
 §3.1.1 slot refusal's is. An immediate receiver passes, and the access
 answers its usual error. A receiver replaced by another instance of the
 level's own application keeps the guard and never reaches the cold path.
+Machine code makes the same check, the compare inline and the cold path
+through a leaf that records the guard in the frame, and reads the slot
+base from the entered level's row of the application id table
+([execution.md](execution.md), "The baseline JIT's foundation", "Own
+slots in machine code").
 
 The level is the one the activation was *entered* at, by its full-width
 `ApplicationIndex`, not the class object's *current* application: the

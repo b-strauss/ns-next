@@ -18,6 +18,9 @@ array 11: index 11 out of range: valid indices are 1..10 (size 10)
 array -1: index -1 out of range: valid indices are 1..10 (size 10)
 array 1180591620717411303424: index 1180591620717411303424 out of range: valid indices are 1..10 (size 10)
 array 'one': at:put: requires an Integer index, got the String "one"
+array 1: 256
+array 1: -1
+array 1: 'seven'
 large array sum 69196
 large array sum 69196
 large array sum 69196
@@ -28,6 +31,9 @@ large array 601: index 601 out of range: valid indices are 1..600 (size 600)
 large array -1: index -1 out of range: valid indices are 1..600 (size 600)
 large array 1180591620717411303424: index 1180591620717411303424 out of range: valid indices are 1..600 (size 600)
 large array 'one': at:put: requires an Integer index, got the String "one"
+large array 1: 256
+large array 1: -1
+large array 1: 'seven'
 bytes sum 55
 bytes sum 55
 bytes sum 55
@@ -38,6 +44,9 @@ bytes 11: index 11 out of range: valid indices are 1..10 (size 10)
 bytes -1: index -1 out of range: valid indices are 1..10 (size 10)
 bytes 1180591620717411303424: index 1180591620717411303424 out of range: valid indices are 1..10 (size 10)
 bytes 'one': at:put: requires an Integer index, got the String "one"
+bytes 1: at:put: requires an Integer from 0 to 255, got 256
+bytes 1: at:put: requires an Integer from 0 to 255, got -1
+bytes 1: at:put: requires an Integer from 0 to 255, got the String "seven"
 large bytes sum 502480
 large bytes sum 502480
 large bytes sum 502480
@@ -48,6 +57,9 @@ large bytes 4001: index 4001 out of range: valid indices are 1..4000 (size 4000)
 large bytes -1: index -1 out of range: valid indices are 1..4000 (size 4000)
 large bytes 1180591620717411303424: index 1180591620717411303424 out of range: valid indices are 1..4000 (size 4000)
 large bytes 'one': at:put: requires an Integer index, got the String "one"
+large bytes 1: at:put: requires an Integer from 0 to 255, got 256
+large bytes 1: at:put: requires an Integer from 0 to 255, got -1
+large bytes 1: at:put: requires an Integer from 0 to 255, got the String "seven"
 at:put: requires an Integer from 0 to 255, got 256
 at:put: requires an Integer from 0 to 255, got -1
 0

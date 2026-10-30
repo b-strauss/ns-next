@@ -2114,9 +2114,11 @@ pub(crate) fn load_vector_into<'gc>(
 /// `own_index` is relative to the executing mixin's own slots; the
 /// activation's slot base, that of the application it was entered at
 /// (`Heap::activation_slot_base`), turns it into this instance's absolute
-/// field index.
+/// field index. Machine code's generic leaf runs it for an `InitializeSlot`
+/// whose value §3.1.1's check must look at (`jit::leaves`), so the two
+/// cannot drift.
 #[inline(always)]
-fn initialize_slot<'gc>(
+pub(crate) fn initialize_slot<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     register_base: RegisterBase,

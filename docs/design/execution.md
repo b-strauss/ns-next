@@ -9574,11 +9574,13 @@ reads or writes another activation. Before it leaves, the exit walks the
 return addresses on the native stack down to the run loop's entry and writes
 each compiled frame's header but the two words its call wrote: its code, its program counter, its
 caller word, its flags with the compiled bit, its continuation (`Deliver`),
-its feedback base, its guard (none, so the first own-slot access takes
-the cold check, as a resume does today: "Suspending and resuming" above)
-and entered level (the current class's application for code that
-addresses its own slots, as the push records it, since the cold check
-verifies the receiver against that level), and its reified word, nil unless the frame reified
+its feedback base, for code that addresses no own slot its guard
+(none) and entered level (`UNREGISTERED`), as the push records them --
+code that does had its prologue write both, the current class's
+application and the guard the push would record, and its own-slot
+instructions may have recorded a guard since, so the walk leaves them
+("Own slots in machine code", under "The baseline JIT's foundation"
+below) -- and its reified word, nil unless the frame reified
 itself, whose reification wrote it then ("Returns" below). Everything it writes is derived: a return
 address names a call site, the call site its code and program counter,
 and a callee's frame lies at a fixed offset of its caller's, the call
@@ -9920,7 +9922,10 @@ of the first two.
   `LoadSelf`, `Move`, `StoreLocal`, `Jump`, `JumpIfNotBoolean`,
   `BranchIfFalse`, `BranchIfTrue`, the cached sends, `Return` and
   `ImplicitReturn`, a leaf-safe `SendMirror`, `MakeVector`, `MakeArray`,
-  `LoadVector`, `StoreVector`, and `IntegerBinary`'s `SmallInteger`
+  `LoadVector`, `StoreVector`, the own-slot instructions
+  (`InitializeSlot`, `InitializeSlotProvisionally`, `LoadOwnSlot`,
+  `ReturnSlotIfFilled`; "Own slots in machine code" below), and
+  `IntegerBinary`'s `SmallInteger`
   fast path -- add, subtract, multiply, floor divide and the five
   compares, with their tag checks, declining to the send at the
   instruction's target, before anything is written, on an operand that
@@ -9958,9 +9963,44 @@ of the first two.
   of a scavenge past the set's limit included, and answers the holder
   again, so that a setter finds its receiver after the call. The
   generic leaf, `Leaf::Step` (`jit/leaves.rs`), runs a `LoadLiteral`
-  that allocates through the interpreter's own function for it, and
-  answers "re-execute" only before it has changed anything, so the
-  interpreter raises the error itself. Every other instruction exits
+  that allocates, and an `InitializeSlot` whose value §3.1.1's check of
+  a value's slot must look at, through the interpreter's own function
+  for it, and answers "re-execute" only before it has changed anything,
+  so the interpreter raises the error, or forces a future, itself.
+  - **Own slots in machine code.** An own-slot template first makes
+    `check_own_slots`' hot path inline
+    (`MacroAssembler::check_own_slot_guard`): the receiver an object
+    whose header's guard is the one its frame recorded, and not `NONE`.
+    On anything else it calls `Leaf::OwnSlots` out of line, which runs
+    the cold check (`receiver_keeps_entered_level`), records the
+    receiver's guard in the frame and answers 0, after which the
+    compare is made again and holds; for a receiver without the level,
+    an immediate and an object whose guard is `NONE` it changes nothing
+    and the template exits to re-execute, so the interpreter raises the
+    error or answers as it does. The field's address comes from the
+    slot base in the entered level's row of the application id table
+    (memory.md, "The application id table";
+    `MacroAssembler::load_own_slot_address`), as
+    `Heap::activation_slot_base` reads it, and the field must be one of
+    the receiver's, an instance's, counted by its header or its
+    overflow word -- a crafted image's index past them exits. A
+    compiled call's prologue writes the frame's entered level, the
+    current class's application, and its guard as the push records
+    them: the receiver's when the receiver's own class is that level,
+    `NONE` otherwise (`jit::sends`' `own_slot_words`), so that a lazy
+    getter called on an instance of its own class calls no leaf. The
+    exit's walk and a leaf's view of a frame leave both words alone for
+    such code, which would otherwise throw a recorded guard away at
+    every leaf call (`Heap::write_machine_frame`). `InitializeSlot` and
+    `InitializeSlotProvisionally` store through the write barrier;
+    `InitializeSlot` with an object value first reads the flags of its
+    receiver's class's application -- not the entered level's, since a
+    `<:` clause can apply `Value` below the level -- and, for one whose
+    slots take §3.1.1's check, or a class with no row, runs the store
+    through `Leaf::Step`, which keeps the interpreter's error and future
+    paths (`vm::initialize_slot_refused`). `ReturnSlotIfFilled` returns
+    a field that is not `nil` as `Return` returns, and goes on
+    otherwise. Every other instruction exits
   and the interpreter runs it. `JitStatistics::leaf_calls` counts every
   leaf call machine code makes, once, in the leaf table's wrapper.
 - **The trigger and the entry** (`jit/mod.rs`): every `CompiledCode`

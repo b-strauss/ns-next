@@ -9,7 +9,9 @@
 //! lies on the send's argument slots as the interpreter's push lays it:
 //! its arguments are those slots, its header follows them, and the call
 //! writes the header's first two words, the receiver and the current
-//! class, which nothing can derive later. Every other header word is
+//! class, which nothing can derive later, and the callee's prologue the
+//! guard and the entered level of code that addresses its own slots,
+//! which its own-slot instructions update. Every other header word is
 //! written when an exit materializes the frame (`jit::materialize`).
 
 use ns_assembler::{Condition, Label, Memory, Register, Width};
@@ -54,9 +56,11 @@ const _: () = assert!(
 /// push does -- the depth limit's error, a growth of the activation
 /// stack, the safepoint (`Mutator::push_on_slots`); then the count, and
 /// the words of the frame the push writes but the header: the named
-/// locals nil, and in a debug build the dead register's word in the
-/// scratch registers and the flags word with the push's generation, the
-/// rest of the header the exit's walk's (`jit::materialize`). The run
+/// locals nil, the guard and the entered level of code that addresses its
+/// own slots (`own_slot_words`), and in a debug build the dead register's
+/// word in the scratch registers and the flags word with the push's
+/// generation, the rest of the header the exit's walk's
+/// (`jit::materialize`). The run
 /// loop's push writes all of it itself and enters the body past the
 /// prologue, at its first instruction; an interpreter's send that calls
 /// the body enters at the prologue, through the call stub, as a compiled
@@ -128,6 +132,10 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
         ),
         roles.callee_class(),
     );
+    if code.addresses_own_slots {
+        own_slot_words(macro_assembler, code.argument_count, scratch, end);
+    }
+    let assembler = macro_assembler.assembler();
     let header_end = code.argument_count + HEADER_REGISTERS;
     for register in header_end..code.local_count.max(header_end) {
         let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
@@ -135,6 +143,77 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     }
     #[cfg(debug_assertions)]
     debug_frame_words(body, code);
+}
+
+/// The guard and the entered level of a frame whose code addresses its own
+/// slots, as the push records them (`Heap::push_activation`): the entered
+/// level is the current class's application, the class object's
+/// application word -- already the `SmallInteger` the header holds -- or
+/// `UNREGISTERED` for a class that names none; the guard is the
+/// receiver's when the receiver's own class is that level, the first
+/// compare of `Heap::receiver_has_level`, and none otherwise, so that the
+/// first own-slot access takes the cold check, which walks the receiver's
+/// chain for the level and records its guard (`jit::baseline`'s own-slot
+/// templates). Written here, once, rather than by the exit's walk, which
+/// would throw a recorded guard away (`Heap::write_machine_frame`).
+/// Clobbers the flags, `scratch` and `spare`.
+fn own_slot_words(
+    macro_assembler: &mut MacroAssembler,
+    argument_count: u16,
+    scratch: Register,
+    spare: Register,
+) {
+    let roles = macro_assembler.roles();
+    let layout = Heap::machine_layout();
+    let (guard, entered_level) = Heap::own_slot_registers(argument_count);
+    let (guard, entered_level) = (
+        frame_slot(roles.frame, guard),
+        frame_slot(roles.frame, entered_level),
+    );
+    let (none_word, unregistered_word) = Heap::machine_own_slot_words();
+    let none_word = i32::try_from(none_word).expect("internal: the guard none is a small word");
+    let receiver = roles.callee_receiver();
+    macro_assembler.load_application_word(scratch, roles.callee_class());
+    let assembler = macro_assembler.assembler();
+    let (registered, recorded) = (assembler.label(), assembler.label());
+    assembler.test_immediate(scratch, layout.small_integer_tag);
+    assembler.jump_if(Condition::NotEqual, registered);
+    assembler.move_immediate(scratch, unregistered_word);
+    assembler.bind(registered);
+    assembler.store(Width::Word64, entered_level, scratch);
+    assembler.store_immediate32(guard, none_word);
+    macro_assembler.jump_unless_object(receiver, recorded);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(spare, receiver);
+    assembler.add(spare, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        Memory {
+            base: spare,
+            displacement: layout.class_word_displacement,
+        },
+    );
+    macro_assembler.load_application_word(spare, spare);
+    let assembler = macro_assembler.assembler();
+    assembler.compare(spare, scratch);
+    assembler.jump_if(Condition::NotEqual, recorded);
+    assembler.move_register(spare, receiver);
+    assembler.add(spare, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        Memory {
+            base: spare,
+            displacement: layout.header_displacement,
+        },
+    );
+    // The frame holds the guard as a `SmallInteger`.
+    assembler.and_immediate(spare, layout.guard_mask);
+    assembler.shift_left(spare, layout.tag_bits);
+    assembler.or_immediate(spare, layout.small_integer_tag);
+    assembler.store(Width::Word64, guard, spare);
+    assembler.bind(recorded);
 }
 
 /// A debug build's words of a pushed frame the interpreter's push writes
@@ -189,6 +268,15 @@ pub(super) fn return_from(body: &mut BodyAssembler, register: u16) -> Lowering {
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     macro_assembler.load_frame_register(roles.leaf_result, register);
+    return_value(macro_assembler);
+    Lowering::Transfer
+}
+
+/// The return of the value in the value register (`Roles::leaf_result`):
+/// the count taken back and `ret`, as `return_from` returns -- also
+/// `ReturnSlotIfFilled`'s return of a filled lazy slot (`jit::baseline`).
+pub(super) fn return_value(macro_assembler: &mut MacroAssembler) {
+    let roles = macro_assembler.roles();
     let machine_words = roles.idiom_scratch;
     macro_assembler.load_machine_words(machine_words);
     let depth = MacroAssembler::machine_word(machine_words, MachineWord::DepthCount);
@@ -198,7 +286,6 @@ pub(super) fn return_from(body: &mut BodyAssembler, register: u16) -> Lowering {
     assembler.add_immediate(count, -1);
     assembler.store(Width::Word64, depth, count);
     assembler.return_();
-    Lowering::Transfer
 }
 
 /// The argument placement of a send whose sources are not all its slots:

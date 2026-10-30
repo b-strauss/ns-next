@@ -819,6 +819,11 @@ fn emit_guarded_accessor(
 )]
 const CHAIN_START_SHIFT: u8 = CHAIN_START_BITS as u8;
 
+// The guarded stubs test the recorded guard against 0 for `NONE`, and
+// `cells::chain_start_word` leaves 0 above the start for an entry that
+// recorded none.
+const _: () = assert!(crate::mixin::DispatchId::NONE.bits() == 0);
+
 /// The stub of a method whose fast path is the row `stub` serves
 /// (`MachineCall::Stub`), at the label it answers: the element its
 /// index, in the send's slot 0, names -- read, or written with the value

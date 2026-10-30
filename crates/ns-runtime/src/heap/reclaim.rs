@@ -271,7 +271,7 @@ impl Heap<'_> {
         self.tables
             .free_applications
             .free(u32::try_from(index.index()).expect("an application index is 32 bits"));
-        self.record_application_id(index.index(), DispatchId::NONE);
+        self.record_application_row(index.index(), Self::vacant_application_row());
         application
     }
 

@@ -173,7 +173,9 @@ class SettersAndIndexing = Object new (
   )
 
   /// Fills `indexable` three times, then stores at its first and last
-  /// index and past them, printing what each answers or refuses.
+  /// index and past them, and values no byte holds at its first, through
+  /// the compiled `store:at:into:`, printing what each answers or
+  /// refuses.
   exercise: indexable named: name on: transcript kernel: kernel = (
     |
       attempt = [:index :value |
@@ -201,6 +203,9 @@ class SettersAndIndexing = Object new (
     attempt value: -1 value: 7.
     attempt value: (2 raisedTo: 70) value: 7.
     attempt value: 'one' value: 7.
+    attempt value: 1 value: 256.
+    attempt value: 1 value: -1.
+    attempt value: 1 value: 'seven'.
   )
 
   public main: platform args: arguments = (

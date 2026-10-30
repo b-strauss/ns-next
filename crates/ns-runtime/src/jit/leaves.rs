@@ -5,8 +5,9 @@
 //! step, the miss of a send's cell -- the one leaf that may compile and
 //! install a body -- the leaf stub's run of a target that is no method
 //! with code, a leaf-safe mirror send, an allocation past the inline
-//! bump's limit, the write barrier's remembering of an old object, and
-//! the exit's materialization of the frames machine code pushed. A
+//! bump's limit, the write barrier's remembering of an old object, the
+//! cold check of an own-slot instruction, and the exit's
+//! materialization of the frames machine code pushed. A
 //! template or a stub names one by its index in `table` (`Leaf::index`),
 //! and every call through the table is counted once
 //! (`JitStatistics::leaf_calls`).
@@ -15,10 +16,12 @@ use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, Instruction};
 use crate::heap::{register_number, ActivationReference, ArgumentSlots, Word};
 use crate::interpreter::inline_cache::{self, MissAnswer};
+use crate::interpreter::locals::receiver_keeps_entered_level;
 use crate::interpreter::mirror::{self, MachineMirrorAnswer};
 use crate::interpreter::{Arguments, Mutator};
+use crate::mixin::DispatchId;
 use crate::types::Value;
-use crate::vm::{argument_window, load_literal_into};
+use crate::vm::{argument_window, initialize_slot, load_literal_into};
 
 use super::macro_assembler::LeafIndex;
 use super::materialize;
@@ -51,6 +54,9 @@ pub(crate) enum Leaf {
     /// Remembers an old object machine code stored a young one into, as
     /// the interpreter's write barrier does (`remember`).
     Remember = 8,
+    /// The cold check of an own-slot instruction whose receiver's guard
+    /// is not the one its frame recorded (`own_slots`).
+    OwnSlots = 9,
 }
 
 impl Leaf {
@@ -77,7 +83,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 9] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 10] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -91,6 +97,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 9] {
         counted!(mirror_method),
         counted!(allocate),
         counted!(remember),
+        counted!(own_slots),
     ]
 }
 
@@ -109,11 +116,14 @@ pub(super) const FAILED: u64 = 2;
 /// machine code holds at `arguments[0]` and whose body `arguments[2]`, an
 /// address inside it, names (`materialize::leaf_frame`), through the
 /// interpreter's own effect function, the one `vm::run_stretch` calls, so
-/// the two cannot drift: an allocated literal's load, the one instruction
-/// lowered to it. Answers `DONE`, or `REFUSED` for a load the interpreter
-/// refuses -- which fails before it writes anything -- so that the exit
-/// after the call re-executes the instruction and the interpreter raises
-/// the error, as no leaf can.
+/// the two cannot drift: an allocated literal's load, and an
+/// `InitializeSlot` whose value §3.1.1's check of a value's slot
+/// must look at (`jit::baseline`'s own-slot templates). Answers `DONE`, or
+/// `REFUSED` for an instruction the interpreter refuses -- which fails
+/// before it writes anything -- so that the exit after the call
+/// re-executes the instruction and the interpreter raises the error, or
+/// forces the future a value's slot is handed (`vm`'s
+/// `initialize_slot_refused`), as no leaf can.
 ///
 /// # Panics
 ///
@@ -151,6 +161,14 @@ fn step_in(
             body.literal(usize::from(literal)),
         )
         .is_ok(),
+        CompactInstruction::InitializeSlot { source, own_index } => initialize_slot(
+            mutator,
+            activation,
+            register_base,
+            u16::from(source),
+            own_index,
+        )
+        .is_ok(),
         CompactInstruction::Wide { index } => match body.wide(index as usize) {
             Instruction::LoadLiteral {
                 destination,
@@ -158,11 +176,47 @@ fn step_in(
             } => {
                 load_literal_into(mutator, activation, register_base, *destination, literal).is_ok()
             }
+            Instruction::InitializeSlot { source, own_index } => {
+                initialize_slot(mutator, activation, register_base, *source, *own_index).is_ok()
+            }
             other => unreachable!("internal: the generic leaf is handed {other:?}"),
         },
         other => unreachable!("internal: the generic leaf is handed {other:?}"),
     };
     if done {
+        DONE
+    } else {
+        REFUSED
+    }
+}
+
+/// `Leaf::OwnSlots`: the cold half of `check_own_slots`
+/// (`interpreter::locals`) for the own-slot instruction at
+/// `arguments[1]`, the program counter, of the frame whose register 0
+/// machine code holds at `arguments[0]` and whose body `arguments[2]`
+/// names, as `step` finds it: whether its receiver, an object, still has
+/// the slots of the level the frame was entered at, in which case the
+/// receiver's guard is recorded in the frame, so that the accesses after
+/// it take the template's hot path, and the leaf answers `DONE`. A
+/// receiver without the level, an immediate -- whose own-slot access the
+/// interpreter answers without a field -- and an object whose guard is
+/// `NONE`, which the hot path never matches, change nothing and answer
+/// `REFUSED`, so that the exit after the call re-executes the instruction
+/// and the interpreter raises the error or answers as it does.
+fn own_slots(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [frame_address, program_counter, code_address] = arguments;
+    let Ok(program_counter) = u32::try_from(program_counter) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
+    let receiver = mutator.heap.activation_receiver(frame.activation);
+    // A receiver whose guard is `NONE` would take the cold check again at
+    // the template's second compare, which never holds for it, and again.
+    let kept = receiver.as_object().is_some()
+        && mutator.heap.dispatch_id(receiver) != DispatchId::NONE
+        && receiver_keeps_entered_level(mutator, frame.activation, receiver);
+    materialize::release_leaf_frame(mutator, frame);
+    if kept {
         DONE
     } else {
         REFUSED

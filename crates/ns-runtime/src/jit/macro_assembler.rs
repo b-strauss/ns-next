@@ -282,6 +282,16 @@ enum ColdPath {
         result: Register,
         rejoin: Label,
     },
+    /// A leaf's call (`call_leaf_out_of_line_or_exit`), then back into the
+    /// straight line at `rejoin` when it answered 0, and an exit that
+    /// re-executes the instruction at `program_counter` otherwise.
+    CheckedLeafCall {
+        label: Label,
+        leaf: LeafIndex,
+        arguments: [Operand; 3],
+        program_counter: u32,
+        rejoin: Label,
+    },
     #[cfg(debug_assertions)]
     DeadRegister {
         label: Label,
@@ -596,6 +606,30 @@ impl MacroAssembler {
             leaf,
             arguments,
             result,
+            rejoin,
+        });
+    }
+
+    /// Calls `leaf` with `arguments` out of line, at `label`, which the
+    /// straight line jumps to; on its answer 0 jumps back to `rejoin`, and
+    /// on any other takes the exit that re-executes the instruction at
+    /// `program_counter`: a cold check that either vouches for what the
+    /// straight line does next or, having changed nothing, hands the
+    /// instruction to the interpreter. The call keeps only the pinned
+    /// roles (`call_leaf_out_of_line`).
+    pub(crate) fn call_leaf_out_of_line_or_exit(
+        &mut self,
+        label: Label,
+        leaf: LeafIndex,
+        arguments: [Operand; 3],
+        program_counter: u32,
+        rejoin: Label,
+    ) {
+        self.cold_paths.push(ColdPath::CheckedLeafCall {
+            label,
+            leaf,
+            arguments,
+            program_counter,
             rejoin,
         });
     }
@@ -1504,21 +1538,44 @@ impl MacroAssembler {
         unrecorded: Label,
     ) {
         let layout = crate::heap::Heap::machine_layout();
-        let scratch = self.roles.idiom_scratch;
         debug_assert!(
-            target != scratch && word != scratch,
+            target != self.roles.idiom_scratch && word != self.roles.idiom_scratch,
             "internal: the application id's idiom uses the idiom scratch register"
         );
-        let machine_words = self.block_word(BlockWord::MachineWords);
         let assembler = &mut self.assembler;
         assembler.test_immediate(word, layout.small_integer_tag);
         assembler.jump_if(Condition::Equal, not_an_application);
         assembler.move_register(target, word);
         assembler.shift_right_arithmetic(target, layout.tag_bits);
+        self.load_application_row(target, unrecorded);
+        self.assembler.load(
+            Width::Word64,
+            target,
+            Memory {
+                base: target,
+                displacement: layout.application_dispatch_id_displacement,
+            },
+        );
+    }
+
+    /// `row :=` the address of the application id table's row
+    /// (`heap/application_ids.rs`) of the application whose index `row`
+    /// holds, untagged; jumps to `unrecorded` for an index at or past the
+    /// table's bound, a negative one included. Clobbers the flags and the
+    /// idiom scratch register.
+    fn load_application_row(&mut self, row: Register, unrecorded: Label) {
+        let layout = crate::heap::Heap::machine_layout();
+        let scratch = self.roles.idiom_scratch;
+        debug_assert_ne!(
+            row, scratch,
+            "internal: the row's idiom uses the idiom scratch register"
+        );
+        let machine_words = self.block_word(BlockWord::MachineWords);
+        let assembler = &mut self.assembler;
         assembler.load(Width::Word64, scratch, machine_words);
         // Unsigned, so that a negative index is past the bound too.
         assembler.compare_memory(
-            target,
+            row,
             Memory {
                 base: scratch,
                 displacement: MachineWords::offset(MachineWord::ApplicationIdRows),
@@ -1533,16 +1590,167 @@ impl MacroAssembler {
                 displacement: MachineWords::offset(MachineWord::ApplicationIds),
             },
         );
-        assembler.shift_left(target, WORD_SHIFT);
-        assembler.add(target, scratch);
+        assembler.shift_left(row, layout.application_row_shift);
+        assembler.add(row, scratch);
+    }
+
+    /// Jumps to `cold` unless the receiver of the frame, whose code takes
+    /// `argument_count` arguments, is an object whose header's guard is
+    /// the one the frame recorded (`frame_header::GUARD`) and not
+    /// `DispatchId::NONE`: the hot path of
+    /// `interpreter::locals::check_own_slots`, one header load and one
+    /// compare. `receiver :=` the receiver; clobbers the flags and `guard`.
+    pub(crate) fn check_own_slot_guard(
+        &mut self,
+        argument_count: u16,
+        receiver: Register,
+        guard: Register,
+        cold: Label,
+    ) {
+        debug_assert_ne!(
+            receiver, guard,
+            "internal: the guard check keeps its receiver"
+        );
+        let layout = crate::heap::Heap::machine_layout();
+        let (guard_register, _) = crate::heap::Heap::own_slot_registers(argument_count);
+        let recorded = self.frame_slot(guard_register);
+        let object_space = self.roles.object_space;
+        self.load_receiver(receiver, argument_count);
+        self.jump_unless_object(receiver, cold);
+        let assembler = &mut self.assembler;
+        assembler.move_register(guard, receiver);
+        assembler.add(guard, object_space);
         assembler.load(
             Width::Word64,
-            target,
+            guard,
             Memory {
-                base: target,
-                displacement: 0,
+                base: guard,
+                displacement: layout.header_displacement,
             },
         );
+        // `NONE`, which a frame records when it verified nothing, is never
+        // a match, whatever guard a header holds: a header's guard bits of
+        // 0 are `NONE`'s (asserted below `WORD_BYTES`).
+        assembler.test_immediate(guard, layout.guard_mask);
+        assembler.jump_if(Condition::Equal, cold);
+        // The frame holds the guard as a `SmallInteger`.
+        assembler.and_immediate(guard, layout.guard_mask);
+        assembler.shift_left(guard, layout.tag_bits);
+        assembler.or_immediate(guard, layout.small_integer_tag);
+        assembler.compare_memory(guard, recorded);
+        assembler.jump_if(Condition::NotEqual, cold);
+    }
+
+    /// `address :=` the address of the receiver's own slot `own_index` --
+    /// mixin-relative, offset by the own slot base of the level the frame
+    /// was entered at (`frame_header::ENTERED_LEVEL`), read from that
+    /// level's row of the application id table, as
+    /// `Heap::activation_slot_base` reads it -- for a receiver in
+    /// `receiver` whose guard `check_own_slot_guard` found the frame's.
+    /// Jumps to `failed`, nothing written, unless the entered level has a
+    /// row and the receiver is an instance with that field
+    /// (`Heap::instance_field`'s checks), the count the header's or the
+    /// overflow word's. `receiver` is kept; clobbers the flags, `count`
+    /// and the idiom scratch register.
+    pub(crate) fn load_own_slot_address(
+        &mut self,
+        argument_count: u16,
+        own_index: i32,
+        receiver: Register,
+        address: Register,
+        count: Register,
+        failed: Label,
+    ) {
+        debug_assert!(
+            distinct(&[receiver, address, count, self.roles.idiom_scratch]),
+            "internal: the own slot's idiom takes distinct registers"
+        );
+        let layout = crate::heap::Heap::machine_layout();
+        let (_, entered_level) = crate::heap::Heap::own_slot_registers(argument_count);
+        let entered_level = self.frame_slot(entered_level);
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        assembler.load(Width::Word64, address, entered_level);
+        assembler.shift_right_arithmetic(address, layout.tag_bits);
+        self.load_application_row(address, failed);
+        let assembler = &mut self.assembler;
+        assembler.load(
+            Width::Word64,
+            address,
+            Memory {
+                base: address,
+                displacement: layout.application_slot_base_displacement,
+            },
+        );
+        assembler.add_immediate(address, own_index);
+        assembler.move_register(count, receiver);
+        assembler.add(count, object_space);
+        assembler.load(
+            Width::Word64,
+            count,
+            Memory {
+                base: count,
+                displacement: layout.header_displacement,
+            },
+        );
+        assembler.test_immediate(count, layout.instance_format_bits);
+        assembler.jump_if(Condition::NotEqual, failed);
+        assembler.shift_right_logical(count, layout.word_count_shift);
+        self.load_overflow_count(receiver, count);
+        // The fields are the words after the header less the class word;
+        // unsigned, so that a field index past them fails, however large.
+        let assembler = &mut self.assembler;
+        assembler.add_immediate(count, -1);
+        assembler.compare(count, address);
+        assembler.jump_if(Condition::BelowOrEqual, failed);
+        assembler.shift_left(address, WORD_SHIFT);
+        assembler.add(address, receiver);
+        assembler.add(address, object_space);
+    }
+
+    /// Jumps to `checked` when the slots of the receiver, the object in
+    /// `receiver`, take §3.1.1's check of what a value's slot may
+    /// hold (`interpreter::instantiate::check_value_slot`): its class's
+    /// application's row says so (`ROW_FLAG_VALUE_SLOTS`), or its class
+    /// names no application the table records, which the check decides.
+    /// `receiver` is kept; clobbers the flags, `scratch` and the idiom
+    /// scratch register.
+    pub(crate) fn jump_if_value_slots(
+        &mut self,
+        receiver: Register,
+        scratch: Register,
+        checked: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        assembler.move_register(scratch, receiver);
+        assembler.add(scratch, object_space);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: scratch,
+                displacement: layout.class_word_displacement,
+            },
+        );
+        self.load_application_word(scratch, scratch);
+        let assembler = &mut self.assembler;
+        assembler.test_immediate(scratch, layout.small_integer_tag);
+        assembler.jump_if(Condition::Equal, checked);
+        assembler.shift_right_arithmetic(scratch, layout.tag_bits);
+        self.load_application_row(scratch, checked);
+        let assembler = &mut self.assembler;
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: scratch,
+                displacement: layout.application_flags_displacement,
+            },
+        );
+        assembler.test_immediate(scratch, layout.application_value_slots_flag);
+        assembler.jump_if(Condition::NotEqual, checked);
     }
 
     /// Jumps to `label` unless the word in `value` names an object -- an
@@ -1655,6 +1863,19 @@ impl MacroAssembler {
                     self.assembler.move_register(result, self.roles.leaf_result);
                     self.assembler.jump(rejoin);
                 }
+                ColdPath::CheckedLeafCall {
+                    label,
+                    leaf,
+                    arguments,
+                    program_counter,
+                    rejoin,
+                } => {
+                    self.assembler.bind(label);
+                    self.call_leaf(leaf, arguments);
+                    self.assembler.compare_immediate(self.roles.leaf_result, 0);
+                    self.assembler.jump_if(Condition::Equal, rejoin);
+                    self.exit(ExitKind::Reexecute, program_counter);
+                }
                 #[cfg(debug_assertions)]
                 ColdPath::DeadRegister {
                     label,
@@ -1678,6 +1899,9 @@ const WORD_SHIFT: u8 = 3;
 
 /// A word's bytes, as an immediate operand.
 const WORD_BYTES: i32 = 8;
+
+// `check_own_slot_guard` takes a header's guard bits of 0 for `NONE`.
+const _: () = assert!(crate::mixin::DispatchId::NONE.bits() == 0);
 
 // `load_element_address` takes a `SmallInteger`'s word, less its tag, for
 // its value's offset in words.
@@ -2507,5 +2731,235 @@ mod tests {
             !index_checked(&words, None, 299),
             "past the overflow's count"
         );
+    }
+
+    /// A frame number word, as a frame's header holds its guard and its
+    /// entered level.
+    fn number(value: u64) -> u64 {
+        let layout = crate::heap::Heap::machine_layout();
+        (value << layout.tag_bits) | u64::try_from(layout.small_integer_tag).expect("a low bit")
+    }
+
+    /// An application id table of `rows`, each a slot base and flags, as
+    /// `heap/application_ids.rs` lays it out, each row's other words 0.
+    fn application_rows(rows: &[(u64, u64)]) -> Vec<u64> {
+        let layout = crate::heap::Heap::machine_layout();
+        let words = 1 << (layout.application_row_shift - 3);
+        let mut table = vec![0u64; rows.len() * words];
+        let word = |displacement: i32| usize::try_from(displacement / 8).expect("in the row");
+        for (row, (slot_base, flags)) in rows.iter().enumerate() {
+            table[row * words + word(layout.application_slot_base_displacement)] = *slot_base;
+            table[row * words + word(layout.application_flags_displacement)] = *flags;
+        }
+        table
+    }
+
+    /// A machine whose application id table is `table`, of `rows` rows.
+    fn machine_with_rows(table: &[u64], rows: u64) -> Machine {
+        use crate::heap::machine_words::MachineWord;
+        let mut machine = Machine::new();
+        machine.set_machine_word(
+            MachineWord::ApplicationIds,
+            table.as_ptr().expose_provenance() as u64,
+        );
+        machine.set_machine_word(MachineWord::ApplicationIdRows, rows);
+        machine
+    }
+
+    /// An object's words for the own-slot tests: an overflow word, the
+    /// header and the class word `class`, then `fields` fields, field
+    /// `index` holding `1000 + index`.
+    fn instance_words(header: u64, overflow: u64, class: u64, fields: usize) -> Vec<u64> {
+        let mut words = vec![overflow, header, class];
+        words.extend((0..fields).map(|index| 1000 + index as u64));
+        words
+    }
+
+    /// The handle of the object `instance_words` laid out, its header its
+    /// second word, in the tests' object space, which starts at 0.
+    fn instance_handle(words: &[u64]) -> u64 {
+        let layout = crate::heap::Heap::machine_layout();
+        let header = words.as_ptr().expose_provenance() as u64 + 8;
+        header - u64::try_from(layout.header_displacement).expect("the header follows the start")
+    }
+
+    /// The header of an instance with guard `guard` and `fields` fields.
+    fn instance_header(guard: u64, fields: u64) -> u64 {
+        header_of(0, fields + 1) | guard
+    }
+
+    /// Runs `check_own_slot_guard` and `load_own_slot_address` for
+    /// `own_index` on a frame whose receiver is `receiver` and whose guard
+    /// and entered level are `recorded.0` and `recorded.1`, against
+    /// `table` of `rows` rows: the field read, or the program counter of
+    /// the exit taken, 2 for the guard's cold path, 3 for a field that is
+    /// not there.
+    fn own_slot_read(
+        receiver: u64,
+        recorded: (u64, u64),
+        own_index: i32,
+        table: &[u64],
+        rows: u64,
+    ) -> Result<u64, u32> {
+        let layout = crate::heap::Heap::machine_layout();
+        let mut machine = machine_with_rows(table, rows);
+        let body = machine.body(|macro_assembler| {
+            let (cold, failed) = (
+                macro_assembler.assembler().label(),
+                macro_assembler.assembler().label(),
+            );
+            macro_assembler.check_own_slot_guard(0, RAX, RCX, cold);
+            macro_assembler.load_own_slot_address(0, own_index, RAX, RDX, RCX, failed);
+            macro_assembler.assembler().load(
+                ns_assembler::Width::Word64,
+                RSI,
+                Memory {
+                    base: RDX,
+                    displacement: layout.fields_displacement,
+                },
+            );
+            macro_assembler.store_frame_register(15, RSI);
+            macro_assembler.exit(ExitKind::Reexecute, 1);
+            macro_assembler.assembler().bind(cold);
+            macro_assembler.exit(ExitKind::Reexecute, 2);
+            macro_assembler.assembler().bind(failed);
+            macro_assembler.exit(ExitKind::Reexecute, 3);
+        });
+        let (guard_register, level_register) = crate::heap::Heap::own_slot_registers(0);
+        let mut frame = frame_with(receiver, NIL);
+        frame[usize::from(guard_register)] = number(recorded.0);
+        frame[usize::from(level_register)] = number(recorded.1);
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
+        match exit {
+            MachineExit::Reexecute { program_counter: 1 } => Ok(frame[15]),
+            MachineExit::Reexecute { program_counter } => Err(program_counter),
+            other => panic!("unexpected exit {other:?}"),
+        }
+    }
+
+    /// The own-slot idioms read exactly the field `check_own_slots` and
+    /// `Heap::activation_slot_base` address: the receiver's guard must be
+    /// the frame's and not `NONE`, the entered level must have a row, and
+    /// the slot base plus the index must be one of the instance's fields,
+    /// counted by its header or, past 254 fields, its overflow word.
+    #[test]
+    fn an_own_slot_is_read_exactly_where_the_guard_and_the_level_place_it() {
+        const COLD: Result<u64, u32> = Err(2);
+        const MISSING: Result<u64, u32> = Err(3);
+        let layout = crate::heap::Heap::machine_layout();
+        let table = application_rows(&[(0, 0), (2, 0)]);
+        let words = instance_words(instance_header(5, 4), 0, NIL, 4);
+        let object = instance_handle(&words);
+        assert_eq!(own_slot_read(object, (5, 1), 1, &table, 2), Ok(1003));
+        assert_eq!(own_slot_read(object, (5, 1), 0, &table, 2), Ok(1002));
+        assert_eq!(
+            own_slot_read(object, (5, 0), 3, &table, 2),
+            Ok(1003),
+            "level 0's base"
+        );
+        assert_eq!(
+            own_slot_read(object, (5, 1), 2, &table, 2),
+            MISSING,
+            "past the fields"
+        );
+        assert_eq!(
+            own_slot_read(object, (5, 1), -3, &table, 2),
+            MISSING,
+            "below them"
+        );
+        assert_eq!(
+            own_slot_read(object, (6, 1), 1, &table, 2),
+            COLD,
+            "another guard"
+        );
+        assert_eq!(
+            own_slot_read(object, (5, 2), 1, &table, 2),
+            MISSING,
+            "no row"
+        );
+        assert_eq!(
+            own_slot_read(object, (5, 1), 1, &table, 1),
+            MISSING,
+            "past the bound"
+        );
+        assert_eq!(
+            own_slot_read(object, (5, u64::from(u32::MAX)), 1, &table, 2),
+            MISSING,
+            "UNREGISTERED"
+        );
+        assert_eq!(
+            own_slot_read(number(7), (5, 1), 1, &table, 2),
+            COLD,
+            "an immediate"
+        );
+        assert_eq!(own_slot_read(NIL, (5, 1), 1, &table, 2), COLD, "nil");
+        let unguarded = instance_words(instance_header(0, 4), 0, NIL, 4);
+        let unguarded = instance_handle(&unguarded);
+        assert_eq!(
+            own_slot_read(unguarded, (0, 1), 1, &table, 2),
+            COLD,
+            "NONE never matches"
+        );
+        let array = instance_words(
+            header_of(layout.indexable_pointers_format, 5) | 5,
+            0,
+            NIL,
+            4,
+        );
+        let array = instance_handle(&array);
+        assert_eq!(
+            own_slot_read(array, (5, 1), 1, &table, 2),
+            MISSING,
+            "no instance"
+        );
+        let overflow = u64::try_from(layout.word_count_overflow).expect("a count");
+        let large = instance_words(header_of(0, overflow) | 5, 301, NIL, 300);
+        let large = instance_handle(&large);
+        assert_eq!(
+            own_slot_read(large, (5, 1), 297, &table, 2),
+            Ok(1299),
+            "the overflow's"
+        );
+        assert_eq!(
+            own_slot_read(large, (5, 1), 298, &table, 2),
+            MISSING,
+            "past it"
+        );
+    }
+
+    /// `jump_if_value_slots` jumps exactly where `check_value_slot` may
+    /// refuse: for a receiver whose class's row carries the value flag,
+    /// and whose class names no row the table records.
+    #[test]
+    fn the_value_check_is_taken_exactly_for_a_value_classs_instance() {
+        let layout = crate::heap::Heap::machine_layout();
+        let flag = u64::try_from(layout.application_value_slots_flag).expect("a flag");
+        let table = application_rows(&[(0, 0), (0, flag)]);
+        let checked = |application_word: u64, rows: u64| {
+            let mut class = FakeClass::new();
+            class.set(layout.application_displacement, application_word);
+            let words = instance_words(instance_header(5, 1), 0, class.handle(), 1);
+            let mut machine = machine_with_rows(&table, rows);
+            let body = machine.body(|macro_assembler| {
+                let label = macro_assembler.assembler().label();
+                macro_assembler.load_frame_register(RAX, 0);
+                macro_assembler.jump_if_value_slots(RAX, RCX, label);
+                macro_assembler.store_frame_register(1, RAX);
+                macro_assembler.exit(ExitKind::Reexecute, 1);
+                macro_assembler.assembler().bind(label);
+                macro_assembler.store_frame_register(1, RAX);
+                macro_assembler.exit(ExitKind::Reexecute, 2);
+            });
+            let receiver = instance_handle(&words);
+            let mut frame = [receiver, 0];
+            let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
+            assert_eq!(frame[1], receiver, "the receiver is kept");
+            exit == MachineExit::Reexecute { program_counter: 2 }
+        };
+        assert!(!checked(number(0), 2), "no value class");
+        assert!(checked(number(1), 2), "a value class");
+        assert!(checked(number(2), 2), "no row");
+        assert!(checked(number(1), 1), "past the bound");
+        assert!(checked(NIL, 2), "no application");
     }
 }

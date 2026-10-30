@@ -1,0 +1,172 @@
+/// The own-slot instructions in machine code (`docs/design/execution.md`,
+/// "Stage 4: closures, non-local return, allocation and the barrier"):
+/// lazy slots read and computed again (newspeak-spec.pdf 6.3.3), a
+/// simultaneous slot clause (6.3.2), a value class's slots and its
+/// subclass's (3.1.1) -- one refused for a slot that would hold no value,
+/// and a class that applies `Value` to a superclass whose initializer
+/// stores an Array -- and a lazy getter whose receiver an install
+/// migrates to a layout with another slot before the getter stores into
+/// it (5b1's recorded guard: docs/design/object-model.md, "What a slot
+/// access checks").
+///
+/// Every method and initializer runs at least three times, so that it is
+/// compiled at its second entry and run in machine code after it.
+class OwnSlots = Object <: Value () (
+  class Lazy seed: seed = Object new (
+    |
+      public trace ::= ''.
+      public base = seed.
+    |
+  ) (
+    lazy public doubled = mark: base * 2.
+
+    lazy public nothing = markNil.
+
+    lazy public cell ::= mark: {base}.
+
+    mark: value = (
+      trace:: trace , '+'.
+      ^value.
+    )
+
+    markNil = (
+      trace:: trace , '0'.
+      ^nil.
+    )
+
+    /// Reads every lazy slot `times` times, resetting `cell` before each
+    /// read; answers the sum of what `doubled` and `cell` hold.
+    public readTimes: times = (
+      |
+        sum ::= 0.
+        index ::= 0.
+      |
+      [index < times] whileTrue: [
+        cell: nil.
+        nothing.
+        sum:: sum + doubled + (cell at: 1).
+        index:: index + 1.
+      ].
+      ^sum.
+    )
+  )
+
+  class Pair = Object new (
+    ||
+      public first = second - 1.
+      public second = 3.
+    ||
+  ) ()
+
+  class Point x: ax y: ay = Value new (
+    |
+      public x = ax.
+      public y = ay.
+      public name = 'point'.
+    |
+  ) ()
+
+  class Point3 x: ax y: ay z: az = Point x: ax y: ay (
+    |
+      public z = az.
+    |
+  ) ()
+
+  class Line from: origin to: destination = Value new (
+    |
+      public start = origin.
+      public end = destination.
+    |
+  ) ()
+
+  class Boxed = Object new (
+    |
+      public items = {1. 2}.
+    |
+  ) ()
+
+  class ValueBoxed = Boxed new <: Value () ()
+
+  class Subject = Object new (
+    |
+      public action ::= [0].
+    |
+  ) (
+    lazy public first = action value.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+      subject
+    |
+    1 to: 3 do: [:round |
+      |
+        holder = Lazy seed: round.
+      |
+      transcript
+          show: (holder readTimes: 100) printString;
+          show: ' ';
+          show: holder trace size printString;
+          newLine.
+    ].
+    1 to: 3 do: [:round |
+      transcript
+          show: Pair new first printString;
+          newLine.
+    ].
+    1 to: 3 do: [:round |
+      |
+        point = Point3 x: round y: round + 1 z: round + 2.
+        line = Line from: (Point x: 0 y: 0) to: point.
+      |
+      transcript
+          show: (point x + point y + point z) printString;
+          show: ' ';
+          show: point name;
+          show: ' ';
+          show: (line end = (Point3 x: round y: round + 1 z: round + 2)) printString;
+          newLine.
+      transcript
+          show: ([
+            Line from: {round} to: point.
+            'accepted'.
+          ] on: Error do: [:error | 'refused']);
+          newLine.
+      transcript
+          show: (Boxed new items at: 2) printString;
+          show: ' ';
+          show: ([
+            ValueBoxed new.
+            'accepted'.
+          ] on: Error do: [:error | 'refused']);
+          newLine.
+    ].
+    1 to: 3 do: [:round |
+      subject:: Subject new.
+      subject action: [round].
+      transcript
+          show: subject first printString;
+          newLine.
+    ].
+    builder
+        header source: 'class Subject = Object new (| public action ::= [0]. public added = 1. |)'.
+    subject:: Subject new.
+    subject action: [
+      builder install.
+      4.
+    ].
+    transcript
+        show: ([subject first printString] on: Error do: [:error | error messageText]);
+        newLine.
+    subject:: Subject new.
+    subject action: [5].
+    transcript
+        show: subject first printString;
+        show: ' ';
+        show: subject added printString;
+        newLine.
+  )
+)

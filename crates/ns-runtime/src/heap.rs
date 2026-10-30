@@ -813,6 +813,18 @@ pub(crate) struct MachineLayout {
     /// The bytes of the words after a ByteArray's header that hold no
     /// data: its class word and the reserve its alignment takes.
     pub(crate) byte_data_reserve_bytes: i32,
+    /// How far an application index is shifted up to be its row's byte
+    /// offset in the application id table (`heap/application_ids.rs`).
+    pub(crate) application_row_shift: u8,
+    /// A row's instances dispatch id's displacement from the row.
+    pub(crate) application_dispatch_id_displacement: i32,
+    /// A row's own slot base's displacement from the row.
+    pub(crate) application_slot_base_displacement: i32,
+    /// A row's flags' displacement from the row.
+    pub(crate) application_flags_displacement: i32,
+    /// The flag of a row whose instances' slots take the check of what a
+    /// value's slot may hold.
+    pub(crate) application_value_slots_flag: i32,
 }
 
 /// The block of an object machine code allocates (`Heap::machine_block`).
@@ -5210,20 +5222,43 @@ impl<'gc> Heap<'gc> {
         );
         let application = Rc::new(application);
         self.tables.applications[row] = Some(application.clone());
-        self.record_application_id(row, application.dispatch_ids.instances);
+        self.record_application_row(row, Self::application_row(Some(&application)));
         application
     }
 
-    /// Writes `id` as row `row`'s in the application id table machine code
-    /// reads (`heap/application_ids.rs`), and its bound, the application
-    /// table's length.
-    pub(crate) fn record_application_id(&mut self, row: usize, id: DispatchId) {
+    /// What the application id table records of `application`, or of a row
+    /// that holds none (`heap/application_ids.rs`).
+    fn application_row(application: Option<&MixinApplication>) -> application_ids::Row {
+        application.map_or(
+            application_ids::Row {
+                dispatch_id: DispatchId::NONE,
+                slot_base: 0,
+                value_slots: false,
+            },
+            |application| application_ids::Row {
+                dispatch_id: application.dispatch_ids.instances,
+                slot_base: application.own_slot_base,
+                value_slots: application.inherits_value,
+            },
+        )
+    }
+
+    /// Writes `recorded` as row `row` of the application id table machine
+    /// code reads (`heap/application_ids.rs`), and its bound, the
+    /// application table's length.
+    pub(crate) fn record_application_row(&mut self, row: usize, recorded: application_ids::Row) {
         self.application_ids
-            .record(row, id, self.tables.applications.len());
+            .record(row, recorded, self.tables.applications.len());
         self.machine_words.set(
             MachineWord::ApplicationIdRows,
             self.application_ids.rows() as u64,
         );
+    }
+
+    /// The zeros of a row that holds no application, which
+    /// `Heap::free_application` records.
+    pub(crate) fn vacant_application_row() -> application_ids::Row {
+        Self::application_row(None)
     }
 
     /// The application id table's bound taken to the application table's
@@ -5238,9 +5273,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Whether the application id table records, for every row of the
-    /// application table and nothing past it, that row's instances id --
-    /// `NONE`'s 0 for a free row -- and the machine words its address and
-    /// bound.
+    /// application table and nothing past it, that row's instances id, own
+    /// slot base and flags -- zeros for a free row -- and the machine words
+    /// its address and bound.
     #[cfg(all(test, debug_assertions))]
     pub(crate) fn verify_application_ids(&self) -> Result<(), String> {
         let rows = self.tables.applications.len();
@@ -5252,17 +5287,17 @@ impl<'gc> Heap<'gc> {
             return Err(format!("the table's bound is not the {rows} rows"));
         }
         for (row, application) in self.tables.applications.iter().enumerate() {
-            let expected = application
-                .as_ref()
-                .map_or(0, |application| application.dispatch_ids.instances.bits());
-            if self.application_ids.id(row) != Some(u64::from(expected)) {
+            let expected = application_ids::ApplicationIds::expected_words(Self::application_row(
+                application.as_deref(),
+            ));
+            if self.application_ids.row_words(row) != Some(expected) {
                 return Err(format!(
-                    "row {row} records {:?}, its application's id is {expected}",
-                    self.application_ids.id(row)
+                    "row {row} records {:?}, its application's row is {expected:?}",
+                    self.application_ids.row_words(row)
                 ));
             }
         }
-        if self.application_ids.id(rows).is_some() {
+        if self.application_ids.row_words(rows).is_some() {
             return Err("the table records a row past its bound".to_owned());
         }
         Ok(())
@@ -8671,6 +8706,36 @@ impl<'gc> Heap<'gc> {
         argument_count + current_class
     }
 
+    /// The register numbers of a frame's recorded guard and entered level
+    /// (`frame_header::GUARD`, `frame_header::ENTERED_LEVEL`), placed as
+    /// `receiver_register` places the receiver: what a compiled prologue
+    /// writes for code that addresses its own slots, and what its own-slot
+    /// instructions read (`jit::baseline`).
+    #[cfg(ns_jit)]
+    pub(crate) fn own_slot_registers(argument_count: u16) -> (u16, u16) {
+        let (Ok(guard), Ok(entered_level)) = (
+            u16::try_from(frame_header::GUARD),
+            u16::try_from(frame_header::ENTERED_LEVEL),
+        ) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        (argument_count + guard, argument_count + entered_level)
+    }
+
+    /// The words a compiled prologue writes as the recorded guard of a
+    /// frame whose code addresses its own slots -- `DispatchId::NONE`, so
+    /// that the first own-slot access takes the cold check -- and as its
+    /// entered level when its current class names no application,
+    /// `ApplicationIndex::UNREGISTERED`; a class object's application word
+    /// is already the entered level's word otherwise.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_own_slot_words() -> (u64, u64) {
+        (
+            frames::number_word(u64::from(DispatchId::NONE.bits())).bits(),
+            frames::number_word(ApplicationIndex::UNREGISTERED.index() as u64).bits(),
+        )
+    }
+
     /// The register number machine code reads a frame's receiver at: the
     /// header word `RECEIVER`, which lies `argument_count` registers above
     /// register 0, since the header follows the arguments
@@ -8735,6 +8800,12 @@ impl<'gc> Heap<'gc> {
             // The words after the header `byte_array_extent` does not count
             // as data: the block's but the header's own.
             byte_data_reserve_bytes: displacement(FIELDS - 1 + object::ALIGNMENT_RESERVE),
+            application_row_shift: application_ids::ROW_SHIFT,
+            application_dispatch_id_displacement: application_ids::RowWord::DispatchId
+                .displacement(),
+            application_slot_base_displacement: application_ids::RowWord::SlotBase.displacement(),
+            application_flags_displacement: application_ids::RowWord::Flags.displacement(),
+            application_value_slots_flag: small(application_ids::ROW_FLAG_VALUE_SLOTS),
         }
     }
 
@@ -8809,8 +8880,10 @@ impl<'gc> Heap<'gc> {
     /// frame an exit materializes (`jit::materialize`) or a leaf runs in.
     /// Its flags say a counted method activation stopped in machine code,
     /// with a debug build's generation from the flags word the frame's
-    /// prologue wrote. Its guard is none, and its entered level the one
-    /// the push records. Answers the frame's handle.
+    /// prologue wrote. Code that addresses its own slots keeps the guard
+    /// and the entered level its prologue wrote and its own-slot
+    /// instructions recorded since; any other records none, as the push
+    /// does. Answers the frame's handle.
     #[cfg(ns_jit)]
     pub(crate) fn write_machine_frame(&mut self, frame: &MachineFrame) -> ActivationReference {
         let offset = frame.offset as usize;
@@ -8830,23 +8903,6 @@ impl<'gc> Heap<'gc> {
         let caller = match frame.caller {
             Some((caller, top)) => frames::caller_link_word(caller, frame.start(), top),
             None => Word::NIL,
-        };
-        // As the push records it for code that addresses its own slots:
-        // the current class's application, which the call wrote. The
-        // guard is none, so that the first own-slot access takes the cold
-        // check against it, as after a resume.
-        let entered_level = if frame.addresses_own_slots {
-            let current_class = self.load(Word::from_bits(
-                self.stack
-                    .frames
-                    .committed_word(offset + frame_header::CURRENT_CLASS),
-            ));
-            current_class
-                .as_object()
-                .and_then(|class| self.class_application_index(class))
-                .unwrap_or(ApplicationIndex::UNREGISTERED)
-        } else {
-            ApplicationIndex::UNREGISTERED
         };
         let words = [
             (
@@ -8870,14 +8926,6 @@ impl<'gc> Heap<'gc> {
             (frame_header::CALLER, caller),
             (frame_header::CONTINUATION, Word::NIL),
             (
-                frame_header::GUARD,
-                frames::number_word(u64::from(DispatchId::NONE.bits())),
-            ),
-            (
-                frame_header::ENTERED_LEVEL,
-                frames::number_word(entered_level.index() as u64),
-            ),
-            (
                 frame_header::REGISTER_COUNT,
                 frames::number_word(frame.register_count as u64),
             ),
@@ -8886,6 +8934,27 @@ impl<'gc> Heap<'gc> {
             self.stack
                 .frames
                 .set_committed_word(offset + field, word.bits());
+        }
+        // Code that addresses its own slots had its prologue write its
+        // guard and entered level (`jit::sends::prologue`), and its own-slot
+        // instructions record the guard their cold check verified there
+        // since, which a rewrite here would throw away at every leaf call.
+        // Every other frame records none, as the push does.
+        if !frame.addresses_own_slots {
+            for (field, word) in [
+                (
+                    frame_header::GUARD,
+                    frames::number_word(u64::from(DispatchId::NONE.bits())),
+                ),
+                (
+                    frame_header::ENTERED_LEVEL,
+                    frames::number_word(ApplicationIndex::UNREGISTERED.index() as u64),
+                ),
+            ] {
+                self.stack
+                    .frames
+                    .set_committed_word(offset + field, word.bits());
+            }
         }
         self.activation_handle_at(frame.offset)
     }

@@ -2045,7 +2045,7 @@ fn at_put_out_of_range_fails_as_the_interpreter_does() {
 /// fails here, and so does one the list names that is not marked.
 #[test]
 fn every_leaf_row_is_audited() {
-    use ns_runtime::builtins::primitive::MIRROR;
+    use ns_runtime::builtins::primitive::{MachineCall, RowStub, MIRROR};
     let marked: std::collections::BTreeSet<&str> = MIRROR
         .iter()
         .filter(|entry| entry.machine_call.is_leaf_safe())
@@ -2068,6 +2068,17 @@ fn every_leaf_row_is_audited() {
         unmarked.is_empty(),
         "audited but not marked Leaf: {unmarked:?}"
     );
+    // A row stub falls back to the row the first entry marked with it
+    // names (`jit::targets`'s `emit_row_stub`), so a second would be run
+    // as the first's.
+    for stub in RowStub::ALL {
+        let rows: Vec<&str> = MIRROR
+            .iter()
+            .filter(|entry| entry.machine_call == MachineCall::Stub(stub))
+            .map(|entry| entry.selector)
+            .collect();
+        assert_eq!(rows.len(), 1, "{stub:?} marks exactly one row: {rows:?}");
+    }
 }
 
 /// Every mirror row machine code runs through the leaf shim, by why its
@@ -2963,5 +2974,116 @@ fn a_stub_storing_into_an_old_holder_remembers_it() {
             statistics.leaf_calls, 2,
             "the two stores that remembered the holder and the Array"
         );
+    }
+}
+
+/// A lazy slot read and computed again a thousand times from a compiled
+/// loop: `doubled`'s getter answers its filled slot, and `cell`'s, reset
+/// to `nil` before each read, computes an Array and stores it through the
+/// inline barrier.
+const OWN_SLOTS: &str = indoc! {"
+    class Subject = Object new (
+      | holder = Holder new. |
+    ) (
+      class Holder = Object new (
+        | public seed ::= 3. |
+      ) (
+        lazy public doubled = seed * 2.
+        lazy public cell ::= {seed}.
+      )
+      readAll: aHolder = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          aHolder cell: nil.
+          sum:: sum + aHolder doubled + (aHolder cell at: 1).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+      public run = (
+        ^readAll: holder
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The own-slot instructions run in machine code: in the third run the
+    /// two thousand lazy getters' `ReturnSlotIfFilled` and `InitializeSlot`
+    /// leave machine code for nothing and call no leaf, since the prologue
+    /// verified each receiver against the getter's level, and the sum is
+    /// the interpreter's.
+    fn own_slot_access_runs_without_an_exit(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(OWN_SLOTS, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(OWN_SLOTS, lowering, false);
+        assert_eq!(interpreted, [9000; 3]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "readAll:");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.leaf_calls, 0, "no own-slot instruction called a leaf");
+            assert!(
+                statistics.compiled_calls >= 3000,
+                "`readAll:` calls the lazy getters through their cells: {}",
+                statistics.compiled_calls
+            );
+        }
+    }
+}
+
+/// A lazy slot of `Base`, computed again a thousand times on a `Base` and
+/// on a `Derived`, whose getter loads its String literal through the
+/// generic leaf between the two own-slot instructions.
+const INHERITED_OWN_SLOTS: &str = indoc! {"
+    class Subject = Object new (
+      |
+        base = Base new.
+        derived = Derived new.
+      |
+    ) (
+      class Base = Object new () (
+        lazy public label ::= 'label'.
+      )
+      class Derived = Base new () ()
+      readAll: aHolder = (
+        |
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          aHolder label: nil.
+          aHolder label.
+          index:: index + 1.
+        ].
+        ^index.
+      )
+      public run = (
+        ^(readAll: base) + (readAll: derived)
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An own-slot instruction's cold check records the receiver's guard
+    /// in its frame, and the generic leaf's view of the frame keeps it: on
+    /// a `Base` each getter calls only the generic leaf, for its literal;
+    /// on a `Derived`, which the prologue does not verify, the first
+    /// own-slot instruction's cold check as well, and the second, after
+    /// the literal's leaf, hits.
+    fn an_own_slot_guard_survives_a_leaf_call(lowering) {
+        let (compiled, statistics) =
+            run_thrice_on_one_instance(INHERITED_OWN_SLOTS, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(INHERITED_OWN_SLOTS, lowering, false);
+        assert_eq!(interpreted, [2000; 3]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "readAll:");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(
+                statistics.leaf_calls, 3000,
+                "a literal's leaf per getter, and a cold check per `Derived` getter"
+            );
+        }
     }
 }
