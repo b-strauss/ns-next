@@ -848,6 +848,9 @@ pub(crate) struct MachineLayout {
     /// The header word's format bits of a closure, under
     /// `instance_format_bits`.
     pub(crate) closure_format: i32,
+    /// The header word's format bits of a frame object, under
+    /// `instance_format_bits`.
+    pub(crate) frame_format: i32,
     /// A class object's builtin field's displacement from its offset
     /// (`Heap::class_builtin`): nil for a class whose instances are
     /// ordinary ones.
@@ -6978,10 +6981,38 @@ impl<'gc> Heap<'gc> {
     /// code out.
     fn frame_argument_count(&self, frame: FrameReference<'gc>) -> usize {
         let registers = self.frame_words(frame).len() - frame_field::COUNT;
+        self.frame_code_argument_count(frame).min(registers)
+    }
+
+    /// The argument count of the body `frame`'s code id names, 0 when it
+    /// names none: `frame_argument_count` before it is bounded by the
+    /// frame's registers.
+    fn frame_code_argument_count(&self, frame: FrameReference<'gc>) -> usize {
         self.frame_code_id_field(frame)
             .and_then(|id| self.tables.codes.get(id.index())?.as_ref())
             .map_or(0, |entry| usize::from(entry.code.argument_count))
-            .min(registers)
+    }
+
+    /// What an outer-local site records of the frame object the word
+    /// `frame_bits` names (`jit::closures::refill_outer_site`): its code
+    /// id field's word, and the argument count of the body that word
+    /// names (`frame_code_argument_count`), which machine code bounds by
+    /// the frame's registers itself, as `frame_argument_count` does. A
+    /// code id names one body until a full collection frees it, which
+    /// moves the code table's epoch the site records beside the two.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_frame_code_arguments(&self, frame_bits: u64) -> (u64, u64) {
+        let Some(frame) = self
+            .machine_value(frame_bits)
+            .as_object()
+            .and_then(|object| self.object_frame(object))
+        else {
+            unreachable!("internal: an outer-local template hands the site leaf a frame object");
+        };
+        (
+            self.frame_words(frame)[frame_field::CODE_ID],
+            self.frame_code_argument_count(frame) as u64,
+        )
     }
 
     /// A reified frame's receiver. Fixed when the frame is created, so it
@@ -9211,6 +9242,7 @@ impl<'gc> Heap<'gc> {
                 .displacement(),
             class_format: small(header::CLASS_BITS),
             closure_format: small(header::CLOSURE_BITS),
+            frame_format: small(header::FRAME_BITS),
             builtin_displacement: displacement(FIELDS + class_field::BUILTIN),
             value_class_refusal_displacement: displacement(
                 FIELDS + class_field::VALUE_CLASS_REFUSAL,
@@ -9307,6 +9339,22 @@ impl<'gc> Heap<'gc> {
     #[cfg(ns_jit)]
     pub(crate) fn machine_call_shift_shift() -> u8 {
         small_count(frames::CALL_SHIFT_BITS.trailing_zeros() + frames::SMALL_INTEGER_TAG_BITS)
+    }
+
+    /// How far a frame's flags word is shifted to bring its argument count
+    /// down to bit 0, and the mask that leaves it alone there, as
+    /// `FrameFlags::of` reads it: what an outer-local template reads of a
+    /// married frame to find its register 0 below its header, as
+    /// `register_slot` does.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_argument_count_field() -> (u8, i32) {
+        let Ok(mask) = i32::try_from(frames::ARGUMENT_COUNT_MASK) else {
+            unreachable!("internal: an argument count fits 16 bits");
+        };
+        (
+            small_count(frames::ARGUMENT_COUNT_SHIFT + frames::SMALL_INTEGER_TAG_BITS),
+            mask,
+        )
     }
 
     /// The bits of a flags word that hold the shift its call made.

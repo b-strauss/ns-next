@@ -71,6 +71,10 @@ pub(crate) enum Leaf {
     /// Records a `MakeClosure`'s code ids in its closure site afresh
     /// (`closure_site`).
     ClosureSite = 12,
+    /// Records the argument count of the body a divorced frame object an
+    /// outer-local instruction reaches runs in its site afresh
+    /// (`outer_local_site`).
+    OuterLocalSite = 13,
 }
 
 impl Leaf {
@@ -97,7 +101,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 13] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 14] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -115,6 +119,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 13] {
         counted!(initializer),
         counted!(divorce),
         counted!(closure_site),
+        counted!(outer_local_site),
     ]
 }
 
@@ -744,6 +749,21 @@ fn divorce(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 fn closure_site(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     let [site_address, program_counter, code_address] = arguments;
     jit::closures::refill_site(mutator, site_address, program_counter, code_address);
+    DONE
+}
+
+/// The outer-local site leaf, which a `LoadOuterLocal`'s or a
+/// `StoreOuterLocal`'s template calls when the divorced frame object it
+/// reached, `arguments[1]`, names another code id than its site records,
+/// or the site another epoch of the code table than the heap's
+/// (`jit::closures`): the site at address `arguments[0]`, among the data
+/// words of the body `arguments[2]` names, written afresh through the
+/// zone's writer with the heap's epoch, the frame's code id word and the
+/// argument count of the body it names. It reads a frame object, no
+/// activation, writes no frame, and cannot fail: answers 0.
+fn outer_local_site(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [site_address, frame_word, code_address] = arguments;
+    jit::closures::refill_outer_site(mutator, site_address, frame_word, code_address);
     DONE
 }
 

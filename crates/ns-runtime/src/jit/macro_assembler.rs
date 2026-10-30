@@ -1225,6 +1225,61 @@ impl MacroAssembler {
         assembler.jump_if(Condition::Equal, failed);
     }
 
+    /// Jumps to `failed` unless the word in `value` names an object whose
+    /// header's format bits are `format`'s, as `Heap::object_frame` and
+    /// the closure accessors tell a frame object and a closure: an
+    /// immediate, `nil` among them, jumps too. `value` is kept; clobbers
+    /// the flags and `scratch`.
+    pub(crate) fn jump_unless_object_of_format(
+        &mut self,
+        value: Register,
+        format: i32,
+        scratch: Register,
+        failed: Label,
+    ) {
+        debug_assert!(value != scratch, "internal: the check keeps its value");
+        let layout = crate::heap::Heap::machine_layout();
+        self.jump_unless_object_word(value, failed);
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        assembler.move_register(scratch, value);
+        assembler.add(scratch, object_space);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: scratch,
+                displacement: layout.header_displacement,
+            },
+        );
+        assembler.and_immediate(scratch, layout.instance_format_bits);
+        assembler.compare_immediate(scratch, format);
+        assembler.jump_if(Condition::NotEqual, failed);
+    }
+
+    /// `count :=` the count of the words after the header of the object
+    /// `object` names -- its class word and its fields -- the header's,
+    /// or the overflow word's when the header says it is there. `object`
+    /// is kept; clobbers the flags.
+    pub(crate) fn load_word_count(&mut self, object: Register, count: Register) {
+        debug_assert!(object != count, "internal: the count keeps its object");
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        assembler.move_register(count, object);
+        assembler.add(count, object_space);
+        assembler.load(
+            Width::Word64,
+            count,
+            Memory {
+                base: count,
+                displacement: layout.header_displacement,
+            },
+        );
+        assembler.shift_right_logical(count, layout.word_count_shift);
+        self.load_overflow_count(object, count);
+    }
+
     /// `count :=` the count of the words after the header of the object
     /// `object` names, `count` holding the header's count when called:
     /// the overflow word's, below its mark, when the header's says it is

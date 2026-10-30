@@ -22,8 +22,15 @@
 //! room from the zone's, and the template reaches it relative to its own
 //! instruction, through no word of the entry block. The leaf writes it
 //! through the zone's one writer.
+//!
+//! `LoadOuterLocal` and `StoreOuterLocal` are here too (`outer_local`):
+//! the registers a block reaches by reference in the frames its closures
+//! captured, on the activation stack while a frame is married and in its
+//! frame object once divorced, the argument count that places a divorced
+//! frame's register read from an outer-local site kept as a closure site
+//! is.
 
-use ns_assembler::{Condition, Memory, Register, Width};
+use ns_assembler::{Condition, Label, Memory, Register, Width};
 
 use crate::bytecode::{CompiledCode, Instruction};
 use crate::heap::machine_words::MachineWord;
@@ -34,7 +41,7 @@ use super::baseline::{BodyAssembler, BodyRole, Lowering};
 use super::leaves::Leaf;
 use super::macro_assembler::{MacroAssembler, ObjectSize, Operand};
 use super::sends::{frame_slot, store_program_counter};
-use super::stubs::BlockWord;
+use super::stubs::{BlockWord, ExitKind};
 
 /// The words of a closure site, in order: the epoch of the code table its
 /// ids were asked in, 0 for a site never filled -- no heap's epoch is 0 --
@@ -576,4 +583,480 @@ fn allocate_closure(
         object,
         placed,
     );
+}
+
+/// The words of an outer-local site, in order: the epoch of the code
+/// table it was filled in, 0 for a site never filled -- no heap's epoch
+/// is 0; the code id word of the divorced frame object it was filled
+/// from; and the argument count of the body that code id names, a plain
+/// integer.
+const OUTER_SITE_EPOCH: usize = 0;
+const OUTER_SITE_CODE: usize = 1;
+const OUTER_SITE_ARGUMENTS: usize = 2;
+const OUTER_SITE_WORDS: usize = 3;
+
+/// `Leaf::OuterLocalSite`: writes the outer-local site at `site_address`
+/// among the data words of the body `code_address` lies in afresh, from
+/// the divorced frame object `frame_word` names: the code table's current
+/// epoch, the frame's code id word and the argument count of the body it
+/// names (`Heap::machine_frame_code_arguments`).
+pub(crate) fn refill_outer_site(
+    mutator: &mut Mutator<'_>,
+    site_address: u64,
+    frame_word: u64,
+    code_address: u64,
+) {
+    let (Ok(site_address), Ok(code_address)) =
+        (usize::try_from(site_address), usize::try_from(code_address))
+    else {
+        unreachable!("internal: an address fits the pointer width");
+    };
+    let (code_word, argument_count) = mutator.heap.machine_frame_code_arguments(frame_word);
+    let words = [mutator.heap.code_table_epoch(), code_word, argument_count];
+    mutator
+        .jit
+        .write_body_words(code_address, site_address, &words);
+}
+
+/// What an outer-local instruction does with the register it reaches.
+#[derive(Clone, Copy)]
+pub(super) enum OuterAccess {
+    /// `LoadOuterLocal`: the register into the frame's `destination`.
+    Load { destination: u16 },
+    /// `StoreOuterLocal`: the frame's `source` into the register.
+    Store { source: u16 },
+}
+
+/// The scratch registers the outer-local template takes, by role.
+#[derive(Clone, Copy)]
+struct OuterRegisters {
+    /// The word naming the frame object reached.
+    frame: Register,
+    /// The value read or written.
+    value: Register,
+    /// The frame object's address, then a married frame's register 0's.
+    address: Register,
+    spare: Register,
+    other: Register,
+    /// The hops still to take past the first, then the machine words.
+    hops: Register,
+}
+
+impl OuterRegisters {
+    fn of(macro_assembler: &MacroAssembler) -> OuterRegisters {
+        let scratch = macro_assembler.roles().scratch;
+        OuterRegisters {
+            frame: scratch[0],
+            value: scratch[1],
+            address: scratch[2],
+            spare: scratch[3],
+            other: scratch[4],
+            hops: scratch[5],
+        }
+    }
+}
+
+/// `LoadOuterLocal` and `StoreOuterLocal`: `interpreter::locals`'s
+/// `read_outer_local` and `write_outer_local`, register `index` of the
+/// frame `depth` closure hops out, with no exit but a debug build's
+/// refusal of a dead register.
+///
+/// The walk is `frame_at_depth`'s: a body that is no block's, or depth 0,
+/// reaches its own frame; otherwise the first hop takes the frame the
+/// running closure captured -- the own frame when it captured none -- and
+/// every further hop the frame a closure frame's closure captured,
+/// staying where it is at any other frame, as the interpreter's walk
+/// stays.
+///
+/// At the frame object reached, a married frame -- its married field a
+/// `SmallInteger`, its activation's header offset -- has the register
+/// read or written on the activation stack, below the header by the
+/// argument count its flags word holds, exactly as `Heap::register_slot`
+/// finds it, wherever the activation was laid; a store there takes no
+/// barrier, since the stack is no object. A divorced one -- returned, or
+/// suspended into its frame object -- has the register in its frame
+/// object's register field, which `Heap::frame_field_of_register` names
+/// from the frame's argument count: its body's, which the instruction's
+/// site records beside the code id it read it for and the code table's
+/// epoch (`refill_outer_site`), bounded by the frame's registers as
+/// `Heap::frame_argument_count` bounds it. A store there goes through the
+/// barrier, since the frame object may be old and the value young; a
+/// register the frame object has no field for reads `nil` and is not
+/// written, as `frame_local` and `frame_set_local` treat it.
+///
+/// A site that does not match is filled by `Leaf::OuterLocalSite` out of
+/// line, before anything is written, and the template starts over.
+pub(super) fn outer_local(
+    body: &mut BodyAssembler,
+    depth: u16,
+    index: u16,
+    access: OuterAccess,
+) -> Lowering {
+    if depth == 0 || body.role != BodyRole::Block {
+        let value = OuterRegisters::of(&body.macro_assembler).value;
+        if let OuterAccess::Store { source } = access {
+            body.macro_assembler.load_frame_register(value, source);
+        }
+        own_local(&mut body.macro_assembler, index, access, value);
+        return Lowering::Template;
+    }
+    let site = body.macro_assembler.take_body_words(OUTER_SITE_WORDS);
+    let registers = OuterRegisters::of(&body.macro_assembler);
+    let layout = Heap::machine_layout();
+    let argument_count = body.argument_count;
+    let program_counter = body.program_counter;
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    let OuterRegisters {
+        frame,
+        value,
+        address,
+        spare,
+        other,
+        ..
+    } = registers;
+    let assembler = macro_assembler.assembler();
+    let (start, own, found, divorced, done) = (
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+    );
+    assembler.bind(start);
+    if let OuterAccess::Store { source } = access {
+        macro_assembler.load_frame_register(value, source);
+    }
+    // The first hop: the frame the running closure captured.
+    let assembler = macro_assembler.assembler();
+    assembler.load(
+        Width::Word64,
+        frame,
+        frame_slot(roles.frame, Heap::operand_register(argument_count)),
+    );
+    assembler.add(frame, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        frame,
+        Memory {
+            base: frame,
+            displacement: layout.closure_captured_frame_displacement,
+        },
+    );
+    macro_assembler.jump_unless_object_of_format(frame, layout.frame_format, spare, own);
+    if depth > 1 {
+        further_hops(macro_assembler, depth - 1, registers, found);
+    }
+    // Married or divorced.
+    let assembler = macro_assembler.assembler();
+    assembler.bind(found);
+    assembler.move_register(address, frame);
+    assembler.add(address, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        other,
+        Memory {
+            base: address,
+            displacement: layout.frame_married_displacement,
+        },
+    );
+    assembler.move_register(spare, other);
+    assembler.and_immediate(spare, layout.tag_mask);
+    assembler.compare_immediate(spare, layout.small_integer_tag);
+    assembler.jump_if(Condition::NotEqual, divorced);
+    married_local(macro_assembler, index, access, registers, program_counter);
+    let assembler = macro_assembler.assembler();
+    assembler.jump(done);
+    assembler.bind(divorced);
+    divorced_local(
+        macro_assembler,
+        site,
+        index,
+        access,
+        registers,
+        (start, done),
+    );
+    macro_assembler.assembler().bind(own);
+    own_local(macro_assembler, index, access, value);
+    macro_assembler.assembler().bind(done);
+    Lowering::Template
+}
+
+/// The frame's own register `index`, read into `destination` or written
+/// from `value`, which holds a store's source: the walk's answer at depth
+/// 0, for a body that is no block's, and for a closure that captured no
+/// frame.
+fn own_local(
+    macro_assembler: &mut MacroAssembler,
+    index: u16,
+    access: OuterAccess,
+    value: Register,
+) {
+    match access {
+        OuterAccess::Load { destination } => {
+            macro_assembler.load_frame_register(value, index);
+            macro_assembler.store_frame_register(destination, value);
+        }
+        OuterAccess::Store { .. } => macro_assembler.store_frame_register(index, value),
+    }
+}
+
+/// The walk's hops past the first, `hops` of them, from the frame object
+/// `registers.frame` names: each takes the frame a closure frame's
+/// closure captured, and jumps to `found` -- the frame where it is -- at
+/// a frame that is no closure's, or whose operand names no closure, or
+/// whose closure names no frame, as `Heap::frame_captured` answers `None`
+/// for each. Clobbers the flags and every register but `value`.
+fn further_hops(
+    macro_assembler: &mut MacroAssembler,
+    hops: u16,
+    registers: OuterRegisters,
+    found: Label,
+) {
+    let layout = Heap::machine_layout();
+    let kinds = Heap::machine_frame_kinds();
+    let object_space = macro_assembler.roles().object_space;
+    let OuterRegisters {
+        frame,
+        address,
+        spare,
+        other,
+        hops: remaining,
+        ..
+    } = registers;
+    let field = |base: Register, displacement: i32| Memory { base, displacement };
+    let assembler = macro_assembler.assembler();
+    let hop = assembler.label();
+    assembler.move_immediate(remaining, u64::from(hops));
+    assembler.bind(hop);
+    assembler.move_register(address, frame);
+    assembler.add(address, object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        field(address, layout.frame_kind_displacement),
+    );
+    assembler.compare_immediate(spare, small(kinds.closure));
+    assembler.jump_if(Condition::NotEqual, found);
+    assembler.load(
+        Width::Word64,
+        spare,
+        field(address, layout.frame_kind_operand_displacement),
+    );
+    macro_assembler.jump_unless_object_of_format(spare, layout.closure_format, other, found);
+    let assembler = macro_assembler.assembler();
+    assembler.add(spare, object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        field(spare, layout.closure_captured_frame_displacement),
+    );
+    macro_assembler.jump_unless_object_of_format(spare, layout.frame_format, other, found);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(frame, spare);
+    assembler.add_immediate(remaining, -1);
+    assembler.compare_immediate(remaining, 0);
+    assembler.jump_if(Condition::NotEqual, hop);
+}
+
+/// Register `index` of the married frame whose married field's word
+/// `registers.other` holds, on the activation stack: the header at the field's
+/// offset from the stack's base, register 0 the argument count its flags
+/// word holds below it (`Heap::register_slot`). A debug build refuses a
+/// dead register's read by an exit before anything is written, so that
+/// the interpreter refuses it as its own read is refused.
+fn married_local(
+    macro_assembler: &mut MacroAssembler,
+    index: u16,
+    access: OuterAccess,
+    registers: OuterRegisters,
+    program_counter: u32,
+) {
+    let layout = Heap::machine_layout();
+    let (argument_count_shift, argument_count_mask) = Heap::machine_argument_count_field();
+    let OuterRegisters {
+        value,
+        address,
+        spare,
+        other: married,
+        ..
+    } = registers;
+    let stack_base = macro_assembler.block_word(BlockWord::StackBase);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(address, married);
+    assembler.shift_right_logical(address, layout.tag_bits);
+    assembler.shift_left(address, WORD_SHIFT);
+    assembler.load(Width::Word64, spare, stack_base);
+    assembler.add(address, spare);
+    assembler.load(
+        Width::Word64,
+        spare,
+        frame_slot(address, Heap::flags_register()),
+    );
+    assembler.shift_right_logical(spare, argument_count_shift);
+    assembler.and_immediate(spare, argument_count_mask);
+    assembler.shift_left(spare, WORD_SHIFT);
+    assembler.subtract(address, spare);
+    let slot = frame_slot(address, index);
+    match access {
+        OuterAccess::Load { destination } => {
+            assembler.load(Width::Word64, value, slot);
+            #[cfg(debug_assertions)]
+            {
+                let dead = assembler.label();
+                assembler.move_immediate(spare, crate::heap::Word::DEAD_REGISTER_BITS);
+                assembler.compare(value, spare);
+                assembler.jump_if(Condition::Equal, dead);
+                macro_assembler.exit_at(dead, ExitKind::Reexecute, program_counter);
+            }
+            macro_assembler.store_frame_register(destination, value);
+        }
+        OuterAccess::Store { .. } => assembler.store(Width::Word64, slot, value),
+    }
+    let _ = program_counter;
+}
+
+/// Register `index` of the divorced frame object `registers.frame`
+/// names, its address in `registers.address`: the field
+/// `Heap::frame_field_of_register` names from the argument count the
+/// site records for the frame's code id, bounded by the frame's
+/// registers -- or none, which reads `nil` and writes nothing. A site
+/// that does not match calls its leaf out of line and starts over at
+/// `start`; the access ends with a jump to `done`.
+fn divorced_local(
+    macro_assembler: &mut MacroAssembler,
+    site: usize,
+    index: u16,
+    access: OuterAccess,
+    registers: OuterRegisters,
+    (start, done): (Label, Label),
+) {
+    let layout = Heap::machine_layout();
+    let leaf_result = macro_assembler.roles().leaf_result;
+    let OuterRegisters {
+        frame,
+        address,
+        spare,
+        other,
+        hops: machine_words,
+        ..
+    } = registers;
+    let assembler = macro_assembler.assembler();
+    let (refill, argument, none, bounded) = (
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+    );
+    // The site's check: the frame's code id, then the epoch.
+    assembler.load(
+        Width::Word64,
+        spare,
+        Memory {
+            base: address,
+            displacement: layout.frame_code_id_displacement,
+        },
+    );
+    macro_assembler.load_body_word(other, site + OUTER_SITE_CODE);
+    let assembler = macro_assembler.assembler();
+    assembler.compare(spare, other);
+    assembler.jump_if(Condition::NotEqual, refill);
+    macro_assembler.load_body_word(other, site + OUTER_SITE_EPOCH);
+    macro_assembler.load_machine_words(machine_words);
+    macro_assembler.assembler().compare_memory(
+        other,
+        MacroAssembler::machine_word(machine_words, MachineWord::CodeTableEpoch),
+    );
+    macro_assembler
+        .assembler()
+        .jump_if(Condition::NotEqual, refill);
+    // The argument count, bounded by the registers: `spare`, beside the
+    // registers' count in `other`.
+    macro_assembler.load_body_word(spare, site + OUTER_SITE_ARGUMENTS);
+    macro_assembler.load_word_count(frame, other);
+    let fixed_words = i32::try_from(1 + layout.frame_fixed_fields)
+        .expect("internal: a frame object's fixed fields are few");
+    let assembler = macro_assembler.assembler();
+    assembler.add_immediate(other, -fixed_words);
+    assembler.compare(spare, other);
+    assembler.jump_if(Condition::BelowOrEqual, bounded);
+    assembler.move_register(spare, other);
+    assembler.bind(bounded);
+    // An argument's field is its own number; a register above the header
+    // is `HEADER_REGISTERS` fields lower; a header's number has none.
+    assembler.compare_immediate(spare, i32::from(index));
+    assembler.jump_if(Condition::Above, argument);
+    match index.checked_sub(crate::bytecode::HEADER_REGISTERS) {
+        Some(above) => {
+            assembler.compare_immediate(spare, i32::from(above));
+            assembler.jump_if(Condition::Above, none);
+            assembler.compare_immediate(other, i32::from(above));
+            assembler.jump_if(Condition::BelowOrEqual, none);
+            divorced_field(macro_assembler, above, access, registers);
+            macro_assembler.assembler().jump(done);
+        }
+        None => assembler.jump(none),
+    }
+    macro_assembler.assembler().bind(argument);
+    divorced_field(macro_assembler, index, access, registers);
+    let assembler = macro_assembler.assembler();
+    assembler.jump(done);
+    assembler.bind(none);
+    if let OuterAccess::Load { destination } = access {
+        let frame_register = macro_assembler.roles().frame;
+        macro_assembler
+            .assembler()
+            .store_immediate32(frame_slot(frame_register, destination), layout.nil_word);
+    }
+    macro_assembler.assembler().jump(done);
+    macro_assembler.call_leaf_out_of_line(
+        refill,
+        Leaf::OuterLocalSite.index(),
+        [
+            Operand::BodyWord(site),
+            Operand::Register(frame),
+            Operand::CodeAddress,
+        ],
+        leaf_result,
+        start,
+    );
+}
+
+/// The divorced frame's register field `field`, read into a load's
+/// destination, or written from a store's value through the barrier.
+fn divorced_field(
+    macro_assembler: &mut MacroAssembler,
+    field: u16,
+    access: OuterAccess,
+    registers: OuterRegisters,
+) {
+    let layout = Heap::machine_layout();
+    let displacement = i32::try_from(layout.frame_fixed_fields + usize::from(field))
+        .ok()
+        .and_then(|fields| fields.checked_mul(8))
+        .and_then(|bytes| bytes.checked_add(layout.fields_displacement))
+        .expect("internal: a frame object's register fields lie within 2 GiB of its start");
+    let OuterRegisters {
+        frame,
+        value,
+        address,
+        spare,
+        ..
+    } = registers;
+    match access {
+        OuterAccess::Load { destination } => {
+            macro_assembler.assembler().load(
+                Width::Word64,
+                value,
+                Memory {
+                    base: address,
+                    displacement,
+                },
+            );
+            macro_assembler.store_frame_register(destination, value);
+        }
+        OuterAccess::Store { .. } => {
+            macro_assembler.store_with_barrier(frame, displacement, value, spare);
+        }
+    }
 }

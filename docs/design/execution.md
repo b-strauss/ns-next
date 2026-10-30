@@ -11118,6 +11118,27 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
     the exemption into the frame's flags word, which a frame an exit
     materializes keeps (`Heap::write_machine_frame`), so that its pop
     takes nothing off.
+- **An outer local is read and written where its frame keeps it**, as
+  `interpreter::locals`'s `frame_at_depth` finds it (`jit::closures`'s
+  `outer_local`). The template hops from the running closure's captured
+  frame along each closure frame's closure's, staying, as the
+  interpreter's walk stays, at a frame that is no closure's. A married
+  frame object names its activation's header offset, and the register
+  lies on the activation stack, below the header by the argument count
+  its flags word holds, as `Heap::register_slot` finds it, wherever the
+  frame was laid, a stub's shifted block frame included; a store there
+  takes no barrier. A divorced one keeps the register in a field
+  `Heap::frame_field_of_register` names from its body's argument count,
+  which no word of the frame object holds: the instruction has a site
+  of three data words, as a `MakeClosure` has, recording that count
+  beside the code id it was read for and the code table's epoch, which
+  the template compares with the frame's code id and the heap's epoch,
+  calling a leaf that fills it afresh where either differs. A store
+  there goes through the inline barrier. Cog needs neither: its closures
+  reach their method's variables only through copied values and
+  indirection vectors, which the optimized lowering adopted, so only
+  its fallback blocks of an inlined conditional and the reference
+  lowering read a frame's registers by reference.
 - **Non-local return is cut by a routine of its own, as Cog's
   `ceNonLocalReturn` cuts it** (`cointerp.c:12761-13100`): machine code
   calls the cut, which walks the compiled frames of the current stretch

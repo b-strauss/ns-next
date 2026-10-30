@@ -3746,8 +3746,9 @@ ns_runtime::for_each_lowering! {
 
 /// A loop of block literals, whose blocks the reference lowering
 /// activates, each sent `value` by a `SendInlinable` of `run` itself, and
-/// so exempt from the depth count; each reads or writes `count`, a local
-/// of `run`, which leaves machine code at once.
+/// so exempt from the depth count; each reads `count`, a local of `run`,
+/// in machine code, then sends `<` or `+` from an uncached site, which
+/// leaves machine code.
 const LOOP_OF_EXEMPT_BLOCKS: &str = indoc! {"
     class Subject = Object new () (
       public run = (
@@ -3762,7 +3763,7 @@ const LOOP_OF_EXEMPT_BLOCKS: &str = indoc! {"
 
 /// A block the interpreter's `SendInlinable` calls in machine code,
 /// exempt from the depth count, and whose code leaves machine code at
-/// once, is materialized exempt: the interpreter's pop of its frame takes
+/// its first send, is materialized exempt: the interpreter's pop of its frame takes
 /// nothing off the count, which ends where it began.
 #[test]
 fn an_exit_inside_an_exempt_closure_call_materializes_it_exempt() {
@@ -4148,5 +4149,199 @@ ns_runtime::for_each_lowering! {
                 "an interpreted send called a compiled body"
             );
         }
+    }
+}
+
+/// Locals a block reaches by reference in the frame of the body that
+/// made it -- under the optimized lowering a fallback block of an inlined
+/// `ifTrue:`, which `Yes` and `Later` are sent since they are no Boolean,
+/// and under the reference lowering every captured local: a block one
+/// frame out and one two frames out, their creator running -- a method,
+/// and a block a closure stub laid past its send's slots; and a block
+/// `Later` keeps and runs once its creator has returned, its frame
+/// divorced; each reaching a temporary and an argument.
+const OUTER_LOCALS: &str = indoc! {"
+    class Subject = Object new (
+      |
+        yes = Yes new.
+        later = Later new.
+      |
+    ) (
+      class Yes = Object new () (
+        public ifTrue: block = (
+          ^block value.
+        )
+      )
+      class Later = Object new (
+        |
+          kept ::= nil.
+        |
+      ) (
+        public ifTrue: block = (
+          kept:: block.
+          ^nil.
+        )
+        public run = (
+          ^kept value.
+        )
+      )
+      countUpTo: limit = (
+        |
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < limit] whileTrue: [
+          yes ifTrue: [count:: count + index].
+          yes ifTrue: [yes ifTrue: [count:: count + 1]].
+          index:: index + 1.
+        ].
+        ^count.
+      )
+      keepFrom: start = (
+        |
+          count ::= start.
+        |
+        later ifTrue: [
+          count:: count + start + 1.
+          count.
+        ].
+        ^start.
+      )
+      sumShifted: numbers = (
+        |
+          total ::= 0.
+        |
+        numbers do: [:each |
+          |
+            local ::= each.
+          |
+          yes ifTrue: [local:: local + each + 1].
+          total:: total + local.
+        ].
+        ^total.
+      )
+      public run = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          total:: total + (self countUpTo: 10) + (self sumShifted: {index. 2. 3}).
+          self keepFrom: index.
+          total:: total + later run + later run.
+          index:: index + 1.
+        ].
+        ^total.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `LoadOuterLocal` and `StoreOuterLocal` run in machine code, on a
+    /// creator's frame still on the activation stack and on one divorced
+    /// into its frame object alike: by the third run no exit leaves
+    /// machine code under the optimized lowering, whose fallback blocks
+    /// are the only ones reading by reference, and both lowerings answer
+    /// what the interpreter does.
+    fn outer_locals_run_without_an_exit(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(OUTER_LOCALS, lowering);
+            interpreter.set_jit_enabled(jit);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let mut answer = 0;
+            let mut statistics = interpreter.jit_statistics();
+            for _ in 0..3 {
+                let before = interpreter.jit_statistics();
+                answer = send_unary(&mut interpreter, &subject, "run");
+                statistics = since(interpreter.jit_statistics(), before);
+            }
+            (answer, statistics)
+        };
+        let (compiled, statistics) = run(true);
+        let (interpreted, _) = run(false);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.send_exits, 0, "every block is called in machine code");
+        }
+    }
+}
+
+/// A local of `prepare` that two blocks `Later` keeps write and read once
+/// `prepare` has returned, its frame divorced: the optimized lowering's
+/// fallback blocks of an inlined `ifTrue:`, which reach it by reference.
+#[cfg(debug_assertions)]
+const DIVORCED_HOLDER: &str = indoc! {"
+    class Subject = Object new (
+      |
+        writer = Later new.
+        reader = Later new.
+      |
+    ) (
+      class Later = Object new (
+        |
+          kept ::= nil.
+        |
+      ) (
+        public ifTrue: block = (
+          kept:: block.
+          ^nil.
+        )
+        public run = (
+          ^kept value.
+        )
+      )
+      public prepare = (
+        |
+          held ::= nil.
+        |
+        writer ifTrue: [
+          held:: Array new: 5.
+          held at: 1 put: 42.
+          0.
+        ].
+        reader ifTrue: [(held at: 1) + held size].
+        ^0.
+      )
+      public write = (
+        ^writer run.
+      )
+      public read = (
+        ^reader run.
+      )
+    ) : ()
+"};
+
+/// A store machine code makes of a young array into a register of a
+/// divorced frame object, which is old, remembers the frame object, as
+/// `Heap::frame_set_local`'s barrier does: the scavenge after it finds the
+/// array through the remembered frame, and it reads back as written. A
+/// store that missed the barrier leaves the frame naming nursery memory
+/// the scavenge vacated.
+#[cfg(debug_assertions)]
+#[test]
+fn an_outer_store_into_an_old_divorced_frame_remembers_it() {
+    let (mut interpreter, class) = load_with(DIVORCED_HOLDER, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    assert_eq!(send_unary(&mut interpreter, &subject, "prepare"), 0);
+    for _ in 0..3 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "write"), 0);
+        assert_eq!(send_unary(&mut interpreter, &subject, "read"), 47);
+    }
+    // A full collection between entries compacts both generations into the
+    // old space: the frame object is old from here on, and remembered by
+    // nothing.
+    interpreter.collect_now();
+    let before = interpreter.jit_statistics();
+    assert_eq!(send_unary(&mut interpreter, &subject, "write"), 0);
+    let statistics = since(interpreter.jit_statistics(), before);
+    interpreter.scavenge_now();
+    assert_eq!(send_unary(&mut interpreter, &subject, "read"), 47);
+    if !a_stress_mode_is_on() {
+        assert_ran_in_machine_code(&statistics, "write");
+        assert!(
+            statistics.leaf_calls >= 1,
+            "the store that remembered the frame object"
+        );
     }
 }

@@ -416,10 +416,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     about 8.5 ns more than interpreting a one-instruction block -- the
     switch, `jit::run_machine_code`, `jit::entered`, the entry stub saving
     and restoring eight registers ([execution.md](design/execution.md),
-    "What the entry at a send moved"). A block that reaches its
-    indirection vector, as `bench_block`'s `[:y | acc:: acc + y]` does,
-    runs those loads and stores through `Leaf::Step`, about 18 ns more an
-    activation, until the outer locals run in machine code. Of the bridge
+    "What the entry at a send moved"). Of the bridge
     itself, `run_machine_code` still clones two `Rc`s at every
     entry, the zone's and the entry block's; and `vm::run_stretch`'s
     `Transfer::Stopped` arm repeats the five reloads of its `Switched`

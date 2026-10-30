@@ -1334,9 +1334,32 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             copied,
             ..
         } => closures::make_closure(body, *destination, code, copied),
-        // What reads another activation, and non-local return: stage 4.
-        Instruction::LoadOuterLocal { .. } => Lowering::Exit,
-        Instruction::StoreOuterLocal { .. } => Lowering::Exit,
+        // A register of the frame `depth` closure hops out, on the
+        // activation stack or in its divorced frame object
+        // (`closures::outer_local`).
+        Instruction::LoadOuterLocal {
+            destination,
+            depth,
+            index,
+        } => closures::outer_local(
+            body,
+            *depth,
+            *index,
+            closures::OuterAccess::Load {
+                destination: *destination,
+            },
+        ),
+        Instruction::StoreOuterLocal {
+            source,
+            depth,
+            index,
+        } => closures::outer_local(
+            body,
+            *depth,
+            *index,
+            closures::OuterAccess::Store { source: *source },
+        ),
+        // Non-local return: stage 4.
         Instruction::NonLocalReturn { .. } => Lowering::Exit,
         // The own-slot instructions, each through the recorded guard
         // (`BodyAssembler::own_slot`).

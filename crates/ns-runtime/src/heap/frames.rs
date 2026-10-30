@@ -174,7 +174,7 @@ pub(super) mod kind_tag {
 /// 61.
 pub(crate) const KIND_TAG_MASK: u64 = 0xFF;
 pub(crate) const ARGUMENT_COUNT_SHIFT: u32 = 8;
-const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
+pub(crate) const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
 pub(crate) const COUNTED_BIT: u64 = 1 << 24;
 pub(crate) const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
 pub(crate) const COMPILED_BIT: u64 = 1 << 26;
