@@ -88,9 +88,12 @@ pub(crate) struct Roles {
     /// `load_guard`, `load_class`, `load_lexical_class` and
     /// `walk_superclasses`; then its site's own cell's address, which a
     /// hit enters the callee with and a miss the polymorphic stub; in the
-    /// stubs the block cell or the global row they read, and 0 after the
-    /// miss leaf. The leaf stub hands it to its leaf, which runs a slot
-    /// accessor straight from the site's entry when it is a site's cell.
+    /// stubs the block cell or the global row they read -- a row's
+    /// address moved on its hit, so that its chain start word lies where a
+    /// cell's does -- and 0 after the miss leaf. A private or `super` slot
+    /// accessor's stub reads the recorded guard there; the leaf stub hands
+    /// it to its leaf, which runs a slot accessor straight from the site's
+    /// entry when it is a site's cell.
     pub(crate) send_cells: Register,
     /// The guard a send compares with its cell's: the receiver's, or a
     /// class object's application word; kept into the stubs, which compare

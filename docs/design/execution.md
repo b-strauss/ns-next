@@ -10141,11 +10141,20 @@ sends and the inline caches in machine code.
   or after its field 0, as `heap/object.rs` computes it, an Array's store
   through the inline barrier, and goes on to the row's mirror method
   stub for every other case, so that the row's failures stay its leaf's;
-  the leaf stub (`Leaf::Act`) for every other target machine code runs
-  this way -- a private or `super`
-  slot accessor, whose guard check runs as `act` runs it, straight from
-  the site's entry when the send hit its site's own cell directly, a primitive
-  that is a leaf-safe mirror send, a builtin class's accessor; and the
+  a getter or setter of a private or `super` chain, whose field the
+  lookup decided from N's or S's chain: `slot_level_holds`'s first
+  compare made inline -- the receiver's guard against the one the entry
+  recorded, which the cell carries above the chain start in its
+  `chain_start` word (`cells::Cell`, `CHAIN_START_BITS`; a lexical
+  send tests the one bit of the start it needs), a megamorphic hit
+  moving `send_cells` so that a global row's word lies where a cell's
+  does -- then the public stubs' access; the leaf stub (`Leaf::Act`)
+  for every other target machine code runs this way -- a private or
+  `super` slot accessor whose guard differs from the recorded one, or
+  that came from the miss leaf, whose guard check runs as `act` runs
+  it, straight from the site's entry when the send hit its site's own
+  cell directly, a primitive that is a leaf-safe mirror send, a builtin
+  class's accessor; and the
   refusing stub, which exits so that the interpreter runs the send. Every
   decline refuses the call before anything is written. A stub stores
   into no frame. A send enters its callee with its own site's cell's

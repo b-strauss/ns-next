@@ -37,6 +37,14 @@ const CELL_CHAIN_START: i32 = 3 * REGISTER_BYTES;
 
 const _: () = assert!(CELL_WORDS == 4 && CELL_BYTES == 32);
 
+// A lexical site tests the one bit of its cell's chain start that N's
+// sets and no other start's does.
+const _: () = assert!(
+    ChainStart::LexicalClass as u64 == 1
+        && ChainStart::ReceiverClass as u64 & 1 == 0
+        && ChainStart::Superclass as u64 & 1 == 0
+);
+
 /// The callee's prologue, at its machine entry -- the body's first byte --
 /// where a compiled call enters it, the frame register at the callee's
 /// register 0 on the send's slots and the call's return address on top of
@@ -459,9 +467,11 @@ fn send_through_cell(
                 no_lexical_class,
                 MissBlock::NoLexicalClass(key_of(CacheRule::LexicalPrivate)),
             ));
+            // The chain start's bit N's sets: the word holds a private or
+            // `super` slot accessor's recorded guard above it.
             assembler.load(Width::Word64, level, cell_word(CELL_CHAIN_START));
-            assembler.compare_immediate(level, ChainStart::LexicalClass as i32);
-            assembler.jump_if(Condition::Equal, private);
+            assembler.test_immediate(level, ChainStart::LexicalClass as i32);
+            assembler.jump_if(Condition::NotEqual, private);
             macro_assembler.compare_receiver_guard(guard, value, cell_word(CELL_GUARD), lexical);
             macro_assembler.load_class(class, value);
             let assembler = macro_assembler.assembler();

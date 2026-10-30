@@ -433,6 +433,12 @@ struct AccessorStubs {
     receiver: CodeOffset,
     /// The leaf stub, which runs `act`'s arm through the leaf shim.
     act: CodeOffset,
+    /// The getter of a private or `super` chain of each field that has
+    /// one, by field.
+    guarded_getters: Vec<CodeOffset>,
+    /// The setter of a private or `super` chain of each field that has
+    /// one, by field.
+    guarded_setters: Vec<CodeOffset>,
 }
 
 /// Why a body was not compiled. It stays interpreted for good.
@@ -899,6 +905,8 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             false_constant: CodeOffset(0),
             receiver: CodeOffset(0),
             act: CodeOffset(0),
+            guarded_getters: Vec::new(),
+            guarded_setters: Vec::new(),
         },
     };
     zone.entry_stub = install(&mut zone, &stubs::assemble_entry_stub(Abi::host()).bytes).ok()?;
@@ -951,6 +959,16 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
         false_constant: placed(entries.false_constant),
         receiver: placed(entries.receiver),
         act: placed(entries.act),
+        guarded_getters: entries
+            .guarded_getters
+            .iter()
+            .map(|offset| placed(*offset))
+            .collect(),
+        guarded_setters: entries
+            .guarded_setters
+            .iter()
+            .map(|offset| placed(*offset))
+            .collect(),
     };
     Some(zone)
 }
@@ -1074,13 +1092,14 @@ pub(crate) enum Stubbed<'method> {
 /// reads it on every hit; a setter on a public or protected chain through
 /// its field's setter stub; a method whose fast path is a leaf-safe mirror
 /// row through its row's own stub (`MachineCall::Stub`) or, without one
-/// (`MachineCall::Leaf`), its row's mirror method stub; a
-/// private or `super` slot accessor, a getter or setter past the stubs'
-/// fields, a builtin class's accessor and a primitive that is a mirror
-/// send of a leaf-safe row through the leaf stub. `None` for
-/// every other -- a fast path that activates a block, a row that is not
-/// leaf-safe, a `doesNotUnderstand:` handler -- and where there is no
-/// zone: the interpreter runs the send.
+/// (`MachineCall::Leaf`), its row's mirror method stub; a private or
+/// `super` slot accessor through its field's guarded stub, which makes
+/// the guard check's first compare inline and goes on to the leaf stub
+/// for the rest; a getter or setter past the stubs' fields, a builtin
+/// class's accessor and a primitive that is a mirror send of a leaf-safe
+/// row through the leaf stub. `None` for every other -- a fast path that
+/// activates a block, a row that is not leaf-safe, a `doesNotUnderstand:`
+/// handler -- and where there is no zone: the interpreter runs the send.
 pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64> {
     use crate::builtins::primitive::{mirror_entry, MachineCall, Primitive};
     use crate::interpreter::resolve::Chain;
@@ -1154,6 +1173,18 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
                 .setters
                 .get(*field)
                 .map_or(act, |entry| address(*entry)),
+        ),
+        Stubbed::Slot {
+            kind,
+            chain: Chain::Private | Chain::Super,
+            field,
+        } => Some(
+            match kind {
+                AccessorKind::Getter => &zone.accessors.guarded_getters,
+                AccessorKind::Setter => &zone.accessors.guarded_setters,
+            }
+            .get(*field)
+            .map_or(act, |entry| address(*entry)),
         ),
         Stubbed::Slot { .. } => Some(act),
         Stubbed::Primitive {
@@ -2289,7 +2320,8 @@ mod tests {
 
         #[test]
         fn a_full_zone_refuses_bodies() {
-            let mut state = JitState::for_test(8192, true);
+            // Three pages: the stubs take most of two.
+            let mut state = JitState::for_test(12_288, true);
             let bodies: Vec<Rc<CompiledCode>> = (0..200).map(|_| body()).collect();
             for code in &bodies {
                 enter_twice(&mut state, code);

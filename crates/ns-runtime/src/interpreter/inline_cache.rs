@@ -30,7 +30,7 @@ use crate::Symbol;
 use super::resolve::{Chain, Resolved};
 use super::sends::{decide_lexical_send, decide_super_send};
 use super::{Mutator, Signal, Step};
-use cells::{Cell, Cells, ChainStart, GlobalRow, VACANT_GUARD};
+use cells::{Cell, Cells, ChainStart, GlobalRow, CHAIN_START_BITS, VACANT_GUARD};
 
 /// Where an activation's code family starts in its heap's cache table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -605,7 +605,7 @@ impl InlineCaches {
                 self.free_blocks.push(block);
                 let megamorphic = Target::Megamorphic { private };
                 self.cells
-                    .write_site(index, site_state_cell(jit, &megamorphic, cell.chain_start));
+                    .write_site(index, site_state_cell(jit, &megamorphic, cell.start()));
                 *entry = CacheEntry {
                     guard: DispatchId::VACANT,
                     target: megamorphic,
@@ -628,7 +628,7 @@ impl InlineCaches {
                     },
                 };
                 let polymorphic = Target::Polymorphic { block, private };
-                let site_cell = site_state_cell(jit, &polymorphic, cell.chain_start);
+                let site_cell = site_state_cell(jit, &polymorphic, cell.start());
                 let first = std::mem::replace(
                     entry,
                     CacheEntry {
@@ -2343,8 +2343,25 @@ fn cell_for<'gc>(mutator: &Mutator<'gc>, key: SendKey<'_, 'gc>, target: &Target)
         guard,
         entry: jit::cell_entry(&mutator.jit, target),
         level: cell_level(target),
-        chain_start: chain_start as u64,
+        chain_start: chain_start_word(chain_start, target),
     }
+}
+
+/// A cell's `chain_start` word for `target`, counted from `chain_start`:
+/// the chain start, and above it a private or `super` slot accessor's
+/// recorded guard, which its stub compares a receiver's with
+/// (`Cell::chain_start`) -- a copy of what the entry records, so that the
+/// cell stays a function of its entry's target.
+fn chain_start_word(chain_start: ChainStart, target: &Target) -> u64 {
+    let recorded = match target {
+        Target::Slot {
+            chain: Chain::Private | Chain::Super,
+            recorded_guard,
+            ..
+        } => u64::from(recorded_guard.bits()),
+        _ => 0,
+    };
+    chain_start as u64 | (recorded << CHAIN_START_BITS)
 }
 
 /// The cell of a site that holds no entry of its own -- polymorphic or
@@ -2660,7 +2677,7 @@ impl InlineCaches {
             let cell = expected_cell(entry.guard, &entry.target, found_cell, &any_guard, jit)
                 .map_err(|problem| format!("global entry {index}: {problem}"))?
                 .ok_or_else(|| format!("global entry {index} holds a site state"))?;
-            if cell.chain_start != rule_chain_start(entry.rule) as u64 {
+            if cell.start() != rule_chain_start(entry.rule) as u64 {
                 return Err(format!("global entry {index}'s rule is not its target's"));
             }
             let expected = GlobalRow {
@@ -2747,7 +2764,7 @@ fn expected_cell(
         guard,
         entry: jit::cell_entry(jit, target),
         level: cell_level(target),
-        chain_start: chain_start as u64,
+        chain_start: chain_start_word(chain_start, target),
     }))
 }
 

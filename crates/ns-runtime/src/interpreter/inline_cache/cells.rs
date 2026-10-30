@@ -35,8 +35,15 @@ use super::POLYMORPHIC_WIDTH;
 /// code compares a word of the class object it found. `entry` is the
 /// address a hit calls (`jit::cell_entry`). `level` and `chain_start` say
 /// where the callee's `current_class` is found: `level` superclass steps
-/// from the class `chain_start` names. A polymorphic site's cell holds its
-/// block's number in `level` instead.
+/// from the class `chain_start`'s low `CHAIN_START_BITS` name (`ChainStart`).
+/// A polymorphic site's cell holds its block's number in `level` instead.
+/// Above those bits `chain_start` holds, for a private or `super` slot
+/// accessor's entry, the guard the entry recorded for its receiver
+/// (`Target::Slot::recorded_guard`, `DispatchId::NONE`'s 0 where it
+/// recorded none), which the accessor's stub compares a receiver's guard
+/// with, as `Mutator::slot_level_holds` compares it first; 0 for every
+/// other entry. Every reader of the chain start masks it
+/// (`Cell::start`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Cell {
@@ -45,6 +52,32 @@ pub(crate) struct Cell {
     pub(crate) level: u64,
     pub(crate) chain_start: u64,
 }
+
+impl Cell {
+    /// The chain start the cell's `chain_start` word names, the recorded
+    /// guard above it masked off.
+    pub(crate) fn start(self) -> u64 {
+        start_of(self.chain_start)
+    }
+}
+
+/// The chain start a cell's or a row's `chain_start` word names
+/// (`Cell::start`).
+pub(crate) fn start_of(chain_start: u64) -> u64 {
+    chain_start & CHAIN_START_MASK
+}
+
+/// The low bits of a cell's `chain_start` word, which hold its
+/// `ChainStart`; a private or `super` slot accessor's recorded guard lies
+/// above them.
+pub(crate) const CHAIN_START_BITS: u32 = 2;
+/// The bits `CHAIN_START_BITS` covers.
+pub(crate) const CHAIN_START_MASK: u64 = (1 << CHAIN_START_BITS) - 1;
+
+const _: () = assert!(
+    (ChainStart::Superclass as u64) <= CHAIN_START_MASK,
+    "every chain start fits the bits below the recorded guard"
+);
 
 /// The class a cell's `level` is counted from (`Cell::chain_start`), as
 /// `inline_cache::chain_start` finds it for a hit: the receiver's class

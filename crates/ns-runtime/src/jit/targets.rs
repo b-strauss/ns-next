@@ -41,10 +41,12 @@ use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};
 use crate::builtins::primitive::{MachineCall, RowStub, MIRROR};
 use crate::heap::machine_words::MachineWord;
 use crate::interpreter::inline_cache::cells::{
-    BLOCK_BYTES, CELL_BYTES, CELL_WORDS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES, ROW_WORDS, VACANT_GUARD,
+    BLOCK_BYTES, CELL_BYTES, CELL_WORDS, CHAIN_START_BITS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES,
+    ROW_WORDS, VACANT_GUARD,
 };
 use crate::interpreter::inline_cache::POLYMORPHIC_WIDTH;
 use crate::interpreter::inline_cache::{RULE_TAG_BITS, RULE_TAG_LEXICAL, RULE_TAG_MASK};
+use crate::mixin::AccessorKind;
 
 /// The bytes of a word.
 const WORD_BYTES: i32 = 8;
@@ -53,6 +55,7 @@ const WORD_BYTES: i32 = 8;
 const CELL_GUARD: i32 = 0;
 const CELL_ENTRY: i32 = WORD_BYTES;
 const CELL_LEVEL: i32 = 2 * WORD_BYTES;
+const CELL_CHAIN_START: i32 = 3 * WORD_BYTES;
 
 /// A global row's words' displacements from its start (`GlobalRow`'s
 /// order).
@@ -61,6 +64,7 @@ const ROW_SELECTOR: i32 = WORD_BYTES;
 const ROW_RULE: i32 = 2 * WORD_BYTES;
 const ROW_ENTRY: i32 = 3 * WORD_BYTES;
 const ROW_LEVEL: i32 = 4 * WORD_BYTES;
+const ROW_CHAIN_START: i32 = 5 * WORD_BYTES;
 
 const _: () = assert!(CELL_WORDS == 4 && ROW_WORDS == 8);
 
@@ -158,7 +162,13 @@ pub(crate) fn assemble_polymorphic_stub(abi: Abi) -> Assembled {
     assembler.bind(found[0]);
     assembler.bind(hit);
     split_rule_tag(&mut macro_assembler);
-    emit_hit(&mut macro_assembler, CELL_LEVEL, CELL_ENTRY, miss);
+    emit_hit(
+        &mut macro_assembler,
+        CELL_LEVEL,
+        CELL_ENTRY,
+        CELL_CHAIN_START,
+        miss,
+    );
     macro_assembler.assembler().bind(miss);
     emit_miss(&mut macro_assembler);
     finish_stub(macro_assembler)
@@ -246,7 +256,13 @@ pub(crate) fn assemble_megamorphic_stub(abi: Abi) -> Assembled {
         assembler.jump(missed);
     }
     assembler.bind(hit);
-    emit_hit(&mut macro_assembler, ROW_LEVEL, ROW_ENTRY, miss);
+    emit_hit(
+        &mut macro_assembler,
+        ROW_LEVEL,
+        ROW_ENTRY,
+        ROW_CHAIN_START,
+        miss,
+    );
     macro_assembler.assembler().bind(miss);
     emit_miss(&mut macro_assembler);
     finish_stub(macro_assembler)
@@ -268,11 +284,15 @@ fn split_rule_tag(macro_assembler: &mut MacroAssembler) {
 /// (`inline_cache::rule_chain_start`) -- then a jump to the recorded
 /// entry, or to `miss` where the chain is shorter, which makes the send a
 /// miss as it makes the interpreter's (`inline_cache::materialize`).
-/// `lookup_rule`'s low bits are the rule's tag.
+/// `lookup_rule`'s low bits are the rule's tag. The callee is entered
+/// with `send_cells` moved so that the cell's or row's chain start word,
+/// at `chain_start_displacement`, lies where a cell's does: a private or
+/// `super` slot accessor's stub reads its recorded guard there.
 fn emit_hit(
     macro_assembler: &mut MacroAssembler,
     level_displacement: i32,
     entry_displacement: i32,
+    chain_start_displacement: i32,
     miss: Label,
 ) {
     let roles = macro_assembler.roles();
@@ -293,6 +313,9 @@ fn emit_hit(
     macro_assembler.walk_superclasses(class, level, miss);
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, entry, word(entry_displacement));
+    if chain_start_displacement != CELL_CHAIN_START {
+        assembler.add_immediate(cell, chain_start_displacement - CELL_CHAIN_START);
+    }
     assembler.jump_register(entry);
 }
 
@@ -364,6 +387,12 @@ pub(crate) struct AccessorEntries {
     pub(crate) receiver: u32,
     /// The leaf stub (`Leaf::Act`).
     pub(crate) act: u32,
+    /// The getter of a private or `super` chain of field `index`, by
+    /// index.
+    pub(crate) guarded_getters: Vec<u32>,
+    /// The setter of a private or `super` chain of field `index`, by
+    /// index.
+    pub(crate) guarded_setters: Vec<u32>,
 }
 
 /// The stubs a cell names for a target that is no method with code
@@ -397,9 +426,15 @@ pub(crate) struct AccessorEntries {
 ///   barrier, a byte's without one, since a byte names no object -- and
 ///   continue at the row's mirror method stub for every other case, so
 ///   that the row's failures stay its leaf's;
+/// - a getter or a setter of a private or `super` chain, whose field the
+///   lookup decided from N's or S's chain, never the receiver's: the
+///   receiver's guard compared with the one the entry recorded, which the
+///   cell carries above its chain start, as `Mutator::slot_level_holds`
+///   compares it first, then the public stubs' access; any other
+///   receiver goes on to the leaf stub, which makes the rest of the check;
 /// - the leaf stub, for every other target machine code runs this way --
-///   a private or `super` slot accessor, whose
-///   `Mutator::slot_level_holds` is the guard check, a setter past
+///   a private or `super` slot accessor whose guard differs from the
+///   recorded one or whose field is past the stubs', a setter past
 ///   `SETTER_STUBS`, a primitive that is a mirror send of a leaf-safe row,
 ///   a builtin class's accessor: the leaf runs `act`'s arm through the
 ///   shim (`Leaf::Act`) and answers its value, or the word no value is
@@ -423,15 +458,17 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         .scratch
         .iter()
         .copied()
-        .filter(|register| ![receiver, field, answer].contains(register))
+        .filter(|register| ![receiver, field, answer, roles.send_cells].contains(register))
         .collect();
     let (index, element, spare) = (free[0], free[1], free[2]);
-    let (decline, getter, setter, mirror_method) = (
+    let (decline, getter, setter, mirror_method, act) = (
+        assembler.label(),
         assembler.label(),
         assembler.label(),
         assembler.label(),
         assembler.label(),
     );
+    let (guarded_getter, guarded_setter) = (assembler.label(), assembler.label());
     let getters: Vec<Label> = (0..GETTER_STUBS)
         .map(|index| {
             let entry = assembler.label();
@@ -450,6 +487,19 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
             entry
         })
         .collect();
+    let mut guarded = |count: u32, target: Label| -> Vec<Label> {
+        (0..count)
+            .map(|index| {
+                let entry = assembler.label();
+                assembler.bind(entry);
+                assembler.move_immediate(field, u64::from(index));
+                assembler.jump(target);
+                entry
+            })
+            .collect()
+    };
+    let guarded_getters = guarded(GETTER_STUBS, guarded_getter);
+    let guarded_setters = guarded(SETTER_STUBS, guarded_setter);
     let rows = u16::try_from(crate::builtins::primitive::MIRROR.len())
         .expect("internal: the mirror rows are numbered in 16 bits");
     let mirror_methods: Vec<Label> = (0..rows)
@@ -570,6 +620,19 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     let assembler = macro_assembler.assembler();
     assembler.move_register(answer, receiver);
     assembler.return_();
+    for (kind, label) in [
+        (AccessorKind::Getter, guarded_getter),
+        (AccessorKind::Setter, guarded_setter),
+    ] {
+        macro_assembler.assembler().bind(label);
+        emit_guarded_accessor(
+            &mut macro_assembler,
+            kind,
+            [index, element, spare],
+            decline,
+            act,
+        );
+    }
     let row_stubs: Vec<Label> = RowStub::ALL
         .into_iter()
         .map(|stub| {
@@ -612,7 +675,6 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     // The leaf stub: the receiver handed over in the machine words, the
     // cell the send hit in `send_cells` -- its site's own on a direct hit,
     // a block's cell or a global row from a stub, 0 after the miss leaf.
-    let act = assembler.label();
     assembler.bind(act);
     macro_assembler.load_machine_words(address);
     let handed = MacroAssembler::machine_word(address, MachineWord::CalleeReceiver);
@@ -656,9 +718,106 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         false_constant: offset(false_constant),
         receiver: offset(receiver_entry),
         act: offset(act),
+        guarded_getters: guarded_getters.into_iter().map(offset).collect(),
+        guarded_setters: guarded_setters.into_iter().map(offset).collect(),
     };
     (assembled, entries)
 }
+
+/// The shared part of a getter's or a setter's stub of a private or
+/// `super` chain, the field in the field's role: `act`'s guard check made
+/// inline -- `Mutator::slot_level_holds`'s first compare, the receiver's
+/// guard against the one its entry recorded, which the cell's chain start
+/// word holds above the start (`cells::Cell`) -- then the read or the
+/// write as the public stubs make it. A receiver that is no object, a
+/// guard that differs, a cell that recorded none and a send that came
+/// from the miss leaf, whose `send_cells` is 0, go on to the leaf stub
+/// at `act`, which makes the check the interpreter makes -- the verified
+/// pair, the walk -- and the access; a receiver with the guard but not
+/// the field declines, as `act` would. `registers` are three registers
+/// it may clobber: none is the receiver's, the field's, the answer's or
+/// `send_cells`'.
+fn emit_guarded_accessor(
+    macro_assembler: &mut MacroAssembler,
+    kind: AccessorKind,
+    registers: [Register; 3],
+    decline: Label,
+    act: Label,
+) {
+    let roles = macro_assembler.roles();
+    let layout = crate::heap::Heap::machine_layout();
+    let [recorded, element, spare] = registers;
+    let (receiver, answer, field, cell) = (
+        roles.callee_receiver(),
+        roles.leaf_result,
+        roles.accessor_field,
+        roles.send_cells,
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(cell, 0);
+    assembler.jump_if(Condition::Equal, act);
+    macro_assembler.jump_unless_object(receiver, act);
+    let assembler = macro_assembler.assembler();
+    assembler.load(
+        Width::Word64,
+        recorded,
+        Memory {
+            base: cell,
+            displacement: CELL_CHAIN_START,
+        },
+    );
+    assembler.shift_right_logical(recorded, CHAIN_START_SHIFT);
+    // `DispatchId::NONE`, recorded for a receiver without the level, is
+    // never a match, whatever guard a header holds.
+    assembler.compare_immediate(recorded, 0);
+    assembler.jump_if(Condition::Equal, act);
+    assembler.move_register(element, receiver);
+    assembler.add(element, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        Memory {
+            base: element,
+            displacement: layout.header_displacement,
+        },
+    );
+    assembler.move_register(answer, spare);
+    assembler.and_immediate(answer, layout.guard_mask);
+    assembler.compare(answer, recorded);
+    assembler.jump_if(Condition::NotEqual, act);
+    // The guard holds: the public stubs' checks of the field, then the
+    // access.
+    assembler.test_immediate(spare, layout.instance_format_bits);
+    assembler.jump_if(Condition::NotEqual, decline);
+    assembler.shift_right_arithmetic(spare, layout.word_count_shift);
+    assembler.and_immediate(spare, WORD_COUNT_FIELD_MASK);
+    assembler.add_immediate(spare, -1);
+    assembler.compare(spare, field);
+    assembler.jump_if(Condition::BelowOrEqual, decline);
+    assembler.shift_left(field, WORD_SHIFT);
+    assembler.add(element, field);
+    let slot = Memory {
+        base: element,
+        displacement: layout.fields_displacement,
+    };
+    match kind {
+        AccessorKind::Getter => assembler.load(Width::Word64, answer, slot),
+        AccessorKind::Setter => {
+            assembler.load(Width::Word64, answer, argument_slot(roles, 0));
+            macro_assembler.store_with_barrier_at(receiver, slot, answer, spare);
+            macro_assembler.assembler().move_register(answer, receiver);
+        }
+    }
+    macro_assembler.assembler().return_();
+}
+
+/// How far a cell's chain start word is shifted to bring its recorded
+/// guard down (`cells::CHAIN_START_BITS`).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the chain start takes two bits"
+)]
+const CHAIN_START_SHIFT: u8 = CHAIN_START_BITS as u8;
 
 /// The stub of a method whose fast path is the row `stub` serves
 /// (`MachineCall::Stub`), at the label it answers: the element its

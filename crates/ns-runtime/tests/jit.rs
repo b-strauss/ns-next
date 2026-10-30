@@ -193,11 +193,11 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A program with more bodies than a zone of two pages holds, each
+    /// A program with more bodies than a zone of three pages holds, each
     /// starting with a template and installed by the stress setting, fills
     /// the zone, and the bodies refused once it is full run interpreted
     /// with the output unchanged.
-    fn a_zone_of_two_pages_leaves_the_output_right(lowering) {
+    fn a_zone_of_three_pages_leaves_the_output_right(lowering) {
         let count: i64 = 300;
         let methods: String = (0..count)
             .map(|index| format!("  m{index} = (\n    ^{index}\n  )\n"))
@@ -215,7 +215,7 @@ ns_runtime::for_each_lowering! {
             ) : ()
         "};
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(8192);
+        interpreter.set_jit_zone_bytes(12_288);
         interpreter.set_jit_stress(true);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), count * (count - 1));
@@ -1840,6 +1840,87 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A private slot's setter and getter sent from a nested class, and a
+/// slot's setter and getter sent to `super`, a thousand times each from
+/// compiled loops: their cells name the guarded stubs, which compare the
+/// receiver's guard with the one the entry recorded and store through the
+/// inline barrier.
+const GUARDED_ACCESSORS: &str = indoc! {"
+    class Subject = Object new (
+      |
+        private hidden ::= 0.
+        reader = Reader new.
+        doubling = Doubling new.
+      |
+    ) (
+      class Reader = Object new () (
+        public sum = (
+          |
+            index ::= 0.
+            total ::= 0.
+          |
+          [index < 1000] whileTrue: [
+            hidden: {index}.
+            total:: total + (hidden at: 1).
+            index:: index + 1.
+          ].
+          ^total
+        )
+      )
+      class Base = Object new (
+        |
+          public count ::= 0.
+        |
+      ) ()
+      class Doubling = Base new () (
+        public count: value = (
+          super count: value * 2.
+        )
+        public count = (
+          ^super count + 1
+        )
+        public sum = (
+          |
+            index ::= 0.
+            total ::= 0.
+          |
+          [index < 1000] whileTrue: [
+            self count: index.
+            total:: total + self count.
+            index:: index + 1.
+          ].
+          ^total
+        )
+      )
+      public run = (
+        ^reader sum + doubling sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A private and a `super` accessor run in their guarded stubs: the
+    /// third run's four thousand accessor sends call no leaf, and the
+    /// sums are the interpreter's.
+    fn a_private_setter_stores_without_a_leaf_call(lowering) {
+        let (compiled, statistics) =
+            run_thrice_on_one_instance(GUARDED_ACCESSORS, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(GUARDED_ACCESSORS, lowering, false);
+        assert_eq!(interpreted, [1_499_500; 3]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "sum");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.leaf_calls, 0, "no private or `super` accessor called a leaf");
+            assert!(
+                statistics.compiled_calls >= 4000,
+                "the loops call the accessors through their cells: {}",
+                statistics.compiled_calls
+            );
+        }
+    }
+}
+
 /// `at:put:` and `at:` on an Array and on a ByteArray, each sent a
 /// thousand times from a compiled loop at every index, the Array's
 /// elements Arrays themselves.
@@ -2263,17 +2344,20 @@ const AUDITED_LEAF_ROWS: &[(&str, &[&str])] = &[
 ];
 
 ns_runtime::for_each_lowering! {
-    /// A private slot's accessors, sent in a loop, run in the leaf stub's
-    /// leaf straight from the entry of the send's own site: the cell the
-    /// send hit is its own, at a site of the body's family, never site 0.
-    /// Two subjects with private slots at different fields share no site,
-    /// so a leaf that read another site's entry would answer the other's
-    /// field.
+    /// A private slot's accessors, sent in a loop to an instance of a
+    /// subclass of the class whose instance filled the site, miss their
+    /// guarded stubs' compare -- the entry recorded the first receiver's
+    /// guard -- and run in the leaf stub's leaf straight from the entry of
+    /// the send's own site: the cell the send hit is its own, at a site of
+    /// the body's family, never site 0. Two subjects with private slots at
+    /// different fields share no site, so a stub or a leaf that read
+    /// another site's cell or entry would answer the other's field.
     fn a_private_accessor_runs_from_its_own_sites_entry(lowering) {
         let source = indoc! {"
             class Subject = Object new (
               |
                 counter = Counter new.
+                derived = Derived new.
                 other = Other new.
               |
             ) (
@@ -2288,6 +2372,7 @@ ns_runtime::for_each_lowering! {
                   ^count
                 )
               )
+              class Derived = Counter new () ()
               class Other = (
                 |
                   private count ::= 1000.
@@ -2303,24 +2388,25 @@ ns_runtime::for_each_lowering! {
                   sum ::= 0.
                 |
                 [index < 200] whileTrue: [
-                  sum:: sum + (counter step: index) + other peek.
+                  sum:: sum + (counter step: index) + (derived step: index) + other peek.
                   index:: index + 1.
                 ].
                 ^sum.
               )
             ) : ()
         "};
-        let (mut interpreter, class) = load_with(source, lowering);
-        interpreter.set_jit_counting(true);
-        let expected = (0..200i64).map(|index| index * (index + 1) / 2 + 1000).sum::<i64>();
-        assert_eq!(run(&mut interpreter, &class), expected);
-        let before = interpreter.jit_statistics();
-        assert_eq!(run(&mut interpreter, &class), expected);
-        let done = since(interpreter.jit_statistics(), before);
+        // One instance throughout, so that no instantiation -- whose
+        // superclass initializer still exits -- falls into the third run.
+        let (compiled, done) = run_thrice_on_one_instance(source, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(source, lowering, false);
+        let first = (0..200i64).map(|index| index * (index + 1) + 1000).sum::<i64>();
+        assert_eq!(interpreted[0], first);
+        assert_eq!(compiled, interpreted);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(
                 done.site_slot_hits >= 400,
-                "the private getter and setter of every turn run from their sites' own entries: {}",
+                "the private getter and setter of every `derived` turn run from their sites' own \
+                 entries: {}",
                 done.site_slot_hits
             );
             assert_eq!(done.send_exits, 0, "no accessor's call is refused");

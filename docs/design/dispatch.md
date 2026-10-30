@@ -1184,8 +1184,12 @@ send compares -- the receiver's dispatch id, but for a `super` and a
 private lexical site S's or N's *application word*, the word the class
 object holds, which machine code reads without a table -- the entry
 address machine code calls, the `level` the hit walks up and the chain's
-start (`ChainStart`: the receiver's class, N or S, from the rule). A
-vacant, polymorphic or megamorphic site's cell guards nothing:
+start (`ChainStart`: the receiver's class, N or S, from the rule) in
+the low two bits of its word, above them, for a private or `super`
+slot accessor's entry, the guard the entry recorded for its receiver,
+which the accessor's stub compares a receiver's guard with -- a copy of
+the entry, as every word of the cell is; every reader masks the start
+(`Cell::start`). A vacant, polymorphic or megamorphic site's cell guards nothing:
 `VACANT_GUARD` is all ones, which no compared word is (a header's guard
 has 22 bits, an application field a `SmallInteger` or `nil`), not
 `DispatchId::VACANT`'s 1, which a class of application 0 holds; a

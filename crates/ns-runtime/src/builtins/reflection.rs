@@ -2355,6 +2355,17 @@ mod tests {
                   ^answer
                 )
               )
+              public class Shell = (
+                | private secret ::= 7. |
+              ) (
+                public class Reader = () (
+                  public read = (^secret)
+                )
+                public reader = (^Reader new)
+                public forward: mirror = (
+                  mirror elementsOf: {self} forwardIdentityToElementsOf: {Wide new} ifFail: [nil].
+                )
+              )
               public class Base = (
                 | public value ::= 7. |
               ) ()
@@ -2385,6 +2396,7 @@ mod tests {
               public class Two = Holder () ()
               public class Three = Holder () ()
               public keeper = (^Keeper new)
+              public shell = (^Shell new)
               public wide = (^Wide new)
               public probe = (^Probe new)
               public derived = (^Derived new)
@@ -2437,6 +2449,37 @@ mod tests {
             assert_eq!(
                 error_text(result, "again:"),
                 "an instance of Wide no longer has the slots of Keeper, which the slot accessor secret addresses"
+            );
+        }
+    }
+
+    crate::for_each_lowering! {
+        /// `Reader`'s `read`, compiled at its first entry and its site
+        /// filled by three reads, reads the private slot of its enclosing
+        /// `Shell`, which is then forwarded to a `Wide`: the forward
+        /// vacates every cache, so the compiled read's next send misses,
+        /// and the miss raises as the interpreter does rather than let the
+        /// guarded getter's stub read the `Wide`'s own slot.
+        fn a_compiled_private_slot_read_after_its_receiver_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = an_accessor_guard_fixture(lowering);
+            interpreter.set_jit_stress(true);
+            let shell = send(&mut interpreter, &fixture, "shell");
+            let reader = send(&mut interpreter, &shell, "reader");
+            for _ in 0..3 {
+                let read = send(&mut interpreter, &reader, "read");
+                interpreter.enter(|mutator| {
+                    assert_eq!(mutator.fetch(&read).as_small_integer(), Some(7));
+                });
+            }
+            let mirror = the_vm_mirror(&mut interpreter);
+            expect_ok(
+                interpreter.send(&shell, Symbol::intern("forward:"), &[mirror]),
+                "forward:",
+            );
+            let result = interpreter.send(&reader, Symbol::intern("read"), &[]);
+            assert_eq!(
+                error_text(result, "read"),
+                "an instance of Wide no longer has the slots of Shell, which the slot accessor secret addresses"
             );
         }
     }
