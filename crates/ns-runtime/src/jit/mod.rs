@@ -415,10 +415,6 @@ struct Zone {
     /// The stubs a cell names for a target that is no method with code
     /// (`targets::assemble_accessor_stubs`).
     accessors: AccessorStubs,
-    /// The closure sites of the `MakeClosure`s compiled into the zone,
-    /// which go with it (`closures::ClosureSites`).
-    #[cfg(ns_jit)]
-    closure_sites: closures::ClosureSites,
 }
 
 /// Where each accessor stub lies in the zone
@@ -532,6 +528,9 @@ struct InstalledBody {
     /// The offsets of its first byte and of the byte past its last.
     start: u32,
     end: u32,
+    /// The offset of its first data word (`MacroAssembler::take_body_words`),
+    /// past its last instruction; `end` for a body that has none.
+    words: u32,
     map: ProgramCounterMap,
 }
 
@@ -848,10 +847,39 @@ impl JitState {
         Some((sender, site.program_counter))
     }
 
-    /// The closure sites of the zone, where there is one.
+    /// Writes `words` at `address`, data words of the installed body the
+    /// address inside the code `code_address` lies in, through the zone's
+    /// one writer (`MacroAssembler::take_body_words`): machine code reads
+    /// them through the executable view, and the writer is the one way
+    /// anything is stored into the zone.
     #[cfg(ns_jit)]
-    pub(crate) fn closure_sites_mut(&mut self) -> Option<&mut closures::ClosureSites> {
-        self.zone.as_mut().map(|zone| &mut zone.closure_sites)
+    pub(crate) fn write_body_words(&mut self, code_address: usize, address: usize, words: &[u64]) {
+        let Some(body) = self.installed_body_at(code_address) else {
+            unreachable!("internal: body words are written for an installed body");
+        };
+        let (start, end) = (body.words, body.end);
+        let Some(zone) = self.zone.as_mut() else {
+            unreachable!("internal: an installed body lies in a zone");
+        };
+        let base = zone.writer.zone().executable_address(CodeOffset(0));
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let offset = address
+            .checked_sub(base)
+            .and_then(|offset| u32::try_from(offset).ok())
+            .filter(|offset| {
+                // Only data words, never an instruction, are written.
+                *offset >= start
+                    && u32::try_from(bytes.len())
+                        .ok()
+                        .and_then(|length| offset.checked_add(length))
+                        .is_some_and(|written_end| written_end <= end)
+            });
+        let Some(offset) = offset else {
+            unreachable!("internal: a body's words lie inside the body");
+        };
+        if zone.writer.write(CodeOffset(offset), &bytes).is_err() {
+            unreachable!("internal: an installed body's words lie in the committed zone");
+        }
     }
 
     /// The innermost frame the last exit's walk materialized, taken.
@@ -931,7 +959,6 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
     let mut zone = Zone {
         writer,
         limit,
-        closure_sites: closures::ClosureSites::new()?,
         next_offset: 0,
         entry_stub: CodeOffset(0),
         call_stub: CodeOffset(0),
@@ -1054,7 +1081,17 @@ fn reserve_zone(_bytes: usize) -> Option<Zone> {
 /// code may be running from the zone meanwhile -- a leaf installs a callee
 /// -- which holds no address an install moves: code is only ever appended.
 fn install(zone: &mut Zone, bytes: &[u8]) -> Result<CodeOffset, Refusal> {
-    let offset = zone.next_offset;
+    install_aligned(zone, bytes, 1)
+}
+
+/// `install`, the code placed at a multiple of `alignment` bytes as well,
+/// so that the data its assembler aligned from its start
+/// (`Assembled::alignment`) is aligned in the zone.
+fn install_aligned(zone: &mut Zone, bytes: &[u8], alignment: u32) -> Result<CodeOffset, Refusal> {
+    let offset = zone
+        .next_offset
+        .checked_next_multiple_of(alignment.max(BODY_ALIGNMENT))
+        .ok_or(Refusal::ZoneFull)?;
     let end = u32::try_from(bytes.len())
         .ok()
         .and_then(|length| offset.checked_add(length))
@@ -1583,13 +1620,7 @@ fn compile(
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(state.counting);
     let role = baseline::BodyRole::of(code, method.is_some());
-    let body = baseline::compile(
-        code,
-        macro_assembler,
-        feedback_base,
-        role,
-        zone.closure_sites.next(),
-    )?;
+    let body = baseline::compile(code, macro_assembler, feedback_base, role)?;
     if body.exits_at_once && !state.install_bodies_exiting_at_once {
         return Err(Refusal::ExitsAtOnce);
     }
@@ -1599,12 +1630,10 @@ fn compile(
     let Some(first_instruction) = body.map.machine_offset(0) else {
         panic!("internal: a compiled body has no code for its first instruction");
     };
-    let offset = install(zone, &body.code.bytes)?;
-    // Once the code is installed, so that a zone too full for it takes no
-    // site, and before anything can run it, so that every site it names is
-    // there to read at its first run. Refused, the code installed lies in
-    // the zone unreached: no slot, cell or row names it.
-    zone.closure_sites.take(body.closure_sites)?;
+    // The body's data words, its closure sites among them, are installed
+    // with it, zeroed, so that each is filled at its first run; a zone too
+    // full for the code and its words refuses both.
+    let offset = install_aligned(zone, &body.code.bytes, body.code.alignment)?;
     let length = u32::try_from(body.code.bytes.len()).map_err(|_| Refusal::ZoneFull)?;
     for call in &body.map.returns {
         // Every call of a body is a cached send's or an initializer
@@ -1630,6 +1659,7 @@ fn compile(
         reifies: body.reifies,
         start: offset.0,
         end: offset.0 + length,
+        words: offset.0 + body.words.unwrap_or(length),
         map: body.map,
     });
     let first_instruction = CodeOffset(offset.0 + first_instruction);
@@ -2229,7 +2259,7 @@ fn resumption_after_exit(
 /// and writes, the stubs it reaches through the block -- the exit stub at
 /// `exit_stub` -- and the global cache's mask.
 #[cfg(ns_jit)]
-fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 12] {
+fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 11] {
     use stubs::BlockWord;
     [
         (
@@ -2262,14 +2292,6 @@ fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockW
         (
             BlockWord::EdenCursor,
             mutator.heap.eden_cursor_address() as u64,
-        ),
-        (
-            BlockWord::ClosureSites,
-            mutator
-                .jit
-                .zone
-                .as_ref()
-                .map_or(0, |zone| zone.closure_sites.address() as u64),
         ),
         (
             BlockWord::MachineEntries,
@@ -2810,6 +2832,66 @@ mod tests {
             assert!(!again.same(frame), "the return cleared the reified word");
             mutator.heap.pop_activation(activation);
             assert_eq!(mutator.heap.activation_depth(), depth);
+        }
+
+        /// A body's closure site lies in the zone among the body's data
+        /// words: past its last instruction, on a cache line no
+        /// instruction shares, before the next body's code, and zeroed at
+        /// install, so that its first run fills it.
+        #[test]
+        fn closure_sites_live_with_their_body() {
+            let mut state = JitState::for_test(1 << 16, true);
+            let making = body_making_a_closure();
+            let next = body();
+            enter_twice(&mut state, &making);
+            enter_twice(&mut state, &next);
+            assert_eq!(state.statistics().compiled_bodies, 2);
+            let (first, second) = (&state.bodies[0], &state.bodies[1]);
+            let alignment = crate::jit::macro_assembler::BODY_WORDS_ALIGNMENT;
+            assert!(first.words < first.end, "the body has data words");
+            assert_eq!(first.words % alignment, 0, "the words start a line");
+            assert_eq!(first.end % alignment, 0, "the words end a line");
+            let last_instruction = first
+                .map
+                .starts
+                .iter()
+                .map(|offset| first.start + offset)
+                .max()
+                .expect("an instruction");
+            assert!(last_instruction < first.words, "past the body's code");
+            assert!(first.end <= second.start, "before the next body's");
+            assert_eq!(
+                second.words, second.end,
+                "a body without sites has no words"
+            );
+            let zone = state.zone.as_ref().expect("a zone");
+            let site = zone
+                .writer
+                .bytes(first.words..first.words + 24)
+                .expect("committed");
+            assert!(site.iter().all(|byte| *byte == 0), "zeroed at install");
+        }
+
+        /// A zone with room for a body's code but not for its closure
+        /// site refuses the body, as a zone too full for its code does:
+        /// sites take their room from the zone's.
+        #[test]
+        fn a_zone_without_room_for_a_body_s_sites_refuses_it() {
+            let mut probe = JitState::for_test(1 << 16, true);
+            let making = body_making_a_closure();
+            enter_twice(&mut probe, &making);
+            let installed = &probe.bodies[0];
+            let (end, words) = (installed.end as usize, installed.words as usize);
+            for (bytes, compiles) in [(words + 8, false), (end - 1, false), (end, true)] {
+                let mut state = JitState::for_test(bytes, true);
+                let code = body_making_a_closure();
+                enter_twice(&mut state, &code);
+                assert_eq!(
+                    machine_entry(&state, &code).is_some(),
+                    compiles,
+                    "a zone of {bytes} bytes, the body's words at {words}, its end at {end}"
+                );
+            }
         }
 
         #[test]

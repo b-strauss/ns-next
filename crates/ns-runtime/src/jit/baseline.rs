@@ -35,9 +35,9 @@ pub(crate) struct BaselineBody {
     pub(crate) exits_at_once: bool,
     /// Whether the code reifies its frame (`reifies_its_frame`).
     pub(crate) reifies: bool,
-    /// How many closure sites its `MakeClosure`s took, from the first the
-    /// compile was handed (`closures::ClosureSites`).
-    pub(crate) closure_sites: usize,
+    /// The offset in the code of its first data word, past its last
+    /// instruction, if it has any (`MacroAssembler::take_body_words`).
+    pub(crate) words: Option<u32>,
 }
 
 /// Whether `code` reifies its frame: whether it makes a closure, whose
@@ -164,10 +164,6 @@ pub(super) struct BodyAssembler {
     /// How many registers a frame object of the body holds
     /// (`CompiledCode::frame_register_count`).
     pub(super) frame_register_count: usize,
-    /// The closure site the next `MakeClosure` takes, and how many the
-    /// body has taken (`closures::ClosureSites`).
-    next_closure_site: usize,
-    closure_sites: usize,
 }
 
 /// The scratch registers a template uses, by role.
@@ -181,13 +177,6 @@ struct TemplateRegisters {
 }
 
 impl BodyAssembler {
-    /// The closure site of the `MakeClosure` being lowered, its own.
-    pub(super) fn take_closure_site(&mut self) -> usize {
-        let site = self.next_closure_site + self.closure_sites;
-        self.closure_sites += 1;
-        site
-    }
-
     /// A jump to the instruction at `target`. A backward one closes a
     /// loop, so it polls first, as the interpreter's backward jump tests
     /// the safepoint, so that a loop that makes no send still reaches one;
@@ -994,16 +983,15 @@ fn allocated_literal(literal: &Literal) -> bool {
 }
 
 /// Compiles `code` with `macro_assembler`, its sends' cells found from
-/// `feedback_base` and its `MakeClosure`s' sites numbered from
-/// `first_closure_site`: the prologue a compiled call enters at, then each
+/// `feedback_base`: the prologue a compiled call enters at, then each
 /// instruction in turn, at a label whose offset the program-counter map
-/// records.
+/// records, and after the code the body's data words, its `MakeClosure`s'
+/// sites (`MacroAssembler::take_body_words`).
 pub(crate) fn compile(
     code: &CompiledCode,
     mut macro_assembler: MacroAssembler,
     feedback_base: FeedbackBase,
     role: BodyRole,
-    first_closure_site: usize,
 ) -> Result<BaselineBody, Refusal> {
     // A program counter of the map, and an exit's, is a `u32`; the bound
     // is the zone's layout's, which a later stage's tables index by
@@ -1027,8 +1015,6 @@ pub(crate) fn compile(
         role,
         reifies: reifies_its_frame(code),
         frame_register_count: code.frame_register_count(),
-        next_closure_site: first_closure_site,
-        closure_sites: 0,
     };
     sends::prologue(&mut body, code);
     let mut exits = Vec::with_capacity(usize::from(count));
@@ -1061,17 +1047,19 @@ pub(crate) fn compile(
     }
     let exits_at_once = !reaches_before_an_exit(code, &exits, &transfers);
     body.emit_backward_branches();
+    let words = body.macro_assembler.body_words_label();
     let assembled = body
         .macro_assembler
         .finish()
         .map_err(|_| Refusal::Unassembled)?;
+    let words = words.and_then(|label| assembled.label_offsets[label.index()]);
     let map = program_counter_map(&assembled, &body.starts, &body.call_returns);
     Ok(BaselineBody {
         code: assembled,
         map,
         exits_at_once,
         reifies: body.reifies,
-        closure_sites: body.closure_sites,
+        words,
     })
 }
 
@@ -1426,7 +1414,6 @@ mod tests {
             macro_assembler,
             FeedbackBase::NOT_ASSIGNED,
             super::BodyRole::Method,
-            0,
         )
         .expect("compiled")
     }
@@ -1482,8 +1469,6 @@ mod tests {
             role: super::BodyRole::Method,
             reifies: false,
             frame_register_count: 0,
-            next_closure_site: 0,
-            closure_sites: 0,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.

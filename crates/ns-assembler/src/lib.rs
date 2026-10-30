@@ -105,7 +105,8 @@ pub struct Memory {
 ///   may do anything.
 /// - **Keeps**: every other operation -- `move_register`, `move_if`,
 ///   `move_immediate`, `load`, `store`, `store_immediate32`, `push`, `pop`,
-///   `add_stack`, `load_code_address`, `jump`, `jump_if`, `jump_register`, `return_` and `trap` -- so a compare
+///   `add_stack`, `load_code_address`, `load_labelled`, `load_label_address`, `jump`, `jump_if`,
+///   `jump_register`, `return_` and `trap` -- so a compare
 ///   may be separated from its branch by moves, loads and stores.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Condition {
@@ -243,6 +244,20 @@ pub enum Operation {
     Trap,
 }
 
+/// An operation whose operand is an address in the code, named by a
+/// label: `displacement` bytes past it, reached relative to the
+/// operation's own position, so that the code needs no relocation
+/// wherever it is placed. Its distance is known only once the code is
+/// laid out, so it is encoded in [`Assembler::finish`], as a branch is,
+/// in one form whose size does not depend on the distance.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum LabelReference {
+    /// `target :=` the 64-bit word at the address.
+    Load { target: Register },
+    /// `target :=` the address itself.
+    Address { target: Register },
+}
+
 /// What a branch does at its target.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum BranchKind {
@@ -292,6 +307,18 @@ pub trait Encoder {
         distance: i64,
         code: &mut Vec<u8>,
     ) -> bool;
+
+    /// Appends `reference`, its address `distance` bytes from the
+    /// operation's first byte, and answers whether its form reaches it;
+    /// when it does not, appends nothing. Its size must not depend on
+    /// `distance`, since a forward reference is patched in place. Keeps
+    /// the flags.
+    fn encode_label_reference(
+        &self,
+        reference: LabelReference,
+        distance: i64,
+        code: &mut Vec<u8>,
+    ) -> bool;
 }
 
 /// The code an [`Assembler`] produced.
@@ -302,6 +329,10 @@ pub struct Assembled {
     /// For each label, by [`Label::index`], the offset in `bytes` it was
     /// bound at, `None` for one never bound.
     pub label_offsets: Vec<Option<u32>>,
+    /// The alignment the code's first byte must have in memory for every
+    /// [`Assembler::align_data`] to align there too: the largest asked
+    /// for, 1 when none was.
+    pub alignment: u32,
 }
 
 /// Why [`Assembler::finish`] produced no code.
@@ -309,7 +340,8 @@ pub struct Assembled {
 pub enum AssemblyError {
     /// A branch names a label that was never bound.
     UnboundLabel(Label),
-    /// A branch's target lies beyond the reach of its longest form.
+    /// A branch's target lies beyond the reach of its longest form, or a
+    /// label reference's beyond the reach of its one.
     BranchOutOfReach(Label),
     /// The code is larger than the offsets of [`Assembled`] count.
     CodeTooLarge,
@@ -336,7 +368,8 @@ impl fmt::Display for AssemblyError {
 impl std::error::Error for AssemblyError {}
 
 /// One element of the code in the order it was emitted: encoded operations,
-/// a branch still to be sized, or a label's position.
+/// a branch still to be sized, a label's position, a label reference still
+/// to be encoded, or data placed after the code.
 #[derive(Clone, Debug)]
 enum Item {
     /// The range of `Assembler::encoded` that holds consecutive operations.
@@ -349,6 +382,15 @@ enum Item {
         label: Label,
     },
     Bind(Label),
+    Reference {
+        reference: LabelReference,
+        label: Label,
+        displacement: i32,
+    },
+    /// Zero bytes up to the next multiple of this many from the start.
+    Align(u32),
+    /// This many zero bytes.
+    Data(u32),
 }
 
 /// Collects operations, labels and branches, and lays them out in
@@ -361,6 +403,8 @@ pub struct Assembler<E: Encoder> {
     items: Vec<Item>,
     /// Whether each label is bound yet, by number.
     bound: Vec<bool>,
+    /// The largest alignment `align_data` asked for.
+    alignment: u32,
 }
 
 impl<E: Encoder + Default> Default for Assembler<E> {
@@ -387,6 +431,7 @@ impl<E: Encoder> Assembler<E> {
             encoded: Vec::new(),
             items: Vec::new(),
             bound: Vec::new(),
+            alignment: 1,
         }
     }
 
@@ -648,6 +693,66 @@ impl<E: Encoder> Assembler<E> {
         self.emit(Operation::LoadCodeAddress { target });
     }
 
+    /// `target :=` the 64-bit word `displacement` bytes past `label`, an
+    /// address in this code reached relative to the operation, so that it
+    /// needs no relocation wherever the code is placed: data the code
+    /// keeps after its last instruction (`align_data`, `zeroed_data`).
+    /// Keeps the flags.
+    ///
+    /// # Panics
+    ///
+    /// When another assembler made `label`.
+    pub fn load_labelled(&mut self, target: Register, label: Label, displacement: i32) {
+        self.reference(LabelReference::Load { target }, label, displacement);
+    }
+
+    /// `target :=` the address `displacement` bytes past `label`, as
+    /// `load_labelled` reaches it. Keeps the flags.
+    ///
+    /// # Panics
+    ///
+    /// When another assembler made `label`.
+    pub fn load_label_address(&mut self, target: Register, label: Label, displacement: i32) {
+        self.reference(LabelReference::Address { target }, label, displacement);
+    }
+
+    fn reference(&mut self, reference: LabelReference, label: Label, displacement: i32) {
+        assert!(
+            label.index() < self.bound.len(),
+            "label {} belongs to another assembler",
+            label.0
+        );
+        self.items.push(Item::Reference {
+            reference,
+            label,
+            displacement,
+        });
+    }
+
+    /// Pads the code with zero bytes up to the next multiple of
+    /// `alignment` bytes from its start, for data placed after its last
+    /// instruction, which control never reaches. The padding aligns in
+    /// memory once the code's first byte does ([`Assembled::alignment`]).
+    ///
+    /// # Panics
+    ///
+    /// When `alignment` is not a power of two.
+    pub fn align_data(&mut self, alignment: u32) {
+        assert!(
+            alignment.is_power_of_two(),
+            "an alignment is a power of two, not {alignment}"
+        );
+        self.alignment = self.alignment.max(alignment);
+        self.items.push(Item::Align(alignment));
+    }
+
+    /// Appends `byte_count` zero bytes: data the code reaches by a label
+    /// (`load_labelled`), after its last instruction, which control never
+    /// reaches.
+    pub fn zeroed_data(&mut self, byte_count: u32) {
+        self.items.push(Item::Data(byte_count));
+    }
+
     /// Returns to the caller. Keeps the flags.
     pub fn return_(&mut self) {
         self.emit(Operation::Return);
@@ -671,9 +776,44 @@ impl<E: Encoder> Assembler<E> {
         let mut bytes = Vec::with_capacity(self.encoded.len());
         let mut label_offsets: Vec<Option<u32>> = vec![None; self.bound.len()];
         let mut forward = Vec::new();
+        let mut forward_references = Vec::new();
         for item in self.items {
             match item {
                 Item::Code { start, end } => bytes.extend_from_slice(&self.encoded[start..end]),
+                Item::Align(alignment) => {
+                    let alignment = alignment as usize;
+                    bytes.resize(bytes.len().next_multiple_of(alignment), 0);
+                }
+                Item::Data(byte_count) => bytes.resize(bytes.len() + byte_count as usize, 0),
+                Item::Reference {
+                    reference,
+                    label,
+                    displacement,
+                } => {
+                    let start = bytes.len();
+                    let target = label_offsets[label.index()];
+                    // A forward reference is encoded at distance 0 and
+                    // patched once its label is placed.
+                    let distance = match target {
+                        Some(target) => reference_distance(start, target, displacement)?,
+                        None => 0,
+                    };
+                    if !self
+                        .encoder
+                        .encode_label_reference(reference, distance, &mut bytes)
+                    {
+                        return Err(AssemblyError::BranchOutOfReach(label));
+                    }
+                    if target.is_none() {
+                        forward_references.push((
+                            start,
+                            bytes.len(),
+                            reference,
+                            label,
+                            displacement,
+                        ));
+                    }
+                }
                 Item::Bind(label) => {
                     let offset =
                         u32::try_from(bytes.len()).map_err(|_| AssemblyError::CodeTooLarge)?;
@@ -726,12 +866,36 @@ impl<E: Encoder> Assembler<E> {
             );
             bytes[start..end].copy_from_slice(&patch);
         }
+        for (start, end, reference, label, displacement) in forward_references {
+            let target = label_offsets[label.index()].ok_or(AssemblyError::UnboundLabel(label))?;
+            patch.clear();
+            if !self.encoder.encode_label_reference(
+                reference,
+                reference_distance(start, target, displacement)?,
+                &mut patch,
+            ) {
+                return Err(AssemblyError::BranchOutOfReach(label));
+            }
+            assert_eq!(
+                patch.len(),
+                end - start,
+                "a label reference's size does not depend on its distance"
+            );
+            bytes[start..end].copy_from_slice(&patch);
+        }
         u32::try_from(bytes.len()).map_err(|_| AssemblyError::CodeTooLarge)?;
         Ok(Assembled {
             bytes,
             label_offsets,
+            alignment: self.alignment,
         })
     }
+}
+
+/// The distance from a label reference at `start` to the address
+/// `displacement` bytes past `target`, both offsets in the code.
+fn reference_distance(start: usize, target: u32, displacement: i32) -> Result<i64, AssemblyError> {
+    Ok(distance(start, target)? + i64::from(displacement))
 }
 
 /// The distance from a branch at `start` to `target`, both offsets in the

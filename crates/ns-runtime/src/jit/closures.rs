@@ -8,15 +8,22 @@
 //! full collection frees once nothing names them and mints again for
 //! other bodies, while the machine code that stores them lives on with its
 //! mixin. So no code id is a constant of the code: each `MakeClosure` has
-//! a closure site of its own (`ClosureSites`), which records the two ids
-//! with the epoch of the code table they were asked in, and its template
-//! compares that epoch with the heap's (`MachineWord::CodeTableEpoch`)
-//! before it reads them, calling the closure site leaf to ask them afresh
-//! whenever the two differ -- at the site's first run, and after a full
-//! collection that freed a code id.
+//! a closure site of its own, which records the two ids with the epoch of
+//! the code table they were asked in, and its template compares that epoch
+//! with the heap's (`MachineWord::CodeTableEpoch`) before it reads them,
+//! calling the closure site leaf to ask them afresh whenever the two differ
+//! -- at the site's first run, and after a full collection that freed a
+//! code id.
+//!
+//! A site is three of its body's data words
+//! (`MacroAssembler::take_body_words`), in the zone right after the body's
+//! code, as Cog keeps a method's data with its code: it is installed with
+//! the body, zeroed, stays wherever the body's code stays and takes its
+//! room from the zone's, and the template reaches it relative to its own
+//! instruction, through no word of the entry block. The leaf writes it
+//! through the zone's one writer.
 
 use ns_assembler::{Condition, Memory, Register, Width};
-use ns_memory::Reservation;
 
 use crate::bytecode::{CompiledCode, Instruction};
 use crate::heap::machine_words::MachineWord;
@@ -28,7 +35,6 @@ use super::leaves::Leaf;
 use super::macro_assembler::{MacroAssembler, ObjectSize, Operand};
 use super::sends::{frame_slot, store_program_counter};
 use super::stubs::BlockWord;
-use super::Refusal;
 
 /// The words of a closure site, in order: the epoch of the code table its
 /// ids were asked in, 0 for a site never filled -- no heap's epoch is 0 --
@@ -38,109 +44,25 @@ const SITE_EPOCH: usize = 0;
 const SITE_FRAME_CODE: usize = 1;
 const SITE_BLOCK_CODE: usize = 2;
 const SITE_WORDS: usize = 3;
-const SITE_BYTES: usize = SITE_WORDS * 8;
 
-/// The most sites the table may hold, one for each `MakeClosure` compiled
-/// into the zone: far past what a zone's code holds.
-const MAXIMUM_SITES: usize = 1 << 20;
-
-/// The least a growth commits, so that a small program commits once.
-const MINIMUM_GROWTH: usize = 64 << 10;
-
-/// The closure sites: a reservation of their own, since machine code reads
-/// them between leaf calls and nothing it reads may lie in the mutator
-/// ("The machine words"), committed as sites are taken. A site is written
-/// only by the closure site leaf (`refill_site`), from the heap's answer.
-///
-/// Aliasing: machine code reaches the sites through the reservation's own
-/// pointer (`Reservation::base_address`), while Rust writes them through a
-/// slice each write borrows afresh and drops before it returns, as the
-/// cells' (`interpreter/inline_cache/cells.rs`).
-pub(crate) struct ClosureSites {
-    reservation: Reservation,
-    /// How many sites are taken.
-    taken: usize,
-    /// How many bytes from the start are committed.
-    committed: usize,
-}
-
-impl ClosureSites {
-    /// Reserves room for `MAXIMUM_SITES` sites, committing none of it;
-    /// `None` when the address space is refused.
-    pub(crate) fn new() -> Option<ClosureSites> {
-        let reservation = Reservation::reserve(MAXIMUM_SITES * SITE_BYTES).ok()?;
-        Some(ClosureSites {
-            reservation,
-            taken: 0,
-            committed: 0,
-        })
-    }
-
-    /// The address of site 0, fixed for the reservation's life
-    /// (`BlockWord::ClosureSites`).
-    pub(crate) fn address(&self) -> usize {
-        self.reservation.base_address()
-    }
-
-    /// The index the next site taken has.
-    pub(crate) fn next(&self) -> usize {
-        self.taken
-    }
-
-    /// Takes `count` more sites, committing their words, which read as
-    /// zero, so that each is filled at its first run; `ZoneFull` when the
-    /// table or the memory runs out.
-    pub(crate) fn take(&mut self, count: usize) -> Result<(), Refusal> {
-        let taken = self
-            .taken
-            .checked_add(count)
-            .filter(|taken| *taken <= MAXIMUM_SITES)
-            .ok_or(Refusal::ZoneFull)?;
-        let bytes = taken * SITE_BYTES;
-        if bytes > self.committed {
-            let page = Reservation::page_size();
-            let end = bytes
-                .max(self.committed + MINIMUM_GROWTH)
-                .div_ceil(page)
-                .saturating_mul(page)
-                .min(self.reservation.size());
-            self.reservation
-                .commit(self.committed..end)
-                .map_err(|_| Refusal::ZoneFull)?;
-            self.committed = end;
-        }
-        self.taken = taken;
-        Ok(())
-    }
-
-    /// Writes site `site`'s words.
-    fn write(&mut self, site: usize, words: [u64; SITE_WORDS]) {
-        let start = site * SITE_BYTES;
-        let Some(slots) = self.reservation.words_mut(start..start + SITE_BYTES) else {
-            unreachable!("internal: a site machine code names is taken and committed");
-        };
-        slots.copy_from_slice(&words);
-    }
-}
-
-/// `Leaf::ClosureSite`: writes site `site` of the `MakeClosure` at
-/// `program_counter` of the body `code_address` lies in afresh -- the
-/// code table's current epoch, and the code ids of the body, registered
-/// with its method when it is one's body, as the frame it runs in names it
-/// (`materialize::code_id`), and of the block, as a closure of it names it
-/// -- each registered if a full collection freed it.
+/// `Leaf::ClosureSite`: writes the closure site at `site_address`, of the
+/// `MakeClosure` at `program_counter` of the body `code_address` lies in,
+/// afresh -- the code table's current epoch, and the code ids of the body,
+/// registered with its method when it is one's body, as the frame it runs
+/// in names it (`materialize::code_id`), and of the block, as a closure of
+/// it names it -- each registered if a full collection freed it.
 pub(crate) fn refill_site(
     mutator: &mut Mutator<'_>,
-    site: u64,
+    site_address: u64,
     program_counter: u64,
     code_address: u64,
 ) {
-    let (Ok(site), Ok(program_counter), Ok(code_address)) = (
-        usize::try_from(site),
+    let (Ok(site_address), Ok(program_counter), Ok(code_address)) = (
+        usize::try_from(site_address),
         usize::try_from(program_counter),
         usize::try_from(code_address),
     ) else {
-        unreachable!("internal: a site, a program counter and an address fit the pointer width");
+        unreachable!("internal: an address and a program counter fit the pointer width");
     };
     let Some(installed) = mutator.jit.body_of(code_address) else {
         unreachable!("internal: a closure site's leaf is called from an installed body");
@@ -160,16 +82,9 @@ pub(crate) fn refill_site(
         Heap::machine_count_word(frame_code.index()),
         Heap::machine_count_word(block_code.index()),
     ];
-    let Some(sites) = mutator.jit.closure_sites_mut() else {
-        unreachable!("internal: machine code runs from a zone");
-    };
-    sites.write(site, words);
-}
-
-/// The displacement of word `word` of site `site` from site 0's address.
-fn site_word(site: usize, word: usize) -> i32 {
-    i32::try_from(site * SITE_BYTES + word * 8)
-        .expect("internal: the closure sites lie within 2 GiB of their start")
+    mutator
+        .jit
+        .write_body_words(code_address, site_address, &words);
 }
 
 /// A word that fits a 32-bit immediate: a tag, `nil`, a Boolean, a small
@@ -226,7 +141,7 @@ pub(super) fn make_closure(
     block: &CompiledCode,
     copied: &[u16],
 ) -> Lowering {
-    let site = body.take_closure_site();
+    let site = body.macro_assembler.take_body_words(SITE_WORDS);
     let registers = ClosureRegisters::of(&body.macro_assembler);
     #[cfg(debug_assertions)]
     for register in copied {
@@ -243,27 +158,18 @@ pub(super) fn make_closure(
     Lowering::Template
 }
 
-/// The site's check: its epoch against the heap's, and the closure site
-/// leaf's call out of line, after which the check is made again, when the
-/// two differ.
+/// The site's check, the site the body words from `site` on: its epoch
+/// against the heap's, and the closure site leaf's call out of line, after
+/// which the check is made again, when the two differ.
 fn check_site(body: &mut BodyAssembler, site: usize, registers: &ClosureRegisters) {
     let program_counter = body.program_counter;
     let macro_assembler = &mut body.macro_assembler;
     let leaf_result = macro_assembler.roles().leaf_result;
-    let sites = macro_assembler.block_word(BlockWord::ClosureSites);
-    let (address, epoch, machine_words) = (registers.address, registers.value, registers.spare);
+    let (epoch, machine_words) = (registers.value, registers.spare);
     let assembler = macro_assembler.assembler();
     let (check, refill) = (assembler.label(), assembler.label());
     assembler.bind(check);
-    assembler.load(Width::Word64, address, sites);
-    assembler.load(
-        Width::Word64,
-        epoch,
-        Memory {
-            base: address,
-            displacement: site_word(site, SITE_EPOCH),
-        },
-    );
+    macro_assembler.load_body_word(epoch, site + SITE_EPOCH);
     macro_assembler.load_machine_words(machine_words);
     let assembler = macro_assembler.assembler();
     assembler.compare_memory(
@@ -275,32 +181,12 @@ fn check_site(body: &mut BodyAssembler, site: usize, registers: &ClosureRegister
         refill,
         Leaf::ClosureSite.index(),
         [
-            Operand::Immediate(site as u64),
+            Operand::BodyWord(site),
             Operand::Immediate(u64::from(program_counter)),
             Operand::CodeAddress,
         ],
         leaf_result,
         check,
-    );
-}
-
-/// `target :=` word `word` of site `site`. Clobbers nothing else.
-fn load_site_word(
-    macro_assembler: &mut MacroAssembler,
-    target: Register,
-    site: usize,
-    word: usize,
-) {
-    let sites = macro_assembler.block_word(BlockWord::ClosureSites);
-    let assembler = macro_assembler.assembler();
-    assembler.load(Width::Word64, target, sites);
-    assembler.load(
-        Width::Word64,
-        target,
-        Memory {
-            base: target,
-            displacement: site_word(site, word),
-        },
     );
 }
 
@@ -430,7 +316,7 @@ fn fill_frame_fields(body: &mut BodyAssembler, site: usize, registers: &ClosureR
         field(layout.frame_program_counter_displacement),
         Heap::machine_program_counter_word(program_counter),
     );
-    load_site_word(macro_assembler, spare, site, SITE_FRAME_CODE);
+    macro_assembler.load_body_word(spare, site + SITE_FRAME_CODE);
     macro_assembler.assembler().store(
         Width::Word64,
         field(layout.frame_code_id_displacement),
@@ -638,7 +524,7 @@ fn allocate_closure(
         slow,
     );
     macro_assembler.assembler().bind(placed);
-    load_site_word(macro_assembler, spare, site, SITE_BLOCK_CODE);
+    macro_assembler.load_body_word(spare, site + SITE_BLOCK_CODE);
     let assembler = macro_assembler.assembler();
     assembler.move_register(address, object);
     assembler.add(address, roles.object_space);

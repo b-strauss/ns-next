@@ -268,6 +268,9 @@ pub(crate) enum Operand {
     /// to the leaf (`JitState::body_at`) without the code holding an
     /// absolute address.
     CodeAddress,
+    /// The address of the body's data word at this index
+    /// (`MacroAssembler::take_body_words`).
+    BodyWord(usize),
 }
 
 /// The size of an object `bump_allocate` places.
@@ -341,7 +344,17 @@ pub(crate) struct MacroAssembler {
     exit_at_every_poll: bool,
     /// Whether a back edge counts itself (`count_back_edge`).
     count_back_edges: bool,
+    /// The body's data words, which `finish` places after its code, and
+    /// the label they start at (`take_body_words`).
+    body_words: usize,
+    body_words_label: Option<Label>,
 }
+
+/// The alignment of a body's data words, a cache line's, which they share
+/// with no instruction: a store into a line the processor is executing
+/// from costs it a self-modifying-code clear on x64, and a refill of a
+/// word is such a store (Intel SDM Vol. 3A, 11.6 Self-Modifying Code).
+pub(crate) const BODY_WORDS_ALIGNMENT: u32 = 64;
 
 impl MacroAssembler {
     pub(crate) fn new(abi: Abi) -> MacroAssembler {
@@ -354,7 +367,53 @@ impl MacroAssembler {
             cold_paths: Vec::new(),
             exit_at_every_poll: super::stress_exit_from_env(),
             count_back_edges: false,
+            body_words: 0,
+            body_words_label: None,
         }
+    }
+
+    /// Takes `count` more of the body's data words -- words the body reads
+    /// between leaf calls and a leaf writes, kept with its code, so that
+    /// they live and move with it -- and answers the index of the first.
+    /// `finish` places them after the code, zeroed, on a cache line of
+    /// their own (`BODY_WORDS_ALIGNMENT`), each reached relative to the
+    /// instruction that reads it, so the code holds no absolute address.
+    pub(crate) fn take_body_words(&mut self, count: usize) -> usize {
+        if self.body_words_label.is_none() {
+            self.body_words_label = Some(self.assembler.label());
+        }
+        let first = self.body_words;
+        self.body_words += count;
+        first
+    }
+
+    /// The label the body's data words start at, and word `index`'s byte
+    /// offset from it.
+    fn body_word(&self, index: usize) -> (Label, i32) {
+        let Some(label) = self.body_words_label else {
+            panic!("internal: a body word is read before any is taken");
+        };
+        assert!(
+            index < self.body_words,
+            "internal: body word {index} was never taken"
+        );
+        let displacement = i32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(WORD_BYTES))
+            .expect("internal: a body's data words lie within 2 GiB of their start");
+        (label, displacement)
+    }
+
+    /// The label the body's data words start at, which `finish` binds, if
+    /// any was taken.
+    pub(crate) fn body_words_label(&self) -> Option<Label> {
+        self.body_words_label
+    }
+
+    /// `target :=` the body's data word `index`. Keeps the flags.
+    pub(crate) fn load_body_word(&mut self, target: Register, index: usize) {
+        let (label, displacement) = self.body_word(index);
+        self.assembler.load_labelled(target, label, displacement);
     }
 
     /// Makes `count_back_edge` emit its count (`true`) or nothing, so that
@@ -524,6 +583,21 @@ impl MacroAssembler {
                 }
                 (Operand::CodeAddress, Place::Register(target)) => {
                     self.assembler.load_code_address(target);
+                }
+                (Operand::BodyWord(index), Place::Register(target)) => {
+                    let (label, displacement) = self.body_word(index);
+                    self.assembler
+                        .load_label_address(target, label, displacement);
+                }
+                (Operand::BodyWord(index), Place::Stack(displacement)) => {
+                    let (label, word) = self.body_word(index);
+                    self.assembler
+                        .load_label_address(roles.idiom_scratch, label, word);
+                    self.assembler.store(
+                        Width::Word64,
+                        stack_slot(displacement),
+                        roles.idiom_scratch,
+                    );
                 }
                 (Operand::CodeAddress, Place::Stack(displacement)) => {
                     self.assembler.load_code_address(roles.idiom_scratch);
@@ -2051,6 +2125,18 @@ impl MacroAssembler {
                     self.exit(ExitKind::DeadRegister, program_counter);
                 }
             }
+        }
+        if let Some(label) = self.body_words_label {
+            let bytes = u32::try_from(self.body_words)
+                .ok()
+                .and_then(|words| words.checked_mul(WORD_BYTES.unsigned_abs()))
+                .ok_or(AssemblyError::CodeTooLarge)?;
+            self.assembler.align_data(BODY_WORDS_ALIGNMENT);
+            self.assembler.bind(label);
+            self.assembler.zeroed_data(bytes);
+            // The line after the words holds no instruction either: the
+            // next body starts at the next line.
+            self.assembler.align_data(BODY_WORDS_ALIGNMENT);
         }
         self.assembler.finish()
     }

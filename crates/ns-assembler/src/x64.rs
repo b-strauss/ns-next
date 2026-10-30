@@ -14,7 +14,9 @@
 //! mirrors are not linked. No numeric pattern appears in a function body;
 //! `tests/encoding_sources.rs` holds every encoder file to that.
 
-use crate::{BranchForm, BranchKind, Condition, Encoder, Memory, Operation, Register, Width};
+use crate::{
+    BranchForm, BranchKind, Condition, Encoder, LabelReference, Memory, Operation, Register, Width,
+};
 
 /// `rax`: register number 0, as ModRM, SIB and opcode fields name it.
 ///
@@ -414,6 +416,13 @@ const LOAD_EFFECTIVE_ADDRESS: [u8; 1] = [0x8D];
 ///
 /// Intel SDM Vol. 2A, 2.2.1.6 RIP-Relative Addressing.
 const RIP_RELATIVE: u8 = 0b101;
+
+/// The size of a RIP-relative `MOV r64, m64` or `LEA r64, m`: the REX.W
+/// prefix, the one-byte opcode, the ModRM byte and the 32-bit
+/// displacement, which counts from the end of the instruction.
+///
+/// Intel SDM Vol. 2A, 2.2.1.6 RIP-Relative Addressing.
+const LABEL_REFERENCE_SIZE: i64 = 7;
 
 /// `RET` (`C3`) — near return.
 ///
@@ -924,6 +933,29 @@ impl Encoder for X64 {
                 code.extend_from_slice(&relative.to_le_bytes());
             }
         }
+        true
+    }
+
+    fn encode_label_reference(
+        &self,
+        reference: LabelReference,
+        distance: i64,
+        code: &mut Vec<u8>,
+    ) -> bool {
+        // `mov target, [rip + relative]` or `lea target, [rip + relative]`:
+        // the displacement counts from the end of the instruction.
+        let Ok(relative) = i32::try_from(distance - LABEL_REFERENCE_SIZE) else {
+            return false;
+        };
+        let (opcode, target): (&[u8], Register) = match reference {
+            LabelReference::Load { target } => (&MOVE_RM_TO_REGISTER, target),
+            LabelReference::Address { target } => (&LOAD_EFFECTIVE_ADDRESS, target),
+        };
+        let target = number(target);
+        rex(code, true, target, 0, false);
+        code.extend_from_slice(opcode);
+        code.push(modrm(MODRM_MODE_NO_DISPLACEMENT, target, RIP_RELATIVE));
+        code.extend_from_slice(&relative.to_le_bytes());
         true
     }
 }

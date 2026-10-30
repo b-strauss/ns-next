@@ -20,7 +20,7 @@ use crate::heap::machine_words::MachineWord;
 /// before it -- `RegisterBase`, `MachineEntry` and, while counting, the
 /// counters' zero at every entry, and `ObjectSpaceBase`, `StackBase`,
 /// `MachineWords`, `ExitStub`, `Cells`, `PolymorphicStub`,
-/// `PolymorphicBlocks` … `ClosureSites`, which name what lasts from one
+/// `PolymorphicBlocks` … `EdenCursor` and `MachineEntries`, which name what lasts from one
 /// entry to the next, only when the block is stale
 /// (`JitState::mark_block_stale`) -- the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
@@ -28,9 +28,11 @@ use crate::heap::machine_words::MachineWord;
 /// counts its back edges `BackEdges`; the entry and the call stub each
 /// write `EnteredByCall`.
 ///
-/// Words 24 to 28 are free, kept for what the later stages enter
+/// Words 23 and 25 to 28 are free, kept for what the later stages enter
 /// machine code with, so the three words only a debug build or a test
-/// uses sit at the top.
+/// uses sit at the top. Word 23 named the closure sites until they moved
+/// into the code zone beside their bodies (`jit::closures`); nothing
+/// reads or writes it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BlockWord {
     /// The leaf shim's address, which `call_leaf` calls. Words 0, 2 and 3,
@@ -100,9 +102,6 @@ pub(crate) enum BlockWord {
     /// word (`Heap::eden_cursor_address`), which an allocation in machine
     /// code bumps in place (`MacroAssembler::bump_allocate`).
     EdenCursor = 22,
-    /// The address of closure site 0's words (`closures::ClosureSites`):
-    /// a `MakeClosure`'s site lies its index sites past it.
-    ClosureSites = 23,
     /// The address of the machine entry table's row 0
     /// (`Heap::machine_entries_address`), where a closure stub finds the
     /// machine entry of the block a closure's code id names

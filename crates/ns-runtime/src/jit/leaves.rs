@@ -735,14 +735,15 @@ fn divorce(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 
 /// The closure site leaf, which a `MakeClosure`'s template calls when its
 /// site records another epoch of the code table than the heap's
-/// (`jit::closures`): site `arguments[0]` of the `MakeClosure` at
-/// `arguments[1]`, the program counter, of the body `arguments[2]` names,
-/// written afresh with the code ids of the body and of the block in the
-/// heap's current epoch, which registers each body that has none. It
-/// reads and writes no frame, and cannot fail: answers 0.
+/// (`jit::closures`): the site at address `arguments[0]`, among the data
+/// words of the body `arguments[2]` names, of the `MakeClosure` at
+/// `arguments[1]`, the program counter, written afresh through the zone's
+/// writer with the code ids of the body and of the block in the heap's
+/// current epoch, which registers each body that has none. It reads and
+/// writes no frame, and cannot fail: answers 0.
 fn closure_site(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    let [site, program_counter, code_address] = arguments;
-    jit::closures::refill_site(mutator, site, program_counter, code_address);
+    let [site_address, program_counter, code_address] = arguments;
+    jit::closures::refill_site(mutator, site_address, program_counter, code_address);
     DONE
 }
 

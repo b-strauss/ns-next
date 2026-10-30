@@ -653,3 +653,87 @@ fn a_division_of_another_register_is_refused() {
 fn a_division_by_rdx_is_refused() {
     let _ = bytes(|assembler| assembler.divide_signed(x64::RAX, x64::RDX, x64::RDX));
 }
+
+/// The bytes of the first instruction of `code`, a label reference, whose
+/// size is a RIP-relative load's.
+const LABEL_REFERENCE_BYTES: usize = 7;
+
+#[test]
+fn a_label_reference_reaches_its_label_in_both_directions() {
+    for register in registers() {
+        // Forward: the reference names data after the code.
+        let forward = assembled(|assembler| {
+            let data = assembler.label();
+            assembler.load_labelled(register, data, 8);
+            assembler.load_label_address(register, data, 16);
+            assembler.return_();
+            assembler.align_data(64);
+            assembler.bind(data);
+            assembler.zeroed_data(24);
+        });
+        let data = u64::from(forward.label_offsets[0].expect("bound"));
+        assert_eq!(data, 64);
+        assert_eq!(
+            disassemble(&forward.bytes[..2 * LABEL_REFERENCE_BYTES]),
+            format!(
+                "mov {name},[{}]\nlea {name},[{}]",
+                number(data + 8),
+                number(data + 16),
+                name = name(register)
+            )
+        );
+        // Backward: the label lies before the reference.
+        let backward = bytes(|assembler| {
+            let top = assembler.label();
+            assembler.bind(top);
+            assembler.trap();
+            assembler.load_labelled(register, top, -8);
+            assembler.load_label_address(register, top, 0);
+        });
+        let instructions = decode(&backward);
+        assert_eq!(instructions.len(), 3);
+        assert_eq!(
+            instructions[1].ip_rel_memory_address(),
+            0u64.wrapping_sub(8)
+        );
+        assert_eq!(instructions[2].ip_rel_memory_address(), 0);
+        assert_eq!(instructions[1].len(), LABEL_REFERENCE_BYTES);
+        assert_eq!(instructions[2].len(), LABEL_REFERENCE_BYTES);
+    }
+}
+
+#[test]
+fn data_is_aligned_from_the_code_s_start_and_zeroed() {
+    let result = assembled(|assembler| {
+        let data = assembler.label();
+        assembler.return_();
+        assembler.align_data(16);
+        assembler.zeroed_data(3);
+        assembler.align_data(64);
+        assembler.bind(data);
+        assembler.zeroed_data(40);
+        assembler.align_data(64);
+    });
+    assert_eq!(result.label_offsets, vec![Some(64)]);
+    assert_eq!(result.bytes.len(), 128);
+    assert_eq!(result.alignment, 64);
+    assert!(result.bytes[1..].iter().all(|byte| *byte == 0));
+    assert_eq!(assembled(Assembler::return_).alignment, 1);
+}
+
+#[test]
+fn a_label_reference_to_a_label_never_bound_is_an_error() {
+    let mut assembler = Assembler::<X64>::new();
+    let unbound = assembler.label();
+    assembler.load_labelled(x64::RAX, unbound, 0);
+    assert!(matches!(
+        assembler.finish(),
+        Err(AssemblyError::UnboundLabel(label)) if label == unbound
+    ));
+}
+
+#[test]
+#[should_panic(expected = "power of two")]
+fn an_alignment_that_is_no_power_of_two_is_refused() {
+    let _ = bytes(|assembler| assembler.align_data(48));
+}

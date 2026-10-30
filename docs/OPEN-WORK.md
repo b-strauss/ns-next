@@ -464,6 +464,16 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     them -- now enters through it; its placement is to be measured again
     once stage 4 has made a closure's activation a compiled call, which
     leaves the bridge to fewer pushes.
+  - **The code zone never frees code.** The zone only appends: a body
+    abandoned at its exit budget, one compiled again into another zone or
+    against another feedback base, and one whose mixin's row a full
+    collection reclaimed all keep their bytes until the zone is full,
+    after which nothing more compiles and every body not yet compiled
+    runs interpreted. The compaction [execution.md](design/execution.md)
+    designs ("The code zone") is unbuilt; when it is built, a body's data
+    words -- its closure sites, which lie right after its code
+    ("Stage 4: closures, non-local return, allocation and the barrier")
+    -- move and are freed with it.
   - **A body shared by two interpreters would ping-pong between their
     zones.** A body's `JitSlot` names one zone, and `jit::note_entry`
     compiles a body whose slot names another into the running
