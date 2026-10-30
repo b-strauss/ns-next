@@ -86,6 +86,12 @@ pub(crate) struct MachineEntries {
     reservation: Reservation,
     /// How many rows are committed, and so read.
     rows: usize,
+    /// One bit per row, set while the row names a machine entry: what the
+    /// interpreter asks on every `value` send of a block
+    /// (`Heap::closure_has_machine_entry`), answered without the commit
+    /// check a read of the reservation makes. Rust's alone, kept by every
+    /// write of a row.
+    entered: Vec<u64>,
 }
 
 impl MachineEntries {
@@ -98,6 +104,7 @@ impl MachineEntries {
         MachineEntries {
             reservation,
             rows: 0,
+            entered: Vec::new(),
         }
     }
 
@@ -128,6 +135,29 @@ impl MachineEntries {
             .unwrap_or([0; ROW_WORDS])
     }
 
+    /// Whether row `row` names a machine entry: `row(row)`'s entry word is
+    /// not 0.
+    pub(crate) fn names_entry(&self, row: usize) -> bool {
+        self.entered
+            .get(row / 64)
+            .is_some_and(|bits| bits & (1 << (row % 64)) != 0)
+    }
+
+    /// Sets or clears row `row`'s bit of `entered`.
+    fn mark_entered(&mut self, row: usize, entered: bool) {
+        let word = row / 64;
+        if entered && word >= self.entered.len() {
+            self.entered.resize(word + 1, 0);
+        }
+        if let Some(bits) = self.entered.get_mut(word) {
+            if entered {
+                *bits |= 1 << (row % 64);
+            } else {
+                *bits &= !(1 << (row % 64));
+            }
+        }
+    }
+
     /// Writes `words` into row `row`, committing the rows up to it first;
     /// a row past the capacity is not written. Answers whether the bound
     /// grew.
@@ -142,6 +172,7 @@ impl MachineEntries {
         let offset = row * ROW_BYTES;
         if let Some(slots) = self.reservation.words_mut(offset..offset + ROW_BYTES) {
             slots.copy_from_slice(&words);
+            self.mark_entered(row, words[RowWord::Entry as usize] != 0);
         }
         grew
     }
@@ -153,6 +184,7 @@ impl MachineEntries {
             if let Some(slots) = self.reservation.words_mut(offset..offset + ROW_BYTES) {
                 slots.fill(0);
             }
+            self.mark_entered(row, false);
         }
     }
 
@@ -161,6 +193,7 @@ impl MachineEntries {
         if let Some(slots) = self.reservation.words_mut(0..self.rows * ROW_BYTES) {
             slots.fill(0);
         }
+        self.entered.fill(0);
     }
 
     /// Commits the rows through `row`, and a generous margin past it, which
@@ -181,5 +214,47 @@ impl MachineEntries {
             super::out_of_memory(needed - committed)
         };
         self.rows = end / ROW_BYTES;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MachineEntries, RowWord, ROW_WORDS};
+
+    /// What `names_entry` answers for every committed row and one past
+    /// them, against the row's own entry word.
+    fn assert_bits_match_rows(entries: &MachineEntries) {
+        for row in 0..=entries.rows() {
+            assert_eq!(
+                entries.names_entry(row),
+                entries.row(row)[RowWord::Entry as usize] != 0,
+                "row {row}"
+            );
+        }
+    }
+
+    /// The bit the interpreter's `value` send asks follows every write of
+    /// a row -- a record with an entry and one without, a clear, a clear of
+    /// them all -- so that it never says a block has machine code its row
+    /// does not name, nor misses one it does.
+    #[test]
+    fn the_entered_bit_follows_every_write_of_a_row() {
+        let mut entries = MachineEntries::new();
+        assert!(!entries.names_entry(0));
+        let words = |entry: u64| -> [u64; ROW_WORDS] { [entry, 8, 1, 0] };
+        entries.record(3, words(0x1000));
+        entries.record(70, words(0x2000));
+        entries.record(5, words(0));
+        assert!(entries.names_entry(3) && entries.names_entry(70));
+        assert_bits_match_rows(&entries);
+        entries.record(3, words(0));
+        assert!(!entries.names_entry(3));
+        entries.clear(70);
+        assert!(!entries.names_entry(70));
+        assert_bits_match_rows(&entries);
+        entries.record(9, words(0x3000));
+        entries.clear_all();
+        assert!(!entries.names_entry(9));
+        assert_bits_match_rows(&entries);
     }
 }

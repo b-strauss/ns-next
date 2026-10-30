@@ -1761,8 +1761,8 @@ pub(crate) fn entered(
     }
     // Every push of a block keeps its row current, the compiling one and
     // each after it: a full collection may have minted its id again, and
-    // a block only `cull:` or `ifTrue:` activates is never called by the
-    // interpreter (`called_closure`), which would write it too.
+    // the interpreter calls (`called_closure`) only a block whose row is
+    // written.
     #[cfg(ns_jit)]
     if code.kind == crate::bytecode::CodeKind::Block {
         let id = mutator.heap.activation_code_id(activation);
@@ -1987,9 +1987,8 @@ pub(crate) fn called_closure<'gc>(
     let Some(captured) = mutator.heap.closure_captured_frame(closure) else {
         unreachable!("internal: a block step is decided only for a closure that captured a frame");
     };
-    if let Some(id) = mutator.heap.closure_code_id(closure) {
-        note_block_entry(mutator, id, code);
-    }
+    // No row to note: the send calls only a block whose row names its
+    // machine code already (`Heap::closure_has_machine_entry`).
     let receiver = mutator.heap.frame_receiver(captured);
     let current_class = mutator.heap.frame_current_class(captured);
     mutator
@@ -2113,14 +2112,26 @@ pub(crate) fn called_closure<'gc>(
 /// Records where the block body `code`, whose id is `id`, enters machine
 /// code in the machine entry table the closure stubs read
 /// (`heap/machine_entries.rs`), when it has machine code in this zone:
-/// asked wherever the interpreter pushes or calls a block -- `entered`,
-/// which compiles it, and `called_closure` -- so that a body compiled, or
-/// a code id minted again after a full collection freed it, is found by
-/// the closure stubs from the next call on. A body compiled against no
-/// feedback base is left out: a closure that has none is given its own at
-/// its first activation, which only the interpreter's push does.
+/// asked wherever the interpreter pushes a block -- `entered`, which
+/// compiles it -- so that a body compiled, or a code id minted again after
+/// a full collection freed it, is found by the closure stubs, and by an
+/// interpreter's `value` send (`Mutator::enter_sent`), from the next call
+/// on. A body compiled against no feedback base is left out: a closure
+/// that has none is given its own at its first activation, which only the
+/// interpreter's push does.
+///
+/// A row once written names its body until something clears it -- the
+/// free of its id, the body's abandonment, the zone's replacement -- so a
+/// row the table records is current, and a push of a block whose row is
+/// recorded costs the test of a bit (`Heap::machine_entry_recorded`): the
+/// body's lookup and the row's comparison cost every push of a block in
+/// a run of closures a percent and more. A debug build compares the row
+/// all the same (`Heap::record_machine_entry`).
 #[cfg(ns_jit)]
 pub(crate) fn note_block_entry(mutator: &mut Mutator<'_>, id: CodeId, code: &CompiledCode) {
+    if !cfg!(debug_assertions) && mutator.heap.machine_entry_recorded(id) {
+        return;
+    }
     let Some(body) = mutator.jit.installed(code) else {
         return;
     };

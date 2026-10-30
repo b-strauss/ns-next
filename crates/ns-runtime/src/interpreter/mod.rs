@@ -2181,12 +2181,20 @@ impl<'gc> Mutator<'gc> {
                 }
             }
             // A block that takes the send's own arguments, the
-            // activation a `value` send decides, delivering its value.
+            // activation a `value` send decides, delivering its value,
+            // whose body has a machine entry row: told apart by its
+            // closure's code id alone (`Heap::closure_has_machine_entry`),
+            // out of line and cheap, so that a block that stays
+            // interpreted -- one the JIT abandoned among them -- reads its
+            // closure once, at its push, and pays no call's frame for it.
             Step::Block {
                 closure,
                 arguments: StepArguments::Send,
                 then: Continuation::Deliver,
-            } if slots.is_some() && self.jit.is_enabled() => {
+            } if slots.is_some()
+                && self.jit.is_enabled()
+                && self.heap.closure_has_machine_entry(*closure) =>
+            {
                 match self.call_sent_closure(*closure, send_arguments, sender, inlinable, slots) {
                     Call::Ran(sent) => return Ok(sent),
                     Call::Push(placed) => arguments = placed,
@@ -2280,7 +2288,8 @@ impl<'gc> Mutator<'gc> {
     /// without machine code, a wrong arity, which the push raises, a
     /// closure without a feedback base of its own, which the push gives
     /// one, and every call the JIT refuses are the push's: `Call::Push`
-    /// names where it takes the arguments from.
+    /// names where it takes the arguments from. Called only for a closure
+    /// whose body has a machine entry row (`enter_sent`).
     #[cold]
     #[inline(never)]
     fn call_sent_closure<'values>(

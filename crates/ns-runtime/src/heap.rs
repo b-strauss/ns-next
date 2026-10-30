@@ -6482,7 +6482,12 @@ impl<'gc> Heap<'gc> {
             u64::from(parameters),
             0,
         ];
-        if self.machine_entries.row(id.index()) == words {
+        let row = self.machine_entries.row(id.index());
+        debug_assert!(
+            !self.machine_entries.names_entry(id.index()) || row == words,
+            "internal: a recorded machine entry row is current until it is cleared"
+        );
+        if row == words {
             return;
         }
         if self.machine_entries.record(id.index(), words) {
@@ -6491,6 +6496,13 @@ impl<'gc> Heap<'gc> {
                 self.machine_entries.rows() as u64,
             );
         }
+    }
+
+    /// Whether the machine entry table's row of code id `id` names a
+    /// machine entry: written, and not cleared since (`jit::note_block_entry`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_entry_recorded(&self, id: CodeId) -> bool {
+        self.machine_entries.names_entry(id.index())
     }
 
     /// Clears the machine entry `code`'s id names, if it has one: its
@@ -6510,12 +6522,27 @@ impl<'gc> Heap<'gc> {
         self.machine_entries.clear_all();
     }
 
-    /// Closure `object`'s code id, or `None` when `object` is not a
-    /// closure.
+    /// Whether closure `object`'s body has a row of the machine entry
+    /// table that names machine code (`machine_entries.rs`); `false` for a
+    /// non-closure. What an interpreter's `value` send asks before it
+    /// calls a block's machine code (`Mutator::enter_sent`): a block
+    /// without machine code -- not compiled yet, abandoned, or compiled
+    /// against no feedback base -- then costs this read and no more before
+    /// its push, which keeps the row current for the next send
+    /// (`jit::entered`). Out of line, so that the run loop it is asked in
+    /// grows by a call.
     #[cfg(ns_jit)]
-    pub(crate) fn closure_code_id(&self, object: ObjectReference<'gc>) -> Option<CodeId> {
-        let words = self.closure_words(object)?;
-        CodeId::from_index(self.closure_count_field(words, closure_field::CODE_ID)?)
+    #[inline(never)]
+    pub(crate) fn closure_has_machine_entry(&self, object: ObjectReference<'gc>) -> bool {
+        self.closure_words(object)
+            .and_then(|words| self.closure_count_field(words, closure_field::CODE_ID))
+            .is_some_and(|row| self.machine_entries.names_entry(row))
+    }
+
+    /// No body has machine code without an encoder.
+    #[cfg(not(ns_jit))]
+    pub(crate) fn closure_has_machine_entry(&self, _object: ObjectReference<'gc>) -> bool {
+        false
     }
 
     /// The `SmallInteger` word of `count`, as an object's count fields --
