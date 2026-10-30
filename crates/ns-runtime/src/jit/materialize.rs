@@ -78,6 +78,19 @@ impl Walk {
             added: 0,
         };
     }
+
+    /// Forgets a seed no exit took, which a call that returned leaves
+    /// behind (`jit::called`), field by field: assigning `Walk::default()`
+    /// copied a partly written temporary, its `Option<Callee>`'s payload
+    /// undefined, and read it back wider than it was written -- a
+    /// store-forwarding stall on every call an interpreter's send made of
+    /// machine code.
+    pub(crate) fn clear(&mut self) {
+        self.last = None;
+        self.callee = None;
+        self.top = 0;
+        self.added = 0;
+    }
 }
 
 /// The callee a send places on its argument slots: its first slot's word

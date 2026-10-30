@@ -2052,7 +2052,7 @@ fn call_through(
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
         // No exit took the seed.
-        mutator.jit.walk = materialize::Walk::default();
+        mutator.jit.walk.clear();
         return Called::Returned {
             value: block.get(BlockWord::ExitProgramCounter.index()),
         };
