@@ -408,6 +408,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     bridge** (accepted with the user on 2026-10-29 until stage 4): an
     interpreted `value` send and its kin call a block's machine code
     through the closure call stub, as a method's (`jit::called_closure`),
+    once a push of the block has written its machine entry row,
     and every compiled send that activates a block calls it through a
     closure stub, but the interpreter's own pushes of a block -- for
     `ifTrue:` and its relatives sent a block that is no literal,

@@ -11063,8 +11063,16 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   the block (`:32704-32750`); the block's prologue fills its copied
   values where a method's nils its locals, and stores the closure as its
   frame's operand, which no return address derives. An interpreter's
-  send of a closure whose body has machine code calls it through a call
-  stub of its own, as its send of a method does (`jit::called_closure`).
+  send of a closure whose body's machine entry row names machine code
+  (below) calls it through a call stub of its own, as its send of a
+  method does (`jit::called_closure`). Any other block is pushed: the
+  push of one with machine code -- compiled at this push, or before its
+  id was minted again -- writes the row and enters the same machine
+  code at its first instruction, so the next send calls it, and one
+  without -- still counting, or abandoned -- stays interpreted. The
+  send tells the two apart by the row's bit alone
+  (`Heap::closure_has_machine_entry`), before it reads anything else of
+  the closure.
   - The closure stubs (`jit/targets.rs`'s `ClosureStub`) serve every
     method whose fast path activates a block: `Closure`'s `value` to
     `value:value:value:`, whose rows activate the receiver, and the quick
@@ -11109,10 +11117,29 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
     parameter count. Since a code id is freed and minted again by a full
     collection while machine code lives on with its mixin, as a closure
     site's are (above), a row is a copy the JIT writes from the body
-    whenever the interpreter pushes or calls a block whose body has
-    machine code, and every way it could name another body's code clears
-    it: the free of the id, the abandonment of the body, the replacement
-    of the zone.
+    whenever the interpreter pushes a block whose body has machine code
+    (`jit::note_block_entry`, from `jit::entered`) -- only the push, since
+    the interpreter's call is made only once the row is written -- and
+    every way it could name another body's code clears it: the free of
+    the id, the abandonment of the body, the replacement of the zone, and
+    a switch of the JIT on or off, since a body pushed while it is off is
+    refused without being abandoned.
+  - Beside the rows, Rust keeps one bit per row, set while the row names
+    a machine entry (`MachineEntries::names_entry`); the table's own
+    writes -- a row recorded, one cleared, all of them cleared -- set and
+    clear it with the row, and machine code never reads it. It answers
+    the two questions the interpreter asks of a block at every `value`
+    send and every push without reading the row through the
+    reservation's commit check, a loop: whether to call the block --
+    asked by the closure's code id alone, so a block that stays
+    interpreted reads its closure once, at its push, where asking the
+    JIT for its body's machine code read it a second time, which Queens'
+    interpreted `to:do:` loops measured -- and whether its push need note the row: a row once
+    written is current until it is cleared, so a release build's push of
+    a block whose bit is set skips the body's lookup and the row's
+    comparison, which cost CD's run of closures a percent and more, and
+    a debug build compares the row all the same and asserts it current
+    (`Heap::record_machine_entry`).
   - A compiled send pushes a counted activation, as every send but a
     `SendInlinable` does. The interpreter's call of a block a
     `SendInlinable` exempts -- the reference lowering's loop -- takes the

@@ -27,6 +27,14 @@
 //! is never compiled into the same zone twice, so a row's entry, once
 //! written, changes only by being cleared.
 //!
+//! Beside the rows, Rust keeps one bit per row, set while the row names a
+//! machine entry (`MachineEntries::names_entry`), which every write of a
+//! row sets or clears with it. It answers the question an interpreter's
+//! `value` send of a block and every push of one ask -- has the body
+//! machine code its row names? -- without reading the closure's body and
+//! comparing its row, which cost every push of a block in a run of
+//! closures a percent and more.
+//!
 //! The bound, `MachineWord::MachineEntryRows`, is the number of rows
 //! committed, so that machine code never reads past what is committed: an
 //! id at or past it reads as no machine entry.
