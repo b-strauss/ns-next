@@ -6538,6 +6538,14 @@ impl<'gc> Heap<'gc> {
         self.stack.frames.set_seat_ordinary_end_at_top(seat);
     }
 
+    /// How many times a word right above a seated ordinary end was found
+    /// written before Rust next pushed or popped: a store machine code made
+    /// past the end (`set_seat_ordinary_end_at_top`).
+    #[cfg(test)]
+    pub(crate) fn seat_disturbances(&mut self) -> u64 {
+        self.stack.frames.seat_disturbances()
+    }
+
     /// The guards a closure's and a frame's headers carry, read off the
     /// `Closure` and `Activation` classes, so a fast bump writes them
     /// without looking them up (`Mutator::refresh_immediate_dispatch_ids`,

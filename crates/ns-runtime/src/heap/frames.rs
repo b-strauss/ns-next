@@ -459,7 +459,22 @@ pub(super) struct FrameStack {
     /// that puts a frame's window end exactly at the ordinary end.
     #[cfg(test)]
     seat_ordinary_end_at_top: bool,
+    /// Where the seat last wrote `SEAT_SENTINEL` into the words above the
+    /// seated end, which nothing may write before Rust next pushes or
+    /// pops, and how many times one was found disturbed.
+    #[cfg(test)]
+    seat_sentinel: Option<usize>,
+    #[cfg(test)]
+    seat_disturbances: u64,
 }
+
+/// The word a seat writes into the words right above a seated ordinary
+/// end, and how many of them: a store machine code makes past the end
+/// overwrites one.
+#[cfg(test)]
+const SEAT_SENTINEL: u64 = 0x5EA7_5EA7_5EA7_5EA7;
+#[cfg(test)]
+const SEAT_SENTINEL_WORDS: usize = 4;
 
 impl FrameStack {
     /// Reserves `reservation_bytes` of address space -- less when the
@@ -485,6 +500,10 @@ impl FrameStack {
             machine_words,
             #[cfg(test)]
             seat_ordinary_end_at_top: false,
+            #[cfg(test)]
+            seat_sentinel: None,
+            #[cfg(test)]
+            seat_disturbances: 0,
         })
     }
 
@@ -505,12 +524,39 @@ impl FrameStack {
         self.seat_ordinary_end_at_top = seat;
     }
 
-    /// The test's seat of the ordinary end at the top after a push.
+    /// The test's seat of the ordinary end at the top after a push, with
+    /// the sentinel written into the words right above it, where the
+    /// committed stack holds them; a seat without that room is not made.
     #[cfg(test)]
     fn seat_if_asked(&mut self) {
-        if self.seat_ordinary_end_at_top {
-            self.set_ordinary_end(self.top);
+        if !self.seat_ordinary_end_at_top || self.top + SEAT_SENTINEL_WORDS > self.committed {
+            return;
         }
+        self.set_ordinary_end(self.top);
+        let start = self.top;
+        self.reservation.accessible_mut()[start..start + SEAT_SENTINEL_WORDS].fill(SEAT_SENTINEL);
+        self.seat_sentinel = Some(start);
+    }
+
+    /// Counts the last seat's sentinel disturbed, if it is, and forgets
+    /// it: called before Rust writes the stack again -- a push or a pop
+    /// -- so that only what machine code stored since the seat is found.
+    #[cfg(test)]
+    fn check_seat_sentinel(&mut self) {
+        if let Some(start) = self.seat_sentinel.take() {
+            let words = &self.reservation.accessible()[start..start + SEAT_SENTINEL_WORDS];
+            if words.iter().any(|word| *word != SEAT_SENTINEL) {
+                self.seat_disturbances += 1;
+            }
+        }
+    }
+
+    /// How many seats' sentinels were found disturbed, the last one
+    /// checked first.
+    #[cfg(test)]
+    pub(super) fn seat_disturbances(&mut self) -> u64 {
+        self.check_seat_sentinel();
+        self.seat_disturbances
     }
 
     /// `ordinary_end`, for a test that holds it to its machine word.
@@ -553,6 +599,8 @@ impl FrameStack {
         &mut self,
         words: usize,
     ) -> Result<(usize, &[u64], &mut [u64]), ReservationExhausted> {
+        #[cfg(test)]
+        self.check_seat_sentinel();
         let start = self.top;
         let end = start + words;
         if end > self.ordinary_end {
@@ -585,6 +633,8 @@ impl FrameStack {
             start <= self.top,
             "internal: a frame laid on its sender's slots starts below the top"
         );
+        #[cfg(test)]
+        self.check_seat_sentinel();
         let end = start + words;
         if end > self.ordinary_end {
             self.grow_to(end, self.ordinary_limit)?;
@@ -603,6 +653,8 @@ impl FrameStack {
     #[inline(always)]
     pub(super) fn lower_top(&mut self, top: usize) {
         debug_assert!(top <= self.top, "internal: a pop never raises the top here");
+        #[cfg(test)]
+        self.check_seat_sentinel();
         self.top = top;
     }
 
@@ -621,6 +673,8 @@ impl FrameStack {
             dead <= top && top <= self.top,
             "internal: a pop gives back dead registers below the top"
         );
+        #[cfg(test)]
+        self.check_seat_sentinel();
         self.top = top;
         let end = dead + (top - dead).next_multiple_of(4);
         let words = self.reservation.accessible_mut();

@@ -2926,7 +2926,7 @@ mod tests {
             ) : ()
         "};
 
-        fn run_at_the_ordinary_end(jit: bool) -> (i64, crate::jit::JitStatistics) {
+        fn run_at_the_ordinary_end(jit: bool) -> (i64, crate::jit::JitStatistics, u64) {
             let module = ns_syntax::parse(AT_THE_ORDINARY_END).expect("parse");
             let resolved = crate::resolve(
                 module,
@@ -2963,21 +2963,32 @@ mod tests {
             let mut statistics = after;
             statistics.exits = after.exits - before.exits;
             statistics.machine_entries = after.machine_entries - before.machine_entries;
-            (answer, statistics)
+            let disturbances = interpreter.enter(|mutator| mutator.heap.seat_disturbances());
+            (answer, statistics, disturbances)
         }
 
         /// A closure stub's copies of a block row's arguments, which lie
         /// past the sender's window before the block's prologue checks its
         /// frame's room, are made only below the ordinary end: at it the
-        /// call declines, and the program answers the interpreter's value.
+        /// call declines, the sentinel each seat writes right above the
+        /// end stays whole, and the program answers the interpreter's
+        /// value.
         #[test]
         fn a_closure_stub_declines_copies_past_the_ordinary_end() {
-            let (expected, _) = run_at_the_ordinary_end(false);
+            let (expected, _, interpreted_disturbances) = run_at_the_ordinary_end(false);
             assert_eq!(expected, 20 * 6 + 190);
-            let (answer, statistics) = run_at_the_ordinary_end(true);
+            assert_eq!(
+                interpreted_disturbances, 0,
+                "the interpreter writes nothing past it"
+            );
+            let (answer, statistics, disturbances) = run_at_the_ordinary_end(true);
             assert_eq!(answer, expected, "the interpreter's answer");
             assert!(statistics.machine_entries > 0, "machine code ran");
             assert!(statistics.exits > 0, "the calls at the edge are refused");
+            assert_eq!(
+                disturbances, 0,
+                "no word past a seated ordinary end is written before the stack grows"
+            );
         }
 
         #[test]
