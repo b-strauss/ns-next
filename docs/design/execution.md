@@ -10741,6 +10741,85 @@ next safepoint (`genCreateFullClosure…`, `:19554-19620`), and the write
 barrier with its early outs -- an immediate value, a young destination, an
 old value, an already remembered object (`:21739-21780`).
 
+### Stage 4: closures, non-local return, allocation and the barrier
+
+Decided with the user on 2026-10-30. Cog's citations in this section are
+to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
+`cointerp.c` where named).
+
+- **Its scope is every instruction that still exits but an error.** Besides
+  closures, non-local return, allocation and the barrier, the rest of
+  stage 3 -- the initializers' invocations (`InitializeInstance`,
+  `InitializeSuperclass`, `InitializeAppliedLevel`, `CheckAppliedClause`)
+  and `LoadEnclosingObject` -- and the futures (`MakeFuture`,
+  `ResolveFuture`, `InitializeSlotProvisionally`) run in machine code, so
+  that afterwards a body exits only at an error, a poll that found a
+  request, a continuation other than `Deliver` and an unwind it cannot
+  cut. `new` is a factory send whose body is `AllocateInstance` and
+  `InitializeInstance`; with either left an exit, every instantiation
+  would exit.
+- **Three parts, each measured against the tree before it**: 4a,
+  allocation and the barrier, with the slots, the instantiation and the
+  initializers behind them; 4b, closures -- `MakeClosure`, a closure's
+  activation as a compiled call, the outer locals, the futures; 4c,
+  non-local return. 4b allocates through 4a's bump, and 4c cuts through
+  frames 4b's closures run in.
+- **Eden's bump cursor lies where machine code reaches it.** Its top and
+  limit leave the reservation's inline fields for an allocation of their
+  own in `ns-memory`, which the reservation and machine code both read
+  and write, as the machine words are; the entry block names its address.
+  An allocation in machine code bumps inline against the limit, as the
+  interpreter's fast path does, and past the limit calls a leaf that does
+  what the interpreter's cold path does -- request a scavenge, carry on
+  up to the ceiling, allocate old and born remembered once eden is spent
+  -- and never collects. Cog carries on into the slack past its threshold
+  inline and calls a trampoline that only schedules the scavenge
+  (`:19053-19077`, `cointerp.c:39866-39873`); here the limit already
+  stands below the threshold, so the leaf is the interpreter's own
+  decision.
+- **The write barrier is inline with Cog's four early outs** -- an
+  immediate or nil value, a young holder, an old value, an already
+  remembered holder (`genStoreCheckReceiverReg:valueReg:scratchReg:inFrame:`,
+  `:21032-21082`) -- and only remembering an object calls a leaf, as
+  only Cog's `ceStoreCheckTrampoline` calls `remember:` (`:21075`). A
+  store into an object machine code has just allocated takes no barrier,
+  as Cog's `genStoreSourceReg:slotIndex:intoNewObjectInDestReg:` takes
+  none (`:21120-21125`).
+- **`MakeClosure` reifies its frame inline, as Cog marries a frame in
+  machine code** (`genGetActiveContextLarge:inBlock:`,
+  `:19271-19560`): the frame's reified word is tested inline, and a frame
+  not yet reified has its frame object bump-allocated and filled by
+  machine code -- its receiver and current class from the frame, its
+  home from the closure of a block's frame, its program counter and code
+  as constants of the body, every register field nil -- and the header's
+  reified word written. Every closure keeps the frame that created it
+  ("The closure keeps its defining activation"), so a frame is reified
+  once per closure-creating activation, as often as closures are made;
+  a leaf there would cost a call on that path. The return of code that
+  reifies its frame divorces it inline, and calls a leaf only for a
+  frame that retains its registers.
+- **A closure's activation is a compiled call, as a method's is.** A send
+  of `value` and its kin to a closure calls through a stub that does what
+  the interpreter's push of the closure does -- the arity, the code, the
+  receiver and current class from the captured frame -- and enters the
+  block's machine code, as Cog's `genPrimitiveFullClosureValue` jumps into
+  the block (`:32704-32750`); the block's prologue fills its copied
+  values where a method's nils its locals, and stores the closure as its
+  frame's operand, which no return address derives. An interpreter's
+  push of a closure whose body has machine code calls it through the
+  call stub, as its send of a method does.
+- **Non-local return is cut by a routine of its own, as Cog's
+  `ceNonLocalReturn` cuts it** (`cointerp.c:12761-13100`): machine code
+  calls the cut, which walks the compiled frames of the current stretch
+  by their return addresses, as the exit's walk does, finds the home's
+  activation among them with no unwind marker's activation between,
+  divorces every reified frame it passes, takes their counts off the
+  depth count and answers where machine code resumes -- the home's return
+  address and stack pointer. Otherwise it answers that machine code exits,
+  and the one unwinder carries the unwind on ("Unwinding" above). The cut
+  runs no Newspeak code, never collects and never pushes; it is the one
+  call that reads and pops other activations, which no leaf may.
+
 ### Tests
 
 - **A seventh stress mode compiles every body at its first entry**, so
@@ -10766,7 +10845,8 @@ interpreter's send calling a compiled callee, every compiled body
 entered ("The baseline JIT's foundation" above, "What sends in machine
 code moved", "What the entry at a send moved"); the fourth, closures,
 non-local return, allocation and the write barrier in machine code, is
-next ([OPEN-WORK.md](../OPEN-WORK.md), "Next"), and it also removes the
+next ([OPEN-WORK.md](../OPEN-WORK.md), "Next"; "Stage 4: closures,
+non-local return, allocation and the barrier" above), and it also removes the
 cost a short block an interpreted `value:` pushes pays at the bridge, by
 making a closure's activation a compiled call.
 
