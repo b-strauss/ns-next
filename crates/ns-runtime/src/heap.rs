@@ -870,6 +870,26 @@ pub(crate) struct MachineGeneration {
     pub(crate) flags_register: u16,
 }
 
+/// Where machine code finds what the divorce of a reified frame at its
+/// return reads and writes (`Heap::machine_divorce`): the header words by
+/// their register number past the frame's arguments, and the frame
+/// object's fields by their displacement from its offset.
+#[cfg(ns_jit)]
+pub(crate) struct MachineDivorce {
+    /// The reified word: nil, or the frame object's word.
+    pub(crate) reified_register: u16,
+    pub(crate) flags_register: u16,
+    pub(crate) program_counter_register: u16,
+    /// `retains_registers`' bit in the flags word.
+    pub(crate) retains_registers_bit: i32,
+    pub(crate) program_counter_displacement: i32,
+    pub(crate) sender_displacement: i32,
+    pub(crate) uncontinuable_displacement: i32,
+    pub(crate) married_displacement: i32,
+    /// `true`'s word.
+    pub(crate) true_word: i32,
+}
+
 /// A frame machine code pushed, described for its header
 /// (`Heap::write_machine_frame`): where it lies, what it runs and where it
 /// stands, and its caller.
@@ -889,6 +909,14 @@ pub(crate) struct MachineFrame {
     /// (`CompiledCode::addresses_own_slots`), so that it records its
     /// entered level.
     pub(crate) addresses_own_slots: bool,
+    /// Whether its code reifies its frame (`jit::baseline::reifies_its_frame`):
+    /// its prologue wrote the reified word, the flags word and the program
+    /// counter, as the push writes them, and its code keeps all three
+    /// since -- the reified word and the flags' `retains_registers` as its
+    /// frame is reified and marked, the program counter at each point the
+    /// interpreter stores it -- so that its return divorces a reified
+    /// frame as the pop does.
+    pub(crate) reifies: bool,
     /// The caller's offset and the top the frame was pushed at; `None`
     /// for a leaf's view of its own frame, whose caller nothing reads.
     pub(crate) caller: Option<(u32, usize)>,
@@ -896,11 +924,12 @@ pub(crate) struct MachineFrame {
 
 /// The kind of a frame machine code pushed and its operand, as its header
 /// records them (`Heap::write_machine_frame`): each either a constant of
-/// its body -- a method's tag and selector, a factory's tag -- or what the
-/// frame itself holds, written by its prologue -- an initializer's tag,
-/// which its code does not say, since one code can be two of its mixin's
-/// bodies -- or the current class the call handed over, a factory's and an
-/// initializer's operand.
+/// its body -- a method's tag and selector, a factory's, a closure's and a
+/// superclass clause's tag -- or what the frame itself holds, written by
+/// its prologue -- an initializer's tag, which its code does not say,
+/// since one code can be two of its mixin's bodies, and a closure's
+/// operand, the closure the call handed over -- or the current class the
+/// call handed over, a factory's and an initializer's operand.
 #[cfg(ns_jit)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct MachineKind {
@@ -926,6 +955,8 @@ enum MachineOperand {
     Selector(Symbol),
     /// The frame's current class.
     CurrentClass,
+    /// The operand word the frame's prologue wrote.
+    Recorded,
 }
 
 #[cfg(ns_jit)]
@@ -955,6 +986,26 @@ impl MachineKind {
         MachineKind {
             tag: MachineKindTag::Recorded,
             operand: MachineOperand::CurrentClass,
+        }
+    }
+
+    /// A closure's activation, on the closure its prologue recorded as
+    /// the frame's operand: no return address says which closure a
+    /// block's code runs for, since one block's code runs for every
+    /// closure made of it.
+    pub(crate) fn closure() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::CLOSURE),
+            operand: MachineOperand::Recorded,
+        }
+    }
+
+    /// A superclass clause's activation, on the class its operand names,
+    /// which the frame holds as a closure's holds its closure.
+    pub(crate) fn superclass_clause() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::SUPERCLASS_CLAUSE),
+            operand: MachineOperand::Recorded,
         }
     }
 }
@@ -9001,8 +9052,12 @@ impl<'gc> Heap<'gc> {
     /// wrote (`MachineKind`); its operand is the selector or the current
     /// class. Code that addresses its own slots keeps the guard and the
     /// entered level its prologue wrote and its own-slot instructions
-    /// recorded since; any other records none, as the push does. Answers
-    /// the frame's handle.
+    /// recorded since; any other records none, as the push does. Code
+    /// that reifies its frame (`MachineFrame::reifies`) keeps the reified
+    /// word, the counted bit and `retains_registers` it wrote, and in a
+    /// leaf's view the program counter too; any other is written unreified,
+    /// counted and without retained registers, as the push writes a method's
+    /// frame. Answers the frame's handle.
     #[cfg(ns_jit)]
     pub(crate) fn write_machine_frame(&mut self, frame: &MachineFrame) -> ActivationReference {
         let offset = frame.offset as usize;
@@ -9014,9 +9069,20 @@ impl<'gc> Heap<'gc> {
             MachineKindTag::Constant(tag) => tag,
             MachineKindTag::Recorded => written.kind_tag,
         };
+        // Only code that reifies its frame wrote these words: in any other
+        // frame they hold whatever the stack held there before.
+        let (reified, counted, retains_registers) = if frame.reifies {
+            (
+                header_word(self, frame_header::REIFIED),
+                written.counted,
+                written.retains_registers,
+            )
+        } else {
+            (Word::NIL, true, false)
+        };
         let flags = FrameFlags {
             compiled: true,
-            ..FrameFlags::new(tag, frame.argument_count, true, false)
+            ..FrameFlags::new(tag, frame.argument_count, counted, retains_registers)
         };
         #[cfg(debug_assertions)]
         let flags = flags.with_generation(written.generation);
@@ -9027,19 +9093,31 @@ impl<'gc> Heap<'gc> {
         let operand = match frame.kind.operand {
             MachineOperand::Selector(selector) => frames::number_word(selector.index() as u64),
             MachineOperand::CurrentClass => header_word(self, frame_header::CURRENT_CLASS),
+            MachineOperand::Recorded => header_word(self, frame_header::OPERAND),
+        };
+        // The program counter a frame that reifies holds is the one the
+        // interpreter would hold there -- its push's 0, or the last one it
+        // stored, at a send, which its templates store too -- and its
+        // divorce records it in the frame object, so it is left be: a
+        // leaf is handed its own, the exit's walk stops each frame below
+        // the innermost at a send whose program counter the frame holds
+        // already, and the run loop goes on at the innermost frame's from
+        // the exit itself, as the interpreter goes on at an instruction
+        // without storing it.
+        let program_counter = if frame.reifies {
+            header_word(self, frame_header::PROGRAM_COUNTER)
+        } else {
+            frames::number_word(u64::from(frame.program_counter))
         };
         let words = [
             (frame_header::OPERAND, operand),
-            (frame_header::REIFIED, Word::NIL),
+            (frame_header::REIFIED, reified),
             (frame_header::FLAGS, flags.word()),
             (
                 frame_header::CODE,
                 frames::number_word(frame.code.index() as u64),
             ),
-            (
-                frame_header::PROGRAM_COUNTER,
-                frames::number_word(u64::from(frame.program_counter)),
-            ),
+            (frame_header::PROGRAM_COUNTER, program_counter),
             (
                 frame_header::FEEDBACK_BASE,
                 frames::number_word(u64::from(frame.feedback_base.raw())),
@@ -9119,6 +9197,80 @@ impl<'gc> Heap<'gc> {
             frame_header::PROGRAM_COUNTER,
             frames::number_word(u64::from(program_counter)),
         );
+    }
+
+    /// `Leaf::Divorce`: the divorce of `activation`'s frame object as its
+    /// pop divorces it (`pop_activation`), at the return of machine code
+    /// whose frame was reified and retains its registers, which the
+    /// return's inline divorce leaves to the copy here; then the frame
+    /// reads as unreified, so that the pop of a frame the run loop entered
+    /// machine code at divorces nothing again.
+    #[cfg(ns_jit)]
+    pub(crate) fn divorce_at_machine_return(&mut self, activation: ActivationReference) {
+        self.check_activation(activation);
+        let offset = activation.offset as usize;
+        let header = self.stack.frames.header(offset);
+        let reified = Word::from_bits(header[frame_header::REIFIED]).object_offset();
+        let flags = FrameFlags::of(Word::from_bits(header[frame_header::FLAGS]));
+        let program_counter = header[frame_header::PROGRAM_COUNTER];
+        let Some(frame) = reified else {
+            unreachable!("internal: machine code divorces only a reified frame");
+        };
+        self.divorce(frame, offset, flags, program_counter);
+        self.stack
+            .set_header_word(activation.offset, frame_header::REIFIED, Word::NIL);
+    }
+
+    /// What machine code reads and writes to divorce a reified frame of a
+    /// body taking `argument_count` arguments at its return, as
+    /// `pop_activation` divorces it (`jit::sends::return_from`), and what a
+    /// prologue of code that reifies its frame writes as the push does
+    /// (`jit::sends::prologue`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_divorce(argument_count: u16) -> MachineDivorce {
+        let register = |field: usize| {
+            let Ok(field) = u16::try_from(field) else {
+                unreachable!("internal: the header's words are numbered from 0 to 12");
+            };
+            argument_count + field
+        };
+        let displacement = |field: usize| {
+            let Ok(displacement) = i32::try_from((FIELDS + field) * 8) else {
+                unreachable!("internal: a frame object's fixed fields lie near its start");
+            };
+            displacement
+        };
+        let small = |bits: u64| {
+            let Ok(bits) = i32::try_from(bits) else {
+                unreachable!("internal: the word is a small constant");
+            };
+            bits
+        };
+        MachineDivorce {
+            reified_register: register(frame_header::REIFIED),
+            flags_register: register(frame_header::FLAGS),
+            program_counter_register: register(frame_header::PROGRAM_COUNTER),
+            retains_registers_bit: small(
+                frames::number_word(frames::RETAINS_REGISTERS_BIT).bits()
+                    - frames::number_word(0).bits(),
+            ),
+            program_counter_displacement: displacement(frame_field::PROGRAM_COUNTER),
+            sender_displacement: displacement(frame_field::SENDER),
+            uncontinuable_displacement: displacement(frame_field::UNCONTINUABLE),
+            married_displacement: displacement(frame_field::MARRIED),
+            true_word: small(Value::boolean(true).word().bits()),
+        }
+    }
+
+    /// The word a frame's header holds as the program counter
+    /// `program_counter`, which a body's instruction count bounds to 16
+    /// bits (`jit::baseline::compile`), as machine code stores it.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_program_counter_word(program_counter: u32) -> i32 {
+        let Ok(word) = i32::try_from(frames::number_word(u64::from(program_counter)).bits()) else {
+            unreachable!("internal: a compiled body's program counter is numbered in 16 bits");
+        };
+        word
     }
 
     /// Whether `activation` stopped in machine code
@@ -12986,6 +13138,193 @@ mod tests {
             .frame_activation(frame)
             .is_some_and(|live| live.same(activation)));
         heap.pop_activation(activation);
+    }
+
+    /// The header of `activation` described as the exit's walk describes a
+    /// frame machine code pushed for a body taking one argument, entered
+    /// at the class its current class names, stopped at program counter 9.
+    #[cfg(ns_jit)]
+    fn machine_frame_of<'gc>(
+        heap: &mut Heap<'gc>,
+        activation: ActivationReference,
+        reifies: bool,
+        caller: Option<(u32, usize)>,
+    ) -> MachineFrame {
+        MachineFrame {
+            offset: activation.offset,
+            argument_count: 1,
+            code: heap.activation_code_id(activation),
+            kind: MachineKind::initializer(),
+            program_counter: 9,
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
+            register_count: heap.stack.register_count(activation.offset),
+            addresses_own_slots: false,
+            reifies,
+            caller,
+        }
+    }
+
+    /// A frame whose code reifies it keeps, when its header is written
+    /// for an exit or a leaf, the reified word, the counted bit,
+    /// `retains_registers` and the program counter its own code wrote,
+    /// so that its divorce at its return finds them; a frame whose code
+    /// reifies nothing, which wrote none of them, is written unreified,
+    /// counted, retaining no registers, at the walk's program counter.
+    #[cfg(ns_jit)]
+    #[test]
+    fn a_materialized_frame_keeps_its_reified_word() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Materialized");
+        let activation = heap
+            .push_activation(
+                ActivationHeader {
+                    counted: false,
+                    ..suspendable_header(class, 1, first_above_header(1) + 1)
+                },
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                1,
+            )
+            .expect("the stack holds the frame");
+        heap.activation_set_program_counter(activation, 4);
+        let frame = heap.reify(activation);
+        heap.retain_registers(activation);
+        let reified_word = |heap: &Heap<'_>| {
+            heap.stack
+                .header_word(activation.offset, frame_header::REIFIED)
+                .object_offset()
+        };
+        let flags = |heap: &Heap<'_>| heap.stack.flags(activation.offset);
+        let (kept_flags, kept_reified) = (
+            heap.stack
+                .header_word(activation.offset, frame_header::FLAGS),
+            heap.stack
+                .header_word(activation.offset, frame_header::REIFIED),
+        );
+
+        for caller in [None, Some((0, 0))] {
+            let reifying = machine_frame_of(&mut heap, activation, true, caller);
+            let written = heap.write_machine_frame(&reifying);
+            assert!(written.same(activation));
+            assert_eq!(reified_word(&heap), Some(frame.offset), "the reified word");
+            assert!(flags(&heap).retains_registers);
+            assert!(
+                !flags(&heap).counted,
+                "the counted bit the frame was pushed with"
+            );
+            assert!(flags(&heap).compiled);
+            assert_eq!(
+                flags(&heap).kind_tag,
+                kind_tag::INITIALIZER_OWN_PART,
+                "the kind the frame recorded"
+            );
+            assert_eq!(heap.activation_program_counter(activation), 4);
+        }
+
+        let plain = machine_frame_of(&mut heap, activation, false, None);
+        let _ = heap.write_machine_frame(&plain);
+        assert_eq!(reified_word(&heap), None);
+        assert!(!flags(&heap).retains_registers);
+        assert!(flags(&heap).counted);
+        assert_eq!(heap.activation_program_counter(activation), 9);
+
+        // As the push left them, for the pop, which divorces the frame.
+        heap.stack
+            .set_header_word(activation.offset, frame_header::FLAGS, kept_flags);
+        heap.stack
+            .set_header_word(activation.offset, frame_header::REIFIED, kept_reified);
+        heap.pop_activation(activation);
+        assert!(heap.frame_activation(frame).is_none());
+    }
+
+    /// A frame of a block's code machine code pushed is written as a
+    /// closure's activation of the closure its prologue recorded as its
+    /// operand, whatever kind its flags word said before: the walk names
+    /// every kind of frame.
+    #[cfg(ns_jit)]
+    #[test]
+    fn materialize_writes_a_closure_frame() {
+        let mut heap = frame_heap();
+        let class = heap.allocate_self_referential(0);
+        let method_activation = heap
+            .push_activation(header(), Arguments::NONE, 0)
+            .expect("the stack holds the frame");
+        let home = heap.reify(method_activation);
+        let block = std::rc::Rc::new(crate::bytecode::CompiledCode::new(
+            crate::bytecode::CodeKind::Block,
+            vec![crate::bytecode::Instruction::ImplicitReturn { register: 13 }],
+            0,
+            14,
+            0,
+            vec![],
+            ns_syntax::Span::new(0, 0),
+        ));
+        let closure = heap.allocate_closure(
+            class,
+            NewClosure {
+                code: std::rc::Rc::clone(&block),
+                captured_frame: home,
+                copied: vec![],
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
+            },
+        );
+        let activation = heap
+            .push_activation(
+                ActivationHeader {
+                    receiver: Value::nil(),
+                    current_class: None,
+                    kind: ActivationKind::Closure(closure),
+                    method: None,
+                    feedback_base: FeedbackBase::NOT_ASSIGNED,
+                    code: std::rc::Rc::clone(&block),
+                    then: Continuation::Deliver,
+                    counted: true,
+                },
+                Arguments::NONE,
+                block.registers_above_header(),
+            )
+            .expect("the stack holds the frame");
+        // A method's flags, as a prologue that records no kind leaves them:
+        // only the operand says which closure the frame runs.
+        let method_flags = FrameFlags {
+            kind_tag: kind_tag::METHOD,
+            ..heap.stack.flags(activation.offset)
+        };
+        heap.stack
+            .set_header_word(activation.offset, frame_header::FLAGS, method_flags.word());
+        let caller = heap
+            .stack
+            .header_word(activation.offset, frame_header::CALLER);
+
+        let installed = crate::jit::Installed {
+            code: std::rc::Rc::clone(&block),
+            method: None,
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
+            reifies: false,
+        };
+        let frame = crate::jit::materialize::machine_frame(
+            &mut heap,
+            activation.offset,
+            &installed,
+            0,
+            None,
+        );
+        let written = heap.write_machine_frame(&frame);
+        assert!(written.same(activation));
+        match heap.activation_kind(activation) {
+            ActivationKind::Closure(running) => {
+                assert!(running.same(closure), "the closure the frame recorded");
+            }
+            _ => panic!("a closure's activation"),
+        }
+        assert!(heap.stack.flags(activation.offset).compiled);
+        assert!(heap
+            .activation_home(activation)
+            .is_some_and(|found| found.same(home)));
+        // A leaf's view leaves out the caller, which the pop reads.
+        heap.stack
+            .set_header_word(activation.offset, frame_header::CALLER, caller);
+        heap.pop_activation(activation);
+        heap.pop_activation(method_activation);
     }
 
     /// Popping a *marked* reified activation hands its registers to the

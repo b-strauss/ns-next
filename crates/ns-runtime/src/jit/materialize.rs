@@ -111,10 +111,13 @@ fn code_id(
 
 /// The header of the frame at `offset`, running the installed body
 /// `installed`, stopped at `program_counter`, whose caller is `caller`:
-/// a method's frame for a method's body, and for a body machine code
-/// calls as no method's, a factory's or an initializer's, as its code's
-/// kind says (`baseline::BodyRole`).
-fn machine_frame(
+/// a method's frame for a method's body, and for a body that is no
+/// method's the kind its code's kind says -- a factory's or an
+/// initializer's, which machine code calls (`baseline::BodyRole`), a
+/// closure's, and a superclass clause's, which only the run loop pushes,
+/// so that its frame is never one machine code pushed, and is named here
+/// so that every frame's kind is.
+pub(crate) fn machine_frame(
     heap: &mut Heap<'_>,
     offset: u32,
     installed: &Installed,
@@ -125,14 +128,14 @@ fn machine_frame(
         code,
         method,
         feedback_base,
+        reifies,
     } = installed;
     let kind = match (method, code.kind) {
         (Some(method), _) => MachineKind::method(method.selector),
         (None, CodeKind::Method) => MachineKind::factory(),
         (None, CodeKind::Initializer) => MachineKind::initializer(),
-        (None, CodeKind::Block | CodeKind::SuperclassClause) => {
-            unreachable!("internal: machine code pushes no block's or superclass clause's frame")
-        }
+        (None, CodeKind::Block) => MachineKind::closure(),
+        (None, CodeKind::SuperclassClause) => MachineKind::superclass_clause(),
     };
     MachineFrame {
         offset,
@@ -143,6 +146,7 @@ fn machine_frame(
         feedback_base: *feedback_base,
         register_count: code.registers_above_header(),
         addresses_own_slots: code.addresses_own_slots,
+        reifies: *reifies,
         caller,
     }
 }

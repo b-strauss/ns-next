@@ -32,6 +32,23 @@ pub(crate) struct BaselineBody {
     /// and the exit cost; such a body is neither installed nor entered
     /// (`jit::note_entry`).
     pub(crate) exits_at_once: bool,
+    /// Whether the code reifies its frame (`reifies_its_frame`).
+    pub(crate) reifies: bool,
+}
+
+/// Whether `code` reifies its frame: whether it makes a closure, whose
+/// `MakeClosure` reifies the frame the closure keeps, so that its prologue
+/// writes the words the divorce at its return reads and its templates
+/// keep its program counter where the interpreter stores it
+/// (`MachineFrame::reifies`). No other instruction of a body reifies the
+/// frame running it.
+pub(crate) fn reifies_its_frame(code: &CompiledCode) -> bool {
+    (0..code.instruction_count()).any(|program_counter| {
+        matches!(
+            code.instruction(program_counter),
+            Instruction::MakeClosure { .. }
+        )
+    })
 }
 
 /// What a body runs as when a compiled call enters it, which its
@@ -135,6 +152,8 @@ pub(super) struct BodyAssembler {
     pub(super) window_end: u16,
     /// What the body runs as when a compiled call enters it.
     pub(super) role: BodyRole,
+    /// Whether the body reifies its frame (`reifies_its_frame`).
+    pub(super) reifies: bool,
 }
 
 /// The scratch registers a template uses, by role.
@@ -781,7 +800,9 @@ impl BodyAssembler {
     /// `ReturnSlotIfFilled`: a lazy slot's getter returns the receiver's
     /// own slot `own_index` as `Return` returns a value once the slot is
     /// filled, anything but `nil` (`interpreter::locals::filled_own_slot`),
-    /// and goes on to compute it otherwise.
+    /// and goes on to compute it otherwise. It is the getter's first
+    /// instruction, before anything could reify the frame, so its return
+    /// divorces nothing (`sends::return_from`).
     fn return_slot_if_filled(&mut self, own_index: u32) -> Lowering {
         let registers = self.registers();
         let Some((_, address, failed)) = self.own_slot(own_index, registers) else {
@@ -828,6 +849,7 @@ impl BodyAssembler {
     /// re-executes the send, nothing written, for anything else.
     fn send_mirror(&mut self, failure: u32) {
         let program_counter = self.program_counter;
+        sends::store_program_counter(self);
         let frame = self.macro_assembler.roles().frame;
         self.macro_assembler.call_leaf(
             Leaf::Mirror.index(),
@@ -960,6 +982,7 @@ pub(crate) fn compile(
         family_size: code.family_size,
         window_end: sends::window_end(code),
         role,
+        reifies: reifies_its_frame(code),
     };
     sends::prologue(&mut body, code);
     let mut exits = Vec::with_capacity(usize::from(count));
@@ -1001,6 +1024,7 @@ pub(crate) fn compile(
         code: assembled,
         map,
         exits_at_once,
+        reifies: body.reifies,
     })
 }
 
@@ -1403,6 +1427,7 @@ mod tests {
             family_size: 0,
             window_end: 0,
             role: super::BodyRole::Method,
+            reifies: false,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.

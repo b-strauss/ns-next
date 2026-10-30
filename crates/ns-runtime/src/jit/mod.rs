@@ -507,6 +507,10 @@ struct InstalledBody {
     /// The feedback base the body's sends' cells were compiled against:
     /// its machine code is entered only by an activation with that base.
     feedback_base: FeedbackBase,
+    /// Whether the body reifies its frame (`baseline::reifies_its_frame`),
+    /// so that the frame keeps words its prologue wrote
+    /// (`MachineFrame::reifies`).
+    reifies: bool,
     /// The offsets of its first byte and of the byte past its last.
     start: u32,
     end: u32,
@@ -862,6 +866,8 @@ pub(crate) struct Installed {
     pub(crate) code: Rc<CompiledCode>,
     pub(crate) method: Option<Rc<MixinMethod>>,
     pub(crate) feedback_base: FeedbackBase,
+    /// Whether the body reifies its frame (`InstalledBody::reifies`).
+    pub(crate) reifies: bool,
 }
 
 /// `body` as `Installed`, while its code and method live.
@@ -875,6 +881,7 @@ fn upgraded(body: &InstalledBody) -> Option<Installed> {
         code,
         method,
         feedback_base: body.feedback_base,
+        reifies: body.reifies,
     })
 }
 
@@ -1071,6 +1078,13 @@ pub(crate) fn cell_entry(
         // instantiates, as its receiver and its current class
         // (`baseline::BodyRole::Factory`). It has no sends, so its machine
         // code is compiled against the one base a body without sends has.
+        // The miss refuses a factory whose body takes another count than
+        // the send places (`inline_cache::decide_at`); a hit cannot meet
+        // one: a body takes fewer than its factory's arguments only when
+        // it stands for more than `u16::MAX` of them
+        // (`CompiledCode::stands_for_too_many_arguments`), and no send
+        // with a cell places that many, since a body numbers its
+        // registers, and so its sends' slots, in 16 bits.
         Target::Factory { code, .. } => {
             return match state.installed(code) {
                 Some(body) => address(CodeOffset(body.start)),
@@ -1503,6 +1517,7 @@ fn compile(
         code: Rc::downgrade(code),
         method: method.map(Rc::downgrade),
         feedback_base,
+        reifies: body.reifies,
         start: offset.0,
         end: offset.0 + length,
         map: body.map,
@@ -2367,6 +2382,135 @@ mod tests {
             drop(third);
             assert!(state.body_at(third_start + 1, heap).is_none());
             assert!(state.body_at(second_start + 1, heap).is_some());
+        }
+
+        /// A body that makes a closure, so that it reifies its frame,
+        /// but returns 7 from its first named local before it does.
+        fn body_making_a_closure() -> Rc<CompiledCode> {
+            let block = Rc::new(CompiledCode::new(
+                CodeKind::Block,
+                vec![Instruction::ImplicitReturn { register: 13 }],
+                0,
+                14,
+                0,
+                Vec::new(),
+                ns_syntax::Span::new(0, 0),
+            ));
+            let mut code = CompiledCode::new(
+                CodeKind::Method,
+                vec![
+                    Instruction::LoadLiteral {
+                        destination: 13,
+                        literal: Literal::SmallInteger(7),
+                    },
+                    Instruction::Return { register: 13 },
+                    Instruction::MakeClosure {
+                        destination: 13,
+                        parameters: Rc::new(Vec::new()),
+                        code: block,
+                        copied: Vec::new(),
+                    },
+                    Instruction::Return { register: 13 },
+                ],
+                0,
+                14,
+                0,
+                Vec::new(),
+                ns_syntax::Span::new(0, 0),
+            );
+            // Register 13 is a named local, which a retained frame keeps.
+            code.local_count = 14;
+            Rc::new(code)
+        }
+
+        /// The return of a frame whose code reifies it divorces the frame
+        /// object in machine code -- inline, or through the divorce leaf
+        /// for one that retains its registers -- as the pop divorces it,
+        /// and leaves the frame unreified, so that the run loop's pop
+        /// after it divorces nothing again: the frame the run loop
+        /// entered machine code at, reified before, as the interpreter
+        /// reifies a frame an exit left.
+        #[test]
+        fn a_reified_frame_is_divorced_by_its_return_in_machine_code() {
+            for retains_registers in [false, true] {
+                let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+                interpreter.set_jit_enabled(true);
+                interpreter.enter(|mutator| {
+                    divorced_by_its_return(mutator, retains_registers);
+                });
+            }
+        }
+
+        fn divorced_by_its_return(
+            mutator: &mut crate::interpreter::Mutator<'_>,
+            retains_registers: bool,
+        ) {
+            let code = body_making_a_closure();
+            note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
+            note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
+            let depth = mutator.heap.activation_depth();
+            let activation = mutator
+                .heap
+                .push_activation(
+                    crate::heap::ActivationHeader {
+                        receiver: crate::Value::nil(),
+                        current_class: None,
+                        kind: crate::types::ActivationKind::TopLevel,
+                        method: None,
+                        feedback_base: FeedbackBase::NOT_ASSIGNED,
+                        code: Rc::clone(&code),
+                        then: crate::types::Continuation::Deliver,
+                        counted: true,
+                    },
+                    crate::interpreter::Arguments::NONE,
+                    code.registers_above_header(),
+                )
+                .unwrap_or_else(|_| panic!("the stack holds the frame"));
+            let frame = mutator.heap.reify(activation);
+            // A program counter the frame stored, which the divorce copies.
+            mutator.heap.activation_set_program_counter(activation, 1);
+            if retains_registers {
+                mutator.heap.retain_registers(activation);
+            }
+            let leaf_calls = mutator.jit.statistics.leaf_calls;
+            let register_base = mutator.heap.activation_register_base(activation);
+            let crate::jit::Resumption::Returned { value } =
+                crate::jit::entered(mutator, activation, &code, register_base)
+            else {
+                panic!("the body runs to its return in machine code");
+            };
+            assert_eq!(
+                value,
+                Immediate::small_integer(7).expect("a small integer").bits()
+            );
+            assert_eq!(
+                mutator.jit.statistics.leaf_calls - leaf_calls,
+                u64::from(retains_registers),
+                "only a frame that retains its registers calls the divorce leaf"
+            );
+            assert!(
+                mutator.heap.frame_activation(frame).is_none(),
+                "the frame is married no longer"
+            );
+            assert!(mutator.heap.frame_is_uncontinuable(frame));
+            assert_eq!(mutator.heap.frame_sender(frame).map(|_| ()), None);
+            assert_eq!(
+                mutator.heap.frame_register_shape(frame).0,
+                1,
+                "the program counter the frame stored"
+            );
+            let local = mutator.heap.frame_local(frame, 13).as_small_integer();
+            if retains_registers {
+                assert_eq!(local, Some(7), "the registers were copied out");
+            } else {
+                assert_eq!(local, None, "no register was copied out");
+            }
+            // The frame reads as unreified: reifying it again makes another
+            // frame object, which the pop divorces in its stead.
+            let again = mutator.heap.reify(activation);
+            assert!(!again.same(frame), "the return cleared the reified word");
+            mutator.heap.pop_activation(activation);
+            assert_eq!(mutator.heap.activation_depth(), depth);
         }
 
         #[test]

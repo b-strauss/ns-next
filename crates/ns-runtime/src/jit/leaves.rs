@@ -7,7 +7,8 @@
 //! the leaf stub's run of a target that is no method with code, a
 //! leaf-safe mirror send, an allocation past the inline bump's limit, the
 //! write barrier's remembering of an old object, the cold check of an
-//! own-slot instruction, and the exit's materialization of the frames
+//! own-slot instruction, the divorce of a reified frame that retains its
+//! registers at its return, and the exit's materialization of the frames
 //! machine code pushed. A
 //! template or a stub names one by its index in `table` (`Leaf::index`),
 //! and every call through the table is counted once
@@ -64,6 +65,9 @@ pub(crate) enum Leaf {
     OwnSlots = 9,
     /// Decides the body an initializer invocation runs (`initializer`).
     Initializer = 10,
+    /// Divorces a reified frame that retains its registers at its return
+    /// (`divorce`).
+    Divorce = 11,
 }
 
 impl Leaf {
@@ -90,7 +94,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 11] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 12] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -106,6 +110,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 11] {
         counted!(remember),
         counted!(own_slots),
         counted!(initializer),
+        counted!(divorce),
     ]
 }
 
@@ -365,7 +370,22 @@ fn initializer_in(
             code,
         }) => {
             // A passed level's initializer takes no arguments, whatever the
-            // invocation placed: its frame lies on the slots all the same.
+            // invocation placed: its frame lies on the slots all the same,
+            // where the interpreter's push lays it above the sender's
+            // window, as it lays every activation that does not take the
+            // send's own arguments (`Mutator::push_step_placed`). The two
+            // places cannot be told apart: an invocation's slots and the
+            // registers above them are scratch of its one statement,
+            // allocated afresh for the slots and then the destination
+            // (`compiler::lower`'s clauses of a full initializer), so the
+            // sender reads none of them after the invocation but the
+            // destination, which it writes first; the leftover analysis
+            // taints every register past the slots after any send, and the
+            // slots, which this callee's header covers too, are read by
+            // nothing again. What the header leaves there -- the instance,
+            // its level, a frame object the initializer reified -- the
+            // pre-pass may trace until a later statement writes them, as it
+            // traces the arguments the interpreter's push leaves there.
             let taken = match &arguments {
                 StepArguments::Send => placed,
                 StepArguments::Owned(values) if values.is_empty() => 0,
@@ -688,6 +708,25 @@ fn remember(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     let [holder_word, _, _] = arguments;
     mutator.heap.remember_for_machine_code(holder_word);
     holder_word
+}
+
+/// The divorce leaf, which the return of code that reifies its frame
+/// calls (`jit::sends::return_from`) for a reified frame whose flags say
+/// it retains its registers: the frame whose register 0 machine code
+/// holds at `arguments[0]`, returning at `arguments[1]`, the program
+/// counter, of the body `arguments[2]` names, as for `step`, divorced as
+/// its pop divorces it -- its registers copied into its frame object,
+/// which is remembered when it is old and now holds a young value
+/// (`Heap::divorce_at_machine_return`). It cannot fail: answers 0.
+fn divorce(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [frame_address, program_counter, code_address] = arguments;
+    let Ok(program_counter) = u32::try_from(program_counter) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
+    mutator.heap.divorce_at_machine_return(frame.activation);
+    materialize::release_leaf_frame(mutator, frame);
+    DONE
 }
 
 /// The exit stub's call for each return address of a compiled frame,

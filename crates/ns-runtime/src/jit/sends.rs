@@ -58,7 +58,9 @@ const _: () = assert!(
 /// stack, the safepoint (`Mutator::push_on_slots`); then the count, and
 /// the words of the frame the push writes but the header: the named
 /// locals nil, the guard and the entered level of code that addresses its
-/// own slots (`own_slot_words`), and in a debug build the dead register's
+/// own slots (`own_slot_words`), the reified word, the program counter
+/// and the flags word of code that reifies its frame
+/// (`reifying_frame_words`), and in a debug build the dead register's
 /// word in the scratch registers and the flags word with the push's
 /// generation, the rest of the header the exit's walk's
 /// (`jit::materialize`) -- but for an initializer's kind, which its
@@ -154,6 +156,9 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
         let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
         assembler.store_immediate32(frame_slot(roles.frame, register), nil);
     }
+    if body.reifies {
+        reifying_frame_words(&mut body.macro_assembler, code.argument_count, scratch);
+    }
     #[cfg(debug_assertions)]
     debug_frame_words(body, code);
     // Last, over the flags word a debug build's generation was just
@@ -233,6 +238,40 @@ fn own_slot_words(
     assembler.or_immediate(spare, layout.small_integer_tag);
     assembler.store(Width::Word64, guard, spare);
     assembler.bind(recorded);
+}
+
+/// The words of a frame whose code reifies it that the push writes and
+/// the exit's walk keeps rather than writes, since the code keeps them
+/// (`MachineFrame::reifies`): the reified word nil, the program counter
+/// 0, and in a release build the flags word, a counted method activation
+/// stopped in machine code that retains no registers, which a debug build
+/// writes with its generation (`debug_frame_words`) and an initializer's
+/// prologue adds its kind to. Clobbers `scratch` in a release build.
+fn reifying_frame_words(
+    macro_assembler: &mut MacroAssembler,
+    argument_count: u16,
+    scratch: Register,
+) {
+    let roles = macro_assembler.roles();
+    let divorce = Heap::machine_divorce(argument_count);
+    let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
+    let assembler = macro_assembler.assembler();
+    assembler.store_immediate32(frame_slot(roles.frame, divorce.reified_register), nil);
+    assembler.store_immediate32(
+        frame_slot(roles.frame, divorce.program_counter_register),
+        Heap::machine_program_counter_word(0),
+    );
+    #[cfg(not(debug_assertions))]
+    {
+        assembler.move_immediate(scratch, Heap::machine_flags_word(argument_count));
+        assembler.store(
+            Width::Word64,
+            frame_slot(roles.frame, divorce.flags_register),
+            scratch,
+        );
+    }
+    #[cfg(debug_assertions)]
+    let _ = scratch;
 }
 
 /// A debug build's words of a pushed frame the interpreter's push writes
@@ -334,15 +373,113 @@ fn frame_slot(frame: Register, register: u16) -> Memory {
 /// entered, whose pop the run loop makes (`stubs::assemble_entry_stub`),
 /// or to the call stub, for a callee an interpreter's send called, which
 /// the send's destination takes the value of (`stubs::assemble_call_stub`).
-/// A frame pushed by compiled code since the last exit delivers its value
-/// and was reified by nothing, since only its own code could have and no
-/// template reifies a frame, so the return tests neither.
+/// A frame pushed by compiled code since the last exit delivers its value,
+/// so the return tests no continuation. Only a frame's own code reifies it
+/// while machine code runs it -- a frame reified while an exit left it
+/// stopped goes on in machine code as the run loop's entry frame, which
+/// the loop's pop divorces -- so only code that reifies its frame tests
+/// the reified word, and divorces a reified frame first, as the pop does
+/// (`divorce_if_reified`).
 pub(super) fn return_from(body: &mut BodyAssembler, register: u16) -> Lowering {
+    if body.reifies {
+        divorce_if_reified(body);
+    }
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     macro_assembler.load_frame_register(roles.leaf_result, register);
     return_value(macro_assembler);
     Lowering::Transfer
+}
+
+/// The divorce of a reified frame at its return, as the pop divorces it
+/// (`Heap::pop_activation`), for code that reifies its frame: nothing for
+/// a frame whose reified word is nil; for one that retains its registers,
+/// the divorce leaf, which copies them and remembers the frame object as
+/// `Heap::divorce` does (`Leaf::Divorce`); otherwise, inline, the frame
+/// object's program counter the one its header holds, its sender nil,
+/// `uncontinuable` true and married nil. Then the reified word is nil, so
+/// that the pop of a frame the run loop entered machine code at divorces
+/// nothing again. Every word stored into the frame object is an
+/// immediate, which the write barrier passes over at its first early
+/// out, so none takes it. Clobbers the flags and every scratch register.
+fn divorce_if_reified(body: &mut BodyAssembler) {
+    let program_counter = body.program_counter;
+    let divorce = Heap::machine_divorce(body.argument_count);
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
+    let (frame_object, word) = (roles.frame_extent, roles.stack_end);
+    let field = |displacement: i32| Memory {
+        base: frame_object,
+        displacement,
+    };
+    let assembler = macro_assembler.assembler();
+    let (unreified, retained) = (assembler.label(), assembler.label());
+    assembler.load(
+        Width::Word64,
+        frame_object,
+        frame_slot(roles.frame, divorce.reified_register),
+    );
+    assembler.compare_immediate(frame_object, nil);
+    assembler.jump_if(Condition::Equal, unreified);
+    assembler.load(
+        Width::Word64,
+        word,
+        frame_slot(roles.frame, divorce.flags_register),
+    );
+    assembler.test_immediate(word, divorce.retains_registers_bit);
+    assembler.jump_if(Condition::NotEqual, retained);
+    assembler.add(frame_object, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        word,
+        frame_slot(roles.frame, divorce.program_counter_register),
+    );
+    assembler.store(
+        Width::Word64,
+        field(divorce.program_counter_displacement),
+        word,
+    );
+    assembler.store_immediate32(field(divorce.sender_displacement), nil);
+    assembler.store_immediate32(field(divorce.uncontinuable_displacement), divorce.true_word);
+    assembler.store_immediate32(field(divorce.married_displacement), nil);
+    assembler.store_immediate32(frame_slot(roles.frame, divorce.reified_register), nil);
+    assembler.bind(unreified);
+    // The leaf divorces and clears the reified word itself
+    // (`Heap::divorce_at_machine_return`).
+    macro_assembler.call_leaf_out_of_line(
+        retained,
+        Leaf::Divorce.index(),
+        [
+            Operand::Register(roles.frame),
+            Operand::Immediate(u64::from(program_counter)),
+            Operand::CodeAddress,
+        ],
+        roles.leaf_result,
+        unreified,
+    );
+}
+
+/// For code that reifies its frame, the program counter of the
+/// instruction being lowered stored into the frame's header, as the
+/// interpreter stores it at the send that instruction is (`vm::send`,
+/// `vm::send_mirror`), so that the frame's divorce records the one the
+/// interpreter's would: right before the call of a send through its
+/// cell, after its every exit, and before the leaf of an initializer
+/// invocation or a mirror send, whose refusal exits after it -- harmless
+/// there, since the interpreter's run of the instruction stores the same
+/// word before anything else. Code that reifies no frame stores nothing:
+/// no divorce reads its frame's.
+pub(super) fn store_program_counter(body: &mut BodyAssembler) {
+    if !body.reifies {
+        return;
+    }
+    let register = Heap::machine_divorce(body.argument_count).program_counter_register;
+    let word = Heap::machine_program_counter_word(body.program_counter);
+    let frame = body.macro_assembler.roles().frame;
+    body.macro_assembler
+        .assembler()
+        .store_immediate32(frame_slot(frame, register), word);
 }
 
 /// The return of the value in the value register (`Roles::leaf_result`):
@@ -551,6 +688,7 @@ pub(super) fn initialize(
             (argument_base, argument_count)
         }
     };
+    store_program_counter(body);
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     macro_assembler.call_leaf(
@@ -834,7 +972,10 @@ fn send_through_cell(
     assembler.load(Width::Word64, entry, polymorphic_stub);
     let slots = i32::from(argument_base) * REGISTER_BYTES;
     assembler.bind(call);
-    assembler.add_immediate(roles.frame, slots);
+    store_program_counter(body);
+    body.macro_assembler
+        .assembler()
+        .add_immediate(roles.frame, slots);
     body.call_send(entry);
     let macro_assembler = &mut body.macro_assembler;
     macro_assembler

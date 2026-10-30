@@ -175,7 +175,7 @@ const KIND_TAG_MASK: u64 = 0xFF;
 pub(crate) const ARGUMENT_COUNT_SHIFT: u32 = 8;
 const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
 pub(crate) const COUNTED_BIT: u64 = 1 << 24;
-const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
+pub(crate) const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
 pub(crate) const COMPILED_BIT: u64 = 1 << 26;
 #[cfg(debug_assertions)]
 pub(crate) const GENERATION_SHIFT: u32 = 27;

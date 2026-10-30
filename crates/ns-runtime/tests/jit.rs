@@ -3188,7 +3188,10 @@ ns_runtime::for_each_lowering! {
             // the level its frame was entered at.
             assert_eq!(
                 statistics.leaf_calls, 6000,
-                "each instance is bumped inline, and only the initializer leaf and one own-slot                  check a turn are called"
+                concat!(
+                    "each instance is bumped inline, and only the initializer leaf and one ",
+                    "own-slot check a turn are called"
+                )
             );
         }
     }
@@ -3317,6 +3320,11 @@ ns_runtime::for_each_lowering! {
     /// returns to -- and the stack its unhandled exception ends on reads
     /// as the interpreter's.
     fn an_exit_in_a_compiled_initializer_materializes_its_frames(lowering) {
+        // The suspension stress mode suspends the frames below a
+        // safepoint into their frame objects, which the trace
+        // (`Interpreter::stack_trace`, the activations on the stack) does
+        // not walk, with the JIT off as on: it would not name the
+        // initializers' and the factory's frames this pins.
         if std::env::var_os("NS_NEXT_STRESS_SUSPEND").is_some_and(|value| !value.is_empty() && value != "0") {
             return;
         }
