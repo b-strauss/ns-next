@@ -71,6 +71,11 @@ impl<'gc> WalkedActivation<'gc> {
     /// The activation this one returns to: the suspended sender of a live
     /// frame that has one, else the frame below; a suspended one's sender
     /// frame. `None` for the run's base and the bottom of the stack.
+    /// Inline into every walk: out of line, it answered the next step
+    /// through memory, written as a tag and a word and read back as one
+    /// wide load, a store-forwarding stall on every step of a handler's
+    /// search (`builtins::activation`'s `next_active_handler`).
+    #[inline(always)]
     pub(crate) fn sender(self, heap: &Heap<'gc>) -> Option<WalkedActivation<'gc>> {
         match self {
             WalkedActivation::Live(activation) => {
