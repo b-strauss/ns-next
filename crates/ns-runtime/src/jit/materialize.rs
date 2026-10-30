@@ -21,8 +21,8 @@
 
 use std::rc::Rc;
 
-use crate::bytecode::CompiledCode;
-use crate::heap::{ActivationReference, CodeId, Heap, MachineFrame};
+use crate::bytecode::{CodeKind, CompiledCode};
+use crate::heap::{ActivationReference, CodeId, Heap, MachineFrame, MachineKind};
 use crate::interpreter::Mutator;
 use crate::mixin::MixinMethod;
 
@@ -49,8 +49,7 @@ impl Walk {
     /// the sender, whose header lies at `sender` and register 0 at
     /// `sender_registers`, both word offsets from the stack's base, stands
     /// as the last frame materialized, its send's callee placed on its
-    /// slots from register `argument_base` with `argument_count`
-    /// arguments, the stack's top at `top`. So the callee is the walk's
+    /// slots from register `argument_base`, the stack's top at `top`. So the callee is the walk's
     /// first frame, materialized as any compiled callee is, and the
     /// sender, interpreted and stopped at its send already, its caller; a
     /// refused call leaves the sender the innermost frame, with nothing
@@ -61,7 +60,6 @@ impl Walk {
         sender: u32,
         sender_registers: u32,
         argument_base: u16,
-        argument_count: u16,
         top: usize,
     ) {
         let start = sender_registers + u32::from(argument_base);
@@ -69,7 +67,6 @@ impl Walk {
             last: Some((sender, sender_registers)),
             callee: Some(Callee {
                 start,
-                offset: start + u32::from(argument_count),
                 caller: sender,
                 top,
             }),
@@ -80,14 +77,22 @@ impl Walk {
 }
 
 /// The callee a send places on its argument slots: its first argument's
-/// and its header's word offsets, its caller's header offset, and the top
-/// its push stood at.
+/// word offset, its caller's header offset, and the top its push stood
+/// at. Its header lies past as many arguments as its own code takes
+/// (`Callee::offset`): an initializer a passed level decided takes none,
+/// whatever its invocation placed.
 #[derive(Clone, Copy)]
 struct Callee {
     start: u32,
-    offset: u32,
     caller: u32,
     top: usize,
+}
+
+impl Callee {
+    /// Its header's word offset, for a callee running `code`.
+    fn offset(self, code: &CompiledCode) -> u32 {
+        self.start + u32::from(code.argument_count)
+    }
 }
 
 /// The id of `code` in `heap`, registered with `method` when it is one's
@@ -104,9 +109,11 @@ fn code_id(
     }
 }
 
-/// The header of the method frame at `offset`, running the installed
-/// body `installed`, stopped at `program_counter`, whose caller is
-/// `caller`.
+/// The header of the frame at `offset`, running the installed body
+/// `installed`, stopped at `program_counter`, whose caller is `caller`:
+/// a method's frame for a method's body, and for a body machine code
+/// calls as no method's, a factory's or an initializer's, as its code's
+/// kind says (`baseline::BodyRole`).
 fn machine_frame(
     heap: &mut Heap<'_>,
     offset: u32,
@@ -119,14 +126,19 @@ fn machine_frame(
         method,
         feedback_base,
     } = installed;
-    let Some(selector) = method.as_ref().map(|method| method.selector) else {
-        unreachable!("internal: machine code pushes only a method's activation");
+    let kind = match (method, code.kind) {
+        (Some(method), _) => MachineKind::method(method.selector),
+        (None, CodeKind::Method) => MachineKind::factory(),
+        (None, CodeKind::Initializer) => MachineKind::initializer(),
+        (None, CodeKind::Block | CodeKind::SuperclassClause) => {
+            unreachable!("internal: machine code pushes no block's or superclass clause's frame")
+        }
     };
     MachineFrame {
         offset,
         argument_count: code.argument_count,
         code: code_id(heap, code, method.as_ref()),
-        selector,
+        kind,
         program_counter,
         feedback_base: *feedback_base,
         register_count: code.registers_above_header(),
@@ -135,18 +147,14 @@ fn machine_frame(
     }
 }
 
-/// Where the send at `program_counter` of `code` places its callee, the
-/// sending frame's register 0 at `register_base`: on its argument slots.
-fn callee_of_send(code: &CompiledCode, program_counter: u32, register_base: u32) -> (u32, u32) {
-    let instruction = code.instruction(program_counter as usize);
-    let Some((argument_base, sources)) = instruction.argument_slots() else {
-        unreachable!("internal: a compiled call's return address names a send");
+/// Where the call at `program_counter` of `code` places its callee's
+/// first argument, the calling frame's register 0 at `register_base`: on
+/// its argument slots, or above the window (`sends::call_slots`).
+fn callee_of_call(code: &CompiledCode, program_counter: u32, register_base: u32) -> u32 {
+    let Some(slots) = super::sends::call_slots(code, program_counter) else {
+        unreachable!("internal: a compiled call's return address names a send or an initializer's");
     };
-    let start = register_base + u32::from(argument_base);
-    let Ok(count) = u32::try_from(sources.len()) else {
-        unreachable!("internal: a send's arguments are numbered in 16 bits");
-    };
-    (start, start + count)
+    register_base + u32::from(slots.argument_base)
 }
 
 /// `Leaf::MaterializeFrame`: the frame the return address
@@ -177,9 +185,10 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
             (Heap::activation_offset(entry), register_base)
         }
         Some(callee) => {
+            let offset = callee.offset(code);
             let frame = machine_frame(
                 &mut mutator.heap,
-                callee.offset,
+                offset,
                 &installed,
                 program_counter,
                 Some((callee.caller, callee.top)),
@@ -187,14 +196,13 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
             let _ = mutator.heap.write_machine_frame(&frame);
             walk.top = walk.top.max(frame.window_end());
             walk.added += 1;
-            (callee.offset, callee.start)
+            (offset, callee.start)
         }
     };
-    let (start, callee_offset) = callee_of_send(code, program_counter, register_base);
+    let start = callee_of_call(code, program_counter, register_base);
     walk.last = Some((offset, register_base));
     walk.callee = Some(Callee {
         start,
-        offset: callee_offset,
         caller: offset,
         top: walk.top,
     });
@@ -227,9 +235,10 @@ pub(crate) fn materialize_innermost(
         let Ok(program_counter) = u32::try_from(program_counter) else {
             unreachable!("internal: an exit's program counter fits 32 bits");
         };
+        let offset = callee.offset(&installed.code);
         let frame = machine_frame(
             &mut mutator.heap,
-            callee.offset,
+            offset,
             &installed,
             program_counter,
             Some((callee.caller, callee.top)),
@@ -237,7 +246,7 @@ pub(crate) fn materialize_innermost(
         let _ = mutator.heap.write_machine_frame(&frame);
         walk.top = walk.top.max(frame.window_end());
         walk.added += 1;
-        callee.offset
+        offset
     };
     mutator
         .heap

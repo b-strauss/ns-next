@@ -2318,7 +2318,10 @@ its address and the number of rows recorded in the machine words
 `index`:
 
 1. the bits of its instances `DispatchId`;
-2. its instances' header word, 0 until machine code allocates instances;
+2. its instances' header word, which `AllocateInstance`'s template
+   writes, or 0 where `allocate_for_factory` makes no ordinary instance
+   of the application's count: an instantiation refusal, or a count that
+   needs an overflow word (`application_ids::Row::instance_header`);
 3. its own slot base (`MixinApplication::own_slot_base`);
 4. its flags, bit 0 set when its instances' slots take §3.1.1's
    check of what a value's slot may hold (`inherits_value`).

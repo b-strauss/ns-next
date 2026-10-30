@@ -34,6 +34,41 @@ pub(crate) struct BaselineBody {
     pub(crate) exits_at_once: bool,
 }
 
+/// What a body runs as when a compiled call enters it, which its
+/// prologue writes into its frame (`sends::prologue`): decided by whom it
+/// was compiled for (`jit::compile`), since a body is one method's body,
+/// one class's factory or one mixin's initializer for its life.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BodyRole {
+    /// A method's body: its frame's kind and selector are its method's.
+    Method,
+    /// A factory's body (`compiler::factory_body`): its current class is
+    /// the class object it runs on, its receiver.
+    Factory,
+    /// An initializer's body: its frame's kind is the body the initializer
+    /// leaf decided, which the call hands over (`MachineWord::CalleeKind`).
+    Initializer,
+    /// A block's or a superclass clause's body, which only the run loop's
+    /// push enters, past its prologue.
+    EnteredOnly,
+}
+
+impl BodyRole {
+    /// The role of `code`, compiled as the body of `method` when it is
+    /// one's.
+    pub(crate) fn of(code: &CompiledCode, is_method: bool) -> BodyRole {
+        match (is_method, code.kind) {
+            (true, _) => BodyRole::Method,
+            (false, crate::bytecode::CodeKind::Method) => BodyRole::Factory,
+            (false, crate::bytecode::CodeKind::Initializer) => BodyRole::Initializer,
+            (
+                false,
+                crate::bytecode::CodeKind::Block | crate::bytecode::CodeKind::SuperclassClause,
+            ) => BodyRole::EnteredOnly,
+        }
+    }
+}
+
 /// What `lower` did with one instruction, and what `compile` still emits
 /// for it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,6 +92,9 @@ pub(super) enum Lowering {
     /// instruction.
     Exit,
 }
+
+/// How far a word count is shifted to be a byte count.
+const WORD_SHIFT: u8 = 3;
 
 /// The sign of a 64-bit word spread over all of it by an arithmetic
 /// shift: 0 for a word of zero or more, -1 for a negative one.
@@ -92,12 +130,11 @@ pub(super) struct BodyAssembler {
     pub(super) feedback_base: FeedbackBase,
     /// The body's family's size, past which a site is uncached.
     pub(super) family_size: u32,
-    /// One past the frame's last register: its window's end.
-    #[cfg_attr(
-        not(debug_assertions),
-        expect(dead_code, reason = "only a debug build's poison reads it")
-    )]
+    /// One past the frame's last register: its window's end, above which
+    /// `InitializeInstance`'s callee lies.
     pub(super) window_end: u16,
+    /// What the body runs as when a compiled call enters it.
+    pub(super) role: BodyRole,
 }
 
 /// The scratch registers a template uses, by role.
@@ -465,6 +502,94 @@ impl BodyAssembler {
         );
     }
 
+    /// `AllocateInstance`: `allocate_instance_into`'s fresh instance of the
+    /// class object the factory runs on, its receiver, bumped inline in
+    /// eden and every field nil, its word into the frame's `destination`,
+    /// where `allocate_for_factory` would make it with
+    /// `Heap::allocate_instance_with`: the receiver a class object whose
+    /// builtin field and value class refusal are nil, read afresh at every
+    /// instantiation, and whose application's row records a header word
+    /// (`MacroAssembler::load_instance_header`). Everything else -- a
+    /// builtin's own instances, a refusal, an overflowing count, a bump
+    /// past eden's limit -- is the generic leaf's, which runs the
+    /// interpreter's `allocate_instance` and, for a refusal, exits with
+    /// nothing written, so that the interpreter raises the error. The
+    /// VM mirror's class is a builtin, so it never takes the inline path.
+    fn allocate_instance(&mut self, destination: u16) -> Lowering {
+        let layout = crate::heap::Heap::machine_layout();
+        // The header's count is below the overflow mark, so the block lies
+        // below the large-object threshold, which the inline bump of a
+        // size in a register requires.
+        let largest = usize::try_from(layout.word_count_overflow - 1)
+            .expect("internal: the overflow mark is a small count");
+        assert!(
+            crate::heap::Heap::machine_block(largest).inline,
+            "internal: an instance whose header holds its count is bumped inline"
+        );
+        let registers = self.registers();
+        let (object, header, class_word) = (registers.first, registers.second, registers.third);
+        let (bytes, end) = (registers.dividend, registers.remainder);
+        let program_counter = self.program_counter;
+        let argument_count = self.argument_count;
+        let frame = self.macro_assembler.roles().frame;
+        let macro_assembler = &mut self.macro_assembler;
+        let (slow, done) = (
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+        );
+        macro_assembler.load_receiver(class_word, argument_count);
+        macro_assembler.jump_unless_object(class_word, slow);
+        macro_assembler.load_instance_header(class_word, header, slow);
+        // The block's bytes: the header's count of the words after it, and
+        // the header itself.
+        let assembler = macro_assembler.assembler();
+        assembler.move_register(bytes, header);
+        assembler.shift_right_logical(bytes, layout.word_count_shift);
+        assembler.add_immediate(bytes, 1);
+        assembler.shift_left(bytes, WORD_SHIFT);
+        macro_assembler.bump_allocate(
+            object,
+            ObjectSize::Register(bytes),
+            header,
+            class_word,
+            slow,
+        );
+        macro_assembler.nil_fill_block(object, bytes, end);
+        macro_assembler.store_frame_register(destination, object);
+        macro_assembler.assembler().bind(done);
+        macro_assembler.call_leaf_out_of_line_or_exit(
+            slow,
+            Leaf::Step.index(),
+            [
+                Operand::Register(frame),
+                Operand::Immediate(u64::from(program_counter)),
+                Operand::CodeAddress,
+            ],
+            program_counter,
+            done,
+        );
+        Lowering::Template
+    }
+
+    /// `LoadEnclosingObject`: the frame's `destination :=` §3.3's
+    /// enclosing object at lexical `depth`
+    /// (`MacroAssembler::load_enclosing_object`), as
+    /// `load_enclosing_object_into` finds it. A body-less declaration's own
+    /// code walks out from its declaration's scope, which the generic leaf
+    /// runs (`interpreter::sends::enclosing_object`).
+    fn load_enclosing_object(&mut self, destination: u16, depth: u16) -> Lowering {
+        if self.declaration_code {
+            return self.step();
+        }
+        let value = self.registers().first;
+        let argument_count = self.argument_count;
+        self.macro_assembler
+            .load_enclosing_object(value, argument_count, depth);
+        self.macro_assembler
+            .store_frame_register(destination, value);
+        Lowering::Template
+    }
+
     /// `LoadVector`: `load_vector_into`, the frame's `destination :=`
     /// element `index` of the indirection vector in its `vector`. A
     /// register that holds no `Array` with that element exits before
@@ -813,6 +938,7 @@ pub(crate) fn compile(
     code: &CompiledCode,
     mut macro_assembler: MacroAssembler,
     feedback_base: FeedbackBase,
+    role: BodyRole,
 ) -> Result<BaselineBody, Refusal> {
     // A program counter of the map, and an exit's, is a `u32`; the bound
     // is the zone's layout's, which a later stage's tables index by
@@ -832,10 +958,8 @@ pub(crate) fn compile(
         call_returns: Vec::new(),
         feedback_base,
         family_size: code.family_size,
-        window_end: code.register_count.max(
-            code.argument_count
-                .saturating_add(crate::bytecode::HEADER_REGISTERS),
-        ),
+        window_end: sends::window_end(code),
+        role,
     };
     sends::prologue(&mut body, code);
     let mut exits = Vec::with_capacity(usize::from(count));
@@ -1116,13 +1240,28 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             }
             MachineCall::Exit => Lowering::Exit,
         },
-        // The initializers' invocations and the lexical walk an implicit
-        // receiver makes: the rest of stage 3.
-        Instruction::InitializeInstance { .. } => Lowering::Exit,
-        Instruction::CheckAppliedClause { .. } => Lowering::Exit,
-        Instruction::InitializeSuperclass { .. } => Lowering::Exit,
-        Instruction::InitializeAppliedLevel { .. } => Lowering::Exit,
-        Instruction::LoadEnclosingObject { .. } => Lowering::Exit,
+        // The initializers' invocations, each a compiled call of the body
+        // the initializer leaf decides (`sends::initialize`), the check of
+        // a `<:` clause, and the lexical walk an implicit receiver makes.
+        Instruction::InitializeInstance { destination, .. } => {
+            sends::initialize(body, None, *destination)
+        }
+        Instruction::InitializeSuperclass {
+            argument_base,
+            argument_sources,
+            destination,
+            ..
+        }
+        | Instruction::InitializeAppliedLevel {
+            argument_base,
+            argument_sources,
+            destination,
+            ..
+        } => sends::initialize(body, Some((*argument_base, argument_sources)), *destination),
+        Instruction::CheckAppliedClause { .. } => body.step(),
+        Instruction::LoadEnclosingObject { destination, depth } => {
+            body.load_enclosing_object(*destination, *depth)
+        }
         // Closures, what reads another activation, and non-local return:
         // stage 4.
         Instruction::MakeClosure { .. } => Lowering::Exit,
@@ -1142,8 +1281,8 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             own_index,
         } => body.load_own_slot(*destination, *own_index),
         Instruction::ReturnSlotIfFilled { own_index } => body.return_slot_if_filled(*own_index),
-        // Allocation and the futures: stage 4.
-        Instruction::AllocateInstance { .. } => Lowering::Exit,
+        Instruction::AllocateInstance { destination } => body.allocate_instance(*destination),
+        // The futures: stage 4.
         Instruction::MakeFuture { .. } => Lowering::Exit,
         Instruction::ResolveFuture { .. } => Lowering::Exit,
         // An error, which the interpreter raises: an exit in every stage.
@@ -1206,7 +1345,13 @@ mod tests {
 
     /// `code` compiled with `macro_assembler`, its sends uncached.
     fn compiled(code: &CompiledCode, macro_assembler: MacroAssembler) -> super::BaselineBody {
-        super::compile(code, macro_assembler, FeedbackBase::NOT_ASSIGNED).expect("compiled")
+        super::compile(
+            code,
+            macro_assembler,
+            FeedbackBase::NOT_ASSIGNED,
+            super::BodyRole::Method,
+        )
+        .expect("compiled")
     }
 
     /// Where the run loop enters `body`, installed at `start`: its first
@@ -1257,6 +1402,7 @@ mod tests {
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             family_size: 0,
             window_end: 0,
+            role: super::BodyRole::Method,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.

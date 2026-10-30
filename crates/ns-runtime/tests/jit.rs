@@ -47,6 +47,23 @@ fn run(interpreter: &mut Interpreter, class: &Root) -> i64 {
     })
 }
 
+/// `run`, but what the JIT did while `run` ran, after the instance was
+/// made, whose initializers call leaves of their own.
+fn run_measured(interpreter: &mut Interpreter, class: &Root) -> (i64, JitStatistics) {
+    let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
+    let before = interpreter.jit_statistics();
+    let answer = expect_ok(
+        interpreter.send(&instance, Symbol::intern("run"), &[]),
+        "run",
+    );
+    let done = since(interpreter.jit_statistics(), before);
+    let answer = interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("run: expected a small integer"),
+    });
+    (answer, done)
+}
+
 const THREE_ANSWERS: &str = indoc! {"
     class Subject = Object new () (
       answer = (
@@ -1056,9 +1073,8 @@ ns_runtime::for_each_lowering! {
         let (mut interpreter, class) = load_with(source, lowering);
         interpreter.set_jit_counting(true);
         assert_eq!(run(&mut interpreter, &class), 5050);
-        let before = interpreter.jit_statistics();
-        assert_eq!(run(&mut interpreter, &class), 5050);
-        let done = since(interpreter.jit_statistics(), before);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 5050);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_eq!(done.leaf_calls, 0, "both setters of every turn store in their stub");
             assert_eq!(done.send_exits, 0, "no setter's call is refused");
@@ -1108,9 +1124,8 @@ ns_runtime::for_each_lowering! {
         let (mut interpreter, class) = load_with(source, lowering);
         interpreter.set_jit_counting(true);
         assert_eq!(run(&mut interpreter, &class), 55);
-        let before = interpreter.jit_statistics();
-        assert_eq!(run(&mut interpreter, &class), 55);
-        let done = since(interpreter.jit_statistics(), before);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 55);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_eq!(done.leaf_calls, 0, "both sends of every turn run in their stubs");
             assert_eq!(done.send_exits, 0, "no call is refused");
@@ -2556,9 +2571,8 @@ ns_runtime::for_each_lowering! {
         let (mut interpreter, class) = load_with(source, lowering);
         assert_eq!(run(&mut interpreter, &class), 5050);
         assert_eq!(run(&mut interpreter, &class), 5050);
-        let before = interpreter.jit_statistics();
-        assert_eq!(run(&mut interpreter, &class), 5050);
-        let done = since(interpreter.jit_statistics(), before);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 5050);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(done.machine_entries >= 1, "`run`, which loops, is entered");
             assert_eq!(done.send_exits, 1, "the call of `step:` is refused");
@@ -3083,6 +3097,236 @@ ns_runtime::for_each_lowering! {
             assert_eq!(
                 statistics.leaf_calls, 3000,
                 "a literal's leaf per getter, and a cold check per `Derived` getter"
+            );
+        }
+    }
+}
+
+/// A thousand `Point`s and `Point3`s made in a compiled loop: each factory
+/// send a compiled call of the factory's body, which bumps the instance
+/// inline and calls the class's initializer, `Point3`'s calling `Point`'s.
+/// The classes are read from slots, since a nested class's accessor send
+/// is no compiled call.
+const POINTS: &str = indoc! {"
+    class Subject = Object new (
+      |
+        pointClass = Point.
+        point3Class = Point3.
+      |
+    ) (
+      class Point x: ax y: ay = Object new (
+        |
+          public x = ax.
+          public y = ay.
+        |
+      ) ()
+      class Point3 x: ax y: ay z: az = Point x: ax y: ay (
+        |
+          public z = az.
+        |
+      ) ()
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+          point
+          deep
+        |
+        [index < 1000] whileTrue: [
+          point:: pointClass x: index y: 2.
+          deep:: point3Class x: 1 y: index z: 3.
+          sum:: sum + point x + point y + deep y + deep z.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Instantiation runs in machine code: in the third run every factory
+    /// send of the loop calls the factory's body, whose `AllocateInstance`
+    /// and `InitializeInstance`, and the initializers' own invocations,
+    /// leave machine code for nothing, and the sum is the interpreter's.
+    fn instantiation_runs_without_an_exit(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(POINTS, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(POINTS, lowering, false);
+        assert_eq!(interpreted, [1_004_000; 3]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(
+                statistics.materialized_frames, 0,
+                "no exit materialized a factory's or an initializer's frame"
+            );
+            assert!(
+                statistics.compiled_calls >= 2000,
+                "`run` calls both factories through their cells: {}",
+                statistics.compiled_calls
+            );
+            // Five initializer invocations a turn, and the cold check of
+            // `Point`'s first own slot on a `Point3`, whose own class is not
+            // the level its frame was entered at.
+            assert_eq!(
+                statistics.leaf_calls, 6000,
+                "each instance is bumped inline, and only the initializer leaf and one own-slot                  check a turn are called"
+            );
+        }
+    }
+}
+
+/// A lazy slot of `Base`, which has a slot before it, computed on a
+/// `Derived`, which declares slots of its own after `Base`'s, both made
+/// in the compiled loop: the lazy slot is `Base`'s level's, at `Base`'s
+/// slot base, and `Derived`'s own slots lie past it.
+const SUPERCLASS_SLOT_BASE: &str = indoc! {"
+    class Subject = Object new (
+      |
+        derivedClass = Derived.
+      |
+    ) (
+      class Base = Object new (
+        |
+          public seed ::= 5.
+        |
+      ) (
+        lazy public doubled = seed * 2.
+      )
+      class Derived = Base new (
+        |
+          public extra ::= 100.
+          public other ::= 7.
+        |
+      ) ()
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+          derived
+        |
+        [index < 1000] whileTrue: [
+          derived:: derivedClass new.
+          sum:: sum + derived doubled + derived extra + derived other + derived seed.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A superclass level's own slots are found at that level's slot base,
+    /// not at the receiver's class's: `Base`'s initializer and its lazy
+    /// getter, run on a `Derived` in machine code, write and read `seed`
+    /// and `doubled` where `Base`'s layout has them, and `Derived`'s
+    /// initializer its own slots past them.
+    fn a_superclass_levels_slots_are_at_its_own_slot_base(lowering) {
+        let (compiled, statistics) =
+            run_thrice_on_one_instance(SUPERCLASS_SLOT_BASE, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(SUPERCLASS_SLOT_BASE, lowering, false);
+        assert_eq!(interpreted, [122_000; 3]);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+        }
+    }
+}
+
+/// `POINTS` with a block in `Point`'s initializer, a closure machine code
+/// does not make yet, and, past the hundredth instance, a message nothing
+/// understands: every instantiation leaves machine code inside the
+/// initializers the compiled factory calls, and the last one ends the run.
+const POINTS_LEAVING: &str = indoc! {"
+    class Subject = Object new (
+      |
+        pointClass = Point.
+        point3Class = Point3.
+      |
+    ) (
+      class Point x: ax y: ay = Object new (
+        |
+          public x = [ax] value.
+          public y = ay.
+          public checked = ax > 100 ifTrue: [nil frobnicate].
+        |
+      ) ()
+      class Point3 x: ax y: ay z: az = Point x: ax y: ay (
+        |
+          public z = az.
+        |
+      ) ()
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+          deep
+        |
+        [index < 200] whileTrue: [
+          deep:: point3Class x: index y: index z: 3.
+          sum:: sum + deep x + deep y + deep z.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// The stack `POINTS_LEAVING`'s unhandled exception ended the run on, with
+/// the JIT on, every body compiled at its first entry, or off.
+fn points_leaving_stack(lowering: Lowering, jit: bool) -> (Vec<String>, JitStatistics) {
+    let (mut interpreter, class) = load_with(POINTS_LEAVING, lowering);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_stress(jit);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let before = interpreter.jit_statistics();
+    match interpreter.send(&instance, Symbol::intern("run"), &[]) {
+        Err(HostSignal::Error(error)) => {
+            assert!(error.message.contains("frobnicate"), "{}", error.message);
+        }
+        _ => panic!("run: expected the unhandled error"),
+    }
+    let done = since(interpreter.jit_statistics(), before);
+    (interpreter.stack_trace(), done)
+}
+
+ns_runtime::for_each_lowering! {
+    /// An exit inside an initializer a compiled factory called, which a
+    /// compiled loop called, materializes the factory's frame and both
+    /// initializers' frames with their kinds, so that the run goes on in
+    /// the interpreter -- and back in machine code, at each frame it
+    /// returns to -- and the stack its unhandled exception ends on reads
+    /// as the interpreter's.
+    fn an_exit_in_a_compiled_initializer_materializes_its_frames(lowering) {
+        if std::env::var_os("NS_NEXT_STRESS_SUSPEND").is_some_and(|value| !value.is_empty() && value != "0") {
+            return;
+        }
+        let (compiled, statistics) = points_leaving_stack(lowering, true);
+        let (interpreted, _) = points_leaving_stack(lowering, false);
+        assert_eq!(compiled, interpreted);
+        assert_eq!(
+            compiled
+                .iter()
+                .filter(|frame| frame.starts_with("initializer"))
+                .count(),
+            2,
+            "`Point3`'s and `Point`'s initializers: {compiled:?}"
+        );
+        assert!(
+            compiled.iter().any(|frame| frame.starts_with("factory")),
+            "the factory's frame: {compiled:?}"
+        );
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                statistics.materialized_frames >= 3 * 100,
+                "the factory's and both initializers' frames were compiled frames: {}",
+                statistics.materialized_frames
+            );
+            assert!(
+                statistics.resumed_entries >= 100,
+                "the frames returned to went on in machine code: {}",
+                statistics.resumed_entries
             );
         }
     }

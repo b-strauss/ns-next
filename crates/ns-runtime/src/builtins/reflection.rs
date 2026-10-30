@@ -2254,6 +2254,36 @@ mod tests {
         }
     }
 
+    #[cfg(ns_jit)]
+    crate::for_each_lowering! {
+        /// The same lazy getter, compiled at its first entry: the forward is
+        /// a send machine code leaves for, and the getter's `InitializeSlot`,
+        /// run in machine code again once the forward returned, finds a
+        /// receiver whose guard is not the one its frame recorded, whose
+        /// cold check refuses it, so that the interpreter raises.
+        fn a_compiled_lazy_getter_whose_receiver_was_forwarded_raises(lowering) {
+            let (mut interpreter, fixture) = a_guard_fixture(lowering);
+            interpreter.set_jit_enabled(true);
+            interpreter.set_jit_stress(true);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let lazy = send(&mut interpreter, &fixture, "aLazy");
+            expect_ok(
+                interpreter.send(&lazy, Symbol::intern("mirror:"), &[mirror]),
+                "mirror:",
+            );
+            let before = interpreter.jit_statistics().machine_entries;
+            let result = interpreter.send(&lazy, Symbol::intern("late"), &[]);
+            assert_eq!(
+                error_text(result, "late"),
+                "an instance of Wide no longer has the slots of Lazy, which the running code was compiled for"
+            );
+            assert!(
+                interpreter.jit_statistics().machine_entries > before,
+                "the getter ran in machine code"
+            );
+        }
+    }
+
     crate::for_each_lowering! {
         /// A simultaneous clause's first initializer forwards the receiver:
         /// what the clause reads or writes of its own slots afterwards

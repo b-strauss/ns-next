@@ -51,7 +51,7 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// next generation 14, the callee's receiver and class 15 and 16, the
 /// application id table's address and bound 17 and 18, the objects
 /// machine code allocated 19, an `Array`'s class word and header 20 and
-/// 21, the rest free for the later stages.
+/// 21, the callee's kind 22, the rest free for the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -115,6 +115,13 @@ pub(crate) enum MachineWord {
     /// application's dispatch id: an allocation in machine code adds its
     /// word count (`Heap::machine_word_count_bits`).
     ArrayHeader,
+    /// The kind tag of the frame the initializer leaf decided, shifted to
+    /// where a flags word holds it (`Heap::hand_machine_initializer`):
+    /// what the callee's prologue adds to its flags word, since an
+    /// initializer's code does not say which of its mixin's bodies it runs
+    /// as (`jit::sends::prologue`). Read only right after it was written,
+    /// as `CalleeReceiver` is.
+    CalleeKind,
 }
 
 impl MachineWord {
@@ -142,6 +149,7 @@ impl MachineWord {
             MachineWord::MachineAllocations => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 5,
             MachineWord::ArrayClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 6,
             MachineWord::ArrayHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 7,
+            MachineWord::CalleeKind => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 8,
         }
     }
 }
@@ -150,7 +158,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 32;
 
-const _: () = assert!(MachineWord::ArrayHeader.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::CalleeKind.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -224,9 +232,10 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::MachineAllocations));
         offsets.push(MachineWords::offset(MachineWord::ArrayClass));
         offsets.push(MachineWords::offset(MachineWord::ArrayHeader));
+        offsets.push(MachineWords::offset(MachineWord::CalleeKind));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 12 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 13 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

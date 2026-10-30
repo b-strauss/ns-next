@@ -16,7 +16,7 @@
 
 use ns_assembler::{Condition, Label, Memory, Register, Width};
 
-use crate::bytecode::{CallSite, CompiledCode, HEADER_REGISTERS};
+use crate::bytecode::{CallSite, CompiledCode, Instruction, HEADER_REGISTERS};
 use crate::heap::machine_words::MachineWord;
 use crate::heap::{Heap, Immediate};
 use crate::interpreter::inline_cache::cells::{ChainStart, CELL_BYTES, CELL_WORDS};
@@ -24,8 +24,9 @@ use crate::interpreter::inline_cache::{rule_tag, site_index, CacheRule, RULE_TAG
 use crate::mixin::DispatchId;
 use crate::Symbol;
 
-use super::baseline::{BodyAssembler, Lowering};
-use super::macro_assembler::MacroAssembler;
+use super::baseline::{BodyAssembler, BodyRole, Lowering};
+use super::leaves::Leaf;
+use super::macro_assembler::{MacroAssembler, Operand};
 use super::stubs::{BlockWord, ExitKind};
 
 /// The bytes of a frame register.
@@ -60,7 +61,11 @@ const _: () = assert!(
 /// own slots (`own_slot_words`), and in a debug build the dead register's
 /// word in the scratch registers and the flags word with the push's
 /// generation, the rest of the header the exit's walk's
-/// (`jit::materialize`). The run
+/// (`jit::materialize`) -- but for an initializer's kind, which its
+/// code does not say: the prologue adds the tag the initializer leaf
+/// handed over to the flags word (`MacroAssembler::record_frame_kind`).
+/// A factory's current class is the class object it runs on, its
+/// receiver. The run
 /// loop's push writes all of it itself and enters the body past the
 /// prologue, at its first instruction; an interpreter's send that calls
 /// the body enters at the prologue, through the call stub, as a compiled
@@ -70,6 +75,7 @@ const _: () = assert!(
 /// interpreter decides, as it does while a `doesNotUnderstand:` handler
 /// holds the reserve the word does not count (`MachineWord::DepthLimit`).
 pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
+    let role = body.role;
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     let machine_words = roles.idiom_scratch;
@@ -124,13 +130,20 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
         frame_slot(roles.frame, receiver_place),
         roles.callee_receiver(),
     );
+    // A factory runs on the class object it instantiates, which is its
+    // receiver: a cell's hit hands over the receiver's class, its
+    // metaclass, as the current class.
+    let current_class = match role {
+        BodyRole::Factory => roles.callee_receiver(),
+        BodyRole::Method | BodyRole::Initializer | BodyRole::EnteredOnly => roles.callee_class(),
+    };
     assembler.store(
         Width::Word64,
         frame_slot(
             roles.frame,
             Heap::current_class_register(code.argument_count),
         ),
-        roles.callee_class(),
+        current_class,
     );
     if code.addresses_own_slots {
         own_slot_words(macro_assembler, code.argument_count, scratch, end);
@@ -143,6 +156,12 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     }
     #[cfg(debug_assertions)]
     debug_frame_words(body, code);
+    // Last, over the flags word a debug build's generation was just
+    // written into.
+    if role == BodyRole::Initializer {
+        body.macro_assembler
+            .record_frame_kind(code.argument_count, scratch);
+    }
 }
 
 /// The guard and the entered level of a frame whose code addresses its own
@@ -235,6 +254,60 @@ fn debug_frame_words(body: &mut BodyAssembler, code: &CompiledCode) {
         assembler.store(Width::Word64, frame_slot(roles.frame, register), poison);
     }
     macro_assembler.store_frame_generation(code.argument_count);
+}
+
+/// Where the call machine code makes at an instruction lays its callee,
+/// and the selector the leaves a callee calls read of it
+/// (`JitState::call_site`).
+#[derive(Clone, Copy)]
+pub(crate) struct CallSlots {
+    /// The first slot: the callee's register 0.
+    pub(crate) argument_base: u16,
+    /// How many arguments the instruction places there.
+    pub(crate) argument_count: u16,
+    pub(crate) selector: Symbol,
+}
+
+/// Where the instruction of `code` at `program_counter` lays the callee
+/// its call enters: a cached send's and an initializer invocation's on
+/// its argument slots, `InitializeInstance`'s above the factory's window,
+/// where `Mutator::push_above` pushes it, with the factory's own
+/// arguments copied there. `None` for an instruction that calls nothing.
+pub(crate) fn call_slots(code: &CompiledCode, program_counter: u32) -> Option<CallSlots> {
+    if let Some(send) = code.cached_send(program_counter as usize) {
+        return Some(CallSlots {
+            argument_base: send.argument_base,
+            argument_count: crate::heap::register_number(send.argument_count),
+            selector: send.selector,
+        });
+    }
+    let instruction = code.instruction(program_counter as usize);
+    let selector = match &instruction {
+        Instruction::InitializeSuperclass { selector, .. } => *selector,
+        Instruction::InitializeAppliedLevel { .. } => Symbol::NEW,
+        Instruction::InitializeInstance { .. } => {
+            return Some(CallSlots {
+                argument_base: window_end(code),
+                argument_count: code.argument_count,
+                selector: Symbol::NEW,
+            });
+        }
+        _ => return None,
+    };
+    let (argument_base, sources) = instruction.argument_slots()?;
+    Some(CallSlots {
+        argument_base,
+        argument_count: crate::heap::register_number(sources.len()),
+        selector,
+    })
+}
+
+/// One past the last register of a frame running `code`: its window's
+/// end, above which a callee no send lays on the slots is pushed
+/// (`InitializeInstance`'s, as `Mutator::push_above` pushes it).
+pub(crate) fn window_end(code: &CompiledCode) -> u16 {
+    code.register_count
+        .max(code.argument_count.saturating_add(HEADER_REGISTERS))
 }
 
 /// How far an index into the machine words is shifted to be a byte
@@ -431,6 +504,134 @@ pub(super) fn send_super(
         destination,
         call_site,
     )
+}
+
+/// An initializer invocation -- `InitializeInstance`, `InitializeSuperclass`
+/// or `InitializeAppliedLevel` -- as a compiled call of the body it
+/// decides (`docs/design/execution.md`, "Sends in machine code"): its
+/// arguments placed where its callee lies -- `slots`, the argument slots
+/// and their sources, or, for `InitializeInstance`, `None`, the factory's
+/// own arguments copied above its window, where `Mutator::push_above`
+/// pushes the initializer, once the stack is found to have room for them
+/// -- then the initializer leaf (`Leaf::Initializer`), which decides the
+/// invocation as `vm.rs`'s arm does and answers the callee's machine entry,
+/// compiling it at its second entry, with its receiver, its level and its
+/// kind handed over in the machine words; or, for a decision that runs no
+/// code, the stub answering its receiver, the instance; or 0, at which the
+/// invocation exits, nothing written but the argument slots, so that the
+/// interpreter decides it again and raises its error or pushes the body.
+/// The callee is called as a send's is, and its value stored into
+/// `destination`. A placement that needs a register to spare exits.
+pub(super) fn initialize(
+    body: &mut BodyAssembler,
+    slots: Option<(u16, &[u16])>,
+    destination: u16,
+) -> Lowering {
+    let program_counter = body.program_counter;
+    let argument_count = body.argument_count;
+    let (argument_base, count) = match slots {
+        Some((argument_base, sources)) => {
+            let Ok(count) = u16::try_from(sources.len()) else {
+                return Lowering::Exit;
+            };
+            let placement = Placement::of(argument_base, sources);
+            let placement_registers = body.macro_assembler.roles().placement.len();
+            if placement.moves.len() > placement_registers && placement.overlaps() {
+                return Lowering::Exit;
+            }
+            place(&mut body.macro_assembler, &placement);
+            (argument_base, count)
+        }
+        None => {
+            let argument_base = body.window_end;
+            if argument_base.checked_add(argument_count).is_none() {
+                return Lowering::Exit;
+            }
+            copy_above_window(body, argument_base);
+            (argument_base, argument_count)
+        }
+    };
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    macro_assembler.call_leaf(
+        Leaf::Initializer.index(),
+        [
+            Operand::Register(roles.frame),
+            Operand::Immediate(u64::from(program_counter)),
+            Operand::CodeAddress,
+        ],
+    );
+    let entry = roles.send_entry;
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(roles.leaf_result, 0);
+    macro_assembler.exit_if(Condition::Equal, ExitKind::Reexecute, program_counter);
+    let machine_words = roles.idiom_scratch;
+    macro_assembler.load_machine_words(machine_words);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(entry, roles.leaf_result);
+    assembler.load(
+        Width::Word64,
+        roles.callee_receiver(),
+        MacroAssembler::machine_word(machine_words, MachineWord::CalleeReceiver),
+    );
+    assembler.load(
+        Width::Word64,
+        roles.callee_class(),
+        MacroAssembler::machine_word(machine_words, MachineWord::CalleeClass),
+    );
+    let slots = i32::from(argument_base) * REGISTER_BYTES;
+    assembler.add_immediate(roles.frame, slots);
+    body.call_send(entry);
+    let macro_assembler = &mut body.macro_assembler;
+    macro_assembler
+        .assembler()
+        .add_immediate(roles.frame, -slots);
+    #[cfg(debug_assertions)]
+    give_back_dead_registers(body, argument_base.saturating_add(count));
+    #[cfg(not(debug_assertions))]
+    let _ = count;
+    body.macro_assembler
+        .store_frame_register(destination, roles.leaf_result);
+    Lowering::Transfer
+}
+
+/// `InitializeInstance`'s placement: the factory's own arguments, registers
+/// `0 .. argument_count`, copied into the registers from `argument_base`,
+/// its window's end, once the activation stack's ordinary room is found to
+/// reach past them -- the room the callee's prologue checks for its whole
+/// frame only after they are written -- and an exit that re-executes the
+/// instruction otherwise, nothing written, so that the interpreter's push
+/// grows the stack or raises.
+fn copy_above_window(body: &mut BodyAssembler, argument_base: u16) {
+    let program_counter = body.program_counter;
+    let argument_count = body.argument_count;
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    let (extent, end) = (roles.frame_extent, roles.stack_end);
+    let stack_base = macro_assembler.block_word(BlockWord::StackBase);
+    let machine_words = roles.idiom_scratch;
+    macro_assembler.load_machine_words(machine_words);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(extent, roles.frame);
+    assembler.load(Width::Word64, end, stack_base);
+    assembler.subtract(extent, end);
+    assembler.add_immediate(
+        extent,
+        (i32::from(argument_base) + i32::from(argument_count)) * REGISTER_BYTES,
+    );
+    assembler.load(
+        Width::Word64,
+        end,
+        MacroAssembler::machine_word(machine_words, MachineWord::OrdinaryStackEnd),
+    );
+    assembler.shift_left(end, WORD_SHIFT);
+    assembler.compare(extent, end);
+    macro_assembler.exit_if(Condition::Above, ExitKind::Reexecute, program_counter);
+    let value = roles.placement[0];
+    for argument in 0..argument_count {
+        macro_assembler.load_frame_register(value, argument);
+        macro_assembler.store_frame_register(argument_base + argument, value);
+    }
 }
 
 /// What a send's miss hands the polymorphic stub besides the cell and the

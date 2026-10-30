@@ -446,6 +446,23 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     argument count where the leaf can read them without a lookup, and the
     store, `at:` and `at:put:` in machine code with stage 4's write
     barrier would remove most of it.
+  - **A nested class's accessor send exits machine code.** A cell whose
+    target is `Target::NestedClass` names the refusing stub
+    (`jit::cell_entry`), so `Point x: 1 y: 2` in a compiled body, whose
+    implicit receiver's `Point` is the accessor's send, exits at
+    `Point` before the factory send, which is a compiled call, is made;
+    only a class read from a slot or a local instantiates without an
+    exit (`tests/jit.rs`'s `instantiation_runs_without_an_exit`). The
+    accessor's cache hit, the class in its hidden slot, would be a stub
+    like a getter's; its miss a trampoline step, which machine code
+    would exit for.
+  - **Every initializer invocation calls a leaf.** `Leaf::Initializer`
+    decides the invocation afresh each time (`jit::sends::initialize`),
+    so an instantiation calls it once per level that runs code, and once
+    more for the instance, where a send's cell hits without one; a class
+    whose levels run code pays a leaf call per level. Whether the
+    decision should be cached per invocation -- the superclass level and
+    its body depend on the frame's class only -- is to be measured.
   - **`jit::entered` is `#[cold]`**, though every push of a compiled
     body that is no send -- a block an interpreted `value:` pushes among
     them -- now enters through it; its placement is to be measured again

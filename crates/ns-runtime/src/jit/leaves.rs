@@ -2,12 +2,13 @@
 //! which runs Newspeak code, collects, reads another activation or
 //! pushes one (`docs/design/execution.md`, "The foundation and the one
 //! extension point", the leaf call): an instruction's own interpreter
-//! step, the miss of a send's cell -- the one leaf that may compile and
-//! install a body -- the leaf stub's run of a target that is no method
-//! with code, a leaf-safe mirror send, an allocation past the inline
-//! bump's limit, the write barrier's remembering of an old object, the
-//! cold check of an own-slot instruction, and the exit's
-//! materialization of the frames machine code pushed. A
+//! step, the miss of a send's cell and the decision of an initializer
+//! invocation -- the two leaves that may compile and install a body --
+//! the leaf stub's run of a target that is no method with code, a
+//! leaf-safe mirror send, an allocation past the inline bump's limit, the
+//! write barrier's remembering of an old object, the cold check of an
+//! own-slot instruction, and the exit's materialization of the frames
+//! machine code pushed. A
 //! template or a stub names one by its index in `table` (`Leaf::index`),
 //! and every call through the table is counted once
 //! (`JitStatistics::leaf_calls`).
@@ -18,10 +19,14 @@ use crate::heap::{register_number, ActivationReference, ArgumentSlots, Word};
 use crate::interpreter::inline_cache::{self, MissAnswer};
 use crate::interpreter::locals::receiver_keeps_entered_level;
 use crate::interpreter::mirror::{self, MachineMirrorAnswer};
-use crate::interpreter::{Arguments, Mutator};
+use crate::interpreter::{Arguments, Mutator, Step, StepArguments};
+use crate::jit;
 use crate::mixin::DispatchId;
 use crate::types::Value;
-use crate::vm::{argument_window, initialize_slot, load_literal_into};
+use crate::vm::{
+    allocate_instance_into, argument_window, initialize_slot, load_enclosing_object_into,
+    load_literal_into,
+};
 
 use super::macro_assembler::LeafIndex;
 use super::materialize;
@@ -57,6 +62,8 @@ pub(crate) enum Leaf {
     /// The cold check of an own-slot instruction whose receiver's guard
     /// is not the one its frame recorded (`own_slots`).
     OwnSlots = 9,
+    /// Decides the body an initializer invocation runs (`initializer`).
+    Initializer = 10,
 }
 
 impl Leaf {
@@ -83,7 +90,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 10] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 11] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -98,6 +105,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 10] {
         counted!(allocate),
         counted!(remember),
         counted!(own_slots),
+        counted!(initializer),
     ]
 }
 
@@ -118,7 +126,9 @@ pub(super) const FAILED: u64 = 2;
 /// interpreter's own effect function, the one `vm::run_stretch` calls, so
 /// the two cannot drift: an allocated literal's load, and an
 /// `InitializeSlot` whose value §3.1.1's check of a value's slot
-/// must look at (`jit::baseline`'s own-slot templates). Answers `DONE`, or
+/// must look at (`jit::baseline`'s own-slot templates), an
+/// `AllocateInstance` the inline bump does not make, a `CheckAppliedClause`,
+/// and a body-less declaration's own `LoadEnclosingObject`. Answers `DONE`, or
 /// `REFUSED` for an instruction the interpreter refuses -- which fails
 /// before it writes anything -- so that the exit after the call
 /// re-executes the instruction and the interpreter raises the error, or
@@ -169,6 +179,24 @@ fn step_in(
             own_index,
         )
         .is_ok(),
+        CompactInstruction::AllocateInstance { destination } => {
+            allocate_instance_into(mutator, activation, register_base, u16::from(destination))
+                .is_ok()
+        }
+        CompactInstruction::CheckAppliedClause { steps, selector } => mutator
+            .check_applied_clause(activation, steps, selector)
+            .is_ok(),
+        CompactInstruction::LoadEnclosingObject { destination, depth } => {
+            load_enclosing_object_into(
+                mutator,
+                activation,
+                register_base,
+                u16::from(destination),
+                depth,
+                code.is_declaration_code(),
+            );
+            true
+        }
         CompactInstruction::Wide { index } => match body.wide(index as usize) {
             Instruction::LoadLiteral {
                 destination,
@@ -178,6 +206,23 @@ fn step_in(
             }
             Instruction::InitializeSlot { source, own_index } => {
                 initialize_slot(mutator, activation, register_base, *source, *own_index).is_ok()
+            }
+            Instruction::AllocateInstance { destination } => {
+                allocate_instance_into(mutator, activation, register_base, *destination).is_ok()
+            }
+            Instruction::CheckAppliedClause { steps, selector } => mutator
+                .check_applied_clause(activation, *steps, *selector)
+                .is_ok(),
+            Instruction::LoadEnclosingObject { destination, depth } => {
+                load_enclosing_object_into(
+                    mutator,
+                    activation,
+                    register_base,
+                    *destination,
+                    *depth,
+                    code.is_declaration_code(),
+                );
+                true
             }
             other => unreachable!("internal: the generic leaf is handed {other:?}"),
         },
@@ -220,6 +265,124 @@ fn own_slots(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         DONE
     } else {
         REFUSED
+    }
+}
+
+/// The initializer leaf, which an initializer invocation's template calls
+/// (`jit::sends::initialize`): decides the instruction at `arguments[1]`,
+/// the program counter, of the frame `arguments[0]` and `arguments[2]`
+/// name, as for `step` -- `InitializeInstance`, `InitializeSuperclass` or
+/// `InitializeAppliedLevel` -- through the interpreter's own decision, the
+/// one `vm.rs`'s arm hands `send`, on the arguments the template placed
+/// where the callee lies, and acts on nothing. For a body to run, it
+/// counts the callee's entry as the miss leaf does, compiling and
+/// installing it at its second (`jit::note_entry_by_call`), and answers
+/// its machine entry, the receiver, the level and the body's kind handed
+/// over in the machine words (`Heap::hand_machine_initializer`); for a
+/// decision that runs no code, the stub answering its receiver, the
+/// instance handed over as the receiver; and 0, having handed nothing
+/// over, for an error, a body without machine code and a body taking
+/// other arguments than the template placed, so that the exit after the
+/// call re-executes the instruction and the interpreter raises the error
+/// or pushes the body.
+fn initializer(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [frame_address, program_counter, code_address] = arguments;
+    let Ok(program_counter) = u32::try_from(program_counter) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
+    let answer = initializer_in(mutator, frame.activation, program_counter as usize);
+    materialize::release_leaf_frame(mutator, frame);
+    answer
+}
+
+/// `initializer`, in `activation`.
+fn initializer_in(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    program_counter: usize,
+) -> u64 {
+    let register_base = mutator.heap.activation_register_base(activation);
+    let code = mutator.heap.activation_code(activation);
+    let slots = |argument_base: u16, sources: &[u16]| {
+        ArgumentSlots::new(register_base, argument_base, register_number(sources.len()))
+    };
+    let (decided, placed) = match code.instruction(program_counter) {
+        Instruction::InitializeInstance { instance, .. } => {
+            let instance = mutator.heap.register(register_base, instance);
+            let arguments = ArgumentSlots::new(register_base, 0, code.argument_count);
+            (
+                mutator.initialize_instance(activation, instance, Arguments::Slots(arguments)),
+                code.argument_count,
+            )
+        }
+        Instruction::InitializeSuperclass {
+            steps,
+            selector,
+            argument_base,
+            argument_sources,
+            ..
+        } => {
+            let arguments = slots(argument_base, &argument_sources);
+            (
+                mutator.decide_superclass_initializer(
+                    activation,
+                    steps,
+                    selector,
+                    Arguments::Slots(arguments),
+                ),
+                arguments.count(),
+            )
+        }
+        Instruction::InitializeAppliedLevel {
+            steps,
+            argument_base,
+            argument_sources,
+            ..
+        } => {
+            let arguments = slots(argument_base, &argument_sources);
+            (
+                mutator.decide_applied_level_initializer(
+                    activation,
+                    steps,
+                    Arguments::Slots(arguments),
+                ),
+                arguments.count(),
+            )
+        }
+        other => unreachable!("internal: the initializer leaf is handed {other:?}"),
+    };
+    match decided {
+        Ok(Step::Value(instance)) => {
+            mutator.heap.hand_machine_receiver(instance);
+            mutator.jit.receiver_stub_address()
+        }
+        Ok(Step::Initializer {
+            receiver,
+            level,
+            arguments,
+            body,
+            code,
+        }) => {
+            // A passed level's initializer takes no arguments, whatever the
+            // invocation placed: its frame lies on the slots all the same.
+            let taken = match &arguments {
+                StepArguments::Send => placed,
+                StepArguments::Owned(values) if values.is_empty() => 0,
+                StepArguments::Owned(_) | StepArguments::ControlFlow => return 0,
+            };
+            if taken != code.argument_count {
+                return 0;
+            }
+            let base = mutator.caches.base_for(&code);
+            jit::note_entry_by_call(&mut mutator.jit, &code, base, None);
+            let Some(address) = jit::machine_entry_address(&mutator.jit, &code, base) else {
+                return 0;
+            };
+            mutator.heap.hand_machine_initializer(receiver, level, body);
+            address
+        }
+        _ => 0,
     }
 }
 

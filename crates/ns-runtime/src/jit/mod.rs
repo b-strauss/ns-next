@@ -1011,7 +1011,8 @@ fn install(zone: &mut Zone, bytes: &[u8]) -> Result<CodeOffset, Refusal> {
 /// through its body's machine entry once its body has machine code in
 /// this zone compiled against the entry's feedback base, and through the
 /// miss stub while its body may still be compiled, which compiles it and
-/// rewrites the site's cell (`inline_cache::decide_at`).
+/// rewrites the site's cell (`inline_cache::decide_at`). A factory's
+/// body is reached the same way.
 ///
 /// A target that is no method with code is reached through the stub
 /// `stub_entry` chooses for it.
@@ -1057,7 +1058,18 @@ pub(crate) fn cell_entry(
             primitive: *primitive,
             chain: *chain,
         },
-        Target::NestedClass { .. } | Target::Factory { .. } => {
+        // A factory's body, entered on the class object the send
+        // instantiates, as its receiver and its current class
+        // (`baseline::BodyRole::Factory`). It has no sends, so its machine
+        // code is compiled against the one base a body without sends has.
+        Target::Factory { code, .. } => {
+            return match state.installed(code) {
+                Some(body) => address(CodeOffset(body.start)),
+                None if state.may_compile(code) => address(zone.miss_stub),
+                None => address(zone.refusing_stub),
+            };
+        }
+        Target::NestedClass { .. } => {
             return address(zone.refusing_stub);
         }
     };
@@ -1218,6 +1230,17 @@ impl JitState {
     pub(crate) fn polymorphic_stub_address(&self) -> u64 {
         self.zone.as_ref().map_or(0, |zone| {
             zone.writer.zone().executable_address(zone.polymorphic_stub) as u64
+        })
+    }
+
+    /// The address of the stub answering its receiver, which a compiled
+    /// initializer invocation calls for a decision that runs no code
+    /// (`jit::leaves`'s `initializer`); 0 where there is no zone.
+    pub(crate) fn receiver_stub_address(&self) -> u64 {
+        self.zone.as_ref().map_or(0, |zone| {
+            zone.writer
+                .zone()
+                .executable_address(zone.accessors.receiver) as u64
         })
     }
 
@@ -1419,7 +1442,8 @@ fn compile(
     };
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(state.counting);
-    let body = baseline::compile(code, macro_assembler, feedback_base)?;
+    let role = baseline::BodyRole::of(code, method.is_some());
+    let body = baseline::compile(code, macro_assembler, feedback_base, role)?;
     if body.exits_at_once && !state.install_bodies_exiting_at_once {
         return Err(Refusal::ExitsAtOnce);
     }
@@ -1432,18 +1456,19 @@ fn compile(
     let offset = install(zone, &body.code.bytes)?;
     let length = u32::try_from(body.code.bytes.len()).map_err(|_| Refusal::ZoneFull)?;
     for call in &body.map.returns {
-        // Every call of a body is a cached send's (`sends`).
-        let Some(send) = code.cached_send(call.program_counter as usize) else {
-            unreachable!("internal: a body calls only at a cached send");
+        // Every call of a body is a cached send's or an initializer
+        // invocation's (`sends`).
+        let Some(slots) = sends::call_slots(code, call.program_counter) else {
+            unreachable!("internal: a body calls only at a cached send or an initializer's");
         };
         state.returns.insert(
             offset.0 + call.machine_offset,
             ReturnSite {
                 body: map,
                 program_counter: call.program_counter,
-                argument_base: send.argument_base,
-                argument_count: crate::heap::register_number(send.argument_count),
-                selector: send.selector,
+                argument_base: slots.argument_base,
+                argument_count: slots.argument_count,
+                selector: slots.selector,
             },
         );
     }
@@ -1677,7 +1702,6 @@ pub(crate) fn called<'gc>(
         Heap::activation_offset(sender),
         sender_registers,
         argument_base,
-        code.argument_count,
         top,
     );
     let block = prepared_block(

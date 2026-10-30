@@ -9577,7 +9577,9 @@ caller word, its flags with the compiled bit, its continuation (`Deliver`),
 its feedback base, for code that addresses no own slot its guard
 (none) and entered level (`UNREGISTERED`), as the push records them --
 code that does had its prologue write both, the current class's
-application and the guard the push would record, and its own-slot
+application and the receiver's guard when the receiver's own class is
+that level (the push's first compare) and none otherwise, which the
+cold check then records, and its own-slot
 instructions may have recorded a guard since, so the walk leaves them
 ("Own slots in machine code", under "The baseline JIT's foundation"
 below) -- and its reified word, nil unless the frame reified
@@ -9922,7 +9924,9 @@ of the first two.
   `LoadSelf`, `Move`, `StoreLocal`, `Jump`, `JumpIfNotBoolean`,
   `BranchIfFalse`, `BranchIfTrue`, the cached sends, `Return` and
   `ImplicitReturn`, a leaf-safe `SendMirror`, `MakeVector`, `MakeArray`,
-  `LoadVector`, `StoreVector`, the own-slot instructions
+  `AllocateInstance`, the initializer invocations and
+  `LoadEnclosingObject` ("The miss leaf" below), `LoadVector`,
+  `StoreVector`, the own-slot instructions
   (`InitializeSlot`, `InitializeSlotProvisionally`, `LoadOwnSlot`,
   `ReturnSlotIfFilled`; "Own slots in machine code" below), and
   `IntegerBinary`'s `SmallInteger`
@@ -9963,9 +9967,11 @@ of the first two.
   of a scavenge past the set's limit included, and answers the holder
   again, so that a setter finds its receiver after the call. The
   generic leaf, `Leaf::Step` (`jit/leaves.rs`), runs a `LoadLiteral`
-  that allocates, and an `InitializeSlot` whose value §3.1.1's check of
-  a value's slot must look at, through the interpreter's own function
-  for it, and answers "re-execute" only before it has changed anything,
+  that allocates, an `InitializeSlot` whose value §3.1.1's check of a
+  value's slot must look at, an `AllocateInstance` the inline bump does
+  not make, a `CheckAppliedClause` and a body-less declaration's own
+  `LoadEnclosingObject`, through the interpreter's own function for
+  it, and answers "re-execute" only before it has changed anything,
   so the interpreter raises the error, or forces a future, itself.
   - **Own slots in machine code.** An own-slot template first makes
     `check_own_slots`' hot path inline
@@ -9985,10 +9991,11 @@ of the first two.
     the receiver's, an instance's, counted by its header or its
     overflow word -- a crafted image's index past them exits. A
     compiled call's prologue writes the frame's entered level, the
-    current class's application, and its guard as the push records
-    them: the receiver's when the receiver's own class is that level,
-    `NONE` otherwise (`jit::sends`' `own_slot_words`), so that a lazy
-    getter called on an instance of its own class calls no leaf. The
+    current class's application, and the receiver's guard when the
+    receiver's own class is that level -- the push's first compare --
+    and `NONE` otherwise, which the cold check then records (`jit::sends`'
+    `own_slot_words`), so that a lazy getter called on an instance of
+    its own class calls no leaf. The
     exit's walk and a leaf's view of a frame leave both words alone for
     such code, which would otherwise throw a recorded guard away at
     every leaf call (`Heap::write_machine_frame`). `InitializeSlot` and
@@ -10210,13 +10217,54 @@ sends and the inline caches in machine code.
   (`public_key`, `lexical_site`, `lexical_receiver`, `lexical_key`,
   `super_site`, `super_key`), filling the site's entry and cell and the
   global cache as the interpreter's miss fills them, but acts on nothing:
-  for a method machine code runs as an activation it counts the callee's
-  entry, compiling and installing it at its second -- the one leaf that
-  may compile, from inside machine code, which holds no address an
-  install moves -- and answers its machine entry, the receiver and class
-  handed over in the machine words (`CalleeReceiver`, `CalleeClass`); for
-  a target that is no method with code it answers the stub its cell
-  names; for everything else it refuses the call. **A site filled while
+  for a method machine code runs as an activation, and for a factory's
+  body, it counts the callee's entry, compiling and installing it at its
+  second -- one of the two leaves that may compile, with the initializer
+  leaf, from inside machine code, which holds no address an install
+  moves -- and answers its machine entry, the receiver and class handed
+  over in the machine words (`CalleeReceiver`, `CalleeClass`); for a
+  target that is no method with code it answers the stub its cell names;
+  for everything else it refuses the call. **A factory send is a compiled
+  call** (decided with the user on 2026-10-30): its cell names the
+  factory body's machine entry, or the miss stub while it may still be
+  compiled (`jit::cell_entry`), and the body's prologue makes the class
+  object it runs on, its receiver, its current class as well
+  (`baseline::BodyRole::Factory`), whatever class a hit walked to. Its
+  `AllocateInstance` bumps an ordinary instance inline: the receiver a
+  class object, by its format, whose builtin field and value class
+  refusal are nil, read afresh at every instantiation, as
+  `allocate_for_factory` reads them, and whose application's row records
+  an instance header word (`MacroAssembler::load_instance_header`; memory.md,
+  "The application id table"), the count of the header's words the size
+  (`ObjectSize::Register`, `nil_fill_block`); everything else -- a
+  builtin's own instances, the VM mirror's class among them, a refusal,
+  an overflowing count, eden at its limit -- runs through `Leaf::Step`,
+  which runs `allocate_instance` and, for a refusal, exits so that the
+  interpreter raises. **An initializer invocation is a compiled call**
+  (`jit::sends::initialize`): `InitializeSuperclass` and
+  `InitializeAppliedLevel` place their arguments on their slots, and
+  `InitializeInstance` copies the factory's own above its window, where
+  `Mutator::push_above` pushes the initializer, once the stack has room
+  for them; then the initializer leaf (`Leaf::Initializer`) decides the
+  invocation through the interpreter's own decision, counts and compiles
+  the callee as the miss leaf does, and answers its machine entry with
+  the receiver, the level and the body's kind in the machine words
+  (`Heap::hand_machine_initializer`, `CalleeKind`), the stub answering
+  its receiver for a decision that runs no code, or 0, at which the
+  invocation exits so that the interpreter raises the error or pushes
+  the body. A passed level's initializer takes no arguments and lies on
+  the slots all the same. `CheckAppliedClause` runs through
+  `Leaf::Step`, and `LoadEnclosingObject` is a template over the lexical
+  walk `load_enclosing_object` makes, or `Leaf::Step` for a body-less
+  declaration's own code.
+  **A frame machine code pushes has a kind and an operand**
+  (`MachineKind`): a method's tag and selector, a factory's tag and its
+  current class, and an initializer's tag, which its code does not say,
+  since one code can be two of its mixin's bodies, written by its
+  prologue into its flags word from `CalleeKind`
+  (`MacroAssembler::record_frame_kind`), and its current class; the
+  walk keeps the recorded tag (`Heap::write_machine_frame`). A callee's
+  header lies past as many arguments as its own code takes. **A site filled while
   its callee had no code heals at its next miss** (decided on 2026-10-28): the
   leaf writes afresh every cell the decision went through -- the site's,
   its block's slot, the global row (`InlineCaches::refresh_cells`) -- once
@@ -10464,9 +10512,11 @@ the heap folds into its own counts before a scavenge or a compaction
 recounts them and adds when it reports them, so that its counts stay the
 interpreter's); and the kernel's `Array` class as a stored word and the
 header of an `Array` of no words (`ArrayClass`, `ArrayHeader`, rewritten
-with the immediates' classes), what `MakeVector`'s allocation writes.
-The area keeps room for the later stages' words (32 words, 22 of them
-taken). Eden's top and limit, which machine code bumps in place, are not
+with the immediates' classes), what `MakeVector`'s allocation writes;
+and the kind tag of the initializer the initializer leaf decided
+(`CalleeKind`), which the callee's prologue adds to its flags word,
+read only right after it was written. The area keeps room for the later
+stages' words (32 words, 23 of them taken). Eden's top and limit, which machine code bumps in place, are not
 among them: they are the object space reservation's own cursor, which
 lies in an allocation of `ns-memory`'s for the same reason
 (`ns_memory::SharedCursor`; [memory.md](memory.md), "The memory

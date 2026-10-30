@@ -9,7 +9,9 @@
 //!   send's rule payload, N's id, here, so that it files the send under
 //!   the dispatch id the global cache is keyed by, as the interpreter
 //!   does.
-//! - The instance header, 0 until machine code allocates instances.
+//! - The instance header: the header word of an ordinary instance, which
+//!   `AllocateInstance`'s template writes, or 0 for an application whose
+//!   instances it does not make (`Row::instance_header`).
 //! - The own slot base (`MixinApplication::own_slot_base`), from which an
 //!   own-slot instruction addresses the slots of the level its frame was
 //!   entered at, as `Heap::activation_slot_base` does.
@@ -44,7 +46,7 @@ use crate::mixin::DispatchId;
 pub(crate) enum RowWord {
     /// The instances dispatch id, zero-extended.
     DispatchId = 0,
-    /// The instance header; 0 until machine code allocates instances.
+    /// The instance header word, or 0 (`Row::instance_header`).
     InstanceHeader = 1,
     /// The own slot base, a plain number.
     SlotBase = 2,
@@ -89,6 +91,15 @@ pub(crate) const ROW_FLAG_VALUE_SLOTS: u64 = 1;
 pub(crate) struct Row {
     /// The instances dispatch id.
     pub(crate) dispatch_id: DispatchId,
+    /// The header word an instance is born with
+    /// (`MixinApplication::instance_header`), or 0 where
+    /// `allocate_for_factory` makes no ordinary instance of the
+    /// application's slot count by it: the application refuses
+    /// instantiation, or its count needs an overflow word. What depends
+    /// on the class object rather than the application -- a builtin's own
+    /// way of making its instances, the value class refusal -- the
+    /// template reads off the class object afresh at every instantiation.
+    pub(crate) instance_header: u64,
     /// `MixinApplication::own_slot_base`.
     pub(crate) slot_base: usize,
     /// `MixinApplication::inherits_value`.
@@ -100,7 +111,7 @@ impl Row {
     fn words(self) -> [u64; ROW_WORDS] {
         [
             u64::from(self.dispatch_id.bits()),
-            0,
+            self.instance_header,
             self.slot_base as u64,
             if self.value_slots {
                 ROW_FLAG_VALUE_SLOTS

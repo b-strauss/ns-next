@@ -2169,11 +2169,33 @@ pub(crate) fn decide_at<'gc>(
         guard,
         index,
         global_key,
+        argument_count,
         ..
     }) = decision_at(mutator, activation, program_counter)
     else {
         return MissAnswer::Refuse;
     };
+    // A factory's body runs on the class object the send instantiates, as
+    // its receiver and its current class: compiled and entered as a
+    // method's body is, below. One that stands for too many arguments
+    // takes another count than the send places; only the push lays its
+    // frame out.
+    if let Resolved::Factory { level, code, .. } = &resolved {
+        if code.argument_count != argument_count {
+            return MissAnswer::Refuse;
+        }
+        let base = mutator.caches.base_for(code);
+        jit::note_entry_by_call(&mut mutator.jit, code, base, None);
+        let address = jit::machine_entry_address(&mutator.jit, code, base);
+        mutator
+            .caches
+            .refresh_cells(index, guard, global_key, &mutator.jit);
+        let Some(address) = address else {
+            return MissAnswer::Refuse;
+        };
+        mutator.heap.hand_machine_callee(receiver, *level);
+        return MissAnswer::Enter(address);
+    }
     let stubbed = match &resolved {
         Resolved::Method { method, chain, .. } if !jit::runs_in_machine_code(method, *chain) => {
             Some(jit::Stubbed::Method {
@@ -2195,7 +2217,10 @@ pub(crate) fn decide_at<'gc>(
             primitive: *primitive,
             chain: *chain,
         }),
-        Resolved::NestedClass { .. } | Resolved::Factory { .. } | Resolved::Unhandled => {
+        Resolved::Factory { .. } => {
+            unreachable!("internal: a factory was answered above")
+        }
+        Resolved::NestedClass { .. } | Resolved::Unhandled => {
             return MissAnswer::Refuse;
         }
     };

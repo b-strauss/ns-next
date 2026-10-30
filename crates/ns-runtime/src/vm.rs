@@ -1923,7 +1923,7 @@ fn load_self_into(
 }
 
 #[inline(always)]
-fn load_enclosing_object_into(
+pub(crate) fn load_enclosing_object_into(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
     register_base: RegisterBase,
@@ -2684,7 +2684,7 @@ fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handof
 
 /// `AllocateInstance`: a fresh instance of the factory's receiver.
 #[inline(never)]
-fn allocate_instance_into<'gc>(
+pub(crate) fn allocate_instance_into<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     register_base: RegisterBase,

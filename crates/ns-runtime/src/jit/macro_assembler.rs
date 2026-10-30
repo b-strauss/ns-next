@@ -254,13 +254,6 @@ pub(crate) enum ObjectSize {
     /// object whose header holds its count -- fewer than 255 words after
     /// it -- and that lies below the large-object threshold: what the
     /// caller has checked before.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no allocation in machine code takes a size known only at run time yet"
-        )
-    )]
     Register(Register),
 }
 
@@ -832,6 +825,102 @@ impl MacroAssembler {
         assembler.jump_if(Condition::Below, step);
         assembler.subtract(object, object_space);
         assembler.add_immediate(object, -(first + bytes));
+    }
+
+    /// Writes `nil` into every field of the object whose word is in
+    /// `object` and whose block, its header included, takes the bytes in
+    /// `bytes`, a header that holds its count: `nil_fill` for a count
+    /// known only at run time, a loop that writes nothing for an object of
+    /// no fields. `object` and `bytes` are kept. Clobbers the flags,
+    /// `end` and the idiom scratch register.
+    pub(crate) fn nil_fill_block(&mut self, object: Register, bytes: Register, end: Register) {
+        debug_assert!(
+            distinct(&[object, bytes, end, self.roles.idiom_scratch]),
+            "internal: the fill's registers are distinct"
+        );
+        let layout = crate::heap::Heap::machine_layout();
+        let (field, object_space) = (self.roles.idiom_scratch, self.roles.object_space);
+        let assembler = &mut self.assembler;
+        let (step, done) = (assembler.label(), assembler.label());
+        assembler.move_register(end, object);
+        assembler.add(end, object_space);
+        assembler.move_register(field, end);
+        assembler.add(end, bytes);
+        assembler.add_immediate(field, layout.fields_displacement);
+        assembler.bind(step);
+        assembler.compare(field, end);
+        assembler.jump_if(Condition::AboveOrEqual, done);
+        assembler.store_immediate32(
+            Memory {
+                base: field,
+                displacement: 0,
+            },
+            layout.nil_word,
+        );
+        assembler.add_immediate(field, WORD_BYTES);
+        assembler.jump(step);
+        assembler.bind(done);
+    }
+
+    /// Jumps to `refused` unless the object `class` names -- an object,
+    /// which the caller has checked -- is a class object whose instances
+    /// `Heap::allocate_instance_with` makes as an ordinary instance would
+    /// be made: its format a class object's, its builtin field and its
+    /// value class refusal nil, both read afresh, as
+    /// `allocate_for_factory` reads them at every instantiation; then
+    /// `header :=` the instance header word the application id table
+    /// records for its application (`heap/application_ids.rs`), and a jump
+    /// to `refused` for an application the table does not record or whose
+    /// word is 0. Clobbers the flags and the idiom scratch register.
+    pub(crate) fn load_instance_header(
+        &mut self,
+        class: Register,
+        header: Register,
+        refused: Label,
+    ) {
+        debug_assert!(
+            distinct(&[class, header, self.roles.idiom_scratch]),
+            "internal: the instance header's registers are distinct"
+        );
+        let layout = crate::heap::Heap::machine_layout();
+        let (object_space, scratch) = (self.roles.object_space, self.roles.idiom_scratch);
+        let field = |displacement| Memory {
+            base: header,
+            displacement,
+        };
+        let assembler = &mut self.assembler;
+        assembler.move_register(header, class);
+        assembler.add(header, object_space);
+        // The format first: only a class object has the fields read next.
+        assembler.load(Width::Word64, scratch, field(layout.header_displacement));
+        assembler.and_immediate(scratch, layout.instance_format_bits);
+        assembler.compare_immediate(scratch, layout.class_format);
+        assembler.jump_if(Condition::NotEqual, refused);
+        for displacement in [
+            layout.builtin_displacement,
+            layout.value_class_refusal_displacement,
+        ] {
+            assembler.load(Width::Word64, scratch, field(displacement));
+            assembler.compare_immediate(scratch, layout.nil_word);
+            assembler.jump_if(Condition::NotEqual, refused);
+        }
+        self.load_application_word(header, class);
+        let assembler = &mut self.assembler;
+        assembler.test_immediate(header, layout.small_integer_tag);
+        assembler.jump_if(Condition::Equal, refused);
+        assembler.shift_right_arithmetic(header, layout.tag_bits);
+        self.load_application_row(header, refused);
+        let assembler = &mut self.assembler;
+        assembler.load(
+            Width::Word64,
+            header,
+            Memory {
+                base: header,
+                displacement: layout.application_instance_header_displacement,
+            },
+        );
+        assembler.compare_immediate(header, 0);
+        assembler.jump_if(Condition::Equal, refused);
     }
 
     /// Stores `value` into the word at `displacement` from the offset of
@@ -1803,6 +1892,33 @@ impl MacroAssembler {
         assembler.move_immediate(constant_word, constant);
         assembler.add(word, constant_word);
         assembler.store(Width::Word64, flags, word);
+    }
+
+    /// Writes the kind the initializer leaf handed over
+    /// (`MachineWord::CalleeKind`) into the flags word of a frame whose
+    /// code takes `argument_count` arguments, as the walk reads it back
+    /// (`Heap::write_machine_frame`): added to the flags a debug build's
+    /// generation was just written with, or to a method's constant flags.
+    /// Clobbers `kind` and the idiom scratch register.
+    pub(crate) fn record_frame_kind(&mut self, argument_count: u16, kind: Register) {
+        let machine_words = self.roles.idiom_scratch;
+        self.load_machine_words(machine_words);
+        let flags = self.frame_slot(argument_count + crate::heap::Heap::flags_register());
+        let assembler = &mut self.assembler;
+        assembler.load(
+            Width::Word64,
+            kind,
+            Self::machine_word(machine_words, MachineWord::CalleeKind),
+        );
+        #[cfg(debug_assertions)]
+        assembler.load(Width::Word64, machine_words, flags);
+        #[cfg(not(debug_assertions))]
+        assembler.move_immediate(
+            machine_words,
+            crate::heap::Heap::machine_flags_word(argument_count),
+        );
+        assembler.add(kind, machine_words);
+        assembler.store(Width::Word64, flags, kind);
     }
 
     /// Takes `exit(Safepoint, program_counter)` when the heap's safepoint

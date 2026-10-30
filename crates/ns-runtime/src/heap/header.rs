@@ -33,6 +33,10 @@ pub(super) const FORMAT_BITS: u64 = FORMAT_MASK << FORMAT_SHIFT;
 /// The header bits of an `Array`'s format (`Format::IndexablePointers`)
 /// under `FORMAT_BITS`, for machine code's test of an indirection vector.
 pub(super) const INDEXABLE_POINTERS_BITS: u64 = (Format::IndexablePointers as u64) << FORMAT_SHIFT;
+
+/// The format bits of a class object's header: what `AllocateInstance`'s
+/// template compares its receiver's with, under `FORMAT_BITS`.
+pub(super) const CLASS_BITS: u64 = (Format::Class as u64) << FORMAT_SHIFT;
 /// The header bits every code of a `ByteArray`'s format
 /// (`Format::AlignedBytes`, 24 to 31) sets and no other format's code
 /// sets all of, for machine code's test of a ByteArray.

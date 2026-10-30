@@ -825,6 +825,19 @@ pub(crate) struct MachineLayout {
     /// The flag of a row whose instances' slots take the check of what a
     /// value's slot may hold.
     pub(crate) application_value_slots_flag: i32,
+    /// A row's instance header word's displacement from the row.
+    pub(crate) application_instance_header_displacement: i32,
+    /// The header word's format bits of a class object, under
+    /// `instance_format_bits`.
+    pub(crate) class_format: i32,
+    /// A class object's builtin field's displacement from its offset
+    /// (`Heap::class_builtin`): nil for a class whose instances are
+    /// ordinary ones.
+    pub(crate) builtin_displacement: i32,
+    /// A class object's value class refusal's displacement from its
+    /// offset (`Heap::class_has_value_refusal`): nil for a class whose
+    /// instantiation nothing refuses there.
+    pub(crate) value_class_refusal_displacement: i32,
 }
 
 /// The block of an object machine code allocates (`Heap::machine_block`).
@@ -866,7 +879,8 @@ pub(crate) struct MachineFrame {
     pub(crate) offset: u32,
     pub(crate) argument_count: u16,
     pub(crate) code: CodeId,
-    pub(crate) selector: Symbol,
+    /// Its kind and operand.
+    pub(crate) kind: MachineKind,
     pub(crate) program_counter: u32,
     pub(crate) feedback_base: FeedbackBase,
     /// The registers above its header.
@@ -878,6 +892,71 @@ pub(crate) struct MachineFrame {
     /// The caller's offset and the top the frame was pushed at; `None`
     /// for a leaf's view of its own frame, whose caller nothing reads.
     pub(crate) caller: Option<(u32, usize)>,
+}
+
+/// The kind of a frame machine code pushed and its operand, as its header
+/// records them (`Heap::write_machine_frame`): each either a constant of
+/// its body -- a method's tag and selector, a factory's tag -- or what the
+/// frame itself holds, written by its prologue -- an initializer's tag,
+/// which its code does not say, since one code can be two of its mixin's
+/// bodies -- or the current class the call handed over, a factory's and an
+/// initializer's operand.
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct MachineKind {
+    tag: MachineKindTag,
+    operand: MachineOperand,
+}
+
+/// Where a machine frame's kind tag comes from (`MachineKind`).
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MachineKindTag {
+    /// The tag itself.
+    Constant(u8),
+    /// The tag the frame's prologue wrote into its flags word.
+    Recorded,
+}
+
+/// Where a machine frame's operand comes from (`MachineKind`).
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MachineOperand {
+    /// A method's selector.
+    Selector(Symbol),
+    /// The frame's current class.
+    CurrentClass,
+}
+
+#[cfg(ns_jit)]
+impl MachineKind {
+    /// A method's activation of the method `selector` names.
+    pub(crate) fn method(selector: Symbol) -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::METHOD),
+            operand: MachineOperand::Selector(selector),
+        }
+    }
+
+    /// A factory's activation, on the class object the call handed over
+    /// as its current class.
+    pub(crate) fn factory() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::FACTORY),
+            operand: MachineOperand::CurrentClass,
+        }
+    }
+
+    /// An initializer's activation, entered at the level the call handed
+    /// over as its current class, running the body whose tag its prologue
+    /// recorded from what the initializer leaf decided
+    /// (`Heap::hand_machine_initializer`).
+    pub(crate) fn initializer() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Recorded,
+            operand: MachineOperand::CurrentClass,
+        }
+    }
 }
 
 #[cfg(ns_jit)]
@@ -5232,11 +5311,19 @@ impl<'gc> Heap<'gc> {
         application.map_or(
             application_ids::Row {
                 dispatch_id: DispatchId::NONE,
+                instance_header: 0,
                 slot_base: 0,
                 value_slots: false,
             },
             |application| application_ids::Row {
                 dispatch_id: application.dispatch_ids.instances,
+                instance_header: match (
+                    &application.instantiation_refusal,
+                    application.instance_header,
+                ) {
+                    (None, Some(header)) => header.0,
+                    _ => 0,
+                },
                 slot_base: application.own_slot_base,
                 value_slots: application.inherits_value,
             },
@@ -8806,6 +8893,13 @@ impl<'gc> Heap<'gc> {
             application_slot_base_displacement: application_ids::RowWord::SlotBase.displacement(),
             application_flags_displacement: application_ids::RowWord::Flags.displacement(),
             application_value_slots_flag: small(application_ids::ROW_FLAG_VALUE_SLOTS),
+            application_instance_header_displacement: application_ids::RowWord::InstanceHeader
+                .displacement(),
+            class_format: small(header::CLASS_BITS),
+            builtin_displacement: displacement(FIELDS + class_field::BUILTIN),
+            value_class_refusal_displacement: displacement(
+                FIELDS + class_field::VALUE_CLASS_REFUSAL,
+            ),
         }
     }
 
@@ -8826,6 +8920,29 @@ impl<'gc> Heap<'gc> {
     #[cfg(ns_jit)]
     pub(crate) fn register_base_index(base: RegisterBase) -> u32 {
         base.index
+    }
+
+    /// The flags word of a counted method activation of a body taking
+    /// `argument_count` arguments stopped in machine code, generation 0:
+    /// what a release build's prologue adds an initializer's kind to
+    /// (`MacroAssembler::record_frame_kind`).
+    #[cfg(all(ns_jit, not(debug_assertions)))]
+    pub(crate) fn machine_flags_word(argument_count: u16) -> u64 {
+        FrameFlags {
+            compiled: true,
+            ..FrameFlags::new(kind_tag::METHOD, argument_count, true, false)
+        }
+        .word()
+        .bits()
+    }
+
+    /// The flags word's register number past a frame's arguments.
+    #[cfg(ns_jit)]
+    pub(crate) fn flags_register() -> u16 {
+        let Ok(register) = u16::try_from(frame_header::FLAGS) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        register
     }
 
     /// What a debug build's compiled prologue writes as a method frame's
@@ -8878,37 +8995,41 @@ impl<'gc> Heap<'gc> {
     /// The header machine code's frame `frame` describes, written but for
     /// its receiver and current class, which the compiled call wrote: the
     /// frame an exit materializes (`jit::materialize`) or a leaf runs in.
-    /// Its flags say a counted method activation stopped in machine code,
-    /// with a debug build's generation from the flags word the frame's
-    /// prologue wrote. Code that addresses its own slots keeps the guard
-    /// and the entered level its prologue wrote and its own-slot
-    /// instructions recorded since; any other records none, as the push
-    /// does. Answers the frame's handle.
+    /// Its flags say a counted activation of the frame's kind stopped in
+    /// machine code, with a debug build's generation and, for a kind its
+    /// code does not say, the tag from the flags word the frame's prologue
+    /// wrote (`MachineKind`); its operand is the selector or the current
+    /// class. Code that addresses its own slots keeps the guard and the
+    /// entered level its prologue wrote and its own-slot instructions
+    /// recorded since; any other records none, as the push does. Answers
+    /// the frame's handle.
     #[cfg(ns_jit)]
     pub(crate) fn write_machine_frame(&mut self, frame: &MachineFrame) -> ActivationReference {
         let offset = frame.offset as usize;
+        let header_word = |heap: &Self, field: usize| {
+            Word::from_bits(heap.stack.frames.committed_word(offset + field))
+        };
+        let written = FrameFlags::of(header_word(self, frame_header::FLAGS));
+        let tag = match frame.kind.tag {
+            MachineKindTag::Constant(tag) => tag,
+            MachineKindTag::Recorded => written.kind_tag,
+        };
         let flags = FrameFlags {
             compiled: true,
-            ..FrameFlags::new(kind_tag::METHOD, frame.argument_count, true, false)
+            ..FrameFlags::new(tag, frame.argument_count, true, false)
         };
         #[cfg(debug_assertions)]
-        let flags = {
-            let written = Word::from_bits(
-                self.stack
-                    .frames
-                    .committed_word(offset + frame_header::FLAGS),
-            );
-            flags.with_generation(FrameFlags::of(written).generation)
-        };
+        let flags = flags.with_generation(written.generation);
         let caller = match frame.caller {
             Some((caller, top)) => frames::caller_link_word(caller, frame.start(), top),
             None => Word::NIL,
         };
+        let operand = match frame.kind.operand {
+            MachineOperand::Selector(selector) => frames::number_word(selector.index() as u64),
+            MachineOperand::CurrentClass => header_word(self, frame_header::CURRENT_CLASS),
+        };
         let words = [
-            (
-                frame_header::OPERAND,
-                frames::number_word(frame.selector.index() as u64),
-            ),
+            (frame_header::OPERAND, operand),
             (frame_header::REIFIED, Word::NIL),
             (frame_header::FLAGS, flags.word()),
             (
@@ -9083,6 +9204,30 @@ impl<'gc> Heap<'gc> {
             .set(MachineWord::CalleeReceiver, receiver.bits());
         self.machine_words
             .set(MachineWord::CalleeClass, class.bits());
+    }
+
+    /// Hands machine code the receiver, the level and the body of the
+    /// initializer the initializer leaf decided, as `hand_machine_callee`
+    /// hands a method's receiver and class, and the body's kind tag in
+    /// `MachineWord::CalleeKind`, as the amount its flags word, written
+    /// with a method's tag of 0, grows by: the callee's prologue adds it
+    /// (`jit::sends::prologue`), so that the frame records which of its
+    /// mixin's bodies it runs, which its code does not say.
+    #[cfg(ns_jit)]
+    pub(crate) fn hand_machine_initializer(
+        &self,
+        receiver: Value<'gc>,
+        level: ClassReference<'gc>,
+        body: InitializerBody,
+    ) {
+        self.hand_machine_callee(receiver, level);
+        let tag = match body {
+            InitializerBody::Full => kind_tag::INITIALIZER_FULL,
+            InitializerBody::OwnPart => kind_tag::INITIALIZER_OWN_PART,
+            InitializerBody::Standalone => kind_tag::INITIALIZER_STANDALONE,
+        };
+        let added = frames::number_word(u64::from(tag)).bits() - frames::number_word(0).bits();
+        self.machine_words.set(MachineWord::CalleeKind, added);
     }
 
     /// The receiver machine code handed a leaf in the machine words
