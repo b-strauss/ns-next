@@ -454,7 +454,8 @@ and a stub does what `Mutator::act_with_base` does for its target and
 nothing more. A row of the machine entry table, which the closure stubs
 jump through (`heap/machine_entries.rs`), is written only from the
 body its code id names, and cleared wherever that stops naming its
-machine code: the id freed, the body abandoned, the zone replaced -- a
+machine code: the id freed, the body abandoned, the zone replaced, the
+JIT switched on or off -- a
 stale row is a jump into another body's code.
 No word machine code reads or writes between two leaf calls lives inline
 in `Mutator`: frame registers and object fields lie in the activation

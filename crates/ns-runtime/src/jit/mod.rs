@@ -2121,8 +2121,8 @@ pub(crate) fn called_closure<'gc>(
 /// interpreter's push does.
 ///
 /// A row once written names its body until something clears it -- the
-/// free of its id, the body's abandonment, the zone's replacement -- so a
-/// row the table records is current, and a push of a block whose row is
+/// free of its id, the body's abandonment, the zone's replacement, a
+/// switch of the JIT on or off -- so a row the table records is current, and a push of a block whose row is
 /// recorded costs the test of a bit (`Heap::machine_entry_recorded`): the
 /// body's lookup and the row's comparison cost every push of a block in
 /// a run of closures a percent and more. A debug build compares the row
@@ -3071,6 +3071,54 @@ mod tests {
             let last = bodies.last().expect("a body");
             assert_eq!(format!("{:?}", last.jit), "JitSlot::Refused");
             assert_eq!(machine_entry(&state, last), None);
+        }
+
+        /// A compiled block pushed while the JIT is off is refused for
+        /// good, and its machine entry row, which the closure stubs jump
+        /// through, names its machine code no more once the JIT is on
+        /// again: the switch cleared it, and the refused body's push does
+        /// not write it afresh.
+        #[test]
+        fn a_block_refused_while_the_jit_is_off_keeps_no_machine_entry_row() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            let block = Rc::new(CompiledCode::new(
+                CodeKind::Block,
+                vec![Instruction::ImplicitReturn { register: 13 }],
+                0,
+                14,
+                0,
+                Vec::new(),
+                ns_syntax::Span::new(0, 0),
+            ));
+            let feedback_base = FeedbackBase::from_raw(0);
+            let id = interpreter.enter(|mutator| {
+                note_entry(&mut mutator.jit, &block, feedback_base, None);
+                note_entry(&mut mutator.jit, &block, feedback_base, None);
+                assert!(machine_entry(&mutator.jit, &block).is_some(), "compiled");
+                let id = mutator.heap.code_id(&block);
+                super::super::note_block_entry(mutator, id, &block);
+                assert!(
+                    mutator.heap.machine_entry_recorded(id),
+                    "its push wrote the row"
+                );
+                id
+            });
+            interpreter.set_jit_enabled(false);
+            interpreter.enter(|mutator| {
+                // The push of the block while the JIT is off.
+                note_entry(&mut mutator.jit, &block, feedback_base, None);
+                super::super::note_block_entry(mutator, id, &block);
+                assert_eq!(format!("{:?}", block.jit), "JitSlot::Refused");
+            });
+            interpreter.set_jit_enabled(true);
+            interpreter.enter(|mutator| {
+                super::super::note_block_entry(mutator, id, &block);
+                assert!(
+                    !mutator.heap.machine_entry_recorded(id),
+                    "no row names the refused body's machine code"
+                );
+            });
         }
     }
 }

@@ -21,8 +21,10 @@
 //! clears it: the heap's free of an unnamed code id
 //! (`Heap::free_unnamed_codes`), the JIT's abandonment of a body
 //! (`jit::abandon`), and the replacement of the zone
-//! (`Interpreter::set_jit_zone_bytes`), which clears every row. A body is
-//! never compiled into the same zone twice, so a row's entry, once
+//! (`Interpreter::set_jit_zone_bytes`), which clears every row, as a switch
+//! of the JIT on or off does (`Interpreter::set_jit_enabled`), since a
+//! body pushed while it is off is refused without being abandoned. A body
+//! is never compiled into the same zone twice, so a row's entry, once
 //! written, changes only by being cleared.
 //!
 //! The bound, `MachineWord::MachineEntryRows`, is the number of rows

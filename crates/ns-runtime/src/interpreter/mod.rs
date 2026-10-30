@@ -1012,11 +1012,21 @@ impl Interpreter {
     /// `NS_NEXT_NO_JIT=1` turns it off for a new interpreter. A test hook,
     /// set before the code it is meant for runs: a body entered while the
     /// JIT is off is refused and stays interpreted for good, so turning
-    /// the JIT on later does not revive it.
+    /// the JIT on later does not revive it. A switch vacates the caches
+    /// and clears every machine entry row, so that no cell and no closure
+    /// stub enters a body refused meanwhile.
     #[doc(hidden)]
     pub fn set_jit_enabled(&mut self, enabled: bool) {
         self.enter(|mutator| {
-            if mutator.jit.set_enabled(enabled) {
+            let was_enabled = mutator.jit.is_enabled();
+            let reserved = mutator.jit.set_enabled(enabled);
+            // What a cell or a machine entry row names is decided by the
+            // JIT's state, which a switch changes: a body pushed while the
+            // JIT is off is refused for good, and a cell or row written
+            // before would still enter its machine code once the JIT is
+            // on again. Rows are written afresh at a block's next push,
+            // cells at their sites' next miss.
+            if reserved || was_enabled != mutator.jit.is_enabled() {
                 mutator.caches.invalidate();
                 mutator.heap.forget_machine_entries();
             }
