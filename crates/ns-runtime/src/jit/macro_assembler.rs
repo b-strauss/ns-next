@@ -240,6 +240,27 @@ pub(crate) enum Operand {
     CodeAddress,
 }
 
+/// The size of an object `bump_allocate` places.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ObjectSize {
+    /// An object of this many words after its header, a constant: the
+    /// block is the header, those words and, when the header cannot hold
+    /// the count, an overflow word before it (`Heap::machine_block`).
+    Constant(usize),
+    /// The bytes of the block, its header included, in a register, for an
+    /// object whose header holds its count -- fewer than 255 words after
+    /// it -- and that lies below the large-object threshold: what the
+    /// caller has checked before.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no allocation in machine code takes a size known only at run time yet"
+        )
+    )]
+    Register(Register),
+}
+
 /// Code placed after the body's last instruction, out of the straight
 /// line: the paths a check takes only when it fails.
 #[derive(Clone, Copy, Debug)]
@@ -248,6 +269,15 @@ enum ColdPath {
         label: Label,
         kind: ExitKind,
         program_counter: u32,
+    },
+    /// A leaf's call (`call_leaf_out_of_line`), its answer moved into
+    /// `result`, then back into the straight line at `rejoin`.
+    LeafCall {
+        label: Label,
+        leaf: LeafIndex,
+        arguments: [Operand; 3],
+        result: Register,
+        rejoin: Label,
     },
     #[cfg(debug_assertions)]
     DeadRegister {
@@ -541,6 +571,231 @@ impl MacroAssembler {
             kind,
             program_counter,
         });
+    }
+
+    /// Calls `leaf` with `arguments` out of line, at `label`, which the
+    /// straight line jumps to, then moves its answer into `result` and
+    /// jumps back to `rejoin`: a slow path that rejoins the fast one, as
+    /// an allocation's leaf does once the inline bump found no room. The
+    /// call keeps only the pinned roles, as every leaf call does
+    /// (`call_leaf`), so the code at `rejoin` reads no other scratch
+    /// register the straight line set before the jump.
+    pub(crate) fn call_leaf_out_of_line(
+        &mut self,
+        label: Label,
+        leaf: LeafIndex,
+        arguments: [Operand; 3],
+        result: Register,
+        rejoin: Label,
+    ) {
+        self.cold_paths.push(ColdPath::LeafCall {
+            label,
+            leaf,
+            arguments,
+            result,
+            rejoin,
+        });
+    }
+
+    /// `header :=` the header word of an `Array` of `word_count` words
+    /// after its header (`MachineWord::ArrayHeader`, the count's bits
+    /// added), and `class_word :=` the `Array` class's word
+    /// (`MachineWord::ArrayClass`): what `MakeVector`'s allocation writes,
+    /// as `Heap::allocate_nil_array` writes it. Clobbers the flags and the
+    /// idiom scratch register.
+    pub(crate) fn load_array_header_and_class(
+        &mut self,
+        header: Register,
+        class_word: Register,
+        word_count: usize,
+    ) {
+        let machine_words = self.roles.idiom_scratch;
+        self.load_machine_words(machine_words);
+        let count_bits = crate::heap::Heap::machine_word_count_bits(word_count);
+        let assembler = &mut self.assembler;
+        assembler.move_immediate(class_word, count_bits);
+        assembler.load(
+            Width::Word64,
+            header,
+            Self::machine_word(machine_words, MachineWord::ArrayHeader),
+        );
+        // The machine word's count is 0, so the addition sets the count.
+        assembler.add(header, class_word);
+        assembler.load(
+            Width::Word64,
+            class_word,
+            Self::machine_word(machine_words, MachineWord::ArrayClass),
+        );
+    }
+
+    /// Bumps eden's cursor (`BlockWord::EdenCursor`) in place by the
+    /// block of an object of `size`, as `Space::bump_object` bumps it:
+    /// jumps to `slow`, nothing written, when the block would end past the
+    /// cursor's limit -- below which no allocation reaches eden's
+    /// scavenge threshold, so the slow path's leaf decides every request
+    /// of a scavenge -- or when the inline bump may not place it at all;
+    /// otherwise stores the new top, writes the overflow word if the
+    /// block has one, `header` and `class_word`, and counts the object
+    /// (`MachineWord::MachineAllocations`). `object :=` the object's
+    /// offset, which is its word, as `Value::object` makes it; its fields
+    /// hold whatever eden held, which the caller writes before anything
+    /// reads them. Clobbers the flags, the idiom scratch register and,
+    /// past the jump to `slow`, `header`, which the slow path still finds
+    /// as it was.
+    pub(crate) fn bump_allocate(
+        &mut self,
+        object: Register,
+        size: ObjectSize,
+        header: Register,
+        class_word: Register,
+        slow: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let (scratch, object_space) = (self.roles.idiom_scratch, self.roles.object_space);
+        debug_assert!(
+            object != header
+                && object != class_word
+                && header != class_word
+                && ![object, header, class_word].contains(&scratch),
+            "internal: an allocation's registers are distinct and none is the idiom scratch register"
+        );
+        let (bytes, overflow_word) = match size {
+            ObjectSize::Constant(word_count) => {
+                let block = crate::heap::Heap::machine_block(word_count);
+                if !block.inline {
+                    self.assembler.jump(slow);
+                    return;
+                }
+                (Some(block.bytes), block.overflow_word)
+            }
+            ObjectSize::Register(_) => (None, None),
+        };
+        let cursor = self.block_word(BlockWord::EdenCursor);
+        let top = Memory {
+            base: scratch,
+            displacement: 0,
+        };
+        let limit = Memory {
+            base: scratch,
+            displacement: EDEN_LIMIT_DISPLACEMENT,
+        };
+        let assembler = &mut self.assembler;
+        assembler.load(Width::Word64, scratch, cursor);
+        assembler.load(Width::Word64, object, top);
+        match (size, bytes) {
+            (ObjectSize::Register(bytes), _) => assembler.add(object, bytes),
+            (ObjectSize::Constant(_), Some(bytes)) => assembler.add_immediate(object, bytes),
+            (ObjectSize::Constant(_), None) => unreachable!("internal: a constant block's bytes"),
+        }
+        // The end against the limit, unsigned: a limit below the top, as
+        // while the decoder allocates old, refuses every bump, as
+        // `Reservation::bump`'s saturating subtraction does.
+        assembler.compare_memory(object, limit);
+        assembler.jump_if(Condition::Above, slow);
+        assembler.store(Width::Word64, top, object);
+        match (size, bytes) {
+            (ObjectSize::Register(bytes), _) => assembler.subtract(object, bytes),
+            (_, Some(bytes)) => assembler.add_immediate(object, -bytes),
+            (ObjectSize::Constant(_), None) => unreachable!("internal: a constant block's bytes"),
+        }
+        assembler.add(object, object_space);
+        if let Some(overflow_word) = overflow_word {
+            assembler.move_immediate(scratch, overflow_word);
+            assembler.store(
+                Width::Word64,
+                Memory {
+                    base: object,
+                    displacement: 0,
+                },
+                scratch,
+            );
+            assembler.add_immediate(object, WORD_BYTES);
+        }
+        assembler.store(
+            Width::Word64,
+            Memory {
+                base: object,
+                displacement: layout.header_displacement,
+            },
+            header,
+        );
+        assembler.store(
+            Width::Word64,
+            Memory {
+                base: object,
+                displacement: layout.class_word_displacement,
+            },
+            class_word,
+        );
+        assembler.subtract(object, object_space);
+        self.load_machine_words(scratch);
+        let count = Self::machine_word(scratch, MachineWord::MachineAllocations);
+        let assembler = &mut self.assembler;
+        assembler.load(Width::Word64, header, count);
+        assembler.add_immediate(header, 1);
+        assembler.store(Width::Word64, count, header);
+    }
+
+    /// Writes `nil` into `count` fields of the object whose word is in
+    /// `object`, from field `from` on, as `allocate_object` fills a new
+    /// object's: a straight line of stores for a few, a loop for more.
+    /// `object` is kept. Clobbers the flags and the idiom scratch
+    /// register.
+    pub(crate) fn nil_fill(&mut self, object: Register, from: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let layout = crate::heap::Heap::machine_layout();
+        let (scratch, object_space) = (self.roles.idiom_scratch, self.roles.object_space);
+        let nil = i32::try_from(crate::heap::Immediate::NIL.bits())
+            .expect("internal: nil is a small word");
+        let first = from
+            .checked_mul(8)
+            .and_then(|bytes| i32::try_from(bytes).ok())
+            .and_then(|bytes| bytes.checked_add(layout.fields_displacement))
+            .expect("internal: an object's fields lie within 2 GiB of its start");
+        let bytes = count
+            .checked_mul(8)
+            .and_then(|bytes| i32::try_from(bytes).ok())
+            .and_then(|bytes| bytes.checked_add(first).map(|_| bytes))
+            .expect("internal: an object's fields lie within 2 GiB of its start");
+        let assembler = &mut self.assembler;
+        if count <= NIL_STORES_IN_LINE {
+            assembler.move_register(scratch, object);
+            assembler.add(scratch, object_space);
+            for index in 0..count {
+                let index = i32::try_from(index).expect("internal: a few stores");
+                let displacement = first + index * WORD_BYTES;
+                assembler.store_immediate32(
+                    Memory {
+                        base: scratch,
+                        displacement,
+                    },
+                    nil,
+                );
+            }
+            return;
+        }
+        // The end, then `object` walked up to it field by field and back.
+        assembler.move_register(scratch, object);
+        assembler.add(scratch, object_space);
+        assembler.add_immediate(scratch, first + bytes);
+        assembler.add(object, object_space);
+        assembler.add_immediate(object, first);
+        let step = assembler.label();
+        assembler.bind(step);
+        assembler.store_immediate32(
+            Memory {
+                base: object,
+                displacement: 0,
+            },
+            nil,
+        );
+        assembler.add_immediate(object, WORD_BYTES);
+        assembler.compare(object, scratch);
+        assembler.jump_if(Condition::Below, step);
+        assembler.subtract(object, object_space);
+        assembler.add_immediate(object, -(first + bytes));
     }
 
     /// Adds one to the entry block's `BackEdges` when the code counts its
@@ -1035,6 +1290,18 @@ impl MacroAssembler {
                     self.assembler.bind(label);
                     self.exit(kind, program_counter);
                 }
+                ColdPath::LeafCall {
+                    label,
+                    leaf,
+                    arguments,
+                    result,
+                    rejoin,
+                } => {
+                    self.assembler.bind(label);
+                    self.call_leaf(leaf, arguments);
+                    self.assembler.move_register(result, self.roles.leaf_result);
+                    self.assembler.jump(rejoin);
+                }
                 #[cfg(debug_assertions)]
                 ColdPath::DeadRegister {
                     label,
@@ -1055,6 +1322,17 @@ impl MacroAssembler {
 /// How far an index into the machine words is shifted to be a byte
 /// offset: a word is eight bytes.
 const WORD_SHIFT: u8 = 3;
+
+/// A word's bytes, as an immediate operand.
+const WORD_BYTES: i32 = 8;
+
+/// Where eden's limit word lies past its top word
+/// (`ns_memory::Reservation::bump_cursor_address`).
+const EDEN_LIMIT_DISPLACEMENT: i32 = 8;
+
+/// The most fields `nil_fill` writes in a straight line; more take a
+/// loop, so that a large vector's code stays small.
+const NIL_STORES_IN_LINE: usize = 8;
 
 /// Where an argument of the leaf shim is passed.
 #[derive(Clone, Copy)]
@@ -1119,8 +1397,9 @@ fn stack_slot(displacement: i32) -> Memory {
 /// says (`build.rs`).
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
-    use ns_assembler::x64::RAX;
+    use ns_assembler::x64::{RAX, RCX, RDX, RSI};
 
+    use super::ObjectSize;
     use crate::jit::stubs::testing::Machine;
     use crate::jit::stubs::{ExitKind, MachineExit};
 
@@ -1337,5 +1616,147 @@ mod tests {
                 superclass.handle()
             )
         );
+    }
+
+    /// A fake eden for the allocation idioms: `words` of space, which the
+    /// tests' object space, starting at 0, addresses by their own
+    /// addresses, and a cursor over them, its top at the first word and
+    /// its limit `limit_words` past it.
+    struct FakeEden {
+        words: Vec<u64>,
+        cursor: Box<[u64; 2]>,
+    }
+
+    /// What eden held before an allocation, so that a test sees which
+    /// words it wrote.
+    const UNWRITTEN: u64 = 0xDEAD_BEEF;
+
+    impl FakeEden {
+        fn new(size: usize, limit_words: usize) -> FakeEden {
+            let words = vec![UNWRITTEN; size];
+            let start = words.as_ptr().expose_provenance() as u64;
+            let cursor = Box::new([start, start + 8 * limit_words as u64]);
+            FakeEden { words, cursor }
+        }
+
+        fn start(&self) -> u64 {
+            self.words.as_ptr().expose_provenance() as u64
+        }
+
+        fn machine(&self) -> Machine {
+            let mut machine = Machine::new();
+            machine.set_block_word(
+                crate::jit::stubs::BlockWord::EdenCursor,
+                self.cursor.as_ptr().expose_provenance() as u64,
+            );
+            machine
+        }
+
+        fn top(&self) -> u64 {
+            self.cursor[0]
+        }
+    }
+
+    const HEADER: u64 = 0x0300_0000_0040_0005;
+    const CLASS: u64 = 0x1230;
+
+    /// Allocates an object of `size` in `eden` with `HEADER` and `CLASS`
+    /// and fills `fields` of its fields with nil, the word in register 0
+    /// and an exit at 1, or an exit at 2 when it takes the slow path; the
+    /// register form's bytes in register 1 of the frame.
+    fn allocate(eden: &FakeEden, size: ObjectSize, fields: usize) -> (MachineExit, u64) {
+        let mut machine = eden.machine();
+        let body = machine.body(|macro_assembler| {
+            let slow = macro_assembler.assembler().label();
+            if let ObjectSize::Register(bytes) = size {
+                macro_assembler.load_frame_register(bytes, 1);
+            }
+            macro_assembler.load_immediate_word(RCX, HEADER);
+            macro_assembler.load_immediate_word(RDX, CLASS);
+            macro_assembler.bump_allocate(RAX, size, RCX, RDX, slow);
+            macro_assembler.nil_fill(RAX, 0, fields);
+            macro_assembler.store_frame_register(0, RAX);
+            macro_assembler.exit(ExitKind::Reexecute, 1);
+            macro_assembler.assembler().bind(slow);
+            macro_assembler.exit(ExitKind::Reexecute, 2);
+        });
+        let mut frame = [0u64; 4];
+        if let ObjectSize::Register(_) = size {
+            frame[1] = 8 * (fields as u64 + 2);
+        }
+        let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
+        (exit, frame[0])
+    }
+
+    const BUMPED: MachineExit = MachineExit::Reexecute { program_counter: 1 };
+    const SLOW: MachineExit = MachineExit::Reexecute { program_counter: 2 };
+
+    /// The inline bump places the block at the cursor's top, moves the
+    /// top past it, and writes the header, the class word and, by
+    /// `nil_fill`, the fields -- a straight line of stores for a few, a
+    /// loop for more -- and nothing past them.
+    #[test]
+    fn an_allocation_bumps_the_cursor_and_writes_its_words() {
+        for fields in [0, 2, 20] {
+            let eden = FakeEden::new(64, 64);
+            let (exit, object) = allocate(&eden, ObjectSize::Constant(fields + 1), fields);
+            assert_eq!((exit, object), (BUMPED, eden.start()), "{fields} fields");
+            assert_eq!(eden.top(), eden.start() + 8 * (fields as u64 + 2));
+            assert_eq!(eden.words[..2], [HEADER, CLASS]);
+            assert!(eden.words[2..2 + fields].iter().all(|word| *word == NIL));
+            assert_eq!(eden.words[2 + fields], UNWRITTEN, "{fields} fields");
+        }
+    }
+
+    /// The bytes in a register bump as a constant's do.
+    #[test]
+    fn an_allocation_of_a_size_in_a_register_bumps_as_a_constant_one() {
+        let eden = FakeEden::new(16, 16);
+        let (exit, object) = allocate(&eden, ObjectSize::Register(RSI), 3);
+        assert_eq!((exit, object), (BUMPED, eden.start()));
+        assert_eq!(eden.top(), eden.start() + 8 * 5);
+        assert_eq!(eden.words[..5], [HEADER, CLASS, NIL, NIL, NIL]);
+        assert_eq!(eden.words[5], UNWRITTEN);
+    }
+
+    /// A count the header cannot hold puts the overflow word before the
+    /// header, and the object's word is the header's.
+    #[test]
+    fn a_large_count_takes_an_overflow_word_before_the_header() {
+        let fields = 300;
+        let eden = FakeEden::new(400, 400);
+        let (exit, object) = allocate(&eden, ObjectSize::Constant(fields + 1), fields);
+        assert_eq!((exit, object), (BUMPED, eden.start() + 8));
+        assert_eq!(eden.top(), eden.start() + 8 * (fields as u64 + 3));
+        assert_eq!(eden.words[0], (0xFF << 56) | (fields as u64 + 1));
+        assert_eq!(eden.words[1..3], [HEADER, CLASS]);
+        assert!(eden.words[3..3 + fields].iter().all(|word| *word == NIL));
+        assert_eq!(eden.words[3 + fields], UNWRITTEN);
+    }
+
+    /// A block that would end past the limit, and one at or past the
+    /// large-object threshold, which the inline bump never places, take
+    /// the slow path with nothing written; one that ends at the limit is
+    /// placed.
+    #[test]
+    fn a_block_past_the_limit_or_large_takes_the_slow_path() {
+        let eden = FakeEden::new(16, 3);
+        assert_eq!(allocate(&eden, ObjectSize::Constant(3), 2).0, SLOW);
+        assert_eq!(eden.top(), eden.start());
+        assert!(eden.words.iter().all(|word| *word == UNWRITTEN));
+        assert_eq!(allocate(&eden, ObjectSize::Constant(2), 1).0, BUMPED);
+        let eden = FakeEden::new(16, 16);
+        assert_eq!(allocate(&eden, ObjectSize::Constant(4096), 0).0, SLOW);
+        assert_eq!(eden.top(), eden.start());
+    }
+
+    /// A limit below the top refuses every bump, as `Reservation::bump`'s
+    /// does.
+    #[test]
+    fn a_limit_below_the_top_refuses_the_inline_bump() {
+        let mut eden = FakeEden::new(16, 16);
+        eden.cursor[1] = eden.start() - 8;
+        assert_eq!(allocate(&eden, ObjectSize::Constant(1), 0).0, SLOW);
+        assert_eq!(eden.top(), eden.start());
     }
 }

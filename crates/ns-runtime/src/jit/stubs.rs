@@ -96,6 +96,10 @@ pub(crate) enum BlockWord {
     /// between two entries, which marks the block stale
     /// (`JitState::mark_block_stale`).
     GlobalMask = 21,
+    /// The address of eden's bump cursor, its top word then its limit
+    /// word (`Heap::eden_cursor_address`), which an allocation in machine
+    /// code bumps in place (`MacroAssembler::bump_allocate`).
+    EdenCursor = 22,
     /// The sends code compiled to count them called compiled code through
     /// (`JitStatistics::compiled_calls`).
     CompiledCalls = 29,
@@ -504,6 +508,8 @@ pub(super) mod testing {
         call: CodeOffset,
         exit: CodeOffset,
         next: u32,
+        /// Block words every run sets besides the frame's and the stubs'.
+        block_words: Vec<(BlockWord, u64)>,
     }
 
     impl Machine {
@@ -515,6 +521,7 @@ pub(super) mod testing {
                 call: CodeOffset(0),
                 exit: CodeOffset(0),
                 next: 0,
+                block_words: Vec::new(),
             };
             machine.entry = machine.install(&assemble_entry_stub(Abi::host()));
             machine.call = machine.install(&assemble_call_stub(Abi::host()));
@@ -528,6 +535,13 @@ pub(super) mod testing {
             let length = u32::try_from(assembled.bytes.len()).expect("small");
             self.next = (self.next + length).next_multiple_of(ALIGNMENT);
             offset
+        }
+
+        /// Makes every later run set the block's `word` to `value`, as
+        /// the JIT sets a lasting word: an address a body under test
+        /// reaches through the block.
+        pub(crate) fn set_block_word(&mut self, word: BlockWord, value: u64) {
+            self.block_words.push((word, value));
         }
 
         /// Installs the body `build` writes and finishes.
@@ -558,6 +572,7 @@ pub(super) mod testing {
                 safepoint_requested,
                 context,
                 leaves,
+                &self.block_words,
             )
         }
 
@@ -579,13 +594,14 @@ pub(super) mod testing {
                 false,
                 context,
                 leaves,
+                &self.block_words,
             )
         }
     }
 
     /// Runs `body` of `zone`, whose entry and exit stubs are `stubs`, on
     /// `frame`, its registers starting `register_base` words into it, and
-    /// answers the exit and the block.
+    /// answers the exit and the block, its words `block_words` set too.
     #[expect(
         clippy::too_many_arguments,
         reason = "a test's one way to run code; each argument is a part of the fake frame"
@@ -599,6 +615,7 @@ pub(super) mod testing {
         safepoint_requested: bool,
         context: &mut C,
         leaves: &[Leaf<C>],
+        block_words: &[(BlockWord, u64)],
     ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
         let [entry, exit] = stubs;
         let block = EntryBlock::new();
@@ -619,6 +636,9 @@ pub(super) mod testing {
             u64::from(safepoint_requested),
         );
         set(BlockWord::MachineWords, machine_words.address() as u64);
+        for (word, value) in block_words {
+            set(*word, *value);
+        }
         let kind = zone.enter(entry, &block, context, leaves);
         assert_eq!(kind, block.get(BlockWord::ExitKind.index()));
         let words = std::array::from_fn(|index| block.get(index));

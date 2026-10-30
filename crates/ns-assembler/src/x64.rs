@@ -303,7 +303,8 @@ const COMPARE_RM_WITH_REGISTER: [u8; 1] = [0x39];
 const COMPARE_REGISTER_WITH_RM: [u8; 1] = [0x3B];
 
 /// `TEST r/m64, imm32` (`F7 /0 id`) — AND a doubleword with a register for
-/// the flags only. It has no sign-extended byte form.
+/// the flags only; without REX.W, `TEST r/m32, imm32`, of the low 32 bits.
+/// It has no sign-extended byte form.
 ///
 /// Intel SDM Vol. 2B, TEST—Logical Compare.
 const TEST_IMMEDIATE: [u8; 1] = [0xF7];
@@ -356,6 +357,11 @@ const SHIFT_BY_IMMEDIATE: u8 = 0xC1;
 ///
 /// Intel SDM Vol. 2B, SAL/SAR/SHL/SHR—Shift.
 const SHIFT_LEFT_EXTENSION: u8 = 4;
+
+/// The `/5` extension of [`SHIFT_BY_IMMEDIATE`]: `SHR r/m64, imm8`.
+///
+/// Intel SDM Vol. 2B, SAL/SAR/SHL/SHR—Shift.
+const SHIFT_RIGHT_LOGICAL_EXTENSION: u8 = 5;
 
 /// The `/7` extension of [`SHIFT_BY_IMMEDIATE`]: `SAR r/m64, imm8`.
 ///
@@ -810,6 +816,9 @@ impl Encoder for X64 {
             Operation::ShiftRightArithmetic { target, count } => {
                 shift(code, SHIFT_RIGHT_ARITHMETIC_EXTENSION, target, count);
             }
+            Operation::ShiftRightLogical { target, count } => {
+                shift(code, SHIFT_RIGHT_LOGICAL_EXTENSION, target, count);
+            }
             Operation::Compare { left, right } => {
                 register_register(code, &COMPARE_RM_WITH_REGISTER, right, left);
             }
@@ -826,10 +835,11 @@ impl Encoder for X64 {
                     right,
                 );
             }
-            Operation::TestImmediate { left, right } => {
-                // `test` has no sign-extended byte form.
+            Operation::TestImmediate { width, left, right } => {
+                // `test` has no sign-extended byte form; the 32-bit one
+                // differs only by the missing REX.W.
                 let left = number(left);
-                rex(code, true, 0, left, false);
+                rex(code, width == Width::Word64, 0, left, false);
                 code.extend_from_slice(&TEST_IMMEDIATE);
                 code.push(modrm(MODRM_MODE_REGISTER, TEST_IMMEDIATE_EXTENSION, left));
                 code.extend_from_slice(&right.to_le_bytes());

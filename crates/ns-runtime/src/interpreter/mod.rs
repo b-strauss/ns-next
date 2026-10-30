@@ -1164,7 +1164,7 @@ impl<'gc> Mutator<'gc> {
             instances(self, BuiltinClass::Float),
         ];
         self.heap.set_immediate_dispatch_ids(ids);
-        self.rewrite_immediate_classes();
+        self.rewrite_machine_classes();
         let guards = crate::heap::BuiltinGuards {
             closure: instances(self, BuiltinClass::Closure),
             frame: instances(self, BuiltinClass::Activation),
@@ -1172,12 +1172,13 @@ impl<'gc> Mutator<'gc> {
         self.heap.set_builtin_guards(guards);
     }
 
-    /// Writes the immediates' class objects into their machine words, from
+    /// Writes the immediates' class objects, and the `Array` class an
+    /// allocation in machine code writes, into their machine words, from
     /// the builtin classes: at the bootstrap and again after every mover
     /// (`World::scavenge`, `collect`, `move_everything`, `forward_identity`),
     /// since a word a heap object stores is a handle the collector does not
     /// trace.
-    pub(crate) fn rewrite_immediate_classes(&mut self) {
+    pub(crate) fn rewrite_machine_classes(&mut self) {
         let classes = [
             self.builtin_class(BuiltinClass::UndefinedObject),
             self.builtin_class(BuiltinClass::False),
@@ -1186,6 +1187,8 @@ impl<'gc> Mutator<'gc> {
             self.builtin_class(BuiltinClass::Float),
         ];
         self.heap.set_immediate_classes(classes);
+        self.heap
+            .set_array_class(self.builtin_class(BuiltinClass::Array));
     }
 
     /// The smallest freed dispatch id, else the next never minted, or

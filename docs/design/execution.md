@@ -9817,7 +9817,7 @@ of the first two.
   `CodeZone::enter` calls the entry or the call stub with the platform's
   C convention, handing it a block of thirty-two words, an `EntryBlock`
   kept from one entry to the next -- 0 to 3 its own, written at every
-  entry, 4 to 31 the caller's (`jit::stubs::BlockWord`), 22 to 28 of
+  entry, 4 to 31 the caller's (`jit::stubs::BlockWord`), 23 to 28 of
   those free for the later stages' words ("The entry at a send" below) --
   and the leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64`
   back, from a leaf table that is one constant for the process.
@@ -9918,7 +9918,7 @@ of the first two.
   is a word (`nil`, a Boolean, a `SmallInteger`, an immediate float),
   `LoadSelf`, `Move`, `StoreLocal`, `Jump`, `JumpIfNotBoolean`,
   `BranchIfFalse`, `BranchIfTrue`, the cached sends, `Return` and
-  `ImplicitReturn`, a leaf-safe `SendMirror`, and `IntegerBinary`'s `SmallInteger`
+  `ImplicitReturn`, a leaf-safe `SendMirror`, `MakeVector`, and `IntegerBinary`'s `SmallInteger`
   fast path -- add, subtract, multiply, floor divide and the five
   compares, with their tag checks, declining to the send at the
   instruction's target, before anything is written, on an operand that
@@ -9926,9 +9926,20 @@ of the first two.
   polls the heap's safepoint request (in the machine words, block word
   `MachineWords`, 11; "The machine words" below) first and
   exits as a safepoint there, so a loop that makes no send still reaches
-  one. The generic leaf, `Leaf::Step` (`jit/leaves.rs`), runs a
+  one. `MakeVector` bumps eden's cursor inline (block word `EdenCursor`,
+  22; `MacroAssembler::bump_allocate`) against the limit the
+  interpreter's fast path bumps against, writes the header and the class
+  word from the machine words `ArrayHeader` and `ArrayClass`, counts the
+  object in `MachineAllocations` and fills its fields with nil
+  (`nil_fill`); past the limit, or for a block at or past the
+  large-object threshold, it calls `Leaf::Allocate`, which places the
+  object as the interpreter's cold path does (`Heap::allocate_block`'s
+  `place_block`: young up to eden's end, asking for the scavenge, else
+  old and remembered) and never collects, and rejoins the fill; a
+  scavenge it asks for runs at the next poll's exit. The generic leaf,
+  `Leaf::Step` (`jit/leaves.rs`), runs a
   straight-line instruction through the interpreter's own function for
-  it -- a `LoadLiteral` that allocates, `MakeArray`, `MakeVector`,
+  it -- a `LoadLiteral` that allocates, `MakeArray`,
   `LoadVector`, `StoreVector` -- and answers "re-execute" only before it
   has changed anything, so the interpreter raises the error itself. Every
   other instruction exits and the interpreter runs it.
@@ -10357,7 +10368,7 @@ push at L to the interpreter), the end of the activation stack's
 ordinary room (`OrdinaryStackEnd`, written beside `FrameStack::ordinary_end`
 in `grow_to`) and, for each of the five immediates, its class object as a
 stored word (`ImmediateClass(index)`, rewritten by
-`Mutator::rewrite_immediate_classes` after every scavenge, compaction,
+`Mutator::rewrite_machine_classes` after every scavenge, compaction,
 move and bulk forward, since a stored word is a handle the collector does
 not trace) and its dispatch id (`ImmediateGuard(index)`); in a debug
 build the generation the last pushed frame took (`NextGeneration`),
@@ -10370,9 +10381,20 @@ the send's receiver for their leaves, each read only right after it was
 written); and the application id table's
 address and the number of its rows recorded (`ApplicationIds`,
 `ApplicationIdRows`; [memory.md](memory.md), "The application id
-table"). Eden's top and limit, which stage 4's bump allocation reads and
-writes in place, are to join them in the room the area keeps (32 words,
-19 of them taken).
+table"); the objects machine code's inline bump placed since the heap
+last counted them (`MachineAllocations`: one add per allocation, which
+the heap folds into its own counts before a scavenge or a compaction
+recounts them and adds when it reports them, so that its counts stay the
+interpreter's); and the kernel's `Array` class as a stored word and the
+header of an `Array` of no words (`ArrayClass`, `ArrayHeader`, rewritten
+with the immediates' classes), what `MakeVector`'s allocation writes.
+The area keeps room for the later stages' words (32 words, 22 of them
+taken). Eden's top and limit, which machine code bumps in place, are not
+among them: they are the object space reservation's own cursor, which
+lies in an allocation of `ns-memory`'s for the same reason
+(`ns_memory::SharedCursor`; [memory.md](memory.md), "The memory
+layer"), and which machine code reaches through block word
+`EdenCursor` (22), a lasting word, fixed for the heap's life.
 The object space and the activation stack, whose words are the object
 fields and frame registers machine code reads and writes, are `ns-memory`
 reservations outside the mutator likewise, and their addresses come from

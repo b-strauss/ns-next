@@ -12,7 +12,8 @@
 //! range lent with no check at all, so that the one bounds check of a
 //! stack access is the index's. The heap's young allocations bump a cursor
 //! the reservation holds (`Reservation::bump`), one comparison against a
-//! limit inside that prefix.
+//! limit inside that prefix; the cursor's two words lie in an allocation of
+//! their own (`SharedCursor`), which machine code bumps in place.
 //!
 //! The JIT's machine code lives in a `CodeZone`, mapped twice, one view
 //! executable and one writable, and written only through its `CodeWriter`
@@ -29,8 +30,10 @@ pub mod native_stack;
 mod page_map;
 mod platform;
 
+use std::cell::Cell;
 use std::ops::Range;
 use std::ptr::NonNull;
+use std::rc::Rc;
 
 pub use code_zone::{CodeOffset, CodeWriter, CodeZone, EntryBlock, Leaf, ENTRY_BLOCK_WORDS};
 use page_map::PageMap;
@@ -103,14 +106,68 @@ impl std::fmt::Display for MemoryError {
 impl std::error::Error for MemoryError {}
 
 /// Where the next bump allocation begins and where none may end, in byte
-/// offsets. The limit never lies past the committed read-write prefix
-/// (`set_bump` checks it, and `record` clamps it when the prefix
-/// shrinks), and the top is a multiple of 8 inside the reservation, so a
-/// bump that stays within the limit lends committed, initialized words.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct BumpCursor {
-    top: usize,
-    limit: usize,
+/// offsets: the top word, then the limit word 8 bytes past it. The limit
+/// never lies past the committed read-write prefix (`set_bump` checks it,
+/// and `record` clamps it when the prefix shrinks), and the top is a
+/// multiple of 8 inside the reservation, so a bump that stays within the
+/// limit lends committed, initialized words.
+///
+/// Machine code bumps the cursor too, reading and writing both words in
+/// place through `address` between two calls into Rust, so the words lie
+/// in an allocation of their own rather than inline in the reservation,
+/// which the code's caller holds a `&mut` to for the whole time the code
+/// runs: an access through an address taken from the reservation's own
+/// bytes would be foreign to that reference, undefined behaviour once Rust
+/// wrote the word in between. The words are `Cell`s behind an `Rc` never
+/// lent mutably, so Rust reads and writes them only through shared
+/// references to interior-mutable cells, which assert no uniqueness, and
+/// machine code through the address derived from the `Rc`'s own pointer,
+/// with no reference in between: no access from either side invalidates
+/// the other's. An `Rc` rather than a `Box`, whose pointer is retagged as
+/// unique wherever it moves. Machine code keeps the cursor's invariant as
+/// the reservation does: it moves the top only by a bump that ends within
+/// the limit, and writes nothing else.
+pub struct SharedCursor {
+    words: Rc<[Cell<usize>; 2]>,
+}
+
+impl SharedCursor {
+    /// Where the top word lies in the allocation.
+    const TOP: usize = 0;
+    /// Where the limit word lies.
+    const LIMIT: usize = 1;
+
+    fn new() -> SharedCursor {
+        SharedCursor {
+            words: Rc::new([Cell::new(0), Cell::new(0)]),
+        }
+    }
+
+    #[inline(always)]
+    fn top(&self) -> usize {
+        self.words[Self::TOP].get()
+    }
+
+    #[inline(always)]
+    fn limit(&self) -> usize {
+        self.words[Self::LIMIT].get()
+    }
+
+    #[inline(always)]
+    fn set_top(&self, top: usize) {
+        self.words[Self::TOP].set(top);
+    }
+
+    fn set_limit(&self, limit: usize) {
+        self.words[Self::LIMIT].set(limit);
+    }
+
+    /// The top word's address, its provenance exposed; the limit word lies
+    /// 8 bytes past it. The allocation never moves while the cursor lives,
+    /// so the address lasts as long as the reservation.
+    fn address(&self) -> usize {
+        Rc::as_ptr(&self.words).expose_provenance()
+    }
 }
 
 /// One contiguous reserved address range and the record of which pages of it
@@ -127,7 +184,7 @@ pub struct Reservation {
     /// which the activation stack's every register access goes through,
     /// lends its slice without a shift.
     accessible_words: usize,
-    bump: BumpCursor,
+    cursor: SharedCursor,
 }
 
 impl Reservation {
@@ -163,7 +220,7 @@ impl Reservation {
             pages: PageMap::new(),
             accessible_prefix: 0,
             accessible_words: 0,
-            bump: BumpCursor { top: 0, limit: 0 },
+            cursor: SharedCursor::new(),
         })
     }
 
@@ -315,18 +372,28 @@ impl Reservation {
         self.accessible_words = self.accessible_prefix / 8;
         // A shrunken prefix takes the cursor's limit with it, so no bump
         // lends memory that is no longer committed.
-        self.bump.limit = self.bump.limit.min(self.accessible_prefix);
+        self.cursor
+            .set_limit(self.cursor.limit().min(self.accessible_prefix));
     }
 
     /// Where the next bump begins.
     #[inline(always)]
     pub fn bump_top(&self) -> usize {
-        self.bump.top
+        self.cursor.top()
     }
 
     /// Where no bump may end past.
     pub fn bump_limit(&self) -> usize {
-        self.bump.limit
+        self.cursor.limit()
+    }
+
+    /// The address of the bump cursor's top word, its provenance exposed,
+    /// the limit word 8 bytes past it (`SharedCursor`): machine code bumps
+    /// the cursor in place there, as `bump` does, and the next `bump` goes
+    /// on from wherever it left the top. It lasts as long as the
+    /// reservation.
+    pub fn bump_cursor_address(&self) -> usize {
+        self.cursor.address()
     }
 
     /// Places the bump cursor. Both offsets are multiples of 8; `top` lies
@@ -339,7 +406,8 @@ impl Reservation {
         if !aligned || top > self.size || limit > self.accessible_prefix {
             return Err(MemoryError::InvalidRange);
         }
-        self.bump = BumpCursor { top, limit };
+        self.cursor.set_top(top);
+        self.cursor.set_limit(limit);
         Ok(())
     }
 
@@ -351,13 +419,15 @@ impl Reservation {
     /// top.
     #[inline(always)]
     pub fn bump(&mut self, words: u8) -> Option<(usize, &mut [u64])> {
-        let start = self.bump.top;
+        let start = self.cursor.top();
         let bytes = usize::from(words) * 8;
-        if bytes > self.bump.limit.saturating_sub(start) {
+        if bytes > self.cursor.limit().saturating_sub(start) {
             return None;
         }
-        self.bump.top = start + bytes;
-        // SAFETY: `bytes <= limit - start` with `limit <= accessible_prefix`,
+        self.cursor.set_top(start + bytes);
+        // SAFETY: `bytes <= limit - start` with `limit <= accessible_prefix`
+        // -- which every writer of the cursor keeps, machine code included
+        // (`SharedCursor`) --
         // or `bytes == 0`, which lends an empty slice at an aligned address
         // inside the reservation; so every byte lent is committed read-write
         // and initialized; `start` is a
@@ -376,12 +446,12 @@ impl Reservation {
     #[inline(always)]
     pub fn bump_array<const COUNT: usize>(&mut self) -> Option<(usize, &mut [u64; COUNT])> {
         const { assert!(COUNT <= u8::MAX as usize) };
-        let start = self.bump.top;
+        let start = self.cursor.top();
         let bytes = COUNT * 8;
-        if bytes > self.bump.limit.saturating_sub(start) {
+        if bytes > self.cursor.limit().saturating_sub(start) {
             return None;
         }
-        self.bump.top = start + bytes;
+        self.cursor.set_top(start + bytes);
         // SAFETY: as for `bump`, for `COUNT` words; an array of `u64` has
         // their alignment.
         let words = unsafe { &mut *self.address(start).cast::<[u64; COUNT]>() };
@@ -394,14 +464,14 @@ impl Reservation {
     /// when the words would end past `ceiling` or `ceiling` lies past the
     /// committed read-write prefix.
     pub fn bump_up_to(&mut self, words: usize, ceiling: usize) -> Option<usize> {
-        let start = self.bump.top;
+        let start = self.cursor.top();
         let end = words
             .checked_mul(8)
             .and_then(|bytes| start.checked_add(bytes))?;
         if end > ceiling || ceiling > self.accessible_prefix {
             return None;
         }
-        self.bump.top = end;
+        self.cursor.set_top(end);
         Some(start)
     }
 
@@ -703,5 +773,54 @@ mod tests {
         assert_eq!(reservation.bump_up_to(1, 2 * page + 8), None);
         assert_eq!(reservation.bump_up_to(usize::MAX, 2 * page), None);
         assert_eq!(reservation.bump_top(), 300 * 8);
+    }
+
+    /// The top word and the limit word 8 bytes past it, read and written
+    /// through the address machine code is given.
+    fn cursor_words(reservation: &Reservation) -> *mut usize {
+        std::ptr::with_exposed_provenance_mut::<usize>(reservation.bump_cursor_address())
+    }
+
+    #[test]
+    fn a_shared_cursor_is_the_reservations_own() {
+        let (mut reservation, page) = two_committed_pages();
+        reservation.set_bump(64, page).expect("inside the prefix");
+        let words = cursor_words(&reservation);
+        // SAFETY: the address names the reservation's two live cursor
+        // words, which nothing else holds a reference to here.
+        unsafe {
+            assert_eq!(*words, 64);
+            assert_eq!(*words.add(1), page);
+        }
+        reservation.bump(3).expect("room");
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!(*words, 64 + 3 * 8, "a bump moves the shared top");
+            *words = 128;
+        }
+        assert_eq!(reservation.bump_top(), 128);
+        let (start, _) = reservation.bump(1).expect("room");
+        assert_eq!(start, 128, "a top written there moves the next bump");
+        // SAFETY: as above.
+        unsafe { *words.add(1) = 136 };
+        assert_eq!(reservation.bump_limit(), 136);
+        assert!(
+            reservation.bump(1).is_none(),
+            "a limit written there refuses the next bump"
+        );
+    }
+
+    #[test]
+    fn record_shrinks_the_shared_limit() {
+        let (mut reservation, page) = two_committed_pages();
+        reservation
+            .set_bump(0, 2 * page)
+            .expect("inside the prefix");
+        reservation.decommit(page..2 * page).expect("decommit");
+        let words = cursor_words(&reservation);
+        // SAFETY: the address names the reservation's two live cursor
+        // words, which nothing else holds a reference to here.
+        let limit = unsafe { *words.add(1) };
+        assert_eq!(limit, page, "machine code reads the shrunken limit");
     }
 }

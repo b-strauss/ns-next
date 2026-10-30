@@ -81,7 +81,8 @@ pub struct Memory {
 ///   `compare_memory`. The signed conditions (`Less` … `GreaterOrEqual`)
 ///   and the unsigned ones (`Below` … `AboveOrEqual`) compare `left` with
 ///   `right`; `Overflow` holds when `left - right` overflows.
-/// - **Sets, only `Equal` and `NotEqual` defined**: `test_immediate`.
+/// - **Sets, only `Equal` and `NotEqual` defined**: `test_immediate` and
+///   `test_immediate_with_width`.
 /// - **Sets, only `Overflow` and `NoOverflow` defined**: `add`,
 ///   `add_immediate`, `subtract` and `multiply_checked`. No other
 ///   condition may be read after them: the carry of an addition means
@@ -96,7 +97,8 @@ pub struct Memory {
 ///   to V alone. So the contract holds as x64's `imul` sets it, and the
 ///   operation needs no other condition.
 /// - **Clobbers**, the flags undefined afterwards: `and`, `and_immediate`,
-///   `or_immediate`, `shift_left`, `shift_right_arithmetic` -- x64's
+///   `or_immediate`, `shift_left`, `shift_right_arithmetic`,
+///   `shift_right_logical` -- x64's
 ///   instructions set the flags, AArch64's plain `and`, `orr`, `lsl` and
 ///   `asr` keep them, so neither may be relied on -- `divide_signed`,
 ///   whose flags x64 leaves undefined, and `call_register`, whose callee
@@ -205,14 +207,22 @@ pub enum Operation {
     ShiftLeft { target: Register, count: u8 },
     /// `target := target >> count`, the sign copied in, `count` below 64.
     ShiftRightArithmetic { target: Register, count: u8 },
+    /// `target := target >> count`, zeros shifted in, `count` below 64.
+    ShiftRightLogical { target: Register, count: u8 },
     /// Sets the flags as `left - right` does.
     Compare { left: Register, right: Register },
     /// Sets the flags as `left - right` sign-extended does.
     CompareImmediate { left: Register, right: i32 },
     /// Sets the flags as `left - [right]`, a 64-bit word, does.
     CompareMemory { left: Register, right: Memory },
-    /// Sets `Equal` when `left & right` sign-extended is zero.
-    TestImmediate { left: Register, right: i32 },
+    /// Sets `Equal` when `left & right` is zero: of 64 bits, `right`
+    /// sign-extended, for `Width::Word64`; of the low 32 bits for
+    /// `Width::Word32`, so that bit 31 is tested alone. No other width.
+    TestImmediate {
+        width: Width,
+        left: Register,
+        right: i32,
+    },
     /// Calls the address in `target`.
     CallRegister { target: Register },
     /// Jumps to the address in `target`.
@@ -546,6 +556,12 @@ impl<E: Encoder> Assembler<E> {
         self.emit(Operation::ShiftRightArithmetic { target, count });
     }
 
+    /// `target := target >> count`, zeros shifted in; `count` must be
+    /// below 64. Clobbers the flags.
+    pub fn shift_right_logical(&mut self, target: Register, count: u8) {
+        self.emit(Operation::ShiftRightLogical { target, count });
+    }
+
     /// Sets the flags to compare `left` with `right`; every condition is
     /// defined after it.
     pub fn compare(&mut self, left: Register, right: Register) {
@@ -567,7 +583,23 @@ impl<E: Encoder> Assembler<E> {
     /// Sets the flags: `Equal` when `left & right` sign-extended is zero,
     /// `NotEqual` otherwise; no other condition is defined after it.
     pub fn test_immediate(&mut self, left: Register, right: i32) {
-        self.emit(Operation::TestImmediate { left, right });
+        self.test_immediate_with_width(Width::Word64, left, right);
+    }
+
+    /// Sets the flags as `test_immediate` does, over `width`'s low bits of
+    /// `left`: `Width::Word64`, `right` sign-extended, or `Width::Word32`,
+    /// `right` as its 32 bits, so that a mask of bit 31 tests that bit
+    /// alone rather than the upper half too.
+    ///
+    /// # Panics
+    ///
+    /// For a byte or half-word width, which no operation tests.
+    pub fn test_immediate_with_width(&mut self, width: Width, left: Register, right: i32) {
+        assert!(
+            matches!(width, Width::Word32 | Width::Word64),
+            "a test is of 32 or 64 bits"
+        );
+        self.emit(Operation::TestImmediate { width, left, right });
     }
 
     /// Jumps to `label`. Keeps the flags.

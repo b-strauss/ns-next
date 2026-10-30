@@ -4,8 +4,9 @@
 //! extension point", the leaf call): an instruction's own interpreter
 //! step, the miss of a send's cell -- the one leaf that may compile and
 //! install a body -- the leaf stub's run of a target that is no method
-//! with code, a leaf-safe mirror send, and the exit's materialization of
-//! the frames machine code pushed. A template or a stub names one by its index in `table`
+//! with code, a leaf-safe mirror send, an allocation past the inline
+//! bump's limit, and the exit's materialization of the frames machine
+//! code pushed. A template or a stub names one by its index in `table`
 //! (`Leaf::index`).
 
 use crate::builtins::primitive::MirrorPrimitive;
@@ -48,6 +49,9 @@ pub(crate) enum Leaf {
     /// Runs a method whose fast path is a leaf-safe mirror row
     /// (`mirror_method`).
     MirrorMethod = 7,
+    /// Allocates an object the inline bump found no room for, as the
+    /// interpreter's cold path does (`allocate`).
+    Allocate = 8,
 }
 
 impl Leaf {
@@ -60,7 +64,7 @@ impl Leaf {
 /// The leaves, in `Leaf` order, each handed the mutator the code was
 /// entered with: one table for the process, a constant the compiler
 /// promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 8] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 9] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -73,6 +77,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 8] {
         mirror as ns_memory::Leaf<Mutator<'gc>>,
         store_field as ns_memory::Leaf<Mutator<'gc>>,
         mirror_method as ns_memory::Leaf<Mutator<'gc>>,
+        allocate as ns_memory::Leaf<Mutator<'gc>>,
     ]
 }
 
@@ -507,6 +512,23 @@ fn mirror_in(
         MachineMirrorAnswer::Failed => FAILED,
         MachineMirrorAnswer::Exit => REFUSED,
     }
+}
+
+/// The allocation leaf, which a template's slow path calls when the
+/// inline bump found eden's cursor at its limit
+/// (`MacroAssembler::bump_allocate`): places an object of `arguments[0]`
+/// words after its header, its header word `arguments[1]` and its class
+/// word `arguments[2]`, as the interpreter's cold path places one
+/// (`Heap::allocate_for_machine_code`) -- in eden up to its end, asking
+/// for the scavenge, or old and remembered once eden is spent -- and
+/// answers its word, for the template to fill its fields. It never
+/// collects: a scavenge it asks for runs at the next poll's exit, as the
+/// interpreter's runs at its next safepoint.
+fn allocate(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [word_count, header, class_word] = arguments;
+    mutator
+        .heap
+        .allocate_for_machine_code(word_count, header, class_word)
 }
 
 /// The exit stub's call for each return address of a compiled frame,

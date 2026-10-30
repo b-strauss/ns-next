@@ -144,6 +144,10 @@ pub struct JitStatistics {
     /// compiled callee's machine entry through the call stub (`called`),
     /// whatever the callee's checks then did.
     pub called_entries: u64,
+    /// Exits of machine code for any reason but a return -- an
+    /// instruction re-executed, a safepoint, a refused push, a dead
+    /// register's read -- each handing a frame to the interpreter.
+    pub exits: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled, and so entered at a
@@ -1759,6 +1763,7 @@ fn resumption_after_exit(
     use stubs::MachineExit;
 
     let exit = stubs::decode_exit(block, kind);
+    mutator.jit.statistics.exits += 1;
     // Counted on every exit, not only while counting, since the abandonment
     // and the tests read it: a match on the exit's slot, which decodes
     // nothing (`CompiledCode::is_send`), on a path that has just left
@@ -1825,7 +1830,7 @@ fn resumption_after_exit(
 /// and writes, the stubs it reaches through the block -- the exit stub at
 /// `exit_stub` -- and the global cache's mask.
 #[cfg(ns_jit)]
-fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 9] {
+fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 10] {
     use stubs::BlockWord;
     [
         (
@@ -1855,6 +1860,10 @@ fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockW
             mutator.caches.global_rows_address() as u64,
         ),
         (BlockWord::GlobalMask, mutator.caches.global_mask()),
+        (
+            BlockWord::EdenCursor,
+            mutator.heap.eden_cursor_address() as u64,
+        ),
     ]
 }
 
@@ -2175,6 +2184,7 @@ mod tests {
                 false,
                 &mut context,
                 &leaves,
+                &[],
             );
             assert_eq!(exit, MachineExit::Reexecute { program_counter: 0 });
             let entry = context
@@ -2191,6 +2201,7 @@ mod tests {
                 0,
                 false,
                 &mut (),
+                &[],
                 &[],
             );
             assert_eq!(

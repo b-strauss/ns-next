@@ -493,7 +493,7 @@ not at every entry, and only a debug build's check at every entry
 catches a missed mark ([execution.md](execution.md), "The entry at a
 send"). The machine words' one handle-like word is an immediate's
 class, a stored word the collector does not trace, so
-`Mutator::rewrite_immediate_classes` writes them afresh after every
+`Mutator::rewrite_machine_classes` writes them afresh after every
 scavenge, compaction, move and bulk forward; the hand-over words are read
 only right after they are written, and no collection runs between. When the flag is
 set the stretch writes its frame back and leaves its entry, and `run` calls
@@ -2219,8 +2219,16 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   which a debug build checks ([execution.md](execution.md),
   "Representation").
 - **A bump cursor**: the reservation holds one cursor, a top and a limit
-  in byte offsets (`BumpCursor`), and eden's young allocations take their
-  memory from it ("Inline allocation"). `set_bump` places it and refuses
+  in byte offsets, and eden's young allocations take their memory from
+  it ("Inline allocation"). Its two words lie in an allocation of their
+  own, `Cell`s behind an `Rc` (`SharedCursor`), the top word then the
+  limit word, whose address `bump_cursor_address` exposes: machine code
+  bumps the cursor in place between two calls into Rust, while its
+  caller holds the reservation's owner by `&mut`, so the words cannot lie
+  in the reservation's own bytes, for the reason the heap's machine words
+  lie apart ([execution.md](execution.md), "The machine words"); machine
+  code moves the top only by a bump that ends within the limit, as
+  `bump` does. `set_bump` places it and refuses
   an unaligned offset, a top outside the reservation or a limit past the
   committed read-write prefix; a limit below the top is allowed and
   refuses every bump. `bump` is one comparison of the words asked for

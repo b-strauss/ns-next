@@ -784,6 +784,21 @@ pub(crate) struct MachineLayout {
     pub(crate) fields_displacement: i32,
 }
 
+/// The block of an object machine code allocates (`Heap::machine_block`).
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct MachineBlock {
+    /// The block's bytes: the overflow word, the header and the words
+    /// after it.
+    pub(crate) bytes: i32,
+    /// The word before the header of an object whose count the header
+    /// cannot hold.
+    pub(crate) overflow_word: Option<u64>,
+    /// Whether the inline bump may place the block in eden: below the
+    /// large-object threshold.
+    pub(crate) inline: bool,
+}
+
 // `instance_format_bits` is a test for all-clear bits.
 const _: () = assert!(Format::FixedPointers as u64 == 0);
 
@@ -1917,7 +1932,7 @@ impl std::fmt::Debug for Heap<'_> {
         f.debug_struct("Heap")
             .field("next_identity_hash", &self.next_identity_hash)
             .field("activations", &self.stack.live)
-            .field("objects", &self.object_count)
+            .field("objects", &(self.object_count + self.machine_allocations()))
             .field("occupied bytes", &self.space.occupied_bytes())
             .field("canonical_symbols.len()", &self.canonical_symbols.len())
             .field("host roots", host_roots)
@@ -3179,6 +3194,28 @@ impl<'gc> Heap<'gc> {
         field_count: usize,
     ) -> (ObjectReference<'gc>, Range<usize>) {
         let word_count = field_count.saturating_add(1);
+        let header = Header::new(guard, format, unused, word_count).with_negative(negative);
+        let offset = self.place_block(header, class, word_count);
+        let first = usize::try_from(offset.get()).expect(
+            "internal: an offset lies inside the object space's reservation, DEFAULT_RESERVATION",
+        ) / 8
+            + FIELDS;
+        let fields = first..first + field_count;
+        self.space.words_mut()[fields.clone()].fill(Word::NIL.bits());
+        (self.object_handle(offset), fields)
+    }
+
+    /// `allocate_block`'s decision and its words but the fields: places
+    /// the block of an object of `word_count` words after its header --
+    /// young below the large-object threshold while eden has room, asking
+    /// for the scavenge once eden passes its threshold, old once eden is
+    /// spent -- writes its overflow word when the header cannot hold the
+    /// count, `header` and the class word `class`, counts the object, and
+    /// remembers an old one, whose fields its caller fills with no
+    /// barrier. Answers the object's offset; its fields hold whatever the
+    /// space held, which the caller writes before anything reads them.
+    /// Never collects.
+    fn place_block(&mut self, header: Header, class: Word, word_count: usize) -> NonZeroU64 {
         let allocation = allocation_words(word_count);
         let bytes = allocation.saturating_mul(8);
         let young = !self.allocating_old && bytes < LARGE_OBJECT_BYTES;
@@ -3212,19 +3249,16 @@ impl<'gc> Heap<'gc> {
             }
         };
         let words = self.space.words_mut();
-        let mut header = start / 8;
+        let mut first = start / 8;
         if word_count >= WORD_COUNT_OVERFLOW {
-            words[header] = overflow_word(word_count);
-            header += 1;
+            words[first] = overflow_word(word_count);
+            first += 1;
         }
-        words[header + HEADER] = Header::new(guard, format, unused, word_count)
-            .with_negative(negative)
-            .0;
-        words[header + CLASS] = class.bits();
-        let fields = header + FIELDS..header + FIELDS + field_count;
-        words[fields.clone()].fill(Word::NIL.bits());
+        debug_assert_eq!(header.word_count(), word_count.min(WORD_COUNT_OVERFLOW));
+        words[first + HEADER] = header.0;
+        words[first + CLASS] = class.bits();
         self.object_count += 1;
-        let Some(offset) = NonZeroU64::new(8 * header as u64) else {
+        let Some(offset) = NonZeroU64::new(8 * first as u64) else {
             unreachable!("internal: an object lies past the first object")
         };
         // Its initializing stores took no barrier, so an old object that may
@@ -3233,7 +3267,48 @@ impl<'gc> Heap<'gc> {
         if !space::is_young(offset) && !self.allocating_old {
             self.remember(offset);
         }
-        (self.object_handle(offset), fields)
+        offset
+    }
+
+    /// `Leaf::Allocate`'s allocation, past the limit of machine code's
+    /// inline bump: the block of an object of `word_count` words after its
+    /// header, its header word `header` and its class word `class_word`,
+    /// placed as `allocate_block` places it (`place_block`), which never
+    /// collects. Answers the object's word, its offset; the caller fills
+    /// its fields.
+    #[cfg(ns_jit)]
+    pub(crate) fn allocate_for_machine_code(
+        &mut self,
+        word_count: u64,
+        header: u64,
+        class_word: u64,
+    ) -> u64 {
+        let Ok(word_count) = usize::try_from(word_count) else {
+            unreachable!("internal: machine code allocates an object it could address");
+        };
+        self.place_block(Header(header), Word::from_bits(class_word), word_count)
+            .get()
+    }
+
+    /// Counts the objects machine code's inline bump placed
+    /// (`MachineWord::MachineAllocations`) into the heap's own counts, as
+    /// `count_young_allocation` counts the interpreter's: before anything
+    /// recounts them -- a scavenge, a compaction.
+    fn settle_machine_allocations(&mut self) {
+        let count = self.machine_allocations();
+        self.object_count += count;
+        self.young_objects += count;
+        self.machine_words.set(MachineWord::MachineAllocations, 0);
+    }
+
+    /// The objects machine code's inline bump placed since the heap last
+    /// counted them (`settle_machine_allocations`).
+    fn machine_allocations(&self) -> usize {
+        let Ok(count) = usize::try_from(self.machine_words.get(MachineWord::MachineAllocations))
+        else {
+            unreachable!("internal: an allocation count fits the address space");
+        };
+        count
     }
 
     /// Counts a fast bump's object, as `allocate_block` counts its own.
@@ -5970,13 +6045,31 @@ impl<'gc> Heap<'gc> {
     /// `immediate_dispatch_ids` is, as the `ImmediateClass` words machine
     /// code hands a send's miss path. A stored word is a handle, so the
     /// step state calls this again after every scavenge, compaction and
-    /// move (`Mutator::rewrite_immediate_classes`).
+    /// move (`Mutator::rewrite_machine_classes`).
     pub(crate) fn set_immediate_classes(&self, classes: [ClassReference<'gc>; 5]) {
         for (index, class) in classes.into_iter().enumerate() {
             let word = self.store(Value::object(class));
             self.machine_words
                 .set(MachineWord::ImmediateClass(index), word.bits());
         }
+    }
+
+    /// Records the kernel's `Array` class as the `ArrayClass` word, and
+    /// the header of an `Array` of no words, guarding on its application,
+    /// as the `ArrayHeader` word: what an allocation of an indirection
+    /// vector in machine code writes. A stored word is a handle, so the
+    /// step state calls this again whenever it rewrites the immediates'
+    /// classes (`Mutator::rewrite_machine_classes`).
+    pub(crate) fn set_array_class(&self, class: ClassReference<'gc>) {
+        let word = self.store(Value::object(class));
+        self.machine_words.set(MachineWord::ArrayClass, word.bits());
+        let header = Header::new(
+            self.header_dispatch_id(class),
+            Format::IndexablePointers,
+            0,
+            0,
+        );
+        self.machine_words.set(MachineWord::ArrayHeader, header.0);
     }
 
     /// Sets the depth limit's word: the limit with the reserve free, or
@@ -8482,6 +8575,39 @@ impl<'gc> Heap<'gc> {
         self.machine_words.address()
     }
 
+    /// The address of eden's bump cursor, its top word then its limit
+    /// word (`jit::stubs::BlockWord::EdenCursor`), which machine code
+    /// bumps in place: fixed for the heap's life, since the object space
+    /// keeps its reservation.
+    #[cfg(ns_jit)]
+    pub(crate) fn eden_cursor_address(&self) -> usize {
+        self.space.eden_cursor_address()
+    }
+
+    /// The block machine code allocates an object of `word_count` words
+    /// after its header in (`jit::macro_assembler`'s `bump_allocate`):
+    /// its bytes, its overflow word when the header cannot hold the count,
+    /// and whether the inline bump may place it at all -- only below the
+    /// large-object threshold, past which `allocate_block` places every
+    /// object old.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_block(word_count: usize) -> MachineBlock {
+        let bytes = allocation_words(word_count).saturating_mul(8);
+        MachineBlock {
+            bytes: i32::try_from(bytes).unwrap_or(i32::MAX),
+            overflow_word: (word_count >= WORD_COUNT_OVERFLOW).then(|| overflow_word(word_count)),
+            inline: bytes < LARGE_OBJECT_BYTES,
+        }
+    }
+
+    /// The bits of a header word that say it is followed by `word_count`
+    /// words, 255 for a count in an overflow word: what an allocation in
+    /// machine code adds to a header of no words (`MachineWord::ArrayHeader`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_word_count_bits(word_count: usize) -> u64 {
+        Header::new(DispatchId::NONE, Format::FixedPointers, 0, word_count).0
+    }
+
     /// The object space's base address, every handle's origin
     /// (`jit::stubs::BlockWord::ObjectSpaceBase`).
     #[cfg(ns_jit)]
@@ -9239,6 +9365,7 @@ impl<'gc> Heap<'gc> {
         step_roots: impl FnOnce(&mut Scavenger<'_>),
     ) {
         use crate::trace::{Trace, Tracer};
+        self.settle_machine_allocations();
         // Committed for the worst case first, so that a promotion never meets a
         // refused commit halfway through (`docs/design/memory.md`).
         let [past, eden, _] = self.space.occupied();
@@ -9394,6 +9521,7 @@ impl<'gc> Heap<'gc> {
     #[cfg(debug_assertions)]
     pub(crate) fn traced_size(&self) -> usize {
         self.object_count
+            + self.machine_allocations()
             + self.stack.frames.top()
             + self.suspensions.rows.len()
             + self.continuations.rows.len()
@@ -9512,6 +9640,7 @@ impl<'gc> Heap<'gc> {
     /// handle: at a safepoint of the run loop, or between runs.
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
     pub(crate) fn compact(&mut self) -> Forwarder<ForwardingTable> {
+        self.settle_machine_allocations();
         #[cfg(debug_assertions)]
         let from_epoch = self.epoch;
         #[cfg(debug_assertions)]
@@ -9783,8 +9912,8 @@ impl<'gc> Heap<'gc> {
     /// The space's occupancy (`Interpreter::heap_statistics`).
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
         crate::HeapStatistics {
-            live_objects: self.object_count,
-            young_objects: self.young_objects,
+            live_objects: self.object_count + self.machine_allocations(),
+            young_objects: self.young_objects + self.machine_allocations(),
             occupied_bytes: self.space.occupied_bytes(),
             committed_bytes: self.space.committed(),
         }
@@ -9820,7 +9949,7 @@ impl<'gc> Heap<'gc> {
             collections: self.collections,
             total_pause: self.total_pause,
             longest_pause: self.longest_pause,
-            live_objects: self.object_count,
+            live_objects: self.object_count + self.machine_allocations(),
         }
     }
 

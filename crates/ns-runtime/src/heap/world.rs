@@ -102,7 +102,7 @@ pub(crate) fn forward_identity<'gc>(
     let (heap, mut roots) = split(mutator);
     let mut forwarder = heap.forward_identity(old, new)?;
     roots.trace(&mut forwarder);
-    mutator.rewrite_immediate_classes();
+    mutator.rewrite_machine_classes();
     mutator.caches.invalidate();
     Ok(())
 }
@@ -278,7 +278,7 @@ impl World {
             use crate::trace::Trace;
             roots.trace(scavenger);
         });
-        self.mutator.rewrite_immediate_classes();
+        self.mutator.rewrite_machine_classes();
         self.mutator.heap.record_scavenge(start.elapsed());
     }
 
@@ -375,7 +375,7 @@ impl World {
         use crate::trace::Trace;
         let (_, mut roots) = split(&mut self.mutator);
         roots.trace(forwarder);
-        self.mutator.rewrite_immediate_classes();
+        self.mutator.rewrite_machine_classes();
     }
 }
 

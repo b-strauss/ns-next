@@ -2,12 +2,13 @@
 //! leaf calls other than frame registers and object fields, which lie in
 //! the activation stack's and the object space's reservations -- today
 //! the safepoint request, which a back edge polls, the depth count and
-//! limit, the end of the activation stack's ordinary room and the
-//! immediates' classes and guards; eden's top and limit, which bump
-//! allocation is to read and write in place, are to join them -- held in
-//! an allocation of their own rather
-//! than inline in the heap
-//! (`docs/design/execution.md`, "The machine words").
+//! limit, the end of the activation stack's ordinary room, the
+//! immediates' classes and guards, and what an allocation in machine code
+//! writes and counts -- held in an allocation of their own rather than
+//! inline in the heap (`docs/design/execution.md`, "The machine words").
+//! Eden's top and limit, which machine code bumps in place, lie in an
+//! allocation of `ns-memory`'s, the reservation's own cursor
+//! (`ns_memory::SharedCursor`), for the same reason.
 //!
 //! # Why apart from the heap
 //!
@@ -48,8 +49,9 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// The words of the area. Every word's index is fixed: the fieldless words
 /// 0 to 3, the immediates' classes 4 to 8 and their guards 9 to 13, the
 /// next generation 14, the callee's receiver and class 15 and 16, the
-/// application id table's address and bound 17 and 18, the rest free for
-/// the later stages.
+/// application id table's address and bound 17 and 18, the objects
+/// machine code allocated 19, an `Array`'s class word and header 20 and
+/// 21, the rest free for the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -70,7 +72,7 @@ pub(crate) enum MachineWord {
     OrdinaryStackEnd,
     /// The class object of immediate `index`, as the word a heap object
     /// stores for it: rewritten by the heap after every scavenge,
-    /// compaction and move (`Mutator::rewrite_immediate_classes`).
+    /// compaction and move (`Mutator::rewrite_machine_classes`).
     ImmediateClass(usize),
     /// The dispatch id an inline cache guards a send to immediate `index`
     /// on (`Heap::dispatch_id`).
@@ -99,6 +101,20 @@ pub(crate) enum MachineWord {
     /// How many rows of the application id table are recorded: an
     /// application index at or past it is read nowhere.
     ApplicationIdRows,
+    /// How many objects machine code's inline bump placed in eden since
+    /// the heap last counted them into its own counts
+    /// (`Heap::settle_machine_allocations`): one add per allocation
+    /// rather than a call, so that the heap's counts stay the
+    /// interpreter's.
+    MachineAllocations,
+    /// The kernel's `Array` class object, as the class word of an object
+    /// stores it: rewritten after every scavenge, compaction and move, as
+    /// `ImmediateClass` is.
+    ArrayClass,
+    /// The header word of an `Array` of no words, guarding on its
+    /// application's dispatch id: an allocation in machine code adds its
+    /// word count (`Heap::machine_word_count_bits`).
+    ArrayHeader,
 }
 
 impl MachineWord {
@@ -123,6 +139,9 @@ impl MachineWord {
             MachineWord::CalleeClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 2,
             MachineWord::ApplicationIds => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 3,
             MachineWord::ApplicationIdRows => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 4,
+            MachineWord::MachineAllocations => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 5,
+            MachineWord::ArrayClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 6,
+            MachineWord::ArrayHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 7,
         }
     }
 }
@@ -131,7 +150,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 32;
 
-const _: () = assert!(MachineWord::ApplicationIdRows.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::ArrayHeader.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -202,9 +221,12 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::CalleeClass));
         offsets.push(MachineWords::offset(MachineWord::ApplicationIds));
         offsets.push(MachineWords::offset(MachineWord::ApplicationIdRows));
+        offsets.push(MachineWords::offset(MachineWord::MachineAllocations));
+        offsets.push(MachineWords::offset(MachineWord::ArrayClass));
+        offsets.push(MachineWords::offset(MachineWord::ArrayHeader));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 9 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 12 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

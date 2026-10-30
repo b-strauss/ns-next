@@ -325,6 +325,14 @@ fn immediate_operations() {
                 text(|assembler| assembler.test_immediate(target, value)),
                 format!("test {register},{operand}")
             );
+            assert_eq!(
+                text(|assembler| assembler.test_immediate_with_width(Width::Word32, target, value)),
+                format!(
+                    "test {},{}",
+                    DOUBLEWORD_NAMES[usize::from(target.0)],
+                    number(u64::from(value.cast_unsigned()))
+                )
+            );
         }
     }
 }
@@ -349,6 +357,10 @@ fn shifts() {
             assert_eq!(
                 text(|assembler| assembler.shift_right_arithmetic(target, count)),
                 format!("sar {},{}", name(target), number(u64::from(count)))
+            );
+            assert_eq!(
+                text(|assembler| assembler.shift_right_logical(target, count)),
+                format!("shr {},{}", name(target), number(u64::from(count)))
             );
         }
     }

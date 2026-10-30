@@ -76,6 +76,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         abandoned_bodies: after.abandoned_bodies - before.abandoned_bodies,
         site_slot_hits: after.site_slot_hits - before.site_slot_hits,
         called_entries: after.called_entries - before.called_entries,
+        exits: after.exits - before.exits,
     }
 }
 
@@ -2407,5 +2408,94 @@ ns_runtime::for_each_lowering! {
                 );
             }
         }
+    }
+}
+
+/// How many locals `fill:` keeps in its indirection vector: an `Array` of
+/// 1022 fields, whose block -- an overflow word, the header, the class
+/// word and the fields -- is 1025 words, about 8 KiB.
+const VECTOR_LOCALS: usize = 1022;
+
+/// How many vectors `run` makes: about three times what eden holds.
+const VECTORS: usize = 3000;
+
+/// `fill:` makes an indirection vector at its every activation, since the
+/// block of its branch never taken writes every local; it writes two of
+/// them and answers their sum read back from the vector. `run` sends it
+/// `VECTORS` times from a loop and answers what the first and the last
+/// vector answered. `run` is entered once, so it stays interpreted and
+/// takes every safepoint the allocations request in its own loop, and
+/// `fill:`, compiled at its second entry, runs from its first instruction
+/// to its return without a poll.
+fn vectors_source() -> String {
+    let locals: Vec<String> = (0..VECTOR_LOCALS)
+        .map(|index| format!("v{index}"))
+        .collect();
+    let declarations = locals.join(" ");
+    let writes: String = locals
+        .iter()
+        .map(|local| format!("{local}:: n. "))
+        .collect();
+    let last = &locals[VECTOR_LOCALS - 1];
+    formatdoc! {"
+        class Subject = Object new () (
+          fill: n = (
+            | {declarations} |
+            n < 0 ifTrue: [^[{writes}]].
+            v0:: n.
+            {last}:: n + n.
+            ^v0 + {last}
+          )
+          public run = (
+            | first last index |
+            index:: 0.
+            [index < {VECTORS}] whileTrue: [
+              index:: index + 1.
+              last:: self fill: index.
+              index = 1 ifTrue: [first:: last]].
+            ^first + last
+          )
+        ) : ()
+    "}
+}
+
+/// `vectors_source`'s `run` with the JIT on or off: its answer, what the
+/// JIT did, and the heap's occupancy and scavenges after it.
+fn run_vectors(jit: bool) -> (i64, JitStatistics, ns_runtime::HeapStatistics, usize) {
+    let (mut interpreter, class) = load_with(&vectors_source(), Lowering::Optimized);
+    interpreter.set_jit_enabled(jit);
+    let before = interpreter.jit_statistics();
+    let scavenges = interpreter.collector_statistics().scavenges;
+    let answer = run(&mut interpreter, &class);
+    (
+        answer,
+        since(interpreter.jit_statistics(), before),
+        interpreter.heap_statistics(),
+        interpreter.collector_statistics().scavenges - scavenges,
+    )
+}
+
+/// `MakeVector` in machine code bumps eden's cursor inline and, past its
+/// limit, calls the leaf that decides as the interpreter's cold path
+/// does: the same objects young and old, the same scavenges requested
+/// and taken at the same safepoints, the same counts. The optimized
+/// lowering only: the reference one sends `ifTrue:` with a closure, whose
+/// creation leaves machine code.
+#[test]
+fn machine_code_allocates_past_eden_as_the_interpreter_does() {
+    let (compiled, statistics, compiled_heap, compiled_scavenges) = run_vectors(true);
+    let (interpreted, _, interpreted_heap, interpreted_scavenges) = run_vectors(false);
+    let last = i64::try_from(VECTORS).expect("a small count");
+    assert_eq!(interpreted, 3 + 3 * last);
+    assert_eq!(compiled, interpreted);
+    assert!(
+        interpreted_scavenges >= 2,
+        "the vectors fill eden more than once: {interpreted_scavenges}"
+    );
+    assert!(statistics.compiled_bodies > 0, "`fill:` is compiled");
+    if !a_stress_mode_is_on() {
+        assert_eq!(compiled_scavenges, interpreted_scavenges);
+        assert_eq!(compiled_heap, interpreted_heap);
+        assert_eq!(statistics.exits, 0, "`fill:` runs to its return");
     }
 }

@@ -15,7 +15,7 @@ use crate::heap::{value_bits, Immediate};
 use crate::interpreter::FeedbackBase;
 
 use super::leaves::Leaf;
-use super::macro_assembler::{LeafIndex, MacroAssembler, Operand};
+use super::macro_assembler::{LeafIndex, MacroAssembler, ObjectSize, Operand};
 use super::sends;
 use super::stubs::ExitKind;
 use super::{CallReturn, ProgramCounterMap, Refusal};
@@ -366,6 +366,44 @@ impl BodyAssembler {
             .store_frame_register(destination, value);
     }
 
+    /// `MakeVector`: `make_vector_into`'s `Array` of `size` nils, bumped
+    /// inline in eden or, past the bump's limit, placed by the allocation
+    /// leaf as the interpreter's cold path places it, then filled, its
+    /// word into the frame's `destination`. Nothing declines or exits, so
+    /// the store comes last only by the order of the work.
+    fn make_vector(&mut self, destination: u16, size: u16) {
+        let registers = self.registers();
+        let (object, header, class_word) = (registers.first, registers.second, registers.third);
+        let word_count = usize::from(size) + 1;
+        let macro_assembler = &mut self.macro_assembler;
+        let (slow, filled) = (
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+        );
+        macro_assembler.load_array_header_and_class(header, class_word, word_count);
+        macro_assembler.bump_allocate(
+            object,
+            ObjectSize::Constant(word_count),
+            header,
+            class_word,
+            slow,
+        );
+        macro_assembler.assembler().bind(filled);
+        macro_assembler.nil_fill(object, 0, usize::from(size));
+        macro_assembler.store_frame_register(destination, object);
+        macro_assembler.call_leaf_out_of_line(
+            slow,
+            Leaf::Allocate.index(),
+            [
+                Operand::Immediate(word_count as u64),
+                Operand::Register(header),
+                Operand::Register(class_word),
+            ],
+            object,
+            filled,
+        );
+    }
+
     /// A send's call of the code at the address in `target`, recorded so
     /// that its return address -- the address right after the `call`,
     /// which the processor pushes and the exit's walk over the native
@@ -674,8 +712,11 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             body.copy(*destination, *source);
             Lowering::Template
         }
+        Instruction::MakeVector { destination, size } => {
+            body.make_vector(*destination, *size);
+            Lowering::Template
+        }
         Instruction::MakeArray { .. }
-        | Instruction::MakeVector { .. }
         | Instruction::LoadVector { .. }
         | Instruction::StoreVector { .. } => body.step(),
         Instruction::Jump { target } => {
