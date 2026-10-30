@@ -1,0 +1,98 @@
+/// Unbounded recursions through closures overflow the depth limit where
+/// the interpreter's do: a closure's activation a compiled send calls
+/// counts exactly as the interpreter's push of it, and one the control
+/// flow exempts stays exempt (`docs/design/execution.md`, "The depth
+/// limit"). Three recursions, each recording every thousandth depth it
+/// reaches and every depth in the last thousand below the limit, so that
+/// the depth printed is exact:
+///
+/// - a block that calls itself through a slot, sent `value:` by its own
+///   body, each level one counted activation of the block;
+/// - a method that calls itself from a block `ifTrue:` runs, which the
+///   optimized lowering inlines and the reference lowering activates
+///   exempt, each level one counted activation of the method;
+/// - a method that calls itself from the body of a `whileTrue:` of block
+///   literals, whose blocks the reference lowering activates exempt, each
+///   sent `value` by the method itself.
+///
+/// Each body loops once before it recurses, so that it is compiled at its
+/// second entry.
+class ClosureRecursionOverflow = Object new () (
+  class Recursion = (
+    |
+      public deepest ::= 0.
+      public block ::= nil.
+    |
+  ) (
+    /// Records `depth` if it is one the run prints.
+    record: depth = (
+      depth > 99000 ifTrue: [
+        deepest:: depth.
+      ] ifFalse: [
+        depth // 1000 * 1000 = depth ifTrue: [deepest:: depth].
+      ].
+    )
+
+    /// Recurses through the block in `block`, which sends itself `value:`.
+    public throughASlot = (
+      deepest:: 0.
+      block:: [:depth |
+        |
+          index ::= 0.
+        |
+        [index < 1] whileTrue: [index:: index + 1].
+        self record: depth.
+        block value: depth + 1.
+      ].
+      ^block value: 1.
+    )
+
+    /// Recurses from the block an `ifTrue:` runs.
+    public throughIfTrue: depth = (
+      |
+        index ::= 0.
+      |
+      [index < 1] whileTrue: [index:: index + 1].
+      self record: depth.
+      depth > 0 ifTrue: [self throughIfTrue: depth + 1].
+      ^depth.
+    )
+
+    /// Recurses from the body of a `whileTrue:`.
+    public throughALoop: depth = (
+      |
+        going ::= true.
+      |
+      self record: depth.
+      [going] whileTrue: [
+        going:: false.
+        self throughALoop: depth + 1.
+      ].
+      ^depth.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      recursion = Recursion new.
+    |
+    transcript
+        show: ([recursion throughASlot] on: Error do: [:error | error messageText]);
+        show: ' ';
+        show: recursion deepest printString;
+        newLine.
+    recursion deepest: 0.
+    transcript
+        show: ([recursion throughIfTrue: 1] on: Error do: [:error | error messageText]);
+        show: ' ';
+        show: recursion deepest printString;
+        newLine.
+    recursion deepest: 0.
+    transcript
+        show: ([recursion throughALoop: 1] on: Error do: [:error | error messageText]);
+        show: ' ';
+        show: recursion deepest printString;
+        newLine.
+  )
+)

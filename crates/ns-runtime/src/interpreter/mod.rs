@@ -1018,6 +1018,7 @@ impl Interpreter {
         self.enter(|mutator| {
             if mutator.jit.set_enabled(enabled) {
                 mutator.caches.invalidate();
+                mutator.heap.forget_machine_entries();
             }
         });
     }
@@ -1031,6 +1032,8 @@ impl Interpreter {
         self.enter(|mutator| {
             mutator.jit.replace_zone(bytes);
             mutator.caches.invalidate();
+            // Every machine entry the table records lies in the old zone.
+            mutator.heap.forget_machine_entries();
         });
     }
 
@@ -2129,28 +2132,42 @@ impl<'gc> Mutator<'gc> {
         slots: Option<u16>,
     ) -> Result<Sent<'gc>, Signal<'gc>> {
         let mut arguments = send_arguments;
-        if let Step::Method {
-            receiver,
-            method,
-            defining_class,
-            arguments: StepArguments::Send,
-            feedback_base,
-        } = &step
-        {
-            if slots.is_some() && method.code.jit.is_compiled() {
-                match self.call_sent(
-                    *receiver,
-                    method,
-                    *defining_class,
-                    *feedback_base,
-                    send_arguments,
-                    sender,
-                    slots,
-                )? {
+        match &step {
+            Step::Method {
+                receiver,
+                method,
+                defining_class,
+                arguments: StepArguments::Send,
+                feedback_base,
+            } => {
+                if slots.is_some() && method.code.jit.is_compiled() {
+                    match self.call_sent(
+                        *receiver,
+                        method,
+                        *defining_class,
+                        *feedback_base,
+                        send_arguments,
+                        sender,
+                        slots,
+                    )? {
+                        Call::Ran(sent) => return Ok(sent),
+                        Call::Push(placed) => arguments = placed,
+                    }
+                }
+            }
+            // A block that takes the send's own arguments, the
+            // activation a `value` send decides, delivering its value.
+            Step::Block {
+                closure,
+                arguments: StepArguments::Send,
+                then: Continuation::Deliver,
+            } if slots.is_some() && self.jit.is_enabled() => {
+                match self.call_sent_closure(*closure, send_arguments, sender, inlinable, slots) {
                     Call::Ran(sent) => return Ok(sent),
                     Call::Push(placed) => arguments = placed,
                 }
             }
+            _ => {}
         }
         self.push_sent(step, arguments, sender, inlinable, slots)
             .map(|(activation, program_counter)| Sent::Pushed(activation, program_counter))
@@ -2228,6 +2245,75 @@ impl<'gc> Mutator<'gc> {
                 ))),
             },
         )
+    }
+
+    /// `enter_sent`'s call of a block's machine code, the block's
+    /// activation on the send's own slots, `call_sent`'s for a method: the
+    /// arity, the feedback base and the depth count's exemption decided as
+    /// `push_step`'s `Step::Block` arm decides them, the arguments placed
+    /// into the slots, and the body called (`jit::called_closure`). A body
+    /// without machine code, a wrong arity, which the push raises, a
+    /// closure without a feedback base of its own, which the push gives
+    /// one, and every call the JIT refuses are the push's: `Call::Push`
+    /// names where it takes the arguments from.
+    #[cold]
+    #[inline(never)]
+    fn call_sent_closure<'values>(
+        &mut self,
+        closure: ObjectReference<'gc>,
+        send_arguments: Arguments<'values, 'gc>,
+        sender: Option<ActivationReference>,
+        inlinable: bool,
+        slots: Option<u16>,
+    ) -> Call<'values, 'gc> {
+        let (Arguments::Slots(window), Some(sender_activation), Some(argument_base)) =
+            (send_arguments, sender, slots)
+        else {
+            return Call::Push(send_arguments);
+        };
+        let Some((code, captured_frame, feedback_base)) = self.heap.closure_activation(closure)
+        else {
+            return Call::Push(send_arguments);
+        };
+        if !code.jit.is_compiled()
+            || usize::from(code.argument_count) != usize::from(window.count())
+            || feedback_base == FeedbackBase::NOT_ASSIGNED
+        {
+            return Call::Push(send_arguments);
+        }
+        // `push_step`'s exemption: a block a `SendInlinable` sends `value`
+        // with the send's own arguments is control flow, and exempt when
+        // the sending activation created it.
+        let counted = !(inlinable
+            && self
+                .heap
+                .activation_reified(sender_activation)
+                .is_some_and(|frame| frame.same(captured_frame)));
+        let register_base = window.register_base();
+        if window.start() != argument_base {
+            self.heap.place_in_slots(window, argument_base);
+        }
+        match crate::jit::called_closure(
+            self,
+            sender_activation,
+            register_base,
+            argument_base,
+            closure,
+            &code,
+            feedback_base,
+            counted,
+        ) {
+            crate::jit::Called::Returned { value } => {
+                Call::Ran(Sent::Value(self.heap.machine_value(value)))
+            }
+            crate::jit::Called::Stopped(resumption) => Call::Ran(Sent::Stopped(resumption)),
+            // From the slots, where the arguments now are.
+            crate::jit::Called::Refused => Call::Push(Arguments::Slots(ArgumentSlots::new(
+                register_base,
+                argument_base,
+                window.count(),
+            ))),
+        }
     }
 
     /// Pushes the initializer body `body` of `level`'s mixin on `receiver`,

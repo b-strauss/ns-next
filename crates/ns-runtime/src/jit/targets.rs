@@ -369,6 +369,35 @@ pub(crate) const NESTED_CLASS_STUBS: u32 = 64;
 /// method answering a parameter past them runs through the leaf stub.
 pub(crate) const PARAMETER_STUBS: u8 = 16;
 
+/// How many arities have a closure stub of their own: `value` to
+/// `value:value:value:`, the arities of the mirror rows that activate a
+/// block (`BlockPrimitive::Value`).
+pub(crate) const CLOSURE_VALUE_ARITIES: u8 = 4;
+
+/// A closure stub (`emit_closure_stub_entry`): what a method whose fast path
+/// activates a block on the send's own slots does, as
+/// `Mutator::act_with_base` does it.
+///
+/// A block's frame lies on the slots as a method's does, its header right
+/// past them, which the collector's trace checks of every frame on the
+/// stack (`Heap::trace_stack`) and the exit's walk derives from a call's
+/// return address (`jit::materialize`): so a block takes as many
+/// arguments as the send places, and no stub serves a fast path that
+/// activates one taking fewer -- `^<parameter> value`, which hands a
+/// block none, and `^<parameter> cull: self` with a block of none, whose
+/// activations the interpreter pushes above the sender's window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ClosureStub {
+    /// A method whose fast path is a mirror row that activates its
+    /// receiver, a closure, with the send's `arity` arguments
+    /// (`MethodFastPath::Mirror` of a `BlockPrimitive::Value` row).
+    ClosureValue { arity: u8 },
+    /// A quick method `^<parameter> cull: self` of one argument, the
+    /// closure: a block of one parameter, activated with the receiver as
+    /// its argument in the send's slot (`MethodFastPath::CullParameter`).
+    CullParameter,
+}
+
 /// Where each entry of the accessor stubs lies in their code, as offsets
 /// from its start (`assemble_accessor_stubs`).
 pub(crate) struct AccessorEntries {
@@ -400,6 +429,10 @@ pub(crate) struct AccessorEntries {
     /// The nested class accessor whose class is cached in hidden slot
     /// `index`, by index.
     pub(crate) nested_classes: Vec<u32>,
+    /// The closure stub of a block row of each arity, by arity.
+    pub(crate) closure_values: Vec<u32>,
+    /// The closure stub of `^<parameter> cull: self` of one argument.
+    pub(crate) cull: u32,
 }
 
 /// The stubs a cell names for a target that is no method with code
@@ -667,6 +700,22 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
             act,
         );
     }
+    let closure_body = macro_assembler.assembler().label();
+    let closure_values: Vec<Label> = (0..CLOSURE_VALUE_ARITIES)
+        .map(|arity| {
+            emit_closure_stub_entry(
+                &mut macro_assembler,
+                ClosureStub::ClosureValue { arity },
+                closure_body,
+            )
+        })
+        .collect();
+    let cull = emit_closure_stub_entry(
+        &mut macro_assembler,
+        ClosureStub::CullParameter,
+        closure_body,
+    );
+    emit_closure_stub_body(&mut macro_assembler, closure_body, decline);
     let row_stubs: Vec<Label> = RowStub::ALL
         .into_iter()
         .map(|stub| {
@@ -755,8 +804,168 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         guarded_getters: guarded_getters.into_iter().map(offset).collect(),
         guarded_setters: guarded_setters.into_iter().map(offset).collect(),
         nested_classes: nested_classes.into_iter().map(offset).collect(),
+        closure_values: closure_values.into_iter().map(offset).collect(),
+        cull: offset(cull),
     };
     (assembled, entries)
+}
+
+/// The arity a closure stub's entry hands its shared body for `cull:`,
+/// whose block takes one, the receiver: no arity a block has.
+const CULL_ARITY: i32 = -1;
+
+/// The entry of the closure stub `stub`, which loads the closure -- the
+/// receiver, or `cull:`'s argument -- and the arity its block must take,
+/// or `CULL_ARITY`, then goes on at `shared`, the body every closure stub
+/// shares (`emit_closure_stub_body`), at the label it answers.
+fn emit_closure_stub_entry(
+    macro_assembler: &mut MacroAssembler,
+    stub: ClosureStub,
+    shared: Label,
+) -> Label {
+    let roles = macro_assembler.roles();
+    // The arity rides in the register that hands the prologue the count,
+    // which the shared body writes last.
+    let (closure, arity) = (roles.callee_closure(), roles.callee_counted());
+    let assembler = macro_assembler.assembler();
+    let start = assembler.label();
+    assembler.bind(start);
+    let expected = match stub {
+        ClosureStub::ClosureValue { arity } => {
+            assembler.move_register(closure, roles.callee_receiver());
+            i64::from(arity)
+        }
+        ClosureStub::CullParameter => {
+            assembler.load(Width::Word64, closure, argument_slot(roles, 0));
+            i64::from(CULL_ARITY)
+        }
+    };
+    assembler.move_immediate(arity, expected.cast_unsigned());
+    assembler.jump(shared);
+    start
+}
+
+/// The body every closure stub shares, at `shared`: what
+/// `Mutator::act_with_base` and `Step::Block`'s push decide before the
+/// push of a block, then a jump to the block's machine entry, as Cog's
+/// `genPrimitiveFullClosureValue` jumps into a full block. The closure its
+/// entry loaded must be a closure whose code id names a row of the machine
+/// entry table (`BlockWord::MachineEntries`) with a machine entry,
+/// compiled against the closure's feedback base, whose parameter count is
+/// the arity its entry handed over, the send's, or for `cull:` one, the
+/// receiver, which the prologue places once its checks have passed
+/// (`Roles::callee_argument`); then the block's prologue is handed the receiver and the
+/// current class of the frame the closure captured, the closure, and that
+/// its activation counts, which every activation a compiled send pushes
+/// does: only a `SendInlinable` decides an exempt one, and machine code
+/// runs none. Anything else -- no closure, a body without machine code
+/// here, an arity the interpreter refuses, a closure an image decoded,
+/// whose feedback base is assigned at its first activation -- declines at
+/// `decline` before anything is written, so that the caller re-executes
+/// the send and the interpreter decides it -- a block of no parameter
+/// `cull:` sends among them (`ClosureStub`).
+fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, decline: Label) {
+    let roles = macro_assembler.roles();
+    let layout = crate::heap::Heap::machine_layout();
+    let rows = crate::heap::Heap::machine_entry_layout();
+    let (closure, counted, argument) = (
+        roles.callee_closure(),
+        roles.callee_counted(),
+        roles.callee_argument(),
+    );
+    let (receiver, class) = (roles.callee_receiver(), roles.callee_class());
+    // The scratch registers none of the roles the block's prologue is
+    // handed are in.
+    let free: Vec<Register> = roles
+        .scratch
+        .iter()
+        .copied()
+        .filter(|register| ![receiver, class, closure, counted, argument].contains(register))
+        .collect();
+    let (address, row, entry, word) = (free[0], free[1], free[2], free[3]);
+    let field = |base: Register, displacement: i32| Memory { base, displacement };
+    let entries = macro_assembler.block_word(BlockWord::MachineEntries);
+    let no_value = crate::heap::Word::NO_VALUE_BITS;
+    macro_assembler.assembler().bind(shared);
+    macro_assembler.jump_unless_object(closure, decline);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(address, closure);
+    assembler.add(address, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        word,
+        field(address, layout.header_displacement),
+    );
+    assembler.and_immediate(word, layout.instance_format_bits);
+    assembler.compare_immediate(word, layout.closure_format);
+    assembler.jump_if(Condition::NotEqual, decline);
+    // The code id's row, within the rows committed.
+    assembler.load(
+        Width::Word64,
+        row,
+        field(address, layout.closure_code_id_displacement),
+    );
+    assembler.shift_right_logical(row, layout.tag_bits);
+    macro_assembler.load_machine_words(roles.idiom_scratch);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_memory(
+        row,
+        MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::MachineEntryRows),
+    );
+    assembler.jump_if(Condition::AboveOrEqual, decline);
+    assembler.shift_left(row, rows.row_shift);
+    assembler.load(Width::Word64, word, entries);
+    assembler.add(row, word);
+    assembler.load(Width::Word64, entry, field(row, rows.entry_displacement));
+    assembler.compare_immediate(entry, 0);
+    assembler.jump_if(Condition::Equal, decline);
+    assembler.load(
+        Width::Word64,
+        word,
+        field(address, layout.closure_feedback_base_displacement),
+    );
+    assembler.compare_memory(word, field(row, rows.feedback_base_displacement));
+    assembler.jump_if(Condition::NotEqual, decline);
+    assembler.load(
+        Width::Word64,
+        word,
+        field(row, rows.parameters_displacement),
+    );
+    let (cull, placed) = (assembler.label(), assembler.label());
+    assembler.move_immediate(argument, no_value);
+    assembler.compare_immediate(counted, CULL_ARITY);
+    assembler.jump_if(Condition::Equal, cull);
+    assembler.compare(word, counted);
+    assembler.jump_if(Condition::NotEqual, decline);
+    assembler.jump(placed);
+    // `cull:`'s: a block of one parameter, which takes the receiver.
+    assembler.bind(cull);
+    assembler.compare_immediate(word, 1);
+    assembler.jump_if(Condition::NotEqual, decline);
+    assembler.move_register(argument, receiver);
+    assembler.bind(placed);
+    // The receiver and the current class of the frame the closure
+    // captured, as `Heap::closure_activation` reads them.
+    assembler.load(
+        Width::Word64,
+        word,
+        field(address, layout.closure_captured_frame_displacement),
+    );
+    macro_assembler.jump_unless_object(word, decline);
+    let assembler = macro_assembler.assembler();
+    assembler.add(word, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        receiver,
+        field(word, layout.frame_receiver_displacement),
+    );
+    assembler.load(
+        Width::Word64,
+        class,
+        field(word, layout.frame_current_class_displacement),
+    );
+    assembler.move_immediate(counted, 1);
+    assembler.jump_register(entry);
 }
 
 /// The shared part of a getter's or a setter's stub of a private or

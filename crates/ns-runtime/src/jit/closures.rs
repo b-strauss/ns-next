@@ -18,7 +18,7 @@
 use ns_assembler::{Condition, Memory, Register, Width};
 use ns_memory::Reservation;
 
-use crate::bytecode::{CodeKind, CompiledCode, Instruction};
+use crate::bytecode::{CompiledCode, Instruction};
 use crate::heap::machine_words::MachineWord;
 use crate::heap::Heap;
 use crate::interpreter::Mutator;
@@ -378,7 +378,7 @@ fn fill_frame_fields(body: &mut BodyAssembler, site: usize, registers: &ClosureR
     let kinds = Heap::machine_frame_kinds();
     let argument_count = body.argument_count;
     let program_counter = body.program_counter;
-    let (role, code_kind) = (body.role, body.code_kind);
+    let role = body.role;
     let ClosureRegisters {
         object,
         address,
@@ -397,7 +397,7 @@ fn fill_frame_fields(body: &mut BodyAssembler, site: usize, registers: &ClosureR
     assembler.move_register(address, object);
     assembler.add(address, roles.object_space);
     assembler.store_immediate32(field(layout.frame_sender_displacement), layout.nil_word);
-    let block_frame = role == BodyRole::EnteredOnly && code_kind == CodeKind::Block;
+    let block_frame = role == BodyRole::Block;
     if block_frame {
         home_of_operand(macro_assembler, argument_count, value, spare);
         macro_assembler.assembler().store(
@@ -449,13 +449,16 @@ fn fill_frame_fields(body: &mut BodyAssembler, site: usize, registers: &ClosureR
             initializer_kind(macro_assembler, argument_count, value, spare);
             Some(current_class)
         }
+        BodyRole::Block => {
+            macro_assembler
+                .assembler()
+                .move_immediate(value, kinds.closure);
+            Some(operand)
+        }
         BodyRole::EnteredOnly => {
-            let kind = if block_frame {
-                kinds.closure
-            } else {
-                kinds.superclass_clause
-            };
-            macro_assembler.assembler().move_immediate(value, kind);
+            macro_assembler
+                .assembler()
+                .move_immediate(value, kinds.superclass_clause);
             Some(operand)
         }
     };
@@ -559,13 +562,12 @@ fn initializer_kind(
     kind: Register,
     tag: Register,
 ) {
-    let layout = Heap::machine_layout();
     let kinds = Heap::machine_frame_kinds();
     let flags = Heap::machine_divorce(argument_count).flags_register;
     let frame = macro_assembler.roles().frame;
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, tag, frame_slot(frame, flags));
-    assembler.shift_right_logical(tag, layout.tag_bits);
+    assembler.shift_right_logical(tag, kinds.kind_tag_shift);
     assembler.and_immediate(tag, kinds.kind_tag_mask);
     let [(_, full), others @ ..] = kinds.initializers;
     assembler.move_immediate(kind, full);

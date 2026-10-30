@@ -112,11 +112,11 @@ pub(super) fn code_id(
 /// The header of the frame at `offset`, running the installed body
 /// `installed`, stopped at `program_counter`, whose caller is `caller`:
 /// a method's frame for a method's body, and for a body that is no
-/// method's the kind its code's kind says -- a factory's or an
-/// initializer's, which machine code calls (`baseline::BodyRole`), a
-/// closure's, and a superclass clause's, which only the run loop pushes,
-/// so that its frame is never one machine code pushed, and is named here
-/// so that every frame's kind is.
+/// method's the kind its code's kind says -- a factory's, an
+/// initializer's or a closure's, which machine code calls
+/// (`baseline::BodyRole`), and a superclass clause's, which only the run
+/// loop pushes, so that its frame is never one machine code pushed, and is
+/// named here so that every frame's kind is.
 pub(crate) fn machine_frame(
     heap: &mut Heap<'_>,
     offset: u32,

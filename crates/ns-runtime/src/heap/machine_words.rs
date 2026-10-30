@@ -52,8 +52,9 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// application id table's address and bound 17 and 18, the objects
 /// machine code allocated 19, an `Array`'s class word and header 20 and
 /// 21, the callee's kind 22, a closure's class word and header 23 and 24,
-/// a frame object's 25 and 26, the code table's epoch 27, the rest free
-/// for the later stages.
+/// a frame object's 25 and 26, the code table's epoch 27, the machine
+/// entry table's bound 28, the callee closure and whether it counts 29
+/// and 30, the rest free for the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -142,6 +143,19 @@ pub(crate) enum MachineWord {
     /// and closures it makes, name their bodies only while the site
     /// records this epoch (`jit::closures`).
     CodeTableEpoch,
+    /// How many rows of the machine entry table are committed
+    /// (`heap/machine_entries.rs`): a code id at or past it is read
+    /// nowhere, and its body is called by the interpreter alone.
+    MachineEntryRows,
+    /// The closure an interpreter's send calls a block's body for, as
+    /// `CalleeReceiver` is the receiver: the closure call stub hands it to
+    /// the block's prologue (`Roles::callee_closure`), which stores it as
+    /// its frame's operand. Read only right after it was written.
+    CalleeClosure,
+    /// 1 when the closure's activation the interpreter's send calls counts
+    /// against the depth limit, 0 when the control flow exempts it
+    /// (`Roles::callee_counted`), handed over as `CalleeClosure` is.
+    CalleeCounted,
 }
 
 impl MachineWord {
@@ -175,6 +189,9 @@ impl MachineWord {
             MachineWord::FrameClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 11,
             MachineWord::FrameHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 12,
             MachineWord::CodeTableEpoch => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 13,
+            MachineWord::MachineEntryRows => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 14,
+            MachineWord::CalleeClosure => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 15,
+            MachineWord::CalleeCounted => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 16,
         }
     }
 }
@@ -183,7 +200,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 32;
 
-const _: () = assert!(MachineWord::CodeTableEpoch.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::CalleeCounted.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -263,9 +280,12 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::FrameClass));
         offsets.push(MachineWords::offset(MachineWord::FrameHeader));
         offsets.push(MachineWords::offset(MachineWord::CodeTableEpoch));
+        offsets.push(MachineWords::offset(MachineWord::MachineEntryRows));
+        offsets.push(MachineWords::offset(MachineWord::CalleeClosure));
+        offsets.push(MachineWords::offset(MachineWord::CalleeCounted));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 18 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 21 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

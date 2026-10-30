@@ -103,6 +103,11 @@ pub(crate) enum BlockWord {
     /// The address of closure site 0's words (`closures::ClosureSites`):
     /// a `MakeClosure`'s site lies its index sites past it.
     ClosureSites = 23,
+    /// The address of the machine entry table's row 0
+    /// (`Heap::machine_entries_address`), where a closure stub finds the
+    /// machine entry of the block a closure's code id names
+    /// (`targets::assemble_accessor_stubs`).
+    MachineEntries = 24,
     /// The sends code compiled to count them called compiled code through
     /// (`JitStatistics::compiled_calls`).
     CompiledCalls = 29,
@@ -214,7 +219,7 @@ pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
 pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
     let roles = macro_assembler.roles();
-    emit_entry(&mut macro_assembler, abi, false);
+    emit_entry(&mut macro_assembler, abi, Entered::AtPush);
     macro_assembler.load_machine_words(roles.idiom_scratch);
     let depth = MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::DepthCount);
     let assembler = macro_assembler.assembler();
@@ -242,18 +247,46 @@ pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
 /// (`BlockWord::EnteredByCall`).
 pub(crate) fn assemble_call_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
-    emit_entry(&mut macro_assembler, abi, true);
+    emit_entry(&mut macro_assembler, abi, Entered::ByCall);
     emit_returned(&mut macro_assembler, abi);
     finish_stub(macro_assembler)
 }
 
-/// The entry and the call stub up to the body's return: the registers the
+/// The closure call stub, through which an interpreter's send calls a
+/// block's compiled body (`jit::called_closure`): the call stub, which
+/// also hands the block's prologue the closure and whether its activation
+/// counts, from the machine words the interpreter left them in
+/// (`MachineWord::CalleeClosure`, `MachineWord::CalleeCounted`), and no
+/// argument of its own, since the send's lie in its slots
+/// (`Roles::callee_argument`).
+pub(crate) fn assemble_closure_call_stub(abi: Abi) -> Assembled {
+    let mut macro_assembler = MacroAssembler::new(abi);
+    emit_entry(&mut macro_assembler, abi, Entered::ByClosureCall);
+    emit_returned(&mut macro_assembler, abi);
+    finish_stub(macro_assembler)
+}
+
+/// How the entry and the call stubs enter a body.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Entered {
+    /// The run loop's push, past the body's prologue.
+    AtPush,
+    /// An interpreter's send of a method, a factory or an initializer, at
+    /// its prologue.
+    ByCall,
+    /// An interpreter's send of a block, at its prologue.
+    ByClosureCall,
+}
+
+/// The entry and the call stubs up to the body's return: the registers the
 /// convention has its callee preserve saved, the roles pinned from the
-/// block, for a call (`by_call`) the callee's receiver, current class and
-/// `send_cells` handed over, `EnteredByCall` written, the stack pointer
-/// saved for the exit stub, the body called, and its value stored into
-/// `ExitProgramCounter`.
-fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, by_call: bool) {
+/// block, for a call the callee's receiver, current class and
+/// `send_cells` handed over -- and for a block's the closure, whether it
+/// counts and no argument of the call's own -- `EnteredByCall` written,
+/// the stack pointer saved for the exit stub, the body called, and its
+/// value stored into `ExitProgramCounter`.
+fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, entered: Entered) {
+    let by_call = entered != Entered::AtPush;
     let roles = macro_assembler.roles();
     let stack_base = macro_assembler.block_word(BlockWord::StackBase);
     let register_base = macro_assembler.block_word(BlockWord::RegisterBase);
@@ -283,6 +316,13 @@ fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, by_call: bool) {
         assembler.load(Width::Word64, roles.callee_receiver(), receiver);
         assembler.load(Width::Word64, roles.callee_class(), class);
         assembler.move_immediate(roles.send_cells, 0);
+        if entered == Entered::ByClosureCall {
+            let closure = MacroAssembler::machine_word(machine_words, MachineWord::CalleeClosure);
+            let counted = MacroAssembler::machine_word(machine_words, MachineWord::CalleeCounted);
+            assembler.load(Width::Word64, roles.callee_closure(), closure);
+            assembler.load(Width::Word64, roles.callee_counted(), counted);
+            assembler.move_immediate(roles.callee_argument(), crate::heap::Word::NO_VALUE_BITS);
+        }
     }
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, roles.idiom_scratch, machine_entry);

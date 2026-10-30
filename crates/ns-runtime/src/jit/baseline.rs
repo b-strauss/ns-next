@@ -69,8 +69,13 @@ pub(crate) enum BodyRole {
     /// An initializer's body: its frame's kind is the body the initializer
     /// leaf decided, which the call hands over (`MachineWord::CalleeKind`).
     Initializer,
-    /// A block's or a superclass clause's body, which only the run loop's
-    /// push enters, past its prologue.
+    /// A block's body: its receiver and its current class are those of the
+    /// frame its closure captured, which the call hands over as a method's
+    /// are, and the call hands the closure and whether the activation
+    /// counts besides (`Roles::callee_closure`, `Roles::callee_counted`).
+    Block,
+    /// A superclass clause's body, which only the run loop's push enters,
+    /// past its prologue.
     EnteredOnly,
 }
 
@@ -80,12 +85,10 @@ impl BodyRole {
     pub(crate) fn of(code: &CompiledCode, is_method: bool) -> BodyRole {
         match (is_method, code.kind) {
             (true, _) => BodyRole::Method,
-            (false, crate::bytecode::CodeKind::Method) => BodyRole::Factory,
-            (false, crate::bytecode::CodeKind::Initializer) => BodyRole::Initializer,
-            (
-                false,
-                crate::bytecode::CodeKind::Block | crate::bytecode::CodeKind::SuperclassClause,
-            ) => BodyRole::EnteredOnly,
+            (false, CodeKind::Method) => BodyRole::Factory,
+            (false, CodeKind::Initializer) => BodyRole::Initializer,
+            (false, CodeKind::Block) => BodyRole::Block,
+            (false, CodeKind::SuperclassClause) => BodyRole::EnteredOnly,
         }
     }
 }
@@ -158,9 +161,6 @@ pub(super) struct BodyAssembler {
     pub(super) role: BodyRole,
     /// Whether the body reifies its frame (`reifies_its_frame`).
     pub(super) reifies: bool,
-    /// What kind of code the body is, which says, with `role`, the kind of
-    /// the frame it runs in.
-    pub(super) code_kind: CodeKind,
     /// How many registers a frame object of the body holds
     /// (`CompiledCode::frame_register_count`).
     pub(super) frame_register_count: usize,
@@ -1026,7 +1026,6 @@ pub(crate) fn compile(
         window_end: sends::window_end(code),
         role,
         reifies: reifies_its_frame(code),
-        code_kind: code.kind,
         frame_register_count: code.frame_register_count(),
         next_closure_site: first_closure_site,
         closure_sites: 0,
@@ -1482,7 +1481,6 @@ mod tests {
             window_end: 0,
             role: super::BodyRole::Method,
             reifies: false,
-            code_kind: CodeKind::Method,
             frame_register_count: 0,
             next_closure_site: 0,
             closure_sites: 0,

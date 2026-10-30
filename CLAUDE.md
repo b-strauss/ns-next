@@ -24,13 +24,16 @@ Rust 1.98.0, edition 2021, seven crates:
   instruction a template, a leaf of `jit/leaves.rs` or an exit that hands
   the frame to the interpreter, and every compiled body entered wherever
   it runs -- an interpreter's send calls it through the call stub
-  (`Mutator::enter_sent` in `interpreter/mod.rs`, `jit::called`), a push
+  (`Mutator::enter_sent` in `interpreter/mod.rs`, `jit::called`, and a
+  block's through the closure call stub, `jit::called_closure`), a push
   and a frame returned to cross a bridge whose entry block lasts between
   entries -- unless its code exits at once; a cached send calls through its site's
   machine-readable cell (`interpreter/inline_cache/cells.rs`) into the
   callee's machine code or a stub the cell names (`jit/sends.rs`,
   `jit/targets.rs`: polymorphic, megamorphic, accessor, mirror method,
-  leaf, refusing), the callee returns by `ret`, the miss leaf decides
+  leaf, refusing, and the closure stubs, which enter a block's machine
+  code through the machine entry table, `heap/machine_entries.rs`), the
+  callee returns by `ret`, the miss leaf decides
   what the cell did not and may compile the callee, and an exit at any
   depth of compiled frames materializes them (`jit/materialize.rs`); the
   VM's idioms and the register roles in `jit/macro_assembler.rs`, the
@@ -433,25 +436,31 @@ compile and install a callee; and a leaf answers "re-execute" only
 before it changed anything but a send's argument slots, which the mirror
 leaf places as the interpreter does and which nothing reads after the
 send but the send re-executed. No leaf reifies a frame machine code
-pushed whose code reifies none (`MachineFrame::reifies`), whose return
-divorces nothing, or its frame object stays married to a popped offset;
-a debug build asserts it as the leaf's view is released. A new
-instruction is one arm of `jit::baseline::lower` plus the
+pushed whose code reifies none (`MachineFrame::reifies`), since its
+return divorces nothing and its frame object would stay married to a
+popped offset; a debug build asserts it as the leaf's view is released.
+A new instruction is one arm of `jit::baseline::lower` plus the
 macro-assembler idioms it lacks, never a second dispatch; the run loop
 enters machine code through `jit::entered` and `jit::resumed`, a send it
-delivers through `jit::called` (`mod.rs`); the entry block's lasting
-words -- what does not move between entries -- are written only when
-what they name changes, which must mark the block stale
-(`JitState::mark_block_stale`; only a debug build's check at every entry
-catches a missed mark), the frame's and the code's words at each entry,
-and it holds no handle. A cache cell is written only from its entry --
-beside it, or afresh when the JIT's state under it changes -- its entry
-address a function of the entry's target and the JIT's state, and a stub
-does what `Mutator::act_with_base` does for its target and nothing more.
+delivers through `jit::called` and `jit::called_closure` (`mod.rs`);
+the entry block's lasting words -- what does not move between entries --
+are written only when what they name changes, which must mark the block
+stale (`JitState::mark_block_stale`; only a debug build's check at every
+entry catches a missed mark), the frame's and the code's words at each
+entry, and it holds no handle. A cache cell is written only from its
+entry -- beside it, or afresh when the JIT's state under it changes --
+its entry address a function of the entry's target and the JIT's state,
+and a stub does what `Mutator::act_with_base` does for its target and
+nothing more. A row of the machine entry table, which the closure stubs
+jump through (`heap/machine_entries.rs`), is written only from the
+body its code id names, and cleared wherever that stops naming its
+machine code: the id freed, the body abandoned, the zone replaced -- a
+stale row is a jump into another body's code.
 No word machine code reads or writes between two leaf calls lives inline
 in `Mutator`: frame registers and object fields lie in the activation
 stack's and the object space's reservations, the cells, the closure
-sites and the application id table in reservations of their own, all
+sites, the application id table and the machine entry table in
+reservations of their own, all
 outside it, and every other such word lives in the heap's machine words
 (`heap/machine_words.rs`) or the entry block (`ns_memory::EntryBlock`),
 `Cell`s behind an `Rc` each. `CodeZone::enter` holds the mutator as a

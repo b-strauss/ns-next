@@ -171,7 +171,7 @@ pub(super) mod kind_tag {
 /// 8-23, `counted` at 24, `retains_registers` at 25, `compiled` at 26 and,
 /// in a debug build, the 31-bit generation in bits 27-57; 58 bits, inside
 /// 61.
-const KIND_TAG_MASK: u64 = 0xFF;
+pub(crate) const KIND_TAG_MASK: u64 = 0xFF;
 pub(crate) const ARGUMENT_COUNT_SHIFT: u32 = 8;
 const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
 pub(crate) const COUNTED_BIT: u64 = 1 << 24;
@@ -182,7 +182,7 @@ pub(crate) const GENERATION_SHIFT: u32 = 27;
 #[cfg(debug_assertions)]
 const GENERATION_MASK: u64 = 0x7FFF_FFFF;
 /// The bits below a `SmallInteger`'s payload.
-const SMALL_INTEGER_TAG_BITS: u32 = 3;
+pub(crate) const SMALL_INTEGER_TAG_BITS: u32 = 3;
 /// A `SmallInteger`'s tag.
 const SMALL_INTEGER_TAG: u64 = 0b001;
 

@@ -365,10 +365,11 @@ ns_runtime::for_each_lowering! {
 const ELEMENTS: i64 = 1000;
 
 ns_runtime::for_each_lowering! {
-    /// The block `[:each | each]` runs straight to its return: the
-    /// interpreted `do:`'s `value:` pushes it once per element, and from
-    /// its second push on, compiled, every push enters its machine code,
-    /// which returns at once.
+    /// The block `[:each | each]` runs straight to its return: `do:`'s
+    /// `value:` activates it once per element, and from its second
+    /// activation on, compiled, every one runs its machine code, which
+    /// returns at once -- entered at an interpreter's push or called by an
+    /// interpreted send or a compiled one.
     fn a_straight_line_body_is_entered_at_a_push(lowering) {
         let source = formatdoc! {"
             class Subject = Object new () (
@@ -382,15 +383,16 @@ ns_runtime::for_each_lowering! {
             ) : ()
         "};
         let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_jit_counting(true);
         assert_eq!(run(&mut interpreter, &class), ELEMENTS);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), ELEMENTS);
         let done = since(interpreter.jit_statistics(), before);
         if !a_stress_mode_is_on() {
+            let ran = done.machine_entries + done.called_entries + done.compiled_calls;
             assert!(
-                done.machine_entries >= ELEMENTS as u64,
-                "every push of the block enters it: {}",
-                done.machine_entries
+                ran >= ELEMENTS as u64,
+                "every activation of the block runs its machine code: {ran}"
             );
         }
     }
@@ -861,17 +863,21 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// `step:`'s block, a closure machine code makes but does not run yet,
-    /// leaves machine code inside the callee at every call: the exit
-    /// materializes `loop:`'s frame too, and once `step:` returns, `loop:`
-    /// is resumed in its machine code, so that its loop goes on there
-    /// rather than in the interpreter.
+    /// `step:`'s `ifTrue:`, sent a block in a local, which no lowering
+    /// inlines and machine code leaves to the interpreter, leaves machine
+    /// code inside the callee at every call: the exit materializes
+    /// `loop:`'s frame too, and once `step:` returns, `loop:` is resumed in
+    /// its machine code, so that its loop goes on there rather than in the
+    /// interpreter.
     fn a_returned_to_frame_resumes_in_machine_code(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
               class Stepper = () (
                 public step: value = (
-                  ^[value printString size] value
+                  |
+                    size = [value printString size].
+                  |
+                  ^true ifTrue: size
                 )
                 public loop: stepper = (
                   |
@@ -1007,7 +1013,8 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A callee that makes a block, which machine code does not do, leaves
+    /// A callee whose `ifTrue:`, sent a block in a local, which no
+    /// lowering inlines and machine code leaves to the interpreter, leaves
     /// its machine code on every call: the interpreted loop of the first
     /// run calls it once it is compiled (`jit::called`), the exit
     /// materializes it and the interpreter runs the rest of it. Once it
@@ -1025,8 +1032,9 @@ ns_runtime::for_each_lowering! {
               step: value = (
                 |
                   doubled = self twice: value.
+                  next = [doubled + 1].
                 |
-                ^[doubled + 1] value.
+                ^true ifTrue: next.
               )
               public run = (
                 |
@@ -2458,8 +2466,9 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// `count` classes whose `step:` makes a block, which machine code does
-/// not do, sent at one site of a loop in turn: with two to four the site
+/// `count` classes whose `step:` sends `ifTrue:` a block in a local,
+/// which machine code leaves to the interpreter, sent at one site of a
+/// loop in turn: with two to four the site
 /// is polymorphic, its callee reached through its block's cells; with five
 /// or more it is megamorphic, reached through the global cache's rows.
 fn leaving_through(count: usize) -> String {
@@ -2492,8 +2501,9 @@ fn leaving_through(count: usize) -> String {
                 public step: value = (
                   |
                     doubled = self twice: value.
+                    next = [doubled + 1].
                   |
-                  ^[doubled + 1] value.
+                  ^true ifTrue: next.
                 )
               )
         {classes}      public run = (
@@ -2536,7 +2546,7 @@ ns_runtime::for_each_lowering! {
             if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
                 assert!(
                     done.abandoned_bodies >= 1,
-                    "{count} classes: `step:`, whose block exits on every call"
+                    "{count} classes: `step:`, which exits on every call"
                 );
                 let states = interpreter.call_site_states(
                     &class,
@@ -2561,8 +2571,9 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A callee found never compilable -- its body makes a block at once,
-    /// so it exits at once -- is refused by the miss leaf, which writes the
+    /// A callee found never compilable -- its body makes a future at once,
+    /// which machine code leaves to the interpreter, so it exits at once
+    /// -- is refused by the miss leaf, which writes the
     /// cells the decision went through afresh, naming the refusing stub:
     /// the site's later sends exit at once rather than calling the miss
     /// leaf again.
@@ -2570,7 +2581,10 @@ ns_runtime::for_each_lowering! {
         let source = indoc! {"
             class Subject = Object new () (
               step: value = (
-                ^[value + 1] value.
+                ||
+                  next = value + 1.
+                ||
+                ^next.
               )
               public run = (
                 |
@@ -2598,7 +2612,7 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// `count` classes sharing a `step:` whose body makes a block at once, so
+/// `count` classes sharing a `step:` whose body makes a future at once, so
 /// that it exits at once and is never compiled, sent at one site of a
 /// loop in turn, each run starting at the next class: with two to four the
 /// site is polymorphic, its callee reached through its block's slots; with
@@ -2619,7 +2633,10 @@ fn refused_through(count: usize) -> String {
         {fills}    ) (
               class Stepper1 = () (
                 public step: value = (
-                  ^[value + 1] value.
+                  ||
+                    next = value + 1.
+                  ||
+                  ^next.
                 )
               )
         {classes}      public run = (
@@ -3259,9 +3276,9 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// `POINTS` with a block in `Point`'s initializer, a closure machine code
-/// does not make yet, and, past the hundredth instance, a message nothing
-/// understands: every instantiation leaves machine code inside the
+/// `POINTS` with an `ifTrue:` in `Point`'s initializer sent a block a
+/// slot holds, which machine code leaves to the interpreter, and, past the
+/// hundredth instance, a message nothing understands: every instantiation leaves machine code inside the
 /// initializers the compiled factory calls, and the last one ends the run.
 const POINTS_LEAVING: &str = indoc! {"
     class Subject = Object new (
@@ -3272,7 +3289,8 @@ const POINTS_LEAVING: &str = indoc! {"
     ) (
       class Point x: ax y: ay = Object new (
         |
-          public x = [ax] value.
+          later = [ax].
+          public x = true ifTrue: later.
           public y = ay.
           public checked = ax > 100 ifTrue: [nil frobnicate].
         |
@@ -3646,6 +3664,115 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A hundred numbers summed by a block `do:` sends `value:` to, each
+/// element in turn: `run` makes the block, which keeps its sum in an
+/// `Array` it was handed as a copied value, and calls `do:`, whose loop
+/// calls the block.
+const SUMMED: &str = indoc! {"
+    class Subject = Object new (
+      |
+        numbers = Array new: 100.
+      |
+    ) (
+      public fill = (
+        |
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          index:: index + 1.
+          numbers at: index put: index.
+        ].
+        ^index.
+      )
+      public run = (
+        |
+          sum = Array new: 1.
+        |
+        sum at: 1 put: 0.
+        numbers do: [:each | sum at: 1 put: (sum at: 1) + each].
+        ^sum at: 1.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A block a compiled `do:` sends `value:` is called as a method is,
+    /// through the closure stub its cell names, and runs as a compiled
+    /// call: by the third run the loop over the elements leaves machine
+    /// code at no send.
+    fn a_closure_value_runs_without_an_exit(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(SUMMED, lowering);
+            interpreter.set_jit_enabled(jit);
+            interpreter.set_jit_counting(jit);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            assert_eq!(send_unary(&mut interpreter, &subject, "fill"), 100);
+            let mut statistics = interpreter.jit_statistics();
+            for _ in 0..3 {
+                let before = interpreter.jit_statistics();
+                assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5050);
+                statistics = since(interpreter.jit_statistics(), before);
+            }
+            statistics
+        };
+        let statistics = run(true);
+        let _ = run(false);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.send_exits, 0, "every `value:` stayed in machine code");
+            assert!(
+                statistics.compiled_calls >= 100,
+                "`do:` calls the block through its cell: {}",
+                statistics.compiled_calls
+            );
+        }
+    }
+}
+
+/// A loop of block literals, whose blocks the reference lowering
+/// activates, each sent `value` by a `SendInlinable` of `run` itself, and
+/// so exempt from the depth count; each reads or writes `count`, a local
+/// of `run`, which leaves machine code at once.
+const LOOP_OF_EXEMPT_BLOCKS: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          count ::= 0.
+        |
+        [count < 5] whileTrue: [count:: count + 1].
+        ^count.
+      )
+    ) : ()
+"};
+
+/// A block the interpreter's `SendInlinable` calls in machine code,
+/// exempt from the depth count, and whose code leaves machine code at
+/// once, is materialized exempt: the interpreter's pop of its frame takes
+/// nothing off the count, which ends where it began.
+#[test]
+fn an_exit_inside_an_exempt_closure_call_materializes_it_exempt() {
+    let (mut interpreter, class) = load_with(LOOP_OF_EXEMPT_BLOCKS, Lowering::Reference);
+    interpreter.set_jit_stress(true);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let depth = interpreter.enter(|mutator| mutator.heap().counted_depth());
+    let before = interpreter.jit_statistics();
+    assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5);
+    let statistics = since(interpreter.jit_statistics(), before);
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.heap().counted_depth()),
+        depth,
+        "the exempt frames left the count as they found it"
+    );
+    assert!(
+        statistics.called_entries > 0,
+        "the loop's blocks are called in machine code"
+    );
+    assert!(
+        statistics.materialized_frames > 0,
+        "an exit materialized a called block's frame"
+    );
+}
+
 /// `make:` makes a closure, and `churn` registers bodies of its own --
 /// each of its methods and blocks -- after a full collection freed the
 /// ids of `make:`'s body and block, which nothing names once the closures
@@ -3668,13 +3795,13 @@ const CODE_IDS: &str = indoc! {"
         ^last value.
       )
       first = (
-        ^[:x | x * 3]
+        ^[:number | number * 3]
       )
       second = (
-        ^[:x :y | x * y]
+        ^[:left :right | left * right]
       )
       third = (
-        ^[:x | x - 5]
+        ^[:number | number - 5]
       )
       fourth = (
         ^[nil]

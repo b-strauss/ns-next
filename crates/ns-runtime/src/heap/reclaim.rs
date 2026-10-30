@@ -562,6 +562,9 @@ impl Heap<'_> {
                     .code_ids
                     .remove(&(Rc::as_ptr(&entry.code) as usize));
                 self.tables.free_codes.free(number);
+                // The id may name another body next: no machine code is
+                // entered through it until the JIT records that body's.
+                self.machine_entries.clear(row);
                 freed = true;
             }
         }

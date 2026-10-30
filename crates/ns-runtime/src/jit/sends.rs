@@ -65,7 +65,10 @@ const _: () = assert!(
 /// generation, the rest of the header the exit's walk's
 /// (`jit::materialize`) -- but for an initializer's kind, which its
 /// code does not say: the prologue adds the tag the initializer leaf
-/// handed over to the flags word (`MacroAssembler::record_frame_kind`).
+/// handed over to the flags word (`MacroAssembler::record_frame_kind`);
+/// and for a block's what `Step::Block`'s push writes besides
+/// (`block_frame_words`): its closure, its copied values and whether it
+/// counts, the named locals past the copied values nil.
 /// A factory's current class is the class object it runs on, its
 /// receiver. The run
 /// loop's push writes all of it itself and enters the body past the
@@ -137,7 +140,9 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     // metaclass, as the current class.
     let current_class = match role {
         BodyRole::Factory => roles.callee_receiver(),
-        BodyRole::Method | BodyRole::Initializer | BodyRole::EnteredOnly => roles.callee_class(),
+        BodyRole::Method | BodyRole::Initializer | BodyRole::Block | BodyRole::EnteredOnly => {
+            roles.callee_class()
+        }
     };
     assembler.store(
         Width::Word64,
@@ -152,7 +157,14 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     }
     let assembler = macro_assembler.assembler();
     let header_end = code.argument_count + HEADER_REGISTERS;
-    for register in header_end..code.local_count.max(header_end) {
+    // A block's copied values follow its header, which its call fills
+    // below rather than nils.
+    let copied = if role == BodyRole::Block {
+        code.copied_count
+    } else {
+        0
+    };
+    for register in header_end.saturating_add(copied)..code.local_count.max(header_end) {
         let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
         assembler.store_immediate32(frame_slot(roles.frame, register), nil);
     }
@@ -162,11 +174,107 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     #[cfg(debug_assertions)]
     debug_frame_words(body, code);
     // Last, over the flags word a debug build's generation was just
-    // written into.
-    if role == BodyRole::Initializer {
-        body.macro_assembler
-            .record_frame_kind(code.argument_count, scratch);
+    // written into, and over the dead register's word in a scratch register
+    // a copied value goes into.
+    match role {
+        BodyRole::Initializer => body
+            .macro_assembler
+            .record_frame_kind(code.argument_count, scratch),
+        BodyRole::Block => block_frame_words(&mut body.macro_assembler, code),
+        BodyRole::Method | BodyRole::Factory | BodyRole::EnteredOnly => {}
     }
+}
+
+/// What `Step::Block`'s push writes into a block's frame besides what
+/// every push writes (`Mutator::push_step`), from what the call handed
+/// over: the closure as the frame's operand (`Roles::callee_closure`),
+/// read before anything else uses its register; the argument the call
+/// places itself, `cull:`'s receiver, into a block of one parameter
+/// (`Roles::callee_argument`); the closure's copied values into the
+/// registers after the header, in order, as `Heap::fill_copied_values`
+/// copies them -- after a debug build's dead register's word, which a
+/// copied value past the named locals overwrites as the push's does; and
+/// the flags word's `counted` bit, 1 or 0 as the call said
+/// (`Roles::callee_counted`), which a frame the exit materializes keeps
+/// (`Heap::write_machine_frame`). Clobbers the flags, `frame_extent`,
+/// `stack_end`, the idiom scratch register and `callee_counted`.
+fn block_frame_words(macro_assembler: &mut MacroAssembler, code: &CompiledCode) {
+    let roles = macro_assembler.roles();
+    let layout = Heap::machine_layout();
+    let (closure, address, value) = (roles.callee_closure(), roles.frame_extent, roles.stack_end);
+    let argument_count = code.argument_count;
+    let assembler = macro_assembler.assembler();
+    assembler.store(
+        Width::Word64,
+        frame_slot(roles.frame, Heap::operand_register(argument_count)),
+        closure,
+    );
+    if argument_count == 1 {
+        let placed = assembler.label();
+        let no_value = i32::try_from(crate::heap::Word::NO_VALUE_BITS)
+            .expect("internal: the word no value is is a small constant");
+        assembler.compare_immediate(roles.callee_argument(), no_value);
+        assembler.jump_if(Condition::Equal, placed);
+        assembler.store(
+            Width::Word64,
+            frame_slot(roles.frame, 0),
+            roles.callee_argument(),
+        );
+        assembler.bind(placed);
+    }
+    if code.copied_count > 0 {
+        assembler.move_register(address, closure);
+        assembler.add(address, roles.object_space);
+        let first = i32::try_from(layout.closure_fixed_fields)
+            .ok()
+            .and_then(|fields| fields.checked_mul(REGISTER_BYTES))
+            .and_then(|bytes| bytes.checked_add(layout.fields_displacement))
+            .expect("internal: a closure's fixed fields are few");
+        let header_end = argument_count + HEADER_REGISTERS;
+        for position in 0..code.copied_count {
+            let displacement = i32::from(position)
+                .checked_mul(REGISTER_BYTES)
+                .and_then(|bytes| bytes.checked_add(first))
+                .expect("internal: a closure's copied values lie within 2 GiB of its start");
+            assembler.load(
+                Width::Word64,
+                value,
+                Memory {
+                    base: address,
+                    displacement,
+                },
+            );
+            assembler.store(
+                Width::Word64,
+                frame_slot(roles.frame, header_end + position),
+                value,
+            );
+        }
+    }
+    record_counted(macro_assembler, argument_count);
+}
+
+/// The `counted` bit of the flags word of a block's frame taking
+/// `argument_count` arguments set to what `callee_counted` holds, 1 or 0:
+/// over the word a debug build's generation was written into, or a
+/// release build's constant flags. Clobbers the idiom scratch register and
+/// `callee_counted`.
+fn record_counted(macro_assembler: &mut MacroAssembler, argument_count: u16) {
+    let roles = macro_assembler.roles();
+    let (flags, counted) = (roles.idiom_scratch, roles.callee_counted());
+    let place = frame_slot(roles.frame, argument_count + Heap::flags_register());
+    let shift = Heap::machine_counted_shift();
+    let counted_bit = 1_i32 << shift;
+    let assembler = macro_assembler.assembler();
+    #[cfg(debug_assertions)]
+    assembler.load(Width::Word64, flags, place);
+    #[cfg(not(debug_assertions))]
+    assembler.move_immediate(flags, Heap::machine_flags_word(argument_count));
+    // Both words say counted: the bit taken off, and the call's put back.
+    assembler.add_immediate(flags, -counted_bit);
+    assembler.shift_left(counted, shift);
+    assembler.add(flags, counted);
+    assembler.store(Width::Word64, place, flags);
 }
 
 /// The guard and the entered level of a frame whose code addresses its own

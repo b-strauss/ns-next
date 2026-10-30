@@ -221,6 +221,33 @@ impl Roles {
     pub(crate) fn callee_class(self) -> Register {
         RDI
     }
+
+    /// The register a call of a block's body hands the closure in, which
+    /// its prologue stores as the frame's operand (`jit::sends::prologue`):
+    /// a closure stub's (`jit::targets`) or the closure call stub's, the
+    /// only ways into a block's prologue. A scratch register everywhere
+    /// else -- the send's guard while a send compares it -- since no cell
+    /// names a block's body.
+    pub(crate) fn callee_closure(self) -> Register {
+        R9
+    }
+
+    /// The register a call of a block's body hands 1 in when the block's
+    /// activation counts against the depth limit and 0 when the control
+    /// flow exempts it, which its prologue writes into the frame's flags
+    /// word, under `callee_closure`'s rule.
+    pub(crate) fn callee_counted(self) -> Register {
+        R10
+    }
+
+    /// The register a call of a block's body of one parameter hands the
+    /// argument it places itself in -- `cull:`'s receiver -- once the
+    /// prologue's checks have passed, so that a refused call leaves the
+    /// send's slots as they were; the word no value is for a call whose
+    /// argument already lies in its slot. Under `callee_closure`'s rule.
+    pub(crate) fn callee_argument(self) -> Register {
+        R12
+    }
 }
 
 /// An index into the leaf table `CodeZone::enter` is given.

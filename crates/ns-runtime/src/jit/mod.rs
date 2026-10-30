@@ -172,9 +172,9 @@ const REFUSED: u32 = u32::MAX;
 /// called it refuses the call instead, so that its callers, refused in
 /// turn, spend their own budgets. An exit and the entry that resumes the
 /// frame cost about as much as a hundred interpreted instructions, so a
-/// loop that leaves on every turn -- one that sends `value:` to a block,
-/// which machine code does not run, or calls a body that makes one --
-/// ran more slowly in machine code than interpreted; a region of bodies
+/// loop that leaves on every turn -- one that sends `ifTrue:` a block in a
+/// variable, which machine code leaves to the interpreter, or calls a body
+/// that does -- ran more slowly in machine code than interpreted; a region of bodies
 /// that keep leaving ends up interpreted, and one that does not stays in
 /// machine code.
 const EXIT_BUDGET: u32 = 64;
@@ -396,6 +396,9 @@ struct Zone {
     /// The stub through which an interpreter's send calls a compiled
     /// callee (`stubs::assemble_call_stub`).
     call_stub: CodeOffset,
+    /// The stub through which an interpreter's send calls a block's
+    /// compiled body (`stubs::assemble_closure_call_stub`).
+    closure_call_stub: CodeOffset,
     exit_stub: CodeOffset,
     /// The stub a cell names for a method whose body has no machine code
     /// yet (`stubs::assemble_miss_stub`).
@@ -448,6 +451,12 @@ struct AccessorStubs {
     /// The nested class accessor of each hidden slot that has one, by
     /// slot.
     nested_classes: Vec<CodeOffset>,
+    /// The closure stub of a block row of each arity, by arity
+    /// (`targets::ClosureStub::ClosureValue`).
+    closure_values: Vec<CodeOffset>,
+    /// The closure stub of `^<parameter> cull: self` of one argument
+    /// (`targets::ClosureStub::CullParameter`).
+    cull: CodeOffset,
 }
 
 /// Why a body was not compiled. It stays interpreted for good.
@@ -642,6 +651,14 @@ impl JitState {
 
     pub(crate) fn statistics(&self) -> JitStatistics {
         self.statistics
+    }
+
+    /// Whether bodies are compiled and entered: the one load an
+    /// interpreter's send of a block makes before it looks for the
+    /// block's machine code (`Mutator::enter_sent`).
+    #[inline(always)]
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     /// Turns compiling and entering bodies on or off; on only where a
@@ -912,6 +929,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
         next_offset: 0,
         entry_stub: CodeOffset(0),
         call_stub: CodeOffset(0),
+        closure_call_stub: CodeOffset(0),
         exit_stub: CodeOffset(0),
         miss_stub: CodeOffset(0),
         refusing_stub: CodeOffset(0),
@@ -931,10 +949,17 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             guarded_getters: Vec::new(),
             guarded_setters: Vec::new(),
             nested_classes: Vec::new(),
+            closure_values: Vec::new(),
+            cull: CodeOffset(0),
         },
     };
     zone.entry_stub = install(&mut zone, &stubs::assemble_entry_stub(Abi::host()).bytes).ok()?;
     zone.call_stub = install(&mut zone, &stubs::assemble_call_stub(Abi::host()).bytes).ok()?;
+    zone.closure_call_stub = install(
+        &mut zone,
+        &stubs::assemble_closure_call_stub(Abi::host()).bytes,
+    )
+    .ok()?;
     zone.exit_stub = install(&mut zone, &stubs::assemble_exit_stub(Abi::host()).bytes).ok()?;
     zone.miss_stub = install(&mut zone, &stubs::assemble_miss_stub(Abi::host()).bytes).ok()?;
     zone.refusing_stub =
@@ -998,6 +1023,12 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
             .iter()
             .map(|offset| placed(*offset))
             .collect(),
+        closure_values: entries
+            .closure_values
+            .iter()
+            .map(|offset| placed(*offset))
+            .collect(),
+        cull: placed(entries.cull),
     };
     Some(zone)
 }
@@ -1147,16 +1178,22 @@ pub(crate) enum Stubbed<'method> {
 /// reads it on every hit; a setter on a public or protected chain through
 /// its field's setter stub; a method whose fast path is a leaf-safe mirror
 /// row through its row's own stub (`MachineCall::Stub`) or, without one
-/// (`MachineCall::Leaf`), its row's mirror method stub; a private or
+/// (`MachineCall::Leaf`), its row's mirror method stub; a method whose
+/// fast path activates a block on the send's slots -- a row that
+/// activates its receiver (`BlockPrimitive::Value`), `^<parameter> cull:
+/// self` of one argument -- through its closure stub
+/// (`targets::ClosureStub`); a private or
 /// `super` slot accessor through its field's guarded stub, which makes
 /// the guard check's first compare inline and goes on to the leaf stub
 /// for the rest; a getter or setter past the stubs' fields, a builtin
 /// class's accessor and a primitive that is a mirror send of a leaf-safe
-/// row through the leaf stub. `None` for every other -- a fast path that
-/// activates a block, a row that is not leaf-safe, a `doesNotUnderstand:`
-/// handler -- and where there is no zone: the interpreter runs the send.
+/// row through the leaf stub. `None` for every other -- a row that is not
+/// leaf-safe, `^<parameter> value` and every other fast path that
+/// activates a block taking fewer arguments than the send places, a
+/// `doesNotUnderstand:` handler -- and where there is no zone: the
+/// interpreter runs the send.
 pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64> {
-    use crate::builtins::primitive::{mirror_entry, MachineCall, Primitive};
+    use crate::builtins::primitive::{mirror_entry, BlockPrimitive, MachineCall, Primitive};
     use crate::interpreter::resolve::Chain;
     use crate::mixin::{AccessorKind, MethodFastPath, QuickConstant};
     let zone = state.zone.as_ref()?;
@@ -1197,6 +1234,20 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
                 )
             }
             Some(MethodFastPath::BuiltinClass(_)) => Some(act),
+            // A row that activates its receiver, a closure, with the send's
+            // arguments.
+            Some(MethodFastPath::Mirror(row))
+                if mirror_entry(row).primitive == Primitive::Block(BlockPrimitive::Value) =>
+            {
+                u8::try_from(method.argument_count)
+                    .ok()
+                    .and_then(|arity| zone.accessors.closure_values.get(usize::from(arity)))
+                    .map(|entry| address(*entry))
+            }
+            // The block in the one slot, which the receiver takes over.
+            Some(MethodFastPath::CullParameter(0)) if method.argument_count == 1 => {
+                Some(address(zone.accessors.cull))
+            }
             Some(MethodFastPath::Mirror(row)) => match mirror_entry(row).machine_call {
                 MachineCall::Stub(stub) => Some(address(zone.accessors.row_stubs[stub.index()])),
                 MachineCall::Leaf => Some(
@@ -1507,9 +1558,6 @@ fn compile(
     if body.exits_at_once && !state.install_bodies_exiting_at_once {
         return Err(Refusal::ExitsAtOnce);
     }
-    // Before the code is installed, so that every site it names is there
-    // to read at its first run.
-    zone.closure_sites.take(body.closure_sites)?;
     let map = u32::try_from(state.bodies.len()).map_err(|_| Refusal::ZoneFull)?;
     // Every body has an instruction, its last a return or a jump, so a
     // map without program counter 0 is the JIT's own defect.
@@ -1517,6 +1565,11 @@ fn compile(
         panic!("internal: a compiled body has no code for its first instruction");
     };
     let offset = install(zone, &body.code.bytes)?;
+    // Once the code is installed, so that a zone too full for it takes no
+    // site, and before anything can run it, so that every site it names is
+    // there to read at its first run. Refused, the code installed lies in
+    // the zone unreached: no slot, cell or row names it.
+    zone.closure_sites.take(body.closure_sites)?;
     let length = u32::try_from(body.code.bytes.len()).map_err(|_| Refusal::ZoneFull)?;
     for call in &body.map.returns {
         // Every call of a body is a cached send's or an initializer
@@ -1595,9 +1648,36 @@ pub(crate) fn entered(
 ) -> Resumption {
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     if !mutator.jit.is_entered_here(code) {
+        // A top-level activation, which only a host pushes, has no kind
+        // its code says: compiled as a factory's, its frame would be
+        // reified and materialized as one. It stays interpreted.
+        if matches!(
+            mutator.heap.activation_kind(activation),
+            crate::types::ActivationKind::TopLevel
+        ) {
+            code.jit.refuse();
+            mutator.jit.statistics.refused_bodies += 1;
+            return Resumption::Interpreted {
+                activation,
+                program_counter: 0,
+            };
+        }
         let method = mutator.heap.activation_method(activation);
         note_entry(&mut mutator.jit, code, feedback_base, method.as_ref());
+        if code.kind == crate::bytecode::CodeKind::Block {
+            let id = mutator.heap.activation_code_id(activation);
+            note_block_entry(mutator, id, code);
+        }
     }
+    // A body compiled at another push stays a body no top-level
+    // activation runs: only a host pushes one, of code of its own.
+    debug_assert!(
+        !matches!(
+            mutator.heap.activation_kind(activation),
+            crate::types::ActivationKind::TopLevel
+        ),
+        "internal: machine code is entered for a top-level activation"
+    );
     match mutator.jit.interpreter_entry(code, feedback_base, 0) {
         Some(entry) => run_machine_code(mutator, activation, register_base, entry),
         None => Resumption::Interpreted {
@@ -1746,20 +1826,113 @@ pub(crate) fn called<'gc>(
     code: &Rc<CompiledCode>,
     feedback_base: FeedbackBase,
 ) -> Called {
-    use stubs::{BlockWord, ExitKind};
-
     let Some(machine_entry) = machine_entry_address(&mutator.jit, code, feedback_base) else {
         return Called::Refused;
     };
     if !native_stack_has_room() {
         return Called::Refused;
     }
+    mutator.heap.hand_machine_callee(receiver, defining_class);
+    call_through(
+        mutator,
+        |zone| zone.call_stub,
+        sender,
+        register_base,
+        argument_base,
+        machine_entry,
+    )
+}
+
+/// An interpreter's send of `sender`, whose registers start at
+/// `register_base`, decided to activate `closure`, whose body is `code`,
+/// on its arguments in the send's slots from register `argument_base`, at
+/// the closure's `feedback_base`, counted against the depth limit or
+/// exempt as `counted` says, as `Mutator::push_step`'s `Step::Block` arm
+/// decides it: calls the block's machine entry through the closure call
+/// stub, as a closure stub calls it from machine code, when it has machine
+/// code in this zone compiled against `feedback_base` and the native stack
+/// has room (`docs/design/execution.md`, "Stage 4: closures, non-local
+/// return, allocation and the barrier"). The block's prologue checks the
+/// push and counts it as a method's does, so an exempt activation's count
+/// is taken off first and given back once nothing stands in its place --
+/// at its return and at a refusal -- while one an exit materialized stays
+/// on the stack exempt, as its flags word says, and its pop takes nothing
+/// off. Out of line, as `called` is.
+///
+/// # Panics
+///
+/// On a debug build's read of a dead register, as `run_machine_code`.
+#[cfg(ns_jit)]
+#[cold]
+#[inline(never)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what the interpreter's push takes, as the send decided it, apart"
+)]
+pub(crate) fn called_closure<'gc>(
+    mutator: &mut Mutator<'gc>,
+    sender: ActivationReference,
+    register_base: RegisterBase,
+    argument_base: u16,
+    closure: crate::heap::ObjectReference<'gc>,
+    code: &Rc<CompiledCode>,
+    feedback_base: FeedbackBase,
+    counted: bool,
+) -> Called {
+    let Some(machine_entry) = machine_entry_address(&mutator.jit, code, feedback_base) else {
+        return Called::Refused;
+    };
+    if !native_stack_has_room() {
+        return Called::Refused;
+    }
+    let Some(captured) = mutator.heap.closure_captured_frame(closure) else {
+        unreachable!("internal: a block step is decided only for a closure that captured a frame");
+    };
+    if let Some(id) = mutator.heap.closure_code_id(closure) {
+        note_block_entry(mutator, id, code);
+    }
+    let receiver = mutator.heap.frame_receiver(captured);
+    let current_class = mutator.heap.frame_current_class(captured);
+    mutator
+        .heap
+        .hand_machine_closure(receiver, current_class, closure, counted);
+    if !counted {
+        mutator.heap.adjust_counted_depth(-1);
+    }
+    let called = call_through(
+        mutator,
+        |zone| zone.closure_call_stub,
+        sender,
+        register_base,
+        argument_base,
+        machine_entry,
+    );
+    if !counted && !matches!(called, Called::Stopped(_)) {
+        mutator.heap.adjust_counted_depth(1);
+    }
+    called
+}
+
+/// The call `called` and `called_closure` make, once the callee's machine
+/// entry is known and what its prologue is handed lies in the machine
+/// words: through the stub `stub` picks, its walk seeded with the sender,
+/// whose send's callee lies on its slots from register `argument_base`.
+#[cfg(ns_jit)]
+fn call_through(
+    mutator: &mut Mutator<'_>,
+    stub: impl FnOnce(&Zone) -> CodeOffset,
+    sender: ActivationReference,
+    register_base: RegisterBase,
+    argument_base: u16,
+    machine_entry: u64,
+) -> Called {
+    use stubs::{BlockWord, ExitKind};
+
     let Some(zone) = mutator.jit.zone.as_ref() else {
         unreachable!("internal: a body has machine code only in a zone");
     };
     let zone_code = Rc::clone(zone.writer.zone());
-    let call_stub = zone.call_stub;
-    mutator.heap.hand_machine_callee(receiver, defining_class);
+    let call_stub = stub(zone);
     let sender_registers = Heap::register_base_index(register_base);
     let top = mutator.heap.activation_stack_top();
     mutator.jit.walk.seed_call(
@@ -1816,6 +1989,50 @@ pub(crate) fn called<'gc>(
     _feedback_base: FeedbackBase,
 ) -> Called {
     unreachable!("internal: no body has machine code without an encoder")
+}
+
+#[cfg(not(ns_jit))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "what the interpreter's push takes, as the send decided it, apart"
+)]
+pub(crate) fn called_closure<'gc>(
+    _mutator: &mut Mutator<'gc>,
+    _sender: ActivationReference,
+    _register_base: RegisterBase,
+    _argument_base: u16,
+    _closure: crate::heap::ObjectReference<'gc>,
+    _code: &Rc<CompiledCode>,
+    _feedback_base: FeedbackBase,
+    _counted: bool,
+) -> Called {
+    unreachable!("internal: no body has machine code without an encoder")
+}
+
+/// Records where the block body `code`, whose id is `id`, enters machine
+/// code in the machine entry table the closure stubs read
+/// (`heap/machine_entries.rs`), when it has machine code in this zone:
+/// asked wherever the interpreter pushes or calls a block -- `entered`,
+/// which compiles it, and `called_closure` -- so that a body compiled, or
+/// a code id minted again after a full collection freed it, is found by
+/// the closure stubs from the next call on. A body compiled against no
+/// feedback base is left out: a closure that has none is given its own at
+/// its first activation, which only the interpreter's push does.
+pub(crate) fn note_block_entry(mutator: &mut Mutator<'_>, id: CodeId, code: &CompiledCode) {
+    let Some(body) = mutator.jit.installed(code) else {
+        return;
+    };
+    if body.feedback_base == FeedbackBase::NOT_ASSIGNED {
+        return;
+    }
+    let (start, feedback_base) = (body.start, body.feedback_base);
+    let Some(zone) = mutator.jit.zone.as_ref() else {
+        return;
+    };
+    let entry = zone.writer.zone().executable_address(CodeOffset(start)) as u64;
+    mutator
+        .heap
+        .record_machine_entry(id, entry, feedback_base, code.argument_count);
 }
 
 /// The entry block for an entry into the frame whose registers start
@@ -1969,7 +2186,7 @@ fn resumption_after_exit(
 /// and writes, the stubs it reaches through the block -- the exit stub at
 /// `exit_stub` -- and the global cache's mask.
 #[cfg(ns_jit)]
-fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 11] {
+fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 12] {
     use stubs::BlockWord;
     [
         (
@@ -2011,6 +2228,10 @@ fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockW
                 .as_ref()
                 .map_or(0, |zone| zone.closure_sites.address() as u64),
         ),
+        (
+            BlockWord::MachineEntries,
+            mutator.heap.machine_entries_address() as u64,
+        ),
     ]
 }
 
@@ -2028,6 +2249,8 @@ fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
         .map(|body| CodeOffset(body.start));
     code.jit.refuse();
     mutator.jit.statistics.abandoned_bodies += 1;
+    // A block's closure stubs call it no more either.
+    mutator.heap.forget_machine_entry(code);
     let Some(zone) = mutator.jit.zone.as_ref() else {
         return;
     };
@@ -2479,13 +2702,16 @@ mod tests {
             note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
             note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
             let depth = mutator.heap.activation_depth();
+            // A factory's activation, as the body compiled without a method
+            // runs: a top-level one is never entered in machine code.
+            let class = mutator.builtin_class(crate::types::BuiltinClass::Object);
             let activation = mutator
                 .heap
                 .push_activation(
                     crate::heap::ActivationHeader {
-                        receiver: crate::Value::nil(),
-                        current_class: None,
-                        kind: crate::types::ActivationKind::TopLevel,
+                        receiver: crate::Value::object(class),
+                        current_class: Some(class),
+                        kind: crate::types::ActivationKind::Factory(class),
                         method: None,
                         feedback_base: FeedbackBase::NOT_ASSIGNED,
                         code: Rc::clone(&code),

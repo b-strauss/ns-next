@@ -11037,8 +11037,40 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   the block (`:32704-32750`); the block's prologue fills its copied
   values where a method's nils its locals, and stores the closure as its
   frame's operand, which no return address derives. An interpreter's
-  push of a closure whose body has machine code calls it through the
-  call stub, as its send of a method does.
+  send of a closure whose body has machine code calls it through a call
+  stub of its own, as its send of a method does (`jit::called_closure`).
+  - The closure stubs (`jit/targets.rs`'s `ClosureStub`) serve the
+    methods whose fast path activates a block on the send's own slots:
+    `Closure`'s `value` to `value:value:value:`, whose rows activate
+    the receiver, and `^<parameter> cull: self` of one argument, whose
+    block of one parameter takes the receiver in that slot, which its
+    prologue places once its checks have passed, so that a refused call
+    leaves the slot as it was. A block's frame lies on the slots as a
+    method's does, its header right past them, which the collector's trace
+    checks of every frame and the exit's walk derives from a call's return
+    address; so `^<parameter> value` and a `cull:` of a block of no
+    parameter, which activate a block taking fewer arguments than the send
+    places, stay the interpreter's, which pushes them above the sender's
+    window.
+  - A stub finds the block's machine entry by the closure's code id in a
+    table of the heap's (`heap/machine_entries.rs`, the entry block's
+    `MachineEntries`): each row the machine entry, the feedback base the
+    body was compiled against, which the closure's must equal, and its
+    parameter count. Since a code id is freed and minted again by a full
+    collection while machine code lives on with its mixin, as a closure
+    site's are (above), a row is a copy the JIT writes from the body
+    whenever the interpreter pushes or calls a block whose body has
+    machine code, and every way it could name another body's code clears
+    it: the free of the id, the abandonment of the body, the replacement
+    of the zone.
+  - A compiled send pushes a counted activation, as every send but a
+    `SendInlinable` does. The interpreter's call of a block a
+    `SendInlinable` exempts -- the reference lowering's loop -- takes the
+    activation off the depth count before the prologue counts it, and
+    gives it back once nothing stands in its place, and the prologue writes
+    the exemption into the frame's flags word, which a frame an exit
+    materializes keeps (`Heap::write_machine_frame`), so that its pop
+    takes nothing off.
 - **Non-local return is cut by a routine of its own, as Cog's
   `ceNonLocalReturn` cuts it** (`cointerp.c:12761-13100`): machine code
   calls the cut, which walks the compiled frames of the current stretch

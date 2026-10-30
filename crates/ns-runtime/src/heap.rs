@@ -37,6 +37,7 @@ mod frames;
 pub(crate) use frames::with_stack_reservation;
 mod header;
 mod ids;
+mod machine_entries;
 pub(crate) mod machine_words;
 pub(crate) mod mark;
 mod object;
@@ -731,6 +732,13 @@ const GENERATION_MASK: u32 = 0x7FFF_FFFF;
 // this many numbers, so the two must agree.
 const _: () = assert!(crate::bytecode::HEADER_REGISTERS as usize == frame_header::COUNT);
 
+// `jit::closures` fills every fixed field of the frame objects and the
+// closures it makes, one store each, and nothing else: a field added to
+// either must be filled there too, where these fail first.
+const _: () = assert!(frame_field::COUNT == 10 && frame_field::MARRIED == frame_field::COUNT - 1);
+const _: () =
+    assert!(closure_field::COUNT == 3 && closure_field::FEEDBACK_BASE == closure_field::COUNT - 1);
+
 /// A shift count machine code takes, which is below 64.
 #[cfg(ns_jit)]
 fn small_count(count: u32) -> u8 {
@@ -830,6 +838,9 @@ pub(crate) struct MachineLayout {
     /// The header word's format bits of a class object, under
     /// `instance_format_bits`.
     pub(crate) class_format: i32,
+    /// The header word's format bits of a closure, under
+    /// `instance_format_bits`.
+    pub(crate) closure_format: i32,
     /// A class object's builtin field's displacement from its offset
     /// (`Heap::class_builtin`): nil for a class whose instances are
     /// ordinary ones.
@@ -877,6 +888,9 @@ pub(crate) struct MachineFrameKinds {
     pub(crate) superclass_clause: u64,
     /// Each initializer body's kind tag in a flags word, and its kind word.
     pub(crate) initializers: [(u8, u64); 3],
+    /// How far a flags word is shifted to bring its payload, the kind tag
+    /// lowest, down.
+    pub(crate) kind_tag_shift: u8,
     /// The kind tag's bits in a flags word's payload.
     pub(crate) kind_tag_mask: i32,
     /// `false`'s word, which a running frame's `uncontinuable` holds.
@@ -911,6 +925,21 @@ pub(crate) struct MachineGeneration {
     pub(crate) shift: u8,
     /// The flags word's register number past the frame's arguments.
     pub(crate) flags_register: u16,
+}
+
+/// Where machine code reads a block body's row of the machine entry table
+/// (`Heap::machine_entry_layout`).
+#[cfg(ns_jit)]
+pub(crate) struct MachineEntryLayout {
+    /// How far a code id is shifted to be its row's offset.
+    pub(crate) row_shift: u8,
+    /// The body's machine entry, 0 for none.
+    pub(crate) entry_displacement: i32,
+    /// The feedback base its machine code was compiled against, as a
+    /// closure's word holds it.
+    pub(crate) feedback_base_displacement: i32,
+    /// Its parameter count.
+    pub(crate) parameters_displacement: i32,
 }
 
 /// Where machine code finds what the divorce of a reified frame at its
@@ -1050,6 +1079,12 @@ impl MachineKind {
             tag: MachineKindTag::Constant(kind_tag::SUPERCLASS_CLAUSE),
             operand: MachineOperand::Recorded,
         }
+    }
+
+    /// Whether it is a closure's activation, whose prologue writes the
+    /// flags word's `counted` bit the call handed it.
+    pub(crate) fn is_closure(self) -> bool {
+        self.tag == MachineKindTag::Constant(kind_tag::CLOSURE)
     }
 }
 
@@ -2110,6 +2145,10 @@ pub struct Heap<'gc> {
     /// code (`application_ids.rs`), written wherever `tables` writes an
     /// application's row.
     application_ids: application_ids::ApplicationIds,
+    /// Each block body's machine entry by code id, for machine code
+    /// (`machine_entries.rs`), which the JIT writes and the free of a code
+    /// id clears.
+    machine_entries: machine_entries::MachineEntries,
     /// What a body's `CodeIdCache` must carry for its id to name a row of
     /// `tables` (`next_code_table_epoch`).
     code_table_epoch: u64,
@@ -2479,6 +2518,7 @@ impl<'gc> Heap<'gc> {
             builtin_guards: BuiltinGuards::NONE,
             tables: Tables::default(),
             application_ids,
+            machine_entries: machine_entries::MachineEntries::new(),
             code_table_epoch: next_code_table_epoch(),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
@@ -6363,12 +6403,97 @@ impl<'gc> Heap<'gc> {
         self.code_table_epoch
     }
 
+    /// The address of the machine entry table's row 0
+    /// (`machine_entries.rs`), fixed for the heap's life: what the entry
+    /// block's `BlockWord::MachineEntries` names.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_entries_address(&self) -> usize {
+        self.machine_entries.address()
+    }
+
+    /// Where machine code reads a block body's row of the machine entry
+    /// table (`machine_entries.rs`): how far an id is shifted to its row's
+    /// offset, and each word's displacement from the row.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_entry_layout() -> MachineEntryLayout {
+        use machine_entries::RowWord;
+        MachineEntryLayout {
+            row_shift: machine_entries::ROW_SHIFT,
+            entry_displacement: RowWord::Entry.displacement(),
+            feedback_base_displacement: RowWord::FeedbackBase.displacement(),
+            parameters_displacement: RowWord::Parameters.displacement(),
+        }
+    }
+
+    /// Records that the block body `id` names enters machine code at
+    /// `entry`, compiled against `feedback_base`, and takes `parameters`
+    /// parameters (`jit::note_block_entry`): the row is written only when
+    /// it says something else, and the bound grows with it.
+    pub(crate) fn record_machine_entry(
+        &mut self,
+        id: CodeId,
+        entry: u64,
+        feedback_base: FeedbackBase,
+        parameters: u16,
+    ) {
+        let words = [
+            entry,
+            count_word(feedback_base.raw() as usize).bits(),
+            u64::from(parameters),
+            0,
+        ];
+        if self.machine_entries.row(id.index()) == words {
+            return;
+        }
+        if self.machine_entries.record(id.index(), words) {
+            self.machine_words.set(
+                MachineWord::MachineEntryRows,
+                self.machine_entries.rows() as u64,
+            );
+        }
+    }
+
+    /// Clears the machine entry `code`'s id names, if it has one: its
+    /// machine code has been abandoned (`jit::abandon`).
+    #[cfg(ns_jit)]
+    pub(crate) fn forget_machine_entry(&mut self, code: &Rc<CompiledCode>) {
+        let key = Rc::as_ptr(code) as usize;
+        if let Some(id) = self.tables.code_ids.get(&key).copied() {
+            self.machine_entries.clear(id.index());
+        }
+    }
+
+    /// Clears every machine entry: the code zone they lie in was replaced
+    /// (`Interpreter::set_jit_zone_bytes`).
+    pub(crate) fn forget_machine_entries(&mut self) {
+        self.machine_entries.clear_all();
+    }
+
+    /// Closure `object`'s code id, or `None` when `object` is not a
+    /// closure.
+    #[cfg(ns_jit)]
+    pub(crate) fn closure_code_id(&self, object: ObjectReference<'gc>) -> Option<CodeId> {
+        let words = self.closure_words(object)?;
+        CodeId::from_index(self.closure_count_field(words, closure_field::CODE_ID)?)
+    }
+
     /// The `SmallInteger` word of `count`, as an object's count fields --
     /// a closure's or a frame object's code id, a closure's feedback base
     /// -- hold it (`closure_fixed_words`, `frame_fixed_words`).
     #[cfg(ns_jit)]
     pub(crate) fn machine_count_word(count: usize) -> u64 {
         count_word(count).bits()
+    }
+
+    /// Moves the depth count by `delta`: what `jit::called_closure` takes
+    /// off before it calls an exempt block's body, whose prologue counts
+    /// it as every compiled push is counted, and gives back once nothing
+    /// stands in its place.
+    #[cfg(ns_jit)]
+    pub(crate) fn adjust_counted_depth(&self, delta: i64) {
+        let count = self.machine_words.get(MachineWord::DepthCount);
+        self.machine_words
+            .set(MachineWord::DepthCount, count.wrapping_add_signed(delta));
     }
 
     /// Sets the depth limit's word: the limit with the reserve free, or
@@ -8442,7 +8567,7 @@ impl<'gc> Heap<'gc> {
     /// The code table's row of the body `activation` runs: its frame's
     /// code word.
     #[inline(always)]
-    fn activation_code_id(&self, activation: ActivationReference) -> CodeId {
+    pub(crate) fn activation_code_id(&self, activation: ActivationReference) -> CodeId {
         CodeId::from_raw(frames::number_as_u32(
             self.stack
                 .header_word(activation.offset, frame_header::CODE),
@@ -9054,6 +9179,7 @@ impl<'gc> Heap<'gc> {
             application_instance_header_displacement: application_ids::RowWord::InstanceHeader
                 .displacement(),
             class_format: small(header::CLASS_BITS),
+            closure_format: small(header::CLOSURE_BITS),
             builtin_displacement: displacement(FIELDS + class_field::BUILTIN),
             value_class_refusal_displacement: displacement(
                 FIELDS + class_field::VALUE_CLASS_REFUSAL,
@@ -9104,7 +9230,10 @@ impl<'gc> Heap<'gc> {
                     InitializerBody::Standalone,
                 ),
             ],
-            kind_tag_mask: i32::from(u8::MAX),
+            kind_tag_shift: small_count(frames::SMALL_INTEGER_TAG_BITS),
+            kind_tag_mask: i32::try_from(frames::KIND_TAG_MASK).unwrap_or_else(|_| {
+                unreachable!("internal: the kind tag takes the payload's lowest byte")
+            }),
             false_word,
         }
     }
@@ -9140,6 +9269,14 @@ impl<'gc> Heap<'gc> {
         }
         .word()
         .bits()
+    }
+
+    /// How far a frame's flags word is shifted to bring its `counted` bit
+    /// down to bit 0: a block's prologue writes the bit the call handed it
+    /// (`jit::sends::prologue`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_counted_shift() -> u8 {
+        small_count(frames::COUNTED_BIT.trailing_zeros() + frames::SMALL_INTEGER_TAG_BITS)
     }
 
     /// The flags word's register number past a frame's arguments.
@@ -9225,15 +9362,21 @@ impl<'gc> Heap<'gc> {
             MachineKindTag::Recorded => written.kind_tag,
         };
         // Only code that reifies its frame wrote these words: in any other
-        // frame they hold whatever the stack held there before.
-        let (reified, counted, retains_registers) = if frame.reifies {
+        // frame they hold whatever the stack held there before. A block's
+        // prologue writes the flags word too, counted or exempt as the
+        // call said (`jit::sends::prologue`).
+        let (reified, retains_registers) = if frame.reifies {
             (
                 header_word(self, frame_header::REIFIED),
-                written.counted,
                 written.retains_registers,
             )
         } else {
-            (Word::NIL, true, false)
+            (Word::NIL, false)
+        };
+        let counted = if frame.reifies || frame.kind.is_closure() {
+            written.counted
+        } else {
+            true
         };
         let flags = FrameFlags {
             compiled: true,
@@ -9511,6 +9654,33 @@ impl<'gc> Heap<'gc> {
             .set(MachineWord::CalleeReceiver, receiver.bits());
         self.machine_words
             .set(MachineWord::CalleeClass, class.bits());
+    }
+
+    /// Hands machine code what an interpreter's send calls a block's body
+    /// with (`jit::called_closure`): the receiver and the current class of
+    /// the frame `closure` captured, `closure` itself, and whether its
+    /// activation counts against the depth limit, which the closure call
+    /// stub passes to the block's prologue as a closure stub does
+    /// (`MachineWord::CalleeClosure`, `MachineWord::CalleeCounted`).
+    #[cfg(ns_jit)]
+    pub(crate) fn hand_machine_closure(
+        &self,
+        receiver: Value<'gc>,
+        current_class: Option<ClassReference<'gc>>,
+        closure: ObjectReference<'gc>,
+        counted: bool,
+    ) {
+        let receiver = self.store(receiver);
+        let class = current_class.map_or(Word::NIL, |class| self.store(Value::object(class)));
+        let closure = self.store(Value::object(closure));
+        self.machine_words
+            .set(MachineWord::CalleeReceiver, receiver.bits());
+        self.machine_words
+            .set(MachineWord::CalleeClass, class.bits());
+        self.machine_words
+            .set(MachineWord::CalleeClosure, closure.bits());
+        self.machine_words
+            .set(MachineWord::CalleeCounted, u64::from(counted));
     }
 
     /// Hands machine code the receiver, the level and the body of the
