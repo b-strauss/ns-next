@@ -10339,9 +10339,12 @@ of the first two.
       under two instructions' worth an entry at the first revival, under
       a tenth of one once the wait is capped. Deterministic, since it
       counts entries, never time; and machine code pays nothing for it,
-      since only the interpreted pushes of an abandoned body, and the
-      misses and initializer invocations that count a body's entries,
-      count. A body revived this way whose exits stay rare spends 64 of
+      since only the interpreted pushes of an abandoned body
+      (`jit::entered`) and a factory's miss (`decide_at`) count; a
+      method's miss, the initializer leaf and the forcing leaf count no
+      entry of an abandoned body (`note_entry_by_call`), and every one
+      of them still passes through `jit::after_compile_trigger`, which
+      takes a revival up wherever it happened. A body revived this way whose exits stay rare spends 64 of
       them in machine code before it is abandoned again: in a run that
       allocates nothing, a body that exits once in N calls runs about
       64·N calls in machine code between waits of at most 65,536
