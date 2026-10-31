@@ -25,6 +25,8 @@ pub(crate) mod baseline;
 #[cfg(ns_jit)]
 pub(crate) mod closures;
 #[cfg(ns_jit)]
+pub(crate) mod cut;
+#[cfg(ns_jit)]
 pub(crate) mod leaves;
 #[cfg(ns_jit)]
 pub(crate) mod macro_assembler;
@@ -153,6 +155,11 @@ pub struct JitStatistics {
     /// Calls machine code made of a leaf (`jit::leaves`), of every kind:
     /// a template's, a stub's and the exit's walk's.
     pub leaf_calls: u64,
+    /// Non-local returns machine code carried out itself, popping its
+    /// compiled frames down to the home and returning from it there
+    /// (`jit::cut`), rather than exiting so that the interpreter's
+    /// unwinder carries them.
+    pub cuts: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled, and so entered at a
@@ -406,6 +413,9 @@ struct Zone {
     /// The stub a cell names for a target machine code does not run
     /// (`stubs::assemble_refusing_stub`).
     refusing_stub: CodeOffset,
+    /// The stub a `NonLocalReturn`'s template calls to cut the return
+    /// (`stubs::assemble_cut_stub`).
+    cut_stub: CodeOffset,
     /// The stub a send whose guard is not its cell's calls, and which a
     /// polymorphic site's cell names (`targets::assemble_polymorphic_stub`).
     polymorphic_stub: CodeOffset,
@@ -574,6 +584,10 @@ pub(crate) struct JitState {
     /// the exit stub makes it (`materialize`).
     #[cfg(ns_jit)]
     pub(crate) walk: materialize::Walk,
+    /// The cut's walk over the compiled frames' return addresses, while
+    /// the cut stub makes it (`cut`).
+    #[cfg(ns_jit)]
+    pub(crate) cut: cut::CutWalk,
     /// The innermost frame the last walk materialized, for the run loop to
     /// go on with (`take_walked`).
     pub(crate) walked: Option<ActivationReference>,
@@ -643,6 +657,8 @@ impl JitState {
             compile_at_entry: if stress_jit { 1 } else { COMPILE_AT_ENTRY },
             #[cfg(ns_jit)]
             walk: materialize::Walk::default(),
+            #[cfg(ns_jit)]
+            cut: cut::CutWalk::default(),
             walked: None,
             block: EntryBlock::new(),
             block_stale: true,
@@ -932,6 +948,8 @@ impl JitState {
             compile_at_entry: COMPILE_AT_ENTRY,
             #[cfg(ns_jit)]
             walk: materialize::Walk::default(),
+            #[cfg(ns_jit)]
+            cut: cut::CutWalk::default(),
             walked: None,
             block: EntryBlock::new(),
             block_stale: true,
@@ -941,6 +959,7 @@ impl JitState {
 
 /// An installed body, while it lives: its code, its method when it is
 /// one's, and the feedback base it was compiled against.
+#[derive(Clone)]
 pub(crate) struct Installed {
     pub(crate) code: Rc<CompiledCode>,
     pub(crate) method: Option<Rc<MixinMethod>>,
@@ -982,6 +1001,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
         exit_stub: CodeOffset(0),
         miss_stub: CodeOffset(0),
         refusing_stub: CodeOffset(0),
+        cut_stub: CodeOffset(0),
         polymorphic_stub: CodeOffset(0),
         megamorphic_stub: CodeOffset(0),
         accessors: AccessorStubs {
@@ -1014,6 +1034,7 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
     zone.miss_stub = install(&mut zone, &stubs::assemble_miss_stub(Abi::host()).bytes).ok()?;
     zone.refusing_stub =
         install(&mut zone, &stubs::assemble_refusing_stub(Abi::host()).bytes).ok()?;
+    zone.cut_stub = install(&mut zone, &stubs::assemble_cut_stub(Abi::host()).bytes).ok()?;
     zone.polymorphic_stub = install(
         &mut zone,
         &targets::assemble_polymorphic_stub(Abi::host()).bytes,
@@ -1424,6 +1445,14 @@ impl JitState {
     pub(crate) fn polymorphic_stub_address(&self) -> u64 {
         self.zone.as_ref().map_or(0, |zone| {
             zone.writer.zone().executable_address(zone.polymorphic_stub) as u64
+        })
+    }
+
+    /// The address of the stub a `NonLocalReturn`'s template calls to cut
+    /// the return (`stubs::assemble_cut_stub`); 0 where there is no zone.
+    pub(crate) fn cut_stub_address(&self) -> u64 {
+        self.zone.as_ref().map_or(0, |zone| {
+            zone.writer.zone().executable_address(zone.cut_stub) as u64
         })
     }
 
@@ -2294,9 +2323,10 @@ fn resumption_after_exit(
 /// The words of the entry block that name what lasts from one entry to
 /// the next, with what they name now: the reservations machine code reads
 /// and writes, the stubs it reaches through the block -- the exit stub at
-/// `exit_stub` -- and the global cache's mask.
+/// `exit_stub`, the polymorphic stub and the cut stub -- and the global
+/// cache's mask.
 #[cfg(ns_jit)]
-fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 11] {
+fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockWord, u64); 12] {
     use stubs::BlockWord;
     [
         (
@@ -2334,6 +2364,7 @@ fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockW
             BlockWord::MachineEntries,
             mutator.heap.machine_entries_address() as u64,
         ),
+        (BlockWord::CutStub, mutator.jit.cut_stub_address()),
     ]
 }
 

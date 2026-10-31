@@ -1,0 +1,55 @@
+/// A `^` from a block run by machine code whose home has returned: the
+/// cut finds the home's frame dead and exits, and the interpreter raises
+/// §7.2's `cannotReturn`, which a handler catches. The home returned
+/// normally, or through a `^` of its own that machine code cut, which
+/// divorced its frame as its return would have. `round:on:` runs once a
+/// round, so that the bodies are compiled at their second entry and the
+/// later rounds run them in machine code (`docs/design/execution.md`,
+/// "Stage 4: closures, non-local return, allocation and the barrier").
+class NonLocalReturnDeadHome = Object new (
+  |
+    stored ::= nil.
+  |
+) (
+  /// Stores a block whose `^` returns from this activation, then answers
+  /// `index`.
+  stash: index = (
+    stored:: [:each | ^each + index].
+    ^index.
+  )
+
+  /// Stores a block whose `^` returns from this activation, then answers
+  /// `index` through a `^` out of `do:`.
+  stashAndCut: index = (
+    stored:: [:each | ^each + index].
+    {index} do: [:each | ^each].
+    ^-1.
+  )
+
+  /// Answers the print string of what the stored block answers for
+  /// `argument`, or the message text of the Error it signals.
+  runStored: argument = (
+    ^[(stored value: argument) printString] on: Error do: [:error | error messageText].
+  )
+
+  /// Shows one line of what round `index` answers on `transcript`.
+  round: index on: transcript = (
+    transcript show: 'round ' , index printString , ':'.
+    transcript show: ' ' , (self stash: index) printString.
+    transcript show: ' ' , (self runStored: 1).
+    transcript show: ' ' , (self stashAndCut: index) printString.
+    transcript show: ' ' , (self runStored: 2).
+    transcript newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      index ::= 0.
+    |
+    [index < 4] whileTrue: [
+      self round: index on: transcript.
+      index:: index + 1.
+    ].
+  )
+)

@@ -845,6 +845,32 @@ impl BodyAssembler {
         Lowering::Transfer
     }
 
+    /// `NonLocalReturn`: the call of the cut stub
+    /// (`stubs::assemble_cut_stub`), handed the program counter, which
+    /// returns only when the cut cannot carry the return out, having
+    /// changed nothing, and then an exit that re-executes the instruction,
+    /// so that the interpreter's unwinder carries it. A debug build reads
+    /// the value's register first, which refuses a dead one as the
+    /// interpreter's read does; the cut reads the value itself. Nothing is
+    /// stored into the frame: the cut records the program counter of a
+    /// frame it divorces.
+    fn non_local_return(&mut self, register: u16) -> Lowering {
+        let program_counter = self.program_counter;
+        let macro_assembler = &mut self.macro_assembler;
+        let roles = macro_assembler.roles();
+        #[cfg(debug_assertions)]
+        macro_assembler.load_frame_register(roles.leaf_result, register);
+        #[cfg(not(debug_assertions))]
+        let _ = register;
+        let stub = macro_assembler.block_word(super::stubs::BlockWord::CutStub);
+        let assembler = macro_assembler.assembler();
+        assembler.move_immediate(roles.leaf_result, u64::from(program_counter));
+        assembler.load(ns_assembler::Width::Word64, roles.idiom_scratch, stub);
+        assembler.call_register(roles.idiom_scratch);
+        macro_assembler.exit(ExitKind::Reexecute, program_counter);
+        Lowering::Transfer
+    }
+
     /// A send's call of the code at the address in `target`, recorded so
     /// that its return address -- the address right after the `call`,
     /// which the processor pushes and the exit's walk over the native
@@ -1364,8 +1390,9 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             *index,
             closures::OuterAccess::Store { source: *source },
         ),
-        // Non-local return: stage 4.
-        Instruction::NonLocalReturn { .. } => Lowering::Exit,
+        // Non-local return, cut by machine code where it can be
+        // (`jit::cut`).
+        Instruction::NonLocalReturn { register } => body.non_local_return(*register),
         // The own-slot instructions, each through the recorded guard
         // (`BodyAssembler::own_slot`).
         Instruction::InitializeSlot { source, own_index } => {

@@ -95,6 +95,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         called_entries: after.called_entries - before.called_entries,
         exits: after.exits - before.exits,
         leaf_calls: after.leaf_calls - before.leaf_calls,
+        cuts: after.cuts - before.cuts,
     }
 }
 
@@ -3756,6 +3757,111 @@ ns_runtime::for_each_lowering! {
                 statistics.compiled_calls
             );
         }
+    }
+}
+
+/// `find:` returns out of the block `do:` sends `value:` with `^`, once
+/// per element `run` looks for: the home, `find:`, lies in the stretch
+/// `run` was entered at, with only `do:` between it and the block.
+const FOUND: &str = indoc! {"
+    class Subject = Object new (
+      |
+        numbers = Array new: 100.
+      |
+    ) (
+      public fill = (
+        |
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          index:: index + 1.
+          numbers at: index put: index.
+        ].
+        ^index.
+      )
+      find: target = (
+        numbers do: [:each | each = target ifTrue: [^each]].
+        ^0.
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          index:: index + 1.
+          sum:: sum + (self find: index).
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A `^` out of the block a compiled `do:` calls is cut by machine
+    /// code: by the third run every one of the hundred returns pops `do:`
+    /// and the block and returns from `find:` into `run` with no exit,
+    /// each a cut, and the depth count ends where it began.
+    fn a_non_local_return_out_of_do_cuts_without_an_exit(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(FOUND, lowering);
+            interpreter.set_jit_enabled(jit);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            assert_eq!(send_unary(&mut interpreter, &subject, "fill"), 100);
+            let depth = interpreter.enter(|mutator| mutator.heap().counted_depth());
+            let mut statistics = interpreter.jit_statistics();
+            for _ in 0..3 {
+                let before = interpreter.jit_statistics();
+                assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5050);
+                statistics = since(interpreter.jit_statistics(), before);
+            }
+            assert_eq!(
+                interpreter.enter(|mutator| mutator.heap().counted_depth()),
+                depth,
+                "every frame the returns popped left the count"
+            );
+            statistics
+        };
+        let statistics = run(true);
+        let _ = run(false);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.exits, 0, "no return left machine code");
+            assert_eq!(statistics.cuts, 100, "every return was cut");
+        }
+    }
+}
+
+/// A home an interpreted frame's send called through the call stub: `run`,
+/// sent once, stays interpreted, and calls `find:`, compiled at its second
+/// entry, through the call stub, so that each later `^` out of `do:` is
+/// cut into the call stub, which hands the value to `run`'s send as
+/// `find:`'s return would.
+#[test]
+fn a_non_local_return_into_an_interpreted_caller_cuts_into_the_call_stub() {
+    let (mut interpreter, class) = load_with(FOUND, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    assert_eq!(send_unary(&mut interpreter, &subject, "fill"), 100);
+    let depth = interpreter.enter(|mutator| mutator.heap().counted_depth());
+    let before = interpreter.jit_statistics();
+    assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5050);
+    let statistics = since(interpreter.jit_statistics(), before);
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.heap().counted_depth()),
+        depth,
+        "every frame the returns popped left the count"
+    );
+    if !a_stress_mode_is_on() {
+        assert!(
+            statistics.called_entries >= 90,
+            "`run` calls `find:` through the call stub: {}",
+            statistics.called_entries
+        );
+        assert!(
+            statistics.cuts >= 90,
+            "the returns into `run` are cut: {}",
+            statistics.cuts
+        );
     }
 }
 

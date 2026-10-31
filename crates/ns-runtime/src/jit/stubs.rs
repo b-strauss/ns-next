@@ -20,19 +20,19 @@ use crate::heap::machine_words::MachineWord;
 /// before it -- `RegisterBase`, `MachineEntry` and, while counting, the
 /// counters' zero at every entry, and `ObjectSpaceBase`, `StackBase`,
 /// `MachineWords`, `ExitStub`, `Cells`, `PolymorphicStub`,
-/// `PolymorphicBlocks` … `EdenCursor` and `MachineEntries`, which name what lasts from one
+/// `PolymorphicBlocks` … `EdenCursor`, `MachineEntries` and `CutStub`, which name what lasts from one
 /// entry to the next, only when the block is stale
 /// (`JitState::mark_block_stale`) -- the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
-/// dead register's exit), a leaf call `LeafStackPointer`, and code that
-/// counts its back edges `BackEdges`; the entry and the call stub each
-/// write `EnteredByCall`.
+/// dead register's exit), a leaf call `LeafStackPointer`, the cut its
+/// answer (`CutStackPointer`, `CutFrameRegister`, `CutValue`), and code
+/// that counts its back edges `BackEdges`; the entry and the call stub
+/// each write `EnteredByCall`.
 ///
-/// Words 23 and 25 to 28 are free, kept for what the later stages enter
-/// machine code with, so the three words only a debug build or a test
-/// uses sit at the top. Word 23 named the closure sites until they moved
-/// into the code zone beside their bodies (`jit::closures`); nothing
-/// reads or writes it.
+/// Word 23 is free, kept for what the later stages enter machine code
+/// with, so the three words only a debug build or a test uses sit at the
+/// top. It named the closure sites until they moved into the code zone
+/// beside their bodies (`jit::closures`); nothing reads or writes it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BlockWord {
     /// The leaf shim's address, which `call_leaf` calls. Words 0, 2 and 3,
@@ -79,7 +79,9 @@ pub(crate) enum BlockWord {
     /// cell names as its entry too.
     PolymorphicStub = 16,
     /// The exit's walk over the return addresses on the native stack: the
-    /// address of the next one to materialize the frame of.
+    /// address of the next one to materialize the frame of; and the cut's
+    /// (`assemble_cut_stub`), the address of the next one to hand the cut,
+    /// which ends before any exit's walk begins.
     WalkCursor = 17,
     /// An address inside the code an exit left, which names the body of
     /// the innermost frame (`Roles::exit_code_address`).
@@ -107,6 +109,18 @@ pub(crate) enum BlockWord {
     /// machine entry of the block a closure's code id names
     /// (`targets::assemble_accessor_stubs`).
     MachineEntries = 24,
+    /// The cut stub's address (`assemble_cut_stub`), which a
+    /// `NonLocalReturn`'s template calls.
+    CutStub = 25,
+    /// The native stack pointer the cut resumes machine code with: the
+    /// one the home's own return leaves (`jit::cut::CutAnswer`).
+    CutStackPointer = 26,
+    /// The frame register the cut resumes machine code with: the home's
+    /// register 0, as the home's caller left it for its callee.
+    CutFrameRegister = 27,
+    /// The value the cut's `^` returns, which machine code resumes with in
+    /// the leaf result's register, as a return leaves it.
+    CutValue = 28,
     /// The sends code compiled to count them called compiled code through
     /// (`JitStatistics::compiled_calls`).
     CompiledCalls = 29,
@@ -462,6 +476,87 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
 
 /// The bytes a return address takes on the native stack.
 const RETURN_ADDRESS_BYTES: i32 = 8;
+
+/// The cut stub, which a `NonLocalReturn`'s template calls with the
+/// program counter in the leaf result's register, the block's register 0
+/// in the frame register, and its own return address on top of the native
+/// stack, which names the block's body (`jit::cut`). It hands the cut the
+/// three (`Leaf::Cut`), then each return address down the native stack in
+/// turn, from the block's own -- the word above the stub's -- with the
+/// word it lies in and the word above that, the next one down
+/// (`Leaf::CutFrame`), until the cut answers. On `cut::EXIT` it returns,
+/// nothing changed, and the template exits at the `NonLocalReturn`; on an
+/// address -- the home's own return address, the frames above the home
+/// and the home popped -- it never returns, but resets the native stack
+/// pointer to the one that return leaves, loads the frame register and
+/// the value the cut wrote into the block, and jumps there, as the home's
+/// `ret` would have: into the code after the call of the home's caller's
+/// send, which stores the value, or into the entry or the call stub.
+pub(crate) fn assemble_cut_stub(abi: Abi) -> Assembled {
+    let mut macro_assembler = MacroAssembler::new(abi);
+    let roles = macro_assembler.roles();
+    let cursor = macro_assembler.block_word(BlockWord::WalkCursor);
+    let stack_pointer = macro_assembler.block_word(BlockWord::CutStackPointer);
+    let frame_register = macro_assembler.block_word(BlockWord::CutFrameRegister);
+    let value = macro_assembler.block_word(BlockWord::CutValue);
+    let answer = roles.leaf_result;
+    // Two scratch registers, neither the idiom scratch register a leaf
+    // call's sequence uses: the word the walk stands at, and the next
+    // return address down.
+    let (slot, next) = (roles.send_cells, roles.send_entry);
+    let word_at = |base, displacement| Memory { base, displacement };
+    let assembler = macro_assembler.assembler();
+    let (walk, decided, refused) = (assembler.label(), assembler.label(), assembler.label());
+    assembler.load(
+        Width::Word64,
+        roles.return_address,
+        word_at(roles.stack_pointer, 0),
+    );
+    macro_assembler.call_leaf(
+        Leaf::Cut.index(),
+        [
+            Operand::Register(roles.frame),
+            Operand::Register(answer),
+            Operand::Register(roles.return_address),
+        ],
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(answer, i32::from(super::cut::EXIT));
+    assembler.jump_if(Condition::Equal, refused);
+    assembler.move_register(slot, roles.stack_pointer);
+    assembler.add_immediate(slot, RETURN_ADDRESS_BYTES);
+    assembler.store(Width::Word64, cursor, slot);
+    assembler.bind(walk);
+    assembler.load(Width::Word64, slot, cursor);
+    assembler.load(Width::Word64, roles.return_address, word_at(slot, 0));
+    assembler.load(Width::Word64, next, word_at(slot, RETURN_ADDRESS_BYTES));
+    macro_assembler.call_leaf(
+        Leaf::CutFrame.index(),
+        [
+            Operand::Register(roles.return_address),
+            Operand::Register(slot),
+            Operand::Register(next),
+        ],
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(answer, i32::from(super::cut::CONTINUE));
+    assembler.jump_if(Condition::NotEqual, decided);
+    assembler.load(Width::Word64, slot, cursor);
+    assembler.add_immediate(slot, RETURN_ADDRESS_BYTES);
+    assembler.store(Width::Word64, cursor, slot);
+    assembler.jump(walk);
+    assembler.bind(decided);
+    assembler.compare_immediate(answer, i32::from(super::cut::EXIT));
+    assembler.jump_if(Condition::Equal, refused);
+    assembler.move_register(next, answer);
+    assembler.load(Width::Word64, roles.frame, frame_register);
+    assembler.load(Width::Word64, answer, value);
+    assembler.load(Width::Word64, roles.stack_pointer, stack_pointer);
+    assembler.jump_register(next);
+    assembler.bind(refused);
+    assembler.return_();
+    finish_stub(macro_assembler)
+}
 
 /// The miss stub, which a send's cell names for a method whose body has no
 /// machine code yet, and which the polymorphic and megamorphic stubs end

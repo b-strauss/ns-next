@@ -1,0 +1,77 @@
+/// A `^` from a block run by machine code whose home lies below an
+/// `ensure:` or `ifCurtailed:` activation: the cut meets the activation's
+/// unwind marker and exits, and the interpreter's unwinder runs the
+/// pending block exactly once, before the home returns, in the order it
+/// runs it for an interpreted `^` -- the inner of two nested `ensure:`s
+/// first. An `ifCurtailed:` block runs only on that unwind, an `ensure:`
+/// block on a normal end too; and an `ensure:` activation below the
+/// home, which the cut does not reach, runs its block once on its normal
+/// end after the cut. `round:` runs once a round, so that the bodies are
+/// compiled at their second entry and the later rounds run them in
+/// machine code (`docs/design/execution.md`, "Stage 4: closures,
+/// non-local return, allocation and the barrier").
+class NonLocalReturnThroughEnsure = Object new (
+  |
+    private transcript ::= nil.
+  |
+) (
+  /// Answers the first element of `numbers` above `bound`, or 0, through
+  /// a `^` out of `do:` inside an `ensure:`'s protected block.
+  firstOf: numbers above: bound = (
+    [numbers do: [:each | each > bound ifTrue: [^each]]] ensure: [transcript show: ' ensured'].
+    ^0.
+  )
+
+  /// Answers the first element of `numbers` above `bound`, or 0, through
+  /// a `^` out of `do:` inside an `ifCurtailed:`'s protected block.
+  curtailed: numbers above: bound = (
+    ^[
+      numbers do: [:each | each > bound ifTrue: [^each]].
+      0.
+    ] ifCurtailed: [transcript show: ' curtailed'].
+  )
+
+  /// Answers the first element of `numbers` above `bound`, or 0, through
+  /// a `^` out of `do:` inside two nested `ensure:`s.
+  nested: numbers above: bound = (
+    [
+      [numbers do: [:each | each > bound ifTrue: [^each]]] ensure: [transcript show: ' inner'].
+    ] ensure: [transcript show: ' outer'].
+    ^0.
+  )
+
+  /// Answers the first element of `numbers` above `bound`, or 0, through
+  /// a `^` out of `do:`, with no `ensure:` between.
+  plainFirstOf: numbers above: bound = (
+    numbers do: [:each | each > bound ifTrue: [^each]].
+    ^0.
+  )
+
+  /// Shows one line of what the returns of round `index` answer.
+  round: index = (
+    |
+      numbers = {index. index + 2. index + 5}.
+      below ::= nil.
+    |
+    transcript show: 'round ' , index printString , ':'.
+    transcript show: ' ' , (self firstOf: numbers above: index + 1) printString.
+    transcript show: ' ' , (self firstOf: numbers above: 100) printString.
+    transcript show: ' ' , (self curtailed: numbers above: index + 1) printString.
+    transcript show: ' ' , (self curtailed: numbers above: 100) printString.
+    transcript show: ' ' , (self nested: numbers above: index + 1) printString.
+    below:: [self plainFirstOf: numbers above: index + 1] ensure: [transcript show: ' below'].
+    transcript show: ' ' , below printString.
+    transcript newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      index ::= 0.
+    |
+    transcript:: platform transcript.
+    [index < 4] whileTrue: [
+      self round: index.
+      index:: index + 1.
+    ].
+  )
+)

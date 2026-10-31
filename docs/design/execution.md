@@ -1022,6 +1022,17 @@ its value is never handed to the superclass as the clause's argument
 (`tests/vm_initializer.rs`'s
 `a_return_inside_a_block_in_a_clause_argument_escapes_instantiate`).
 
+**Machine code cuts the `^` that needs no unwinder.** A `^` from a
+block whose home lies among the compiled frames of the current stretch
+of machine code, with no activation carrying an unwind marker between
+and a home that catches a return, is carried out by machine code itself
+("Stage 4: closures, non-local return, allocation and the barrier"
+below, the cut): there is no block to run and no continuation to abandon
+on its way, so it pops what the unwinder would pop, divorcing as each
+pop divorces, and returns from the home as the unwinder's arrival does.
+Every other `^` in machine code exits at its `NonLocalReturn`, and the
+interpreter raises it here.
+
 A method body's own `^` is an ordinary `Return` and raises no signal. The
 observable discipline — a block invoked after its home has returned gets
 a `CannotReturn` — comes from the pop, which divorces a reified home on every exit
@@ -9932,19 +9943,21 @@ compiled callee as a compiled send does ("The entry at a send" below).
 On x64 a body is compiled at its second entry, and every compiled body
 is entered wherever it runs: at a send, a push and a frame returned to.
 Its machine
-code runs until the first instruction that has no template -- a closure,
-an allocation, a non-local return, a send whose call is refused -- where
-it exits and the interpreter runs that instruction and the rest of the
-body; a cached send calls through its site's cell into the callee's
+code runs until an instruction it cannot carry out -- one with no
+template, a send whose call is refused, a non-local return it cannot
+cut -- where it exits and the interpreter runs that instruction and the
+rest of the body; a cached send calls through its site's cell into the callee's
 machine code or a stub, the callee returns by `ret`, and an exit at any
 depth of compiled frames materializes all of them before the interpreter
 runs. Only x64 has an encoder: the JIT is compiled where
 `crates/ns-runtime/build.rs` sets `cfg(ns_jit)`, on x64 alone, the one
 line the AArch64 port changes; elsewhere `jit::available` answers `false`
-and every body stays interpreted. What the design names beyond this --
-closures, non-local return, allocation and the write barrier, on-stack
-replacement, the register cache, compacting the zone, the AArch64
-encoder -- is stages 4 to 7, still planned. "What the entry at a send
+and every body stays interpreted. Closures, allocation and the write
+barrier, and non-local return run in machine code as stage 4 describes
+("Stage 4: closures, non-local return, allocation and the barrier"
+below); what the design names beyond them -- compacting the zone,
+on-stack replacement, the register cache, the AArch64 encoder -- is
+still planned. "What the entry at a send
 moved" has the measurement of the entry, "What sends in machine code
 moved" that of stage 3, "What the baseline JIT's foundation moved" that
 of the first two.
@@ -11281,16 +11294,43 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   a forcing in Rust needs a continuation of its own, which no compiled
   call carries, and would cost an exit per future a clause's end forces.
 - **Non-local return is cut by a routine of its own, as Cog's
-  `ceNonLocalReturn` cuts it** (`cointerp.c:12761-13100`): machine code
-  calls the cut, which walks the compiled frames of the current stretch
-  by their return addresses, as the exit's walk does, finds the home's
-  activation among them with no unwind marker's activation between,
-  divorces every reified frame it passes, takes their counts off the
-  depth count and answers where machine code resumes -- the home's return
-  address and stack pointer. Otherwise it answers that machine code exits,
-  and the one unwinder carries the unwind on ("Unwinding" above). The cut
-  runs no Newspeak code, never collects and never pushes; it is the one
-  call that reads and pops other activations, which no leaf may.
+  `ceNonLocalReturn` cuts it** (`cointerp.c:12761-13100`; `jit/cut.rs`):
+  a `NonLocalReturn`'s template calls the cut stub
+  (`stubs::assemble_cut_stub`, `BlockWord::CutStub`) with its program
+  counter. The cut takes the block's home as `raise_return` takes it,
+  from the closure its frame holds, and declines at once a body that is
+  no block's, a block that is the stretch's entry frame, and a home not
+  running, suspended or below the stretch's entry frame. Then it walks
+  the compiled frames of the current stretch by their return addresses,
+  innermost first: Rust reads no native stack, so the stub hands it each
+  return address with the word it lies in and the word above it, one
+  leaf call per frame (`Leaf::CutFrame`), and the return address names
+  the caller and the send it stopped at, whose argument slots the callee
+  lies on -- a block past them, as the exit's walk places it. A caller
+  whose code carries an unwind marker -- `ensure:`, `ifCurtailed:`,
+  `on:do:`, the `ifCurtailed:` a future's `resolve` evaluates its
+  computation inside -- a return address into a stub, and the stretch's
+  entry frame reached first end the walk with nothing changed, and so
+  does a home that catches no return, an initializer's. The home found,
+  every frame above it and the home itself are popped as their returns
+  pop them: a reified frame is divorced with the program counter it
+  stopped at -- the `NonLocalReturn`'s for the block, its send's for
+  each other -- and each frame's count, which its prologue added, is
+  taken off the depth count. Machine code resumes where the home's own
+  `ret` would have gone: at the home's return address, the stack pointer
+  above it, the frame register at the home's register 0 and the value in
+  the leaf result's register (`BlockWord::CutStackPointer`,
+  `CutFrameRegister`, `CutValue`) -- in its caller's code after the
+  call, which stores the value as the send's, or in the entry or the
+  call stub, which hand it to the run loop or the interpreter's send as
+  the home's return would. Where the cut declines, the stub returns and
+  the template exits at the `NonLocalReturn`, and the interpreter's one
+  unwinder carries the return ("Unwinding" above), so that a `^` through
+  an `ensure:` runs its block exactly once, in the interpreter's order,
+  and one whose home has returned raises `cannotReturn`
+  (`goldens/runtime/jit/non_local_return*.ns`). The cut runs no Newspeak
+  code, never collects and never pushes; it is the one routine that
+  reads and pops other activations, which no leaf may.
 
 ### Tests
 

@@ -439,6 +439,14 @@ send but the send re-executed. No leaf reifies a frame machine code
 pushed whose code reifies none (`MachineFrame::reifies`), since its
 return divorces nothing and its frame object would stay married to a
 popped offset; a debug build asserts it as the leaf's view is released.
+The cut (`cut.rs`), which carries out a non-local return in machine
+code, is the one routine that reads and pops activations other than
+its own: it runs no Newspeak code, never collects, never pushes, reads
+only the compiled frames of the current stretch and pops only them --
+each as its return pops it, a reified one divorced and its count taken
+off -- and changes nothing before it has found the home among them with
+no unwind marker's activation between, answering the exit otherwise, so
+that the interpreter's one unwinder carries the return.
 A new instruction is one arm of `jit::baseline::lower` plus the
 macro-assembler idioms it lacks, never a second dispatch; the run loop
 enters machine code through `jit::entered` and `jit::resumed`, a send it

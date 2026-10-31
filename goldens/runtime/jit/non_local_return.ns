@@ -1,0 +1,91 @@
+/// A `^` from a block once machine code runs it
+/// (`docs/design/execution.md`, "Stage 4: closures, non-local return,
+/// allocation and the barrier"): machine code cuts a return whose home
+/// lies in its own stretch of compiled frames, with no unwind marker's
+/// activation between, popping the frames above the home and the home,
+/// and goes on in the home's caller at the send that called the home.
+/// Out of `do:`, out of the kernel's own `^` in `detect:ifNone:`, out of
+/// a block nested in a block, out of a block a method two sends deep
+/// calls, into a caller that goes on computing with the value, and into
+/// `main:args:`, which runs once and so stays interpreted, its send
+/// calling the home through the call stub, which the cut returns into;
+/// and blocks whose `^` is never taken, whose homes return normally.
+/// `round:` runs once a round, so that the bodies are compiled at their
+/// second entry and the later rounds cut in machine code.
+class NonLocalReturn = Object new () (
+  /// Answers the first element of `numbers` above `bound`, through a `^`
+  /// out of the block `do:` sends `value:`, or 0 when there is none.
+  firstOf: numbers above: bound = (
+    numbers do: [:each | each > bound ifTrue: [^each]].
+    ^0.
+  )
+
+  /// Answers the first element of `numbers` above `bound`, or 0, through
+  /// the `^` out of `do:` of the kernel's `detect:ifNone:`.
+  detectIn: numbers above: bound = (
+    ^numbers detect: [:each | each > bound] ifNone: [0].
+  )
+
+  /// Answers the first pair of elements of `numbers` whose sum is above
+  /// `bound`, as the first times 100 plus the second, through a `^` out
+  /// of a block nested in a block, or 0 when there is none.
+  pairIn: numbers above: bound = (
+    numbers do: [:each | numbers do: [:other | each + other > bound ifTrue: [^each * 100 + other]]].
+    ^0.
+  )
+
+  /// Answers the first of 1 to 10 above `bound`, through a `^` out of a
+  /// block `inner:` calls, which `outer:` calls, or -1 when there is
+  /// none.
+  deepAbove: bound = (
+    self outer: [:value | value > bound ifTrue: [^value]].
+    ^-1.
+  )
+
+  /// Answers what `inner:` answers for `action`.
+  outer: action = (
+    ^self inner: action.
+  )
+
+  /// Sends `action` `value:` with each of 1 to 10, then answers 0.
+  inner: action = (
+    1 to: 10 do: [:index | action value: index].
+    ^0.
+  )
+
+  /// Answers one line of what the returns of round `index` answer.
+  round: index = (
+    |
+      numbers = {3. 1 + index. 7. 2 * index}.
+    |
+    ^{
+      self firstOf: numbers above: 4.
+      self firstOf: numbers above: 100.
+      self detectIn: numbers above: index.
+      self detectIn: numbers above: 100.
+      self pairIn: numbers above: 9 + index.
+      self pairIn: numbers above: 100.
+      self deepAbove: index + 3.
+      self deepAbove: 20.
+      (self firstOf: numbers above: 2) + 1000.
+    }.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      index ::= 0.
+    |
+    [index < 4] whileTrue: [
+      transcript show: 'round ' , index printString , ':'.
+      (self round: index) do: [:each |
+        transcript
+            show: ' ';
+            show: each printString.
+      ].
+      transcript show: ' ' , (self firstOf: {index. 9} above: 5) printString.
+      transcript newLine.
+      index:: index + 1.
+    ].
+  )
+)

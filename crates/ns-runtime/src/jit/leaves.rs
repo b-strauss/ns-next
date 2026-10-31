@@ -12,7 +12,10 @@
 //! write barrier's remembering of an old object, the cold check of an
 //! own-slot instruction, the divorce of a reified frame that retains its
 //! registers at its return, the refill of a `MakeClosure`'s code ids, and
-//! the exit's materialization of the frames machine code pushed. A
+//! the exit's materialization of the frames machine code pushed. Beside
+//! them the table holds the cut's two steps (`jit::cut`), which are no
+//! leaves by that rule: they read and pop the compiled frames of the
+//! current stretch, as no leaf may. A
 //! template or a stub names one by its index in `table` (`Leaf::index`),
 //! and every call through the table is counted once
 //! (`JitStatistics::leaf_calls`).
@@ -32,6 +35,7 @@ use crate::vm::{
     load_literal_into, make_future_into,
 };
 
+use super::cut::{cut, cut_frame};
 use super::macro_assembler::LeafIndex;
 use super::materialize;
 
@@ -81,6 +85,11 @@ pub(crate) enum Leaf {
     /// Decides the `resolve` a future `ResolveFuture` met calls
     /// (`forcing`).
     Forcing = 14,
+    /// Sets out on the cut of a non-local return (`cut::cut`).
+    Cut = 15,
+    /// Takes the cut's walk one compiled frame further down
+    /// (`cut::cut_frame`).
+    CutFrame = 16,
 }
 
 impl Leaf {
@@ -107,7 +116,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 15] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 17] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -127,6 +136,8 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 15] {
         counted!(closure_site),
         counted!(outer_local_site),
         counted!(forcing),
+        counted!(cut),
+        counted!(cut_frame),
     ]
 }
 

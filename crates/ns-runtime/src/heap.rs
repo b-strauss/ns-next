@@ -9067,6 +9067,17 @@ impl<'gc> Heap<'gc> {
             .map(|offset| self.activation_handle(offset))
     }
 
+    /// The header offset of the stack frame `frame` is married to, as
+    /// `frame_activation` finds it, without minting a handle: the frame
+    /// may be one machine code pushed, whose header its call has not
+    /// written whole, which no handle may name before an exit or a leaf
+    /// writes it (`write_machine_frame`). The cut compares it with the
+    /// offsets of the compiled frames it walks (`jit::cut`).
+    #[cfg(ns_jit)]
+    pub(crate) fn married_offset_of(&self, frame: FrameReference<'gc>) -> Option<u32> {
+        self.married_offset(self.frame_words(frame))
+    }
+
     // ---------- The safepoint ----------
 
     #[inline]

@@ -1,0 +1,6 @@
+stdout = '''
+round 0: 0 cannotReturn: the enclosing method activation has already returned 0 cannotReturn: the enclosing method activation has already returned
+round 1: 1 cannotReturn: the enclosing method activation has already returned 1 cannotReturn: the enclosing method activation has already returned
+round 2: 2 cannotReturn: the enclosing method activation has already returned 2 cannotReturn: the enclosing method activation has already returned
+round 3: 3 cannotReturn: the enclosing method activation has already returned 3 cannotReturn: the enclosing method activation has already returned
+'''

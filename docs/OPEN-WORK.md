@@ -462,6 +462,18 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     them -- now enters through it; its placement is to be measured again
     once stage 4 has made a closure's activation a compiled call, which
     leaves the bridge to fewer pushes.
+  - **The cut exits at every unwind marker, `on:do:`'s too, and calls a
+    leaf per frame it passes** (`jit/cut.rs`; [execution.md](design/execution.md),
+    "Stage 4: closures, non-local return, allocation and the barrier").
+    An `on:do:` activation runs nothing when an unwind pops it -- the
+    unwinder answers a block only for `ensure:` and `ifCurtailed:` -- so
+    the cut could pop it as it pops any frame, and an `ensure:` or
+    `ifCurtailed:` whose block has run (`complete` set) likewise; a `^`
+    out of a protected block now exits instead. And Rust reads no native
+    stack, so the walk to the home costs a leaf call per frame above it:
+    whether a `^` from a block several calls deep below its home is worth
+    a walk in machine code that hands the frames over at once is to be
+    measured with the stage.
   - **The code zone never frees code.** The zone only appends: a body
     abandoned at its exit budget, one compiled again into another zone or
     against another feedback base, and one whose mixin's row a full
