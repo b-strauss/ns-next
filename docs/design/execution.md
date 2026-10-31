@@ -10024,9 +10024,10 @@ line the AArch64 port changes; elsewhere `jit::available` answers `false`
 and every body stays interpreted. Closures, allocation and the write
 barrier, and non-local return run in machine code as stage 4 describes
 ("Stage 4: closures, non-local return, allocation and the barrier"
-below); what the design names beyond them -- compacting the zone,
-on-stack replacement, the register cache, the AArch64 encoder -- is
-still planned. "What the entry at a send
+below), and the zone is compacted when a compile finds it full ("The
+code zone" below); what the design names beyond them -- on-stack
+replacement, the register cache, the AArch64 encoder -- is still
+planned. "What the entry at a send
 moved" has the measurement of the entry, "What sends in machine code
 moved" that of stage 3, "What the baseline JIT's foundation moved" that
 of the first two.
@@ -10321,24 +10322,26 @@ of the first two.
     count").
 
   A body the compiler refuses -- more instructions
-  than a `u16` counts, code the assembler cannot lay out, no room left in
-  the zone -- stays interpreted for good, and so does one entered while
-  the JIT is off (`NS_NEXT_NO_JIT=1` for a process,
-  `Interpreter::set_jit_enabled` for a test): enabling the JIT later does
-  not revive it, so that a disabled JIT costs every later push only the
-  compare. A body refused for want of room is planned to count again
-  instead, once the zone is compacted ("Planned: the baseline JIT", "The
-  code zone"). A body compiled by another interpreter, whose slot names
+  than a `u16` counts, code the assembler cannot lay out, more bytes than
+  the zone holds past its stubs -- stays interpreted for good, and so
+  does one entered while the JIT is off (`NS_NEXT_NO_JIT=1` for a
+  process, `Interpreter::set_jit_enabled` for a test): enabling the JIT
+  later does not revive it, so that a disabled JIT costs every later push
+  only the compare. A body that found no room left in the zone counts its
+  entries again instead, and the zone is compacted ("Planned: the
+  baseline JIT", "The code zone"). A body compiled by another interpreter, whose slot names
   another zone's identity, is compiled again into this one rather than
   entered at an offset that means nothing here. A panic inside a leaf
   never unwinds through machine code: it aborts the process at the shim,
   so a debug build's dead-register read inside a leaf ends the process
   rather than failing one test.
-- **Two stress modes** run every golden through machine code: under
+- **Three stress modes** run every golden through machine code: under
   `NS_NEXT_STRESS_JIT` every body is compiled at its first entry and
-  entered even when its machine code exits at once, and under
+  entered even when its machine code exits at once, under
   `NS_NEXT_STRESS_EXIT` every poll takes its exit as if a safepoint were
-  requested ([README.md](README.md), "Gates").
+  requested, and under `NS_NEXT_STRESS_ZONE` the zone is compacted at the
+  safepoints a schedule picks, every body no activation runs freed
+  ([README.md](README.md), "Gates").
   `crates/ns-runtime/tests/jit.rs` pins the trigger, the zone's identity,
   a full zone, a body exiting mid-way, the sends at every lexical depth
   and both `super` levels against the interpreter, the stubs, the
@@ -11136,98 +11139,102 @@ Literals are loaded through the heap's tables. A body's data words -- its
 after its code, reached relative to the instructions that read them, so
 a move would take them with the body and a free would free them with it.
 
-Today the zone only appends (`Zone.next_offset`, `jit/mod.rs`): a body
-abandoned at its exit budget, one compiled again into another zone or
-against another feedback base, and one whose mixin's row a full
-collection reclaimed all keep their bytes, and once the zone is full a
-compile is refused with `Refusal::ZoneFull` for good, so every body not
-yet compiled runs interpreted ([OPEN-WORK.md](../OPEN-WORK.md), "The code
-zone never frees code"). The default zone is 16 MiB
+The zone installs by appending (`Zone.next_offset`, `jit/mod.rs`), and
+is compacted, as Cog compacts its method zone, when a compile finds no
+room (`jit/zone.rs`), so a program that keeps compiling keeps doing so in
+a zone of fixed size. The default zone is 16 MiB
 (`jit::DEFAULT_ZONE_BYTES`), a first guess within the 128 MiB bound;
 Cog's default is 1,433,600 bytes (`defaultCogCodeSize`, `:6851-6856`).
-
-#### Planned: the zone is compacted as Cog compacts it
-
-Would change: a full zone frees code and compiles again, and a full
-collection frees the code of the bodies that died, so a program that
-runs for days keeps compiling in a zone of fixed size. Decided with the
-user on 2026-10-30, as the first of the six decisions that make
-everything that grows reclaimable (plan
+Decided with the user on 2026-10-30, as the first of the six decisions
+that make everything that grows reclaimable (plan
 `docs/superpowers/plans/2026-10-30-0103-jit-closures.md`, "Part 4d").
 
 - **The request.** A compile that finds no room sets
-  `JitState.compaction_requested` and the heap's safepoint request, and
-  the body goes back to counting its entries rather than being refused;
-  the run loop's safepoint (`Interpreter::safepoint`,
-  `interpreter/safepoint.rs`) serves the request before it serves a
-  collection. Machine code runs only inside `CodeZone::enter`, and a leaf
-  never reaches a safepoint, so no return address into the zone exists
-  there: moving a body needs no walk of the native stack. Cog likewise
-  only sets a flag when a compile finds no room
-  (`callForCogCompiledCodeCompaction`, `cointerp.c:12068-12074`, from a
-  failed compile such as `cogitX64SysV.c:4147-4149`) and compacts at its
-  next event check (`cointerp.c:65051-65054`). The refused compile also
-  sets `JitState.zone_exhausted`; while it holds, entries keep counting
-  but compile nothing, and a compaction that frees a quarter of the zone
-  clears it, else the next full collection does, so a zone full of
-  active code does not compact at every safepoint.
+  `JitState.compaction_requested` and the heap's safepoint request
+  (`jit::request_compaction`, called after every compile trigger that
+  holds the mutator), and the body goes back to counting its entries
+  (`JitSlot::forget`) rather than being refused; the run loop's safepoint
+  (`Interpreter::safepoint`, `interpreter/safepoint.rs`) serves the
+  request (`Mutator::compact_code_zone`) before it serves a collection.
+  Machine code runs only inside `CodeZone::enter`, and a leaf never
+  reaches a safepoint, so no return address into the zone exists there:
+  moving a body needs no walk of the native stack, and a debug build
+  asserts that no entry is in progress (`JitState.entries_in_progress`).
+  A compile from inside a leaf -- the miss leaf, the initializer leaf, a
+  future's `resolve` -- only sets the flags. Cog likewise only sets a flag
+  when a compile finds no room (`callForCogCompiledCodeCompaction`,
+  `cointerp.c:12068-12074`, from a failed compile such as
+  `cogitX64SysV.c:4147-4149`) and compacts at its next event check
+  (`cointerp.c:65051-65054`). The refused compile also sets
+  `JitState.zone_exhausted`, and records the bytes it needed
+  (`JitState.wanted_bytes`); while the exhaustion holds, entries keep
+  counting -- held at the entry that compiles -- but compile nothing, and
+  a compaction that leaves a quarter of the bodies' room free, and at
+  least what the refused compile needed, clears it, else the next full
+  collection does, so a zone full of active code neither assembles a hot
+  body again at every second entry nor compacts at every safepoint. A
+  body larger than the zone's whole room past its stubs is refused for
+  good (`Refusal::TooLarge`), since no compaction could make room for it.
 - **The usage counts** (`InstalledBody.usage`), Cog's `cmUsageCount`:
-  - a body is born at 2, what Cog's `initialMethodUsageCount` answers
-    for a method whose primitive has no machine-code generator
-    (`:8837-8850`);
-  - a cache cell or a machine entry row written to name it bumps it, up
-    to 3 -- only when a miss writes a cell (`jit::cell_entry`) or a push
-    writes a row (`jit::note_block_entry`), never on a call or an entry,
-    so the hot path is unchanged -- as Cog raises a linked send's target
-    while it is below `CMMaxUsageCount / 2`
-    (`incrementUsageOfTargetIfLinkedSend`, `:8697-8698`);
+  - a body is born at 2 (`zone::INITIAL_USAGE`), what Cog's
+    `initialMethodUsageCount` answers for a method whose primitive has no
+    machine-code generator (`:8837-8850`);
+  - a cache cell or a machine entry row written to name it raises it,
+    while it is below 3 (`zone::LINKED_USAGE_CEILING`) -- only when a
+    cell is written from its entry (`jit::cell_entry`) or a push writes a
+    row (`jit::note_block_entry`), never on a call or an entry, so the hot
+    path is unchanged -- as Cog raises a linked send's target while it is
+    below `CMMaxUsageCount / 2` (`incrementUsageOfTargetIfLinkedSend`,
+    `:8697-8698`); the check of the cells (`jit::expected_cell_entry`)
+    raises nothing, so that a debug build frees as a release one does;
   - a body with an activation on the activation stack or in a
-    suspension row is set to 7, `CMMaxUsageCount` (`:85`), as Cog's
+    suspension row (`Heap::active_codes`) is set to 7
+    (`zone::MAXIMUM_USAGE`, `CMMaxUsageCount`, `:85`), as Cog's
     `markMethodAndReferents` sets an active method (`:10073-10074`);
   - every compaction halves every survivor's count (`compactCompiledCode`,
     `:12756-12757`, `:12806-12807`).
 - **The freeing.**
   - These are always freed: a dead body (its `CompiledCode` no longer
-    upgrades: its mixin's row was freed or superseded), a body its slot
-    no longer names (abandoned, compiled again, or superseded), and a
-    body compiled against a feedback base that moved ([dispatch.md](dispatch.md),
-    "Code families").
+    upgrades: its mixin's row was freed or superseded) and a body its
+    slot no longer names (abandoned, compiled again, or compiled into
+    another zone).
   - Then bodies are freed by usage, every body whose count is at most 0,
     then at most 1, and so on below 7, until the free bytes -- the gap at
     the zone's end and the bodies marked free -- reach a quarter of the
-    zone (`freeOlderMethodsForCompaction`, `:12897-12927`). A body freed
-    this way goes back to counting its entries.
-  - A full collection frees the code of every body that died or that its
-    slot no longer names, without waiting for the zone to fill, as Cog's
-    full collection frees the machine code of every unmarked method
-    (`freeUnmarkedMachineCode`, `:7473-7505`, from `cointerp.c:54977`),
-    and requests a compaction once the bytes freed since the last one
-    reach a quarter of the zone (the count Cog keeps as
-    `methodBytesFreedSinceLastCompaction`, which `freeMethod` adds each
-    freed method's size to, `:12887`).
-  - An abandoned body is marked free at once: abandonment runs only
-    between entries, where no return address into the zone exists, and
-    a frame an exit left stopped in its code resumes interpreted, as
-    every frame stopped in freed code does (below).
+    bodies' room past the stubs, as Cog's zone size is its method zone's
+    past the trampolines, and what the refused compile needed
+    (`freeOlderMethodsForCompaction`, `:12897-12927`). A body freed this
+    way goes back to counting its entries.
+  - An abandoned body is marked free at once (`JitState::free_body`, which
+    removes its return sites): abandonment runs only between entries,
+    where no return address into the zone exists, and a frame an exit
+    left stopped in its code resumes interpreted, as every frame stopped
+    in freed code does (below).
+  - A freed body is skipped by every lookup (`installed`,
+    `installed_body_at`, `body_of`, `return_site`) until the next
+    compaction reclaims its bytes.
 - **The slide and the fix-ups**, in Cog's order (`compactCogCompiledCode`,
   `:5723-5743`):
   1. mark the active bodies (Cog's `markActiveMethodsAndReferents`,
      `cointerp.c:17709-17727`);
   2. free what is always freed;
   3. free by usage;
-  4. plan: each survivor, in ascending order, at the next address its
-     own alignment allows from the end of the stubs, which yields an
-     old-start to new-start table (`planCompaction`, `:13098-13115`) --
-     a body keeps its alignment so that its data words stay on cache
-     lines of their own;
+  4. plan (`zone::CompactionPlan`): each survivor, in ascending order, at
+     the next address its own alignment (`InstalledBody.alignment`)
+     allows from the end of the stubs (`Zone.bodies_start`), which
+     yields an old-start to new-start table (`planCompaction`,
+     `:13098-13115`) -- a body keeps its alignment so that its data words
+     stay on cache lines of their own;
   5. remap every address outside the bodies through the plan: every
      cache cell (the sites', the polymorphic blocks' and the global
-     rows') and every machine entry row. An address inside a survivor
-     moves by its delta, a freed body's entry becomes the miss stub's (a
-     freed body's row becomes empty), and a stub's address stays. This
-     comes before the bytes move, as Cog updates the stack zone and
-     relocates its methods' references before it copies
-     (`updateStackZoneReferencesToCompiledCodePreCompaction`,
+     rows', `InlineCaches::remap_cell_entries`) and every machine entry
+     row (`Heap::remap_machine_entries`, its bit beside it following). An
+     address inside a survivor moves by its delta; a freed body's entry
+     becomes the miss stub's -- what `cell_entry` answers for a body
+     counting its entries -- and a freed body's row becomes empty; a
+     stub's address stays. This comes before the bytes move, as Cog
+     updates the stack zone and relocates its methods' references before
+     it copies (`updateStackZoneReferencesToCompiledCodePreCompaction`,
      `cointerp.c:21546-21601`; `relocateMethodsPreCompaction`,
      `:13400-13418`);
   6. slide each survivor's bytes, code and data words, down in ascending
@@ -11238,16 +11245,20 @@ everything that grows reclaimable (plan
      return sites keyed by zone offset (a freed body's go), and the
      zone's next offset;
   8. halve every survivor's usage;
-  9. clear the request, and the exhaustion once a quarter is free.
+  9. clear the request, and the exhaustion once enough is free.
 
   A body is position-independent: stubs and leaves are reached through
   the entry block's words, callees through cells, and its data words
-  relative to `rip`. The entry block's lasting words name only stubs,
-  which sit at the zone's base and never move, so a compaction leaves the
-  block current. A compiled frame names its body by code and program
-  counter, never by address, so a frame stopped in a body the compaction
-  freed resumes interpreted (`jit::resumed`); keeping an active body, as
-  its count does, is only a matter of speed.
+  relative to `rip` (`zone`'s test
+  `a_body_assembled_at_two_offsets_is_the_same_bytes`). The entry block's
+  lasting words name only stubs, which sit at the zone's base and never
+  move, so a compaction leaves the block current, which the debug check
+  at every entry confirms. A compiled frame names its body by code and
+  program counter, never by address, so a frame stopped in a body the
+  compaction freed resumes interpreted (`jit::resumed`); keeping an
+  active body, as its count does, is only a matter of speed. A closure
+  site moves with its body and keeps what it holds: its code ids and
+  their epoch name no address.
 - **A refusal is not permanent.** `ZoneFull` refuses no body for good:
   after a compaction bodies compile again, as Cog forgets which methods
   it found uncoggable after every compaction (`nilUncoggableMethods`,
@@ -11255,13 +11266,36 @@ everything that grows reclaimable (plan
   its code cache is full (`share/compiler/compileBroker.cpp:2371-2377`),
   starts again once a collection's code unloading freed memory
   (`CodeCache::maybe_restart_compiler`, `share/code/codeCache.cpp:1083-1093`,
-  from `share/gc/shared/classUnloadingContext.cpp:121`). Only
-  a body past the `u16` instruction count or one the assembler cannot
-  lay out stays refused.
+  from `share/gc/shared/classUnloadingContext.cpp:121`). Only a body
+  past the `u16` instruction count, one the assembler cannot lay out and
+  one larger than the zone's room stay refused.
+- **The statistics** count the compactions, the bodies they freed and
+  the bytes they moved (`JitStatistics::zone_compactions`,
+  `freed_bodies`, `moved_bytes`), and `Interpreter::table_sizes` the
+  bytes, bodies and return sites the zone holds after them.
 - **A stress mode** (`NS_NEXT_STRESS_ZONE`, debug builds) compacts at
-  the safepoints its schedule picks, freeing every body that is not
-  active, so every golden runs with its bodies freed, compiled again and
-  moved.
+  the safepoints its schedule picks (`StressSchedule`, beside the collect
+  stress mode's), freeing every body that is not active
+  (`zone::Freeing::EveryInactiveBody`), so every golden runs with its
+  bodies freed, compiled again and moved; like the exit stress mode, it
+  forces the JIT on.
+
+#### Planned: the full collection frees code
+
+Would change: a full collection frees the code of the bodies that died,
+without waiting for the zone to fill. Decided with the compaction above.
+
+- A full collection frees the code of every body that died or that its
+  slot no longer names, and of every body compiled against a feedback
+  base that moved ([dispatch.md](dispatch.md), "Code families"), as Cog's
+  full collection frees the machine code of every unmarked method
+  (`freeUnmarkedMachineCode`, `:7473-7505`, from `cointerp.c:54977`),
+  and requests a compaction once the bytes freed since the last one
+  reach a quarter of the zone (the count Cog keeps as
+  `methodBytesFreedSinceLastCompaction`, which `freeMethod` adds each
+  freed method's size to, `:12887`). Today a full collection only clears
+  the zone's exhaustion (`JitState::note_full_collection`), and a dead
+  body's bytes wait for the next compaction a full zone asks for.
 
 ### Polls and the depth check
 

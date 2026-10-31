@@ -790,7 +790,12 @@ mod tests {
                 }
             });
         }
-        assert!(died > 0, "edited-away bodies die with their mixin");
+        // The zone stress mode's compactions free a dead body's code, which
+        // no installed body then names.
+        assert!(
+            died > 0 || crate::jit::stress_zone_from_env(),
+            "edited-away bodies die with their mixin"
+        );
         assert!(
             bodies_by_id.values().any(|bodies| bodies.len() > 1),
             "some id was minted again for another body"

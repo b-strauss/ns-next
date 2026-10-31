@@ -468,9 +468,13 @@ and a stub does what `Mutator::act_with_base` does for its target and
 nothing more. A row of the machine entry table, which the closure stubs
 jump through (`heap/machine_entries.rs`), is written only from the
 body its code id names, and cleared wherever that stops naming its
-machine code: the id freed, the body abandoned, the zone replaced, the
-JIT switched on or off -- a
+machine code: the id freed, the body abandoned or freed by a
+compaction, the zone replaced, the JIT switched on or off -- a
 stale row is a jump into another body's code.
+The code zone is compacted only at the run loop's safepoint, when no
+return address into it exists. A compaction remaps every cell, machine
+entry row and record that names an address in it, and a body holds no
+address of its own but those relative to `rip`.
 No word machine code reads or writes between two leaf calls lives inline
 in `Mutator`: frame registers and object fields lie in the activation
 stack's and the object space's reservations, the cells, the closure
@@ -525,7 +529,7 @@ every one runs on 18 threads.
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy for `aarch64-apple-darwin`, a target without an encoder, warning-free | when a change touches a type a size test pins; the end of a batch that changed the runtime |
-| `stress` | the suite under the eight stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `stress` | the suite under the nine stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew --no-daemon verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 

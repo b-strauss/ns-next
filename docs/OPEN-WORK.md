@@ -478,24 +478,21 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     whether a `^` from a block several calls deep below its home is worth
     a walk in machine code that hands the frames over at once is to be
     measured with the stage.
-  - **The code zone never frees code.** The zone only appends: a body
-    abandoned at its exit budget, one compiled again into another zone or
-    against another feedback base, and one whose mixin's row a full
-    collection reclaimed all keep their bytes until the zone is full,
-    after which nothing more compiles and every body not yet compiled
-    runs interpreted. The compaction [execution.md](design/execution.md)
-    designs ("The code zone") is unbuilt; when it is built, a body's data
-    words -- its closure sites, which lie right after its code
-    ("Stage 4: closures, non-local return, allocation and the barrier")
-    -- move and are freed with it. Part 4d's design closes it
-    ([execution.md](design/execution.md), "The code zone", "Planned: the
-    zone is compacted as Cog compacts it").
+  - **The code zone frees code only when it is full.** A compile that
+    finds no room has the zone compacted, Cog's way (`jit/zone.rs`), but
+    a body that died with its mixin's row, one abandoned, and one
+    compiled against a feedback base that moved keep their bytes until
+    then, and a full collection only clears the zone's exhaustion. Part
+    4d's design closes it (Task 19): a full collection frees the code of
+    the bodies that died and requests a compaction once a quarter of the
+    zone is freed ([execution.md](design/execution.md), "The code zone",
+    "Planned: the full collection frees code").
   - **A body shared by two interpreters would ping-pong between their
     zones.** A body's `JitSlot` names one zone, and `jit::note_entry`
     compiles a body whose slot names another into the running
     interpreter's, so two interpreters running one `CompiledCode` in turn
     would compile it again at every switch, each compile leaving its old
-    code in a zone that nothing reclaims before the zone is compacted. No
+    code in the other's zone until that zone is compacted. No
     body is run by two interpreters today; if code comes to be shared,
     the slot holds code per zone or the stale copy is reclaimed.
   - **`load_frame_register` has no unchecked variant.** Every frame

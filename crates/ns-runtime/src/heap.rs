@@ -6551,6 +6551,13 @@ impl<'gc> Heap<'gc> {
         self.machine_entries.names_entry(id.index())
     }
 
+    /// The machine entry the row of code id `id` names, 0 for none. For
+    /// tests.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_entry_of(&self, id: CodeId) -> u64 {
+        self.machine_entries.row(id.index())[machine_entries::RowWord::Entry as usize]
+    }
+
     /// Clears the machine entry `code`'s id names, if it has one: its
     /// machine code has been abandoned (`jit::abandon`).
     #[cfg(ns_jit)]
@@ -6559,6 +6566,31 @@ impl<'gc> Heap<'gc> {
         if let Some(id) = self.tables.code_ids.get(&key).copied() {
             self.machine_entries.clear(id.index());
         }
+    }
+
+    /// Rewrites every machine entry row through `plan`: a compaction of
+    /// the code zone moved the bodies the rows name, and cleared those of
+    /// the bodies it freed (`jit::zone`).
+    #[cfg(ns_jit)]
+    pub(crate) fn remap_machine_entries(&mut self, plan: &crate::jit::zone::CompactionPlan) {
+        self.machine_entries
+            .remap_entries(|entry| plan.remap_row(entry));
+    }
+
+    /// Every body an activation runs, on the activation stack or suspended
+    /// into its frame, a body as often as activations run it: what a
+    /// compaction of the code zone keeps (`jit::zone`).
+    pub(crate) fn active_codes(&self) -> Vec<Rc<CompiledCode>> {
+        let mut codes = Vec::new();
+        let mut activation = self.top_activation();
+        while let Some(running) = activation {
+            codes.push(self.activation_code(running));
+            activation = self.activation_sender(running);
+        }
+        for suspension in self.suspensions.rows.iter().flatten() {
+            codes.extend(self.frame_code(suspension.frame));
+        }
+        codes
     }
 
     /// Clears every machine entry: the code zone they lie in was replaced
@@ -9156,8 +9188,10 @@ impl<'gc> Heap<'gc> {
             .set(MachineWord::SafepointRequested, word);
     }
 
-    /// Asks the run loop's next safepoint to take its slow path.
-    fn request_safepoint(&mut self) {
+    /// Asks the run loop's next safepoint to take its slow path: an
+    /// allocation's limits, and a compile that found the code zone full
+    /// (`jit::request_compaction`).
+    pub(crate) fn request_safepoint(&mut self) {
         self.machine_words.set(MachineWord::SafepointRequested, 1);
     }
 

@@ -620,6 +620,34 @@ impl InlineCaches {
         self.global.refresh_entering(&mut self.cells, address, jit);
     }
 
+    /// Rewrites the entry address of every cell -- a site's own, a
+    /// polymorphic block's, a global row -- through `plan`: a compaction of
+    /// the code zone moved the bodies the cells name, and freed some, whose
+    /// cells now name the miss stub (`jit::zone`). Not written from the
+    /// entry, as every other write of a cell is: what the entry decided is
+    /// unchanged, only the address of the code it decided moved, and a
+    /// freed body's target is one `cell_entry` answers the miss stub for.
+    pub(crate) fn remap_cell_entries(&mut self, plan: &crate::jit::zone::CompactionPlan) {
+        for index in 0..self.sites.len() {
+            let cell = self.cells.site(index);
+            let entry = plan.remap(cell.entry);
+            if entry != cell.entry {
+                self.cells.write_site(index, Cell { entry, ..cell });
+            }
+        }
+        for (block, slots) in (0..).zip(&self.pool) {
+            for position in 0..slots.len() {
+                let cell = self.cells.block_cell(block, position);
+                let entry = plan.remap(cell.entry);
+                if entry != cell.entry {
+                    self.cells
+                        .write_block_cell(block, position, Cell { entry, ..cell });
+                }
+            }
+        }
+        self.global.remap_entries(&mut self.cells, plan);
+    }
+
     /// Moves site `index` on after a miss found `target` for `guard`
     /// (`docs/design/dispatch.md`, "A site's states"): vacant to
     /// monomorphic, monomorphic to a polymorphic block of four in the order
@@ -1108,6 +1136,18 @@ impl GlobalCache {
                         ..found
                     },
                 );
+            }
+        }
+    }
+
+    /// Rewrites every mirror row's entry address through `plan`:
+    /// `InlineCaches::remap_cell_entries`'s global part.
+    fn remap_entries(&self, cells: &mut Cells, plan: &crate::jit::zone::CompactionPlan) {
+        for row in 0..self.entries.len() {
+            let found = cells.global_row(row);
+            let entry = plan.remap(found.entry);
+            if entry != found.entry {
+                cells.write_global_row(row, GlobalRow { entry, ..found });
             }
         }
     }
@@ -2261,6 +2301,7 @@ pub(crate) fn decide_at<'gc>(
         }
         let base = mutator.feedback_base_for(code);
         jit::note_entry(&mut mutator.jit, code, base, None);
+        jit::request_compaction(mutator);
         let address = jit::machine_entry_address(&mutator.jit, code, base);
         mutator
             .caches
@@ -2326,6 +2367,7 @@ pub(crate) fn decide_at<'gc>(
         base
     };
     jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
+    jit::request_compaction(mutator);
     let address = jit::machine_entry_address(&mutator.jit, &method.code, base);
     // The cells the decision went through follow the JIT's state either
     // way: the callee's machine entry once it has one, the refusing stub
@@ -2866,7 +2908,7 @@ fn expected_cell(
     };
     Ok(Some(Cell {
         guard,
-        entry: jit::cell_entry(jit, target),
+        entry: jit::expected_cell_entry(jit, target),
         level: cell_level(target),
         chain_start: chain_start_word(chain_start, target),
     }))

@@ -23,9 +23,11 @@
 //! (`jit::abandon`), and the replacement of the zone
 //! (`Interpreter::set_jit_zone_bytes`), which clears every row, as a switch
 //! of the JIT on or off does (`Interpreter::set_jit_enabled`), since a
-//! body pushed while it is off is refused without being abandoned. A body
-//! is never compiled into the same zone twice, so a row's entry, once
-//! written, changes only by being cleared.
+//! body pushed while it is off is refused without being abandoned. A
+//! compaction of the zone rewrites every row through its plan: a moved
+//! body's entry moves with it, and a freed body's row is cleared
+//! (`Heap::remap_machine_entries`). A row's entry, once written, changes
+//! only so, or by being cleared.
 //!
 //! Beside the rows, Rust keeps one bit per row, set while the row names a
 //! machine entry (`MachineEntries::names_entry`), which every write of a
@@ -195,6 +197,32 @@ impl MachineEntries {
                 slots.fill(0);
             }
             self.mark_names_entry(row, false);
+        }
+    }
+
+    /// Rewrites the entry of every row that names one through `remap`,
+    /// clearing a row it answers 0 for: a compaction of the code zone moved
+    /// the bodies, and freed some (`jit::zone`). Only the rows whose bit is
+    /// set are read.
+    #[cfg(ns_jit)]
+    pub(crate) fn remap_entries(&mut self, remap: impl Fn(u64) -> u64) {
+        for word in 0..self.named_entries.len() {
+            let mut bits = self.named_entries[word];
+            while bits != 0 {
+                let row = word * 64 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let mut words = self.row(row);
+                let entry = remap(words[RowWord::Entry as usize]);
+                if entry == words[RowWord::Entry as usize] {
+                    continue;
+                }
+                if entry == 0 {
+                    self.clear(row);
+                } else {
+                    words[RowWord::Entry as usize] = entry;
+                    self.record(row, words);
+                }
+            }
         }
     }
 

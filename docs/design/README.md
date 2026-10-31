@@ -412,10 +412,11 @@ NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace     # every instruction in i
 NS_NEXT_STRESS_SUSPEND=1 cargo nextest run --workspace  # suspending every activation into its frame at safepoints
 NS_NEXT_STRESS_JIT=1 cargo nextest run --workspace      # every body compiled at its first entry, and entered at every push even when its machine code exits at once
 NS_NEXT_STRESS_EXIT=1 cargo nextest run --workspace     # every poll in machine code -- every backward jump it takes -- taking its exit, as if a safepoint were requested
+NS_NEXT_STRESS_ZONE=1 cargo nextest run --workspace     # compacting the code zone at safepoints, every body no activation runs freed
 NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every body interpreted, in every build
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
-# `cargo xtask gates stress` runs the nine suites at once, each into its own
+# `cargo xtask gates stress` runs the ten suites at once, each into its own
 # log, `.temp/stress-NO_JIT.log` the last's
 ```
 
@@ -424,7 +425,7 @@ gates <group>`, its builds included, on the development machine on
 2026-10-29: `images` 14 s, `caches` 4 s, `benchmarks` 70 s,
 `release-checks` 49 s, `codegen` 61 s (about 6 s of it the shipped-code
 step its build needed), `stress` 802 s -- 791 s the suite under the eight
-stress modes and with the JIT off at once, 7 s `run-corpus` plain and
+stress modes it had then and with the JIT off at once, 7 s `run-corpus` plain and
 about half a second under each mode -- so `end-of-batch` about seventeen
 minutes in all.
 
@@ -441,11 +442,12 @@ its own, so cheap inputs share one. What bounds the suite's wall time is
 the longest test that cannot be split: the compilations of a body past the
 register ceiling, a few seconds each in a debug build.
 
-The invocations above are Git Bash syntax; the eight stress modes, sixteen
-of them, do anything only in a debug build, `NS_NEXT_NO_JIT` in every
+The invocations above are Git Bash syntax; the nine stress modes do
+anything only in a debug build, `NS_NEXT_NO_JIT` in every
 build ([memory.md](memory.md), "The move stress mode", "The gates the collector needs", "Generations";
 [dispatch.md](dispatch.md), "Invalidation"; [execution.md](execution.md),
-"The compact instruction encoding", "Suspending and resuming"). Clippy's gate
+"The compact instruction encoding", "Suspending and resuming", "The code
+zone"). Clippy's gate
 includes `min_ident_chars` (`clippy.toml`), which refuses identifiers of one
 or two characters: names are written out
 (`CLAUDE.md`, "Conventions"). It also includes `cast_possible_truncation` and

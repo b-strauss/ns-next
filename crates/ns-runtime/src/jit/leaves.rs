@@ -440,6 +440,7 @@ fn initializer_in(
             }
             let base = mutator.feedback_base_for(&code);
             jit::note_entry_by_call(&mut mutator.jit, &code, base, None);
+            jit::request_compaction(mutator);
             let Some(address) = jit::machine_entry_address(&mutator.jit, &code, base) else {
                 return 0;
             };
@@ -504,6 +505,7 @@ fn forcing_in(
         } => {
             let base = mutator.feedback_base_for(&method.code);
             jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
+            jit::request_compaction(mutator);
             let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
                 return 0;
             };

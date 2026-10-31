@@ -196,6 +196,12 @@ impl World {
         self.mutator.heap.collection_requested()
     }
 
+    /// Whether a compile found the code zone full since its last
+    /// compaction (`Interpreter::safepoint`).
+    pub(crate) fn code_zone_compaction_requested(&self) -> bool {
+        self.mutator.jit.compaction_requested()
+    }
+
     /// Sets the collection floor and the next limit to `floor` bytes of
     /// objects (`Interpreter::set_collection_floor`).
     #[cfg(debug_assertions)]
@@ -355,6 +361,9 @@ impl World {
         let mut forwarder = self.mutator.heap.compact();
         self.forward_step_state(&mut forwarder);
         self.mutator.heap.reset_collection_limits();
+        // A code zone full of active code is tried again: what the
+        // collection's run left active may be no longer.
+        self.mutator.jit.note_full_collection();
         // After `reclaim_ids`, from what it left of each table.
         self.mutator.heap.reset_table_limits();
         self.mutator.caches.reset_site_limit();

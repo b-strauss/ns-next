@@ -634,6 +634,15 @@ pub struct Interpreter {
     /// Debug builds only.
     #[cfg(debug_assertions)]
     stress_suspend: Option<safepoint::StressSchedule>,
+    /// The zone stress mode's schedule, when it is on
+    /// (`NS_NEXT_STRESS_ZONE`, or `set_stress_zone`): the code zone
+    /// compacted at the safepoints its schedule picks, every body no
+    /// activation runs freed, so that every program runs with its bodies
+    /// freed, compiled again and moved (`jit::zone`). Paced like the
+    /// collect stress mode, since a compaction walks the stack and every
+    /// cell. Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_zone: Option<safepoint::StressSchedule>,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
@@ -691,6 +700,8 @@ impl Interpreter {
             stress_scavenge: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SCAVENGE"),
             #[cfg(debug_assertions)]
             stress_suspend: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SUSPEND"),
+            #[cfg(debug_assertions)]
+            stress_zone: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_ZONE"),
             #[cfg(debug_assertions)]
             cache_invalidations: 0,
         };
@@ -1045,6 +1056,80 @@ impl Interpreter {
             // Every machine entry the table records lies in the old zone.
             mutator.heap.forget_machine_entries();
         });
+    }
+
+    /// Compacts the code zone now, between runs, as the run loop's
+    /// safepoint compacts it once a compile found the zone full: every body
+    /// dead, abandoned or no longer named freed, and then the least used
+    /// until a quarter of the zone is free (`jit::zone`). A test hook.
+    #[doc(hidden)]
+    pub fn compact_jit_zone(&mut self) {
+        assert!(!self.running, "compact_jit_zone is for between runs");
+        self.enter(|mutator| mutator.compact_code_zone());
+    }
+
+    /// The zone offset at which `method`'s body has machine code in this
+    /// interpreter's zone, if it has some. A test hook.
+    #[doc(hidden)]
+    pub fn jit_body_offset(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<u32> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.body_offset(&code)
+        })
+    }
+
+    /// The data words of `method`'s body's machine code -- its closure
+    /// sites among them -- as the zone holds them. A test hook.
+    #[doc(hidden)]
+    pub fn jit_body_words(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<Vec<u64>> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.body_words(&code)
+        })
+    }
+
+    /// For each block `method` makes, in order: the machine entry its row
+    /// of the machine entry table names (0 for none), and the address of
+    /// its machine code in this interpreter's zone, if it has some. A test
+    /// hook.
+    #[doc(hidden)]
+    pub fn jit_block_rows(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Vec<(u64, Option<u64>)> {
+        self.enter(|mutator| {
+            let Some(code) = method_code(mutator, class, side, method) else {
+                return Vec::new();
+            };
+            let mut rows = Vec::new();
+            for instruction in code.instructions() {
+                let crate::bytecode::Instruction::MakeClosure { code: block, .. } = instruction
+                else {
+                    continue;
+                };
+                #[cfg(ns_jit)]
+                let entry = {
+                    let id = mutator.heap.code_id(&block);
+                    mutator.heap.machine_entry_of(id)
+                };
+                #[cfg(not(ns_jit))]
+                let entry = 0;
+                rows.push((entry, mutator.jit.body_entry_address(&block)));
+            }
+            rows
+        })
     }
 
     /// Turns the JIT stress mode (`NS_NEXT_STRESS_JIT`) on or off for this

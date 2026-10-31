@@ -96,6 +96,9 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         exits: after.exits - before.exits,
         leaf_calls: after.leaf_calls - before.leaf_calls,
         cuts: after.cuts - before.cuts,
+        zone_compactions: after.zone_compactions - before.zone_compactions,
+        freed_bodies: after.freed_bodies - before.freed_bodies,
+        moved_bytes: after.moved_bytes - before.moved_bytes,
     }
 }
 
@@ -145,7 +148,7 @@ ns_runtime::for_each_lowering! {
                     "`run` calls `answer`'s machine code three times, the first through the miss"
                 );
             }
-        } else {
+        } else if !the_zone_stress_mode_is_on() {
             assert_eq!(
                 done.machine_entries, 3,
                 "the two base activations the host pushes, the factory's and `run`'s, and \
@@ -213,8 +216,8 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// A program with more bodies than a zone of three pages holds, each
     /// starting with a template and installed by the stress setting, fills
-    /// the zone, and the bodies refused once it is full run interpreted
-    /// with the output unchanged.
+    /// the zone, which is compacted rather than any body refused, with the
+    /// output unchanged.
     fn a_zone_of_three_pages_leaves_the_output_right(lowering) {
         let count: i64 = 300;
         let methods: String = (0..count)
@@ -239,7 +242,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(run(&mut interpreter, &class), count * (count - 1));
         let done = since(interpreter.jit_statistics(), before);
         assert!(done.compiled_bodies >= 1, "the zone holds the stubs and a body");
-        assert!(done.refused_bodies >= 1, "the zone fills");
+        assert!(done.zone_compactions >= 1, "the zone fills");
     }
 }
 
@@ -759,18 +762,27 @@ fn a_stress_mode_is_on() -> bool {
     })
 }
 
+/// Whether the environment turns the zone stress mode on, which frees and
+/// compiles again every body no activation runs at its safepoints, so that
+/// a body's entries and calls are not those of its one compile.
+fn the_zone_stress_mode_is_on() -> bool {
+    std::env::var_os("NS_NEXT_STRESS_ZONE").is_some_and(|value| !value.is_empty() && value != "0")
+}
+
 /// Whether the environment turns on a stress mode under which every poll
 /// leaves machine code: the exit stress mode, whose polls exit
 /// unconditionally, and every mode that holds the safepoint request,
 /// which a poll takes (`Interpreter::hold_safepoints_for_stress`). The
 /// JIT's and the wide encoding's stress modes leave the polls alone.
 fn a_stress_mode_polls_out() -> bool {
-    ["EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND"]
-        .iter()
-        .any(|mode| {
-            std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
-                .is_some_and(|value| !value.is_empty() && value != "0")
-        })
+    [
+        "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE",
+    ]
+    .iter()
+    .any(|mode| {
+        std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
+            .is_some_and(|value| !value.is_empty() && value != "0")
+    })
 }
 
 /// A chain of compiled sends three deep -- `run:`, `first:with:`,
@@ -3988,6 +4000,9 @@ fn an_exit_inside_an_exempt_closure_call_materializes_it_exempt() {
         depth,
         "the exempt frames left the count as they found it"
     );
+    if the_zone_stress_mode_is_on() {
+        return;
+    }
     assert!(
         statistics.called_entries > 0,
         "the loop's blocks are called in machine code"
@@ -4715,5 +4730,384 @@ ns_runtime::for_each_lowering! {
             answer
         };
         assert_eq!(run(true), run(false));
+    }
+}
+
+/// `count` methods `m0`, `m1`, ..., each answering its index and one, and
+/// for each a method `hot` sending it a hundred times from a loop of its
+/// own, which `run` sends one after another: each `m` is hot for a while
+/// and then never sent again.
+fn hot_in_turn(count: usize) -> String {
+    let methods: String = (0..count)
+        .map(|index| {
+            formatdoc! {"
+                  m{index} = (
+                    ^{index} + 1
+                  )
+                  hot{index} = (
+                    |
+                      sum ::= 0.
+                      index ::= 0.
+                    |
+                    [index < 100] whileTrue: [
+                      sum:: sum + self m{index}.
+                      index:: index + 1.
+                    ].
+                    ^sum
+                  )
+            "}
+        })
+        .collect();
+    let sends: String = (0..count)
+        .map(|index| format!("    total:: total + self hot{index}.\n"))
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {methods}  public run = (
+            |
+              total ::= 0.
+            |
+        {sends}    ^total
+          )
+        ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// A zone of four pages holds a few of two hundred methods hot in
+    /// turn: a compile that finds it full asks for a compaction, which
+    /// frees the methods no longer sent, and every method is compiled once
+    /// it is hot, none refused for want of room, the output the
+    /// interpreter's.
+    fn a_full_zone_compacts_and_compiles_again(lowering) {
+        let count = 200;
+        let source = hot_in_turn(count);
+        let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_jit_zone_bytes(16_384);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        let expected: i64 = (1..=200).map(|index: i64| 100 * index).sum();
+        assert_eq!(answer, expected, "the interpreter's");
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.zone_compactions > 0, "the zone filled");
+            let held = interpreter.table_sizes().zone_bodies as u64;
+            assert!(
+                done.compiled_bodies >= count as u64,
+                "every hot method compiled: {}",
+                done.compiled_bodies
+            );
+            assert!(
+                done.compiled_bodies > held,
+                "more than the zone holds at once ({held})"
+            );
+            assert_eq!(done.refused_bodies, 0, "no room refuses no body");
+            assert!(done.freed_bodies > 0);
+        }
+    }
+}
+
+/// `a` exits at its send of a message nothing understands, after a loop
+/// that has its body compiled under either lowering; `b` runs to its
+/// return; `callB` sends `b`, and `callBOnce` sends it from a body run
+/// only once, and so interpreted; `apply:` sends `value:` to a block
+/// `makeBlock` makes; `makeAndRun` makes a block in its own machine code
+/// and sends it.
+const MOVING: &str = indoc! {"
+    class Subject = Object new () (
+      public a = (
+        |
+          index ::= 0.
+        |
+        [index < 3] whileTrue: [
+          index:: index + 1.
+        ].
+        ^self missing
+      )
+      public b = (
+        |
+          index ::= 0.
+        |
+        [index < 3] whileTrue: [
+          index:: index + 1.
+        ].
+        ^index + 4
+      )
+      public callB = (
+        ^self b + 1
+      )
+      public callBOnce = (
+        ^self b + 2
+      )
+      public makeBlock = (
+        ^[:value | value + 1]
+      )
+      public apply: block = (
+        ^block value: 3
+      )
+      public makeAndRun = (
+        |
+          index ::= 0.
+        |
+        [index < 3] whileTrue: [
+          index:: index + 1.
+        ].
+        ^[:value | value + index] value: 10
+      )
+      public doesNotUnderstand: message = (
+        ^1
+      )
+    ) : ()
+"};
+
+/// Sends `a` to `subject` until its body, compiled first, is abandoned for
+/// the exits it keeps making, so that it is freed.
+fn abandon_a(interpreter: &mut Interpreter, subject: &Root) {
+    for _ in 0..70 {
+        assert_eq!(send_unary(interpreter, subject, "a"), 1);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A compaction slides a body down over one freed below it, and the
+    /// cell a compiled send calls it through, and an interpreter's send,
+    /// still reach its machine code at its new place: no exit, no miss.
+    fn a_compaction_moves_a_body_its_cells_call(lowering) {
+        let (mut interpreter, class) = load_with(MOVING, lowering);
+        interpreter.set_jit_counting(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..2 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "a"), 1);
+        }
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "callB"), 8);
+        }
+        let offset = |interpreter: &mut Interpreter, selector: &str| {
+            interpreter.jit_body_offset(&class, MethodSide::Instance, Symbol::intern(selector))
+        };
+        let a_before = offset(&mut interpreter, "a");
+        let b_before = offset(&mut interpreter, "b");
+        abandon_a(&mut interpreter, &subject);
+        interpreter.compact_jit_zone();
+        let b_after = offset(&mut interpreter, "b");
+        if let Err(message) = interpreter.verify_cells() {
+            panic!("after the compaction: {message}");
+        }
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "callB"), 8);
+        assert_eq!(send_unary(&mut interpreter, &subject, "callBOnce"), 9);
+        let done = since(interpreter.jit_statistics(), before);
+        // The reference lowering leaves every send uncached, `<` and `+`
+        // among them, so that its bodies exit at their first send and are
+        // never compiled.
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            let (Some(a_before), Some(b_before), Some(b_after)) = (a_before, b_before, b_after)
+            else {
+                panic!("`a` and `b` were compiled, and `b` survives");
+            };
+            assert!(a_before < b_before, "`a` compiled first");
+            assert_eq!(offset(&mut interpreter, "a"), None, "`a` is freed");
+            assert!(
+                b_after < b_before,
+                "`b` moved down: {b_before:#x} to {b_after:#x}"
+            );
+            assert!(
+                done.called_entries >= 1,
+                "`callBOnce`'s send called `b`'s machine code"
+            );
+            assert_eq!(done.exits, 0, "nothing left machine code");
+            assert_eq!(done.miss_leaf_calls, 0, "the cell names `b`'s new place");
+            assert!(done.compiled_calls >= 1, "`callB` calls `b` through its cell");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A compaction slides a block's body down, and its machine entry row
+    /// moves with it: the closure stub, and an interpreter's `value:`,
+    /// enter its machine code at its new place.
+    fn a_moved_block_body_is_called_through_its_row(lowering) {
+        let (mut interpreter, class) = load_with(MOVING, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..2 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "a"), 1);
+        }
+        let block = expect_ok(
+            interpreter.send(&subject, Symbol::intern("makeBlock"), &[]),
+            "makeBlock",
+        );
+        let apply = |interpreter: &mut Interpreter| {
+            let answer = expect_ok(
+                interpreter.send(&subject, Symbol::intern("apply:"), std::slice::from_ref(&block)),
+                "apply:",
+            );
+            interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+                ValueKind::SmallInteger(integer) => integer,
+                _ => panic!("apply: expected a small integer"),
+            })
+        };
+        for _ in 0..4 {
+            assert_eq!(apply(&mut interpreter), 4);
+        }
+        let rows = |interpreter: &mut Interpreter| {
+            interpreter.jit_block_rows(&class, MethodSide::Instance, Symbol::intern("makeBlock"))
+        };
+        let before_rows = rows(&mut interpreter);
+        abandon_a(&mut interpreter, &subject);
+        interpreter.compact_jit_zone();
+        let after_rows = rows(&mut interpreter);
+        let before = interpreter.jit_statistics();
+        assert_eq!(apply(&mut interpreter), 4);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            let [(entry_before, Some(address_before))] = before_rows[..] else {
+                panic!("the block is compiled and its row written: {before_rows:?}");
+            };
+            assert_eq!(entry_before, address_before, "the row names the block's code");
+            let [(entry_after, Some(address_after))] = after_rows[..] else {
+                panic!("the block survives the compaction: {after_rows:?}");
+            };
+            assert_eq!(entry_after, address_after, "the row moved with the block's code");
+            assert!(address_after < address_before, "the block's code moved down");
+            assert_eq!(done.exits, 0, "nothing left machine code");
+            assert!(
+                done.machine_entries + done.called_entries >= 1,
+                "machine code ran"
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A body's closure site moves with its code: filled before the
+    /// compaction, it is not filled again after it -- its words, the code
+    /// table's epoch among them, are what they were -- and the body still
+    /// makes the closure right.
+    fn a_moved_body_keeps_its_closure_sites(lowering) {
+        let (mut interpreter, class) = load_with(MOVING, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..2 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "a"), 1);
+        }
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "makeAndRun"), 13);
+        }
+        let selector = Symbol::intern("makeAndRun");
+        let words_before = interpreter.jit_body_words(&class, MethodSide::Instance, selector);
+        let offset_before = interpreter.jit_body_offset(&class, MethodSide::Instance, selector);
+        abandon_a(&mut interpreter, &subject);
+        interpreter.compact_jit_zone();
+        let words_after = interpreter.jit_body_words(&class, MethodSide::Instance, selector);
+        let offset_after = interpreter.jit_body_offset(&class, MethodSide::Instance, selector);
+        assert_eq!(send_unary(&mut interpreter, &subject, "makeAndRun"), 13);
+        let words_run = interpreter.jit_body_words(&class, MethodSide::Instance, selector);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            let Some(words_before) = words_before else {
+                panic!("`makeAndRun` is compiled");
+            };
+            assert!(
+                words_before.first().is_some_and(|epoch| *epoch != 0),
+                "its site was filled: {words_before:?}"
+            );
+            assert!(offset_after < offset_before, "it moved down");
+            assert_eq!(
+                words_after.as_ref(),
+                Some(&words_before),
+                "moved with its code"
+            );
+            assert_eq!(words_run, Some(words_before), "not filled again");
+        }
+    }
+}
+
+/// `count` methods, each sending the next and adding one to what it
+/// answers, the last answering 0, each after a loop so that its body is
+/// compiled under either lowering.
+fn chain_of(count: usize) -> String {
+    let methods: String = (0..count)
+        .map(|index| {
+            let next = if index + 1 == count {
+                "0".to_string()
+            } else {
+                format!("(self m{}) + 1", index + 1)
+            };
+            formatdoc! {"
+                  m{index} = (
+                    |
+                      index ::= 0.
+                    |
+                    [index < 1] whileTrue: [
+                      index:: index + 1.
+                    ].
+                    ^{next}
+                  )
+            "}
+        })
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {methods}  public run = (
+            ^self m0
+          )
+        ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// A recursion through more bodies than the zone holds fills it with
+    /// active code: the one compaction its compile asks for frees nothing
+    /// it runs, and the zone, still full, compiles nothing more and is not
+    /// compacted again at every safepoint -- until a full collection lets
+    /// it try once more.
+    fn a_zone_full_of_active_code_does_not_compact_at_every_safepoint(lowering) {
+        let count = 300;
+        let source = chain_of(count);
+        let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_jit_zone_bytes(16_384);
+        let before = interpreter.jit_statistics();
+        for _ in 0..4 {
+            assert_eq!(run(&mut interpreter, &class), count as i64 - 1);
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Reference || a_stress_mode_is_on() {
+            return;
+        }
+        assert_eq!(
+            done.zone_compactions, 1,
+            "compacted once, not at every safepoint"
+        );
+        assert!(
+            done.compiled_bodies < count as u64,
+            "the zone held only part of the chain"
+        );
+        #[cfg(debug_assertions)]
+        {
+            interpreter.collect_now();
+            assert_eq!(run(&mut interpreter, &class), count as i64 - 1);
+            let done = since(interpreter.jit_statistics(), before);
+            assert_eq!(
+                done.zone_compactions, 2,
+                "tried once more after the collection"
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The zone stress mode compacts at the safepoints its schedule picks,
+    /// freeing every body no activation runs, and the program still
+    /// answers what it answers without it: the mode the goldens run under
+    /// (`NS_NEXT_STRESS_ZONE`) does what it says.
+    #[cfg(debug_assertions)]
+    fn the_zone_stress_mode_frees_and_moves_bodies(lowering) {
+        let source = hot_in_turn(20);
+        let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_stress_zone(true);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        let expected: i64 = (1..=20).map(|index: i64| 100 * index).sum();
+        assert_eq!(answer, expected, "the interpreter's");
+        assert!(interpreter.stress_zone_compactions() > 0, "the mode compacted");
+        assert!(done.zone_compactions > 0);
+        if lowering == Lowering::Optimized {
+            assert!(done.freed_bodies > 0, "the hot methods are freed once cold");
+        }
     }
 }
