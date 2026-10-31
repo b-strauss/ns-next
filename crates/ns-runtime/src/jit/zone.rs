@@ -896,7 +896,8 @@ impl Mutator<'_> {
         for entry in self.heap.recorded_machine_entries() {
             assert!(
                 starts.contains(&entry),
-                "internal: a machine entry row names {entry:#x}, no live body's start,                  after a compaction or a slide"
+                "internal: a machine entry row names {entry:#x}, no live body's start, \
+                 after a compaction or a slide"
             );
         }
     }
