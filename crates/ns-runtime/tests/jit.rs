@@ -4843,6 +4843,17 @@ const MOVING: &str = indoc! {"
       public apply: block = (
         ^block value: 3
       )
+      public spin = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 2000] whileTrue: [
+          sum:: sum + index.
+          index:: index + 1.
+        ].
+        ^sum
+      )
       public makeAndRun = (
         |
           index ::= 0.
@@ -5108,6 +5119,25 @@ ns_runtime::for_each_lowering! {
         assert!(done.zone_compactions > 0);
         if lowering == Lowering::Optimized {
             assert!(done.freed_bodies > 0, "the hot methods are freed once cold");
+        }
+        // `spin`, compiled right after `a`, runs its loop while the mode
+        // compacts: it is active, so it survives, and slides down over
+        // `a`, which no activation runs, freed below it.
+        let (mut interpreter, class) = load_with(MOVING, lowering);
+        interpreter.set_stress_zone(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1999 * 1000);
+        for _ in 0..2 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "a"), 1);
+        }
+        for _ in 0..2 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1999 * 1000);
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        // Another stress mode changes which bodies compile when.
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.moved_bytes > 0, "a survivor slid down over freed code");
         }
     }
 }
