@@ -228,6 +228,11 @@ pub(crate) struct JitSlot {
     /// How many times the body's machine code handed its frame to the
     /// interpreter (`EXIT_BUDGET`).
     exits: Cell<u32>,
+    /// The bytes the body's machine code needed, its alignment's slack
+    /// included, when a compile last found no room for it; 0 if none
+    /// did. While the zone is exhausted, a body that came due compiles
+    /// only if the room left holds this much (`JitState::may_compile_now`).
+    needed: Cell<u32>,
 }
 
 impl Default for JitSlot {
@@ -239,6 +244,7 @@ impl Default for JitSlot {
             first_instruction: Cell::new(0),
             map: Cell::new(0),
             exits: Cell::new(0),
+            needed: Cell::new(0),
         }
     }
 }
@@ -324,6 +330,7 @@ impl JitSlot {
         self.offset.set(offset.0);
         self.first_instruction.set(first_instruction.0);
         self.map.set(map);
+        self.needed.set(0);
     }
 }
 
@@ -680,12 +687,14 @@ pub(crate) struct JitState {
     /// `cointerp.c:12068-12074`) and compacts at its next event check.
     compaction_requested: bool,
     /// Whether a compile found no room and no compaction has freed a
-    /// quarter of the zone since, nor a full collection run: entries go on
-    /// counting but compile nothing, so that a zone full of active code
-    /// neither assembles a hot body again at every second entry nor
-    /// compacts at every safepoint. A compaction is asked for again once
-    /// enough compiles were held (`held_compiles`), so that the exhaustion
-    /// ends without a collection.
+    /// quarter of the zone since, nor a full collection run: a body that
+    /// found no room goes on counting but compiles nothing until the room
+    /// left holds it (`may_compile_now`), and a compile that finds no room
+    /// asks for no compaction, so that a zone full of active code neither
+    /// assembles a hot body again at every second entry nor compacts at
+    /// every safepoint. A compaction is asked for again once enough
+    /// compiles were held (`held_compiles`), so that the exhaustion ends
+    /// without a collection.
     zone_exhausted: bool,
     /// The most bytes a compile that found no room needed since the zone
     /// last had room -- a compaction that freed that much, or a full
@@ -1776,9 +1785,9 @@ pub(crate) fn machine_entry_address(
 /// it. While the JIT is off, refuses it at once (`JitState::set_enabled`).
 /// A body that cannot be compiled is refused for good; one that found no
 /// room in the zone counts again, and while the zone stays exhausted
-/// (`JitState::zone_exhausted`) entries are counted but compile nothing,
-/// each held compile counting towards the next compaction
-/// (`JitState::hold_compile`).
+/// (`JitState::zone_exhausted`) entries of a body known not to fit the
+/// room left are counted but compile nothing, each held compile counting
+/// towards the next compaction (`JitState::hold_compile`).
 /// A body compiled into a zone that is not this interpreter's -- another
 /// interpreter's, or one since replaced -- is compiled again into this
 /// one.
@@ -1805,24 +1814,24 @@ pub(crate) fn note_entry(
         // zone; no body is run by two interpreters today
         // (`docs/OPEN-WORK.md`, road step 8).
         COMPILED => {
-            if state.zone_exhausted {
-                state.hold_compile();
-            } else {
+            if state.may_compile_now(slot) {
                 compile_into_slot(state, code, feedback_base, method);
+            } else {
+                state.hold_compile();
             }
         }
         entries => {
             let entries = entries + 1;
             if entries < state.compile_at_entry {
                 slot.state.set(entries);
-            } else if state.zone_exhausted {
+            } else if state.may_compile_now(slot) {
+                compile_into_slot(state, code, feedback_base, method);
+            } else {
                 // Held at the entry that compiles, so that the first entry
                 // after the zone has room again compiles a body that came
                 // due meanwhile.
                 slot.state.set(state.compile_at_entry);
                 state.hold_compile();
-            } else {
-                compile_into_slot(state, code, feedback_base, method);
             }
         }
     }
@@ -1842,7 +1851,7 @@ pub(crate) fn note_entry_by_call(
     method: Option<&Rc<MixinMethod>>,
 ) {
     let compiles = state.enabled
-        && !state.zone_exhausted
+        && state.may_compile_now(&code.jit)
         && match code.jit.state.get() {
             REFUSED | EXITS_AT_ONCE => false,
             COMPILED => code.jit.zone.get() != state.zone_identity(),
@@ -1876,10 +1885,17 @@ fn compile_into_slot(
         // compaction (`nilUncoggableMethods`, `cointerp.c:14432-14433`).
         // A compile from inside a leaf, which cannot compact, only sets
         // the flags.
+        // While the zone is already exhausted, a body that does not fit
+        // the room left asks for nothing: only the held compiles do, so
+        // that the retries keep their backoff.
         Err(Refusal::ZoneFull) => {
             code.jit.forget();
-            state.compaction_requested = true;
-            state.zone_exhausted = true;
+            if state.zone_exhausted {
+                state.hold_compile();
+            } else {
+                state.compaction_requested = true;
+                state.zone_exhausted = true;
+            }
         }
         Err(Refusal::TooManyInstructions | Refusal::Unassembled | Refusal::TooLarge) => {
             code.jit.refuse();
@@ -1955,6 +1971,7 @@ fn compile(
                 .unwrap_or(u32::MAX)
                 .saturating_add(body.code.alignment.max(BODY_ALIGNMENT));
             state.wanted_bytes = state.wanted_bytes.max(needed);
+            code.jit.needed.set(needed);
             return Err(refusal);
         }
     };
@@ -3352,7 +3369,8 @@ mod tests {
 
         /// A full zone refuses no body for good: the body that found no
         /// room counts its entries again, a compaction is asked for, and
-        /// until one frees room every entry counts but compiles nothing.
+        /// until one frees room a body that found no room counts its
+        /// entries but compiles nothing.
         #[test]
         fn a_full_zone_asks_for_a_compaction() {
             // Three pages: the stubs take most of two.
@@ -3379,14 +3397,20 @@ mod tests {
             );
             assert_eq!(
                 format!("{:?}", last.jit),
-                "JitSlot::Counting(2)",
-                "an exhausted zone compiles nothing: due, held at the entry that compiles"
+                "JitSlot::Counting(0)",
+                "tried once while exhausted, and found no room either"
             );
             assert_eq!(machine_entry(&state, last), None);
             let compiled = state.statistics().compiled_bodies;
             enter_twice(&mut state, last);
             assert_eq!(state.statistics().compiled_bodies, compiled);
+            assert_eq!(
+                format!("{:?}", last.jit),
+                "JitSlot::Counting(2)",
+                "known not to fit: due, held at the entry that compiles"
+            );
             state.note_full_collection();
+            state.compaction_requested = false;
             note_entry(&mut state, last, FeedbackBase::NOT_ASSIGNED, None);
             assert!(state.compaction_requested(), "the zone is still full");
         }
@@ -3404,6 +3428,8 @@ mod tests {
             }
             assert!(state.zone_exhausted);
             let last = bodies.last().expect("a body");
+            // Due, and known not to fit: every entry from now on is held.
+            enter_twice(&mut state, last);
             for fruitless in 1..=3 {
                 // As a fruitless compaction leaves it.
                 state.compaction_requested = false;
@@ -3422,6 +3448,37 @@ mod tests {
                 assert!(state.compaction_requested(), "asked again");
                 assert!(state.zone_exhausted, "but compiling nothing until then");
             }
+        }
+
+        /// A zone exhausted for a large body still compiles a small one that
+        /// fits the room it has, while a body known not to fit is held.
+        #[test]
+        fn an_exhausted_zone_compiles_a_body_that_fits() {
+            let mut state = JitState::for_test(65_536, true);
+            let first = body();
+            enter_twice(&mut state, &first);
+            assert!(machine_entry(&state, &first).is_some());
+            let room = {
+                let zone = state.zone.as_ref().expect("a zone");
+                zone.limit - zone.next_offset
+            };
+            assert!(room > 4_096, "room left: {room}");
+            // As a compile of a body larger than the room left leaves it.
+            state.zone_exhausted = true;
+            state.wanted_bytes = room + 1;
+            let large = body();
+            large.jit.needed.set(room + 1);
+            enter_twice(&mut state, &large);
+            assert_eq!(machine_entry(&state, &large), None, "held: it does not fit");
+            assert_eq!(state.held_compiles, 1);
+            let small = body();
+            enter_twice(&mut state, &small);
+            assert!(
+                machine_entry(&state, &small).is_some(),
+                "compiled: it fits the room left"
+            );
+            assert!(state.zone_exhausted, "still exhausted for the large one");
+            assert!(!state.compaction_requested(), "and asking for nothing");
         }
 
         /// A compiled block pushed while the JIT is off is refused for

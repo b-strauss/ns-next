@@ -5272,7 +5272,9 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// A full collection frees the machine code of a body that died with
     /// its version, without waiting for the zone to fill: `freed_bodies`
-    /// rises at the collection, which compacts nothing.
+    /// rises by the collection, which compacts nothing. Counted from
+    /// before the edit, so that a collection a stress mode makes inside
+    /// the edit, which frees the body first, counts as well.
     fn a_full_collection_frees_the_code_of_a_dead_body(lowering) {
         let (mut interpreter, subject, edited) = edited_answer(lowering);
         for _ in 0..3 {
@@ -5281,18 +5283,22 @@ ns_runtime::for_each_lowering! {
         let compiled = interpreter
             .jit_body_offset(&edited, MethodSide::Instance, Symbol::intern("answer"))
             .is_some();
-        assert_eq!(send_number(&mut interpreter, &subject, "edit:", 1), 1);
         let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "edit:", 1), 1);
         interpreter.collect_now();
         let done = since(interpreter.jit_statistics(), before);
         assert_eq!(send_unary(&mut interpreter, &subject, "run"), 4);
-        // The zone stress mode may have freed the body before the
-        // collection; the reference lowering's body exits at once and is
-        // never installed.
-        if lowering == Lowering::Optimized && !the_zone_stress_mode_is_on() {
-            assert!(compiled, "`answer` was compiled");
-            assert!(done.freed_bodies >= 1, "the dead body's code is freed");
-            assert_eq!(done.zone_compactions, 0, "without a compaction");
+        // The reference lowering's body exits at once and is never
+        // installed. The zone stress mode compacts, and may have freed the
+        // body before the edit and compiled it no more.
+        if lowering == Lowering::Optimized {
+            if !the_zone_stress_mode_is_on() {
+                assert!(compiled, "`answer` was compiled");
+                assert_eq!(done.zone_compactions, 0, "without a compaction");
+            }
+            if compiled {
+                assert!(done.freed_bodies >= 1, "the dead body's code is freed");
+            }
         }
     }
 }

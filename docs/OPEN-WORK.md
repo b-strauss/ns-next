@@ -478,6 +478,23 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     whether a `^` from a block several calls deep below its home is worth
     a walk in machine code that hands the frames over at once is to be
     measured with the stage.
+  - **A cell of a body an exhausted zone holds calls the miss leaf on
+    every hit.** A compaction points the cells of every body it frees at
+    the miss stub (`jit/zone.rs`), which is right while the body may
+    compile at its next due entry. While the zone is exhausted and the
+    body does not fit the room left (`JitState::may_compile_now`), the
+    miss leaf decides the send, compiles nothing, refuses the call and
+    writes the miss stub back, so every hit costs a leaf call and an
+    exit until a retry ends the exhaustion -- a wait the doubling of the
+    retries lets grow with the run ([execution.md](design/execution.md),
+    "The code zone"). A stub of its own for such a cell, which refuses
+    the call at once without the leaf and which the end of the exhaustion
+    rewrites to the miss stub, would save the leaf call per hit; it is
+    not built, because those hits are held compiles that pay towards the
+    retry, a stub would need its own way to count them, and an exhausted
+    zone needs a body that does not fit in a zone smaller than any
+    measured program's (the default zone holds 16 MiB). Worth building
+    if a measurement shows a run that stays exhausted.
   - **A body shared by two interpreters would ping-pong between their
     zones.** A body's `JitSlot` names one zone, and `jit::note_entry`
     compiles a body whose slot names another into the running

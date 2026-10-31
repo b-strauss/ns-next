@@ -67,10 +67,9 @@ pub(crate) const LINKED_USAGE_CEILING: u8 = MAXIMUM_USAGE / 2;
 /// below what the held entries cost.
 pub(crate) const COMPILES_HELD_BEFORE_RETRY: u32 = 64;
 
-/// The most doublings of `COMPILES_HELD_BEFORE_RETRY`: past 2^30 held
-/// compiles the count would overflow, and a retry that rare is as good as
-/// none.
-const MAXIMUM_RETRY_DOUBLINGS: u32 = 24;
+/// The most doublings of `COMPILES_HELD_BEFORE_RETRY`: as many as a `u32`
+/// holds, 64 << 25 being its highest power of two.
+const MAXIMUM_RETRY_DOUBLINGS: u32 = u32::BITS - 1 - COMPILES_HELD_BEFORE_RETRY.trailing_zeros();
 
 /// The compiles an exhausted zone holds before it asks for a compaction
 /// again, after `fruitless_compactions` compactions in a row left it
@@ -299,16 +298,21 @@ impl JitState {
     /// machine code of every unmarked method (`freeUnmarkedMachineCode`,
     /// `cogitX64SysV.c:7473-7505`, from `cointerp.c:54977`). Run by a full
     /// collection after the ids are reclaimed (`World::collect`), between
-    /// entries. Answers the bytes freed, which count towards the quarter
-    /// the collection asks for a compaction at.
+    /// entries. The bytes freed count towards the quarter the collection
+    /// asks for a compaction at.
     ///
     /// No holder needs writing: a dead body's code is held by no cache
     /// entry, whose method would hold it, so no cell names it; its code id
     /// was freed with it, which cleared its machine entry row; and no
-    /// activation runs it. A frame stopped in a body its slot no longer
-    /// names resumes interpreted (`jit::resumed`).
-    pub(crate) fn free_dead_bodies(&mut self) -> u32 {
-        let before = self.bytes_freed_since_compaction;
+    /// activation runs it. A body alive but no longer named was abandoned
+    /// or freed by its usage, and so freed already, with its holders
+    /// written then -- but for one compiled again into another
+    /// interpreter's zone, whose cells here could still name it: that
+    /// rests on no body being run by two interpreters
+    /// (`docs/OPEN-WORK.md`, "A body shared by two interpreters"). A frame
+    /// stopped in a body its slot no longer names resumes interpreted
+    /// (`jit::resumed`).
+    pub(crate) fn free_dead_bodies(&mut self) {
         let mut freed = Vec::new();
         for index in 0..self.bodies.len() {
             if self.bodies[index].free || self.still_named(index) {
@@ -326,7 +330,6 @@ impl JitState {
             self.returns
                 .retain(|_, site| freed.binary_search(&site.body).is_err());
         }
-        self.bytes_freed_since_compaction.saturating_sub(before)
     }
 
     /// Whether a compile found no room since the last compaction, a held
@@ -335,6 +338,40 @@ impl JitState {
     /// compacts the zone (`Interpreter::safepoint`).
     pub(crate) fn compaction_requested(&self) -> bool {
         self.compaction_requested
+    }
+
+    /// The zone has room again, or may have: the next compile tries for
+    /// itself and asks again if it finds none, and the backoff of the
+    /// retries starts afresh, so that a later exhaustion waits only on the
+    /// compiles held since it began.
+    fn end_exhaustion(&mut self) {
+        self.zone_exhausted = false;
+        self.wanted_bytes = 0;
+        self.held_compiles = 0;
+        self.fruitless_compactions = 0;
+    }
+
+    /// Whether a body that came due, with `slot`, may be compiled now:
+    /// always while the zone is not exhausted; while it is, only if no
+    /// compile found the zone without room for this body since it last
+    /// had room (`JitSlot::needed`), or the room left holds what it needed.
+    /// So an exhausted zone still compiles every body that fits the room
+    /// it has, and a body that does not fit is assembled in vain at most
+    /// once while the room stays as it is -- the room grows only at a
+    /// compaction -- since a compile that finds no room records the bytes
+    /// it needed and, while the zone is exhausted, asks for no compaction
+    /// but counts as a held compile (`hold_compile`): no livelock between
+    /// compiles and compactions is possible.
+    pub(super) fn may_compile_now(&self, slot: &super::JitSlot) -> bool {
+        if !self.zone_exhausted {
+            return true;
+        }
+        let needed = slot.needed.get();
+        needed == 0
+            || self
+                .zone
+                .as_ref()
+                .is_some_and(|zone| zone.limit.saturating_sub(zone.next_offset) >= needed)
     }
 
     /// A compile held because the zone is exhausted: once
@@ -362,10 +399,7 @@ impl JitState {
     /// compaction is asked for, which the caller passes on to the
     /// safepoint request.
     pub(crate) fn note_full_collection(&mut self) -> bool {
-        self.zone_exhausted = false;
-        // The next compile tries for itself, and asks again if it finds
-        // no room.
-        self.wanted_bytes = 0;
+        self.end_exhaustion();
         if let Some(zone) = self.zone.as_ref() {
             let room = zone.room();
             if room > 0 && self.bytes_freed_since_compaction >= room / 4 {
@@ -723,9 +757,7 @@ impl Mutator<'_> {
             .as_ref()
             .is_some_and(|zone| zone.limit.saturating_sub(zone.next_offset) >= wanted);
         if enough {
-            self.jit.zone_exhausted = false;
-            self.jit.fruitless_compactions = 0;
-            self.jit.wanted_bytes = 0;
+            self.jit.end_exhaustion();
         } else if self.jit.zone_exhausted {
             // The next retry waits for twice the compiles this one did,
             // and aims at what the refused compile needed still: a retry

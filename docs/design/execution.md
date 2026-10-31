@@ -11168,20 +11168,30 @@ that make everything that grows reclaimable (plan
   `cogitX64SysV.c:4147-4149`) and compacts at its next event check
   (`cointerp.c:65051-65054`). The refused compile also sets
   `JitState.zone_exhausted`, and records the bytes it needed
-  (`JitState.wanted_bytes`); while the exhaustion holds, entries keep
-  counting -- held at the entry that compiles -- but compile nothing, so
-  a zone full of active code neither assembles a hot body again at every
-  second entry nor compacts at every safepoint. A compaction that leaves
-  a quarter of the bodies' room free, and at least what the refused
-  compile needed, clears it; one that does not keeps both, so that a
-  retry ends the exhaustion only once the refused body would fit.
+  (`JitState.wanted_bytes`), as the refused body's slot records its own
+  (`JitSlot.needed`). While the exhaustion holds, a body that came due
+  compiles if no compile found it without room, or if the room past the
+  last body holds what it needed (`JitState::may_compile_now`); else it
+  keeps counting -- held at the entry that compiles -- and compiles
+  nothing. So an exhausted zone compiles every body that fits the room
+  it has, as Cog goes on compiling whatever fits, and a body that does
+  not fit is assembled in vain at most once while the room stays as it
+  is, which only a compaction changes: a compile that finds no room in
+  an exhausted zone asks for no compaction but counts as a held one, so
+  a zone full of active code neither assembles a hot body again at
+  every second entry nor compacts at every safepoint. A compaction that
+  leaves a quarter of the bodies' room free, and at least what the
+  refused compile needed, clears the exhaustion; one that does not keeps
+  both, so that a retry ends the exhaustion only once the refused body
+  would fit.
 - **The exhaustion ends by entries, not by allocation.** Every entry a
   zone exhausted holds (`JitState::hold_compile`) counts, and at 64 of
   them (`zone::COMPILES_HELD_BEFORE_RETRY`) a compaction is asked for
   again; each compaction in a row that leaves the zone exhausted doubles
-  the count the next waits for (`zone::compiles_held_before_retry`, at
-  most 2^24 times 64), and one that ends it resets it. A full collection
-  also clears the exhaustion (`JitState::note_full_collection`), but a
+  the count the next waits for (`zone::compiles_held_before_retry`, as
+  far as a `u32` holds), and whatever ends the exhaustion resets the
+  count and the held compiles (`JitState::end_exhaustion`). A full
+  collection also ends it (`JitState::note_full_collection`), but a
   program that allocates little may never run one, and meanwhile every
   cell a compaction pointed at the miss stub costs the miss leaf on every
   hit -- those hits are held entries too, and pay towards the retry. Cog
