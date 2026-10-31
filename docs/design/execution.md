@@ -7806,6 +7806,75 @@ search's steps in registers. What the table still shows slower:
   closure costs its body's Boolean path" in
   [OPEN-WORK.md](../OPEN-WORK.md)).
 
+### What non-local return in machine code moved
+
+**Measured 2026-10-31, `4f991268` against `f476f86c`** (the tree of
+"What closures in machine code moved" above) **and `master`
+(`b96b55ab`)**, by the same protocol: three pinned release builds a
+side with debug information, a, b and c laid out as there (`vm::run`
+spans the same about 52.5, 56.4 and 61.2 KB on both branch trees, and
+no build has a `run_stretch` or a `vm::run` closure of its own); three
+rounds in one sitting, the order of the nine binaries rotated each
+round; `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue
+and `--iterations 8` for the rest. Each cell is a side's medians per
+build pooled by geometric mean, in milliseconds. Between the two trees
+lie the cut and the forcing of a future by `FutureImplementation`'s
+`resolve`.
+
+| Program | master (ms) | `f476f86c` (ms) | `4f991268` (ms) | range | vs master | separated | vs `f476f86c` | separated |
+|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 0.667 | 0.214 | 0.210 | 0.209–0.212 | -68.5% | faster | -1.7% | faster |
+| `CD` | 3273.588 | 3151.603 | 3155.731 | 3139.449–3170.842 | -3.6% | faster | +0.1% | no |
+| `DeltaBlue` | 544.697 | 282.324 | 283.488 | 282.317–284.742 | -48.0% | faster | +0.4% | no |
+| `DeltaBlueTon80` | 4.526 | 1.938 | 1.961 | 1.943–1.980 | -56.7% | faster | +1.2% | slower (see below) |
+| `Havlak` | 2876.427 | 2204.285 | 2202.977 | 2182.201–2219.792 | -23.4% | faster | -0.1% | no |
+| `Json` | 5.524 | 3.556 | 3.569 | 3.517–3.643 | -35.4% | faster | +0.4% | no |
+| `List` | 0.194 | 0.191 | 0.191 | 0.188–0.194 | -1.3% | no | -0.1% | no |
+| `Mandelbrot` | 1902.902 | 1805.740 | 1794.317 | 1780.055–1806.516 | -5.7% | faster | -0.6% | no |
+| `NBody` | 1689.738 | 1508.167 | 1516.940 | 1508.633–1529.460 | -10.2% | faster | +0.6% | no |
+| `Permute` | 1.990 | 0.376 | 0.373 | 0.370–0.375 | -81.3% | faster | -0.8% | no |
+| `Queens` | 1.569 | 1.220 | 0.321 | 0.319–0.324 | -79.6% | faster | -73.7% | faster |
+| `Richards` | 44.428 | 16.956 | 16.752 | 16.663–16.799 | -62.3% | faster | -1.2% | faster |
+| `RichardsTon80` | 3.325 | 3.124 | 1.846 | 1.842–1.852 | -44.5% | faster | -40.9% | faster |
+| `Sieve` | 1.309 | 0.365 | 0.341 | 0.341–0.342 | -73.9% | faster | -6.6% | faster |
+| `Storage` | 1.343 | 0.691 | 0.688 | 0.681–0.701 | -48.8% | faster | -0.4% | no |
+| `Towers` | 1.967 | 0.486 | 0.488 | 0.485–0.489 | -75.2% | faster | +0.3% | no |
+| `bench_block` | 7.744 | 0.849 | 0.860 | 0.856–0.866 | -88.9% | faster | +1.3% | no |
+| `bench_loop` | 0.810 | 0.543 | 0.517 | 0.517–0.519 | -36.1% | faster | -4.7% | faster (see below) |
+| `bench_megamorphic` | 4.685 | 4.723 | 4.731 | 4.702–4.783 | +1.0% | no | +0.2% | no |
+| `bench_send` | 0.773 | 0.508 | 0.519 | 0.517–0.520 | -32.9% | faster | +2.1% | slower (see below) |
+| `bench_signal` | 21.972 | 18.528 | 18.519 | 18.345–18.676 | -15.7% | faster | -0.1% | no |
+| `bench_while` | 46.894 | 6.179 | 6.272 | 6.236–6.335 | -86.6% | faster | +1.5% | slower (see below) |
+| `bench_recursion` | 0.665 | 0.678 | 0.692 | 0.681–0.701 | +4.1% | slower (see below) | +2.1% | no |
+
+The geometric mean over the twenty-three sources is -52.2% against
+`master` and -8.0% against `f476f86c`. The gains are where a `^` left
+a block: Queens (-73.7%) returns `^true` out of `placeQueen:`'s
+`to:do:` on every placement that succeeds, and RichardsTon80 (-40.9%)
+returns out of its tasks' blocks (`^scheduler suspendCurrent`). A
+non-local return exited machine code at `f476f86c` and spent the body's
+exit budget until it was abandoned; now the cut pops the compiled
+frames to the home itself.
+
+**What is slower is where the code lies, not what it is.** The cut stub
+(224 bytes) moves every stub after it, and the five mirror rows of
+`resolve` move the getter, setter and closure stubs after the mirror
+method table by 279 bytes more; the bodies start 288 bytes later and
+are otherwise byte for byte `f476f86c`'s. `bench_send`'s four bodies
+and `bench_while`'s eight are identical; `f476f86c` laid out as
+`4f991268` lays out its zone, with pads before the stubs and the
+bodies, runs at `4f991268`'s time, and over seventeen paddings the two
+trees are level pooled (`bench_while`'s time spreads 17% across them).
+DeltaBlueTon80 runs no cut; 124 of its 125 bodies are identical and the
+125th differs in a non-local return's arm that never runs, and the
+extra samples of its profile all lie in the zone. `bench_loop`'s -4.7%
+is the same placement going the other way: it is back at the time it
+had before "What closures in machine code moved" measured it 5.1%
+slower. Sampling the zone's placement as the builds sample `vm::run`'s
+is open ("A program in machine code measures where its bodies land in
+the code zone" in [OPEN-WORK.md](../OPEN-WORK.md)). `bench_recursion`
+against `master` is the fallback closure's cost described above.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
