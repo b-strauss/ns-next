@@ -11239,13 +11239,22 @@ that make everything that grows reclaimable (plan
      `:13400-13418`);
   6. slide each survivor's bytes, code and data words, down in ascending
      order, through a buffer the writer reads back (`compactCompiledCode`,
-     `:12740-12824`);
+     `:12740-12824`), and fill every byte the survivors no longer cover --
+     the gaps their alignment leaves and the room freed past the last --
+     with stops (`macro_assembler::stop_bytes`, `int3` on x64), as Cog
+     fills the freed end of its zone (`stopsFromto`, `:5738`), so that an
+     address a holder failed to remap traps rather than running stale
+     code;
   7. rewrite the JIT's own records: the installed bodies, each
      survivor's slot (its offset, first instruction and map index), the
      return sites keyed by zone offset (a freed body's go), and the
      zone's next offset;
   8. halve every survivor's usage;
-  9. clear the request, and the exhaustion once enough is free.
+  9. clear the request, and the exhaustion once enough is free; a debug
+     build then checks every cell against its entry
+     (`InlineCaches::verify_cells`) and every machine entry row against
+     the bodies' starts, so that the zone stress mode checks the
+     remapping at every compaction it makes.
 
   A body is position-independent: stubs and leaves are reached through
   the entry block's words, callees through cells, and its data words

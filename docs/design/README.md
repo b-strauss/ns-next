@@ -424,8 +424,9 @@ How long the end of a batch takes, each group run alone with `cargo xtask
 gates <group>`, its builds included, on the development machine on
 2026-10-29: `images` 14 s, `caches` 4 s, `benchmarks` 70 s,
 `release-checks` 49 s, `codegen` 61 s (about 6 s of it the shipped-code
-step its build needed), `stress` 802 s -- 791 s the suite under the eight
-stress modes it had then and with the JIT off at once, 7 s `run-corpus` plain and
+step its build needed), `stress` 802 s -- 791 s the suite under the stress
+modes and with the JIT off at once, measured before the zone stress mode
+was added, 7 s `run-corpus` plain and
 about half a second under each mode -- so `end-of-batch` about seventeen
 minutes in all.
 

@@ -487,6 +487,25 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     the bodies that died and requests a compaction once a quarter of the
     zone is freed ([execution.md](design/execution.md), "The code zone",
     "Planned: the full collection frees code").
+  - **An exhausted zone stays exhausted until a full collection**
+    (2026-10-31). A compaction that cannot free a quarter of the bodies'
+    room, and what the refused compile needed, leaves
+    `JitState.zone_exhausted` set, and only a full collection clears it
+    (`JitState::note_full_collection`): a program that allocates little
+    compiles nothing more for the rest of its run, even once the active
+    code that filled the zone has returned. Meanwhile every cell a
+    compaction pointed at the miss stub -- a freed body's -- calls the
+    miss leaf on every hit, which compiles nothing while the zone is
+    exhausted and writes the miss stub back. And step 3 counts the freed
+    bodies' sizes, which lie apart, while the check after the slide
+    measures the one gap the re-aligned survivors leave, so a compaction
+    that reached its aim by its own count can still leave the zone
+    exhausted. For Task 19's triggers: clear the exhaustion after a count
+    of entries or safepoints that does not wait on a collection, count
+    the gap the new layout leaves (or allow for the alignment slack), and
+    let a cell of a body that may compile but not now name a stub that
+    does not call the miss leaf ([execution.md](design/execution.md),
+    "The code zone").
   - **A body shared by two interpreters would ping-pong between their
     zones.** A body's `JitSlot` names one zone, and `jit::note_entry`
     compiles a body whose slot names another into the running
