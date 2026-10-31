@@ -1850,13 +1850,16 @@ fn encode_object<'gc>(
         }
         ObjectShape::Symbol => {
             writer.write_u8(OBJECT_SYMBOL);
-            let Some(symbol) = heap.symbol_value(object) else {
-                unreachable!("internal: an `ObjectShape::Symbol` has a symbol")
+            // The object's own text, whether its text is interned or the
+            // program made it and it has no number: the wire carries a
+            // symbol's text, never a number.
+            let Some(text) = heap.symbol_text(object) else {
+                unreachable!("internal: an `ObjectShape::Symbol` has a text")
             };
             // A program can make a symbol of any string (`asSymbol`); the
             // symbol table writes its text with a `u32` length.
-            u32_length("symbol", symbol.as_str().len())?;
-            writer.write_u32(symbols.intern(symbol.as_str()));
+            u32_length("symbol", text.len())?;
+            writer.write_u32(symbols.intern(&text));
         }
         ObjectShape::ByteArray => {
             writer.write_u8(OBJECT_BYTE_ARRAY);

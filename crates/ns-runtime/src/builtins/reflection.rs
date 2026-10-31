@@ -126,10 +126,8 @@ pub(crate) fn execute<'gc>(
             )))
         }
         ReflectionPrimitive::SymbolText => {
-            let symbol = mutator.heap.symbol_value(receiver.as_object()?)?;
-            Some(Value::object(
-                mutator.new_string(symbol.as_str().to_string()),
-            ))
+            let text = mutator.heap.symbol_text(receiver.as_object()?)?;
+            Some(Value::object(mutator.new_string(text)))
         }
         ReflectionPrimitive::ForwardIdentity => forward_identity(mutator, receiver, arguments),
         ReflectionPrimitive::CheckEdit => {

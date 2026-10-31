@@ -48,6 +48,7 @@ pub(crate) mod reclaim;
 mod records;
 mod scavenge;
 mod space;
+mod symbols;
 mod tables;
 mod value;
 mod world;
@@ -2091,10 +2092,11 @@ pub struct Heap<'gc> {
     /// table strongly, since a scavenge reclaims no id, and every move
     /// forwards it.
     mixin_objects: Vec<Option<ObjectReference<'gc>>>,
-    /// The one object each symbol is, indexed by `Symbol::index` (§5.1.6:
-    /// equal symbols are one object; `docs/design/object-model.md`,
-    /// "Values and objects"). Filled lazily by `Mutator::new_symbol`, the one
-    /// way to make a symbol, and by the image decoder. Per heap, because a
+    /// The one object each interned symbol is, indexed by `Symbol::index`
+    /// (§5.1.6: equal symbols are one object; `docs/design/object-model.md`,
+    /// "Values and objects"). Filled lazily by `Mutator::new_symbol` and by
+    /// the image decoder, and by the adoption of a program-made symbol
+    /// whose text has since been interned (`program_symbols`). Per heap, because a
     /// handle means nothing against another heap. Weak, as
     /// `mixin_objects` is: not a root for marking, pruned by
     /// `prune_canonical_symbols` between marking and compaction, and
@@ -2102,14 +2104,24 @@ pub struct Heap<'gc> {
     /// (`docs/design/memory.md`, "Weak references").
     canonical_symbols: Vec<Option<ObjectReference<'gc>>>,
     /// The inverse of `canonical_symbols`: each canonical symbol object's
-    /// offset, and the symbol it is. Every Symbol object is canonical
-    /// (`Mutator::new_symbol` and the image decoder are the only makers, and
-    /// both record what they make), so `symbol_value` is one probe here
-    /// rather than a search of the interner by the object's text. Keyed by
-    /// offset, so it holds no handle: `record_canonical_symbol` inserts,
-    /// `prune_canonical_symbols` removes, and `forward_everything` rebuilds
-    /// it from the forwarded table after every move and every compaction.
+    /// offset, and the symbol it is. Every Symbol object is canonical or
+    /// program-made (`Mutator::new_symbol`, `Mutator::program_symbol` and
+    /// the image decoder are the only makers, and each records what it
+    /// makes), so `symbol_value` is one probe here rather than a search of
+    /// the interner by the object's text. Keyed by offset, so it holds no
+    /// handle: `record_canonical_symbol` inserts, `prune_canonical_symbols`
+    /// removes, and `forward_everything` rebuilds it from the forwarded
+    /// table after every move and every compaction.
     symbol_of: IdentityMap<u64, Symbol>,
+    /// The symbols a program made whose text nothing has interned: no
+    /// number, only the object, the one of its text while anything reaches
+    /// it (`Mutator::program_symbol`; `docs/design/memory.md`, "Weak
+    /// references"). Weak as `canonical_symbols` is: pruned by
+    /// `prune_canonical_symbols`, which also hands the canonical table
+    /// every survivor whose text has since been interned, forwarded by a
+    /// scavenge's weak pass and by every move and compaction, and never a
+    /// root. Measured against `table_limits.program_symbols` at each mint.
+    program_symbols: symbols::ProgramSymbols<'gc>,
     /// Every `Root` a host holds. A `RefCell` so that `stash` and `fetch`
     /// take `&self`, which lets a host stash an argument inside the call that
     /// sends it.
@@ -2217,6 +2229,7 @@ impl std::fmt::Debug for Heap<'_> {
             .field("objects", &(self.object_count + self.machine_allocations()))
             .field("occupied bytes", &self.space.occupied_bytes())
             .field("canonical_symbols.len()", &self.canonical_symbols.len())
+            .field("program_symbols.len()", &self.program_symbols.len())
             .field("host roots", host_roots)
             .finish()
     }
@@ -2543,6 +2556,7 @@ impl<'gc> Heap<'gc> {
             mixin_objects: Vec::new(),
             canonical_symbols: Vec::new(),
             symbol_of: IdentityMap::default(),
+            program_symbols: symbols::ProgramSymbols::default(),
             host_roots: std::cell::RefCell::new(HostRoots {
                 slots: Vec::new(),
                 sweep_at: MIN_ROOT_SWEEP,
@@ -2853,7 +2867,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// A Symbol object of `class` for `symbol`. `Mutator::new_symbol` is the
-    /// one caller, since a heap holds one object per symbol (§5.1.6).
+    /// one caller, since a heap holds one object per symbol (§5.1.6); a
+    /// program-made symbol is the same representation, a String of the
+    /// `Symbol` class (`Mutator::program_symbol`).
     pub(crate) fn allocate_symbol(
         &mut self,
         class: ClassReference<'gc>,
@@ -4226,9 +4242,7 @@ impl<'gc> Heap<'gc> {
             Format::Closure => ObjectShape::Closure,
             Format::Class => ObjectShape::Class,
             Format::AlignedBytes => ObjectShape::ByteArray,
-            Format::Bytes | Format::ThirtyTwoBit if self.symbol_value(object).is_some() => {
-                ObjectShape::Symbol
-            }
+            Format::Bytes | Format::ThirtyTwoBit if self.is_symbol(object) => ObjectShape::Symbol,
             Format::Bytes | Format::ThirtyTwoBit => ObjectShape::String,
             _ if self.is_boxed_float(object) => ObjectShape::Float,
             _ => ObjectShape::LargeInteger,
@@ -4813,20 +4827,97 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The interned symbol a Symbol object stands for; `None` for any other
-    /// object, a String of the same text included. Agrees with `is_symbol`,
-    /// because every Symbol object is canonical and so recorded in
-    /// `symbol_of`; it reads neither the object's text nor its class.
+    /// object, a String of the same text included, and for a program-made
+    /// symbol whose text nothing has interned -- which, since every
+    /// selector, slot name and class name is interned, names nothing
+    /// (`docs/design/memory.md`, "Weak references"). A canonical symbol is
+    /// one probe of `symbol_of`, reading neither the object's text nor its
+    /// class; only a program-made one reads its text, to probe the
+    /// interner (`Symbol::lookup`), which inserts nothing. A caller that
+    /// asks only whether an object is a Symbol asks `is_symbol`, and one
+    /// that reads the text reads `symbol_text`.
     #[inline]
     pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
         self.check_object_origin(object);
-        let answer = self.symbol_of.get(&object.offset.get()).copied();
+        let offset = object.offset.get();
+        let canonical = self.symbol_of.get(&offset).copied();
+        let program_made = canonical.is_none() && self.program_symbols.contains(offset);
         debug_assert_eq!(
-            answer.is_some(),
+            canonical.is_some() || program_made,
             self.is_symbol(object),
-            "`symbol_of` must record exactly the Symbol objects, or a symbol \
-             answers its text as a String's and a String answers a symbol"
+            "`symbol_of` and `program_symbols` must record exactly the Symbol \
+             objects, or a symbol answers its text as a String's and a String \
+             answers a symbol"
         );
-        answer
+        if program_made {
+            return self.program_symbol_number(object);
+        }
+        canonical
+    }
+
+    /// The number of a program-made symbol's text, once something interned
+    /// it; out of line, since a canonical symbol never asks.
+    #[cold]
+    #[inline(never)]
+    fn program_symbol_number(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
+        Symbol::lookup(&self.str_value(object)?)
+    }
+
+    /// A Symbol's text, canonical or program-made; `None` for any other
+    /// object, a String included.
+    pub fn symbol_text(&self, object: ObjectReference<'gc>) -> Option<String> {
+        if !self.is_symbol(object) {
+            return None;
+        }
+        self.str_value(object)
+    }
+
+    /// The program-made symbol whose text is `text`, if one lives: the
+    /// candidates filed under the text's hash, compared by the text each
+    /// holds.
+    pub(crate) fn program_symbol_named(&self, text: &str) -> Option<ObjectReference<'gc>> {
+        if self.program_symbols.is_empty() {
+            return None;
+        }
+        let hash = crate::hash::content_hash(text);
+        self.program_symbols
+            .candidates(hash)
+            .iter()
+            .copied()
+            .find(|object| {
+                self.packed_string(*object)
+                    .is_some_and(|string| string.code_points().eq(text.chars().map(u32::from)))
+            })
+    }
+
+    /// Records `object`, a Symbol of a text nothing has interned and no
+    /// program-made symbol spells, as that text's one object while anything
+    /// reaches it, and asks for a full collection once the table reaches its
+    /// growth limit (`limits::TableLimits`).
+    pub(crate) fn record_program_symbol(&mut self, object: ObjectReference<'gc>) {
+        self.check_object_origin(object);
+        let Some(hash) = self.string_hash(object) else {
+            unreachable!("internal: a program-made symbol is a String")
+        };
+        self.program_symbols.insert(hash, object);
+        if self
+            .table_limits
+            .program_symbols
+            .reached(self.program_symbols.len())
+        {
+            self.request_table_collection();
+        }
+    }
+
+    /// The program-made symbol of `symbol`'s text, if one lives, made the
+    /// canonical object of `symbol` -- which its text being interned
+    /// after the program made it calls for -- so that the text keeps one
+    /// object (§5.1.6). `Mutator::new_symbol` asks before it allocates.
+    pub(crate) fn adopt_program_symbol(&mut self, symbol: Symbol) -> Option<ObjectReference<'gc>> {
+        let object = self.program_symbol_named(symbol.as_str())?;
+        self.program_symbols.remove(object);
+        self.record_canonical_symbol(symbol, object);
+        Some(object)
     }
 
     /// The one object `symbol` already is in this heap, if anything has
@@ -4836,6 +4927,19 @@ impl<'gc> Heap<'gc> {
             .get(symbol.index())
             .copied()
             .flatten()
+    }
+
+    /// Whether an object of `symbol`'s text already lives in this heap:
+    /// its canonical object, or a program-made symbol of the text, which
+    /// a program made before the text was interned. The image decoder
+    /// refuses a record of such a text, since the record would be a second
+    /// object of it (§5.1.6); an object the decoder already built cannot
+    /// be replaced by the one adoption would answer, and `load` decodes
+    /// into an interpreter that has run nothing of a program's, so no
+    /// program-made symbol lives there.
+    pub(crate) fn has_symbol_object(&self, symbol: Symbol) -> bool {
+        self.canonical_symbol(symbol).is_some()
+            || self.program_symbol_named(symbol.as_str()).is_some()
     }
 
     /// Records `object` as the one object `symbol` is in this heap, from
@@ -5071,13 +5175,14 @@ impl<'gc> Heap<'gc> {
                     return format!("the mixin {}", mixin.reflected_name());
                 }
                 match self.header(object).format() {
-                    _ if self.is_string(object) => match self.symbol_value(object) {
-                        Some(symbol) => format!("the Symbol #{symbol}"),
-                        None => format!(
-                            "the String {:?}",
-                            self.str_value(object).unwrap_or_default()
-                        ),
-                    },
+                    _ if self.is_string(object) => {
+                        let text = self.str_value(object).unwrap_or_default();
+                        if self.is_symbol(object) {
+                            format!("the Symbol #{text}")
+                        } else {
+                            format!("the String {text:?}")
+                        }
+                    }
                     Format::IndexablePointers => {
                         format!("an Array of {}", self.fields(object).len())
                     }
@@ -10434,6 +10539,7 @@ impl<'gc> Heap<'gc> {
             host_roots,
             canonical_symbols,
             symbol_of,
+            program_symbols,
             tables,
             ..
         } = self;
@@ -10483,6 +10589,7 @@ impl<'gc> Heap<'gc> {
         scavenger.drain();
         scavenger.finish();
         Self::forward_weak_symbols(canonical_symbols, symbol_of, &scavenger);
+        Self::forward_weak_program_symbols(program_symbols, &scavenger);
         let remembered = std::mem::take(&mut scavenger.remembered);
         let (survived, promoted, ages) = (scavenger.survived, scavenger.promoted, scavenger.ages);
         // Poisons every word the nursery's objects held before the scavenge
@@ -10564,9 +10671,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// After a collection: every table's next limit, from the rows the
-    /// collection left in use (`limits::GrowthLimit::reset`). The
-    /// program-made symbols have no table yet, so their limit stays at its
-    /// floor.
+    /// collection left in use (`limits::GrowthLimit::reset`).
     pub(crate) fn reset_table_limits(&mut self) {
         self.table_collection_requested = false;
         let tables = &self.tables;
@@ -10576,7 +10681,9 @@ impl<'gc> Heap<'gc> {
         self.table_limits.code_ids.reset(codes);
         self.table_limits.mixin_rows.reset(mixins);
         self.table_limits.application_rows.reset(applications);
-        self.table_limits.program_symbols.reset(0);
+        self.table_limits
+            .program_symbols
+            .reset(self.program_symbols.len());
     }
 
     /// The sizes of the heap's own tables and of the reservations beside
@@ -10591,6 +10698,7 @@ impl<'gc> Heap<'gc> {
             code_ids: self.tables.codes.len(),
             mixin_rows: self.tables.mixins.len(),
             application_rows: self.tables.applications.len(),
+            program_symbols: self.program_symbols.len(),
             stack_committed_bytes: self.stack.frames.committed_words() * 8,
             machine_entry_rows_committed,
             application_id_rows_committed: self.application_ids.committed_rows(),
@@ -10626,8 +10734,8 @@ impl<'gc> Heap<'gc> {
     }
 
     /// How much a move has to rewrite: the objects, the activation stack's
-    /// words, the suspended activations, the continuations, the reified-mixin
-    /// and canonical symbol tables, and the host roots. The stress mode paces
+    /// words, the suspended activations, the continuations, the reified-mixin,
+    /// canonical symbol and program-made symbol tables, and the host roots. The stress mode paces
     /// its moves by it.
     #[cfg(debug_assertions)]
     pub(crate) fn traced_size(&self) -> usize {
@@ -10638,6 +10746,7 @@ impl<'gc> Heap<'gc> {
             + self.continuations.rows.len()
             + self.mixin_objects.len()
             + self.canonical_symbols.len()
+            + self.program_symbols.len()
             + self.host_roots.borrow().slots.len()
     }
 
@@ -11011,6 +11120,13 @@ impl<'gc> Heap<'gc> {
                 self.symbol_of.insert(object.offset.get(), symbol);
             }
         }
+        // Weak as the canonical table is, and pruned with it before a
+        // compaction: every entry left names a live object, and the
+        // inverse follows it.
+        self.program_symbols.retain(|object| {
+            forwarder.object(object);
+            true
+        });
         let roots = self.host_roots.get_mut();
         roots.sweep();
         for slot in &roots.slots {
@@ -11207,8 +11323,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Clears every canonical symbol the marking did not reach. The table is
-    /// weak, and sound so: `Mutator::new_symbol` is the only
-    /// way to make a symbol object (§5.1.6: equal symbols are one object), so
+    /// weak, and sound so: `Mutator::new_symbol` and
+    /// `Mutator::program_symbol` are the only ways to make a symbol object
+    /// (§5.1.6: equal symbols are one object), so
     /// one that is collected was held by nothing -- anything that held it
     /// would have been a root and kept it live -- and the next mint is again
     /// the only one. No live comparison can tell a collected-and-reminted
@@ -11219,6 +11336,11 @@ impl<'gc> Heap<'gc> {
     /// compaction clears the mark bits, and before marking has finished
     /// draining, an entry cleared here reads bits that are not yet complete
     /// and could wrongly prune a symbol the traversal has not reached yet.
+    ///
+    /// Prunes the program-made symbols the same way, and hands the
+    /// canonical table every survivor whose text has been interned since
+    /// the program made it, so that `symbol_value` of it is one probe
+    /// again and the text keeps one object.
     pub(crate) fn prune_canonical_symbols(&mut self) {
         for index in 0..self.canonical_symbols.len() {
             if let Some(object) = self.canonical_symbols[index] {
@@ -11227,6 +11349,24 @@ impl<'gc> Heap<'gc> {
                     self.canonical_symbols[index] = None;
                 }
             }
+        }
+        let mut program_symbols = std::mem::take(&mut self.program_symbols);
+        program_symbols.retain(|object| self.header(*object).marked());
+        let interned: Vec<(Symbol, ObjectReference<'gc>)> = program_symbols
+            .objects()
+            .filter_map(|object| Some((self.program_symbol_number(object)?, object)))
+            .collect();
+        self.program_symbols = program_symbols;
+        for (symbol, object) in interned {
+            // `new_symbol` adopts a living program-made symbol before it
+            // allocates, and the decoder refuses a text one spells, so
+            // nothing else can be the number's object.
+            debug_assert!(
+                self.canonical_symbol(symbol).is_none(),
+                "internal: a text has a program-made and a canonical object"
+            );
+            self.program_symbols.remove(object);
+            self.record_canonical_symbol(symbol, object);
         }
     }
 
@@ -11265,6 +11405,40 @@ impl<'gc> Heap<'gc> {
                 object.offset = moved;
             }
         }
+    }
+
+    /// The scavenge's pass over the program-made symbols, as
+    /// `forward_weak_symbols` is over the canonical ones: a young symbol the
+    /// scavenge copied is its copy, one it did not is gone, an old one
+    /// stays. Every entry is checked as the scavenger checks a handle it
+    /// traces, and every entry left is rebranded into the scavenge's epoch.
+    fn forward_weak_program_symbols(
+        program_symbols: &mut symbols::ProgramSymbols<'gc>,
+        scavenger: &Scavenger<'_>,
+    ) {
+        if program_symbols.is_empty() {
+            return;
+        }
+        program_symbols.retain(|object| {
+            // A stale entry panics here rather than being made fresh.
+            #[cfg(debug_assertions)]
+            {
+                object.epoch = scavenger.check_and_rebrand(object.origin, object.epoch);
+            }
+            if !space::is_young(object.offset) {
+                return true;
+            }
+            let words = scavenger.space.words();
+            let header = header_index(object.offset);
+            if Header(words[header]).format() != Format::Forwarded {
+                return false;
+            }
+            let Some(moved) = Word::from_bits(words[header + CLASS]).object_offset() else {
+                unreachable!("internal: a forwarder names an object")
+            };
+            object.offset = moved;
+            true
+        });
     }
 
     /// Runs the marker's work list empty: each object popped unmarked is

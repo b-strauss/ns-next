@@ -2794,14 +2794,42 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The one object `symbol` is in this heap, allocated the first time
-    /// anything asks for it.
+    /// anything asks for it -- unless a program made a symbol of its text
+    /// before the text was interned, which is then adopted as the
+    /// symbol's object, so that the text keeps one object (§5.1.6).
     pub fn new_symbol(&mut self, symbol: Symbol) -> Value<'gc> {
         if let Some(object) = self.heap.canonical_symbol(symbol) {
+            return Value::object(object);
+        }
+        if let Some(object) = self.heap.adopt_program_symbol(symbol) {
             return Value::object(object);
         }
         let class = self.builtin_class(BuiltinClass::Symbol);
         let object = self.heap.allocate_symbol(class, symbol);
         self.heap.record_canonical_symbol(symbol, object);
+        Value::object(object)
+    }
+
+    /// The Symbol of `text`, which a program chose (`asSymbol`): the
+    /// interned symbol's object when something interned the text, and
+    /// otherwise a program-made symbol, which takes no number -- the
+    /// object the weak table holds for the text, or a new one recorded
+    /// there -- so that a run making symbols of fresh texts leaves the
+    /// interner as it was and its symbols die with their objects
+    /// (`docs/design/memory.md`, "Weak references"). Either way the text
+    /// has one object while anything reaches it (§5.1.6).
+    pub fn program_symbol(&mut self, text: &str) -> Value<'gc> {
+        if let Some(symbol) = Symbol::lookup(text) {
+            return self.new_symbol(symbol);
+        }
+        if let Some(object) = self.heap.program_symbol_named(text) {
+            return Value::object(object);
+        }
+        let class = self.builtin_class(BuiltinClass::Symbol);
+        let object = self
+            .heap
+            .allocate_string(class, crate::CodePoints::from(text));
+        self.heap.record_program_symbol(object);
         Value::object(object)
     }
 

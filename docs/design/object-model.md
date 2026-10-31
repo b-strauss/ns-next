@@ -186,25 +186,35 @@ object's sends on, a copy stamped from its application's ids
 **A symbol is a heap object, and a canonical one**: each `Heap` keeps a
 canonical table, `Vec<Option<ObjectReference>>` indexed by the number inside a
 `Symbol` -- which the interner assigns densely -- and `Mutator::new_symbol`
-answers the table's object, allocating it only the first time. It is the one way
-to make a symbol, so a symbol literal, `asSymbol` and every selector handed to
+answers the table's object, allocating it only the first time. A symbol a
+program makes from a string (`asSymbol`) whose text nothing has interned takes
+no number: `Mutator::program_symbol` answers the object a second, weak table
+holds for the text, keyed by the text's hash, or makes one and records it
+there, and once something interns the text the canonical table adopts that very
+object ([memory.md](memory.md), "Weak references"). Those are the only ways to
+make a symbol, so a symbol literal, `asSymbol` and every selector handed to
 `doesNotUnderstand:` all reach the same object for the same text, which is what
-§5.1.6 and §3.1.1 make two equal symbols. The table is per heap because a handle
-means nothing against another heap. It is weak: the collector clears an entry
-whose symbol nothing else holds ([memory.md](memory.md), "Weak references").
+§5.1.6 and §3.1.1 make two equal symbols. The tables are per heap because a
+handle means nothing against another heap. Both are weak: the collector clears
+an entry whose symbol nothing else holds.
 This is what every reference does -- Primordial Soup's weak `symbolTable`
 (`KernelForPrimordialSoup.ns`), SOMns's `Symbols.symbolFor`, Squeak's symbol
 table -- and it keeps a symbol an indexable object, so that `Symbol` is a
 subclass of `String` in `Kernel.ns`, as the references declare it: a symbol's
 words are a string's, in the same two widths, and only its class tells it
 from one ("Strings have two widths" below). The symbol a symbol object is,
-`Heap::symbol_value`, is the table's inverse, kept beside it per heap and
-keyed by the object's byte offset, so the object stores nothing but its code points
-and no lookup reads them. Rejected: a symbol
+`Heap::symbol_value`, is the canonical table's inverse, kept beside it per heap
+and keyed by the object's byte offset, so the object stores nothing but its code
+points and no lookup of a canonical symbol reads them; a program-made symbol
+answers the number of its text once something interned it and `None` before,
+which names nothing, since every selector, slot name and class name is interned.
+A symbol's `hash` is its text's, told apart from a String's, never its number,
+so a program-made symbol hashes the same before and after its adoption. Rejected: a symbol
 as an immediate, a tag of its own, which no reference does and which every
 string primitive, and later the Newspeak kernel, would have to accept as a
-non-object. An image carries a symbol as a record; the decoder enters each one
-into the loading heap's table and refuses a second record of the same text
+non-object. An image carries a symbol as a record of its text, never a number;
+the decoder interns each text and enters each record into the loading heap's
+canonical table, and refuses a second record of the same text
 ([image-format.md](image-format.md), "Verification").
 
 **An `ObjectReference` is an offset, not a pointer.** Every object lives in one
@@ -2569,8 +2579,8 @@ code points in two widths").
 
 `Symbol` is a subclass of `String`, as in every reference kernel: a symbol's
 words are a string's, and only its class tells it from one.
-`Mutator::new_symbol` is the only way to make one: instantiating `Symbol` is
-refused, and `String new` answers an empty one-byte string
+`Mutator::new_symbol` and `Mutator::program_symbol` are the only ways to make
+one: instantiating `Symbol` is refused, and `String new` answers an empty one-byte string
 (`goldens/library/string/symbol_new_is_refused.ns`,
 `string_new_answers_an_empty_string.ns`). `=` is class-tight both ways:
 `'foo' = #foo` and `#foo = 'foo'` both answer `false`, since `Symbol>>=` is

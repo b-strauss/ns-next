@@ -335,13 +335,15 @@ text `printString` does (`fixed` in `numeric/float_text.rs`;
 `goldens/library/number/float/as_float_and_as_string_fixed.ns`). The Are We
 Fast Yet harness prints its scores with it.
 
-**A `Symbol`'s hash is its interner number** (`text::symbol_hash`): §5.1.6
-makes equal symbols one object, so it agrees with `Symbol>>=` by
-construction and is a dense small integer. It is stable only within one
-process — the interner numbers symbols in the order they are first seen —
-so it does **not** survive a snapshot: the same symbol in a reloaded image
-can hash to another number, and a hash a program recorded in an artifact
-cannot be compared against one computed after the load.
+**A `Symbol`'s hash is its text's** (`text::symbol_hash`): the content
+hash a String of the same text answers, told apart from it by a constant,
+since a Symbol never equals a String. §5.1.6 makes equal symbols one
+object, so it agrees with `Symbol>>=` by construction. It is never the
+interner's number: a symbol a program makes has none until its text is
+interned, and its hash must not change when the canonical table adopts it
+([memory.md](memory.md), "Weak references"). Hashed in place, without
+building the text, as a String's is; being the text's, it is the same in
+every process and survives a snapshot.
 
 **Strings are code points in two widths.** A `String` is an object of the
 byte-indexed format while every code point fits Latin-1, one byte per code

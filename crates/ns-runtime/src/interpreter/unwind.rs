@@ -605,11 +605,18 @@ impl<'gc> Mutator<'gc> {
         let selector = self
             .kernel_slot(message, BuiltinClass::Message, "selector")?
             .as_object()?;
-        let selector = self.heap.symbol_value(selector)?;
+        let text = self.heap.symbol_text(selector)?;
+        // A program-made symbol whose text nothing has interned is
+        // interned here: the error names its selector as a `Symbol`, and
+        // it ends the run, so what this adds is bounded by the runs.
+        let selector = self
+            .heap
+            .symbol_value(selector)
+            .unwrap_or_else(|| Symbol::intern(&text));
         Some(NewspeakError::error(
             selector,
             activation.receiver(&self.heap),
-            format!("an object does not understand #{}", selector.as_str()),
+            format!("an object does not understand #{text}"),
         ))
     }
 

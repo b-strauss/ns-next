@@ -2214,15 +2214,14 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   ranges slide at a full collection"), and the machine code compiled
   against a range that moved is freed ([execution.md](design/execution.md),
   "Planned: the code of a moved range is freed").
-- **A program-made symbol is interned for good** (2026-10-31).
-  `asSymbol` and its kin intern their text (`Symbol::intern`), and the
-  interner is append-only, per thread, its texts leaked: the symbol object
-  dies with the weak canonical table, its number and its text never do,
-  so a program that makes symbols from fresh strings grows the interner
-  without bound. Part 4d's design closes it (Task 21): a program-made
-  symbol takes no number and lives in a weak table of its own
-  ([memory.md](design/memory.md), "Weak references", "Planned: a
-  program-made symbol takes no number and dies with its object").
+- **A program-made symbol an image carries becomes permanent at load**
+  (2026-10-31). The decoder interns every text of an image's symbol
+  table, so a symbol a program made, which takes no number and dies with
+  its object, takes a number for good once an image carrying it is
+  loaded, bounded by the images loaded ([memory.md](design/memory.md),
+  "Weak references", "A program-made symbol takes no number and dies
+  with its object"). Making it weak there would need the decoder's first
+  pass to tell a symbol record's text from a text the code names.
 - **Nothing beside the object space gives committed memory back**
   (2026-10-31). The activation stack, the cells' reservation, the machine
   entry table, the application id table and the code zone keep every page

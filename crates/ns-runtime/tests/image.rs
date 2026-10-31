@@ -18417,3 +18417,69 @@ fn an_image_past_the_verification_bound_is_refused() {
     );
     assert_eq!(decode::verify_code_table(&nested_branches(257)), Ok(()));
 }
+
+/// A program-made symbol an image carries round-trips as its text: the
+/// loaded graph holds a symbol equal and identical to one made afresh
+/// from the same text, and to the interned symbol of that text, which the
+/// decoder interns (`docs/design/memory.md`, "Weak references").
+#[test]
+fn an_image_keeps_a_program_made_symbol() {
+    let source = indoc! {"
+        class X = Object new (
+          | made = ('q' , 'x') asSymbol. |
+        ) (
+          public symbol = ( ^made )
+          public isMadeAgain = ( ^made == ('q' , 'x') asSymbol )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    assert_eq!(
+        Symbol::lookup("qx"),
+        None,
+        "nothing has interned the symbol's text before the snapshot"
+    );
+    assert_eq!(interpreter.table_sizes().program_symbols, 1);
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let again = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("isMadeAgain"), &[]),
+        "isMadeAgain",
+    );
+    let symbol = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("symbol"), &[]),
+        "symbol",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(mutator.fetch(&again).as_boolean(), Some(true));
+        let held = mutator.fetch(&symbol);
+        assert_eq!(
+            held.as_object()
+                .and_then(|object| mutator.heap().symbol_text(object))
+                .as_deref(),
+            Some("qx")
+        );
+        let interned = mutator.new_symbol(Symbol::intern("qx"));
+        assert!(
+            held.as_object()
+                .zip(interned.as_object())
+                .is_some_and(|(held, interned)| held.same(interned)),
+            "the loaded symbol is the one object of its text"
+        );
+    });
+}

@@ -364,6 +364,20 @@ fn inherits_mixin_of<'gc>(
 /// `description` may answer anything, which is rendered -- a String's or a
 /// Symbol's text as it is, anything else as `Heap::describe` names it --
 /// and a selector that is no Symbol is reported as `signal`'s.
+/// The selector a termination reports, when `object` is a Symbol. A
+/// program-made symbol whose text nothing has interned is interned here:
+/// the host's error names its selector as a `Symbol`, and a run ends at
+/// most once, so what this adds to the interner is bounded by the runs.
+fn terminating_selector<'gc>(
+    mutator: &Mutator<'gc>,
+    object: ObjectReference<'gc>,
+) -> Option<Symbol> {
+    match mutator.heap.symbol_value(object) {
+        Some(symbol) => Some(symbol),
+        None => Some(Symbol::intern(&mutator.heap.symbol_text(object)?)),
+    }
+}
+
 fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: Arguments<'_, 'gc>) -> Signal<'gc> {
     let argument = |position: usize| {
         arguments
@@ -372,19 +386,13 @@ fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: Arguments<'_, 'gc>) -> Sign
     };
     let selector = argument(0)
         .as_object()
-        .and_then(|object| mutator.heap.symbol_value(object))
+        .and_then(|object| terminating_selector(mutator, object))
         .unwrap_or(Symbol::SIGNAL);
     let description = argument(2);
+    // A Symbol is a String, so its text is read the same way.
     let message = description
         .as_object()
-        .and_then(|object| {
-            mutator.heap.str_value(object).or_else(|| {
-                mutator
-                    .heap
-                    .symbol_value(object)
-                    .map(|symbol| symbol.to_string())
-            })
-        })
+        .and_then(|object| mutator.heap.str_value(object))
         .unwrap_or_else(|| mutator.heap.describe(description));
     Signal::Terminate(Box::new(NewspeakError::error(
         selector,

@@ -1728,7 +1728,7 @@ objects grow collects for the space:
 | mixin rows | `Tables.mixins` less `free_mixins` | `MIXIN_ROW_FLOOR = 4_096` |
 | application rows | `Tables.applications` less `free_applications` | `APPLICATION_ROW_FLOOR = 4_096` |
 | sites | `InlineCaches.sites` less the free ranges' sites | `SITE_FLOOR = 262_144`, 8 MiB of cells |
-| program-made symbols | none yet, so their limit is never reached | `PROGRAM_SYMBOL_FLOOR = 65_536` |
+| program-made symbols | `ProgramSymbols`' live entries | `PROGRAM_SYMBOL_FLOOR = 65_536` |
 
 A table's size is its rows in use -- its length less its free rows, the
 sites less those the free ranges hold -- never its length alone: under a
@@ -1740,7 +1740,8 @@ the high mark of its rows in use. Every mint, a freed row's included,
 compares the rows in use with the table's limit: a code id in
 `Heap::register_code_uncached`, behind `Heap::code_id`'s cache, a mixin
 row in `push_mixin_row`, an application row in `register_application`,
-and a new range in `InlineCaches::fresh_range`. A reached limit calls
+a program-made symbol in `Heap::record_program_symbol`, and a new range
+in `InlineCaches::fresh_range`. A reached limit calls
 `Heap::request_table_collection`, which, like `request_collection`, only
 sets flags, so a mint inside a leaf or while an object is half-wired may
 call it. The heap's limits are its `TableLimits`; the sites' lies with
@@ -1876,40 +1877,42 @@ checked for its heap and its epoch as the scavenger checks a handle it
 traces, and rebranded into the scavenge's epoch.
 
 This does not weaken §5.1.6. Equal symbols are one object as long as
-`Mutator::new_symbol` is the only way to make one. If a symbol object is
-collected then nothing held it — anything that did would have been a root and
+`Mutator::new_symbol` and `Mutator::program_symbol` are the only ways to
+make one. If a symbol object is collected then nothing held it — anything that did would have been a root and
 kept it live — so the next `new_symbol` mints a fresh one whose identity is
 again unique, and no live comparison can tell the difference. An identity hash
 belongs to the object rather than to the symbol; a program that keeps the
 number `identityHash` answered instead of the object has no guarantee today
 either, and Squeak's weak symbol table behaves the same way.
 
-**Planned: a program-made symbol takes no number and dies with its
-object.** Would change: a symbol a program makes from a string --
-`asSymbol` and its kin -- no longer interns its text, so a run that makes
-a million distinct symbols and keeps none leaves the interner as it was.
-Today every symbol object is canonical for an interned `Symbol`, and the
-interner (`symbol.rs`) is append-only: `Symbol::intern` leaks one text
-per new spelling, per thread, for good, so the weak table above lets the
-object die but never its number or its text. Newspeak's own tests require
-a program-made symbol to be collectable (`testSymbolTableWeakness1` and
-`2`, `prior-art/newspeak/KernelWeakTests.ns:228-243`). Decided with the
-user on 2026-10-30.
+**A program-made symbol takes no number and dies with its object.** A
+symbol a program makes from a string -- `asSymbol` and its kin -- does not
+intern its text, so a run that makes a million distinct symbols and keeps
+none leaves the interner as it was
+(`tests/builtins_text.rs`'s
+`a_million_program_made_symbols_leave_the_interner_as_it_was`). The
+interner (`symbol.rs`) is append-only: `Symbol::intern` leaks one text per
+new spelling, per thread, for good, so a weak table of numbered symbols
+would let the object die but never its number or its text. Newspeak's own
+tests require a program-made symbol to be collectable
+(`testSymbolTableWeakness1` and `2`,
+`prior-art/newspeak/KernelWeakTests.ns:228-243`;
+`goldens/runtime/symbols/program_symbols_are_weak.ns`, where the second
+answers with the Ephemeron's refusal of a value as its key).
 
-- **Why no number.** Recycling the number and the text, the decision's
-  first wording, cannot be built as worded without `unsafe`:
-  `Symbol::as_str` answers a `&'static str` that `intern` leaked, and
-  freeing it would take `Box::from_raw`, which `ns-runtime` forbids, or
-  a non-`'static` text API at every caller of `as_str`; the interner is
-  one per thread, shared by every interpreter on it, so one heap's collection
-  cannot know whether another heap still holds a number; and a `Symbol`
-  is a `Copy` `u32` held by compiled code, cache keys, return sites,
-  frame headers and every Rust table, each of which a recycled number
-  would need scrubbed. A `Symbol` object already holds its own text
-  (`Heap::allocate_symbol` is `allocate_string` with the `Symbol` class),
-  so a program-made symbol whose text nothing has interned needs no
-  number at all: it is just that object, and no number exists to
-  recycle. Sends, caches and machine code then see only permanent
+- **Why no number.** Recycling the number and the text cannot be built
+  without `unsafe`: `Symbol::as_str` answers a `&'static str` that
+  `intern` leaked, and freeing it would take `Box::from_raw`, which
+  `ns-runtime` forbids, or a non-`'static` text API at every caller of
+  `as_str`; the interner is one per thread, shared by every interpreter on
+  it, so one heap's collection cannot know whether another heap still
+  holds a number; and a `Symbol` is a `Copy` `u32` held by compiled code,
+  cache keys, return sites, frame headers and every Rust table, each of
+  which a recycled number would need scrubbed. A `Symbol` object already
+  holds its own text (`Heap::allocate_symbol` is `allocate_string` with
+  the `Symbol` class), so a program-made symbol whose text nothing has
+  interned needs no number at all: it is just that object, and no number
+  exists to recycle. Sends, caches and machine code see only permanent
   numbers, where reference-counted numbers would cost on every cache
   fill, install and text read; the user chose this mechanism as the
   faster of the two.
@@ -1921,16 +1924,22 @@ user on 2026-10-30.
   `PERM_REFCOUNT` (`prior-art/jdk/src/hotspot/share/oops/symbol.hpp:99-102`,
   `:167-169`). A program-made symbol is a `Symbol` object whose text
   nothing has interned; compiled code, a cache key, a return site, a
-  frame header and an image record can never hold one.
+  frame header and an image record can never hold one. A text a program
+  chooses is interned in only two places, each bounded by the runs: the
+  selector of the error a run ends with, which the host's `HostError`
+  names as a `Symbol` (`Activation`'s termination, and the error an
+  unhandled `doesNotUnderstand:` at the depth limit reports).
 - **The weak table** (`heap::symbols::ProgramSymbols`), per heap, beside
-  `canonical_symbols`: the program-made symbols keyed by the hash of
-  their text (`Heap::string_hash`) and compared by text, so it keeps no
-  copy of the text, with an inverse from an object's offset to its hash,
-  as `symbol_of` is the canonical table's. It is weak as the canonical
-  table is: pruned with `prune_canonical_symbols`, forwarded by a
-  scavenge beside `forward_weak_symbols`, rebuilt after every compaction
-  and move, and counted by its live entries against its growth limit
-  ("The trigger and the growth policy").
+  `canonical_symbols`: the program-made symbols keyed by the content hash
+  of their text (`Heap::string_hash`, an `i64` below 2^32) and compared by
+  text, so it keeps no copy of the text, with an inverse from an object's
+  offset to its hash, as `symbol_of` is the canonical table's. It is weak
+  as the canonical table is: never a root, pruned with
+  `prune_canonical_symbols`, forwarded by a scavenge's weak pass
+  (`Heap::forward_weak_program_symbols`) beside `forward_weak_symbols`,
+  forwarded by every compaction and move, and counted by its live entries
+  against its growth limit ("The trigger and the growth policy") at each
+  mint (`Heap::record_program_symbol`).
 - **Making one** (`Mutator::program_symbol`): a text the interner already
   holds (`Symbol::lookup`, a probe that inserts nothing) answers the
   canonical object, `new_symbol` of its number; any other answers the
@@ -1938,23 +1947,39 @@ user on 2026-10-30.
 - **One text, one object.** When a text a program-made symbol spells is
   interned afterwards -- a method of that name compiled, an image
   loaded -- `new_symbol` adopts the existing object as the number's
-  canonical object instead of allocating another, the image decoder's
-  canonical record does the same, and the prune adopts every surviving
-  program-made symbol whose text has since been interned. So §5.1.6 holds
-  across both tables: equal symbols are one object while either table
-  holds it.
+  canonical object instead of allocating another
+  (`Heap::adopt_program_symbol`), and the prune adopts every surviving
+  program-made symbol whose text has since been interned, so its
+  `symbol_value` is one probe again. The image decoder refuses a record
+  whose text a living program-made symbol spells, as it refuses a second
+  record of one text (`Heap::has_symbol_object`): the record is an object
+  of its own the decoder already built, and `load` decodes into an
+  interpreter that has run nothing of a program's, so no such symbol
+  lives there. So §5.1.6 holds across both tables: equal symbols are one
+  object while either table holds it
+  (`goldens/runtime/symbols/program_symbol_identity.ns`;
+  `tests/mixin.rs`'s
+  `a_program_made_symbol_finds_a_method_installed_after_it`).
 - **Reading one.** `Heap::symbol_value` answers a program-made symbol's
   number only once its text is interned, `None` before. A caller that
   only asks whether an object is a Symbol asks `is_symbol`; one that
   looks a name up treats `None` as "nothing has this name", since every
-  selector, slot name and class name is interned: `perform:` and its kin
-  raise `doesNotUnderstand:` with the symbol object in the `Message`,
-  `respondsTo:` answers `false`, a mirror's lookup answers its not-found
-  result. A reader of the text reads the object's own.
+  selector, slot name and class name is interned: `Message>>sendTo:`
+  reaches `doesNotUnderstand:` with the symbol object in the `Message`
+  (`Mutator::decide_unnamed_send`), and a mirror's lookup by name
+  declines to its not-found result. A reader of the text reads the
+  object's own (`Heap::symbol_text`). A symbol's `hash` is its text's,
+  told apart from a String's of the same text, so it does not change when
+  the canonical table adopts the object. No leaf of machine code reads a
+  symbol object's number: the mirror leaves and the stubs read the
+  selector of the send, always a permanent number, and `sendTo:` is no
+  leaf.
 - **The image format is unchanged.** A symbol's record carries its text,
   never a number, so no tag is added, and the decoder interns every text
   of an image's symbol table: a program-made symbol an image carries
-  becomes permanent at load, bounded by the images loaded.
+  becomes permanent at load, bounded by the images loaded
+  ([OPEN-WORK.md](../OPEN-WORK.md); `tests/image.rs`'s
+  `an_image_keeps_a_program_made_symbol`).
 
 **The table of reified mixins is weak** (`mixin_objects`,
 `Heap::prune_mixin_objects`), as the symbol table is, for the same

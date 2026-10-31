@@ -8,6 +8,16 @@
 //! str` this interner hands out, and the interner's own table, are a
 //! separate store outside the heap that the collector never traces --
 //! nothing reclaims them, and nothing is meant to.
+//!
+//! So only a text the runtime names is interned: what the compiler, the
+//! resolver, the image decoder and the runtime's own constants name,
+//! bounded by the source compiled and the images loaded. A running
+//! program never interns: a symbol it makes from a string (`asSymbol`)
+//! whose text nothing has interned takes no number and lives only as its
+//! object, in the heap's weak table of program-made symbols
+//! (`Mutator::program_symbol`; `docs/design/memory.md`, "Weak
+//! references"), and a name a program looks up is probed with `lookup`,
+//! which inserts nothing.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -83,10 +93,11 @@ impl Interner {
         interner
     }
 
-    /// Interns `text` under the next number. A running program interns
-    /// symbols of its choosing (`asSymbol`), and no caller of `intern` can
-    /// answer an error, so a symbol past the number `u32::MAX` on one thread
-    /// exhausts the table and aborts, as an image field past `u32` does.
+    /// Interns `text` under the next number. No caller of `intern` can
+    /// answer an error, so a symbol past the number `u32::MAX` on one
+    /// thread exhausts the table and aborts, as an image field past `u32`
+    /// does; the texts interned are bounded by the source compiled and the
+    /// images loaded, never by what a program makes.
     fn insert(&mut self, text: &'static str) -> Symbol {
         let symbol =
             Symbol(u32::try_from(self.strings.len()).expect(
@@ -123,6 +134,16 @@ impl Symbol {
             }
             interner.insert(Box::leak(text.to_string().into_boxed_str()))
         })
+    }
+
+    /// The symbol `text` already is, or `None` while nothing has interned
+    /// it. A probe that inserts nothing: what a program makes or looks up
+    /// by a text of its choosing goes through here, so that no run grows
+    /// the interner (`Mutator::program_symbol`). Since every selector, slot
+    /// name and class name is interned, `None` means that nothing has this
+    /// name.
+    pub fn lookup(text: &str) -> Option<Symbol> {
+        INTERNER.with_borrow(|interner| interner.lookup.get(text).copied())
     }
 
     /// How many symbols this thread has interned (`Interpreter::table_sizes`).
@@ -163,6 +184,15 @@ mod tests {
         let first = Symbol::intern("foo:");
         let second = Symbol::intern("bar:");
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_lookup_finds_what_was_interned_and_inserts_nothing() {
+        let interned = Symbol::intern("looked:up:");
+        assert_eq!(Symbol::lookup("looked:up:"), Some(interned));
+        let count = Symbol::interned_count();
+        assert_eq!(Symbol::lookup("never interned by anything"), None);
+        assert_eq!(Symbol::interned_count(), count);
     }
 
     #[test]

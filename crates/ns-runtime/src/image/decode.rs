@@ -4568,7 +4568,7 @@ impl Sizing<'_, '_, '_> {
                 let named = symbols_named
                     .get_mut(id as usize)
                     .ok_or(DecodeError::BadSymbolId(id))?;
-                if *named || self.context.mutator.heap.canonical_symbol(symbol).is_some() {
+                if *named || self.context.mutator.heap.has_symbol_object(symbol) {
                     return Err(DecodeError::DuplicateSymbol(symbol.as_str().to_string()));
                 }
                 *named = true;
@@ -5220,7 +5220,7 @@ pub fn decode_graph_section<'gc>(
             if !class.same(context.mutator.builtin_class(BuiltinClass::Symbol)) {
                 return Err(DecodeError::SymbolOfWrongClass(symbol.as_str().to_string()));
             }
-            if context.mutator.heap.canonical_symbol(symbol).is_some() {
+            if context.mutator.heap.has_symbol_object(symbol) {
                 return Err(DecodeError::DuplicateSymbol(symbol.as_str().to_string()));
             }
             context

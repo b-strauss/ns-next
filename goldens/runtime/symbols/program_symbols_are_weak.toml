@@ -1,0 +1,8 @@
+stdout = '''
+'key: requires an object that is not a value, got #Hopefully unique string3'
+nil
+#Hopefully unique string2
+true
+true
+nil
+'''

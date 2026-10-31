@@ -59,12 +59,23 @@ pub(crate) fn string_hash(text: &str) -> i64 {
     crate::hash::content_hash(text)
 }
 
-/// A symbol's hash: its interned number. §5.1.6 makes equal symbols one
-/// object, so the number is as stable as the symbol is and agrees with
-/// `Symbol>>=` by construction. It is a `u32`, so it is already the
-/// non-negative sub-2^32 answer a `hash` gives.
-pub(crate) fn symbol_hash(symbol: Symbol) -> i64 {
-    symbol.index() as i64
+/// Told apart from a String's hash of the same text: a Symbol is never
+/// equal to a String, so nothing requires the two to hash alike, and a
+/// collection holding both keeps them in different buckets. Any 32-bit
+/// constant would do; this one mixes the bits evenly.
+const SYMBOL_HASH_SALT: i64 = 0x5bd1_e995;
+
+/// A symbol's hash: its text's, never a number, since a program-made
+/// symbol has none until its text is interned and its hash must not change
+/// when the canonical table adopts it. §5.1.6 makes equal symbols one
+/// object, so it agrees with `Symbol>>=` by construction. The text's hash
+/// is a non-negative sub-2^32 integer, and so is this, since the salt has
+/// no bit past 32. `None` for anything but a Symbol.
+pub(crate) fn symbol_hash<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<i64> {
+    if !heap.is_symbol(object) {
+        return None;
+    }
+    Some(heap.string_hash(object)? ^ SYMBOL_HASH_SALT)
 }
 
 /// Mirrors `ns_syntax::lexer`'s string-literal escaping (`lex_string`): a
@@ -528,7 +539,7 @@ pub(crate) fn execute_string<'gc>(
             .map(|hash| Ok(Value::small_integer(hash))),
         StringPrimitive::AsSymbol => {
             let text = mutator.heap.str_value(object)?;
-            Some(Ok(mutator.new_symbol(Symbol::intern(&text))))
+            Some(Ok(mutator.program_symbol(&text)))
         }
         StringPrimitive::PrintString => {
             let text = mutator.heap.str_value(object)?;
@@ -546,10 +557,8 @@ pub(crate) fn execute_symbol<'gc>(
     let object = receiver.as_object()?;
     match primitive {
         SymbolPrimitive::AsString => {
-            let symbol = mutator.heap.symbol_value(object)?;
-            Some(Ok(Value::object(
-                mutator.new_string(symbol.as_str().to_string()),
-            )))
+            let text = mutator.heap.symbol_text(object)?;
+            Some(Ok(Value::object(mutator.new_string(text))))
         }
         // Identity, a symbol being canonical (§5.1.6): it asks only whether
         // the receiver is one, never which.
@@ -568,14 +577,12 @@ pub(crate) fn execute_symbol<'gc>(
             .map(|answer| Ok(Value::boolean(answer)))
         }
         SymbolPrimitive::Hash => {
-            let symbol = mutator.heap.symbol_value(object)?;
-            Some(Ok(Value::small_integer(symbol_hash(symbol))))
+            let hash = symbol_hash(&mutator.heap, object)?;
+            Some(Ok(Value::small_integer(hash)))
         }
         SymbolPrimitive::PrintString => {
-            let symbol = mutator.heap.symbol_value(object)?;
-            Some(Ok(Value::object(
-                mutator.new_string(format!("#{}", symbol.as_str())),
-            )))
+            let text = mutator.heap.symbol_text(object)?;
+            Some(Ok(Value::object(mutator.new_string(format!("#{text}")))))
         }
     }
 }

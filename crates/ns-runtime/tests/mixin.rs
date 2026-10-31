@@ -662,3 +662,77 @@ ns_runtime::for_each_lowering! {
         });
     }
 }
+
+/// A program-made symbol held across the install of a method of its name
+/// sends that method: once the method's source interns the text, the
+/// symbol names it, and the method's own literal of the text is the held
+/// object, which the canonical table adopted (§5.1.6;
+/// `docs/design/memory.md`, "Weak references"). The text never appears in
+/// the module's source but split across strings, so nothing interns it
+/// before the install.
+#[test]
+fn a_program_made_symbol_finds_a_method_installed_after_it() {
+    let source = indoc! {"
+        class Host usingPlatform: platform = Object new (
+            | mirrors = platform mirrors. kernel = platform kernel. held ::= nil. |
+        ) (
+            public class Subject = Object new () ()
+            public hold = ( held:: ('zo' , 'rk') asSymbol )
+            public install = (
+                | builder = (mirrors ClassMirror reflecting: Subject) mixin declaration asBuilder. |
+                builder instanceSide methods addFromSource: 'public zo' , 'rk = (^#zo' , 'rk)'.
+                builder install.
+            )
+            public performHeld = (
+                ^(kernel Message new selector: held; arguments: {}) sendTo: Subject new
+            )
+            public answerIsHeld: answer = ( ^answer == held )
+        ) : ()
+    "};
+    let (mut interpreter, class, _resolved) = load(source);
+    let platform = interpreter.platform();
+    let host = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    expect_ok(interpreter.send(&host, Symbol::intern("hold"), &[]), "hold");
+    assert_eq!(
+        Symbol::lookup("zork"),
+        None,
+        "nothing has interned the held symbol's text"
+    );
+    assert_eq!(interpreter.table_sizes().program_symbols, 1);
+
+    expect_ok(
+        interpreter.send(&host, Symbol::intern("install"), &[]),
+        "install",
+    );
+    let answer = expect_ok(
+        interpreter.send(&host, Symbol::intern("performHeld"), &[]),
+        "performHeld",
+    );
+    interpreter.enter(|mutator| {
+        let answer = object(mutator, &answer);
+        assert_eq!(
+            mutator.heap().symbol_text(answer).as_deref(),
+            Some("zork"),
+            "the installed method answers its literal"
+        );
+    });
+    let identical = expect_ok(
+        interpreter.send(&host, Symbol::intern("answerIsHeld:"), &[answer]),
+        "answerIsHeld:",
+    );
+    interpreter.enter(|mutator| {
+        assert_eq!(
+            mutator.fetch(&identical).as_boolean(),
+            Some(true),
+            "the method's literal is the held object"
+        );
+    });
+    assert_eq!(
+        interpreter.table_sizes().program_symbols,
+        0,
+        "the canonical table adopted the held symbol"
+    );
+}
