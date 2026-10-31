@@ -438,7 +438,7 @@ fn initializer_in(
             if taken != code.argument_count {
                 return 0;
             }
-            let base = mutator.caches.base_for(&code);
+            let base = mutator.feedback_base_for(&code);
             jit::note_entry_by_call(&mut mutator.jit, &code, base, None);
             let Some(address) = jit::machine_entry_address(&mutator.jit, &code, base) else {
                 return 0;
@@ -502,7 +502,7 @@ fn forcing_in(
             defining_class,
             ..
         } => {
-            let base = mutator.caches.base_for(&method.code);
+            let base = mutator.feedback_base_for(&method.code);
             jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
             let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
                 return 0;

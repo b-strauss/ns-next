@@ -26,7 +26,8 @@ pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {
 pub(crate) fn print_collector_statistics(statistics: &ns_runtime::CollectorStatistics) {
     eprintln!(
         "collector: {} scavenges, {:.3} ms total pause, {:.3} ms longest; \
-         {} collections, {:.3} ms total pause, {:.3} ms longest; {} live objects",
+         {} collections, {:.3} ms total pause, {:.3} ms longest; {} live objects; \
+         {} table collections",
         statistics.scavenges,
         statistics.scavenge_pause.as_secs_f64() * 1000.0,
         statistics.longest_scavenge_pause.as_secs_f64() * 1000.0,
@@ -34,6 +35,7 @@ pub(crate) fn print_collector_statistics(statistics: &ns_runtime::CollectorStati
         statistics.total_pause.as_secs_f64() * 1000.0,
         statistics.longest_pause.as_secs_f64() * 1000.0,
         statistics.live_objects,
+        statistics.table_collections,
     );
 }
 

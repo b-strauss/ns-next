@@ -83,6 +83,7 @@ macro_rules! for_each_lowering {
     };
 }
 pub use code_points::CodePoints;
+pub use heap::limits::{TableFloors, TableSizes};
 pub use heap::{
     ActivationHeader, ActivationReference, ApplicationIndex, ClassReference, CodeId,
     CollectorStatistics, FrameRecord, FrameReference, Heap, HeapStatistics, MixinId, NewClass,

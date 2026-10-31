@@ -89,6 +89,7 @@ pub fn benchmark_runs() -> Vec<BenchmarkRun> {
                     stderr: String::new(),
                     skipped: None,
                     arguments: vec![name],
+                    reaches_a_table_limit: None,
                 },
             });
         }
@@ -320,6 +321,13 @@ pub struct Expectation {
     /// sends the entry: what `main:args:` receives (§8.4). Empty for most.
     #[serde(default)]
     pub arguments: Vec<String>,
+    /// Why the program grows a table beside the object space past its
+    /// growth limit's floor with rows it keeps live, so that a table's
+    /// limit may request a collection (`heap::limits`); every other
+    /// program is held to requesting none
+    /// (`no_program_reaches_a_table_limit`).
+    #[serde(default)]
+    pub reaches_a_table_limit: Option<String>,
 }
 
 impl Expectation {
@@ -354,6 +362,15 @@ pub fn expectation_of(source: &Path) -> Expectation {
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let recorded: Expectation =
         toml::from_str(&text).unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+    if let Some(reason) = &recorded.reaches_a_table_limit {
+        // As for `skipped`: an exemption says why it is one.
+        assert!(
+            !reason.trim().is_empty(),
+            "{} has an empty `reaches_a_table_limit` -- a golden reaches a \
+             table's limit only for a reason that says which rows it keeps live",
+            path.display()
+        );
+    }
     if let Some(reason) = &recorded.skipped {
         // A blank reason is the whole failure mode the field could
         // introduce: a golden switched off in a hurry, with nothing left
@@ -371,6 +388,7 @@ pub fn expectation_of(source: &Path) -> Expectation {
         stderr: recorded.stderr.replace("\r\n", "\n"),
         skipped: recorded.skipped,
         arguments: recorded.arguments,
+        reaches_a_table_limit: recorded.reaches_a_table_limit,
     }
 }
 
@@ -508,4 +526,40 @@ pub fn ns_next(arguments: &[&std::ffi::OsStr]) -> (bool, String, String) {
         String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
         String::from_utf8_lossy(&output.stderr).replace("\r\n", "\n"),
     )
+}
+
+/// Removes `--collector-statistics`'s line from `output`'s stderr and
+/// answers it; `None` when the run stopped before it printed one, as a
+/// program that does not compile does.
+pub fn take_collector_statistics(output: &mut std::process::Output) -> Option<String> {
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let mut statistics = None;
+    let mut rest = String::new();
+    for line in stderr.split_inclusive('\n') {
+        if statistics.is_none() && line.starts_with("collector: ") {
+            statistics = Some(line.trim_end().to_string());
+        } else {
+            rest.push_str(line);
+        }
+    }
+    output.stderr = rest.into_bytes();
+    statistics
+}
+
+/// No golden or benchmark program grows a table beside the object space
+/// to its growth limit (`heap::limits`) unless its `expectation` says why
+/// (`Expectation::reaches_a_table_limit`): the floors lie above what the
+/// others mint, so that a small program never collects for a table.
+pub fn no_program_reaches_a_table_limit(
+    statistics: &str,
+    expectation: &Expectation,
+) -> Result<(), String> {
+    if expectation.reaches_a_table_limit.is_some() || statistics.ends_with("; 0 table collections")
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "a table's growth limit requested a collection: {statistics}"
+        ))
+    }
 }

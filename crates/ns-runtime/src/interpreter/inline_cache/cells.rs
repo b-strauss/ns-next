@@ -247,6 +247,11 @@ impl Cells {
         }
     }
 
+    /// How many bytes of the reservation are committed, every region's.
+    pub(crate) fn committed_bytes(&self) -> usize {
+        self.global.committed + self.sites.committed + self.blocks.committed
+    }
+
     /// The address of site `index`'s cell: the site cells' base plus
     /// `index` cells, fixed for the reservation's life.
     pub(crate) fn site_address(&self, index: usize) -> usize {

@@ -125,6 +125,11 @@ impl Symbol {
         })
     }
 
+    /// How many symbols this thread has interned (`Interpreter::table_sizes`).
+    pub(crate) fn interned_count() -> usize {
+        INTERNER.with_borrow(|interner| interner.strings.len())
+    }
+
     pub fn as_str(self) -> &'static str {
         INTERNER.with_borrow(|interner| interner.strings[self.0 as usize])
     }

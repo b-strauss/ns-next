@@ -37,6 +37,7 @@ mod frames;
 pub(crate) use frames::with_stack_reservation;
 mod header;
 mod ids;
+pub(crate) mod limits;
 #[cfg(ns_jit)]
 mod machine_entries;
 pub(crate) mod machine_words;
@@ -2137,6 +2138,17 @@ pub struct Heap<'gc> {
     /// stays under it never collects: `bench_loop.ns` and `bench_send.ns`
     /// should not pay for a collector they do not need.
     collection_floor: usize,
+    /// The growth limits of the tables beside the space (`limits.rs`):
+    /// each mint of a new row compares its table with its limit, and a
+    /// reached one requests a full collection as the space's limit does.
+    table_limits: limits::TableLimits,
+    /// Whether a table's limit has requested the next collection, which
+    /// `collect` counts in `table_collections` when the space's limit did
+    /// not request it too.
+    table_collection_requested: bool,
+    /// How many collections a table's limit requested and the space's
+    /// did not.
+    table_collections: u64,
     /// How many collections have run, and how long they have taken in total
     /// and at the longest (`Interpreter::collector_statistics`,
     /// `--collector-statistics`). `World::collect` is the only writer,
@@ -2390,6 +2402,9 @@ pub struct CollectorStatistics {
     pub total_pause: std::time::Duration,
     pub longest_pause: std::time::Duration,
     pub live_objects: usize,
+    /// Collections a table's growth limit requested and the space's limit
+    /// did not (`heap::limits`).
+    pub table_collections: u64,
 }
 
 /// A frame object's fixed fields as values and handles, before
@@ -2526,6 +2541,9 @@ impl<'gc> Heap<'gc> {
             next_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
+            table_limits: limits::TableLimits::default(),
+            table_collection_requested: false,
+            table_collections: 0,
             collections: 0,
             total_pause: std::time::Duration::ZERO,
             longest_pause: std::time::Duration::ZERO,
@@ -5225,6 +5243,13 @@ impl<'gc> Heap<'gc> {
             Some(free) => free as usize,
             None => {
                 self.tables.mixins.push(None);
+                if self
+                    .table_limits
+                    .mixin_rows
+                    .reached(self.tables.mixins.len())
+                {
+                    self.request_table_collection();
+                }
                 self.tables.mixins.len() - 1
             }
         };
@@ -5434,6 +5459,13 @@ impl<'gc> Heap<'gc> {
             Some(free) => free as usize,
             None => {
                 self.tables.applications.push(None);
+                if self
+                    .table_limits
+                    .application_rows
+                    .reached(self.tables.applications.len())
+                {
+                    self.request_table_collection();
+                }
                 self.tables.applications.len() - 1
             }
         };
@@ -5638,6 +5670,9 @@ impl<'gc> Heap<'gc> {
             Some(free) => free as usize,
             None => {
                 self.tables.codes.push(None);
+                if self.table_limits.code_ids.reached(self.tables.codes.len()) {
+                    self.request_table_collection();
+                }
                 self.tables.codes.len() - 1
             }
         };
@@ -10454,6 +10489,72 @@ impl<'gc> Heap<'gc> {
         self.collection_requested
     }
 
+    /// A table beside the space reached its growth limit
+    /// (`limits::TableLimits`, `InlineCaches::wants_collection`). Only
+    /// sets flags, as `request_collection` does, so a mint inside a leaf
+    /// or while an object is half-wired may call it.
+    #[cold]
+    pub(crate) fn request_table_collection(&mut self) {
+        self.table_collection_requested = true;
+        self.request_collection();
+    }
+
+    /// Whether the collection about to run was requested by a table's
+    /// limit and not by the space's (`World::collect`, before it marks).
+    pub(crate) fn collecting_for_a_table(&self) -> bool {
+        self.table_collection_requested && self.old_occupied() < self.next_collection
+    }
+
+    /// Counts a collection `collecting_for_a_table` answered true for.
+    pub(crate) fn count_table_collection(&mut self) {
+        self.table_collections += 1;
+    }
+
+    /// After a collection: every table's next limit, from the sizes the
+    /// collection left (`limits::GrowthLimit::reset`). The program-made
+    /// symbols have no table yet, so their limit stays at its floor.
+    pub(crate) fn reset_table_limits(&mut self) {
+        self.table_collection_requested = false;
+        self.table_limits.code_ids.reset(self.tables.codes.len());
+        self.table_limits.mixin_rows.reset(self.tables.mixins.len());
+        self.table_limits
+            .application_rows
+            .reset(self.tables.applications.len());
+        self.table_limits.program_symbols.reset(0);
+    }
+
+    /// The sizes of the heap's own tables and of the reservations beside
+    /// the space it holds (`Interpreter::table_sizes`); the caches, the
+    /// zone and the interner fill the rest.
+    pub(crate) fn table_sizes(&self) -> limits::TableSizes {
+        #[cfg(ns_jit)]
+        let machine_entry_rows_committed = self.machine_entries.rows();
+        #[cfg(not(ns_jit))]
+        let machine_entry_rows_committed = 0;
+        limits::TableSizes {
+            code_ids: self.tables.codes.len(),
+            mixin_rows: self.tables.mixins.len(),
+            application_rows: self.tables.applications.len(),
+            stack_committed_bytes: self.stack.frames.committed_words() * 8,
+            machine_entry_rows_committed,
+            application_id_rows_committed: self.application_ids.committed_rows(),
+            ..limits::TableSizes::default()
+        }
+    }
+
+    /// Sets every table's floor and next limit but the sites', which lie
+    /// with the caches (`Interpreter::set_table_floors`).
+    pub(crate) fn set_table_floors(&mut self, floors: limits::TableFloors) {
+        self.table_limits.code_ids.set_floor(floors.code_ids);
+        self.table_limits.mixin_rows.set_floor(floors.mixin_rows);
+        self.table_limits
+            .application_rows
+            .set_floor(floors.application_rows);
+        self.table_limits
+            .program_symbols
+            .set_floor(floors.program_symbols);
+    }
+
     /// After a collection: the space's next limit, in bytes
     /// (`collection_limit`).
     pub(crate) fn reset_collection_limits(&mut self) {
@@ -10904,6 +11005,7 @@ impl<'gc> Heap<'gc> {
             total_pause: self.total_pause,
             longest_pause: self.longest_pause,
             live_objects: self.object_count + self.machine_allocations(),
+            table_collections: self.table_collections,
         }
     }
 

@@ -1703,26 +1703,24 @@ bounded by the input, since every instruction consumed at least one wire byte.
 
 In a release build the two triggers are what the safepoint's slow path serves.
 
-#### Planned: the side tables' growth limits, and memory given back
-
-Would change: a full collection is requested when a table beside the
-space grows, not only when the old space does, and the reservations
-beside the space give back what a peak committed. Today a full
-collection is requested only by the old space's growth, by the
-exhaustion of dispatch ids and by an explicit `garbageCollect`, so a
-program that edits methods, makes symbols or runs fresh families without
-promoting much grows its tables between collections without bound, and
-nothing but the old space ever decommits. Decided with the user on
-2026-10-30, two of the six decisions that make everything that grows
-reclaimable (plan `docs/superpowers/plans/2026-10-30-0103-jit-closures.md`,
-"Part 4d").
-
-**Every side table has a growth limit** (`heap::limits::GrowthLimit`,
-one per table in `TableLimits`), of the collection limit's shape: after
-every full collection a table's limit becomes `max(floor, 2 × size)`,
-`size` the table's size after the collection reclaimed what it could.
-The floors lie above what any golden or benchmark program reaches, so a
-small program never collects for a table:
+**Every side table has a growth limit** (`heap/limits.rs`'s
+`GrowthLimit`), of the collection limit's shape: after every full
+collection a table's limit becomes `max(floor, 2 × size)`, `size` the
+table's size after the collection reclaimed what it could
+(`World::collect` resets them after `reclaim_ids`, beside
+`reset_collection_limits`). The space's own limit asks for a collection
+only when objects grow, so a program that edits methods or runs fresh
+families without promoting much would otherwise grow these tables
+between collections without bound. The floors lie above what a small
+program mints, so it never collects for a table: `run_goldens.rs` and
+`run_benchmarks.rs` hold every golden and benchmark program to no table
+collection, through the count that `ns-next run --collector-statistics`
+and `bench --collector-statistics` print, except a golden whose `.toml`
+says which rows it keeps live past a floor (`reaches_a_table_limit`) --
+`a_chain_deeper_than_the_depth_limit_overflows.ns`, whose 102,001
+classes are as many live applications. Such a program collects for the
+table a logarithmic number of times as it grows, as one whose live
+objects grow collects for the space:
 
 | Table | Size measured | Floor |
 |---|---|---|
@@ -1730,17 +1728,30 @@ small program never collects for a table:
 | mixin rows | `Tables.mixins.len()` | `MIXIN_ROW_FLOOR = 4_096` |
 | application rows | `Tables.applications.len()` | `APPLICATION_ROW_FLOOR = 4_096` |
 | sites | `InlineCaches.sites.len()` | `SITE_FLOOR = 262_144`, 8 MiB of cells |
-| program-made symbols | the live entries of the weak table ("Weak references") | `PROGRAM_SYMBOL_FLOOR = 65_536` |
+| program-made symbols | none yet, so their limit is never reached | `PROGRAM_SYMBOL_FLOOR = 65_536` |
 
-Each mint of a new row compares the table's size with its limit -- a
-code id in `Heap::code_id`, a mixin row, an application row, a new range
-in `InlineCaches::fresh_range`, a program-made symbol -- and a reached
-limit calls `Heap::request_collection`, which only sets flags and so is
-legal inside a leaf; `InlineCaches`, which has no heap, answers its own
-through `wants_collection`, and the mutator's caller requests it. The
-collection is served at the next safepoint, as the heap's own request
-is. `CollectorStatistics.table_collections` counts the collections a
-table requested and the heap's limit did not. HotSpot requests a
+Each mint of a new row -- one that grows its table rather than reusing a
+freed row -- compares the table's size with its limit: a code id in
+`Heap::register_code_uncached`, behind `Heap::code_id`'s cache, a mixin
+row in `push_mixin_row`, an application row in `register_application`,
+and a new range in `InlineCaches::fresh_range`. A reached limit calls
+`Heap::request_table_collection`, which, like `request_collection`, only
+sets flags, so a mint inside a leaf or while an object is half-wired may
+call it. The heap's limits are its `TableLimits`; the sites' lies with
+the sites, since `InlineCaches` has no heap: `fresh_range` records the
+reached limit, `InlineCaches::wants_collection` answers it, and the
+mutator that asked for the range requests the collection --
+`Mutator::feedback_base_for`, through which every caller of `base_for`
+goes, machine code's leaves included, and `fresh_feedback_range` for a
+closure an image decoded. A family that already has its range pays
+nothing for it: `feedback_base_for` mints, and asks, only on its cold
+path. The collection is served at the next safepoint, as the heap's own
+request is. `CollectorStatistics.table_collections` counts the
+collections a table requested and the space's limit did not;
+`Interpreter::table_sizes` reads every table's size and what the
+reservations beside the space have committed, and
+`Interpreter::set_table_floors` lowers the floors for a test
+(`tests/collector.rs`'s churns of method edits). HotSpot requests a
 collection when class metadata reach a high-water mark, and resizes the
 mark after the collection from what is still in use
 (`prior-art/jdk/src/hotspot/share/memory/metaspace.cpp:272-300`,
@@ -1748,6 +1759,22 @@ mark after the collection from what is still in use
 memory its objects hold outside the heap passes a limit, and raises the
 limit to what is held then (`Heap::UpdateExternalMemory`,
 `prior-art/v8/src/heap/heap.cc:6915-6968`).
+
+**No time-based watchdog.** No collection is started by the clock: every
+one follows from what the program allocated or minted, so a run is
+deterministic, and the growth limits bound every table without one.
+V8's memory reducer, which starts marking from a timer when the mutator
+seems idle and again after a watchdog delay
+(`prior-art/v8/src/heap/memory-reducer.cc:41-42`, `:56-90`), is
+rejected for that reason.
+
+#### Planned: memory given back
+
+Would change: the reservations beside the space give back what a peak
+committed. Today nothing but the old space ever decommits. Decided with
+the user on 2026-10-30, one of the six decisions that make everything
+that grows reclaimable (plan
+`docs/superpowers/plans/2026-10-30-0103-jit-closures.md`, "Part 4d").
 
 **Committed memory is given back with hysteresis** (`heap::limits::Shrink
 { threshold, headroom }`). After every full collection, and after a
@@ -1773,14 +1800,6 @@ A decommit lowers with it every bound machine code compares against --
 the stack's ordinary end, the machine entry rows, the application id
 table's committed rows -- so machine code reads only committed memory.
 `CollectorStatistics.decommitted_bytes` and `decommits` count them.
-
-**No time-based watchdog.** No collection is started by the clock: every
-one follows from what the program allocated or minted, so a run is
-deterministic, and the growth limits bound every table without one.
-V8's memory reducer, which starts marking from a timer when the mutator
-seems idle and again after a watchdog delay
-(`prior-art/v8/src/heap/memory-reducer.cc:41-42`, `:56-90`), is
-rejected for that reason.
 
 ### Weak references
 

@@ -314,6 +314,13 @@ closing the gap is deleting one line. A reason is required, and a blank
 one fails. A skipped golden is an ignored test, counted in the suite's
 summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 
+A sixth key, `reaches_a_table_limit`, says why a golden keeps live rows
+of a table beside the object space past its growth limit's floor; the
+sweep holds every other golden to its run requesting no collection for
+a table ([memory.md](memory.md), "The trigger and the growth policy").
+One golden has it, `a_chain_deeper_than_the_depth_limit_overflows`. A
+reason is required, and a blank one fails.
+
 | Directory | What belongs in it |
 |---|---|
 | `language/` | what the compiler, the resolver and the object model decide |

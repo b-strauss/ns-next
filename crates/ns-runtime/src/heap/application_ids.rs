@@ -164,6 +164,11 @@ impl ApplicationIds {
         self.rows
     }
 
+    /// How many rows are committed, recorded or not.
+    pub(crate) fn committed_rows(&self) -> usize {
+        self.committed / ROW_BYTES
+    }
+
     /// Records `recorded` as row `row` of a table of `table_rows` rows, and
     /// the bound the table's length sets; a row past the capacity is not
     /// recorded, and the bound stays at the capacity.

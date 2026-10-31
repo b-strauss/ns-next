@@ -829,7 +829,6 @@ impl FrameStack {
     }
 
     /// How many words of the stack are committed.
-    #[cfg(ns_jit)]
     pub(super) fn committed_words(&self) -> usize {
         self.committed
     }

@@ -20,6 +20,7 @@ use crate::bytecode::{CachedSend, CachedSendKind};
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
 use crate::dispatch::{self, LexicalOrigin};
 use crate::hash::IdentityMap;
+use crate::heap::limits::{GrowthLimit, SITE_FLOOR};
 use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::jit::{self, JitState};
@@ -268,6 +269,12 @@ pub(crate) struct InlineCaches {
     /// Root body identity -> its family. A collection drops a family nothing
     /// runs any more (`forget_families`).
     families: IdentityMap<usize, Family>,
+    /// The sites' growth limit (`heap::limits`): held here, beside the
+    /// sites, since the caches have no heap to compare against.
+    site_limit: GrowthLimit,
+    /// Whether a new range grew `sites` to `site_limit` since the last
+    /// collection (`wants_collection`).
+    collection_wanted: bool,
 }
 
 /// A family that has run: its range and its root body, held so that the
@@ -291,6 +298,8 @@ impl InlineCaches {
             cells,
             verified_slot_level: None,
             families: IdentityMap::default(),
+            site_limit: GrowthLimit::at_floor(SITE_FLOOR),
+            collection_wanted: false,
         }
     }
 
@@ -298,14 +307,14 @@ impl InlineCaches {
     /// activated, so that a family that never runs takes no room -- as V8
     /// allocates a feedback vector lazily. A body with no sends is given
     /// base 0 and no room: no site of it is ever indexed.
+    ///
+    /// A new range may grow the table past its limit; the caller asks
+    /// `wants_collection` after it (`Mutator::feedback_base_for`).
     pub(crate) fn base_for(&mut self, code: &Rc<CompiledCode>) -> FeedbackBase {
-        if code.family_size == 0 {
-            return FeedbackBase(0);
+        if let Some(base) = self.known_base(code) {
+            return base;
         }
         let key = Rc::as_ptr(code) as usize;
-        if let Some(family) = self.families.get(&key) {
-            return family.base;
-        }
         let base = self.fresh_range(code.family_size);
         self.families.insert(
             key,
@@ -315,6 +324,45 @@ impl InlineCaches {
             },
         );
         base
+    }
+
+    /// `code`'s range when its family already has one, or needs none:
+    /// `base_for` without minting.
+    #[inline]
+    pub(crate) fn known_base(&self, code: &Rc<CompiledCode>) -> Option<FeedbackBase> {
+        if code.family_size == 0 {
+            return Some(FeedbackBase(0));
+        }
+        self.families
+            .get(&(Rc::as_ptr(code) as usize))
+            .map(|family| family.base)
+    }
+
+    /// Whether a new range has grown the sites to their growth limit since
+    /// the last collection: the caches have no heap, so the mutator that
+    /// minted the range requests the collection (`Mutator::feedback_base_for`,
+    /// `Mutator::fresh_feedback_range`).
+    #[inline]
+    pub(crate) fn wants_collection(&self) -> bool {
+        self.collection_wanted
+    }
+
+    /// After a collection: the sites' next limit, from what the collection
+    /// left of them (`heap::limits::GrowthLimit::reset`).
+    pub(crate) fn reset_site_limit(&mut self) {
+        self.collection_wanted = false;
+        self.site_limit.reset(self.sites.len());
+    }
+
+    /// Sets the sites' floor and next limit (`Interpreter::set_table_floors`).
+    pub(crate) fn set_site_floor(&mut self, floor: usize) {
+        self.site_limit.set_floor(floor);
+    }
+
+    /// How many bytes the cells' reservation has committed
+    /// (`Interpreter::table_sizes`).
+    pub(crate) fn cells_committed_bytes(&self) -> usize {
+        self.cells.committed_bytes()
     }
 
     /// Drops every family whose root body only the family holds and whose
@@ -389,6 +437,9 @@ impl InlineCaches {
             Some(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
                 self.sites.resize(end as usize, CacheEntry::vacant());
                 self.cells.vacate_sites(start..end as usize);
+                if self.site_limit.reached(self.sites.len()) {
+                    self.collection_wanted = true;
+                }
                 // `end` fits 32 bits, and `start` lies `size` below it.
                 FeedbackBase(end - size)
             }
@@ -1191,7 +1242,7 @@ fn record<'gc>(
             ..
         } => Target::Method {
             method: method.clone(),
-            feedback_base: mutator.caches.base_for(&method.code),
+            feedback_base: mutator.feedback_base_for(&method.code),
             level: levels_between(&mutator.heap, start?, *defining_class)?,
             chain,
         },
@@ -2188,7 +2239,7 @@ pub(crate) fn decide_at<'gc>(
         if code.argument_count != argument_count {
             return MissAnswer::Refuse;
         }
-        let base = mutator.caches.base_for(code);
+        let base = mutator.feedback_base_for(code);
         jit::note_entry(&mut mutator.jit, code, base, None);
         let address = jit::machine_entry_address(&mutator.jit, code, base);
         mutator
@@ -2250,7 +2301,7 @@ pub(crate) fn decide_at<'gc>(
         unreachable!("internal: every other resolution was answered above");
     };
     let base = if base == FeedbackBase::NOT_ASSIGNED {
-        mutator.caches.base_for(&method.code)
+        mutator.feedback_base_for(&method.code)
     } else {
         base
     };

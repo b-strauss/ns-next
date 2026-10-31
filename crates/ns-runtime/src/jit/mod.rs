@@ -679,6 +679,17 @@ impl JitState {
         self.statistics
     }
 
+    /// The bytes of the zone installed code takes, the bodies installed
+    /// and the call returns recorded (`Interpreter::table_sizes`); zeros
+    /// without a zone.
+    pub(crate) fn zone_sizes(&self) -> (usize, usize, usize) {
+        let used_bytes = self
+            .zone
+            .as_ref()
+            .map_or(0, |zone| zone.next_offset as usize);
+        (used_bytes, self.bodies.len(), self.returns.len())
+    }
+
     /// Whether bodies are compiled and entered: the one load an
     /// interpreter's send of a block makes before it looks for the
     /// block's machine code (`Mutator::enter_sent`).

@@ -544,3 +544,106 @@ fn every_kind_of_stored_word_survives_moves_and_collections() {
         "the scavenge stress mode never scavenged"
     );
 }
+
+/// A program that replaces one method's source `count` times through a
+/// MirrorBuilder, each time with a fresh class side, and runs the edited
+/// method and its class side's after each install: every install mints
+/// code ids and application rows that only a full collection reclaims.
+const METHOD_EDIT_CHURN: &str = indoc! {"
+    class Churn usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Edited = Object new () (
+        public answer = ( ^0 )
+      ) : (
+        public tag = ( ^0 )
+      )
+      public churn: count = (
+        1 to: count do: [:index |
+          | builder |
+          builder:: (ClassMirror reflecting: Edited) mixin declaration asBuilder.
+          builder instanceSide methods
+              addFromSource: 'public answer = ( ^' , index printString , ' yourself )'.
+          builder classSide methods
+              addFromSource: 'public tag = ( ^' , index printString , ' )'.
+          builder install.
+          Edited new answer = index ifFalse: [^false].
+          Edited tag = index ifFalse: [^false]].
+        ^true
+      )
+    ) : ()
+"};
+
+/// Runs `METHOD_EDIT_CHURN` for `count` edits on `interpreter`, whose
+/// collection floor lies far above what the edits allocate, so that only
+/// a table's growth limit can request a collection.
+fn churn_method_edits(interpreter: &mut Interpreter, class: &Root, count: i64) {
+    // The tables' limits are what this pins; under `NS_NEXT_STRESS_COLLECT=1`
+    // the mode's own collections would keep every table below its limit.
+    interpreter.set_stress_collect(false);
+    interpreter.set_collection_floor(1 << 30);
+    let platform = interpreter.platform();
+    let churn = expect_ok(interpreter.send(class, Symbol::intern("usingPlatform:"), &[platform]));
+    let count = interpreter.stash(Value::small_integer(count));
+    let answered = expect_ok(interpreter.send(&churn, Symbol::intern("churn:"), &[count]));
+    let answered_true = interpreter
+        .enter(|mutator| matches!(mutator.fetch(&answered).kind(), ValueKind::Boolean(true)));
+    assert!(answered_true, "an edited method answered another value");
+}
+
+/// A program that edits methods without promoting much grows the code ids
+/// and the application rows, not the old space; their growth limits
+/// request the full collections that reclaim them, so that after one the
+/// tables stay within twice their floors (`heap::limits`).
+#[test]
+fn a_churn_of_method_edits_collects_without_old_space_growth() {
+    let (mut interpreter, class) = load(METHOD_EDIT_CHURN);
+    churn_method_edits(&mut interpreter, &class, 5_000);
+    assert!(
+        interpreter.collector_statistics().table_collections > 0,
+        "no table's growth limit requested a collection"
+    );
+    interpreter.collect_now();
+    let sizes = interpreter.table_sizes();
+    let floors = ns_runtime::TableFloors::default();
+    assert!(
+        sizes.mixin_rows < 2 * floors.mixin_rows,
+        "{} mixin rows after a collection",
+        sizes.mixin_rows
+    );
+    assert!(
+        sizes.code_ids < 2 * floors.code_ids,
+        "{} code ids after a collection",
+        sizes.code_ids
+    );
+}
+
+/// Each install runs a fresh family -- the edited `answer` sends
+/// `yourself` -- whose range the caches mint, so the sites grow with the
+/// edits. A churn too short to reach the other tables' default floors
+/// requests no collection; with the sites' floor at 64 it requests one,
+/// through `InlineCaches::wants_collection`, which only the sites' limit
+/// sets.
+#[test]
+fn a_churn_of_families_requests_a_collection_at_the_site_limit() {
+    let edits = 1_000;
+    let (mut unlimited, class) = load(METHOD_EDIT_CHURN);
+    churn_method_edits(&mut unlimited, &class, edits);
+    assert_eq!(
+        unlimited.collector_statistics().table_collections,
+        0,
+        "the churn reached a table's default floor"
+    );
+    let (mut interpreter, class) = load(METHOD_EDIT_CHURN);
+    interpreter.set_table_floors(ns_runtime::TableFloors {
+        sites: 64,
+        ..ns_runtime::TableFloors::default()
+    });
+    churn_method_edits(&mut interpreter, &class, edits);
+    assert!(
+        interpreter.collector_statistics().table_collections > 0,
+        "the sites' growth limit requested no collection"
+    );
+}

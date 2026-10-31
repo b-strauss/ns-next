@@ -2214,15 +2214,6 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   symbol takes no number and lives in a weak table of its own
   ([memory.md](design/memory.md), "Weak references", "Planned: a
   program-made symbol takes no number and dies with its object").
-- **No side table requests a full collection** (2026-10-31). A full
-  collection is requested only by the old space's growth, the exhaustion
-  of dispatch ids and `garbageCollect`, so code ids, mixin and
-  application rows and site ranges grow between collections with nothing
-  to bound them but what a program happens to promote. Part 4d's design
-  closes it (Task 17): each table has a growth limit past which it
-  requests one ([memory.md](design/memory.md), "The trigger and the
-  growth policy", "Planned: the side tables' growth limits, and memory
-  given back").
 - **Nothing beside the object space gives committed memory back**
   (2026-10-31). The activation stack, the cells' reservation, the machine
   entry table, the application id table and the code zone keep every page
@@ -2230,7 +2221,7 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   collection, and after a compaction of the code zone, each decommits
   above its high mark plus a headroom once its threshold is passed
   ([memory.md](design/memory.md), "The trigger and the growth policy",
-  "Planned: the side tables' growth limits, and memory given back").
+  "Planned: memory given back").
 - **A superseded class side held after its instance side was dropped
   names itself `class side`** (2026-10-20). A full collection drops a
   superseded instance side that only the table holds while a Rust holder

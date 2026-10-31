@@ -1088,6 +1088,22 @@ impl Interpreter {
         self.world.collector_statistics()
     }
 
+    /// The sizes of the tables beside the object space and of what the
+    /// reservations beside it have committed: what a long-run test holds
+    /// to a bound. Available in every build, like `collector_statistics`.
+    #[doc(hidden)]
+    pub fn table_sizes(&self) -> crate::TableSizes {
+        self.world.table_sizes()
+    }
+
+    /// Sets every table's growth floor and next limit (`heap::limits`), so
+    /// that a test reaches a table's limit without minting up to the
+    /// default floor first. A test hook.
+    #[doc(hidden)]
+    pub fn set_table_floors(&mut self, floors: crate::TableFloors) {
+        self.world.set_table_floors(floors);
+    }
+
     /// Replaces the global cache with a fresh one sized for `entries`,
     /// vacating whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
     /// `run_goldens.rs`), not an input path a program can reach: `entries`
@@ -1757,6 +1773,45 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// `code`'s feedback base (`InlineCaches::base_for`), requesting a full
+    /// collection when the range it minted grew the sites to their growth
+    /// limit. Every caller of `base_for` goes through it, machine code's
+    /// leaves included: the request only sets flags. A family that already
+    /// has its range -- every push but its first -- pays the lookup alone.
+    #[inline]
+    pub(crate) fn feedback_base_for(
+        &mut self,
+        code: &Rc<crate::bytecode::CompiledCode>,
+    ) -> FeedbackBase {
+        match self.caches.known_base(code) {
+            Some(base) => base,
+            None => self.mint_feedback_base(code),
+        }
+    }
+
+    /// `feedback_base_for` for a family without its range yet.
+    #[cold]
+    #[inline(never)]
+    fn mint_feedback_base(&mut self, code: &Rc<crate::bytecode::CompiledCode>) -> FeedbackBase {
+        let base = self.caches.base_for(code);
+        if self.caches.wants_collection() {
+            self.heap.request_table_collection();
+        }
+        base
+    }
+
+    /// A range of `size` sites for a closure an image decoded, which
+    /// carries none (`InlineCaches::fresh_range`), requesting a full
+    /// collection as `feedback_base_for` does.
+    #[cold]
+    fn fresh_feedback_range(&mut self, size: u32) -> FeedbackBase {
+        let base = self.caches.fresh_range(size);
+        if self.caches.wants_collection() {
+            self.heap.request_table_collection();
+        }
+        base
+    }
+
     /// Resumes the suspended activation of `frame`
     /// (`Heap::resume_activation`) and answers it. Its feedback base is
     /// derived again by `push_step`'s rule for its kind -- a closure's
@@ -1772,7 +1827,7 @@ impl<'gc> Mutator<'gc> {
                     .closure_activation(closure)
                     .expect("internal: a closure frame names a closure object");
                 if closure_feedback_base == FeedbackBase::NOT_ASSIGNED {
-                    let fresh = self.caches.fresh_range(code.family_size);
+                    let fresh = self.fresh_feedback_range(code.family_size);
                     self.heap.closure_set_feedback_base(closure, fresh);
                     fresh
                 } else {
@@ -1783,7 +1838,7 @@ impl<'gc> Mutator<'gc> {
                 let code = self.heap.frame_code(frame).expect(
                     "internal: the frame of an activation the runtime pushed names its code",
                 );
-                self.caches.base_for(&code)
+                self.feedback_base_for(&code)
             }
         };
         self.heap.resume_activation(frame, feedback_base)
@@ -1841,7 +1896,7 @@ impl<'gc> Mutator<'gc> {
                 // so every decider hands `NOT_ASSIGNED` and this is where it
                 // is found, once, per family (`inline_cache::InlineCaches::base_for`).
                 let feedback_base = if feedback_base == FeedbackBase::NOT_ASSIGNED {
-                    self.caches.base_for(&code)
+                    self.feedback_base_for(&code)
                 } else {
                     feedback_base
                 };
@@ -1904,7 +1959,7 @@ impl<'gc> Mutator<'gc> {
                 // `NOT_ASSIGNED` here means a closure an image decoded,
                 // which never ran `MakeClosure` at all.
                 let feedback_base = if closure_feedback_base == FeedbackBase::NOT_ASSIGNED {
-                    let fresh = self.caches.fresh_range(code.family_size);
+                    let fresh = self.fresh_feedback_range(code.family_size);
                     self.heap.closure_set_feedback_base(closure, fresh);
                     fresh
                 } else {
@@ -1973,7 +2028,7 @@ impl<'gc> Mutator<'gc> {
                         arguments.len(),
                     ));
                 }
-                let feedback_base = self.caches.base_for(&code);
+                let feedback_base = self.feedback_base_for(&code);
                 let temporaries = code.registers_above_header();
                 self.push_placed(
                     ActivationHeader {
@@ -2011,7 +2066,7 @@ impl<'gc> Mutator<'gc> {
             }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
-                let feedback_base = self.caches.base_for(&code);
+                let feedback_base = self.feedback_base_for(&code);
                 let temporaries = code.registers_above_header();
                 let (enclosing, index, serial) =
                     (creation.enclosing, creation.index, creation.serial);
@@ -2236,7 +2291,7 @@ impl<'gc> Mutator<'gc> {
         }
         check_method_arity(method, receiver, usize::from(window.count()))?;
         let feedback_base = if feedback_base == FeedbackBase::NOT_ASSIGNED {
-            self.caches.base_for(&method.code)
+            self.feedback_base_for(&method.code)
         } else {
             feedback_base
         };
@@ -2371,7 +2426,7 @@ impl<'gc> Mutator<'gc> {
                 || code.stands_for_too_many_arguments(arguments.len()),
             "internal: an initializer is pushed with its own number of arguments"
         );
-        let feedback_base = self.caches.base_for(&code);
+        let feedback_base = self.feedback_base_for(&code);
         let temporaries = code.registers_above_header();
         self.push_placed(
             ActivationHeader {

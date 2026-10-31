@@ -333,6 +333,8 @@ impl World {
     /// nothing towards it.
     pub(crate) fn collect(&mut self) {
         let start = std::time::Instant::now();
+        // Asked before the compaction lowers the space's occupancy.
+        let for_a_table = self.mutator.heap.collecting_for_a_table();
         // Before marking, so that a resolved future nothing but object
         // fields reached is garbage by the time the marker looks; a program
         // that never made a future pays nothing for it. `move_everything`
@@ -353,11 +355,39 @@ impl World {
         let mut forwarder = self.mutator.heap.compact();
         self.forward_step_state(&mut forwarder);
         self.mutator.heap.reset_collection_limits();
+        // After `reclaim_ids`, from what it left of each table.
+        self.mutator.heap.reset_table_limits();
+        self.mutator.caches.reset_site_limit();
+        if for_a_table {
+            self.mutator.heap.count_table_collection();
+        }
         self.mutator.heap.record_collection(start.elapsed());
     }
 
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
         self.mutator.heap.heap_statistics()
+    }
+
+    /// The sizes of the tables beside the space (`Interpreter::table_sizes`).
+    pub(crate) fn table_sizes(&self) -> crate::TableSizes {
+        let mutator = &self.mutator;
+        let (zone_used_bytes, zone_bodies, zone_returns) = mutator.jit.zone_sizes();
+        crate::TableSizes {
+            sites: mutator.caches.table_len(),
+            interned_symbols: crate::Symbol::interned_count(),
+            zone_used_bytes,
+            zone_bodies,
+            zone_returns,
+            cells_committed_bytes: mutator.caches.cells_committed_bytes(),
+            ..mutator.heap.table_sizes()
+        }
+    }
+
+    /// Sets every table's growth floor and next limit
+    /// (`Interpreter::set_table_floors`).
+    pub(crate) fn set_table_floors(&mut self, floors: crate::TableFloors) {
+        self.mutator.heap.set_table_floors(floors);
+        self.mutator.caches.set_site_floor(floors.sites);
     }
 
     /// The collector's counts and pauses (`Interpreter::collector_statistics`).
