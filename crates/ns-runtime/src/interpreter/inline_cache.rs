@@ -2316,7 +2316,7 @@ pub(crate) fn decide_at<'gc>(
         }
         let base = mutator.feedback_base_for(code);
         jit::note_entry(&mut mutator.jit, code, base, None);
-        jit::request_compaction(mutator);
+        jit::after_compile_trigger(mutator);
         let address = jit::machine_entry_address(&mutator.jit, code, base);
         mutator
             .caches
@@ -2382,7 +2382,7 @@ pub(crate) fn decide_at<'gc>(
         base
     };
     jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
-    jit::request_compaction(mutator);
+    jit::after_compile_trigger(mutator);
     let address = jit::machine_entry_address(&mutator.jit, &method.code, base);
     // The cells the decision went through follow the JIT's state either
     // way: the callee's machine entry once it has one, the refusing stub

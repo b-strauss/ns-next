@@ -36,7 +36,7 @@ impl Interpreter {
     /// request set, so that every safepoint comes here.
     ///
     /// A compaction of the code zone a compile that found it full asked
-    /// for (`jit::request_compaction`) is served next, before a pending
+    /// for (`jit::after_compile_trigger`) is served next, before a pending
     /// collection: here, between two stretches, no return address into the
     /// zone exists (`jit::zone`).
     ///

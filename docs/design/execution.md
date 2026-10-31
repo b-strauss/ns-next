@@ -10329,26 +10329,35 @@ of the first two.
       been entered interpreted 4,096 times since its abandonment
       (`REVIVAL_ENTRIES`, 64 times the budget;
       `JitState::note_abandoned_entry`), a count that doubles at each
-      further abandonment of the same body (`revival_entries`, at most
-      19 doublings, as many as a `u32` holds). An exit and its resumption
-      cost about a hundred interpreted instructions, so a body that
-      always exits wastes about 6,400 instructions' worth and one compile
-      per revival, against at least 4,096 interpreted entries: under two
-      instructions' worth an entry at the first revival, halving with
-      each doubling, and its compiles are logarithmic in its entries.
-      Deterministic, since it counts entries, never time; and machine
-      code pays nothing for it, since only the interpreted pushes of an
-      abandoned body count. A body revived this way whose exits stay
-      rare spends 64 of them in machine code before it is abandoned
-      again and waits twice as long: in a run that allocates nothing, a
-      body that exits once in N calls runs in machine code for about
-      64·N calls between waits of 4,096, 8,192, ... interpreted calls.
+      further abandonment of the same body, at most four times, to 65,536
+      (`revival_entries`, `MAXIMUM_REVIVAL_DOUBLINGS`). Every scavenge and
+      full collection halves a body's abandonments with its exits, so
+      that in a run that allocates the wait shrinks again. An exit and its
+      resumption cost about a hundred interpreted instructions, so a body
+      that always exits wastes about 6,400 instructions' worth and one
+      compile per revival, against at least 4,096 interpreted entries:
+      under two instructions' worth an entry at the first revival, under
+      a tenth of one once the wait is capped. Deterministic, since it
+      counts entries, never time; and machine code pays nothing for it,
+      since only the interpreted pushes of an abandoned body, and the
+      misses and initializer invocations that count a body's entries,
+      count. A body revived this way whose exits stay rare spends 64 of
+      them in machine code before it is abandoned again: in a run that
+      allocates nothing, a body that exits once in N calls runs about
+      64·N calls in machine code between waits of at most 65,536
+      interpreted calls, so its interpreted share stays below
+      65,536 / (65,536 + 64·N) -- about half for an exit in a thousand
+      calls, a tenth for one in ten thousand.
 
     Whenever a body is revived, every cell that names the refusing stub
     is written afresh from its entry (`InlineCaches::refresh_all_cells`),
-    since a revival changes only those: the cells of its callers name the
-    miss stub again, the miss compiles it, and the cascade reverses: its
-    callers call it and stop spending their budgets. A body compiled
+    since a revival changes only those: after the collector's decay
+    (`World::decay_exits`), and after every compile trigger that counted
+    the entry that revived it -- a push, a miss, an initializer
+    invocation, a future forced -- in the one hook every trigger passes
+    through (`jit::after_compile_trigger`). The cells of its callers
+    name the miss stub again, the miss compiles it, and the cascade
+    reverses: its callers call it and stop spending their budgets. A body compiled
     again into a replaced zone (`Interpreter::set_jit_zone_bytes`) counts
     its exits from none, as every compile does (`JitSlot::compiled`): the
     budget is that of its machine code, and the old code's count, which
@@ -11187,7 +11196,7 @@ that make everything that grows reclaimable (plan
 
 - **The request.** A compile that finds no room sets
   `JitState.compaction_requested` and the heap's safepoint request
-  (`jit::request_compaction`, called after every compile trigger that
+  (`jit::after_compile_trigger`, called after every compile trigger that
   holds the mutator), and the body goes back to counting its entries
   (`JitSlot::forget`) rather than being refused; the run loop's safepoint
   (`Interpreter::safepoint`, `interpreter/safepoint.rs`) serves the

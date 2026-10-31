@@ -9198,7 +9198,7 @@ impl<'gc> Heap<'gc> {
 
     /// Asks the run loop's next safepoint to take its slow path: an
     /// allocation's limits, and a compile that found the code zone full
-    /// (`jit::request_compaction`).
+    /// (`jit::after_compile_trigger`).
     pub(crate) fn request_safepoint(&mut self) {
         self.machine_words.set(MachineWord::SafepointRequested, 1);
     }

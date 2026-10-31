@@ -1160,6 +1160,15 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.set_counting(counting));
     }
 
+    /// Sets the interpreted entries after which a body abandoned for the
+    /// first time is revived (`jit::REVIVAL_ENTRIES`, 4,096, otherwise), so
+    /// that a test reaches a revival by entries cheaply. A test hook, set
+    /// before the abandonment it is meant for.
+    #[doc(hidden)]
+    pub fn set_jit_revival_entries(&mut self, entries: u32) {
+        self.enter(|mutator| mutator.jit.set_revival_entries(entries));
+    }
+
     /// The object space's occupancy. Available in every build: it is what a
     /// measurement and a retention test both read.
     pub fn heap_statistics(&self) -> crate::HeapStatistics {

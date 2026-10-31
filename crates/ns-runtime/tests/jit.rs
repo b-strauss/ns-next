@@ -5819,9 +5819,9 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// Bodies that exit at every call, in a run that allocates nothing, are
     /// revived by their entries after a wait that doubles at each
-    /// abandonment, so that each is compiled a number of times logarithmic
-    /// in its entries.
-    fn an_always_exiting_body_recompiles_logarithmically_in_its_entries(lowering) {
+    /// abandonment up to 65,536 entries, so that each is compiled at a rate
+    /// that falls geometrically and then stays at once per 65,536 entries.
+    fn an_always_exiting_body_recompiles_at_a_backed_off_rate(lowering) {
         let (mut interpreter, class) = load_with(ALLOCATION_FREE, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let measured = lowering == Lowering::Optimized && !a_stress_mode_is_on();
@@ -5829,15 +5829,21 @@ ns_runtime::for_each_lowering! {
         let (done, collected) = run_allocation_free(&mut interpreter, &subject, count, 1);
         if measured {
             assert!(!collected, "the run allocates nothing");
-            // The first revival waits 4,096 entries, each later one twice
-            // the one before: after k of them at least 4,096 * (2^k - 1)
-            // entries have passed. Two bodies take turns: `handles:`,
-            // which leaves at its mirror send, and `hot:`, whose call of
-            // `handles:` is refused while that is abandoned.
-            let bound = u64::from((count.unsigned_abs() / 4096 + 1).next_power_of_two().trailing_zeros());
+            // The waits are 4,096, 8,192, 16,384, 32,768 and then 65,536
+            // entries each. Two bodies take turns: `handles:`, which leaves
+            // at its mirror send, and `hot:`, whose call of `handles:` is
+            // refused while that is abandoned.
+            let mut most = 0u64;
+            let mut waited = 0u64;
+            let mut wait = 4096u64;
+            while waited + wait <= count.unsigned_abs() {
+                waited += wait;
+                most += 1;
+                wait = (wait * 2).min(65_536);
+            }
             assert!(
-                (3..=2 * bound).contains(&done.revived_bodies),
-                "revived {} times in {count} entries of each, at most {bound} each: {done:?}",
+                (3..=2 * most).contains(&done.revived_bodies),
+                "revived {} times in {count} entries, at most {most} each: {done:?}",
                 done.revived_bodies
             );
             assert!(
@@ -5845,6 +5851,86 @@ ns_runtime::for_each_lowering! {
                 "one compile per revival: {} compiles",
                 done.compiled_bodies
             );
+        }
+    }
+}
+
+/// `Thing`, whose factory makes its instance and runs its initializer,
+/// whose slot's message its class answers in its own
+/// `doesNotUnderstand:`, which machine code leaves to the interpreter;
+/// `make`, which sends `Thing new`; and `makeAgain:`, which sends it from
+/// a site of its own only when its argument is true.
+const LEAVING_FACTORY: &str = indoc! {"
+    class Subject = Object new () (
+      class Thing = (
+        |
+          value = self missing.
+        |
+      ) (
+        public doesNotUnderstand: message = (
+          ^1
+        )
+      ) : ()
+      public make = (
+        ^Thing new
+      )
+      public makeAgain: making = (
+        making ifTrue: [^Thing new].
+        ^nil
+      )
+    ) : ()
+"};
+ns_runtime::for_each_lowering! {
+    /// A body revived by an entry the miss leaf counts -- a factory's,
+    /// which only a miss counts -- has every cell that refused its calls
+    /// written afresh, not only the site that missed. The initializer
+    /// leaves at its slot's message and is abandoned first; the factory's
+    /// call of it is refused from then on, an exit of the factory's, until
+    /// the factory is abandoned too, its wait lowered to one entry, and
+    /// `make`'s cell names the refusing stub. `makeAgain:`'s site, never
+    /// run before its body is compiled, misses: that entry revives the
+    /// factory, and `make`'s cell must name the miss stub again.
+    fn a_revival_by_a_miss_writes_every_cell_afresh(lowering) {
+        let (mut interpreter, class) = load_with(LEAVING_FACTORY, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let start = interpreter.jit_statistics();
+        let abandoned = |interpreter: &Interpreter| {
+            since(interpreter.jit_statistics(), start).abandoned_bodies
+        };
+        let make_again = |interpreter: &mut Interpreter, making: bool| {
+            let argument = interpreter.stash(Value::boolean(making));
+            expect_ok(
+                interpreter.send(&subject, Symbol::intern("makeAgain:"), &[argument]),
+                "makeAgain:",
+            );
+        };
+        let make = |interpreter: &mut Interpreter| {
+            expect_ok(interpreter.send(&subject, Symbol::intern("make"), &[]), "make");
+        };
+        let mut sends = 0;
+        while abandoned(&interpreter) < 1 && sends < 500 {
+            make(&mut interpreter);
+            sends += 1;
+        }
+        interpreter.set_jit_revival_entries(1);
+        while abandoned(&interpreter) < 2 && sends < 1_000 {
+            make(&mut interpreter);
+            sends += 1;
+        }
+        // Compiled at its second entry, its site not yet run.
+        for _ in 0..2 {
+            make_again(&mut interpreter, false);
+        }
+        let before = interpreter.jit_statistics();
+        make_again(&mut interpreter, true);
+        let revived = since(interpreter.jit_statistics(), before);
+        if let Err(message) = interpreter.verify_cells() {
+            panic!("after the revival: {message}");
+        }
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(abandoned(&interpreter), 2, "the initializer, then the factory");
+            assert_eq!(revived.revived_bodies, 1, "`makeAgain:`'s miss revived the factory");
+            assert!(revived.miss_leaf_calls >= 1, "counted by the miss leaf");
         }
     }
 }
