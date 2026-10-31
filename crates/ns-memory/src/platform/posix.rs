@@ -30,6 +30,21 @@ pub(crate) fn reservation_granularity() -> usize {
     page_size()
 }
 
+/// A code zone's size is a multiple of this: a page.
+pub(crate) fn code_reservation_granularity() -> usize {
+    reservation_granularity()
+}
+
+/// What the code zone commits and gives back at a time: a page.
+pub(crate) fn code_commit_granularity() -> usize {
+    page_size()
+}
+
+/// Every POSIX system this crate builds for can make a code zone.
+pub(crate) fn code_zone_support() -> Result<(), &'static str> {
+    Ok(())
+}
+
 /// # Safety
 /// None beyond the call itself; the answer is a fresh mapping no one else holds.
 pub(crate) unsafe fn reserve(bytes: usize) -> Result<NonNull<u8>, i32> {

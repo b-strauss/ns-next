@@ -377,8 +377,7 @@ pub struct TableSizes {
     pub stack_used_bytes: usize,
     /// Bytes of the code zone its writer counts committed
     /// (`CodeWriter::committed`): pages it gave back are not counted, though
-    /// on Windows, and for a POSIX shared memory object outside Linux, the
-    /// system may still charge them.
+    /// a POSIX shared memory object outside Linux still holds them.
     pub zone_committed_bytes: usize,
     /// Bytes of the cells' reservation committed.
     pub cells_committed_bytes: usize,

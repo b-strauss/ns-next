@@ -6122,7 +6122,9 @@ ns_runtime::for_each_lowering! {
     fn the_zone_gives_back_its_pages_after_a_compaction(lowering) {
         let threshold = 64 << 10;
         let headroom = 16 << 10;
-        let page = 64 << 10;
+        // The zone commits and gives back in its own unit: a page, or a
+        // chunk of 1 MiB on Windows.
+        let page = (64 << 10).max(ns_memory::CodeZone::commit_granularity());
         let (mut interpreter, subject, _) = edited_answer(lowering);
         interpreter.set_shrink_pairs(ns_runtime::ShrinkPairs {
             code_zone: ns_runtime::Shrink {
@@ -6168,14 +6170,7 @@ ns_runtime::for_each_lowering! {
                 sizes.zone_committed_bytes
             );
             assert!(sizes.zone_committed_bytes < filled, "the zone shrank");
-            // Counted only where the system takes the pages back: a
-            // Windows section keeps their commit charge
-            // (`CodeWriter::decommit_above`).
-            if cfg!(windows) {
-                assert_eq!(after.decommits, before.decommits);
-            } else {
-                assert!(after.decommits > before.decommits, "the compaction decommitted");
-            }
+            assert!(after.decommits > before.decommits, "the compaction decommitted");
         }
     }
 }

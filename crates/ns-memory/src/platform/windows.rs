@@ -3,23 +3,33 @@
 //! shape (prior-art/strongtalk/vm/runtime/os_nt.cpp:403-414). Windows accounts
 //! every commit, so a commit the system cannot back fails here as a value.
 //!
-//! The code zone is a pagefile-backed section mapped twice, one view
+//! The code zone is two address ranges reserved as placeholders, into both
+//! of which each chunk's pagefile-backed section is mapped, one view
 //! executable and one writable, so no page is ever writable and executable
-//! at once (docs/design/execution.md, "Executable memory").
+//! at once (docs/design/execution.md, "Executable memory"), and a chunk
+//! given back takes its commit charge with it (`CodeMapping`).
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::OnceLock;
 
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE};
+use windows_sys::core::BOOL;
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_PROC_NOT_FOUND, HANDLE, INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, DiscardVirtualMemory, MapViewOfFile, UnmapViewOfFile, VirtualAlloc,
-    VirtualFree, VirtualProtect, FILE_MAP, FILE_MAP_EXECUTE, FILE_MAP_READ, FILE_MAP_WRITE,
-    MEMORY_MAPPED_VIEW_ADDRESS, MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE,
-    PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS,
-    PAGE_READWRITE, SEC_RESERVE,
+    CreateFileMappingW, VirtualAlloc, VirtualFree, VirtualProtect, MEMORY_MAPPED_VIEW_ADDRESS,
+    MEM_COMMIT, MEM_DECOMMIT, MEM_EXTENDED_PARAMETER, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE,
+    MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, PAGE_EXECUTE_READ,
+    PAGE_EXECUTE_READWRITE, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, SEC_RESERVE,
+    UNMAP_VIEW_OF_FILE_FLAGS, VIRTUAL_ALLOCATION_TYPE,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
-use windows_sys::Win32::System::Threading::{GetCurrentThreadStackLimits, SetThreadStackGuarantee};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentThreadStackLimits, SetThreadStackGuarantee,
+};
 
 use crate::Protection;
 
@@ -142,11 +152,121 @@ pub(crate) fn thread_stack_lowest_usable_address() -> Option<usize> {
         .and_then(|address| address.checked_add(guarantee as usize))
 }
 
-/// How the code zone's executable view may be accessed. Neither ever
-/// includes write, which is what keeps a stray store from rewriting code
-/// that runs.
-const EXECUTABLE_VIEW_ACCESS: FILE_MAP = FILE_MAP_READ | FILE_MAP_EXECUTE;
+/// The protection of the code zone's executable view. It never includes
+/// write, which is what keeps a stray store from rewriting code that runs.
 const EXECUTABLE_VIEW_PROTECTION: PAGE_PROTECTION_FLAGS = PAGE_EXECUTE_READ;
+
+/// The code zone is committed and given back in chunks of this many bytes,
+/// each a pagefile-backed section of its own mapped into both views. A
+/// section's committed pages stay charged until the section goes, so the
+/// chunk is the unit in which the zone gives its commit charge back. ZGC
+/// maps its heap the same way, in granules of 2 MiB
+/// (`prior-art/jdk/src/hotspot/os/windows/gc/z/zMapper_windows.cpp`); the
+/// zone's 16 MiB by default and its stubs at the base, a few KiB, take a
+/// finer unit, and a chunk is still sixteen times the reservation
+/// granularity, so a zone of the default size makes sixteen sections.
+pub(crate) const CODE_CHUNK_BYTES: usize = 1 << 20;
+
+/// A code zone's size is a multiple of this: whole chunks.
+pub(crate) fn code_reservation_granularity() -> usize {
+    CODE_CHUNK_BYTES
+}
+
+/// What the code zone commits and gives back at a time: a chunk.
+pub(crate) fn code_commit_granularity() -> usize {
+    CODE_CHUNK_BYTES
+}
+
+/// The minimum the code zone needs, named when it is missing.
+const PLACEHOLDER_REQUIREMENT: &str =
+    "Windows 10 version 1803 or later (VirtualAlloc2, MapViewOfFile3, UnmapViewOfFile2)";
+
+type VirtualAlloc2Function = unsafe extern "system" fn(
+    HANDLE,
+    *const c_void,
+    usize,
+    VIRTUAL_ALLOCATION_TYPE,
+    u32,
+    *mut MEM_EXTENDED_PARAMETER,
+    u32,
+) -> *mut c_void;
+type MapViewOfFile3Function = unsafe extern "system" fn(
+    HANDLE,
+    HANDLE,
+    *const c_void,
+    u64,
+    usize,
+    VIRTUAL_ALLOCATION_TYPE,
+    u32,
+    *mut MEM_EXTENDED_PARAMETER,
+    u32,
+) -> MEMORY_MAPPED_VIEW_ADDRESS;
+type UnmapViewOfFile2Function =
+    unsafe extern "system" fn(HANDLE, MEMORY_MAPPED_VIEW_ADDRESS, UNMAP_VIEW_OF_FILE_FLAGS) -> BOOL;
+
+/// The three calls placeholders take, which `KernelBase.dll` exports from
+/// Windows 10 version 1803 on. Resolved at run time, as HotSpot resolves
+/// them (`prior-art/jdk/src/hotspot/os/windows/gc/z/zSyscall_windows.cpp:74-81`),
+/// so that a system without them refuses the zone when it is made, with
+/// the requirement named, rather than the process at its start.
+#[derive(Clone, Copy)]
+struct PlaceholderCalls {
+    virtual_alloc2: VirtualAlloc2Function,
+    map_view_of_file3: MapViewOfFile3Function,
+    unmap_view_of_file2: UnmapViewOfFile2Function,
+}
+
+/// The calls, looked up once per process.
+fn placeholder_calls() -> Option<PlaceholderCalls> {
+    static CALLS: OnceLock<Option<PlaceholderCalls>> = OnceLock::new();
+    *CALLS.get_or_init(|| {
+        let name: Vec<u16> = "KernelBase.dll"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: the name is a terminated UTF-16 string; `KernelBase.dll`
+        // is loaded into every Win32 process, and the handle is not freed.
+        let module = unsafe { GetModuleHandleW(name.as_ptr()) };
+        if module.is_null() {
+            return None;
+        }
+        // SAFETY: each name is a terminated C string, the module is live.
+        let (virtual_alloc2, map_view_of_file3, unmap_view_of_file2) = unsafe {
+            (
+                GetProcAddress(module, c"VirtualAlloc2".as_ptr().cast())?,
+                GetProcAddress(module, c"MapViewOfFile3".as_ptr().cast())?,
+                GetProcAddress(module, c"UnmapViewOfFile2".as_ptr().cast())?,
+            )
+        };
+        // SAFETY: each address is the export of that name, whose signature
+        // the Windows SDK declares as the function type it is cast to
+        // (`windows-sys`'s own declarations of the three); a function
+        // pointer of one ABI cast to another of the same ABI.
+        Some(unsafe {
+            PlaceholderCalls {
+                virtual_alloc2: std::mem::transmute::<
+                    unsafe extern "system" fn() -> isize,
+                    VirtualAlloc2Function,
+                >(virtual_alloc2),
+                map_view_of_file3: std::mem::transmute::<
+                    unsafe extern "system" fn() -> isize,
+                    MapViewOfFile3Function,
+                >(map_view_of_file3),
+                unmap_view_of_file2: std::mem::transmute::<
+                    unsafe extern "system" fn() -> isize,
+                    UnmapViewOfFile2Function,
+                >(unmap_view_of_file2),
+            }
+        })
+    })
+}
+
+/// Whether this system can make a code zone: `Err` names what it lacks.
+pub(crate) fn code_zone_support() -> Result<(), &'static str> {
+    placeholder_calls()
+        .map(|_| ())
+        .ok_or(PLACEHOLDER_REQUIREMENT)
+}
 
 /// Any committed page of the executable view's first `committed` bytes is
 /// writable, as the system reports its protection now (`VirtualQuery`), so
@@ -193,91 +313,209 @@ pub(crate) fn executable_view_is_writable(mapping: &CodeMapping, committed: usiz
     false
 }
 
-/// The two views of one code zone. The section itself needs no handle: the
-/// views keep it alive, and unmapping both releases it.
+/// The two views of one code zone: two address ranges of the zone's size,
+/// each reserved as placeholders, one per chunk (`CODE_CHUNK_BYTES`), and
+/// the sections of the chunks committed so far, each mapped into both at
+/// the same offset -- read and execute in one, read and write in the
+/// other -- in place of its placeholders. ZGC's shape
+/// (`zMapper_windows.cpp:62-75`, `:258-312`), and HotSpot's
+/// placeholders (`prior-art/jdk/src/hotspot/os/windows/os_windows.cpp:3573-3618`).
 pub(crate) struct CodeMapping {
     pub(crate) executable: NonNull<u8>,
     pub(crate) writable: NonNull<u8>,
+    calls: PlaceholderCalls,
+    /// The section of each chunk, by chunk, null for one not mapped: the
+    /// chunk's two views keep it alive, and the handle is closed when they
+    /// are unmapped, which frees its pages and their commit charge.
+    sections: RefCell<Vec<HANDLE>>,
+}
+
+impl CodeMapping {
+    /// The executable and the writable address of chunk `chunk`.
+    fn chunk_addresses(&self, chunk: usize) -> (*mut u8, *mut u8) {
+        let offset = chunk * CODE_CHUNK_BYTES;
+        (
+            self.executable.as_ptr().wrapping_add(offset),
+            self.writable.as_ptr().wrapping_add(offset),
+        )
+    }
+}
+
+/// Reserves `bytes` of address space as one placeholder, split into one
+/// placeholder per chunk, so that each chunk's view replaces exactly one.
+///
+/// # Safety
+/// `bytes` is a positive multiple of `CODE_CHUNK_BYTES`.
+unsafe fn reserve_placeholders(calls: PlaceholderCalls, bytes: usize) -> Result<NonNull<u8>, i32> {
+    // SAFETY: reserving a placeholder with a null address asks the system to
+    // pick one; it touches no memory the program owns.
+    let base = unsafe {
+        (calls.virtual_alloc2)(
+            GetCurrentProcess(),
+            std::ptr::null(),
+            bytes,
+            MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+            PAGE_NOACCESS,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let base = NonNull::new(base.cast::<u8>()).ok_or_else(last_error)?;
+    // Each split takes the next chunk off the front of the placeholder that
+    // is left; the last chunk is what remains (`zMapper_windows.cpp:258-268`).
+    for chunk in 0..bytes / CODE_CHUNK_BYTES - 1 {
+        // SAFETY: the range lies at the front of the placeholder just
+        // reserved, which nothing maps; splitting changes only placeholders.
+        let split = unsafe {
+            VirtualFree(
+                base.as_ptr()
+                    .wrapping_add(chunk * CODE_CHUNK_BYTES)
+                    .cast::<c_void>(),
+                CODE_CHUNK_BYTES,
+                MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER,
+            )
+        };
+        if split == 0 {
+            let code = last_error();
+            // SAFETY: the placeholders are ours and nothing maps them.
+            unsafe { release_placeholders(base, bytes) };
+            return Err(code);
+        }
+    }
+    Ok(base)
+}
+
+/// Releases the placeholders of `bytes` from `base`, one per chunk.
+///
+/// # Safety
+/// `base` is a range `reserve_placeholders` made, `bytes` long, whose
+/// chunks are all placeholders again: no view is mapped into it.
+unsafe fn release_placeholders(base: NonNull<u8>, bytes: usize) {
+    for chunk in 0..bytes / CODE_CHUNK_BYTES {
+        // SAFETY: the caller guarantees each chunk is a placeholder of ours
+        // that nothing maps; a placeholder never split off is released by
+        // the first call and the later ones fail harmlessly.
+        unsafe {
+            VirtualFree(
+                base.as_ptr()
+                    .wrapping_add(chunk * CODE_CHUNK_BYTES)
+                    .cast::<c_void>(),
+                0,
+                MEM_RELEASE,
+            )
+        };
+    }
 }
 
 /// # Safety
-/// None beyond the call itself; the answer is two fresh views no one else
-/// holds. `bytes` is a multiple of the reservation granularity.
+/// None beyond the call itself; the answer is two fresh ranges no one else
+/// holds. `bytes` is a positive multiple of `CODE_CHUNK_BYTES`.
 pub(crate) unsafe fn map_code(bytes: usize) -> Result<CodeMapping, i32> {
-    let size = u64::try_from(bytes).map_err(|_| 0)?;
-    let high = u32::try_from(size >> 32).map_err(|_| 0)?;
-    let low = u32::try_from(size & u64::from(u32::MAX)).map_err(|_| 0)?;
+    // `code_zone_support` refused the zone before this is called.
+    let calls = placeholder_calls().ok_or(ERROR_PROC_NOT_FOUND as i32)?;
+    // SAFETY: `bytes` is a positive multiple of a chunk, as the caller
+    // guarantees.
+    let executable = unsafe { reserve_placeholders(calls, bytes) }?;
+    // SAFETY: as above.
+    let writable = match unsafe { reserve_placeholders(calls, bytes) } {
+        Ok(writable) => writable,
+        Err(code) => {
+            // SAFETY: the executable range was reserved just above and
+            // nothing maps it.
+            unsafe { release_placeholders(executable, bytes) };
+            return Err(code);
+        }
+    };
+    Ok(CodeMapping {
+        executable,
+        writable,
+        calls,
+        sections: RefCell::new(vec![std::ptr::null_mut(); bytes / CODE_CHUNK_BYTES]),
+    })
+}
+
+/// Maps chunk `chunk`: a fresh section, `SEC_RESERVE` as ZGC creates its
+/// paging file mappings (`zMapper_windows.cpp:90-113`), mapped into both
+/// views in place of their placeholders, then committed through the
+/// writable view and protected read and execute in the executable one.
+///
+/// # Safety
+/// `chunk` lies inside the mapping and is not mapped.
+unsafe fn map_chunk(mapping: &CodeMapping, chunk: usize) -> Result<HANDLE, i32> {
+    let (executable, writable) = mapping.chunk_addresses(chunk);
+    let size = u32::try_from(CODE_CHUNK_BYTES).map_err(|_| 0)?;
     // SAFETY: a pagefile-backed, unnamed section touches no memory the
-    // program owns. `SEC_RESERVE` reserves its pages without committing
-    // them, so a zone commits only what code fills; the section's maximum
-    // protection must admit both views.
+    // program owns; its maximum protection admits both views.
     let section = unsafe {
         CreateFileMappingW(
             INVALID_HANDLE_VALUE,
             std::ptr::null(),
             PAGE_EXECUTE_READWRITE | SEC_RESERVE,
-            high,
-            low,
+            0,
+            size,
             std::ptr::null(),
         )
     };
     if section.is_null() {
         return Err(last_error());
     }
-    let map = |access: FILE_MAP| {
-        // SAFETY: `section` is the live section just created, `bytes` long.
-        let view = unsafe { MapViewOfFile(section, access, 0, 0, bytes) };
-        NonNull::new(view.Value.cast::<u8>()).ok_or_else(last_error)
+    let map = |address: *mut u8, protection: PAGE_PROTECTION_FLAGS| {
+        // SAFETY: `address` is the start of one of our chunk placeholders,
+        // a chunk long, which the view replaces; the section is live.
+        let view = unsafe {
+            (mapping.calls.map_view_of_file3)(
+                section,
+                GetCurrentProcess(),
+                address.cast::<c_void>(),
+                0,
+                CODE_CHUNK_BYTES,
+                MEM_REPLACE_PLACEHOLDER,
+                protection,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if view.Value.is_null() {
+            Err(last_error())
+        } else {
+            Ok(())
+        }
     };
-    let views = map(EXECUTABLE_VIEW_ACCESS).and_then(|executable| match map(FILE_MAP_WRITE) {
-        Ok(writable) => Ok(CodeMapping {
-            executable,
-            writable,
-        }),
+    let mapped = map(executable, EXECUTABLE_VIEW_PROTECTION).and_then(|()| {
+        map(writable, PAGE_READWRITE).inspect_err(|_| {
+            // SAFETY: the executable view was mapped just above.
+            unsafe { unmap_chunk_view(mapping, executable) };
+        })
+    });
+    if let Err(code) = mapped {
+        // SAFETY: the handle is the section just created; no view of it
+        // is left.
+        unsafe { CloseHandle(section) };
+        return Err(code);
+    }
+    // SAFETY: both views map the chunk now, a chunk long each.
+    match unsafe { commit_chunk(executable, writable) } {
+        Ok(()) => Ok(section),
         Err(code) => {
-            // SAFETY: the view was mapped above and nothing refers into it.
-            unsafe { unmap_view(executable) };
+            // SAFETY: both views were mapped above, the section is ours.
+            unsafe { unmap_chunk(mapping, executable, writable, section) };
             Err(code)
         }
-    });
-    // SAFETY: each view holds its own reference to the section, so closing
-    // the handle now frees it when the last view goes.
-    unsafe { CloseHandle(section) };
-    views
+    }
 }
 
+/// Commits a mapped chunk's pages through the writable view, and protects
+/// them read and execute in the executable one.
+///
 /// # Safety
-/// `view` is the base of a view this crate mapped, and nothing refers into
-/// it.
-unsafe fn unmap_view(view: NonNull<u8>) {
-    // SAFETY: the caller guarantees the view is ours and no longer used.
-    let answer = unsafe {
-        UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
-            Value: view.as_ptr().cast::<c_void>(),
-        })
-    };
-    debug_assert!(answer != 0, "UnmapViewOfFile failed: {}", last_error());
-}
-
-/// # Safety
-/// `offset..offset + bytes` lies inside the mapping's zone and is
-/// page-aligned, and no reference into it is alive.
-pub(crate) unsafe fn commit_code(
-    mapping: &CodeMapping,
-    offset: usize,
-    bytes: usize,
-) -> Result<(), i32> {
-    // SAFETY: the caller guarantees the range is inside the views; committing
-    // through one view commits the section's pages behind both, and keeps
-    // the contents of pages committed before.
+/// Both addresses start a chunk mapped from the same section.
+unsafe fn commit_chunk(executable: *mut u8, writable: *mut u8) -> Result<(), i32> {
+    // SAFETY: the range is the writable view of one mapped chunk;
+    // committing through one view commits the section's pages behind both.
     let answer = unsafe {
         VirtualAlloc(
-            mapping
-                .writable
-                .as_ptr()
-                .wrapping_add(offset)
-                .cast::<c_void>(),
-            bytes,
+            writable.cast::<c_void>(),
+            CODE_CHUNK_BYTES,
             MEM_COMMIT,
             PAGE_READWRITE,
         )
@@ -290,12 +528,8 @@ pub(crate) unsafe fn commit_code(
     // the protection names read and execute only.
     let protected = unsafe {
         VirtualProtect(
-            mapping
-                .executable
-                .as_ptr()
-                .wrapping_add(offset)
-                .cast::<c_void>(),
-            bytes,
+            executable.cast::<c_void>(),
+            CODE_CHUNK_BYTES,
             EXECUTABLE_VIEW_PROTECTION,
             &mut previous,
         )
@@ -307,48 +541,102 @@ pub(crate) unsafe fn commit_code(
     }
 }
 
-/// Gives back the physical memory behind `offset..offset + bytes`, whose
-/// contents are gone. A section's committed pages cannot be decommitted
-/// -- `VirtualFree` refuses a view's pages, and `CreateFileMappingW` says
-/// a `SEC_RESERVE` section's pages once committed stay so -- so they stay
-/// charged against the commit limit; `DiscardVirtualMemory` releases their
-/// physical memory, and a later write faults fresh pages in. Answers
-/// false: the commit the system charged is not given back.
+/// Unmaps one view of a chunk, leaving its placeholder.
 ///
 /// # Safety
-/// `offset..offset + bytes` lies inside the mapping's committed zone and
-/// is page-aligned, and no reference into it is alive.
+/// `address` starts a view of a chunk of `mapping`, which nothing refers
+/// into.
+unsafe fn unmap_chunk_view(mapping: &CodeMapping, address: *mut u8) {
+    // SAFETY: the caller guarantees the view is ours and unused.
+    let answer = unsafe {
+        (mapping.calls.unmap_view_of_file2)(
+            GetCurrentProcess(),
+            MEMORY_MAPPED_VIEW_ADDRESS {
+                Value: address.cast::<c_void>(),
+            },
+            MEM_PRESERVE_PLACEHOLDER,
+        )
+    };
+    debug_assert!(answer != 0, "UnmapViewOfFile2 failed: {}", last_error());
+}
+
+/// Unmaps both views of a chunk, leaving their placeholders, and closes
+/// its section, which frees its pages and their commit charge.
+///
+/// # Safety
+/// Both addresses start the views of one chunk of `mapping` mapped from
+/// `section`, which nothing refers into.
+unsafe fn unmap_chunk(
+    mapping: &CodeMapping,
+    executable: *mut u8,
+    writable: *mut u8,
+    section: HANDLE,
+) {
+    // SAFETY: the caller guarantees both views are ours and unused, and
+    // the handle is their section's, which no other view keeps.
+    unsafe {
+        unmap_chunk_view(mapping, executable);
+        unmap_chunk_view(mapping, writable);
+        CloseHandle(section);
+    }
+}
+
+/// Maps and commits every chunk of `offset..offset + bytes` not mapped
+/// yet: a chunk is committed whole when it is mapped.
+///
+/// # Safety
+/// `offset..offset + bytes` lies inside the mapping's zone and is
+/// chunk-aligned, and no reference into it is alive.
+pub(crate) unsafe fn commit_code(
+    mapping: &CodeMapping,
+    offset: usize,
+    bytes: usize,
+) -> Result<(), i32> {
+    let mut sections = mapping.sections.borrow_mut();
+    for chunk in offset / CODE_CHUNK_BYTES..(offset + bytes).div_ceil(CODE_CHUNK_BYTES) {
+        if sections[chunk].is_null() {
+            // SAFETY: the chunk lies inside the mapping, and is not mapped.
+            sections[chunk] = unsafe { map_chunk(mapping, chunk) }?;
+        }
+    }
+    Ok(())
+}
+
+/// Gives back every mapped chunk of `offset..offset + bytes`: both its
+/// views unmapped back to placeholders and its section closed, so that
+/// its pages and their commit charge go. Answers true: the system took
+/// them back.
+///
+/// # Safety
+/// `offset..offset + bytes` lies inside the mapping's zone and is
+/// chunk-aligned, and no reference into it is alive.
 pub(crate) unsafe fn decommit_code(
     mapping: &CodeMapping,
     offset: usize,
     bytes: usize,
 ) -> Result<bool, i32> {
-    // SAFETY: the caller guarantees the range is inside the committed
-    // views and unborrowed; discarding through the writable view discards
-    // the section's pages behind both.
-    let answer = unsafe {
-        DiscardVirtualMemory(
-            mapping
-                .writable
-                .as_ptr()
-                .wrapping_add(offset)
-                .cast::<c_void>(),
-            bytes,
-        )
-    };
-    match i32::try_from(answer) {
-        Ok(0) => Ok(false),
-        Ok(code) => Err(code),
-        Err(_) => Err(i32::MAX),
+    let mut sections = mapping.sections.borrow_mut();
+    for chunk in offset / CODE_CHUNK_BYTES..(offset + bytes).div_ceil(CODE_CHUNK_BYTES) {
+        let section = std::mem::replace(&mut sections[chunk], std::ptr::null_mut());
+        if !section.is_null() {
+            let (executable, writable) = mapping.chunk_addresses(chunk);
+            // SAFETY: the chunk is mapped from `section`, and the caller
+            // guarantees nothing refers into it.
+            unsafe { unmap_chunk(mapping, executable, writable, section) };
+        }
     }
+    Ok(true)
 }
 
 /// # Safety
-/// `mapping` is a live mapping this crate made, and nothing refers into it.
-pub(crate) unsafe fn unmap_code(mapping: &CodeMapping, _bytes: usize) {
-    for view in [mapping.executable, mapping.writable] {
-        // SAFETY: the caller guarantees the view is ours and no longer used.
-        unsafe { unmap_view(view) };
+/// `mapping` is a live mapping this crate made, `bytes` long, and nothing
+/// refers into it.
+pub(crate) unsafe fn unmap_code(mapping: &CodeMapping, bytes: usize) {
+    // SAFETY: the whole zone is ours and unused, as the caller guarantees.
+    let _ = unsafe { decommit_code(mapping, 0, bytes) };
+    for base in [mapping.executable, mapping.writable] {
+        // SAFETY: every chunk is a placeholder again, mapped by nothing.
+        unsafe { release_placeholders(base, bytes) };
     }
 }
 

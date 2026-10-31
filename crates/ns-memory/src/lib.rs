@@ -76,6 +76,9 @@ pub enum MemoryError {
     /// The operating system refused; `code` is its error number
     /// (`GetLastError` on Windows, `errno` elsewhere).
     Refused { operation: Operation, code: i32 },
+    /// The operating system lacks what a code zone needs, named by
+    /// `requirement`; no zone was made.
+    Unsupported { requirement: &'static str },
 }
 
 impl std::fmt::Display for MemoryError {
@@ -86,6 +89,9 @@ impl std::fmt::Display for MemoryError {
                 "the range is not aligned or not inside the reservation"
             ),
             MemoryError::NotCommitted => write!(formatter, "the range is not entirely committed"),
+            MemoryError::Unsupported { requirement } => {
+                write!(formatter, "the code zone needs {requirement}")
+            }
             MemoryError::Refused { operation, code } => {
                 let verb = match operation {
                     Operation::Reserve => "reserve",

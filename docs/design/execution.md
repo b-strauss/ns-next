@@ -10972,7 +10972,10 @@ per-architecture idioms; nothing above changes.
   9 compile on a thread of its own while machine code runs -- V8 turns
   concurrent Sparkplug off where it can only toggle
   (`src/flags/flag-definitions.h:1269-1274`); on Apple AArch64 it is
-  `MAP_JIT` with the per-thread switch.
+  `MAP_JIT` with the per-thread switch. On Windows each view is a range
+  of placeholders, one per chunk of 1 MiB, and each chunk a section of
+  its own mapped into both, so that a chunk given back returns its
+  commit charge ([memory.md](memory.md), "Giving committed memory back").
 - **One reservation of at most 128 MiB**, AArch64's `bl` reach, so every
   call within the zone is direct on both architectures; the stubs sit at
   its base and never move, as Cog's trampolines do

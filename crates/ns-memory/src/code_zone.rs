@@ -111,20 +111,25 @@ impl CodeZone {
     pub const MAXIMUM_BYTES: usize = 128 << 20;
 
     /// Reserves a zone of at least `bytes`, rounded up to the platform's
-    /// reservation granularity, committing none of it, and answers its one
+    /// code zone granularity (a whole number of chunks on Windows, of
+    /// pages elsewhere), committing none of it, and answers its one
     /// writer, which owns it. `InvalidRange` for 0 or more than
-    /// `MAXIMUM_BYTES`, so that every offset into a zone fits a `u32`.
+    /// `MAXIMUM_BYTES`, so that every offset into a zone fits a `u32`;
+    /// `Unsupported` on a system that lacks what a zone needs -- here, at
+    /// the zone's making, and never later.
     pub fn reserve(bytes: usize) -> Result<CodeWriter, MemoryError> {
         if bytes == 0 || bytes > Self::MAXIMUM_BYTES {
             return Err(MemoryError::InvalidRange);
         }
-        let granularity = platform::reservation_granularity();
+        platform::code_zone_support()
+            .map_err(|requirement| MemoryError::Unsupported { requirement })?;
+        let granularity = platform::code_reservation_granularity();
         let size = bytes.div_ceil(granularity) * granularity;
         if size > Self::MAXIMUM_BYTES {
             return Err(MemoryError::InvalidRange);
         }
         // SAFETY: mapping touches no memory the program owns, and `size` is
-        // a multiple of the reservation granularity.
+        // a positive multiple of the code zone granularity.
         let mapping = unsafe { platform::map_code(size) }.map_err(|code| MemoryError::Refused {
             operation: Operation::Map,
             code,
@@ -142,6 +147,12 @@ impl CodeZone {
     /// The reserved size in bytes.
     pub fn size(&self) -> usize {
         self.size
+    }
+
+    /// The unit in which a zone commits and gives its memory back: a
+    /// page, or on Windows a chunk of 1 MiB (`CodeWriter::decommit_above`).
+    pub fn commit_granularity() -> usize {
+        platform::code_commit_granularity()
     }
 
     /// This zone's identity, unique among the zones of the process and
@@ -385,14 +396,16 @@ impl CodeWriter {
     }
 
     /// The bytes from the base the writer counts committed, a whole number
-    /// of pages: what it commits again before it writes past them. Pages
-    /// `decommit_above` gave back are not counted, though the system may
-    /// still charge them (`decommit_above`).
+    /// of the zone's commit granularity: what it commits again before it
+    /// writes past them. Pages `decommit_above` gave back are not counted,
+    /// though a POSIX shared memory object outside Linux still holds them
+    /// (`decommit_above`).
     pub fn committed(&self) -> usize {
         self.committed
     }
 
-    /// Gives back the pages from `end`, rounded up to a page, to the
+    /// Gives back the pages from `end`, rounded up to the commit
+    /// granularity (a chunk on Windows, a page elsewhere), to the
     /// committed prefix's end, and answers how many bytes of them the
     /// system took back: 0 for an end at or past the prefix's end. The
     /// writer stops counting them as committed first, whatever the system
@@ -400,13 +413,11 @@ impl CodeWriter {
     /// again; what they held is gone, and code is never run from them
     /// before a write stores it there again. What the system takes back
     /// differs by platform (`platform::decommit_code`), and only what it
-    /// takes is answered: on Windows a section's pages stay charged
-    /// against the commit limit, only their physical memory released, and
-    /// a POSIX shared memory object outside Linux keeps them, so both
-    /// answer 0, as a refusal of the system does.
+    /// takes is answered: a POSIX shared memory object outside Linux
+    /// keeps them, and answers 0, as a refusal of the system does.
     pub fn decommit_above(&mut self, end: usize) -> usize {
-        let page = platform::page_size();
-        let Some(end) = end.checked_next_multiple_of(page) else {
+        let granularity = platform::code_commit_granularity();
+        let Some(end) = end.checked_next_multiple_of(granularity) else {
             return 0;
         };
         if end >= self.committed {
@@ -414,7 +425,8 @@ impl CodeWriter {
         }
         let from = self.committed;
         self.committed = end;
-        // SAFETY: `end..from` is page-aligned and inside the zone's
+        // SAFETY: `end..from` is aligned to the commit granularity and
+        // inside the zone's
         // committed prefix, and no slice into the zone is alive: only
         // `bytes` lends one, borrowing this writer, which `decommit_above`
         // holds mutably. Nothing runs from the range: its caller, which
@@ -430,11 +442,13 @@ impl CodeWriter {
         if end <= self.committed {
             return Ok(());
         }
-        let page = platform::page_size();
-        // The size is a multiple of the reservation granularity, itself a
-        // multiple of the page, so rounding up stays inside the zone.
-        let new_end = end.div_ceil(page) * page;
-        // SAFETY: `committed..new_end` is page-aligned and inside the zone,
+        let granularity = platform::code_commit_granularity();
+        // The size is a multiple of the code zone's reservation
+        // granularity, itself a multiple of its commit granularity, so
+        // rounding up stays inside the zone.
+        let new_end = end.div_ceil(granularity) * granularity;
+        // SAFETY: `committed..new_end` is aligned to the commit
+        // granularity and inside the zone,
         // past every byte written so far, and no slice into the zone is
         // alive: only `bytes` lends one, borrowing this writer, which
         // `commit_through` holds mutably.
@@ -533,40 +547,42 @@ mod tests {
         zone.zone().executable_address(CodeOffset(end));
     }
 
+    /// A write across a boundary of the commit granularity -- a page, or
+    /// a chunk on Windows -- commits the unit on each side and no more.
     #[test]
-    fn a_write_across_a_page_boundary_commits_both_pages() {
-        let page = platform::page_size();
-        let mut zone = CodeZone::reserve(4 * page).expect("a zone");
-        let offset = u32::try_from(page - 1).expect("small");
+    fn a_write_across_a_commit_boundary_commits_both_units() {
+        let unit = platform::code_commit_granularity();
+        let mut zone = CodeZone::reserve(4 * unit).expect("a zone");
+        let offset = u32::try_from(unit - 1).expect("small");
         zone.write(CodeOffset(offset), &[1, 2]).expect("written");
         assert_eq!(zone.bytes(offset..offset + 2), Some(&[1, 2][..]));
         assert_eq!(zone.bytes(0..1), Some(&[0][..]), "committed reads zero");
-        let past = u32::try_from(2 * page).expect("small");
+        let past = u32::try_from(2 * unit).expect("small");
         assert!(
             zone.bytes(0..past + 1).is_none(),
-            "the third page is not committed"
+            "the third unit is not committed"
         );
     }
 
-    /// A decommit gives back the pages above its end and no others, and a
+    /// A decommit gives back the units above its end and no others, and a
     /// write past it commits them again: what is written there reads back.
     #[test]
     fn a_decommitted_range_is_committed_again_by_a_write() {
-        let page = platform::page_size();
-        let mut zone = CodeZone::reserve(8 * page).expect("a zone");
-        let last = u32::try_from(4 * page - 1).expect("small");
+        let unit = platform::code_commit_granularity();
+        let mut zone = CodeZone::reserve(8 * unit).expect("a zone");
+        let last = u32::try_from(4 * unit - 1).expect("small");
         zone.write(CodeOffset(0), &[1]).expect("written");
         zone.write(CodeOffset(last), &[2]).expect("written");
-        assert_eq!(zone.committed(), 4 * page);
-        let given_back = zone.decommit_above(page + 1);
+        assert_eq!(zone.committed(), 4 * unit);
+        let given_back = zone.decommit_above(unit + 1);
         assert!(
-            given_back == 2 * page || given_back == 0,
-            "from the next page on, or nothing the system takes: {given_back}"
+            given_back == 2 * unit || given_back == 0,
+            "from the next unit on, or nothing the system takes: {given_back}"
         );
-        assert_eq!(zone.committed(), 2 * page);
+        assert_eq!(zone.committed(), 2 * unit);
         assert_eq!(zone.bytes(0..1), Some(&[1][..]), "below the end is kept");
         assert!(zone.bytes(0..last + 1).is_none(), "no longer committed");
-        assert_eq!(zone.decommit_above(4 * page), 0, "nothing above the prefix");
+        assert_eq!(zone.decommit_above(4 * unit), 0, "nothing above the prefix");
         zone.write(CodeOffset(last), &[3]).expect("written again");
         assert_eq!(zone.bytes(last..last + 1), Some(&[3][..]));
     }
@@ -719,5 +735,150 @@ mod tests {
                 .enter(CodeOffset(16), &block, &mut context, &leaves),
             2
         );
+    }
+
+    /// The system's commit charge in bytes: every process's commit, the
+    /// sections' included, which a process's own `PrivateUsage` leaves out
+    /// -- a pagefile-backed section's committed pages are no process's
+    /// private bytes.
+    #[cfg(windows)]
+    fn system_commit_charge() -> usize {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetPerformanceInfo, PERFORMANCE_INFORMATION,
+        };
+        // SAFETY: plain data, for which all-zero is a valid value.
+        let mut information: PERFORMANCE_INFORMATION = unsafe { std::mem::zeroed() };
+        let size = u32::try_from(std::mem::size_of::<PERFORMANCE_INFORMATION>()).expect("small");
+        // SAFETY: the call writes only the structure it is given, `size`
+        // bytes long.
+        let answered = unsafe { K32GetPerformanceInfo(&mut information, size) };
+        assert!(answered != 0, "K32GetPerformanceInfo failed");
+        information.CommitTotal * information.PageSize
+    }
+
+    /// The process's own commit charge in bytes (`PrivateUsage`).
+    #[cfg(windows)]
+    fn private_usage() -> usize {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        // SAFETY: plain data, for which all-zero is a valid value.
+        let mut counters: PROCESS_MEMORY_COUNTERS_EX = unsafe { std::mem::zeroed() };
+        let size = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>()).expect("small");
+        // SAFETY: the call writes only the structure it is given, `size`
+        // bytes long, which the `_EX` form extends.
+        let answered = unsafe {
+            K32GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                std::ptr::addr_of_mut!(counters).cast::<PROCESS_MEMORY_COUNTERS>(),
+                size,
+            )
+        };
+        assert!(answered != 0, "K32GetProcessMemoryInfo failed");
+        counters.PrivateUsage
+    }
+
+    /// A Windows zone gives its commit charge back with its chunks: code
+    /// written into the first chunk runs, the 31 chunks above it --
+    /// written through, so committed -- are given back whole, the
+    /// system's commit charge falls by about as much and the process's
+    /// own does not rise, the first chunk's code still runs, and a write
+    /// past the end maps a chunk again, whose code runs as well. The
+    /// system's charge is every process's, so it is held to three
+    /// quarters of what was given back, not to all of it.
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[test]
+    fn a_windows_zone_gives_its_commit_charge_back() {
+        let chunk = platform::code_commit_granularity();
+        let chunks = 32;
+        let mut zone = CodeZone::reserve(chunks * chunk).expect("a zone");
+        // mov eax, 42; ret
+        let answer_42 = [0xB8, 42, 0, 0, 0, 0xC3];
+        zone.write(CodeOffset(0), &answer_42).expect("written");
+        let last = u32::try_from(chunks * chunk - 1).expect("small");
+        zone.write(CodeOffset(last), &[0xC3]).expect("written");
+        assert_eq!(zone.committed(), chunks * chunk);
+        let run = |zone: &CodeWriter, offset: u32| {
+            let address = std::ptr::with_exposed_provenance::<()>(
+                zone.zone().executable_address(CodeOffset(offset)),
+            );
+            // SAFETY: the address is the start of `answer_42`, a complete
+            // function of the C calling convention, in the zone's
+            // executable view, which `zone` keeps alive.
+            let function =
+                unsafe { std::mem::transmute::<*const (), extern "C" fn() -> u32>(address) };
+            function()
+        };
+        assert_eq!(run(&zone, 0), 42);
+        // The system's charge moves with every other process too -- the
+        // rest of a test run among them -- so a decommit is tried up to
+        // five times, written through again before each, and one that
+        // the charge followed is enough.
+        let mut fallen_each = Vec::new();
+        for _ in 0..5 {
+            let system_before = system_commit_charge();
+            let private_before = private_usage();
+            let given_back = zone.decommit_above(1);
+            let system_after = system_commit_charge();
+            let private_after = private_usage();
+            assert_eq!(
+                given_back,
+                (chunks - 1) * chunk,
+                "every chunk above the first"
+            );
+            assert_eq!(zone.committed(), chunk);
+            assert!(
+                private_after <= private_before + chunk,
+                "the process's charge rose from {private_before} to {private_after}"
+            );
+            let fallen = system_before.saturating_sub(system_after);
+            fallen_each.push(fallen);
+            if fallen >= given_back / 4 * 3 {
+                break;
+            }
+            zone.write(CodeOffset(last), &[0xC3])
+                .expect("written again");
+        }
+        assert!(
+            fallen_each
+                .last()
+                .is_some_and(|fallen| *fallen >= (chunks - 1) * chunk / 4 * 3),
+            "the system's commit charge fell by {fallen_each:?} bytes, not {}",
+            (chunks - 1) * chunk
+        );
+        // Deterministic beside the charge: the chunk above the first is a
+        // placeholder again in the executable view, reserved and not
+        // committed.
+        {
+            use windows_sys::Win32::System::Memory::{
+                VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_RESERVE,
+            };
+            let address = zone
+                .zone()
+                .executable_address(CodeOffset(u32::try_from(chunk).expect("small")));
+            // SAFETY: plain data, for which all-zero is a valid value.
+            let mut information: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+            // SAFETY: querying an address of our own zone reads nothing the
+            // program owns and writes only the structure it is given.
+            let written = unsafe {
+                VirtualQuery(
+                    std::ptr::with_exposed_provenance::<std::ffi::c_void>(address),
+                    &mut information,
+                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+                )
+            };
+            assert!(written != 0, "VirtualQuery failed");
+            assert_eq!(
+                information.State, MEM_RESERVE,
+                "the chunk is no longer mapped"
+            );
+        }
+        assert_eq!(run(&zone, 0), 42, "the kept chunk still runs");
+        let again = u32::try_from(3 * chunk).expect("small");
+        zone.write(CodeOffset(again), &answer_42)
+            .expect("written again");
+        assert_eq!(zone.committed(), 4 * chunk);
+        assert_eq!(run(&zone, again), 42, "a chunk mapped again runs");
     }
 }

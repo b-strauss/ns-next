@@ -2460,8 +2460,9 @@ pub struct CollectorStatistics {
     /// How many times a reservation beside the space gave committed pages
     /// back after a full collection or a compaction of the code zone
     /// (`heap::limits::Shrink`), and how many bytes in all: only what the
-    /// system took back, so a Windows code zone's pages, whose commit
-    /// charge stays, count nothing (`CodeWriter::decommit_above`).
+    /// system took back, so the code zone's pages in a POSIX shared memory
+    /// object outside Linux, which it keeps, count nothing
+    /// (`CodeWriter::decommit_above`).
     pub decommits: u64,
     pub decommitted_bytes: u64,
 }

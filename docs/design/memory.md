@@ -1861,24 +1861,30 @@ machine entry rows reads as no machine entry, and the interpreter calls
 the block. The stack shrinks between entries, when no frame machine
 code pushed lies above its top. A page of a table given back reads zeros
 when it is committed again, and each table writes what it reads there
-first, as it does for a page committed fresh. The code zone is a section
-on Windows, whose committed pages cannot be decommitted:
-`DiscardVirtualMemory` releases their physical memory -- a 64 MiB zone
-written through and discarded took the process's working set from 68 MiB
-back to 4 MiB, measured on 2026-10-31 -- and their commit charge stays;
-Linux punches a hole into the zone's memory object, Apple AArch64 frees
-its `MAP_JIT` pages with `MADV_FREE`, and a POSIX shared memory object
+first, as it does for a page committed fresh. On Windows the code zone
+is made of chunks of 1 MiB, each a pagefile-backed section of its own
+mapped into both views in place of a placeholder, and it commits and
+gives back whole chunks: a chunk given back has both its views unmapped
+back to placeholders and its section closed, which returns its pages and
+their commit charge, as ZGC maps and unmaps its heap
+(`prior-art/jdk/src/hotspot/os/windows/gc/z/zMapper_windows.cpp:62-75`,
+`:258-312`; HotSpot's placeholders,
+`prior-art/jdk/src/hotspot/os/windows/os_windows.cpp:3573-3618`); the
+zone needs Windows 10 version 1803 for it, and refuses to be made
+without it (`CodeZone::reserve`, `MemoryError::Unsupported`). Linux
+punches a hole into the zone's memory object, Apple AArch64 frees its
+`MAP_JIT` pages with `MADV_FREE`, and a POSIX shared memory object
 elsewhere keeps its pages (`platform::decommit_code`). A zone page given
-back reads zeros on Linux, and stops or zeros on Windows and Apple
-AArch64, where its contents are undefined until written and the
-compaction wrote stops over it first; either way no code runs from it
-before an install writes it again. `CollectorStatistics.decommits` and
-`decommitted_bytes` count only what the system took back: a Windows zone
-page, whose charge stays, a POSIX shared memory object's and a hole a file
-system refuses count nothing. `TableSizes.zone_committed_bytes` is what
-the zone's writer counts committed, the pages it commits again before it
-writes past them, which on those platforms may be less than the system
-still charges.
+back reads zeros on Linux and on Windows, where a chunk mapped again is a
+fresh section, and stops or zeros on Apple AArch64, where its contents
+are undefined until written and the compaction wrote stops over it
+first; either way no code runs from it before an install writes it
+again. `CollectorStatistics.decommits` and `decommitted_bytes` count only
+what the system took back: a POSIX shared memory object's pages and a
+hole a file system refuses count nothing. `TableSizes.zone_committed_bytes`
+is what the zone's writer counts committed, the pages it commits again
+before it writes past them, which for a POSIX shared memory object may be
+less than the system still holds.
 
 ### Weak references
 
