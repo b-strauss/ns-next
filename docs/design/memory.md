@@ -1703,6 +1703,85 @@ bounded by the input, since every instruction consumed at least one wire byte.
 
 In a release build the two triggers are what the safepoint's slow path serves.
 
+#### Planned: the side tables' growth limits, and memory given back
+
+Would change: a full collection is requested when a table beside the
+space grows, not only when the old space does, and the reservations
+beside the space give back what a peak committed. Today a full
+collection is requested only by the old space's growth, by the
+exhaustion of dispatch ids and by an explicit `garbageCollect`, so a
+program that edits methods, makes symbols or runs fresh families without
+promoting much grows its tables between collections without bound, and
+nothing but the old space ever decommits. Decided with the user on
+2026-10-30, two of the six decisions that make everything that grows
+reclaimable (plan `docs/superpowers/plans/2026-10-30-0103-jit-closures.md`,
+"Part 4d").
+
+**Every side table has a growth limit** (`heap::limits::GrowthLimit`,
+one per table in `TableLimits`), of the collection limit's shape: after
+every full collection a table's limit becomes `max(floor, 2 × size)`,
+`size` the table's size after the collection reclaimed what it could.
+The floors lie above what any golden or benchmark program reaches, so a
+small program never collects for a table:
+
+| Table | Size measured | Floor |
+|---|---|---|
+| code ids | `Tables.codes.len()` | `CODE_ID_FLOOR = 16_384` |
+| mixin rows | `Tables.mixins.len()` | `MIXIN_ROW_FLOOR = 4_096` |
+| application rows | `Tables.applications.len()` | `APPLICATION_ROW_FLOOR = 4_096` |
+| sites | `InlineCaches.sites.len()` | `SITE_FLOOR = 262_144`, 8 MiB of cells |
+| program-made symbols | the live entries of the weak table ("Weak references") | `PROGRAM_SYMBOL_FLOOR = 65_536` |
+
+Each mint of a new row compares the table's size with its limit -- a
+code id in `Heap::code_id`, a mixin row, an application row, a new range
+in `InlineCaches::fresh_range`, a program-made symbol -- and a reached
+limit calls `Heap::request_collection`, which only sets flags and so is
+legal inside a leaf; `InlineCaches`, which has no heap, answers its own
+through `wants_collection`, and the mutator's caller requests it. The
+collection is served at the next safepoint, as the heap's own request
+is. `CollectorStatistics.table_collections` counts the collections a
+table requested and the heap's limit did not. HotSpot requests a
+collection when class metadata reach a high-water mark, and resizes the
+mark after the collection from what is still in use
+(`prior-art/jdk/src/hotspot/share/memory/metaspace.cpp:272-300`,
+`MetaspaceGC::compute_new_size`, `:424-490`); V8 starts marking when the
+memory its objects hold outside the heap passes a limit, and raises the
+limit to what is held then (`Heap::UpdateExternalMemory`,
+`prior-art/v8/src/heap/heap.cc:6915-6968`).
+
+**Committed memory is given back with hysteresis** (`heap::limits::Shrink
+{ threshold, headroom }`). After every full collection, and after a
+compaction of the code zone, each reservation beside the space whose
+committed bytes exceed its high mark by more than its threshold is
+decommitted above the high mark plus its headroom, rounded up to a page;
+one within its threshold keeps what it has, so a sawtooth that returns
+to its peak every cycle never decommits and commits again. It is Spur's
+`attemptToShrink` after a full collection, which shrinks only when the
+free old space exceeds `shrinkThreshold` and keeps `growHeadroom`
+(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:50244-50249`; its
+defaults of 32 MiB and 16 MiB, `:51088-51094`):
+
+| Reservation | Threshold / headroom | High mark |
+|---|---|---|
+| the cells (1 GiB reserved) | 32 MiB / 16 MiB, Spur's | the end of `sites` after the sites' slide ([dispatch.md](dispatch.md), "Code families"), and the polymorphic pool's length; the global rows never shrink |
+| the activation stack | 4 MiB / 2 MiB | the stack's top; a 100,000-deep recursion commits about 16 MiB |
+| the machine entry table | 1 MiB / 512 KiB | the code table's length after its truncation |
+| the application id table | 1 MiB / 512 KiB | the bound after the application rows' truncation |
+| the code zone (16 MiB by default) | 2 MiB / 1 MiB | the zone's next offset after its compaction ([execution.md](execution.md), "The code zone") |
+
+A decommit lowers with it every bound machine code compares against --
+the stack's ordinary end, the machine entry rows, the application id
+table's committed rows -- so machine code reads only committed memory.
+`CollectorStatistics.decommitted_bytes` and `decommits` count them.
+
+**No time-based watchdog.** No collection is started by the clock: every
+one follows from what the program allocated or minted, so a run is
+deterministic, and the growth limits bound every table without one.
+V8's memory reducer, which starts marking from a timer when the mutator
+seems idle and again after a watchdog delay
+(`prior-art/v8/src/heap/memory-reducer.cc:41-42`, `:56-90`), is
+rejected for that reason.
+
 ### Weak references
 
 In the space, four things are weak: the canonical symbol table, the table
@@ -1779,6 +1858,78 @@ again unique, and no live comparison can tell the difference. An identity hash
 belongs to the object rather than to the symbol; a program that keeps the
 number `identityHash` answered instead of the object has no guarantee today
 either, and Squeak's weak symbol table behaves the same way.
+
+**Planned: a program-made symbol takes no number and dies with its
+object.** Would change: a symbol a program makes from a string --
+`asSymbol` and its kin -- no longer interns its text, so a run that makes
+a million distinct symbols and keeps none leaves the interner as it was.
+Today every symbol object is canonical for an interned `Symbol`, and the
+interner (`symbol.rs`) is append-only: `Symbol::intern` leaks one text
+per new spelling, per thread, for good, so the weak table above lets the
+object die but never its number or its text. Newspeak's own tests require
+a program-made symbol to be collectable (`testSymbolTableWeakness1` and
+`2`, `prior-art/newspeak/KernelWeakTests.ns:228-243`). Decided with the
+user on 2026-10-30.
+
+- **Why no number.** Recycling the number and the text, the decision's
+  first wording, cannot be built safely: `Symbol::as_str` answers a
+  `&'static str` that `intern` leaked, and freeing it would take
+  `Box::from_raw`, which `ns-runtime` forbids, or a non-`'static` text
+  API at every caller of `as_str`; the interner is one per
+  thread, shared by every interpreter on it, so one heap's collection
+  cannot know whether another heap still holds a number; and a `Symbol`
+  is a `Copy` `u32` held by compiled code, cache keys, return sites,
+  frame headers and every Rust table, each of which a recycled number
+  would need scrubbed. A `Symbol` object already holds its own text
+  (`Heap::allocate_symbol` is `allocate_string` with the `Symbol` class),
+  so a program-made symbol whose text nothing has interned needs no
+  number at all: it is just that object, and no number exists to
+  recycle. Sends, caches and machine code then see only permanent
+  numbers, where reference-counted numbers would cost on every cache
+  fill, install and text read; the user chose this mechanism as the
+  faster of the two.
+- **Permanent and program-made.** A symbol is permanent when its text
+  was interned -- by the compiler, the resolver, the image decoder or
+  the runtime's own constants -- which is every `Symbol` value Rust
+  holds; the interner stays append-only, bounded by the source compiled
+  and the images loaded, as HotSpot keeps the symbols it never frees at
+  `PERM_REFCOUNT` (`prior-art/jdk/src/hotspot/share/oops/symbol.hpp:99-102`,
+  `:167-169`). A program-made symbol is a `Symbol` object whose text
+  nothing has interned; compiled code, a cache key, a return site, a
+  frame header and an image record can never hold one.
+- **The weak table** (`heap::symbols::ProgramSymbols`), per heap, beside
+  `canonical_symbols`: the program-made symbols keyed by the hash of
+  their text (`Heap::string_hash`) and compared by text, so it keeps no
+  copy of the text, with an inverse from an object's offset to its hash,
+  as `symbol_of` is the canonical table's. It is weak as the canonical
+  table is: pruned with `prune_canonical_symbols`, forwarded by a
+  scavenge beside `forward_weak_symbols`, rebuilt after every compaction
+  and move, and counted by its live entries against its growth limit
+  ("The trigger and the growth policy").
+- **Making one** (`Mutator::program_symbol`): a text the interner already
+  holds (`Symbol::lookup`, a probe that inserts nothing) answers the
+  canonical object, `new_symbol` of its number; any other answers the
+  weak table's object for the text, or a new one recorded there.
+- **One text, one object.** When a text a program-made symbol spells is
+  interned afterwards -- a method of that name compiled, an image
+  loaded -- `new_symbol` adopts the existing object as the number's
+  canonical object instead of allocating another, the image decoder's
+  canonical record does the same, and the prune adopts every surviving
+  program-made symbol whose text has since been interned. So §5.1.6 holds
+  across both tables: equal symbols are one object while either table
+  holds it.
+- **Reading one.** `Heap::symbol_value` answers a program-made symbol's
+  number only once its text is interned, `None` before. A caller that
+  only asks whether an object is a Symbol asks `is_symbol`; one that
+  looks a name up treats `None` as "nothing has this name", since every
+  selector, slot name and class name is interned: `perform:` and its kin
+  raise `doesNotUnderstand:` with the symbol object in the `Message`,
+  `respondsTo:` answers `false`, a mirror's lookup answers its not-found
+  result. A reader of the text reads the object's own.
+- **The image format is unchanged.** A symbol's record carries its text,
+  never a number, so no tag is added, and the decoder interns every text
+  of an image's symbol table: a program-made symbol an image carries
+  becomes permanent at load, bounded by the images loaded.
 
 **The table of reified mixins is weak** (`mixin_objects`,
 `Heap::prune_mixin_objects`), as the symbol table is, for the same

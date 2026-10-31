@@ -403,7 +403,11 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     until a long-running program whose one rare slow path exits ends
     interpreted. Once stage 4 runs closures in machine code most exits go;
     whether a budget per entries (a rate), a decaying count, or nothing is
-    right is to be measured then.
+    right is to be measured then. Part 4d's design closes it: the count
+    halves at every scavenge and full collection, and an abandoned body
+    counts again below half the budget ([execution.md](design/execution.md),
+    "The baseline JIT's foundation", "Planned: the budget is a decaying
+    count").
   - **A block the interpreter pushes above its sender's window pays the
     bridge** (accepted with the user on 2026-10-29 until stage 4): an
     interpreted `value` send and its kin call a block's machine code
@@ -483,7 +487,9 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     designs ("The code zone") is unbuilt; when it is built, a body's data
     words -- its closure sites, which lie right after its code
     ("Stage 4: closures, non-local return, allocation and the barrier")
-    -- move and are freed with it.
+    -- move and are freed with it. Part 4d's design closes it
+    ([execution.md](design/execution.md), "The code zone", "Planned: the
+    zone is compacted as Cog compacts it").
   - **A body shared by two interpreters would ping-pong between their
     zones.** A body's `JitSlot` names one zone, and `jit::note_entry`
     compiles a body whose slot names another into the running
@@ -2186,7 +2192,10 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   nothing runs (`InlineCaches::forget_families`) never frees it, even once
   the closure is dead. The table grows by one range per decoded closure
   ever run, bounded by the image, not by how often anything runs.
-  [dispatch.md](design/dispatch.md), "Code families".
+  [dispatch.md](design/dispatch.md), "Code families". Part 4d's design
+  closes it: the range is recorded and reclaimed as a family's is, and
+  the ranges slide at a full collection (the same section, "Planned: the
+  ranges slide at a full collection").
 - **A superseded class side held after its instance side was dropped
   names itself `class side`** (2026-10-20). A full collection drops a
   superseded instance side that only the table holds while a Rust holder

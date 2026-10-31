@@ -1268,7 +1268,47 @@ of the application the entry names ("Invalidation" below), by an
 invalidation, or, for an entry of a family the same collection dropped, by
 the next collection. A range a decoded closure is given on its first
 activation is no family's, and is not reclaimed
-([OPEN-WORK.md](../OPEN-WORK.md)).
+([OPEN-WORK.md](../OPEN-WORK.md), "The feedback range a decoded closure
+is given is never reclaimed"). Nor does a free range in the middle of
+the table ever shrink it: only a free range at its end truncates it.
+
+**Planned: the ranges slide at a full collection.** Would change: the
+site table's size follows the live families, not the most it ever held,
+and a decoded closure's range is reclaimed. Decided with the user on
+2026-10-30 (plan `docs/superpowers/plans/2026-10-30-0103-jit-closures.md`,
+"Part 4d").
+
+- **When.** After `forget_families`, a full collection slides the live
+  ranges down when the free ranges cover at least a quarter of the
+  table, the code zone's fraction ([execution.md](execution.md), "The
+  code zone"), so neither table compacts for a hole of a few entries.
+  The slide (`InlineCaches::plan_slide`, a `SiteSlide`) packs the live
+  ranges from 0 in ascending order; `NOT_ASSIGNED` and a body without
+  sends keep their base.
+- **Every holder of a base is rewritten**, within the same full
+  collection: the moved ranges' entries and cells move down in
+  ascending order (a polymorphic block is named by its number and
+  stays), and the table is truncated to the packed end; then every
+  `Family.base`, every recorded decoded closure's range and every
+  method target's `feedback_base` in a site, a polymorphic block or the
+  global cache; then the heap's holders -- each closure's feedback-base
+  field, which the compaction visits anyway, and each frame header's on
+  the activation stack, in the suspension rows and in the continuation
+  rows.
+- **A moved family loses its machine code.** A compiled send addresses
+  its cell from the base the body was compiled against, and a closure
+  template carries the base as an immediate, so every installed body
+  whose base moved is freed and compiled again on demand; its machine
+  entry rows are cleared and every cell is written afresh from its
+  entry, so none names freed code, and a frame stopped in such a body
+  resumes interpreted. Addressing cells from a base register instead
+  would change the hot path; the quarter threshold keeps the recompiles
+  rare. Machine code never runs here: the collection runs at the
+  safepoint.
+- **A decoded closure's range is recorded** (`InlineCaches.loose_ranges`)
+  at its first activation, and reclaimed as a family's is: a full
+  collection frees it once no marked closure and no activation names its
+  base, and the slide moves it while one does.
 
 #### `site_index`'s rule
 
