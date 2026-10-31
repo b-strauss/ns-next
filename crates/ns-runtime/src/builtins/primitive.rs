@@ -278,10 +278,17 @@ impl Primitive {
                 | ModulePrimitive::ClassNamed
                 | ModulePrimitive::Record,
             ) => false,
-            // `IsFuture` answers `false` exactly when its operand is no future:
-            // what it asks about is the future itself, never its value.
+            // Each asks about, or writes, the future itself, never its
+            // value: `IsFuture` answers `false` exactly when its operand
+            // is no future.
             Primitive::Future(
-                FuturePrimitive::Value | FuturePrimitive::Made | FuturePrimitive::IsFuture,
+                FuturePrimitive::Made
+                | FuturePrimitive::IsFuture
+                | FuturePrimitive::State
+                | FuturePrimitive::Computation
+                | FuturePrimitive::TakeOver
+                | FuturePrimitive::ResolveTo
+                | FuturePrimitive::Abandon,
             ) => false,
             Primitive::Weak(
                 WeakPrimitive::Allocate
@@ -811,18 +818,28 @@ pub enum ModulePrimitive {
     Record,
 }
 
-/// The three leaves of the futures (`docs/design/object-model.md`,
-/// "Simultaneous slots"), all `FutureImplementation`'s.
+/// The leaves of the futures (`docs/design/object-model.md`,
+/// "Simultaneous slots"), all `FutureImplementation`'s (`builtins::future`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FuturePrimitive {
-    /// The future's value: a resolved one's at once, any other's by a
-    /// send of its `resolve`, which forces it.
-    Value,
     /// Notes that `FutureImplementation`'s factory made a future, which
     /// turns on the runtime's looking for one (`Mutator::futures_made`).
     Made,
     /// Whether the operand is a future, answered without forcing it.
     IsFuture,
+    /// A future's state, normalized: 0 unresolved, 1 resolving, 2
+    /// resolved, 3 for fields no forcing wrote.
+    State,
+    /// A future's computation field: its computation, or its value once
+    /// it is resolved.
+    Computation,
+    /// Marks an unresolved future resolving and answers its computation,
+    /// which a forcing of another future then runs in its stead.
+    TakeOver,
+    /// Records a value in a future and marks it resolved.
+    ResolveTo,
+    /// Marks a future still resolving unresolved again.
+    Abandon,
 }
 
 /// The leaves the shipped mirrors module reads structure and state
@@ -1739,12 +1756,36 @@ pub const MIRROR: &[MirrorEntry] = &[
         "recordShippedModule",
         Primitive::Module(ModulePrimitive::Record),
     ),
-    mirror(
-        "futureValue:ifFail:",
+    // Leaf: each of the five reads or writes only its future's two fields,
+    // through the write barrier, allocates nothing and pushes nothing, and
+    // declines -- for a non-future, or `TakeOver` for a future that is not
+    // unresolved -- having written nothing (`builtins::future`).
+    leaf(mirror(
+        "futureState:ifFail:",
         // Unary: the future is the row's subject.
-        "value",
-        Primitive::Future(FuturePrimitive::Value),
-    ),
+        "state",
+        Primitive::Future(FuturePrimitive::State),
+    )),
+    leaf(mirror(
+        "futureComputation:ifFail:",
+        "computation",
+        Primitive::Future(FuturePrimitive::Computation),
+    )),
+    leaf(mirror(
+        "futureTakeOver:ifFail:",
+        "takeOver",
+        Primitive::Future(FuturePrimitive::TakeOver),
+    )),
+    leaf(mirror(
+        "future:resolveTo:ifFail:",
+        "resolveTo:",
+        Primitive::Future(FuturePrimitive::ResolveTo),
+    )),
+    leaf(mirror(
+        "futureAbandon:ifFail:",
+        "abandon",
+        Primitive::Future(FuturePrimitive::Abandon),
+    )),
     // Leaf: reads its operand's class word and answers a Boolean; it never
     // declines and writes nothing (`builtins::future`).
     leaf(mirror(
@@ -2329,7 +2370,7 @@ pub const MIRROR: &[MirrorEntry] = &[
     mirror(
         "futureMade:ifFail:",
         // Unary: the new future is the row's subject, as the future is
-        // `futureValue:ifFail:`'s. It never fails, so the selector names
+        // `futureState:ifFail:`'s. It never fails, so the selector names
         // what the program sent.
         "computing",
         Primitive::Future(FuturePrimitive::Made),

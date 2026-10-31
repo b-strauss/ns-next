@@ -445,14 +445,14 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A chain of futures each answering the next: each one's `resolve`
-    /// forces the next by a send of the next one's `resolve`, so the
-    /// chain is resolved by a recursion one level of activations per
-    /// link, which Rust carries on its trampoline, and machine code on the
-    /// native stack it checks, rather than by a Rust recursion per link.
-    fn a_long_chain_of_futures_resolves(lowering) {
+    /// A chain of futures each answering the next is as long as the
+    /// program makes it, and the head's `resolve` takes each next one over
+    /// in its own activation, each block's activation popped before the
+    /// next is pushed, so no depth limit bounds it, and nothing recurses,
+    /// in Newspeak or in Rust, once per link.
+    fn a_long_chain_of_futures_resolves_without_recursing_per_link(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
-        let next = a_chain(&mut interpreter, &holder, "three", LINKS);
+        let next = a_chain(&mut interpreter, &holder, "three");
         let four = interpreter.stash(Value::small_integer(4));
         let sum = expect_ok(
             interpreter.send(&next, Symbol::intern("+"), &[four]),
@@ -467,12 +467,12 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// The same chain, its last block raising: the unwind abandons the
-    /// whole chain, each link's `ifCurtailed:` in turn, and leaves the head
+    /// The same chain, its last block raising: the head's `ifCurtailed:`
+    /// abandons the whole chain, one link at a time, and leaves the head
     /// unresolved.
-    fn a_long_chain_of_futures_is_abandoned(lowering) {
+    fn a_long_chain_of_futures_is_abandoned_without_recursing_per_link(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
-        let next = a_chain(&mut interpreter, &holder, "failing", LINKS);
+        let next = a_chain(&mut interpreter, &holder, "failing");
         let one = interpreter.stash(Value::small_integer(1));
         let message = expect_error_message(
             interpreter.send(&next, Symbol::intern("+"), &[one]),
@@ -483,39 +483,15 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-ns_runtime::for_each_lowering! {
-    /// A chain longer than the depth limit allows for its recursion is
-    /// refused as any recursion that deep is, with the depth limit's
-    /// ordinary error, before its last block runs, and every forcing the
-    /// unwind abandons leaves its future unresolved, the head among them.
-    fn a_chain_of_futures_past_the_depth_limit_is_refused(lowering) {
-        let (mut interpreter, holder) = a_holder(lowering);
-        let next = a_chain(&mut interpreter, &holder, "three", PAST_THE_DEPTH_LIMIT);
-        let one = interpreter.stash(Value::small_integer(1));
-        let message = expect_error_message(
-            interpreter.send(&next, Symbol::intern("+"), &[one]),
-            "head + 1",
-        );
-        assert_eq!(message, "stack overflow: recursion too deep");
-        assert_eq!(state_of(&mut interpreter, &next), "unresolved");
-        assert_eq!(runs(&mut interpreter, &holder), 0, "the last block never ran");
-    }
-}
+/// How many futures `a_chain` links: far more than any native stack holds
+/// frames of a recursion per link.
+const LINKS: usize = 200_000;
 
-/// How many futures a long chain links: more than a native stack holds
-/// frames of a Rust recursion per link, and few enough that the
-/// recursion of its forcings stays within the depth limit.
-const LINKS: usize = 10_000;
-
-/// How many futures a chain links whose forcings recurse past the depth
-/// limit: one activation per link would reach it already.
-const PAST_THE_DEPTH_LIMIT: usize = 2 * ns_runtime::interpreter::MAX_ACTIVATION_DEPTH;
-
-/// The head of `links` futures, each one's block answering the next, the
+/// The head of `LINKS` futures, each one's block answering the next, the
 /// last one's the block `holder` answers for `last`.
-fn a_chain(interpreter: &mut Interpreter, holder: &Root, last: &str, links: usize) -> Root {
+fn a_chain(interpreter: &mut Interpreter, holder: &Root, last: &str) -> Root {
     let mut next = a_future(interpreter, holder, last);
-    for _ in 1..links {
+    for _ in 1..LINKS {
         let block = expect_ok(
             interpreter.send(holder, Symbol::intern("answering:"), &[next]),
             "answering:",

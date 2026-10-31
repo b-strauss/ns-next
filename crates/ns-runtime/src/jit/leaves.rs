@@ -2,10 +2,12 @@
 //! which runs Newspeak code, collects, reads another activation or
 //! pushes one (`docs/design/execution.md`, "The foundation and the one
 //! extension point", the leaf call): an instruction's own interpreter
-//! step, the miss of a send's cell and the decision of an initializer
-//! invocation -- the two leaves that may compile and install a body --
-//! the leaf stub's run of a target that is no method with code, a
-//! future's forcing, which may compile its `resolve` too, a
+//! step, the miss of a send's cell, the decision of an initializer
+//! invocation and that of a future's forcing -- the three leaves that may
+//! compile and install a body, each at the moment a compiled call is
+//! about to be made, before anything of the call is written, so that
+//! none holds an address an install moves -- the leaf stub's run of a
+//! target that is no method with code, a
 //! leaf-safe mirror send, an allocation past the inline bump's limit, the
 //! write barrier's remembering of an old object, the cold check of an
 //! own-slot instruction, the divorce of a reified frame that retains its

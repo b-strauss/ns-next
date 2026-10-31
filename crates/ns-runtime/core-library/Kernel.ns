@@ -1301,12 +1301,14 @@ class Kernel vmMirror: mirror = Value (
   /// message a program sends it reaches `doesNotUnderstand:`, which
   /// forwards it to the forced value -- §5.5's proxy, indistinguishable
   /// from its target. Forcing is `resolve`'s, an ordinary method, so that
-  /// machine code runs it as it runs any other: it alone writes the two
-  /// slots after the factory -- the computation, until it is resolved,
-  /// and then the value, and the state, 0 unresolved, 1 resolving, 2
-  /// resolved -- which the runtime reads, by position, to see through a
-  /// resolved future, and wherever it meets one that is not, it sends
-  /// the future `resolve` (`interpreter/future.rs`). A simultaneous slot
+  /// machine code runs it as it runs any other: only a `resolve` writes
+  /// the two slots after the factory -- the computation, until it is
+  /// resolved, and then the value, and the state, 0 unresolved, 1
+  /// resolving, 2 resolved -- its own future's through the slots, and
+  /// those of the futures it takes over through the VM mirror. The
+  /// runtime reads them, by position, to see through a resolved future,
+  /// and wherever it meets one that is not, it sends the future `resolve`
+  /// (`interpreter/future.rs`). A simultaneous slot
   /// clause makes its futures in the runtime, of a block; `Future
   /// computing:` sends the factory, which stores the computation as it
   /// is, so a future handed to it is not forced until this one is. The
@@ -1315,9 +1317,9 @@ class Kernel vmMirror: mirror = Value (
   private class FutureImplementation computing: theComputation = Proxy (
     |
       /// The computation until the future is resolved, then its value;
-      /// written only by `resolve` after the factory.
+      /// written only by a `resolve` after the factory.
       private computation ::= theComputation.
-      /// The state, written only by `resolve`: 0 unresolved, 1
+      /// The state, written only by a `resolve`: 0 unresolved, 1
       /// resolving, 2 resolved.
       private state ::= 0.
     |
@@ -1336,49 +1338,90 @@ class Kernel vmMirror: mirror = Value (
     /// Forces the future: answers its value, computing it first when it
     /// is unresolved. The computation runs at most once per forcing that
     /// completes: a block is evaluated, any other object is sent
-    /// `value`. When the computation answers a future, that future is
-    /// forced in turn, by a send of its own `resolve`, and its value is
-    /// this one's -- §6.3.2's pipelined promise -- so that the value
-    /// answered and recorded is never a future. From then on the future
-    /// is resolved, and answers its value without running anything.
+    /// `value`. When the computation answers a future, that future's
+    /// value is this one's -- §6.3.2's pipelined promise -- so that the
+    /// value answered and recorded is never a future: a resolved one's
+    /// value is taken as it is, and an unresolved one is taken over --
+    /// marked resolving, and its computation run here in its stead --
+    /// and so on along a chain of futures each answering the next, which
+    /// this one activation resolves at a depth that does not grow with
+    /// the chain. Every future taken over is resolved to the same value,
+    /// before this one. From then on each is resolved, and answers its
+    /// value without running anything.
     ///
     /// Signals an Error, 'divergent evaluation: a future was forced
-    /// while it was being computed', when the future is forced while its
-    /// own computation runs -- §6.3.2 resolves only well-founded
-    /// recursion -- and an Error, 'a malformed future: its fields are
-    /// no future''s', when its slots hold what no forcing wrote: a state
-    /// none of the three, or a value that is itself a future. Every Error
-    /// the computation signals passes through.
+    /// while it was being computed', when the future, or one the chain
+    /// reaches, is forced while it is being computed -- §6.3.2 resolves
+    /// only well-founded recursion -- and an Error, 'a malformed future:
+    /// its fields are no future''s', when its slots hold what no forcing
+    /// wrote: a state none of the three, or a value that is itself a
+    /// future. Every Error a computation signals passes through.
     ///
-    /// A forcing an unwind abandons -- the computation signalled, a
-    /// handler returned past it, the depth limit refused one of its
-    /// activations -- leaves the future unresolved again, its
-    /// computation kept, so that the next message computes it afresh
-    /// rather than meeting a stale resolving state
+    /// A forcing an unwind abandons -- a computation signalled, a handler
+    /// returned past it, the depth limit refused one of its activations
+    /// -- leaves the future, and every future it took over, unresolved
+    /// again, their computations kept, so that the next message computes
+    /// them afresh rather than meeting a stale resolving state
     /// (docs/design/object-model.md, "A clause abandoned by an
-    /// exception"). The mark of resolving is set inside the protected
-    /// block, so that no activation the forcing pushes can be refused
-    /// between the mark and the `ifCurtailed:` that undoes it.
+    /// exception"). Each mark of resolving is set inside the protected
+    /// block, and a future taken over is recorded before it is marked, so
+    /// that no activation the forcing pushes can be refused between a mark
+    /// and the `ifCurtailed:` that undoes it. The states are read through
+    /// the VM mirror, which answers them as small integers, so that a
+    /// state crafted code stored is compared by nothing it defines.
     private resolve = (
       |
+        own = vmMirror futureState: self ifFail: [3].
+        taken ::= nil.
+        link ::= nil.
+        inner ::= nil.
         value ::= nil.
       |
-      (state == 2 and: [(vmMirror objectIsFuture: computation ifFail: [true]) not]) ifTrue: [
-        ^computation.
-      ].
-      state == 0 ifTrue: [
-        ^[
-          state:: 1.
-          value:: computation value.
-          [vmMirror objectIsFuture: value ifFail: [false]] whileTrue: [
-            value:: vmMirror futureValue: value ifFail: [value].
+      own = 2 ifTrue: [^computation].
+      own = 0 ifFalse: [^self signalForcingInState: own].
+      ^[
+        state:: 1.
+        value:: computation value.
+        [vmMirror objectIsFuture: value ifFail: [false]] whileTrue: [
+          inner:: vmMirror futureState: value ifFail: [3].
+          inner = 2 ifTrue: [
+            value:: vmMirror futureComputation: value ifFail: [nil].
+          ] ifFalse: [
+            inner = 0 ifFalse: [self signalForcingInState: inner].
+            taken:: {value. taken}.
+            value:: (vmMirror futureTakeOver: value ifFail: [
+              self signalForcingInState: (vmMirror futureState: value ifFail: [3]).
+            ]) value.
           ].
-          computation:: value.
-          state:: 2.
-          value.
-        ] ifCurtailed: [state:: 0].
+        ].
+        link:: taken.
+        [link isNil] whileFalse: [
+          vmMirror future: (link at: 1) resolveTo: value ifFail: [nil].
+          link:: link at: 2.
+        ].
+        computation:: value.
+        state:: 2.
+        value.
+      ] ifCurtailed: [
+        state:: 0.
+        [taken isNil] whileFalse: [
+          vmMirror futureAbandon: (taken at: 1) ifFail: [nil].
+          taken:: taken at: 2.
+        ].
       ].
-      state == 1 ifTrue: [
+    )
+
+    /// Signals the Error of forcing a future whose state, as
+    /// `futureState:ifFail:` answers it, is `futureState`: 'divergent
+    /// evaluation: a future was forced while it was being computed' for
+    /// 1, resolving, and 'a malformed future: its fields are no
+    /// future''s' for any other. Never answers: an Error is not
+    /// resumable.
+    ///
+    /// futureState: a state that is neither 0, unresolved, nor 2,
+    /// resolved.
+    private signalForcingInState: futureState = (
+      futureState = 1 ifTrue: [
         ^(outer Kernel Error new) signal: 'divergent evaluation: a future was forced '
             , 'while it was being computed'.
       ].

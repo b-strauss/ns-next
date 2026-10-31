@@ -707,6 +707,8 @@ pub(super) fn make_future(body: &mut BodyAssembler, destination: u16, closure: u
 /// them unchecked, and its state compares equal to the resolved
 /// `SmallInteger` word only when it is one. The field displacements are
 /// pinned to `FIELD_COUNT` by `a_futures_fields_lie_inside_its_layout`.
+/// A `Transfer`, as an initializer invocation's is: it may make a compiled
+/// call, which pays for entering the body.
 pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source: u16) -> Lowering {
     let layout = Heap::machine_layout();
     let resolved = Heap::machine_count_word(
@@ -797,7 +799,7 @@ pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source:
     );
     super::sends::call_decided(body, window_end, 0, destination);
     body.macro_assembler.assembler().bind(done);
-    Lowering::Template
+    Lowering::Transfer
 }
 
 /// The words of an outer-local site, in order: the epoch of the code

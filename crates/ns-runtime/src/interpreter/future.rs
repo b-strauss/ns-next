@@ -1,11 +1,13 @@
 //! §6.3.2's pull future (`docs/design/object-model.md`, "Simultaneous
 //! slots"): an instance of the kernel-private `FutureImplementation`, which
 //! a simultaneous slot clause or `Future computing:` makes. Forcing one is
-//! its own `resolve`, an ordinary Newspeak method, which alone writes its
-//! two slots once it is made; the runtime reads them to see through a
+//! its own `resolve`, an ordinary Newspeak method: only a `resolve` writes
+//! a future's two slots once it is made -- its own through its slots, and
+//! those of a chain's futures it takes over through the VM mirror's
+//! leaves (`builtins::future`). The runtime reads them to see through a
 //! resolved future, and wherever it meets one that is not, it pushes that
 //! method (`Mutator::forcing`): answering the value to the instruction
-//! that met the future -- `ResolveFuture`, `futureValue:ifFail:` -- or,
+//! that met the future -- `ResolveFuture` -- or,
 //! for an instruction that has no destination for it, discarding it and
 //! running the instruction again (`Continuation::Reexecute`).
 
@@ -22,7 +24,7 @@ use crate::{Mutator, Symbol};
 /// The `state` slot's three values, as `Kernel.ns` documents them and its
 /// `resolve` writes them.
 pub(crate) const UNRESOLVED: i64 = 0;
-const RESOLVING: i64 = 1;
+pub(crate) const RESOLVING: i64 = 1;
 pub(crate) const RESOLVED: i64 = 2;
 
 /// The position of each of `FutureImplementation`'s two slots in its field
@@ -301,8 +303,10 @@ fn see_through_a_failed_leaf<'gc>(
     // itself: forcing one here would run the program's computation from
     // inside a mirror read, which sends its reflectee nothing
     // (`docs/design/liveness-and-reflection.md`, "A mirror sends its
-    // reflectee nothing").
-    if matches!(primitive, Primitive::Reflection(_)) {
+    // reflectee nothing"). A future's own leaves read and write the future
+    // itself, for the `resolve` that is forcing it: seeing through it
+    // would force it again from inside its own forcing.
+    if matches!(primitive, Primitive::Reflection(_) | Primitive::Future(_)) {
         return answer;
     }
     match see_through(mutator, primitive, receiver, selector, arguments) {

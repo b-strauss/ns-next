@@ -2140,6 +2140,16 @@ const AUDITED_LEAF_ROWS: &[(&str, &[&str])] = &[
         &["objectIsFuture:ifFail:"],
     ),
     (
+        "reads or writes only its future's two fields, through the write barrier, allocates nothing and pushes nothing, or declines having written nothing",
+        &[
+            "futureState:ifFail:",
+            "futureComputation:ifFail:",
+            "futureTakeOver:ifFail:",
+            "future:resolveTo:ifFail:",
+            "futureAbandon:ifFail:",
+        ],
+    ),
+    (
         "answers the class, an identity, the identity hash or a new String, or declines for a future, having written nothing",
         &[
             "objectClass:ifFail:",
@@ -4342,6 +4352,65 @@ ns_runtime::for_each_lowering! {
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_ran_in_machine_code(&statistics, "run");
             assert_eq!(statistics.abandoned_bodies, 0, "no body is abandoned");
+        }
+    }
+}
+
+/// A slot clause whose first slot's block answers the second slot's
+/// future, unresolved, so that the clause's end forcing `first` meets a
+/// future of a future, instantiated more often per run than a body's exit
+/// budget allows exits.
+const ALIASING: &str = indoc! {"
+    class Subject = Object new () (
+      class Alias = Object new (
+        ||
+          public first = second.
+          public second = 2.
+        ||
+      ) ()
+      public run = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          total:: total + Alias new first.
+          index:: index + 1.
+        ].
+        ^total.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A future whose computation answers another, unresolved future is
+    /// resolved in machine code: `resolve` takes the inner future over
+    /// through leaf-safe mirror rows, so it never exits, and so its exit
+    /// budget is never spent and it stays compiled however many such
+    /// clauses run. Over five runs of a hundred instances each, no body is
+    /// abandoned, and the last run exits only at safepoints.
+    fn a_future_of_a_future_resolves_without_an_exit(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(ALIASING, lowering);
+            interpreter.set_jit_enabled(jit);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let first = interpreter.jit_statistics();
+            let mut answer = 0;
+            let mut statistics = interpreter.jit_statistics();
+            for _ in 0..5 {
+                let before = interpreter.jit_statistics();
+                answer = send_unary(&mut interpreter, &subject, "run");
+                statistics = since(interpreter.jit_statistics(), before);
+            }
+            (answer, statistics, since(interpreter.jit_statistics(), first))
+        };
+        let (compiled, statistics, overall) = run(true);
+        let (interpreted, _, _) = run(false);
+        assert_eq!(compiled, interpreted);
+        assert_eq!(compiled, 200);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(overall.abandoned_bodies, 0, "no body is abandoned");
         }
     }
 }
