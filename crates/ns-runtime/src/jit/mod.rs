@@ -688,7 +688,9 @@ pub(crate) struct JitState {
     wanted_bytes: u32,
     /// How many entries into machine code are in progress, raised around
     /// `CodeZone::enter`: a compaction, which moves the code, asserts there
-    /// are none. Rust's alone; machine code never reads it.
+    /// are none. Rust's alone; machine code never reads it. Debug builds
+    /// only: only their assertions read it.
+    #[cfg(debug_assertions)]
     entries_in_progress: u32,
 }
 
@@ -770,6 +772,7 @@ impl JitState {
             compaction_requested: false,
             zone_exhausted: false,
             wanted_bytes: 0,
+            #[cfg(debug_assertions)]
             entries_in_progress: 0,
         }
     }
@@ -1084,6 +1087,7 @@ impl JitState {
             compaction_requested: false,
             zone_exhausted: false,
             wanted_bytes: 0,
+            #[cfg(debug_assertions)]
             entries_in_progress: 0,
         }
     }
@@ -2471,9 +2475,15 @@ fn enter_block(
 ) -> u64 {
     use stubs::BlockWord;
 
-    mutator.jit.entries_in_progress += 1;
+    #[cfg(debug_assertions)]
+    {
+        mutator.jit.entries_in_progress += 1;
+    }
     let kind = zone.enter(stub, block, mutator, leaves::table());
-    mutator.jit.entries_in_progress -= 1;
+    #[cfg(debug_assertions)]
+    {
+        mutator.jit.entries_in_progress -= 1;
+    }
     debug_assert_eq!(
         kind,
         block.get(BlockWord::ExitKind.index()),

@@ -226,6 +226,16 @@ impl MachineEntries {
         }
     }
 
+    /// The entry of every row whose bit is set, for a debug build's check
+    /// of them after a compaction of the code zone (`jit::zone`).
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn recorded_entries(&self) -> Vec<u64> {
+        (0..self.rows)
+            .filter(|row| self.names_entry(*row))
+            .map(|row| self.row(row)[RowWord::Entry as usize])
+            .collect()
+    }
+
     /// Clears every committed row.
     pub(crate) fn clear_all(&mut self) {
         if let Some(slots) = self.reservation.words_mut(0..self.rows * ROW_BYTES) {

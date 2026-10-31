@@ -6577,6 +6577,14 @@ impl<'gc> Heap<'gc> {
             .remap_entries(|entry| plan.remap_row(entry));
     }
 
+    /// The machine entry of every row of the machine entry table that
+    /// names one: what a debug build checks after a compaction of the code
+    /// zone (`jit::zone`).
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn recorded_machine_entries(&self) -> Vec<u64> {
+        self.machine_entries.recorded_entries()
+    }
+
     /// Every body an activation runs, on the activation stack or suspended
     /// into its frame, a body as often as activations run it: what a
     /// compaction of the code zone keeps (`jit::zone`).

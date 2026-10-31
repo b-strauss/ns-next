@@ -319,6 +319,12 @@ pub trait Encoder {
         distance: i64,
         code: &mut Vec<u8>,
     ) -> bool;
+
+    /// Appends `length` bytes that stop the program wherever execution
+    /// enters them, so that code no branch is to reach -- the room a
+    /// moved or freed body left -- traps at once rather than running what
+    /// lay there before.
+    fn fill_with_stops(&self, length: usize, code: &mut Vec<u8>);
 }
 
 /// The code an [`Assembler`] produced.

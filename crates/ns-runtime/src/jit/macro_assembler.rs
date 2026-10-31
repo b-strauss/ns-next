@@ -26,6 +26,18 @@ pub(crate) enum Abi {
     SystemV,
 }
 
+/// `length` bytes that stop the program wherever execution enters them:
+/// what a compaction of the code zone writes over the room a moved or
+/// freed body left (`jit::zone`), so that an address into it something
+/// failed to remap traps at once rather than running stale code, as Cog
+/// fills its freed method zone with stop instructions (`stopsFromto`).
+pub(crate) fn stop_bytes(length: usize) -> Vec<u8> {
+    use ns_assembler::Encoder;
+    let mut code = Vec::with_capacity(length);
+    X64.fill_with_stops(length, &mut code);
+    code
+}
+
 impl Abi {
     /// The convention of the platform this build runs on.
     pub(crate) fn host() -> Abi {

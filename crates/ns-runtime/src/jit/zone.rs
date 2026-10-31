@@ -9,7 +9,9 @@
 //! not running and so no return address into the zone exists: moving a
 //! body needs no walk of the native stack. The compaction marks the
 //! bodies activations run, frees what is always freed and then the least
-//! used until a quarter of the zone is free, plans each survivor's new
+//! used until a quarter of the bodies' room past the stubs is free, and
+//! at least what the compile that found no room needed, plans each
+//! survivor's new
 //! place, remaps every address outside the bodies that names one -- the
 //! cells and the machine entry rows -- slides the survivors' bytes down,
 //! and rewrites the JIT's own records, in the order of Cog's
@@ -51,7 +53,9 @@ pub(crate) const LINKED_USAGE_CEILING: u8 = MAXIMUM_USAGE / 2;
 pub(crate) enum Freeing {
     /// Cog's: the least used first, every body whose usage is at most 0,
     /// then at most 1, and so on below `MAXIMUM_USAGE`, until a quarter of
-    /// the zone is free (`freeOlderMethodsForCompaction`, `:12897-12925`).
+    /// the bodies' room past the stubs is free, and at least what the
+    /// compile that found no room needed (`freeOlderMethodsForCompaction`,
+    /// `:12897-12925`).
     ToAQuarter,
     /// The zone stress mode's: every body below `MAXIMUM_USAGE`, so every
     /// body no activation runs is freed and compiled again, and every
@@ -165,6 +169,11 @@ impl CompactionPlan {
         self.new_end
     }
 
+    /// Where the bodies ended before the compaction.
+    pub(crate) fn old_end(&self) -> u32 {
+        self.old_end
+    }
+
     fn locate(&self, address: u64) -> Remapped {
         let Some(offset) = address
             .checked_sub(self.base)
@@ -213,7 +222,8 @@ impl JitState {
     /// bytes. Only between entries, where no return address into it
     /// exists.
     pub(super) fn free_body(&mut self, index: u32) {
-        debug_assert_eq!(
+        #[cfg(debug_assertions)]
+        assert_eq!(
             self.entries_in_progress, 0,
             "internal: machine code is freed only between entries"
         );
@@ -474,6 +484,17 @@ impl JitState {
             }
         }
         self.returns = returns;
+        // Every byte the survivors no longer cover -- the gaps their
+        // alignment leaves and the room freed past the last -- is filled
+        // with stops, as Cog fills the freed end of its zone
+        // (`stopsFromto`, `compactCogCompiledCode`, `:5738`): an address a
+        // holder failed to remap traps there rather than running stale code.
+        let mut covered = zone.bodies_start;
+        for body in &self.bodies {
+            fill_with_stops(zone, covered, body.start);
+            covered = body.end;
+        }
+        fill_with_stops(zone, covered, plan.old_end());
         zone.next_offset = plan.new_end();
         self.statistics.zone_compactions += 1;
         self.statistics.freed_bodies += freed_bodies;
@@ -481,11 +502,27 @@ impl JitState {
     }
 }
 
+/// Writes stops over the zone's bytes from `start` to `end`.
+#[cfg(ns_jit)]
+fn fill_with_stops(zone: &mut super::Zone, start: u32, end: u32) {
+    if start >= end {
+        return;
+    }
+    let stops = super::macro_assembler::stop_bytes((end - start) as usize);
+    if zone.writer.write(CodeOffset(start), &stops).is_err() {
+        unreachable!("internal: the room a body left lies in the committed zone");
+    }
+}
+
+#[cfg(not(ns_jit))]
+fn fill_with_stops(_zone: &mut super::Zone, _start: u32, _end: u32) {}
+
 impl Mutator<'_> {
     /// Compacts the code zone at the run loop's safepoint, once a compile
     /// found no room (`JitState::compaction_requested`): Cog's
     /// `compactCogCompiledCode` (`:5723-5744`), freeing the least used
-    /// bodies until a quarter of the zone is free.
+    /// bodies until a quarter of the bodies' room past the stubs is free,
+    /// and at least what the compile that found no room needed.
     pub(crate) fn compact_code_zone(&mut self) {
         self.compact_code_zone_freeing(Freeing::ToAQuarter);
     }
@@ -504,9 +541,10 @@ impl Mutator<'_> {
     /// (`updateStackZoneReferencesToCompiledCodePreCompaction`,
     /// `cointerp.c:21546-21596`; `relocateMethodsPreCompaction`,
     /// `:13400-13417`); the bytes slid and the records rewritten; the
-    /// request cleared, and the exhaustion once a quarter is free.
+    /// request cleared, and the exhaustion once that much is free.
     fn compact_code_zone_freeing(&mut self, freeing: Freeing) {
-        debug_assert_eq!(
+        #[cfg(debug_assertions)]
+        assert_eq!(
             self.jit.entries_in_progress, 0,
             "internal: the zone is compacted only between entries"
         );
@@ -533,6 +571,40 @@ impl Mutator<'_> {
             }
         }
         self.jit.wanted_bytes = 0;
+        #[cfg(all(ns_jit, debug_assertions))]
+        self.verify_code_zone_holders();
+    }
+
+    /// A debug build's check, after every compaction, that every holder of
+    /// an address into the zone was remapped: every cell agrees with its
+    /// entry, which names a moved body's new start, a stub, or the miss
+    /// stub (`InlineCaches::verify_cells`), and every machine entry row
+    /// names the start of a body the zone holds. The zone stress mode so
+    /// checks the remapping at every compaction it makes.
+    #[cfg(all(ns_jit, debug_assertions))]
+    fn verify_code_zone_holders(&self) {
+        if let Err(message) = self.caches.verify_cells(&self.heap, &self.jit) {
+            panic!("internal: a cell names stale code after a compaction: {message}");
+        }
+        let Some(zone) = self.jit.zone.as_ref() else {
+            return;
+        };
+        let starts: Vec<u64> = self
+            .jit
+            .bodies
+            .iter()
+            .map(|body| {
+                zone.writer
+                    .zone()
+                    .executable_address(CodeOffset(body.start)) as u64
+            })
+            .collect();
+        for entry in self.heap.recorded_machine_entries() {
+            assert!(
+                starts.contains(&entry),
+                "internal: a machine entry row names {entry:#x}, no body's start, after a compaction"
+            );
+        }
     }
 }
 

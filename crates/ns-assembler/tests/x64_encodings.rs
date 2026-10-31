@@ -737,3 +737,20 @@ fn a_label_reference_to_a_label_never_bound_is_an_error() {
 fn an_alignment_that_is_no_power_of_two_is_refused() {
     let _ = bytes(|assembler| assembler.align_data(48));
 }
+
+/// A run of stops is a breakpoint at every byte, so that a jump into any
+/// byte of the room a moved or freed body left traps at once.
+#[test]
+fn every_byte_of_a_fill_with_stops_is_a_breakpoint() {
+    use ns_assembler::Encoder;
+    let mut code = vec![0x90];
+    X64.fill_with_stops(3, &mut code);
+    assert_eq!(code.len(), 4, "appended, the bytes before kept");
+    for start in 1..code.len() {
+        let instructions = decode(&code[start..]);
+        assert!(instructions
+            .iter()
+            .all(|instruction| instruction.mnemonic() == Mnemonic::Int3));
+        assert_eq!(instructions.len(), code.len() - start);
+    }
+}

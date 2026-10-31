@@ -435,6 +435,12 @@ const RETURN_NEAR: u8 = 0xC3;
 /// Intel SDM Vol. 2B, UD—Undefined Instruction.
 const UNDEFINED_INSTRUCTION: [u8; 2] = [0x0F, 0x0B];
 
+/// `INT3` (`CC`) — the one-byte breakpoint, which raises a breakpoint
+/// exception at whichever byte execution enters a run of them.
+///
+/// Intel SDM Vol. 2A, INT n/INTO/INT3/INT1—Call to Interrupt Procedure.
+const BREAKPOINT: u8 = 0xCC;
+
 /// `JMP rel8` (`EB cb`) — the short unconditional jump.
 ///
 /// Intel SDM Vol. 2A, JMP—Jump.
@@ -681,6 +687,10 @@ fn condition_code(condition: Condition) -> u8 {
 }
 
 impl Encoder for X64 {
+    fn fill_with_stops(&self, length: usize, code: &mut Vec<u8>) {
+        code.resize(code.len() + length, BREAKPOINT);
+    }
+
     fn encode(&self, operation: Operation, code: &mut Vec<u8>) {
         match operation {
             Operation::MoveRegister { target, source } => {
