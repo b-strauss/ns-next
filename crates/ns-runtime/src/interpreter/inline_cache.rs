@@ -620,6 +620,35 @@ impl InlineCaches {
         self.global.refresh_entering(&mut self.cells, address, jit);
     }
 
+    /// Writes every cell -- a site's own, a polymorphic block's, a global
+    /// row -- afresh from its entry whose entry address the JIT's state now
+    /// answers differently: the JIT revived an abandoned body
+    /// (`JitState::decay_exits`), so that a cell that names the refusing
+    /// stub for its method names the miss stub again. A cell whose address
+    /// is unchanged is left alone, and read with `jit::expected_cell_entry`,
+    /// so that the walk raises no body's usage but that of one a cell is
+    /// written to name, as every write of a cell does.
+    pub(crate) fn refresh_all_cells(&mut self, jit: &JitState) {
+        for (index, entry) in self.sites.iter().enumerate() {
+            let cell = self.cells.site(index);
+            if cell.entry != jit::expected_cell_entry(jit, &entry.target) {
+                let entry = jit::cell_entry(jit, &entry.target);
+                self.cells.write_site(index, Cell { entry, ..cell });
+            }
+        }
+        for (block, slots) in (0..).zip(&self.pool) {
+            for (position, slot) in slots.iter().enumerate() {
+                let cell = self.cells.block_cell(block, position);
+                if cell.entry != jit::expected_cell_entry(jit, &slot.target) {
+                    let entry = jit::cell_entry(jit, &slot.target);
+                    self.cells
+                        .write_block_cell(block, position, Cell { entry, ..cell });
+                }
+            }
+        }
+        self.global.refresh_all(&mut self.cells, jit);
+    }
+
     /// Rewrites the entry address of every cell -- a site's own, a
     /// polymorphic block's, a global row -- through `plan`: a compaction of
     /// the code zone moved the bodies the cells name, and freed some, whose
@@ -1129,6 +1158,24 @@ impl GlobalCache {
         for (row, entry) in self.entries.iter().enumerate() {
             let found = cells.global_row(row);
             if found.entry == address {
+                cells.write_global_row(
+                    row,
+                    GlobalRow {
+                        entry: jit::cell_entry(jit, &entry.target),
+                        ..found
+                    },
+                );
+            }
+        }
+    }
+
+    /// Writes afresh every mirror row whose entry address the JIT's state
+    /// now answers differently: `InlineCaches::refresh_all_cells`'s global
+    /// part.
+    fn refresh_all(&self, cells: &mut Cells, jit: &JitState) {
+        for (row, entry) in self.entries.iter().enumerate() {
+            let found = cells.global_row(row);
+            if found.entry != jit::expected_cell_entry(jit, &entry.target) {
                 cells.write_global_row(
                     row,
                     GlobalRow {

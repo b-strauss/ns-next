@@ -10288,38 +10288,42 @@ of the first two.
   - a body whose machine code has handed its frame to the interpreter
     `EXIT_BUDGET` (64) times -- an exit at an instruction or a refused
     call, not a poll -- is **abandoned** (`jit::abandon`,
-    `JitStatistics::abandoned_bodies`): it is refused, so that neither
-    an interpreter's send nor a push nor a frame returned to enters it,
-    and every cell that names its machine entry is written afresh from
-    its entry
+    `JitStatistics::abandoned_bodies`): it is settled `ABANDONED`, so
+    that neither an interpreter's send nor a push nor a frame returned to
+    enters it, its machine code is freed at once ("Planned: the baseline
+    JIT", "The code zone"), and every cell that names its machine entry
+    is written afresh from its entry
     (`InlineCaches::refresh_cells_entering`), which names the refusing
-    stub since, so that its callers' calls are refused and spend their own
-    budgets. A loop whose callee makes a block, which machine code does
-    not do yet, otherwise paid an exit and an entry on every turn; a
+    stub since, so that its callers' calls are refused and spend their
+    own budgets. A loop whose callee makes a block, which machine code
+    does not do yet, otherwise paid an exit and an entry on every turn; a
     region of bodies that keep leaving ends up interpreted, and one that
-    does not stays in machine code. The code stays in the zone, which only
-    appends, so a frame stopped in it is still materialized.
+    does not stays in machine code. `ABANDONED` lies above `COMPILED`
+    with `EXITS_AT_ONCE` and `REFUSED`, so the push's test of a body
+    stays one compare (`JitSlot::is_armed`).
 
-    **Planned: the budget is a decaying count.** Would change: a rare
-    exit no longer ends a long run interpreted. Every body's exit count
-    is halved at every scavenge and every full collection
+    The budget bounds the exits of a stretch of the run, not of its
+    lifetime, so that a rare exit does not end a long run interpreted:
+    every scavenge and every full collection halves the exit count of
+    every body compiled into the zone and of every abandoned one
     (`JitState::decay_exits`, from `World::scavenge` and
-    `World::collect`), so the budget bounds the exits of a stretch of the
-    run rather than of its lifetime, as Strongtalk divides each nmethod's
-    uncommon-trap counter by its decay factor at every sweeper step
+    `World::collect`), as Strongtalk divides each nmethod's uncommon-trap
+    counter by its decay factor at every sweeper step
     (`prior-art/strongtalk/vm/code/nmethod.cpp:953-966`, which the zone
-    sweeper runs for each nmethod, `vm/runtime/sweeper.cpp:218`). An
-    abandoned body is settled `ABANDONED` rather than refused, its code
-    marked free ("Planned: the baseline JIT", "The code zone"), and
-    counts again once its count has fallen below 32 (`REVIVAL_EXITS`,
-    half the budget): it goes back to counting its entries and compiles
-    at its second. Whenever a body is revived, every cell is written
-    afresh from its entry, so the cells of its callers name the miss stub
-    again instead of the refusing stub, and the cascade reverses. Revival
-    needs two halvings from 64, so a body that always exits compiles at
-    most once per two scavenges
-    ([OPEN-WORK.md](../OPEN-WORK.md), "The exit budget is a lifetime
-    count").
+    sweeper runs for each nmethod, `vm/runtime/sweeper.cpp:218`); Cog
+    halves its methods' usage counts at each compaction instead. An
+    abandoned body whose count falls below 32 (`REVIVAL_EXITS`, half the
+    budget) is **revived** (`JitStatistics::revived_bodies`): it goes back
+    to counting its entries (`JitSlot::forget`) and is compiled anew at
+    its second, its old code long freed. Whenever one is revived, every
+    cell whose entry address the JIT's state now answers differently is
+    written afresh from its entry (`InlineCaches::refresh_all_cells`), so
+    the cells of its callers name the miss stub again instead of the
+    refusing stub, the miss compiles it, and the cascade reverses: its
+    callers call it and stop spending their budgets. Revival needs two
+    halvings from 64, so a body that always exits is compiled at most
+    once per two scavenges. The JIT stress mode never abandons a body
+    (`resumption_after_exit`), so it never revives one either.
 
   A body the compiler refuses -- more instructions
   than a `u16` counts, code the assembler cannot lay out, more bytes than

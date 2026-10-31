@@ -411,7 +411,7 @@ impl JitState {
 
     /// The index in `bodies` of the body `code`'s slot names in this zone,
     /// whether or not the JIT is on, while it is not freed.
-    fn named_body(&self, code: &CompiledCode) -> Option<usize> {
+    pub(super) fn named_body(&self, code: &CompiledCode) -> Option<usize> {
         let slot = &code.jit;
         let index = slot.map.get() as usize;
         let named = slot.state.get() == COMPILED

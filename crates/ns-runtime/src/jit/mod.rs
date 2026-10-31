@@ -134,8 +134,10 @@ pub struct JitStatistics {
     /// again.
     pub send_exits: u64,
     /// Bodies the JIT abandoned once their machine code had handed their
-    /// frames to the interpreter too often (`EXIT_BUDGET`): refused since,
-    /// and called by no cell.
+    /// frames to the interpreter too often (`EXIT_BUDGET`): neither entered
+    /// nor called by any cell until their exits decay
+    /// (`revived_bodies`). A body abandoned again after a revival counts
+    /// again.
     pub abandoned_bodies: u64,
     /// Calls of the leaf stub's leaf (`jit::leaves`'s `act`), which runs a
     /// target that is no method with code -- a setter, a leaf-safe
@@ -174,11 +176,21 @@ pub struct JitStatistics {
     pub freed_bodies: u64,
     /// Bytes of machine code and data words the compactions slid down.
     pub moved_bytes: u64,
+    /// Abandoned bodies whose exit count the scavenges and full
+    /// collections had halved below `REVIVAL_EXITS`, which count their
+    /// entries again (`JitState::decay_exits`).
+    pub revived_bodies: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled, and so entered at a
 /// send, a push and a frame returned to.
-const COMPILED: u32 = u32::MAX - 2;
+const COMPILED: u32 = u32::MAX - 3;
+/// What a body's `JitSlot` says once the JIT abandoned it for its exits
+/// (`abandon`): neither compiled nor entered until the scavenges and full
+/// collections have halved its exit count below `REVIVAL_EXITS`
+/// (`JitState::decay_exits`). Above `COMPILED`, as every state that is not
+/// armed is, so that `is_armed` stays one compare.
+const ABANDONED: u32 = u32::MAX - 2;
 /// What a body's `JitSlot` says once its machine code is known to leave
 /// before it reaches a return, a compiled send or a backward jump, so that
 /// it is never entered.
@@ -188,27 +200,39 @@ const REFUSED: u32 = u32::MAX;
 
 /// How many times a body's machine code may hand its frame to the
 /// interpreter -- an exit at an instruction or a refused call, not a
-/// poll -- before the JIT abandons it (`abandon`): it is refused, so that
-/// neither a push nor a frame returned to enters it, and every cell that
-/// called it refuses the call instead, so that its callers, refused in
-/// turn, spend their own budgets. An exit and the entry that resumes the
-/// frame cost about as much as a hundred interpreted instructions, so a
-/// loop that leaves on every turn -- one that sends `ifTrue:` a block in a
-/// variable, which machine code leaves to the interpreter, or calls a body
-/// that does -- ran more slowly in machine code than interpreted; a region of bodies
-/// that keep leaving ends up interpreted, and one that does not stays in
-/// machine code.
+/// poll -- before the JIT abandons it (`abandon`): it is neither compiled
+/// nor entered, so that neither a push nor a frame returned to enters it,
+/// and every cell that called it refuses the call instead, so that its
+/// callers, refused in turn, spend their own budgets. An exit and the
+/// entry that resumes the frame cost about as much as a hundred
+/// interpreted instructions, so a loop that leaves on every turn -- one
+/// that sends `ifTrue:` a block in a variable, which machine code leaves
+/// to the interpreter, or calls a body that does -- ran more slowly in
+/// machine code than interpreted; a region of bodies that keep leaving
+/// ends up interpreted, and one that does not stays in machine code.
+///
+/// The count decays: every scavenge and full collection halves it
+/// (`JitState::decay_exits`), so that the budget bounds the exits of a
+/// stretch of the run rather than of its lifetime, and a rare exit does
+/// not end a long run interpreted.
 const EXIT_BUDGET: u32 = 64;
+
+/// The exit count below which an abandoned body is revived: it counts its
+/// entries again, and is compiled at its `COMPILE_AT_ENTRY`th. Half the
+/// budget, so that a body abandoned at `EXIT_BUDGET` needs two halvings --
+/// two scavenges or full collections -- and a body that always exits is
+/// compiled at most once per two of them.
+const REVIVAL_EXITS: u32 = EXIT_BUDGET / 2;
 
 /// A body's state in the JIT: *counting* its entries (`state` below
 /// `COMPILED`), *compiled* (`COMPILED`; `zone` names the zone its machine
 /// code lies in, `offset` where, `map` its program-counter map), *exiting
 /// at once* (`EXITS_AT_ONCE`: its code would exit before it reaches a
 /// return, a compiled send or a backward jump, so entering it would cost
-/// every push more than the few instructions it runs), or *refused*
-/// (`REFUSED`). A push looks at a body in neither of the last two, so they
-/// are the top values, which one compare tells from the others
-/// (`is_armed`).
+/// every push more than the few instructions it runs), *abandoned*
+/// (`ABANDONED`, until its exits decay) or *refused* (`REFUSED`). A push
+/// looks at a body in none of the last three, so they are the top values,
+/// which one compare tells from the others (`is_armed`).
 /// Interior-mutable, since a body is shared by every activation of it.
 ///
 /// A copy starts counting afresh: it is another body to the JIT, compiled
@@ -259,6 +283,7 @@ impl std::fmt::Debug for JitSlot {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.state.get() {
             REFUSED => formatter.write_str("JitSlot::Refused"),
+            ABANDONED => write!(formatter, "JitSlot::Abandoned({})", self.exits.get()),
             EXITS_AT_ONCE => formatter.write_str("JitSlot::ExitsAtOnce"),
             COMPILED => formatter
                 .debug_struct("JitSlot::Compiled")
@@ -274,7 +299,8 @@ impl std::fmt::Debug for JitSlot {
 
 impl JitSlot {
     /// Whether an entry into the body has anything to do with the JIT:
-    /// false once the body is refused or exits at once. The one load and
+    /// false once the body is refused, abandoned or exits at once. The one
+    /// load and
     /// compare the run loop makes on a push (`vm::run_stretch`);
     /// everything else is `entered`'s, out of line.
     #[inline(always)]
@@ -302,7 +328,15 @@ impl JitSlot {
     fn note_exit(&self) -> bool {
         let exits = self.exits.get().saturating_add(1);
         self.exits.set(exits);
-        exits == EXIT_BUDGET && self.state.get() == COMPILED
+        exits >= EXIT_BUDGET && self.state.get() == COMPILED
+    }
+
+    /// Halves the count of the body's exits (`JitState::decay_exits`),
+    /// answering it.
+    fn decay_exits(&self) -> u32 {
+        let exits = self.exits.get() / 2;
+        self.exits.set(exits);
+        exits
     }
 
     fn settle(&self, state: u32) {
@@ -313,6 +347,7 @@ impl JitSlot {
     /// Puts the body back to counting its entries, from none, its exits
     /// forgotten with its code: a compile that found the zone full, and a
     /// compaction that freed its machine code by its usage (`jit::zone`),
+    /// and the revival of an abandoned body (`JitState::decay_exits`),
     /// leave it to be compiled again at its next `COMPILE_AT_ENTRY`th
     /// entry, as Cog forgets the machine code of a method it freed.
     fn forget(&self) {
@@ -723,6 +758,11 @@ pub(crate) struct JitState {
     /// only: only their assertions read it.
     #[cfg(debug_assertions)]
     entries_in_progress: u32,
+    /// The bodies abandoned and not yet revived, held weakly as the
+    /// installed bodies are, so that a body dies with its mixin's row:
+    /// what `decay_exits` halves the exits of beside the installed bodies,
+    /// whose slots no longer name machine code.
+    abandoned: Vec<Weak<CompiledCode>>,
 }
 
 /// Whether `NS_NEXT_STRESS_JIT` asks for the JIT stress mode: set, and
@@ -808,6 +848,7 @@ impl JitState {
             bytes_freed_since_compaction: 0,
             #[cfg(debug_assertions)]
             entries_in_progress: 0,
+            abandoned: Vec::new(),
         }
     }
 
@@ -1129,6 +1170,7 @@ impl JitState {
             bytes_freed_since_compaction: 0,
             #[cfg(debug_assertions)]
             entries_in_progress: 0,
+            abandoned: Vec::new(),
         }
     }
 }
@@ -1757,6 +1799,56 @@ impl JitState {
     pub(crate) fn cell_entry_may_be(&self, found: u64, expected: u64) -> bool {
         found == expected || (found != 0 && found == self.miss_stub_address())
     }
+
+    /// Halves the exit count of every body compiled into this zone and of
+    /// every abandoned one, and revives each abandoned body whose count
+    /// fell below `REVIVAL_EXITS`: it counts its entries again
+    /// (`JitSlot::forget`), its machine code long freed (`abandon`).
+    /// Answers whether one was revived, in which case the caller writes
+    /// every cell afresh from its entry (`InlineCaches::refresh_all_cells`),
+    /// so that a cell that refused the call of a revived body names the
+    /// miss stub again, which compiles it, and its callers stop spending
+    /// their budgets on it.
+    ///
+    /// Run after every scavenge and full collection (`World::scavenge`,
+    /// `World::collect`): the run's periodic event, as Strongtalk's zone
+    /// sweeper divides each nmethod's uncommon-trap counter by its decay
+    /// factor at every step (`nmethod::sweeper_step`,
+    /// `prior-art/strongtalk/vm/code/nmethod.cpp:960-966`, run for each
+    /// nmethod by `ZoneSweeper::nmethod_task`, `vm/runtime/sweeper.cpp:218`).
+    /// A body that always exits is so compiled at most once per two of
+    /// them. The JIT stress mode never abandons a body
+    /// (`resumption_after_exit`), so it never revives one either.
+    pub(crate) fn decay_exits(&mut self) -> bool {
+        for (index, body) in self.bodies.iter().enumerate() {
+            // Only the body its slot names, so that each slot's count is
+            // halved once: one freed, or compiled anew since, is not.
+            if let Some(code) = body.code.upgrade() {
+                if self.named_body(&code) == Some(index) {
+                    code.jit.decay_exits();
+                }
+            }
+        }
+        let mut revived = 0;
+        self.abandoned.retain(|body| {
+            let Some(code) = body.upgrade() else {
+                return false;
+            };
+            // A body refused since -- entered while the JIT was off -- is
+            // no longer abandoned.
+            if code.jit.state.get() != ABANDONED {
+                return false;
+            }
+            if code.jit.decay_exits() >= REVIVAL_EXITS {
+                return true;
+            }
+            code.jit.forget();
+            revived += 1;
+            false
+        });
+        self.statistics.revived_bodies += revived;
+        revived > 0
+    }
 }
 
 /// Where `code`'s machine code starts, when it is compiled into this
@@ -1807,7 +1899,7 @@ pub(crate) fn note_entry(
         return;
     }
     match slot.state.get() {
-        REFUSED | EXITS_AT_ONCE => {}
+        REFUSED | ABANDONED | EXITS_AT_ONCE => {}
         COMPILED if slot.zone.get() == state.zone_identity() => {}
         // A body two interpreters ran in turn would be compiled again at
         // every switch, each time leaving its old code in the other's
@@ -1853,7 +1945,7 @@ pub(crate) fn note_entry_by_call(
     let compiles = state.enabled
         && state.may_compile_now(&code.jit)
         && match code.jit.state.get() {
-            REFUSED | EXITS_AT_ONCE => false,
+            REFUSED | ABANDONED | EXITS_AT_ONCE => false,
             COMPILED => code.jit.zone.get() != state.zone_identity(),
             entries => entries + 1 >= state.compile_at_entry,
         };
@@ -2677,14 +2769,16 @@ fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockW
 }
 
 /// Abandons `code`, whose machine code has spent its `EXIT_BUDGET`: its
-/// body is refused, so that no push and no frame returned to enters it
-/// again, and every cell that names its machine entry is written afresh
-/// from its entry, which now names the stub that refuses the call. Its
-/// machine code is freed at once (`JitState::free_body`), and its bytes
-/// reclaimed by the next compaction: abandonment runs only between
-/// entries (`resumption_after_exit`), where no return address into the
-/// zone exists, and a frame an exit left stopped in the code resumes
-/// interpreted (`resumed`), as every frame stopped in freed code does.
+/// body is settled `ABANDONED`, so that no push and no frame returned to
+/// enters it again until its exits decay (`JitState::decay_exits`), and
+/// every cell that names its machine entry is written afresh from its
+/// entry, which now names the stub that refuses the call. Its machine code
+/// is freed at once (`JitState::free_body`), and its bytes reclaimed by the
+/// next compaction, so that a revived body is compiled anew: abandonment
+/// runs only between entries (`resumption_after_exit`), where no return
+/// address into the zone exists, and a frame an exit left stopped in the
+/// code resumes interpreted (`resumed`), as every frame stopped in freed
+/// code does.
 #[cfg(ns_jit)]
 fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     let installed = mutator.jit.installed(code).map(|body| body.start);
@@ -2692,7 +2786,8 @@ fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     if installed.is_some() {
         mutator.jit.free_body(code.jit.map.get());
     }
-    code.jit.refuse();
+    code.jit.settle(ABANDONED);
+    mutator.jit.abandoned.push(Rc::downgrade(code));
     mutator.jit.statistics.abandoned_bodies += 1;
     // A block's closure stubs call it no more either.
     mutator.heap.forget_machine_entry(code);

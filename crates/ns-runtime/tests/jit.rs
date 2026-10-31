@@ -99,6 +99,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         zone_compactions: after.zone_compactions - before.zone_compactions,
         freed_bodies: after.freed_bodies - before.freed_bodies,
         moved_bytes: after.moved_bytes - before.moved_bytes,
+        revived_bodies: after.revived_bodies - before.revived_bodies,
     }
 }
 
@@ -5481,5 +5482,214 @@ ns_runtime::for_each_lowering! {
             last.machine_entries + last.called_entries >= 10,
             "`hot` runs in machine code: {last:?}"
         );
+    }
+}
+
+/// `leave:`, which loops and then, when its argument is 0, sends a message
+/// the class's `doesNotUnderstand:` answers, which machine code leaves to
+/// the interpreter; `callLeave:`, which sends it ten times from a loop;
+/// and `drive:`, which sends it a thousand times, its argument 0 -- an
+/// exit -- only at the turn `drive:`'s argument names.
+const DECAYING: &str = indoc! {"
+    class Subject = Object new () (
+      public leave: flag = (
+        |
+          index ::= 0.
+        |
+        [index < 2] whileTrue: [
+          index:: index + 1.
+        ].
+        flag = 0 ifTrue: [^self missing + index].
+        ^index
+      )
+      public callLeave: flag = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 10] whileTrue: [
+          sum:: sum + (self leave: flag).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public drive: exitAt = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          sum:: sum + (self leave: index - exitAt).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public doesNotUnderstand: message = (
+        ^1
+      )
+    ) : ()
+"};
+
+/// Sends `leave: 0` to `subject` 70 times, each leaving machine code once
+/// the body is compiled: past the exit budget, so that it is abandoned.
+fn spend_the_exit_budget(interpreter: &mut Interpreter, subject: &Root) {
+    for _ in 0..70 {
+        assert_eq!(send_number(interpreter, subject, "leave:", 0), 3);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A body abandoned for its exits counts them down at every scavenge,
+    /// and once two have halved them below half the budget it is revived:
+    /// it counts its entries again, is compiled at its second, and runs in
+    /// machine code.
+    fn an_abandoned_body_compiles_again_once_its_exits_decay(lowering) {
+        let (mut interpreter, class) = load_with(DECAYING, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let before = interpreter.jit_statistics();
+        spend_the_exit_budget(&mut interpreter, &subject);
+        let abandoned = since(interpreter.jit_statistics(), before);
+        let before_scavenges = interpreter.jit_statistics();
+        interpreter.scavenge_now();
+        interpreter.scavenge_now();
+        let decayed = since(interpreter.jit_statistics(), before_scavenges);
+        if let Err(message) = interpreter.verify_cells() {
+            panic!("after the revival: {message}");
+        }
+        for _ in 0..2 {
+            assert_eq!(send_number(&mut interpreter, &subject, "leave:", 1), 2);
+        }
+        let before_hot = interpreter.jit_statistics();
+        for _ in 0..10 {
+            assert_eq!(send_number(&mut interpreter, &subject, "leave:", 1), 2);
+        }
+        let hot = since(interpreter.jit_statistics(), before_hot);
+        // The reference lowering leaves every send uncached, `<` among
+        // them, so that its body exits at once and is never compiled.
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(abandoned.abandoned_bodies, 1, "`leave:` is abandoned");
+            assert_eq!(decayed.revived_bodies, 1, "two scavenges revive it");
+            assert!(
+                interpreter
+                    .jit_body_offset(&class, MethodSide::Instance, Symbol::intern("leave:"))
+                    .is_some(),
+                "`leave:` is compiled again"
+            );
+            assert_eq!(hot.machine_entries, 10, "every later run is in machine code");
+            assert_eq!(hot.exits, 0, "and leaves it only by its returns");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A caller's cached send of a callee the JIT abandoned names the
+    /// refusing stub; once the callee is revived, the cell is written
+    /// afresh from its entry and names the miss stub, which compiles the
+    /// callee, and the send calls its machine code again rather than
+    /// refusing the call and spending the caller's budget.
+    fn a_revived_callee_is_called_from_machine_code_again(lowering) {
+        let (mut interpreter, class) = load_with(DECAYING, lowering);
+        interpreter.set_jit_counting(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_number(&mut interpreter, &subject, "callLeave:", 1), 20);
+        }
+        spend_the_exit_budget(&mut interpreter, &subject);
+        let before_scavenges = interpreter.jit_statistics();
+        interpreter.scavenge_now();
+        interpreter.scavenge_now();
+        let decayed = since(interpreter.jit_statistics(), before_scavenges);
+        if let Err(message) = interpreter.verify_cells() {
+            panic!("after the revival: {message}");
+        }
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "callLeave:", 1), 20);
+        let first = since(interpreter.jit_statistics(), before);
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "callLeave:", 1), 20);
+        let second = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(decayed.revived_bodies, 1, "`leave:` is revived");
+            // The miss refuses the first call, which counts nothing; the
+            // interpreter's push of `leave:` counts its first entry, and the
+            // rest of the run, interpreted, calls it once compiled.
+            assert!(
+                first.called_entries >= 1,
+                "the interpreted rest of the run called `leave:`'s machine code: {first:?}"
+            );
+            assert_eq!(second.send_exits, 0, "no call is refused: {second:?}");
+            assert_eq!(second.exits, 0, "nothing leaves machine code");
+            assert!(
+                second.compiled_calls >= 10,
+                "`callLeave:` calls `leave:` through its cell: {}",
+                second.compiled_calls
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A body that exits on every run is abandoned, revived after two
+    /// scavenges, compiled at its second entry and abandoned again: over
+    /// twenty scavenges it is compiled at most once per two of them.
+    fn a_body_that_always_exits_compiles_at_most_once_per_two_scavenges(lowering) {
+        let (mut interpreter, class) = load_with(DECAYING, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        // Compiles `leave:` and the `doesNotUnderstand:` handler once, and
+        // abandons `leave:`.
+        spend_the_exit_budget(&mut interpreter, &subject);
+        let before = interpreter.jit_statistics();
+        for _ in 0..20 {
+            interpreter.scavenge_now();
+            spend_the_exit_budget(&mut interpreter, &subject);
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.compiled_bodies <= 11,
+                "`leave:` compiled at most once per two scavenges: {}",
+                done.compiled_bodies
+            );
+            assert_eq!(done.revived_bodies, 10, "revived at every second scavenge");
+            assert_eq!(done.abandoned_bodies, 10, "and abandoned again");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A hot body that leaves machine code once in a thousand entries,
+    /// two hundred thousand times with a scavenge after every thousand,
+    /// never spends its exit budget: the scavenges halve its count, so that
+    /// the budget bounds the exits of a stretch of the run, not of its
+    /// lifetime, and the end of the run is in machine code.
+    fn a_rare_exit_no_longer_ends_a_long_run_interpreted(lowering) {
+        let (mut interpreter, class) = load_with(DECAYING, lowering);
+        interpreter.set_jit_counting(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        // The long run only where its assertions are checked: the
+        // reference lowering, whose body is never compiled, and a stress
+        // mode, which collects or scavenges at every safepoint, check the
+        // answers over a stretch of it.
+        let measured = lowering == Lowering::Optimized && !a_stress_mode_is_on();
+        let rounds = if measured { 200 } else { 10 };
+        let before = interpreter.jit_statistics();
+        for _ in 0..rounds {
+            assert_eq!(send_number(&mut interpreter, &subject, "drive:", 999), 2001);
+            interpreter.scavenge_now();
+        }
+        let long_run = since(interpreter.jit_statistics(), before);
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "drive:", -1), 2000);
+        let last = since(interpreter.jit_statistics(), before);
+        if measured {
+            assert!(long_run.exits >= 200, "`leave:` left once per thousand");
+            assert_eq!(long_run.abandoned_bodies, 0, "no body spent its budget");
+            assert_eq!(last.exits, 0, "the last thousand entries stay in machine code");
+            assert!(
+                last.compiled_calls >= 1000,
+                "`drive:` calls `leave:` through its cell: {}",
+                last.compiled_calls
+            );
+        }
     }
 }

@@ -285,7 +285,19 @@ impl World {
             roots.trace(scavenger);
         });
         self.mutator.rewrite_machine_classes();
+        self.decay_exits();
         self.mutator.heap.record_scavenge(start.elapsed());
+    }
+
+    /// Halves the JIT's exit counts (`JitState::decay_exits`) after a
+    /// scavenge or a full collection, the run's periodic events, and
+    /// writes every cell afresh from its entry when that revived a body,
+    /// so that the cells that refused the calls of an abandoned body call
+    /// it again.
+    fn decay_exits(&mut self) {
+        if self.mutator.jit.decay_exits() {
+            self.mutator.caches.refresh_all_cells(&self.mutator.jit);
+        }
     }
 
     /// Whether an allocation or the remembered set has asked for a
@@ -374,6 +386,7 @@ impl World {
         // After `reclaim_ids`, from what it left of each table.
         self.mutator.heap.reset_table_limits();
         self.mutator.caches.reset_site_limit();
+        self.decay_exits();
         if for_a_table {
             self.mutator.heap.count_table_collection();
         }

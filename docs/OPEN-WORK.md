@@ -44,8 +44,9 @@ What stage 3 measured is "What sends in machine code moved": where
 machine code runs whole -- loops of sends, accessors and arithmetic --
 it is several times the interpreter's speed; where it meets a block, an
 allocation or a non-local return it exits, and a body that keeps exiting
-is abandoned to the interpreter, so that those programs run at about the
-interpreter's speed until stage 4 removes the exits. The stages after it,
+is abandoned to the interpreter until its exits decay, so that those
+programs run at about the interpreter's speed until stage 4 removes the
+exits. The stages after it,
 each measured against the tree before it: on-stack replacement, the polls
 and the depth count's measurement; the register cache; the AArch64
 encoder under QEMU. Road step 8 as a whole, Cog's class, for x64 and
@@ -394,20 +395,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   16 MiB today (`jit::DEFAULT_ZONE_BYTES`), a first guess. What the
   stages so far leave to the ones after them (noted in their reviews,
   2026-10-27 to 2026-10-29):
-  - **The exit budget is a lifetime count** (`jit::EXIT_BUDGET`, 64),
-    chosen, not measured, and it never decays: a hot body that exits once
-    in ten thousand entries is abandoned for good after its sixty-fourth
-    exit, however rare, and abandonment cascades -- every compiled caller's
-    call of it is refused from then on, an exit of the caller's, so the
-    callers spend their budgets and are abandoned in turn, up the region,
-    until a long-running program whose one rare slow path exits ends
-    interpreted. Once stage 4 runs closures in machine code most exits go;
-    whether a budget per entries (a rate), a decaying count, or nothing is
-    right is to be measured then. Part 4d's design closes it: the count
-    halves at every scavenge and full collection, and an abandoned body
-    counts again below half the budget ([execution.md](design/execution.md),
-    "The baseline JIT's foundation", "Planned: the budget is a decaying
-    count").
   - **A block the interpreter pushes above its sender's window pays the
     bridge** (accepted with the user on 2026-10-29 until stage 4): an
     interpreted `value` send and its kin call a block's machine code
