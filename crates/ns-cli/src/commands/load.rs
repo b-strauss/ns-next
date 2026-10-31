@@ -46,6 +46,7 @@ pub(crate) fn execute(image: &Path, print_source: bool, program_arguments: &[Str
         );
         return ExitCode::FAILURE;
     }
+    crate::entry::report_jit_unavailable(&loaded.interpreter);
     let application = loaded.roots[0].clone();
     crate::entry::report_entry_send(crate::entry::send_main(
         &mut loaded.interpreter,

@@ -703,10 +703,11 @@ fn recurse(interpreter: &mut Interpreter, class: &Root, depth: i64) -> i64 {
 /// platforms ns-next runs on.
 const A_PAGE: usize = 64 << 10;
 
-/// A recursion 50,000 deep commits several MiB of the activation stack,
-/// which a full collection after it returned gives back down to the
-/// headroom above the top, 2 MiB (`heap::limits::STACK_SHRINK`); a second
-/// recursion as deep commits the pages again and answers right.
+/// A recursion 50,000 deep commits several MiB of the activation stack.
+/// The first full collection after it returned sees that growth, demand,
+/// and keeps the pages; the next gives them back down to the headroom
+/// above the top, 2 MiB (`heap::limits::STACK_SHRINK`); a second recursion
+/// as deep commits the pages again and answers right.
 #[test]
 fn a_deep_recursion_gives_its_stack_pages_back() {
     let (mut interpreter, class) = load(DEEP);
@@ -722,6 +723,13 @@ fn a_deep_recursion_gives_its_stack_pages_back() {
     });
     let depth = 50_000;
     assert_eq!(recurse(&mut interpreter, &class, depth), depth);
+    let grown = interpreter.table_sizes().stack_committed_bytes;
+    interpreter.collect_now();
+    assert_eq!(
+        interpreter.table_sizes().stack_committed_bytes,
+        grown,
+        "the collection after the growth keeps it"
+    );
     let before = interpreter.collector_statistics();
     interpreter.collect_now();
     let sizes = interpreter.table_sizes();
@@ -824,15 +832,18 @@ fn a_sawtooth_of_recursions_does_not_thrash() {
     };
     let before = interpreter.collector_statistics();
     cycle(&mut interpreter, 75_000);
-    let shrunk = interpreter.collector_statistics();
+    let grown = interpreter.collector_statistics();
     assert!(
-        shrunk.collections > before.collections,
+        grown.collections > before.collections,
         "the cycle collected"
     );
+    assert_eq!(grown.decommits, before.decommits, "a growth is demand");
+    cycle(&mut interpreter, 10);
+    let shrunk = interpreter.collector_statistics();
     assert_eq!(
         shrunk.decommits - before.decommits,
         1,
-        "the first cycle shrinks"
+        "the shallow cycle after it shrinks"
     );
     let kept = interpreter.table_sizes().stack_committed_bytes;
     assert!(
@@ -888,6 +899,10 @@ fn a_shrink_is_damped_over_successive_collections() {
     let end = 2 << 20;
     let mut committed = interpreter.table_sizes().stack_committed_bytes;
     assert!(committed > 2 * end, "{committed} bytes committed");
+    // The recursion's growth is demand: the collection after it is out of
+    // the band, and the ramp starts at the next.
+    interpreter.collect_now();
+    assert_eq!(interpreter.table_sizes().stack_committed_bytes, committed);
     for factor in [0, 10, 40, 100] {
         interpreter.collect_now();
         let sizes = interpreter.table_sizes();
@@ -937,5 +952,51 @@ fn a_returning_peak_resets_the_damping() {
     assert!(
         interpreter.table_sizes().stack_committed_bytes < committed,
         "and goes on to 10%"
+    );
+}
+
+/// A program whose recursion returns to about 6 MiB of the activation
+/// stack between every two collections, each taken at a top near 0: a
+/// peak beyond one doubling of the 2 MiB the stack's band keeps there.
+/// Each cycle's push past the ordinary end the band set -- or past what is
+/// committed -- is demand (`heap::limits::Shrink`, "Growth is demand"), so
+/// no collection gives the peak's pages back, and the stack decommits at
+/// most twice over thirty cycles; once the program stops peaking, the
+/// collections give them back over the damping's ramp.
+#[test]
+fn a_recurring_peak_beyond_a_doubling_does_not_thrash() {
+    let (mut interpreter, class) = load(SAWTOOTH);
+    interpreter.set_stress_collect(false);
+    interpreter.set_shrink_pairs(only_the_stack_shrinks(true));
+    let platform = interpreter.platform();
+    let subject =
+        expect_ok(interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]));
+    let cycle = |interpreter: &mut Interpreter, depth: i64| {
+        let count = interpreter.stash(Value::small_integer(depth));
+        let answer = expect_ok(interpreter.send(&subject, Symbol::intern("cycle:"), &[count]));
+        assert_eq!(
+            interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+            depth
+        );
+    };
+    let before = interpreter.collector_statistics();
+    for _ in 0..30 {
+        cycle(&mut interpreter, 56_000);
+    }
+    let peaked = interpreter.collector_statistics();
+    assert!(
+        peaked.collections >= before.collections + 30,
+        "every cycle collected"
+    );
+    let decommits = peaked.decommits - before.decommits;
+    assert!(decommits <= 2, "{decommits} decommits over thirty peaks");
+    let committed = interpreter.table_sizes().stack_committed_bytes;
+    for _ in 0..6 {
+        cycle(&mut interpreter, 10);
+    }
+    let kept = interpreter.table_sizes().stack_committed_bytes;
+    assert!(
+        kept <= (2 << 20) + A_PAGE && kept < committed,
+        "{kept} bytes kept of {committed} once the peaks stopped"
     );
 }

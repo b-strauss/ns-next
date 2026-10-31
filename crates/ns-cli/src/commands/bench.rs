@@ -73,6 +73,12 @@ fn benchmark_entry(
     program_arguments: &[String],
 ) -> Result<BenchmarkStatistics, ExitCode> {
     let mut loaded = program::load_program(program, ns_runtime::Lowering::Optimized);
+    // A measurement never times the interpreter in the JIT's place: a JIT
+    // that was wanted and is off refuses the benchmark, naming why.
+    if let Some(reason) = loaded.interpreter.jit_unavailable() {
+        eprintln!("error: the JIT is off, and a benchmark would time the interpreter: {reason}");
+        return Err(ExitCode::FAILURE);
+    }
     let arguments = entry::main_arguments(&mut loaded.interpreter, program_arguments);
 
     // Warm-up: discarded. It exercises the same allocation and lookup

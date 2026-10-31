@@ -1254,6 +1254,9 @@ fn the_cells_shrink_after_a_slide() {
     let before = interpreter.table_sizes().cells_committed_bytes;
     let slides = interpreter.cache_statistics().site_slides;
     interpreter.collect_now();
+    // The first collection sees the churn's growth, demand, and keeps the
+    // cells; the next, after none, gives them back.
+    interpreter.collect_now();
     assert!(
         interpreter.cache_statistics().site_slides > slides,
         "the ranges slid"

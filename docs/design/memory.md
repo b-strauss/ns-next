@@ -1824,16 +1824,46 @@ counts collections, never time; the share is multiplied before it is
 divided, where HotSpot divides first, so that 100% reaches the band's end
 exactly.
 
+**Growth is demand** (decided with the user on 2026-10-31). A reservation
+that grew since the previous collection is out of the band at this one:
+it does not shrink, and its damping starts again at 0. HotSpot resets its
+factor wherever the generation does not want to shrink -- it reads and
+zeroes it before each resizing, and its expanding branch returns with it
+0 (`tenuredGeneration.cpp:146-151, 181-193`) -- and a generation sees its
+demand in what is used after a collection. A collection here runs at a
+low point -- the stack's top between two recursions, the tables just
+truncated -- and does not see the peak between two, so growth since the
+last one stands for it: a flag each reservation sets in its cold growth
+path and its shrink takes. Growth past what is committed alone does not
+show a peak that fits what the damping left committed, and a peak
+returning every cycle would thrash still, at every partial step that
+cut into it (16 decommits in 30 cycles of a 6 MiB recursion, measured).
+So the stack, whose push already compares with an ordinary end in the
+cold path, lowers that end to the band's end at every collection in its
+band, whatever the damping gives back (`FrameStack::shrink`), and a push
+past it is a growth too, which raises the end again without a commit
+(`FrameStack::grow_to`) -- machine code's push past it exits to the
+interpreter's, once per collection. The tables grow only by minting rows
+between two collections, so their high mark at a collection is their
+peak.
+
 The guarantee: of the collections in a row that a reservation's band says
-shrink at, the first gives back nothing, the second 10% of what lies
-above the band's end, the third 40% of what is left above it, and the
-fourth and every later one all of it; one collection out of the band in
-between starts the count again. After a shrink kept `end` for a high mark
-`h`, a cycle whose peak lies within one doubling of `end` never puts the
-reservation back in the band at a collection whose high mark is `h` or
-above. Pinned by `tests/collector.rs`: `a_sawtooth_of_recursions_does_not_thrash`
-(collections at a top above 0, the stack decommitted once in a hundred
-cycles; it fails without the band's second condition),
+shrink at and that follow no growth, the first gives back nothing, the
+second 10% of what lies above the band's end, the third 40% of what is
+left above it, and the fourth and every later one all of it; one
+collection out of the band, or after a growth, in between starts the
+count again. So a program whose peak returns between every two
+collections keeps what it committed, whatever the peak's depth, and one
+that stops peaking gives it back over the ramp. After a shrink kept `end`
+for a high mark `h`, a cycle whose peak lies within one doubling of `end`
+never puts the reservation back in the band at a collection whose high
+mark is `h` or above. Pinned by `tests/collector.rs`:
+`a_sawtooth_of_recursions_does_not_thrash` (collections at a top above 0,
+the stack decommitted once in a hundred cycles; it fails without the
+band's second condition), `a_recurring_peak_beyond_a_doubling_does_not_thrash`
+(a 6 MiB recursion between collections at a top near 0, at most two
+decommits in thirty cycles, then given back once it stops; 29 without
+the growth, 16 with growth past the committed end alone),
 `a_shrink_is_damped_over_successive_collections` and
 `a_returning_peak_resets_the_damping`.
 

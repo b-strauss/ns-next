@@ -117,16 +117,35 @@ impl Default for TableLimits {
 /// between phases would otherwise give back at once what its next phase
 /// grows again. It counts collections, never time.
 ///
+/// **Growth is demand.** A reservation that grew since the previous
+/// collection -- a commit past its end, or for the activation stack a
+/// push past the end its band would keep -- is out of the band at this
+/// one: it does not shrink, and its damping starts again at 0. HotSpot
+/// resets its factor wherever the generation does not want to shrink,
+/// the factor read and zeroed before each resizing and the expanding
+/// branch returning with it 0 (`tenuredGeneration.cpp:146-151, 181-193`);
+/// a generation sees its demand in what is used after a collection. A
+/// collection here runs at a low point -- the stack's top between two
+/// recursions, a table truncated -- and does not see the peak between
+/// two, so growth since the last one stands for it. The stack sees a
+/// peak inside what it keeps committed too: a collection in its band
+/// lowers its ordinary end to the band's end (`FrameStack::shrink`), and a
+/// push past it is a growth, made in the cold path that raises the
+/// ordinary end again, without a commit.
+///
 /// The guarantee: of the collections in a row that a reservation's band
-/// says shrink at, the first gives back nothing, the second 10% of what
-/// lies above the band's end, the third 40% of what is left above it, and
-/// the fourth and every later one all of it; one collection out of the
-/// band in between starts the count again. After a shrink kept `end` for
-/// a high mark `h`, a cycle whose peak lies within
-/// one doubling of `end` never puts it back in the band at a collection
-/// whose high mark is `h` or above, so a sawtooth back to the same peak
-/// does not thrash. The code zone commits only what an install needs, so
-/// the band's second condition only makes its shrink rarer.
+/// says shrink at and that follow no growth, the first gives back
+/// nothing, the second 10% of what lies above the band's end, the third
+/// 40% of what is left above it, and the fourth and every later one all of
+/// it; one collection out of the band, or after a growth, in between
+/// starts the count again. So a program whose peak returns between every
+/// two collections keeps what it committed, whatever the peak's depth,
+/// and one that stops peaking gives it back over the ramp. After a shrink
+/// kept `end` for a high mark `h`, a cycle whose peak lies within one
+/// doubling of `end` never puts the reservation back in the band at a
+/// collection whose high mark is `h` or above. The code zone commits only
+/// what an install needs, so the band's second condition only makes its
+/// shrink rarer.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shrink {
@@ -165,43 +184,78 @@ impl Shrink {
     /// bytes, and so a whole page, behind at 100%, which one doubling from
     /// that end would put back in the band.
     fn damped_end(end: usize, committed: usize, factor: usize) -> Option<usize> {
-        let page = ns_memory::Reservation::page_size();
-        let given_back = (committed - end).saturating_mul(factor) / 100 / page * page;
+        let page = ns_memory::Reservation::page_size() as u64;
+        // In 64 bits, where no product of an excess and a percent
+        // overflows: a 32-bit target's would past about 41 MiB, and stop
+        // short of the end at 100%.
+        let excess = (committed - end) as u64;
+        let given_back = excess * factor as u64 / 100 / page * page;
+        let given_back = usize::try_from(given_back).unwrap_or(committed - end);
         (given_back > 0).then(|| committed - given_back)
     }
 
-    /// The committed end a reservation that uses `high_mark` bytes of its
-    /// `committed` keeps after this collection, by the band and the
-    /// damping's factor, which this advances or resets
-    /// (`ShrinkDamping::take`, `advance`); `None` for no shrink. Undamped
-    /// (`damped` false, the stress modes'), a collection the band says
-    /// shrink at gives back all of the way at once, and the factor is left
-    /// alone.
+    /// What this collection decides for a reservation that uses
+    /// `high_mark` bytes of its `committed`, by the band, the damping's
+    /// factor, which this advances or resets (`ShrinkDamping::take`,
+    /// `advance`), and whether it `grew` since the previous collection,
+    /// which puts it out of the band. Undamped (`damped` false, the stress
+    /// modes'), a collection in the band gives back all of the way at once,
+    /// and the factor is left alone.
+    pub(crate) fn decide(
+        &self,
+        damping: &mut ShrinkDamping,
+        damped: bool,
+        grew: bool,
+        high_mark: usize,
+        committed: usize,
+    ) -> ShrinkDecision {
+        let factor = damping.take(damped);
+        let band_end = if grew {
+            None
+        } else {
+            self.band(high_mark, committed)
+        };
+        let Some(end) = band_end else {
+            return ShrinkDecision::default();
+        };
+        damping.advance(damped, factor);
+        ShrinkDecision {
+            band_end: Some(end),
+            kept_end: Shrink::damped_end(end, committed, factor),
+        }
+    }
+
+    /// The committed end `decide` keeps, `None` for no shrink.
     pub(crate) fn keep(
         &self,
         damping: &mut ShrinkDamping,
         damped: bool,
+        grew: bool,
         high_mark: usize,
         committed: usize,
     ) -> Option<usize> {
-        let factor = damping.take(damped);
-        let end = self.band(high_mark, committed)?;
-        damping.advance(damped, factor);
-        Shrink::damped_end(end, committed, factor)
+        self.decide(damping, damped, grew, high_mark, committed)
+            .kept_end
     }
 
     /// `keep` for a reservation of several regions, each with its high mark
     /// and committed bytes, which shrink together under one damping: the
-    /// factor advances once if the band says shrink for any of them.
+    /// factor advances once if the band says shrink for any of them, and a
+    /// growth of any puts them all out of it.
     pub(crate) fn keep_each<const COUNT: usize>(
         &self,
         damping: &mut ShrinkDamping,
         damped: bool,
+        grew: bool,
         regions: [(usize, usize); COUNT],
     ) -> [Option<usize>; COUNT] {
         let factor = damping.take(damped);
         let ends = regions.map(|(high_mark, committed)| {
-            self.band(high_mark, committed).map(|end| (end, committed))
+            if grew {
+                None
+            } else {
+                self.band(high_mark, committed).map(|end| (end, committed))
+            }
         });
         if ends.iter().any(Option::is_some) {
             damping.advance(damped, factor);
@@ -210,6 +264,18 @@ impl Shrink {
             band.and_then(|(end, committed)| Shrink::damped_end(end, committed, factor))
         })
     }
+}
+
+/// What a collection decides for one reservation (`Shrink::decide`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ShrinkDecision {
+    /// The band's end, when the reservation is in its band: the activation
+    /// stack lowers its ordinary end to it, so that a push past it shows
+    /// the next collection a peak.
+    pub(crate) band_end: Option<usize>,
+    /// The committed end the reservation keeps, when it gives anything
+    /// back.
+    pub(crate) kept_end: Option<usize>,
 }
 
 /// A reservation's damping of its shrinks (`Shrink`): the percent of what
@@ -449,36 +515,56 @@ mod tests {
         };
         let mut damping = ShrinkDamping::default();
         let mut committed = 1001 * page;
-        assert_eq!(shrink.keep(&mut damping, true, 0, committed), None);
+        assert_eq!(shrink.keep(&mut damping, true, false, 0, committed), None);
         let excess = committed - page;
         committed -= excess * 10 / 100 / page * page;
         assert_eq!(
-            shrink.keep(&mut damping, true, 0, 1001 * page),
+            shrink.keep(&mut damping, true, false, 0, 1001 * page),
             Some(committed)
         );
         let excess = committed - page;
         let after_forty = committed - excess * 40 / 100 / page * page;
         assert_eq!(
-            shrink.keep(&mut damping, true, 0, committed),
+            shrink.keep(&mut damping, true, false, 0, committed),
             Some(after_forty)
         );
-        assert_eq!(shrink.keep(&mut damping, true, 0, after_forty), Some(page));
-        // At 100 it stays; a collection out of the band resets it.
-        assert_eq!(shrink.keep(&mut damping, true, 0, 1001 * page), Some(page));
         assert_eq!(
-            shrink.keep(&mut damping, true, 1000 * page, 1001 * page),
+            shrink.keep(&mut damping, true, false, 0, after_forty),
+            Some(page)
+        );
+        // At 100 it stays; a collection out of the band resets it.
+        assert_eq!(
+            shrink.keep(&mut damping, true, false, 0, 1001 * page),
+            Some(page)
+        );
+        assert_eq!(
+            shrink.keep(&mut damping, true, false, 1000 * page, 1001 * page),
             None
         );
         assert_eq!(
-            shrink.keep(&mut damping, true, 0, 1001 * page),
+            shrink.keep(&mut damping, true, false, 0, 1001 * page),
             None,
             "reset"
         );
         let mut undamped = ShrinkDamping::default();
         assert_eq!(
-            shrink.keep(&mut undamped, false, 0, 1001 * page),
+            shrink.keep(&mut undamped, false, false, 0, 1001 * page),
             Some(page)
         );
         assert_eq!(undamped, ShrinkDamping::default());
+        // A growth since the previous collection puts it out of the band
+        // and starts the ramp again: at 100% the growth gives back
+        // nothing, nor does the collection after it.
+        let mut grown = ShrinkDamping { factor: 100 };
+        assert_eq!(shrink.keep(&mut grown, true, true, 0, 1001 * page), None);
+        assert_eq!(shrink.keep(&mut grown, true, false, 0, 1001 * page), None);
+        assert!(shrink
+            .keep(&mut grown, true, false, 0, 1001 * page)
+            .is_some());
+        assert_eq!(
+            shrink.keep(&mut undamped, false, true, 0, 1001 * page),
+            None,
+            "undamped too"
+        );
     }
 }

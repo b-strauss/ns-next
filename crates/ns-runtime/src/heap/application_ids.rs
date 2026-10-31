@@ -141,6 +141,10 @@ pub(crate) struct ApplicationIds {
     rows: usize,
     /// How far the next shrink goes (`shrink`).
     damping: super::limits::ShrinkDamping,
+    /// Whether it committed more since the last shrink: demand, which
+    /// keeps the next collection from shrinking it. Written in the cold
+    /// growth path only.
+    grew: bool,
 }
 
 impl ApplicationIds {
@@ -155,6 +159,7 @@ impl ApplicationIds {
             committed: 0,
             rows: 0,
             damping: super::limits::ShrinkDamping::default(),
+            grew: false,
         }
     }
 
@@ -195,6 +200,7 @@ impl ApplicationIds {
         let rows = table_rows.min(CAPACITY_ROWS);
         let end = rows * ROW_BYTES;
         if end > self.committed {
+            self.grew = true;
             let page = Reservation::page_size();
             let needed = end.div_ceil(page) * page;
             let generous = (self.committed + self.committed.max(MINIMUM_GROWTH))
@@ -225,6 +231,7 @@ impl ApplicationIds {
         let Some(end) = shrink.keep(
             &mut self.damping,
             damped,
+            std::mem::take(&mut self.grew),
             self.rows * ROW_BYTES,
             self.committed,
         ) else {

@@ -1037,6 +1037,16 @@ impl Interpreter {
         self.world.jit_statistics()
     }
 
+    /// Why the JIT is off though it was wanted, `None` while it runs or
+    /// when nothing asked for it (`NS_NEXT_NO_JIT=1`, or a build without an
+    /// encoder): its code zone could not be reserved -- on a Windows before
+    /// 10 version 1803 among others, which the reason names. A host reports
+    /// it, since the program then runs interpreted, several times slower,
+    /// and a measurement must refuse it rather than time the interpreter.
+    pub fn jit_unavailable(&self) -> Option<String> {
+        self.world.jit_unavailable()
+    }
+
     /// Turns the JIT on or off for the bodies entered from now on, as
     /// `NS_NEXT_NO_JIT=1` turns it off for a new interpreter. A test hook,
     /// set before the code it is meant for runs: a body entered while the

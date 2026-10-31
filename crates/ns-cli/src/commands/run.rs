@@ -24,6 +24,7 @@ pub(crate) fn execute(
         Err(code) => return code,
     };
     let mut loaded = program::load_program(&program, lowering);
+    entry::report_jit_unavailable(&loaded.interpreter);
     let application = match program::instantiate_application(&program, &mut loaded) {
         Ok(application) => application,
         Err(code) => return code,

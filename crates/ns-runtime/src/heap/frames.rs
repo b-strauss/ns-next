@@ -458,6 +458,11 @@ pub(super) struct FrameStack {
     machine_words: MachineWords,
     /// How far the next shrink goes (`shrink`).
     damping: super::limits::ShrinkDamping,
+    /// Whether a push went past the ordinary end since the last shrink --
+    /// past what was committed, or past the end a collection's band would
+    /// keep (`shrink`): demand, which keeps the next collection from
+    /// shrinking the stack. Written in the cold growth path only.
+    grew: bool,
     /// Whether every push seats `ordinary_end` at the new top, for a test
     /// that puts a frame's window end exactly at the ordinary end.
     #[cfg(test)]
@@ -502,6 +507,7 @@ impl FrameStack {
             ordinary_end: 0,
             machine_words,
             damping: super::limits::ShrinkDamping::default(),
+            grew: false,
             #[cfg(test)]
             seat_ordinary_end_at_top: false,
             #[cfg(test)]
@@ -522,7 +528,9 @@ impl FrameStack {
 
     /// Makes every push from now on seat the ordinary end at the new top
     /// (`true`), or leave it at the committed end, for a test. A push past
-    /// a seated end grows the stack as any push past it does.
+    /// a seated end takes the growth path as any push past the ordinary
+    /// end does, which commits nothing while it lies inside the committed
+    /// stack.
     #[cfg(test)]
     pub(super) fn set_seat_ordinary_end_at_top(&mut self, seat: bool) {
         self.seat_ordinary_end_at_top = seat;
@@ -741,6 +749,15 @@ impl FrameStack {
         if needed > ceiling {
             return Err(ReservationExhausted);
         }
+        // Demand, which the next collection reads (`shrink`).
+        self.grew = true;
+        if needed <= self.committed {
+            // Past an ordinary end below the committed one -- the end a
+            // collection's band would keep: the pages are there, and the
+            // push only shows that the stack's peak still reaches them.
+            self.set_ordinary_end(self.committed.min(self.ordinary_limit));
+            return Ok(());
+        }
         let page = Reservation::page_size();
         let size = self.reservation.size();
         let committed_bytes = self.committed * 8;
@@ -771,21 +788,35 @@ impl FrameStack {
     }
 
     /// Gives back the committed pages above the top and `shrink`'s
-    /// headroom once more than its threshold lies unused above the top
-    /// (`limits::Shrink`), and answers how many bytes that was. Run after
-    /// a full collection, between entries, so that no frame machine code
-    /// pushed lies above the top. The ordinary end -- and the machine word
-    /// machine code compares a push with -- is lowered to the new
-    /// committed end before a page goes, so that a push past it takes the
-    /// growth, which commits the pages again.
+    /// headroom by the band and the damping (`limits::Shrink::decide`),
+    /// unless a push went past the ordinary end since the last call, and
+    /// answers how many bytes that was. Run after a full collection,
+    /// between entries, so that no frame machine code pushed lies above
+    /// the top. The ordinary end -- and the machine word machine code
+    /// compares a push with -- is lowered first: to the band's end while
+    /// the stack is in its band, whatever the damping gives back, so that
+    /// a push past it before the next collection is seen as the peak it
+    /// is (`grow_to`), and otherwise to what is committed. It never lies
+    /// below the top: the band's end is the top and a headroom.
     pub(super) fn shrink(&mut self, shrink: super::limits::Shrink, damped: bool) -> usize {
         let committed_bytes = self.committed * 8;
-        let Some(end) = shrink.keep(&mut self.damping, damped, self.top * 8, committed_bytes)
-        else {
+        let decision = shrink.decide(
+            &mut self.damping,
+            damped,
+            std::mem::take(&mut self.grew),
+            self.top * 8,
+            committed_bytes,
+        );
+        if let Some(end) = decision.kept_end {
+            self.committed = end / 8;
+        }
+        let ordinary_end = decision
+            .band_end
+            .map_or(self.committed, |end| (end / 8).min(self.committed));
+        self.set_ordinary_end(ordinary_end.min(self.ordinary_limit));
+        let Some(end) = decision.kept_end else {
             return 0;
         };
-        self.committed = end / 8;
-        self.set_ordinary_end(self.committed.min(self.ordinary_limit));
         match self.reservation.decommit(end..committed_bytes) {
             Ok(()) => committed_bytes - end,
             // The pages the system refused to take are still counted

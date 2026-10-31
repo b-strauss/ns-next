@@ -177,9 +177,12 @@ pub(crate) fn code_commit_granularity() -> usize {
     CODE_CHUNK_BYTES
 }
 
-/// The minimum the code zone needs, named when it is missing.
-const PLACEHOLDER_REQUIREMENT: &str =
-    "Windows 10 version 1803 or later (VirtualAlloc2, MapViewOfFile3, UnmapViewOfFile2)";
+/// Each view of a code zone is one mapping per chunk.
+pub(crate) fn code_mapping_granularity() -> Option<usize> {
+    Some(CODE_CHUNK_BYTES)
+}
+
+use crate::code_zone::PLACEHOLDER_REQUIREMENT;
 
 type VirtualAlloc2Function = unsafe extern "system" fn(
     HANDLE,

@@ -212,6 +212,10 @@ struct Region {
     start: usize,
     size: usize,
     committed: usize,
+    /// Whether it committed more since the last shrink: demand, which
+    /// keeps the next collection from shrinking the cells. Written in the
+    /// cold growth path only (`ensure_committed`).
+    grew: bool,
 }
 
 impl Region {
@@ -220,6 +224,7 @@ impl Region {
             start,
             size,
             committed: 0,
+            grew: false,
         }
     }
 }
@@ -272,9 +277,18 @@ impl Cells {
         shrink: crate::heap::limits::Shrink,
         damped: bool,
     ) -> usize {
+        // Every region's flag taken, none left set for the next
+        // collection.
+        let grew = [
+            std::mem::take(&mut self.global.grew),
+            std::mem::take(&mut self.sites.grew),
+            std::mem::take(&mut self.blocks.grew),
+        ]
+        .contains(&true);
         let [sites_end, blocks_end] = shrink.keep_each(
             &mut self.damping,
             damped,
+            grew,
             [
                 (sites * CELL_BYTES, self.sites.committed),
                 (blocks * BLOCK_BYTES, self.blocks.committed),
@@ -506,6 +520,7 @@ fn ensure_committed(reservation: &mut Reservation, region: &mut Region, end: usi
         .min(region.size);
     let target = needed.max(generous);
     let from = region.start + region.committed;
+    region.grew = true;
     region.committed = if reservation.commit(from..region.start + target).is_ok() {
         target
     } else if reservation.commit(from..region.start + needed).is_ok() {

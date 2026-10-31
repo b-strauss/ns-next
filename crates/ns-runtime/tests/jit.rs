@@ -6090,6 +6090,9 @@ ns_runtime::for_each_lowering! {
             assert_eq!(send_number(&mut interpreter, &subject, "callBlock:", value), value + 1);
         }
         let committed = interpreter.table_sizes().machine_entry_rows_committed;
+        // The first collection sees the rows' growth, demand, and keeps
+        // them; the next, after none, lowers them.
+        interpreter.collect_now();
         interpreter.collect_now();
         let lowered = interpreter.table_sizes().machine_entry_rows_committed;
         assert_eq!(send_unary(&mut interpreter, &subject, "keepAll"), 200);

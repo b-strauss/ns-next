@@ -108,6 +108,10 @@ pub(crate) struct MachineEntries {
     named_entries: Vec<u64>,
     /// How far the next shrink goes (`shrink`).
     damping: super::limits::ShrinkDamping,
+    /// Whether it committed more since the last shrink: demand, which
+    /// keeps the next collection from shrinking it. Written in the cold
+    /// growth path only.
+    grew: bool,
 }
 
 impl MachineEntries {
@@ -122,6 +126,7 @@ impl MachineEntries {
             rows: 0,
             named_entries: Vec::new(),
             damping: super::limits::ShrinkDamping::default(),
+            grew: false,
         }
     }
 
@@ -269,6 +274,7 @@ impl MachineEntries {
         let Some(end) = shrink.keep(
             &mut self.damping,
             damped,
+            std::mem::take(&mut self.grew),
             high_rows.min(self.rows) * ROW_BYTES,
             committed,
         ) else {
@@ -291,6 +297,7 @@ impl MachineEntries {
     /// Commits the rows through `row`, and a generous margin past it, which
     /// read as zeros -- no machine entry -- until a row is written.
     fn commit_through(&mut self, row: usize) {
+        self.grew = true;
         let committed = self.rows * ROW_BYTES;
         let page = Reservation::page_size();
         let needed = ((row + 1) * ROW_BYTES).div_ceil(page) * page;

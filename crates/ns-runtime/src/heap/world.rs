@@ -245,6 +245,11 @@ impl World {
         self.mutator.jit.statistics()
     }
 
+    /// Why the JIT is off though it was wanted (`Interpreter::jit_unavailable`).
+    pub(crate) fn jit_unavailable(&self) -> Option<String> {
+        self.mutator.jit.unavailable().map(str::to_owned)
+    }
+
     /// The inline caches' sizes (`Interpreter::cache_statistics`).
     pub(crate) fn cache_statistics(&self) -> crate::interpreter::inline_cache::CacheStatistics {
         self.mutator.caches.statistics()

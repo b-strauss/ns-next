@@ -21,6 +21,16 @@ pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {
     );
 }
 
+/// One line to stderr when the JIT was wanted and is off
+/// (`Interpreter::jit_unavailable`): the program runs interpreted, several
+/// times slower, and says so rather than unawares. Nothing when the JIT
+/// runs, or when nothing asked for it (`NS_NEXT_NO_JIT=1`).
+pub(crate) fn report_jit_unavailable(interpreter: &ns_runtime::Interpreter) {
+    if let Some(reason) = interpreter.jit_unavailable() {
+        eprintln!("warning: the JIT is off, so the program runs interpreted: {reason}");
+    }
+}
+
 /// `--collector-statistics`'s one line, always to stderr so that a golden's
 /// recorded stdout is untouched.
 pub(crate) fn print_collector_statistics(statistics: &ns_runtime::CollectorStatistics) {

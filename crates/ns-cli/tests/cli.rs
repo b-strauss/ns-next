@@ -224,6 +224,76 @@ fn benchmark_reports_the_entry_sends_median() {
     assert!(stdout.contains("timing: `main:args:` only"), "{stdout}");
 }
 
+/// `ns-next` with a debug build's simulation of a system whose code zone
+/// cannot be reserved, as on Windows before 10 version 1803, the JIT
+/// wanted: `NS_NEXT_NO_JIT` cleared, whatever the environment says, and
+/// the stress modes that want the JIT whatever it says, so that a test
+/// that sets it finds the JIT unwanted.
+#[cfg(debug_assertions)]
+fn ns_next_without_a_code_zone() -> Command {
+    let mut command = ns_next();
+    command
+        .env("NS_NEXT_SIMULATE_UNSUPPORTED_ZONE", "1")
+        .env_remove("NS_NEXT_NO_JIT")
+        .env_remove("NS_NEXT_STRESS_JIT")
+        .env_remove("NS_NEXT_STRESS_EXIT")
+        .env_remove("NS_NEXT_STRESS_ZONE");
+    command
+}
+
+/// A JIT that was wanted and is off says so, once, on stderr, naming the
+/// requirement, and the program still runs right, interpreted; a JIT
+/// nothing asked for (`NS_NEXT_NO_JIT=1`) says nothing.
+#[cfg(debug_assertions)]
+#[test]
+fn run_says_when_the_jit_is_off_and_why() {
+    let golden = common::golden("language/control-flow/while_loop");
+    let out = ns_next_without_a_code_zone()
+        .arg("run")
+        .arg(&golden)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr was: {stderr}");
+    let warnings: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("the JIT is off"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{stderr}");
+    assert!(warnings[0].contains("Windows 10 version 1803"), "{stderr}");
+    let plain = ns_next().arg("run").arg(&golden).output().unwrap();
+    assert_eq!(out.stdout, plain.stdout, "the interpreter answers the same");
+    let unwanted = ns_next_without_a_code_zone()
+        .env("NS_NEXT_NO_JIT", "1")
+        .arg("run")
+        .arg(&golden)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&unwanted.stderr);
+    assert!(!stderr.contains("the JIT is off"), "{stderr}");
+}
+
+/// A benchmark refuses to time the interpreter in the JIT's place.
+#[cfg(debug_assertions)]
+#[test]
+fn bench_refuses_when_the_jit_is_off() {
+    let out = ns_next_without_a_code_zone()
+        .arg("bench")
+        .arg(common::golden("language/control-flow/while_loop"))
+        .arg("--iterations")
+        .arg("1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "stderr was: {stderr}");
+    assert!(
+        stderr.contains("the JIT is off, and a benchmark would time the interpreter"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Windows 10 version 1803"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("median"));
+}
+
 #[test]
 fn benchmark_takes_a_project_file() {
     let out = ns_next()

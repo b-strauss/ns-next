@@ -40,6 +40,11 @@ pub(crate) fn code_commit_granularity() -> usize {
     page_size()
 }
 
+/// Each view of a code zone is one mapping.
+pub(crate) fn code_mapping_granularity() -> Option<usize> {
+    None
+}
+
 /// Every POSIX system this crate builds for can make a code zone.
 pub(crate) fn code_zone_support() -> Result<(), &'static str> {
     Ok(())

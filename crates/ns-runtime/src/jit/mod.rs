@@ -741,6 +741,11 @@ pub(crate) struct JitState {
     /// `None` when this build has no encoder, the JIT is turned off by
     /// `NS_NEXT_NO_JIT=1`, or the zone could not be reserved.
     zone: Option<Zone>,
+    /// Why the JIT is off though it was wanted: the zone could not be
+    /// reserved, as the error says (`Interpreter::jit_unavailable`).
+    /// `None` while it runs, and while it is off because it was not
+    /// wanted.
+    unavailable: Option<String>,
     /// Every body compiled into the zone, indexed by the slot's `map`, in
     /// the order they were installed, which is ascending by offset: an
     /// install appends.
@@ -900,14 +905,18 @@ impl JitState {
         let stress = stress_jit || stress_exit_from_env() || stress_zone_from_env();
         let wanted = available()
             && (stress || std::env::var_os("NS_NEXT_NO_JIT").is_none_or(|value| value != "1"));
-        let zone = if wanted {
-            reserve_zone(DEFAULT_ZONE_BYTES)
+        let (zone, unavailable) = if wanted {
+            match reserve_zone(DEFAULT_ZONE_BYTES) {
+                Ok(zone) => (Some(zone), None),
+                Err(reason) => (None, Some(reason)),
+            }
         } else {
-            None
+            (None, None)
         };
         JitState {
             enabled: zone.is_some(),
             zone,
+            unavailable,
             bodies: Vec::new(),
             returns: IdentityMap::default(),
             counting: false,
@@ -935,6 +944,26 @@ impl JitState {
             revived_by_entries: false,
             revival_base: REVIVAL_ENTRIES,
         }
+    }
+
+    /// Reserves a zone of `bytes`, recording why the JIT is off when none
+    /// can be reserved.
+    fn reserve(&mut self, bytes: usize) {
+        match reserve_zone(bytes) {
+            Ok(zone) => {
+                self.zone = Some(zone);
+                self.unavailable = None;
+            }
+            Err(reason) => {
+                self.zone = None;
+                self.unavailable = Some(reason);
+            }
+        }
+    }
+
+    /// Why the JIT is off though it was wanted (`Interpreter::jit_unavailable`).
+    pub(crate) fn unavailable(&self) -> Option<&str> {
+        self.unavailable.as_deref()
     }
 
     /// Makes the next entry write every word of the entry block afresh:
@@ -988,7 +1017,7 @@ impl JitState {
     pub(crate) fn set_enabled(&mut self, enabled: bool) -> bool {
         let reserved = enabled && self.zone.is_none() && available();
         if reserved {
-            self.zone = reserve_zone(DEFAULT_ZONE_BYTES);
+            self.reserve(DEFAULT_ZONE_BYTES);
             self.mark_block_stale();
         }
         self.enabled = enabled && self.zone.is_some();
@@ -1011,7 +1040,7 @@ impl JitState {
         self.bytes_freed_since_compaction = 0;
         self.zone = None;
         if available() {
-            self.zone = reserve_zone(bytes);
+            self.reserve(bytes);
         }
         self.enabled = self.enabled && self.zone.is_some();
         self.mark_block_stale();
@@ -1244,9 +1273,12 @@ impl JitState {
     /// compiles when `install_bodies_exiting_at_once` is set.
     #[cfg(all(test, ns_jit))]
     fn for_test(bytes: usize, install_bodies_exiting_at_once: bool) -> JitState {
-        let zone = reserve_zone(bytes).expect("a zone");
+        let Ok(zone) = reserve_zone(bytes) else {
+            panic!("a zone")
+        };
         JitState {
             zone: Some(zone),
+            unavailable: None,
             bodies: Vec::new(),
             returns: IdentityMap::default(),
             enabled: true,
@@ -1304,13 +1336,23 @@ fn upgraded(body: &InstalledBody) -> Option<Installed> {
     })
 }
 
-/// A zone of `bytes` with both stubs installed at its base, or `None`
-/// when it cannot be reserved or the stubs do not fit.
+/// A zone of `bytes` with both stubs installed at its base, or why there
+/// is none: the reservation's error -- a system without what a zone needs
+/// among them (`ns_memory::MemoryError::Unsupported`), which a host reports
+/// rather than run interpreted unawares -- or stubs that do not fit.
 #[cfg(ns_jit)]
-fn reserve_zone(bytes: usize) -> Option<Zone> {
+fn reserve_zone(bytes: usize) -> Result<Zone, String> {
+    let writer = ns_memory::CodeZone::reserve(bytes).map_err(|error| error.to_string())?;
+    zone_with_stubs(writer, bytes)
+        .ok_or_else(|| format!("the code zone's stubs do not fit in {bytes} bytes"))
+}
+
+/// The zone `writer` writes, installing at most `bytes`, with every stub
+/// installed at its base; `None` when they do not fit.
+#[cfg(ns_jit)]
+fn zone_with_stubs(writer: ns_memory::CodeWriter, bytes: usize) -> Option<Zone> {
     use macro_assembler::Abi;
 
-    let writer = ns_memory::CodeZone::reserve(bytes).ok()?;
     let limit = u32::try_from(bytes.min(writer.zone().size())).ok()?;
     let mut zone = Zone {
         writer,
@@ -1433,8 +1475,8 @@ fn reserve_zone(bytes: usize) -> Option<Zone> {
 }
 
 #[cfg(not(ns_jit))]
-fn reserve_zone(_bytes: usize) -> Option<Zone> {
-    None
+fn reserve_zone(_bytes: usize) -> Result<Zone, String> {
+    Err("this build has no machine code encoder".to_string())
 }
 
 /// Writes `bytes` at the zone's next aligned offset and answers it. Machine

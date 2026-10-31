@@ -123,6 +123,15 @@ impl CodeZone {
         }
         platform::code_zone_support()
             .map_err(|requirement| MemoryError::Unsupported { requirement })?;
+        // A debug build's test hook: a system without what a zone needs,
+        // as Windows before 10 version 1803 is, on any system, so that a
+        // host's report of it is tested where it cannot happen.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("NS_NEXT_SIMULATE_UNSUPPORTED_ZONE").is_some_and(|value| value == "1") {
+            return Err(MemoryError::Unsupported {
+                requirement: PLACEHOLDER_REQUIREMENT,
+            });
+        }
         let granularity = platform::code_reservation_granularity();
         let size = bytes.div_ceil(granularity) * granularity;
         if size > Self::MAXIMUM_BYTES {
@@ -141,6 +150,7 @@ impl CodeZone {
                 identity: NEXT_IDENTITY.fetch_add(1, Ordering::Relaxed),
             }),
             committed: 0,
+            grown: false,
         })
     }
 
@@ -306,6 +316,34 @@ fn word_as_address(word: u64) -> usize {
     usize::try_from(word).unwrap_or_else(|_| std::process::abort())
 }
 
+/// `start..end` cut where it crosses from one mapping of a view into the
+/// next (`platform::code_mapping_granularity`): on Windows each chunk of
+/// the zone is a mapping of its own, and a slice or a copy spanning two
+/// would span two allocations, which Rust gives no meaning to; elsewhere a
+/// view is one mapping, and the range is one span.
+fn mapping_spans(start: usize, end: usize) -> impl Iterator<Item = Range<usize>> {
+    let granularity = platform::code_mapping_granularity();
+    let mut next = start;
+    std::iter::from_fn(move || {
+        if next >= end {
+            return None;
+        }
+        let span_end = granularity
+            .and_then(|granularity| (next / granularity + 1).checked_mul(granularity))
+            .map_or(end, |boundary| boundary.min(end));
+        let span = next..span_end;
+        next = span_end;
+        Some(span)
+    })
+}
+
+/// What a code zone needs on Windows, named when it is missing: the calls
+/// placeholders take (`platform::code_zone_support`), and what a debug
+/// build's simulation of its absence names on any system.
+#[cfg(any(windows, debug_assertions))]
+pub(crate) const PLACEHOLDER_REQUIREMENT: &str =
+    "Windows 10 version 1803 or later (VirtualAlloc2, MapViewOfFile3, UnmapViewOfFile2)";
+
 /// The one way code is written into a zone, and its owner: `reserve`
 /// makes exactly one per zone. Each write makes what it wrote visible to
 /// the instruction fetch, and on Apple AArch64 switches its thread to
@@ -318,6 +356,9 @@ pub struct CodeWriter {
     /// from the base up, so the committed pages are a prefix, which
     /// `decommit_above` shortens.
     committed: usize,
+    /// Whether it committed more since `take_grown` last asked: demand
+    /// its caller's shrink reads. Written in the cold growth path only.
+    grown: bool,
 }
 
 impl CodeWriter {
@@ -340,50 +381,69 @@ impl CodeWriter {
         }
         self.commit_through(end)?;
         platform::begin_code_write();
-        // SAFETY: `start..end` is inside the committed prefix, which the
-        // writable view maps read-write -- on Apple AArch64 for this thread,
-        // switched to writing just above until just below; `bytes` is the
-        // caller's own memory and cannot overlap the zone, and no slice of
-        // the zone is alive: only `bytes` lends one, borrowing this writer,
-        // which `write` holds mutably.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                self.zone.mapping.writable.as_ptr().wrapping_add(start),
-                bytes.len(),
-            );
-        }
-        // SAFETY: the range is inside the zone's committed prefix, flushed
-        // at the addresses it runs from.
-        unsafe {
-            platform::flush_instruction_cache(
-                self.zone.mapping.executable.as_ptr().wrapping_add(start),
-                bytes.len(),
-            );
+        for span in mapping_spans(start, end) {
+            let source = &bytes[span.start - start..span.end - start];
+            // SAFETY: `span` is inside the committed prefix and inside one
+            // mapping of the writable view (`mapping_spans`), which maps it
+            // read-write -- on Apple AArch64 for this thread, switched to
+            // writing just above until just below; `source` is the caller's
+            // own memory and cannot overlap the zone, and no slice of the
+            // zone is alive: only `bytes` lends copies.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    source.as_ptr(),
+                    self.zone.mapping.writable.as_ptr().wrapping_add(span.start),
+                    source.len(),
+                );
+            }
+            // SAFETY: the span is inside the zone's committed prefix and one
+            // mapping, flushed at the addresses it runs from.
+            unsafe {
+                platform::flush_instruction_cache(
+                    self.zone
+                        .mapping
+                        .executable
+                        .as_ptr()
+                        .wrapping_add(span.start),
+                    source.len(),
+                );
+            }
         }
         platform::end_code_write();
         Ok(())
     }
 
-    /// The bytes of `range` read through the executable view, when the
-    /// range is committed; `None` otherwise -- for tests, and for the
-    /// disassembly of a body.
-    pub fn bytes(&self, range: Range<u32>) -> Option<&[u8]> {
+    /// A copy of the bytes of `range` read through the executable view,
+    /// when the range is committed; `None` otherwise -- for tests, for the
+    /// disassembly of a body and for a compaction's move of one. A copy,
+    /// read one mapping at a time, since a range may span two mappings on
+    /// Windows, and no slice is lent across two (`mapping_spans`).
+    pub fn bytes(&self, range: Range<u32>) -> Option<Vec<u8>> {
         let start = range.start as usize;
         let end = range.end as usize;
         if start > end || end > self.committed {
             return None;
         }
-        // SAFETY: the range is inside the committed prefix, which the
-        // executable view maps readable and which is initialized (zero or
-        // written); only this writer stores into the zone, and `write`
-        // takes it mutably, so no store happens while the slice lives.
-        Some(unsafe {
-            std::slice::from_raw_parts(
-                self.zone.mapping.executable.as_ptr().wrapping_add(start),
-                end - start,
-            )
-        })
+        let mut copied = Vec::with_capacity(end - start);
+        for span in mapping_spans(start, end) {
+            // SAFETY: the span is inside the committed prefix and inside one
+            // mapping of the executable view (`mapping_spans`), which maps
+            // it readable and which is initialized (zero or written); only
+            // this writer stores into the zone, and `write` takes it
+            // mutably, so no store happens while the slice lives, which ends
+            // with this statement.
+            copied.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(
+                    self.zone
+                        .mapping
+                        .executable
+                        .as_ptr()
+                        .wrapping_add(span.start),
+                    span.end - span.start,
+                )
+            });
+        }
+        Some(copied)
     }
 
     /// The executable view's committed pages are writable: on Windows as
@@ -393,6 +453,13 @@ impl CodeWriter {
     #[cfg(test)]
     pub fn executable_view_is_writable(&self) -> bool {
         platform::executable_view_is_writable(&self.zone.mapping, self.committed)
+    }
+
+    /// Whether the writer committed more since the last call, which
+    /// clears it: whether its caller's code grew past what it had
+    /// committed, demand that keeps a shrink back.
+    pub fn take_grown(&mut self) -> bool {
+        std::mem::take(&mut self.grown)
     }
 
     /// The bytes from the base the writer counts committed, a whole number
@@ -460,6 +527,7 @@ impl CodeWriter {
             code,
         })?;
         self.committed = new_end;
+        self.grown = true;
         Ok(())
     }
 }
@@ -472,7 +540,7 @@ mod tests {
     fn a_written_byte_reads_back_through_the_executable_view() {
         let mut zone = CodeZone::reserve(1 << 20).expect("a zone");
         zone.write(CodeOffset(64), &[0xC3, 0x90]).expect("written");
-        assert_eq!(zone.bytes(64..66), Some(&[0xC3, 0x90][..]));
+        assert_eq!(zone.bytes(64..66), Some(vec![0xC3, 0x90]));
     }
 
     #[test]
@@ -515,8 +583,8 @@ mod tests {
         second.write(CodeOffset(0), &[2]).expect("written");
         first.write(CodeOffset(0), &[1]).expect("written");
         second.write(CodeOffset(1), &[3]).expect("written");
-        assert_eq!(first.bytes(0..1), Some(&[1][..]));
-        assert_eq!(second.bytes(0..2), Some(&[2, 3][..]));
+        assert_eq!(first.bytes(0..1), Some(vec![1]));
+        assert_eq!(second.bytes(0..2), Some(vec![2, 3]));
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -555,8 +623,8 @@ mod tests {
         let mut zone = CodeZone::reserve(4 * unit).expect("a zone");
         let offset = u32::try_from(unit - 1).expect("small");
         zone.write(CodeOffset(offset), &[1, 2]).expect("written");
-        assert_eq!(zone.bytes(offset..offset + 2), Some(&[1, 2][..]));
-        assert_eq!(zone.bytes(0..1), Some(&[0][..]), "committed reads zero");
+        assert_eq!(zone.bytes(offset..offset + 2), Some(vec![1, 2]));
+        assert_eq!(zone.bytes(0..1), Some(vec![0]), "committed reads zero");
         let past = u32::try_from(2 * unit).expect("small");
         assert!(
             zone.bytes(0..past + 1).is_none(),
@@ -580,11 +648,11 @@ mod tests {
             "from the next unit on, or nothing the system takes: {given_back}"
         );
         assert_eq!(zone.committed(), 2 * unit);
-        assert_eq!(zone.bytes(0..1), Some(&[1][..]), "below the end is kept");
+        assert_eq!(zone.bytes(0..1), Some(vec![1]), "below the end is kept");
         assert!(zone.bytes(0..last + 1).is_none(), "no longer committed");
         assert_eq!(zone.decommit_above(4 * unit), 0, "nothing above the prefix");
         zone.write(CodeOffset(last), &[3]).expect("written again");
-        assert_eq!(zone.bytes(last..last + 1), Some(&[3][..]));
+        assert_eq!(zone.bytes(last..last + 1), Some(vec![3]));
     }
 
     #[test]

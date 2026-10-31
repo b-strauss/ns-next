@@ -486,6 +486,7 @@ impl JitState {
         match shrink.keep(
             &mut self.zone_damping,
             damped,
+            zone.writer.take_grown(),
             zone.next_offset as usize,
             zone.writer.committed(),
         ) {
@@ -704,8 +705,7 @@ impl JitState {
             if delta != 0 {
                 // Ascending, each body moves down onto bytes already moved
                 // or its own, which the buffer keeps apart.
-                let Some(bytes) = zone.writer.bytes(body.start..body.end).map(<[u8]>::to_vec)
-                else {
+                let Some(bytes) = zone.writer.bytes(body.start..body.end) else {
                     unreachable!("internal: an installed body lies in the committed zone");
                 };
                 if zone
