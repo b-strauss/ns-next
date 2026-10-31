@@ -1193,6 +1193,16 @@ impl SiteSlide {
         self.range_of(base.0)
             .is_none_or(|range| range.new != range.old)
     }
+
+    /// Whether `base` is one a live holder may name: 0, `NOT_ASSIGNED`, or
+    /// inside a live range. A full collection frees no range a marked
+    /// closure or an activation names (`InlineCaches::forget_families`),
+    /// so a heap holder of any other base would name, once the ranges are
+    /// packed, another family's sites: the heap's rewriters assert it in a
+    /// debug build (`Heap::compact_with`).
+    pub(crate) fn holds(&self, base: u32) -> bool {
+        base == 0 || base == FeedbackBase::NOT_ASSIGNED.0 || self.range_of(base).is_some()
+    }
 }
 
 /// Whether `target` names a freed application or guard: a slot target's

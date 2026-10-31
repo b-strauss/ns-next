@@ -469,8 +469,9 @@ nothing more. A row of the machine entry table, which the closure stubs
 jump through (`heap/machine_entries.rs`), is written only from the
 body its code id names, and cleared wherever that stops naming its
 machine code: the id freed, the body abandoned or freed by a
-compaction or a slide of its feedback base, the zone replaced, the JIT switched on or off -- a
-stale row is a jump into another body's code.
+compaction or a slide of its feedback base, the zone replaced, the
+JIT switched on or off -- a stale row is a jump into another body's
+code.
 The code zone is compacted only at the run loop's safepoint, when no
 return address into it exists. A compaction remaps every cell, machine
 entry row and record that names an address in it, and a body holds no

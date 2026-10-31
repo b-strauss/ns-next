@@ -836,8 +836,9 @@ no stack frame moves (a rebuilt stack is read again, above); its
 safepoint, since a full collection that slides the inline caches' ranges
 rewrites it in the header ([dispatch.md](dispatch.md), "Code families"); and
 its `RegisterBase`, the word offset of its first register, which a move does
-not touch — and the run's floor, a word offset on the stack. Every value the loop works on is read from
-a register or an operand when an instruction needs it and written back before
+not touch — and the run's floor, a word offset on the stack. Every value
+the loop works on is read from a register or an operand when an
+instruction needs it and written back before
 the next, so at a safepoint every handle is in a word of a stack frame,
 in the heap's side table of continuations or of suspended
 activations, in a heap object or in a root, where

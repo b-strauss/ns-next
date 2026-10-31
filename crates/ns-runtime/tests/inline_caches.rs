@@ -1071,15 +1071,20 @@ fn an_install_vacates_every_cell() {
 /// "Code families").
 #[cfg(debug_assertions)]
 fn yourself_chain(count: usize) -> String {
-    format!("^self{}", " yourself".repeat(count))
+    format!("self{}", " yourself".repeat(count))
 }
 
-/// A module whose `Victim>>answer` is a family of a thousand sites and
-/// whose `editVictim` replaces it through a MirrorBuilder, so that the old
-/// version's range is freed by the next full collection; `keep` stores a
-/// block of its own family in `kept`, `useKept:` runs it, and `deep` runs
-/// `work`, which edits the victim and then loops, a frame of `deep`'s
-/// family below it all along.
+/// A module whose `Victim>>answer` is a family of a thousand sites, which
+/// answers a block of its family, and whose `editVictim` replaces it
+/// through a MirrorBuilder, so that the old version's range is freed by the
+/// next full collection once no closure of it lives; `holdVictim` keeps
+/// one in `held` until `release:` lets it go. `keep` stores a block of its
+/// own family in `kept`, and `useKept:` runs it. `carry` edits the victim
+/// and then runs `release:`, which loops, lets the held closure go and
+/// loops again, a frame of `carry`'s family below it all along: the first
+/// collection after the release slides both families down while both
+/// frames are on the stack. Each of `release:` and `carry` sends
+/// `yourself` only after that, from a site no earlier send filled.
 #[cfg(debug_assertions)]
 fn sliding_source() -> String {
     let victim = yourself_chain(1_000);
@@ -1088,12 +1093,17 @@ fn sliding_source() -> String {
           |
             ClassMirror = platform mirrors ClassMirror.
             public kept ::= nil.
+            held ::= nil.
           |
         ) (
           class Victim = Object new () (
-            public answer = ( {victim} )
+            public answer = (
+              {victim}.
+              ^[:value | value]
+            )
           )
           public victim = ( ^Victim new answer )
+          public holdVictim = ( held:: Victim new answer )
           public keep = ( kept:: [:value | value yourself + 1]. ^self )
           public useKept: value = ( ^kept value: value )
           public editVictim = (
@@ -1102,18 +1112,17 @@ fn sliding_source() -> String {
             builder instanceSide methods addFromSource: 'public answer = ( ^0 )'.
             builder install.
           )
-          public spin: count = (
+          public release: count = (
             | index ::= 0. |
             [index < count] whileTrue: [index:: index + 1].
-            ^index
+            held:: nil.
+            [index < (count * 2)] whileTrue: [index:: index + 1].
+            ^index yourself
           )
-          public work = (
-            self editVictim.
-            ^self spin: 3000
-          )
-          public deep = (
+          public carry = (
             | total |
-            total:: self work.
+            self editVictim.
+            total:: self release: 20000.
             ^total yourself + 1
           )
         ) : ()
@@ -1234,9 +1243,6 @@ ns_runtime::for_each_lowering! {
     fn a_closure_made_before_a_slide_hits_at_its_moved_range(lowering) {
         let (mut interpreter, class, subject) = sliding_subject(lowering);
         interpreter.set_stress_caches(false);
-        // What this pins is what its own collection does; the collect
-        // stress mode's collections would slide the ranges before it.
-        interpreter.set_stress_collect(false);
         send(&mut interpreter, &subject, "keep", &[]);
         let one = integer_argument(&interpreter, 1);
         let answer = send(&mut interpreter, &subject, "useKept:", &[one]);
@@ -1245,8 +1251,10 @@ ns_runtime::for_each_lowering! {
         let before = interpreter
             .closure_feedback_base(&closure)
             .expect("kept holds a closure");
-        send(&mut interpreter, &subject, "editVictim", &[]);
+        // Counted from before the edit: the collect stress mode may slide
+        // the ranges inside it, before `collect_now`.
         let slides = interpreter.cache_statistics().site_slides;
+        send(&mut interpreter, &subject, "editVictim", &[]);
         interpreter.collect_now();
         let after = interpreter
             .closure_feedback_base(&closure)
@@ -1277,43 +1285,80 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `carry` run with the collect stress mode on and, with `suspend`, the
+/// suspend stress mode, the cache stress mode off so that the states read
+/// what the run filled: answers what `carry` answered, how many slides
+/// the run made and how many times the suspend stress mode suspended.
+#[cfg(debug_assertions)]
+fn carried(suspend: bool) -> (Interpreter, Root, i64, u64, usize) {
+    let (mut interpreter, class, subject) = sliding_subject(Lowering::Optimized);
+    interpreter.set_stress_caches(false);
+    send(&mut interpreter, &subject, "holdVictim", &[]);
+    let slides = interpreter.cache_statistics().site_slides;
+    interpreter.set_stress_suspend(suspend);
+    interpreter.set_stress_collect(true);
+    let answer = send(&mut interpreter, &subject, "carry", &[]);
+    let answer = small_integer(&mut interpreter, &answer);
+    let suspensions = interpreter.stress_suspensions();
+    interpreter.set_stress_collect(false);
+    interpreter.set_stress_suspend(false);
+    let slid = interpreter.cache_statistics().site_slides - slides;
+    (interpreter, class, answer, slid, suspensions)
+}
+
+/// Whether the one `yourself` site of `method`, sent only after the slide,
+/// was filled: at the family's moved range, where the states read it.
+#[cfg(debug_assertions)]
+fn filled_after_the_slide(interpreter: &mut Interpreter, class: &Root, method: &str) -> bool {
+    let filled = states(interpreter, class, MethodSide::Instance, method, "yourself");
+    assert_eq!(filled.len(), 1, "{method} sends `yourself` once");
+    filled[0] != CallSiteState::Vacant
+}
+
+/// Frames running across a slide hit at their families' moved range, with
+/// no suspension to derive their bases again: `release:` is the running
+/// frame when the collection after its release of the held closure frees
+/// the victim's old range and slides both families down, and `carry`'s
+/// frame lies below it. `release:`'s next send takes the base the run loop
+/// read again from its frame after the safepoint, and `carry`'s, once
+/// `release:` returns, the base the collection rewrote in its header; a
+/// stale one would fill a site of another range, and the moved one would
+/// stay vacant.
+#[cfg(debug_assertions)]
+#[test]
+fn a_running_frame_hits_at_its_moved_range_after_a_slide() {
+    let (mut interpreter, class, answer, slid, _) = carried(false);
+    assert_eq!(answer, 40_001);
+    assert!(slid > 0, "a collection slid the ranges");
+    assert!(
+        filled_after_the_slide(&mut interpreter, &class, "release:"),
+        "the running frame filled its site at the moved range"
+    );
+    assert!(
+        filled_after_the_slide(&mut interpreter, &class, "carry"),
+        "the frame below it filled its site at the moved range"
+    );
+    if let Err(message) = interpreter.verify_cells() {
+        panic!("after the run: {message}");
+    }
+}
+
 /// A frame suspended across a slide resumes at its family's moved range:
-/// `deep`'s frame lies below `work`, which edits the victim and loops, so
-/// that the suspend stress mode suspends it before the install and keeps it
-/// suspended until `work` returns, while the collect stress mode's
-/// collections free the victim's old range and slide `deep`'s down. The
-/// resumed frame derives its base again, and its send of `yourself` fills
-/// the site its family now names.
+/// `carry`'s frame lies below `release:`, whose first loop runs as many
+/// safepoints as the second, so that the suspend stress mode, paced as the
+/// collect stress mode is, has suspended it before the release lets the
+/// victim's old range go, and keeps it suspended until `release:` returns,
+/// across the slide the release allows. The resumed frame derives its base
+/// again, and its send of `yourself` fills the site its family now names.
 #[cfg(debug_assertions)]
 #[test]
 fn a_suspended_frame_resumes_at_its_moved_range() {
-    let (mut interpreter, class, subject) = sliding_subject(Lowering::Optimized);
-    interpreter.set_stress_caches(false);
-    let slides = interpreter.cache_statistics().site_slides;
-    interpreter.set_stress_suspend(true);
-    interpreter.set_stress_collect(true);
-    let answer = send(&mut interpreter, &subject, "deep", &[]);
-    assert_eq!(small_integer(&mut interpreter, &answer), 3001);
+    let (mut interpreter, class, answer, slid, suspensions) = carried(true);
+    assert_eq!(answer, 40_001);
+    assert!(suspensions > 0, "the run suspended frames");
+    assert!(slid > 0, "a collection slid the ranges");
     assert!(
-        interpreter.stress_suspensions() > 0,
-        "the run suspended frames"
-    );
-    assert!(interpreter.stress_collections() > 0, "the run collected");
-    assert!(
-        interpreter.cache_statistics().site_slides > slides,
-        "a collection slid the ranges"
-    );
-    let filled = states(
-        &mut interpreter,
-        &class,
-        MethodSide::Instance,
-        "deep",
-        "yourself",
-    );
-    assert_eq!(filled.len(), 1);
-    assert_ne!(
-        filled[0],
-        CallSiteState::Vacant,
+        filled_after_the_slide(&mut interpreter, &class, "carry"),
         "the resumed frame filled its site at the moved range"
     );
     if let Err(message) = interpreter.verify_cells() {

@@ -835,6 +835,15 @@ impl Mutator<'_> {
     /// resumes interpreted (`jit::resumed`). Run by `World::collect` after
     /// the caches and the heap took the new bases, between entries.
     pub(crate) fn free_code_of_moved_bases(&mut self, slide: &SiteSlide) {
+        self.free_moved_code(slide);
+        // As after a compaction: every slide of the collect stress mode
+        // checks that no cell and no machine entry row names freed code.
+        #[cfg(all(ns_jit, debug_assertions))]
+        self.verify_code_zone_holders();
+    }
+
+    /// `free_code_of_moved_bases`'s work, before its check.
+    fn free_moved_code(&mut self, slide: &SiteSlide) {
         let freed = self.jit.free_bodies_with_moved_bases(slide);
         if freed.is_empty() {
             return;
@@ -858,16 +867,17 @@ impl Mutator<'_> {
         self.caches.refresh_cells_entering_any(&entries, &self.jit);
     }
 
-    /// A debug build's check, after every compaction, that every holder of
-    /// an address into the zone was remapped: every cell agrees with its
-    /// entry, which names a moved body's new start, a stub, or the miss
-    /// stub (`InlineCaches::verify_cells`), and every machine entry row
-    /// names the start of a body the zone holds. The zone stress mode so
-    /// checks the remapping at every compaction it makes.
+    /// A debug build's check, after every compaction and every slide of the
+    /// site ranges, that every holder of an address into the zone was
+    /// remapped: every cell agrees with its entry, which names a live
+    /// body's start, a stub, or the miss stub (`InlineCaches::verify_cells`),
+    /// and every machine entry row names the start of a body the zone holds
+    /// and has not freed. The zone and collect stress modes so check every
+    /// compaction and every slide they make.
     #[cfg(all(ns_jit, debug_assertions))]
     fn verify_code_zone_holders(&self) {
         if let Err(message) = self.caches.verify_cells(&self.heap, &self.jit) {
-            panic!("internal: a cell names stale code after a compaction: {message}");
+            panic!("internal: a cell names stale code after a compaction or a slide: {message}");
         }
         let Some(zone) = self.jit.zone.as_ref() else {
             return;
@@ -876,6 +886,7 @@ impl Mutator<'_> {
             .jit
             .bodies
             .iter()
+            .filter(|body| !body.free)
             .map(|body| {
                 zone.writer
                     .zone()
@@ -885,7 +896,7 @@ impl Mutator<'_> {
         for entry in self.heap.recorded_machine_entries() {
             assert!(
                 starts.contains(&entry),
-                "internal: a machine entry row names {entry:#x}, no body's start, after a compaction"
+                "internal: a machine entry row names {entry:#x}, no live body's start,                  after a compaction or a slide"
             );
         }
     }

@@ -1712,6 +1712,10 @@ impl ActivationStack {
         let offsets: Vec<u32> = self.offsets().collect();
         for offset in offsets {
             let base = frames::number_as_u32(self.header_word(offset, frame_header::FEEDBACK_BASE));
+            debug_assert!(
+                slide.holds(base),
+                "internal: a running frame's base {base} lies in no live range"
+            );
             let moved = slide.remap(base);
             if moved != base {
                 self.set_header_word(
@@ -2504,6 +2508,10 @@ fn slide_closure_feedback_base(block: &mut [u64], slide: &SiteSlide) {
     let Ok(base) = u32::try_from(frames::number_of(word)) else {
         return;
     };
+    debug_assert!(
+        slide.holds(base),
+        "internal: a live closure's base {base} lies in no live range"
+    );
     *bits = count_word(slide.remap(base) as usize).bits();
 }
 

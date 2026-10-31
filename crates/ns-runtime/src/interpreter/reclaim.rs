@@ -750,10 +750,10 @@ mod tests {
         interpreter.set_jit_enabled(true);
         interpreter.set_jit_stress(true);
         // The ids minted again are what this pins; the collect stress
-        // mode's slide at every collection frees the code of every body
-        // whose family moved, so that no live body would be left to name
-        // one. The test collects for itself.
-        interpreter.set_stress_collect(false);
+        // mode's slide at every collection with a range free would free
+        // the code of every body whose family moved, so that no live body
+        // would be left to name one. Its collections stay.
+        interpreter.world.set_eager_slides(false);
         let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
         let id = id_of(&mut interpreter, &outer);
         // Every body each id was answered for, by its allocation.

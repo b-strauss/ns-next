@@ -13566,6 +13566,120 @@ fn a_decoded_closures_range_is_reclaimed() {
     );
 }
 
+/// A decoded closure that outlives a slide keeps its range: two closures an
+/// image carries take a range each at their first activation, the second
+/// above the first; once the program drops the first, a collection that
+/// slides -- every one, under the collect stress mode, which this turns on
+/// for it -- frees the first range and moves the second down, rewriting
+/// the live closure's base and the loose range's key alike. The closure
+/// answers as before, and the next collection keeps its range, which it
+/// would free were the key no longer the base the closure names.
+/// `collect_now` is a debug build's.
+#[cfg(debug_assertions)]
+#[test]
+fn a_decoded_closure_keeps_its_range_across_a_slide() {
+    let source = indoc! {"
+        class Keeper = Object new (
+            |
+            first ::= nil.
+            public second ::= nil.
+            |
+        ) (
+            public prepare = (
+                first:: [:each | each + 1].
+                second:: [:each | each + 2].
+                ^self
+            )
+            public applyFirst: value = ( ^first value: value )
+            public applySecond: value = ( ^second value: value )
+            public dropFirst = ( first:: nil )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("prepare"), &[]),
+        "prepare",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("keeper.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let keeper = loaded.roots[0].clone();
+    let apply = |loaded: &mut image::LoadedImage, selector: &str, value: i64| {
+        let argument = loaded.interpreter.stash(Value::small_integer(value));
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&keeper, Symbol::intern(selector), &[argument]),
+            selector,
+        );
+        loaded
+            .interpreter
+            .enter(|mutator| match mutator.fetch(&answer).kind() {
+                ValueKind::SmallInteger(integer) => integer,
+                _ => panic!("{selector} answers a small integer"),
+            })
+    };
+    assert_eq!(apply(&mut loaded, "applyFirst:", 1), 2);
+    assert_eq!(apply(&mut loaded, "applySecond:", 1), 3);
+    assert_eq!(loaded.interpreter.cache_statistics().loose_ranges, 2);
+    let second = expect_ok(
+        loaded
+            .interpreter
+            .send(&keeper, Symbol::intern("second"), &[]),
+        "second",
+    );
+    let before = loaded
+        .interpreter
+        .closure_feedback_base(&second)
+        .expect("second holds a closure");
+    expect_ok(
+        loaded
+            .interpreter
+            .send(&keeper, Symbol::intern("dropFirst"), &[]),
+        "dropFirst",
+    );
+    let slides = loaded.interpreter.cache_statistics().site_slides;
+    loaded.interpreter.set_stress_collect(true);
+    loaded.interpreter.collect_now();
+    loaded.interpreter.set_stress_collect(false);
+    let after = loaded
+        .interpreter
+        .closure_feedback_base(&second)
+        .expect("second holds a closure");
+    let statistics = loaded.interpreter.cache_statistics();
+    assert!(statistics.site_slides > slides, "the collection slid");
+    assert_eq!(
+        statistics.loose_ranges, 1,
+        "the dropped closure's range is freed"
+    );
+    assert!(
+        after < before,
+        "the live closure's base moved down, from {before} to {after}"
+    );
+    assert_eq!(apply(&mut loaded, "applySecond:", 2), 4);
+    loaded.interpreter.collect_now();
+    assert_eq!(
+        loaded.interpreter.cache_statistics().loose_ranges,
+        1,
+        "the moved range is the one the live closure names"
+    );
+    assert_eq!(apply(&mut loaded, "applySecond:", 3), 5);
+    if let Err(message) = loaded.interpreter.verify_cells() {
+        panic!("after the slide: {message}");
+    }
+}
+
 /// A metaclass that reaches the graph is rebuilt **over `Class`**: its
 /// application is applied over `Class`'s, exactly as the live
 /// `Mutator::attach_metaclass` builds it (`newspeak-spec.pdf` §6, a

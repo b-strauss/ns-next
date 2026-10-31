@@ -5982,9 +5982,6 @@ ns_runtime::for_each_lowering! {
     #[cfg(debug_assertions)]
     fn machine_code_of_a_moved_family_compiles_again(lowering) {
         let (mut interpreter, class) = load_with(&moved_family_source(), lowering);
-        // What this pins is what its own collection does; the collect
-        // stress mode's collections would slide the ranges before it.
-        interpreter.set_stress_collect(false);
         let platform = interpreter.platform();
         let subject = expect_ok(
             interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
@@ -6001,12 +5998,14 @@ ns_runtime::for_each_lowering! {
         let compiled = interpreter
             .jit_body_offset(&class, MethodSide::Instance, run)
             .is_some();
+        // Counted from before the edit: the collect stress mode may slide
+        // the ranges inside it, before `collect_now`.
+        let slides = interpreter.cache_statistics().site_slides;
+        let before = interpreter.jit_statistics();
         expect_ok(
             interpreter.send(&subject, Symbol::intern("editVictim"), &[]),
             "editVictim",
         );
-        let slides = interpreter.cache_statistics().site_slides;
-        let before = interpreter.jit_statistics();
         interpreter.collect_now();
         let collected = since(interpreter.jit_statistics(), before);
         let slid = interpreter.cache_statistics().site_slides > slides;

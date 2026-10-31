@@ -158,11 +158,12 @@ impl Handoff {
 /// code, its `program_counter`, its `FeedbackBase` and its `RegisterBase`,
 /// none of which a move changes, and only the `FeedbackBase` a full
 /// collection's slide of the inline caches' ranges does, which the loop
-/// reads again from the frame after the safepoint -- so a collection may run there and nowhere
-/// else (`docs/design/memory.md`, "Where a collection can happen"), and a run
-/// ends inside its last entry, its answer rooted (`docs/design/memory.md`,
-/// "The brand"). Each safepoint is one compare of a flag the heap owns; what
-/// happens when it is set is `interpreter/`'s (`Interpreter::safepoint`).
+/// reads again from the frame after the safepoint -- so a collection may
+/// run there and nowhere else (`docs/design/memory.md`, "Where a collection
+/// can happen"), and a run ends inside its last entry, its answer rooted
+/// (`docs/design/memory.md`, "The brand"). Each safepoint is one compare of
+/// a flag the heap owns; what happens when it is set is `interpreter/`'s
+/// (`Interpreter::safepoint`).
 ///
 /// An activation's `program_counter` is stored only by the instructions that
 /// can hand it to an observer: every send (a callee runs above it, and the loop
