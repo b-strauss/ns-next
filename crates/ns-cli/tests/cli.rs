@@ -273,6 +273,31 @@ fn run_says_when_the_jit_is_off_and_why() {
     assert!(!stderr.contains("the JIT is off"), "{stderr}");
 }
 
+/// `run-corpus` says once that the JIT is off, and takes the line off its
+/// children's stderr, which a module's recorded outcome never holds: the
+/// corpus still runs clean.
+#[cfg(debug_assertions)]
+#[test]
+fn run_corpus_says_once_when_the_jit_is_off() {
+    let out = ns_next_without_a_code_zone()
+        .arg("run-corpus")
+        .arg(repository_root().join("corpus/modules"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr was: {stderr}");
+    let warnings = stderr
+        .lines()
+        .filter(|line| line.contains("the JIT is off"))
+        .count();
+    assert_eq!(warnings, 1, "{stderr}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("failed 0"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
 /// A benchmark refuses to time the interpreter in the JIT's place.
 #[cfg(debug_assertions)]
 #[test]

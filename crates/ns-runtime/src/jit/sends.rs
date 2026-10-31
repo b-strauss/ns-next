@@ -125,7 +125,15 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     assembler.load(Width::Word64, end, word(MachineWord::OrdinaryStackEnd));
     assembler.shift_left(end, WORD_SHIFT);
     assembler.compare(scratch, end);
-    macro_assembler.exit_if(Condition::Above, ExitKind::PushRefused, 0);
+    // Past the ordinary end the growth leaf makes the room the
+    // interpreter's push would, and only a frame the ordinary room cannot
+    // hold refuses the call.
+    macro_assembler.grow_stack_if(
+        Condition::Above,
+        Leaf::GrowStack.index(),
+        scratch,
+        ExitKind::PushRefused,
+    );
     let assembler = macro_assembler.assembler();
     assembler.add_immediate(depth, 1);
     assembler.store(Width::Word64, word(MachineWord::DepthCount), depth);
@@ -930,7 +938,25 @@ fn copy_above_window(body: &mut BodyAssembler, argument_base: u16) {
     );
     assembler.shift_left(end, WORD_SHIFT);
     assembler.compare(extent, end);
-    macro_assembler.exit_if(Condition::Above, ExitKind::Reexecute, program_counter);
+    // Past the ordinary end the growth leaf makes the room; only where the
+    // ordinary room cannot hold the arguments does the instruction go to
+    // the interpreter, nothing written. No register lives across the call
+    // but the pinned ones: the copy below reads the frame afresh.
+    let grow = macro_assembler.assembler().label();
+    let rejoin = macro_assembler.assembler().label();
+    macro_assembler.assembler().jump_if(Condition::Above, grow);
+    macro_assembler.assembler().bind(rejoin);
+    macro_assembler.call_leaf_out_of_line_or_exit(
+        grow,
+        Leaf::GrowStack.index(),
+        [
+            Operand::Register(extent),
+            Operand::Immediate(0),
+            Operand::Immediate(0),
+        ],
+        program_counter,
+        rejoin,
+    );
     let value = roles.placement[0];
     for argument in 0..argument_count {
         macro_assembler.load_frame_register(value, argument);

@@ -10232,6 +10232,14 @@ impl<'gc> Heap<'gc> {
         );
     }
 
+    /// Whether the activation stack makes room for a frame machine code
+    /// pushes, ending `end_bytes` from the stack's base, past the ordinary
+    /// end (`FrameStack::grow_for_machine_push`): the growth leaf's work.
+    #[cfg(ns_jit)]
+    pub(crate) fn grow_stack_for_machine_push(&mut self, end_bytes: u64) -> bool {
+        usize::try_from(end_bytes / 8).is_ok_and(|end| self.stack.frames.grow_for_machine_push(end))
+    }
+
     /// `remember` for machine code's write barrier
     /// (`MacroAssembler::store_with_barrier`), which calls it only for an
     /// old holder `holder_word`, its word, that came to name a young

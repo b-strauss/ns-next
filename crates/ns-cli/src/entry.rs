@@ -27,9 +27,15 @@ pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {
 /// runs, or when nothing asked for it (`NS_NEXT_NO_JIT=1`).
 pub(crate) fn report_jit_unavailable(interpreter: &ns_runtime::Interpreter) {
     if let Some(reason) = interpreter.jit_unavailable() {
-        eprintln!("warning: the JIT is off, so the program runs interpreted: {reason}");
+        eprintln!("{JIT_OFF_WARNING}{reason}");
     }
 }
+
+/// The start of `report_jit_unavailable`'s line, the reason after it,
+/// which `run-corpus` takes off its children's stderr and prints once
+/// itself.
+pub(crate) const JIT_OFF_WARNING: &str =
+    "warning: the JIT is off, so the program runs interpreted: ";
 
 /// `--collector-statistics`'s one line, always to stderr so that a golden's
 /// recorded stdout is untouched.

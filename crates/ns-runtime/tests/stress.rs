@@ -197,6 +197,13 @@ fn run_suspended(source: &str, lowering: Lowering, suspend: bool) -> (String, us
     .expect("resolve");
     let mut interpreter = Interpreter::bootstrap_with(lowering);
     let class = interpreter.load_module(&resolved);
+    // The suspend mode suspends at the run loop's safepoints, which a
+    // recursion compiled at its first entry -- the JIT stress mode's --
+    // never reaches: its machine code grows the stack itself
+    // (`jit::leaves::grow_stack`) and polls at back edges alone. A body
+    // compiled at its second entry leaves the first frames of each to the
+    // interpreter, as a program meets them.
+    interpreter.set_jit_stress(false);
     interpreter.set_stress_suspend(suspend);
     // Counted from here, as `run_every_continuation` counts its moves.
     let suspensions_before = interpreter.stress_suspensions();

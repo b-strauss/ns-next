@@ -10452,13 +10452,20 @@ sends and the inline caches in machine code.
   into the callee's frame; the callee's prologue checks the depth count
   against `DepthLimit`, the safepoint request and the frame's end against
   `OrdinaryStackEnd`, refusing the call with `ExitKind::PushRefused`
-  before anything is written when one fails, then counts the activation,
+  before anything is written when one fails -- but a frame past the
+  ordinary end calls the growth leaf first (`jit::leaves::grow_stack`,
+  `MacroAssembler::grow_stack_if`), which makes the room the
+  interpreter's push would, committing pages or raising an ordinary end a
+  collection's band lowered ([memory.md](memory.md), "Giving committed
+  memory back"), the call's handover (`Roles::call_handover`) kept on the
+  native stack across it, so that only a frame the ordinary room cannot
+  hold refuses the call -- then counts the activation,
   stores header places 0 and 1, nils its named locals and, in a debug
   build, poisons its scratch registers and writes its flags word's
   generation (`MachineWord::NextGeneration`). So a template stores into a
   frame only after its last decline or exit, and no margin of committed
   words past a frame is needed. A refused call re-executes the send in
-  the interpreter, which raises the overflow or grows the stack. The
+  the interpreter, which raises the overflow or takes the safepoint. The
   depth limit word is a bound: at or past it the interpreter decides, as
   while a `doesNotUnderstand:` handler holds the reserve the word does
   not count.
@@ -10737,11 +10744,12 @@ send.
   was a safepoint's). `JitStatistics::called_entries` counts the calls.
 - **A refusal is the push's.** A call the callee's own prologue refused
   before it wrote anything -- at the depth limit's bound, past the
-  stack's room, with a safepoint requested -- exits with
+  ordinary room the growth leaf could not make, with a safepoint
+  requested -- exits with
   `ExitKind::PushRefused` and the sender as the innermost frame, which
   `called` answers as `Called::Refused`: the interpreter pushes the
   callee from the slots, as it pushes a body without machine code, and
-  so raises the overflow, grows the stack or takes the safepoint, rather
+  so raises the overflow or takes the safepoint, rather
   than run the send again, which would only call the body again. Such a
   refusal is counted nowhere ([OPEN-WORK.md](../OPEN-WORK.md), "A call
   refused at the depth bound is counted nowhere").
@@ -11136,9 +11144,11 @@ Strongtalk, V8 and HotSpot again for it.
   default is the exit.
 - **The depth count and the activation stack's committed end are machine
   words** (decided with the user on 2026-10-28): a compiled push compares
-  the count with the limit and the frame's end with the committed end,
-  one compare each, and exits when either fails, so the interpreter
-  raises the overflow or grows the stack. The innermost frame and the
+  the count with the limit and the frame's end with the ordinary end,
+  one compare each; past the ordinary end the growth leaf makes the room,
+  and only a count at the limit or a frame the ordinary room cannot hold
+  exits, so that the interpreter raises the overflow. The innermost
+  frame and the
   number of live frames are derived by the exit's walk. Whether the
   count lives in a machine register is stage 5's measurement.
 - **The megamorphic stub probes a machine-readable mirror of the global

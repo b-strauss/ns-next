@@ -825,6 +825,22 @@ impl FrameStack {
         }
     }
 
+    /// Makes room for a frame machine code pushes, ending `end` words
+    /// from the base, past the ordinary end (the growth leaf,
+    /// `jit::leaves::grow_stack`): `grow_to` within the ordinary room, as
+    /// the interpreter's push takes it -- the pages committed, or an
+    /// ordinary end below the committed one raised -- and false, nothing
+    /// changed, where the ordinary room cannot hold it. The top stays:
+    /// machine code's frames lie above it until an exit materializes them.
+    #[cfg(ns_jit)]
+    pub(super) fn grow_for_machine_push(&mut self, end: usize) -> bool {
+        // A test's seat holds machine code to the seated end until the
+        // stack grows, here as at Rust's own push.
+        #[cfg(test)]
+        self.check_seat_sentinel();
+        self.grow_to(end, self.ordinary_limit).is_ok()
+    }
+
     /// The words of every frame, `[0, top)`: one comparison, of the top
     /// against the committed end it never passes.
     #[inline(always)]

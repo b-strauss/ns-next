@@ -1842,8 +1842,9 @@ So the stack, whose push already compares with an ordinary end in the
 cold path, lowers that end to the band's end at every collection in its
 band, whatever the damping gives back (`FrameStack::shrink`), and a push
 past it is a growth too, which raises the end again without a commit
-(`FrameStack::grow_to`) -- machine code's push past it exits to the
-interpreter's, once per collection. The tables grow only by minting rows
+(`FrameStack::grow_to`) -- machine code's push past it calls the growth
+leaf, which does the same and lets the push go on
+(`jit::leaves::grow_stack`). The tables grow only by minting rows
 between two collections, so their high mark at a collection is their
 peak.
 

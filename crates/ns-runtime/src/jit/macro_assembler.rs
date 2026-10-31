@@ -260,6 +260,25 @@ impl Roles {
     pub(crate) fn callee_argument(self) -> Register {
         R12
     }
+
+    /// What a prologue reads after its checks, of what the call handed it
+    /// and of what it counted: the machine words' address it stores the
+    /// count through, the depth count it is about to store, the receiver,
+    /// the current class, and a block's closure, `counted` word and
+    /// argument. None is pinned, so the stack's growth from a prologue
+    /// (`MacroAssembler::grow_stack_if`) keeps them on the native stack
+    /// across its leaf call.
+    pub(crate) fn call_handover(self) -> [Register; 7] {
+        [
+            self.idiom_scratch,
+            self.depth_count,
+            self.callee_receiver(),
+            self.callee_class(),
+            self.callee_closure(),
+            self.callee_counted(),
+            self.callee_argument(),
+        ]
+    }
 }
 
 /// An index into the leaf table `CodeZone::enter` is given.
@@ -325,6 +344,17 @@ enum ColdPath {
         leaf: LeafIndex,
         arguments: [Operand; 3],
         program_counter: u32,
+        rejoin: Label,
+    },
+    /// A prologue's growth of the activation stack (`grow_stack_if`): the
+    /// call's handover kept on the native stack across the growth leaf's
+    /// call, then back into the straight line at `rejoin` when it made the
+    /// room, and the exit `kind` otherwise.
+    StackGrowth {
+        label: Label,
+        leaf: LeafIndex,
+        extent: Register,
+        kind: ExitKind,
         rejoin: Label,
     },
     #[cfg(debug_assertions)]
@@ -741,6 +771,34 @@ impl MacroAssembler {
             leaf,
             arguments,
             program_counter,
+            rejoin,
+        });
+    }
+
+    /// When `condition` holds -- the frame a prologue pushes, ending
+    /// `extent` bytes from the activation stack's base, ends past the
+    /// ordinary end -- calls `leaf`, the growth leaf
+    /// (`jit::leaves::grow_stack`), out of line with `extent`, keeping the
+    /// call's handover (`Roles::call_handover`) on the native stack across
+    /// it: back here when it made the room, so that the push goes on in
+    /// machine code, and the exit `kind` when the ordinary room cannot hold
+    /// the frame, nothing changed. Falls through otherwise.
+    pub(crate) fn grow_stack_if(
+        &mut self,
+        condition: Condition,
+        leaf: LeafIndex,
+        extent: Register,
+        kind: ExitKind,
+    ) {
+        let label = self.assembler.label();
+        let rejoin = self.assembler.label();
+        self.assembler.jump_if(condition, label);
+        self.assembler.bind(rejoin);
+        self.cold_paths.push(ColdPath::StackGrowth {
+            label,
+            leaf,
+            extent,
+            kind,
             rejoin,
         });
     }
@@ -2184,6 +2242,33 @@ impl MacroAssembler {
                     self.assembler.compare_immediate(self.roles.leaf_result, 0);
                     self.assembler.jump_if(Condition::Equal, rejoin);
                     self.exit(ExitKind::Reexecute, program_counter);
+                }
+                ColdPath::StackGrowth {
+                    label,
+                    leaf,
+                    extent,
+                    kind,
+                    rejoin,
+                } => {
+                    self.assembler.bind(label);
+                    let handover = self.roles.call_handover();
+                    for register in handover {
+                        self.assembler.push(register);
+                    }
+                    self.call_leaf(
+                        leaf,
+                        [
+                            Operand::Register(extent),
+                            Operand::Immediate(0),
+                            Operand::Immediate(0),
+                        ],
+                    );
+                    for register in handover.into_iter().rev() {
+                        self.assembler.pop(register);
+                    }
+                    self.assembler.compare_immediate(self.roles.leaf_result, 0);
+                    self.assembler.jump_if(Condition::Equal, rejoin);
+                    self.exit(kind, 0);
                 }
                 #[cfg(debug_assertions)]
                 ColdPath::DeadRegister {

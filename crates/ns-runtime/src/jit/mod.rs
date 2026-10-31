@@ -156,6 +156,17 @@ pub struct JitStatistics {
     /// instruction re-executed, a safepoint, a refused push, a dead
     /// register's read -- each handing a frame to the interpreter.
     pub exits: u64,
+    /// Compiled calls a callee's prologue refused (`ExitKind::PushRefused`):
+    /// at the depth limit, at a safepoint requested, or where the
+    /// activation stack's ordinary room cannot hold the frame -- never for
+    /// a frame past the ordinary end alone, which the growth leaf makes
+    /// room for (`jit::leaves::grow_stack`).
+    pub pushes_refused: u64,
+    /// Pushes of machine code past the activation stack's ordinary end
+    /// the growth leaf made room for, and those it refused, the ordinary
+    /// room unable to hold the frame (`jit::leaves::grow_stack`).
+    pub stack_growths: u64,
+    pub stack_growth_refusals: u64,
     /// Calls machine code made of a leaf (`jit::leaves`), of every kind:
     /// a template's, a stub's and the exit's walk's.
     pub leaf_calls: u64,
@@ -1021,6 +1032,10 @@ impl JitState {
             self.mark_block_stale();
         }
         self.enabled = enabled && self.zone.is_some();
+        // A JIT switched off is not wanted: no reason is reported for it.
+        if !enabled {
+            self.unavailable = None;
+        }
         reserved
     }
 
@@ -2687,6 +2702,7 @@ fn call_through(
         // An exit all the same, which `resumption_after_exit` would have
         // counted.
         mutator.jit.statistics.exits += 1;
+        mutator.jit.statistics.pushes_refused += 1;
         return Called::Refused;
     }
     Called::Stopped(resumption_after_exit(mutator, &block, kind, innermost))
@@ -2908,6 +2924,7 @@ fn resumption_after_exit(
         // The innermost frame is the caller, stopped at the send the walk
         // wrote as its program counter: it runs the send again.
         MachineExit::PushRefused => {
+            mutator.jit.statistics.pushes_refused += 1;
             let program_counter = mutator.heap.activation_program_counter(innermost);
             Resumption::Interpreted {
                 activation: innermost,
@@ -3691,15 +3708,18 @@ mod tests {
             let mut statistics = after;
             statistics.exits = after.exits - before.exits;
             statistics.machine_entries = after.machine_entries - before.machine_entries;
+            statistics.stack_growths = after.stack_growths - before.stack_growths;
             let disturbances = interpreter.enter(|mutator| mutator.heap.seat_disturbances());
             (answer, statistics, disturbances)
         }
 
         /// A closure stub's copies of a block row's arguments, which lie
         /// past the sender's window before the block's prologue checks its
-        /// frame's room, are made only below the ordinary end: at it the
-        /// call declines, the sentinel each seat writes right above the
-        /// end stays whole, and the program answers the interpreter's
+        /// frame's room, are made only below the ordinary end, and a
+        /// prologue's frame only below it or after the growth leaf raised
+        /// it: at the end the call declines or the leaf grows the stack
+        /// first, the sentinel each seat writes right above the end stays
+        /// whole until then, and the program answers the interpreter's
         /// value.
         #[test]
         fn a_closure_stub_declines_copies_past_the_ordinary_end() {
@@ -3712,7 +3732,10 @@ mod tests {
             let (answer, statistics, disturbances) = run_at_the_ordinary_end(true);
             assert_eq!(answer, expected, "the interpreter's answer");
             assert!(statistics.machine_entries > 0, "machine code ran");
-            assert!(statistics.exits > 0, "the calls at the edge are refused");
+            assert!(
+                statistics.exits + statistics.stack_growths > 0,
+                "the calls at the edge are refused, or grow the stack first"
+            );
             assert_eq!(
                 disturbances, 0,
                 "no word past a seated ordinary end is written before the stack grows"

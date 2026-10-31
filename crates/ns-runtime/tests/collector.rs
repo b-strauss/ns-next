@@ -815,6 +815,9 @@ fn a_sawtooth_of_recursions_does_not_thrash() {
     // collect stress mode's, at every safepoint of the recursion, are a
     // collection cycle of their own each.
     interpreter.set_stress_collect(false);
+    // The stack's own top is what its collections read: the suspend
+    // stress mode would take the recursion's frames off it.
+    interpreter.set_stress_suspend(false);
     // Undamped, so that the first cycle shrinks at once: the band is what
     // this pins (`a_shrink_is_damped_over_successive_collections` pins the
     // damping).
@@ -868,6 +871,9 @@ fn a_sawtooth_of_recursions_does_not_thrash() {
 fn deep_once() -> (Interpreter, Root) {
     let (mut interpreter, class) = load(SAWTOOTH);
     interpreter.set_stress_collect(false);
+    // The stack's own top is what its collections read: the suspend
+    // stress mode would take the recursion's frames off it.
+    interpreter.set_stress_suspend(false);
     interpreter.set_shrink_pairs(only_the_stack_shrinks(true));
     let platform = interpreter.platform();
     let subject =
@@ -961,12 +967,16 @@ fn a_returning_peak_resets_the_damping() {
 /// Each cycle's push past the ordinary end the band set -- or past what is
 /// committed -- is demand (`heap::limits::Shrink`, "Growth is demand"), so
 /// no collection gives the peak's pages back, and the stack decommits at
-/// most twice over thirty cycles; once the program stops peaking, the
-/// collections give them back over the damping's ramp.
+/// most twice over thirty cycles, with no call refused and no body
+/// abandoned; once the program stops peaking, the collections give them
+/// back over the damping's ramp.
 #[test]
 fn a_recurring_peak_beyond_a_doubling_does_not_thrash() {
     let (mut interpreter, class) = load(SAWTOOTH);
     interpreter.set_stress_collect(false);
+    // The stack's own top is what its collections read: the suspend
+    // stress mode would take the recursion's frames off it.
+    interpreter.set_stress_suspend(false);
     interpreter.set_shrink_pairs(only_the_stack_shrinks(true));
     let platform = interpreter.platform();
     let subject =
@@ -980,10 +990,34 @@ fn a_recurring_peak_beyond_a_doubling_does_not_thrash() {
         );
     };
     let before = interpreter.collector_statistics();
+    let jit_before = interpreter.jit_statistics();
     for _ in 0..30 {
         cycle(&mut interpreter, 56_000);
     }
     let peaked = interpreter.collector_statistics();
+    let jit_after = interpreter.jit_statistics();
+    // Machine code's push past the ordinary end the band set calls the
+    // growth leaf (`jit::leaves::grow_stack`) and goes on: no call is
+    // refused for room, and no body is abandoned for the exits it would
+    // have taken. The calls that are refused (`pushes_refused`) are
+    // refused at the safepoints the cycles' own `garbageCollect`
+    // requests, or a stress mode's, whatever the depth.
+    assert_eq!(
+        jit_after.stack_growth_refusals, jit_before.stack_growth_refusals,
+        "a push past the ordinary end refused for room"
+    );
+    assert_eq!(
+        jit_after.abandoned_bodies, jit_before.abandoned_bodies,
+        "a body abandoned"
+    );
+    // Where machine code ran at all: not without the JIT, nor in a build
+    // without an encoder.
+    if jit_after.compiled_bodies > jit_before.compiled_bodies {
+        assert!(
+            jit_after.stack_growths > jit_before.stack_growths,
+            "machine code grew the stack itself"
+        );
+    }
     assert!(
         peaked.collections >= before.collections + 30,
         "every cycle collected"

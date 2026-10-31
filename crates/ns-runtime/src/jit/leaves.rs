@@ -11,8 +11,10 @@
 //! leaf-safe mirror send, an allocation past the inline bump's limit, the
 //! write barrier's remembering of an old object, the cold check of an
 //! own-slot instruction, the divorce of a reified frame that retains its
-//! registers at its return, the refill of a `MakeClosure`'s code ids, and
-//! the exit's materialization of the frames machine code pushed. Beside
+//! registers at its return, the refill of a `MakeClosure`'s code ids, the
+//! activation stack's growth for a frame a prologue pushes past the
+//! ordinary end, and the exit's materialization of the frames machine
+//! code pushed. Beside
 //! them the table holds the cut's two steps (`jit::cut`), which are no
 //! leaves by that rule: they read and pop the compiled frames of the
 //! current stretch, as no leaf may. A
@@ -90,6 +92,9 @@ pub(crate) enum Leaf {
     /// Takes the cut's walk one compiled frame further down
     /// (`cut::cut_frame`).
     CutFrame = 16,
+    /// Makes room on the activation stack for a frame a prologue pushes
+    /// past the ordinary end (`grow_stack`).
+    GrowStack = 17,
 }
 
 impl Leaf {
@@ -116,7 +121,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 17] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 18] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -138,6 +143,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 17] {
         counted!(forcing),
         counted!(cut),
         counted!(cut_frame),
+        counted!(grow_stack),
     ]
 }
 
@@ -818,6 +824,30 @@ fn remember(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     let [holder_word, _, _] = arguments;
     mutator.heap.remember_for_machine_code(holder_word);
     holder_word
+}
+
+/// The growth leaf, which a prologue (`jit::sends::prologue`) and an
+/// `InitializeInstance`'s placement call when the frame they push ends
+/// past the ordinary end, `arguments[0]` bytes from the activation
+/// stack's base: makes the room the interpreter's push would make
+/// (`Heap::grow_stack_for_machine_push`) -- the pages committed, or an
+/// ordinary end below the committed one, which a collection's band set
+/// (`FrameStack::shrink`), raised -- and answers `DONE`, so that the push
+/// goes on in machine code; `REFUSED` where the ordinary room cannot hold
+/// the frame, having changed nothing, so that the call is refused as
+/// before and the interpreter raises the overflow. It runs no Newspeak
+/// code, cannot collect, reads no activation and pushes none: only the
+/// stack's committed pages and its ordinary end -- with the machine word
+/// machine code compares a push with -- change.
+fn grow_stack(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [end_bytes, _, _] = arguments;
+    if mutator.heap.grow_stack_for_machine_push(end_bytes) {
+        mutator.jit.statistics.stack_growths += 1;
+        DONE
+    } else {
+        mutator.jit.statistics.stack_growth_refusals += 1;
+        REFUSED
+    }
 }
 
 /// The divorce leaf, which the return of code that reifies its frame
