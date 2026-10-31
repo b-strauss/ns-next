@@ -1498,12 +1498,26 @@ classes and a class from source with no predecessor are not edited
   body moves the same binary between 48.9 and 52.2 ms on a 5,000,000-step
   loop by its 16-byte position, and aligning every body to 64 bytes made
   `bench_loop.ns` level but `bench_while.ns` 9.6% and Richards 1.9% slower.
+  The stubs' placement counts as much as the bodies': the cut stub and five
+  mirror rows of part 4c moved the stubs after the cut stub by 224 bytes,
+  those after the mirror-method entries by 279 and the bodies by 288, and on
+  that alone `bench_send.ns` measured +2.1%, `bench_while.ns`
+  +1.5% and DeltaBlueTon80 +1.2%, builds separated, every body executed
+  instruction for instruction the same. The tree before, its stubs and
+  bodies padded to the same offsets, runs `bench_while.ns` at the same time
+  as the tree after at every body padding (5.93-6.95 ms over thirteen),
+  while body padding alone leaves the two 2.4% apart pooled, since it never
+  moves the closure stubs the loop calls. DeltaBlueTon80's extra samples lie
+  in the zone (stubs +201, bodies +150 of 6,153), its Rust functions taking
+  fewer, and two builds with other Rust code are level on it: the zone's
+  offsets and the binary's layout roll together.
   The measurement protocol varies `vm::run`'s block layout across three
   builds a side but never the zone's placement, so a growth of any stub
   re-rolls every machine-code program's number. Open: a protocol knob that
-  shifts the zone's first body by several offsets per build, pooled as the
-  three builds are, and then whether a placement policy (aligned loop
-  heads) measures better than the lottery.
+  shifts both the stubs after the entry stub and the first body by several
+  offsets per build, pooled as the three builds are, and then whether a
+  placement policy (aligned loop heads, hot stubs on their own lines)
+  measures better than the lottery.
 - **The interpreter is 1.35% slower than before stage 3** (2026-10-29),
   with the JIT off, on the geometric mean over twenty-two sources, twelve
   of them slower with their builds separated, `bench_megamorphic.ns` the
