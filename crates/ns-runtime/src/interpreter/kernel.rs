@@ -1738,14 +1738,6 @@ mod tests {
             "valueOnUnwind:",
             MethodFastPath::ValueOfParameter(0),
         ),
-        // Quick in shape too, though only a future's forcing activates it,
-        // pushing it as a method so that its return carries the forcing on
-        // (`Mutator::send_value_then`).
-        (
-            BuiltinClass::Closure,
-            "valueOf:",
-            MethodFastPath::ValueOfParameter(0),
-        ),
         // Whether a handler may resume the exception.
         (
             BuiltinClass::Exception,

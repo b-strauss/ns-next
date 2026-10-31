@@ -422,7 +422,9 @@ pub(crate) struct CallSlots {
 /// its call enters: a cached send's and an initializer invocation's on
 /// its argument slots, `InitializeInstance`'s above the factory's window,
 /// where `Mutator::push_above` pushes it, with the factory's own
-/// arguments copied there. `None` for an instruction that calls nothing.
+/// arguments copied there, and `ResolveFuture`'s, a future's `resolve`,
+/// above the window with no argument, where the interpreter's push of it
+/// lays it. `None` for an instruction that calls nothing.
 pub(crate) fn call_slots(code: &CompiledCode, program_counter: u32) -> Option<CallSlots> {
     if let Some(send) = code.cached_send(program_counter as usize) {
         return Some(CallSlots {
@@ -440,6 +442,13 @@ pub(crate) fn call_slots(code: &CompiledCode, program_counter: u32) -> Option<Ca
                 argument_base: window_end(code),
                 argument_count: code.argument_count,
                 selector: Symbol::NEW,
+            });
+        }
+        Instruction::ResolveFuture { .. } => {
+            return Some(CallSlots {
+                argument_base: window_end(code),
+                argument_count: 0,
+                selector: Symbol::RESOLVE,
             });
         }
         _ => return None,
@@ -832,6 +841,27 @@ pub(super) fn initialize(
             Operand::CodeAddress,
         ],
     );
+    call_decided(body, argument_base, count, destination);
+    Lowering::Transfer
+}
+
+/// The call of the callee a leaf decided and answered in `leaf_result`
+/// -- its machine entry, or a stub's -- with its receiver and current
+/// class in the machine words, its register 0 at `argument_base`, where
+/// `count` arguments lie, and its value stored into `destination`; or, for
+/// 0, an exit before anything is written but what the instruction placed
+/// for its callee, so that the interpreter decides the instruction again.
+/// The tail of an initializer invocation's call and of a future's forcing
+/// (`closures::resolve_future`).
+pub(super) fn call_decided(
+    body: &mut BodyAssembler,
+    argument_base: u16,
+    count: u16,
+    destination: u16,
+) {
+    let program_counter = body.program_counter;
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
     let entry = roles.send_entry;
     let assembler = macro_assembler.assembler();
     assembler.compare_immediate(roles.leaf_result, 0);
@@ -867,7 +897,6 @@ pub(super) fn initialize(
     let _ = count;
     body.macro_assembler
         .store_frame_register(destination, roles.leaf_result);
-    Lowering::Transfer
 }
 
 /// `InitializeInstance`'s placement: the factory's own arguments, registers

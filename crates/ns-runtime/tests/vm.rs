@@ -723,10 +723,9 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
 // §6.3.2's simultaneous slots' four instructions (`MakeFuture`,
 // `ResolveFuture`, `LoadOwnSlot`, `InitializeSlotProvisionally`). Hand-built,
 // like the indirection vector's above, so each instruction is driven on its
-// own -- `ResolveFuture`'s forcing path (`vm::force_and_reexecute`, the
-// `Reexecute` branch of `interpreter::future::resolve_for_instruction`)
-// included -- apart from the lowering of a simultaneous clause that emits
-// them together.
+// own -- `ResolveFuture`'s forcing path (`vm::resolve_future`'s push of
+// the future's `resolve`, `Mutator::forcing`) included -- apart from the
+// lowering of a simultaneous clause that emits them together.
 // ---------------------------------------------------------------------------
 
 /// A block whose body answers `value` and nothing else -- the future's
@@ -767,12 +766,11 @@ fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_han
         // InitSlotProvisionally own 0 <- r14        (n holds the unresolved future)
         // LoadOwnSlot r15 <- own 0                  (a simultaneous clause's end
         //                                            reading its own slot back)
-        // ResolveFuture r16 <- r15                   (unresolved: forces the
-        //                                            block, then runs this same
-        //                                            instruction again --
-        //                                            `vm::force_and_reexecute` /
-        //                                            `reexecute` -- and finds it
-        //                                            resolved)
+        // ResolveFuture r16 <- r15                   (unresolved: calls the
+        //                                            future's `resolve`, which
+        //                                            runs the block, and takes
+        //                                            its answer into r16 --
+        //                                            `vm::resolve_future`)
         // Return r16  =>  99
         let body = CompiledCode::new(
             CodeKind::Method,
@@ -1036,9 +1034,9 @@ fn a_corrupted_future(
 /// A future whose fields no forcing wrote -- corrupted by crafted code --
 /// is an ordinary, catchable error wherever it is forced: by
 /// `ResolveFuture`, by a message to it (its `doesNotUnderstand:`), and as
-/// the answer of another future's block (`Mutator::future_computed`). Never
-/// a panic, and never a recursion without end through futures resolved to
-/// each other.
+/// the answer of another future's block (its `resolve`'s forcing of the
+/// answer). Never a panic, and never a recursion without end through
+/// futures resolved to each other.
 #[test]
 fn forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic() {
     let source = indoc! {"

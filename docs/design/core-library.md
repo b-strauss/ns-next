@@ -4854,11 +4854,14 @@ public member of `Object` as protected, so a message from outside reaches
 `doesNotUnderstand:`: a program's subclass that implements only
 `doesNotUnderstand:` forwards every message, `Object`'s included, and a
 bare `Proxy` understands none of them. The private `FutureImplementation`
-is such a subclass: its `doesNotUnderstand:` forces the future through the
-mirror row `futureValue:ifFail:` (`builtins/future.rs`) and sends the
-message on to its value with `Message>>sendTo:`; its state is the two slots
-`computation` and `state`, and forcing is `interpreter/future.rs`'s, a
-trampoline step under `Continuation::Future`. Like `Activation`, it is
+is such a subclass: its `doesNotUnderstand:` forces the future by its own
+private `resolve` and sends the message on to its value with
+`Message>>sendTo:`; its state is the two slots `computation` and `state`,
+which only `resolve` writes, and the runtime forces a future by pushing
+that method (`interpreter/future.rs`). `resolve` asks whether a value is a
+future through the mirror row `objectIsFuture:ifFail:`, and forces a
+future its computation answered through `futureValue:ifFail:`
+(`builtins/future.rs`). Like `Activation`, it is
 private, `Object` declares no accessor for it, and an image names it,
 `Kernel FutureImplementation`, only where it must (an unresolved future's
 record). The

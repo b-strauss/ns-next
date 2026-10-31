@@ -1300,22 +1300,25 @@ class Kernel vmMirror: mirror = Value (
   /// as `Activation` is, and no program names it: as a `Proxy`, every
   /// message a program sends it reaches `doesNotUnderstand:`, which
   /// forwards it to the forced value -- §5.5's proxy, indistinguishable
-  /// from its target. Forcing is the runtime's (`interpreter/future.rs`),
-  /// which alone reads and writes the two slots after the factory: the
-  /// computation, until it is resolved, and then the value, and the state,
-  /// 0 unresolved, 1 resolving, 2 resolved. A simultaneous slot clause
-  /// makes its futures in the runtime, of a block; `Future computing:`
-  /// sends the factory, which stores the computation as it is, so a
-  /// future handed to it is not forced until this one is. The
+  /// from its target. Forcing is `resolve`'s, an ordinary method, so that
+  /// machine code runs it as it runs any other: it alone writes the two
+  /// slots after the factory -- the computation, until it is resolved,
+  /// and then the value, and the state, 0 unresolved, 1 resolving, 2
+  /// resolved -- which the runtime reads, by position, to see through a
+  /// resolved future, and wherever it meets one that is not, it sends
+  /// the future `resolve` (`interpreter/future.rs`). A simultaneous slot
+  /// clause makes its futures in the runtime, of a block; `Future
+  /// computing:` sends the factory, which stores the computation as it
+  /// is, so a future handed to it is not forced until this one is. The
   /// initializer tells the runtime a future exists, which is what turns
   /// on its seeing through futures.
   private class FutureImplementation computing: theComputation = Proxy (
     |
       /// The computation until the future is resolved, then its value;
-      /// read and written only by the runtime after the factory.
+      /// written only by `resolve` after the factory.
       private computation ::= theComputation.
-      /// The state, read and written only by the runtime: 0
-      /// unresolved, 1 resolving, 2 resolved.
+      /// The state, written only by `resolve`: 0 unresolved, 1
+      /// resolving, 2 resolved.
       private state ::= 0.
     |
     vmMirror futureMade: self ifFail: [nil].
@@ -1325,11 +1328,61 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// message: the `Message` the future was sent.
     ///
-    /// Signals an Error, 'divergent evaluation: a future was forced
-    /// while it was being computed', when forcing reaches the future
-    /// while its own computation runs.
+    /// Signals every Error `resolve` signals, before `message` is sent.
     protected doesNotUnderstand: message = (
-      ^message sendTo: (vmMirror futureValue: self ifFail: [^nil]).
+      ^message sendTo: self resolve.
+    )
+
+    /// Forces the future: answers its value, computing it first when it
+    /// is unresolved. The computation runs at most once per forcing that
+    /// completes: a block is evaluated, any other object is sent
+    /// `value`. When the computation answers a future, that future is
+    /// forced in turn, by a send of its own `resolve`, and its value is
+    /// this one's -- §6.3.2's pipelined promise -- so that the value
+    /// answered and recorded is never a future. From then on the future
+    /// is resolved, and answers its value without running anything.
+    ///
+    /// Signals an Error, 'divergent evaluation: a future was forced
+    /// while it was being computed', when the future is forced while its
+    /// own computation runs -- §6.3.2 resolves only well-founded
+    /// recursion -- and an Error, 'a malformed future: its fields are
+    /// no future''s', when its slots hold what no forcing wrote: a state
+    /// none of the three, or a value that is itself a future. Every Error
+    /// the computation signals passes through.
+    ///
+    /// A forcing an unwind abandons -- the computation signalled, a
+    /// handler returned past it, the depth limit refused one of its
+    /// activations -- leaves the future unresolved again, its
+    /// computation kept, so that the next message computes it afresh
+    /// rather than meeting a stale resolving state
+    /// (docs/design/object-model.md, "A clause abandoned by an
+    /// exception"). The mark of resolving is set inside the protected
+    /// block, so that no activation the forcing pushes can be refused
+    /// between the mark and the `ifCurtailed:` that undoes it.
+    private resolve = (
+      |
+        value ::= nil.
+      |
+      (state == 2 and: [(vmMirror objectIsFuture: computation ifFail: [true]) not]) ifTrue: [
+        ^computation.
+      ].
+      state == 0 ifTrue: [
+        ^[
+          state:: 1.
+          value:: computation value.
+          [vmMirror objectIsFuture: value ifFail: [false]] whileTrue: [
+            value:: vmMirror futureValue: value ifFail: [value].
+          ].
+          computation:: value.
+          state:: 2.
+          value.
+        ] ifCurtailed: [state:: 0].
+      ].
+      state == 1 ifTrue: [
+        ^(outer Kernel Error new) signal: 'divergent evaluation: a future was forced '
+            , 'while it was being computed'.
+      ].
+      ^(outer Kernel Error new) signal: 'a malformed future: its fields are no future''s'.
     )
   )
 
@@ -6204,16 +6257,6 @@ class Kernel vmMirror: mirror = Value (
     /// itself.
     private valueOnUnwind: onUnwind = (
       ^onUnwind value.
-    )
-
-    /// Sends `value` to `action` and answers what it answers. The
-    /// forcing of a future activates it for a computation that is no
-    /// block, so that the forcing carries on from this activation's
-    /// return whatever the send decides.
-    ///
-    /// action: any object; sent `value`.
-    private valueOf: action = (
-      ^action value.
     )
   )
 

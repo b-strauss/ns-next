@@ -9643,8 +9643,10 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Marks `activation`, a frame the run loop pushed or resumed, as
-    /// stopped in machine code at the send at `program_counter`: the
-    /// bottom frame of a stretch an exit above it materializes.
+    /// stopped in machine code at the call at `program_counter` -- a
+    /// cached send, an initializer invocation, or a `ResolveFuture` that
+    /// called a future's `resolve` (`jit::sends::call_slots`): the bottom
+    /// frame of a stretch an exit above it materializes.
     #[cfg(ns_jit)]
     pub(crate) fn mark_stopped_in_machine_code(
         &mut self,
@@ -10907,8 +10909,8 @@ impl<'gc> Heap<'gc> {
     ///
     /// Which objects are resolved futures, and their values, is `futures`'
     /// test, the one the scavenger's weak pass applies too. A future's
-    /// value is never itself a future -- `Mutator::future_computed` follows
-    /// a future of a future before it records one, and one whose fields
+    /// value is never itself a future -- its `resolve` forces a future its
+    /// computation answered before it records the value, and one whose fields
     /// crafted code made so is malformed and not replaced -- so one pass of
     /// replacement leaves no resolved future behind in any field it
     /// rewrites.

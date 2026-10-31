@@ -5,6 +5,7 @@
 //! step, the miss of a send's cell and the decision of an initializer
 //! invocation -- the two leaves that may compile and install a body --
 //! the leaf stub's run of a target that is no method with code, a
+//! future's forcing, which may compile its `resolve` too, a
 //! leaf-safe mirror send, an allocation past the inline bump's limit, the
 //! write barrier's remembering of an old object, the cold check of an
 //! own-slot instruction, the divorce of a reified frame that retains its
@@ -75,6 +76,9 @@ pub(crate) enum Leaf {
     /// outer-local instruction reaches runs in its site afresh
     /// (`outer_local_site`).
     OuterLocalSite = 13,
+    /// Decides the `resolve` a future `ResolveFuture` met calls
+    /// (`forcing`).
+    Forcing = 14,
 }
 
 impl Leaf {
@@ -101,7 +105,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 14] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 15] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -120,6 +124,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 14] {
         counted!(divorce),
         counted!(closure_site),
         counted!(outer_local_site),
+        counted!(forcing),
     ]
 }
 
@@ -429,6 +434,70 @@ fn initializer_in(
             address
         }
         _ => 0,
+    }
+}
+
+/// The forcing leaf, which `ResolveFuture`'s template calls for a future
+/// it does not see through inline (`jit::closures::resolve_future`):
+/// decides the instruction at `arguments[1]`, the program counter, of the
+/// frame `arguments[0]` and `arguments[2]` name, as for `step`, as the
+/// interpreter's `vm::resolve_future` does (`Mutator::forcing`), and acts
+/// on nothing. For the future's `resolve`, it counts the callee's entry as
+/// the miss leaf does, compiling and installing it at its second
+/// (`jit::note_entry_by_call`), and answers its machine entry, the future
+/// and its class handed over in the machine words as the callee's
+/// receiver and current class (`Heap::hand_machine_callee`); for a value
+/// the decision answers, the stub answering its receiver, the value
+/// handed over as the receiver; and 0, having handed nothing over, for a
+/// `resolve` without machine code, so that the exit after the call
+/// re-executes the instruction and the interpreter pushes it.
+fn forcing(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [frame_address, program_counter, code_address] = arguments;
+    let Ok(program_counter) = u32::try_from(program_counter) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
+    let answer = forcing_in(mutator, frame.activation, program_counter as usize);
+    materialize::release_leaf_frame(mutator, frame);
+    answer
+}
+
+/// `forcing`, in `activation`.
+fn forcing_in(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    program_counter: usize,
+) -> u64 {
+    let register_base = mutator.heap.activation_register_base(activation);
+    let code = mutator.heap.activation_code(activation);
+    let Instruction::ResolveFuture { source, .. } = code.instruction(program_counter) else {
+        unreachable!("internal: the forcing leaf is handed a ResolveFuture");
+    };
+    let value = mutator.heap.register(register_base, source);
+    let decided = match mutator.as_future(value) {
+        Some(future) => mutator.forcing(future),
+        None => Step::Value(value),
+    };
+    match decided {
+        Step::Value(value) => {
+            mutator.heap.hand_machine_receiver(value);
+            mutator.jit.receiver_stub_address()
+        }
+        Step::Method {
+            receiver,
+            method,
+            defining_class,
+            ..
+        } => {
+            let base = mutator.caches.base_for(&method.code);
+            jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
+            let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
+                return 0;
+            };
+            mutator.heap.hand_machine_callee(receiver, defining_class);
+            address
+        }
+        _ => unreachable!("internal: a forcing answers a value or its resolve"),
     }
 }
 

@@ -191,10 +191,10 @@ pub(crate) enum Step<'gc> {
     /// built, cached and answered (`nested::after_clause`).
     SuperclassClause(Box<NestedClassCreation<'gc>>),
     /// Activate `method`, as `Step::Method` with owned arguments does, and
-    /// do `then` with its value: how a future's forcing sends `value` to a
-    /// computation that is no block and carries on afterwards
-    /// (`Mutator::send_value_then`). Boxed, so that `Step` keeps the size
-    /// the hot path was measured at.
+    /// do `then` with its value: how a future is forced for an instruction
+    /// that runs again once it is resolved
+    /// (`Mutator::forcing_then_reexecute`). Boxed, so that `Step` keeps the
+    /// size the hot path was measured at.
     MethodThen(Box<MethodThen<'gc>>),
 }
 
@@ -1497,11 +1497,9 @@ impl<'gc> Mutator<'gc> {
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
         match refusal {
-            Refusal::PastTheRegisterCeiling => Err(self.refuse_past_the_register_ceiling(
-                header.kind,
-                header.receiver,
-                header.then,
-            )),
+            Refusal::PastTheRegisterCeiling => {
+                Err(self.refuse_past_the_register_ceiling(header.kind, header.receiver))
+            }
             Refusal::AtTheLimit(arguments) => {
                 self.push_past_the_limit(Box::new(header), arguments, temporaries)
             }
@@ -1527,16 +1525,8 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         kind: ActivationKind<'gc>,
         receiver: Value<'gc>,
-        then: Continuation<'gc>,
     ) -> Signal<'gc> {
-        let refusal =
-            literals::body_too_large_error(kind, receiver, crate::bytecode::BodyLimit::Registers);
-        // As `refuse_exhausted_push` undoes it: a refused activation never
-        // runs, so a future it was to compute is unresolved again.
-        if let Continuation::Future(forcing) = then {
-            self.future_abandoned(*forcing);
-        }
-        refusal
+        literals::body_too_large_error(kind, receiver, crate::bytecode::BodyLimit::Registers)
     }
 
     /// A push the ordinary room of the activation stack's reservation could
@@ -1575,17 +1565,11 @@ impl<'gc> Mutator<'gc> {
     #[cold]
     #[inline(never)]
     fn refuse_exhausted_push(&mut self, header: Box<ActivationHeader<'gc>>) -> Signal<'gc> {
-        let refusal = if self.depth_reserve_held() {
+        if self.depth_reserve_held() {
             Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
         } else {
             recursion_too_deep(&header)
-        };
-        // As `push_past_the_limit` undoes it: a refused activation never
-        // runs, so a future it was to compute is unresolved again.
-        if let Continuation::Future(forcing) = header.then {
-            self.future_abandoned(*forcing);
         }
-        refusal
     }
 
     /// A counted push at or past L. While a VM error's `signal` holds the
@@ -1619,14 +1603,9 @@ impl<'gc> Mutator<'gc> {
         } else {
             Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
         };
-        // A refused activation never runs, so a future it was to compute is
-        // unresolved again, as `abandon` leaves one whose activation an
-        // unwind pops. Only a forcing is undone here: every other
-        // continuation that has begun something -- a nested class's
-        // creation -- begins it once its push has succeeded.
-        if let Continuation::Future(forcing) = header.then {
-            self.future_abandoned(*forcing);
-        }
+        // A refused activation never runs, and no continuation begins
+        // anything before its push has succeeded -- a nested class's
+        // creation is marked only then -- so nothing is undone here.
         Err(refusal)
     }
 
@@ -2434,8 +2413,8 @@ impl<'gc> Mutator<'gc> {
             // stopped at -- now the top of the stack again.
             Continuation::Unwind(pending) => Err(unwind::signal_of(*pending)),
             Continuation::VmErrorSignalled(error) => Err(Signal::Terminate(error)),
-            Continuation::Future(_) => {
-                unreachable!("internal: vm::finish handles a future's continuation itself")
+            Continuation::Reexecute => {
+                unreachable!("internal: vm::finish runs the instruction again itself")
             }
             Continuation::ReturnToSuspended(_) => unreachable!(
                 "internal: the run loop resumes a suspended sender before it applies the continuation"
@@ -2446,17 +2425,17 @@ impl<'gc> Mutator<'gc> {
     /// What a continuation undoes when its activation is thrown away rather
     /// than returned from: the counterpart of `resume`, which `unwind::unwind`
     /// calls for every activation it pops, and `push_step` for a block
-    /// activation it refuses. Only a nested class's creation and a future's
-    /// forcing have begun anything -- the creation's cache slot is marked as
-    /// in progress, the future as resolving -- so only they have anything to
-    /// undo, and a return to a suspended sender undoes what the
-    /// continuation it wraps began; every other continuation is simply dropped, a
-    /// `Continuation::Unwind` included: a newer unwind, or an error, has
-    /// replaced the one it would have carried on.
+    /// activation it refuses. Only a nested class's creation has begun
+    /// anything -- its cache slot is marked as in progress -- so only it has
+    /// anything to undo, and a return to a suspended sender undoes what the
+    /// continuation it wraps began; every other continuation is simply
+    /// dropped, a `Continuation::Unwind` included: a newer unwind, or an
+    /// error, has replaced the one it would have carried on, and a
+    /// `Continuation::Reexecute`: a future's `resolve` undoes its own
+    /// forcing, by its `ifCurtailed:`.
     pub(crate) fn abandon(&mut self, then: Continuation<'gc>) {
         match then {
             Continuation::NestedClass(creation) => nested::end_creation(self, &creation),
-            Continuation::Future(forcing) => self.future_abandoned(*forcing),
             // The sender stays suspended: whoever throws this activation
             // away decides whether it resumes it.
             Continuation::ReturnToSuspended(suspended) => self.abandon(suspended.then),
@@ -2504,37 +2483,10 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<ActivationReference, Signal<'gc>> {
         let sender = self.heap.top_activation();
         // A continuation's step never refers to a send's arguments
-        // (`StepArguments::Send` is only answered by a decision about a send,
-        // and a continuation decides none: the one send it makes, a body's
-        // `value`, is a `Step::MethodThen`, which owns its arguments), so
-        // `Arguments::NONE` is always right here.
+        // (`StepArguments::Send` is only answered by a decision about a
+        // send, and a continuation decides none), so `Arguments::NONE` is
+        // always right here.
         self.push_step(step, Arguments::NONE, sender, !replaced_counted)
-    }
-
-    /// The step that sends `value` to `action`, through `Closure`'s
-    /// private `valueOf:` activated on `receiver`, and does `then` with the
-    /// answer. A send's decision may be a method, a block, a value or an
-    /// instantiation of several activations; the helper's own return is
-    /// the one place to hang `then` on for all of them.
-    pub(crate) fn send_value_then(
-        &mut self,
-        receiver: Value<'gc>,
-        action: Value<'gc>,
-        then: Continuation<'gc>,
-    ) -> Step<'gc> {
-        let closure_class = self.builtin_class(BuiltinClass::Closure);
-        let method = self
-            .heap
-            .class_application(closure_class)
-            .and_then(|application| application.mixin.compiled_method(Symbol::VALUE_OF).cloned())
-            .expect("internal: Kernel.ns's Closure declares valueOf:");
-        Step::MethodThen(Box::new(MethodThen {
-            receiver,
-            method,
-            defining_class: closure_class,
-            arguments: vec![action],
-            then,
-        }))
     }
 
     /// Whether a `^` aimed at `activation` ends at `activation`: a method's

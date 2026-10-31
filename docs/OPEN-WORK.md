@@ -852,33 +852,32 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   arrays part, to be measured again by itself with the next change to
   allocation. [execution.md](design/execution.md), "What inline
   allocation moved", "What `new` as compiled code moved".
-- **The futures of simultaneous slots stay in Rust** (noted with the user
-  on 2026-10-22). Forcing a future is Rust machinery -- a
-  `Continuation::Future` on the forcing block's activation, and the
-  stopped instruction run again once it is resolved
-  (`interpreter/future.rs`; [execution.md](design/execution.md),
-  "Running an instruction again after forcing a future") -- the last
-  piece of a slot clause's semantics that is no code the compiler emits,
-  as instantiation was before `new` became compiled code. A JIT sees it
-  as an opaque call, and every instruction that can meet a future keeps
-  its forcing path. How a future's forcing becomes code the compiler
-  emits is open.
+- **A chain of futures is bounded by the depth limit** (noted
+  2026-10-31). A future is forced by its own `resolve`, and one whose
+  computation answers another forces that one by a send of the other's
+  `resolve`, so a chain of futures each answering the next recurses one
+  forcing -- `resolve`, `ifCurtailed:` and its block -- per link, and a
+  chain of some tens of thousands of links ends in the depth limit's
+  error where the forcing in Rust it replaced, a loop, resolved any
+  length (`tests/future.rs`,
+  `a_chain_of_futures_past_the_depth_limit_is_refused`). The canonical
+  `resolve` recurses the same way. Resolving a chain in one activation
+  would take one future writing another's slots, which Newspeak's
+  object-private access forbids and only a mirror leaf could do. Whether
+  any program builds such a chain is unknown.
   [object-model.md](design/object-model.md), "Simultaneous slots".
-  So machine code makes a future and sees through a resolved one, but
-  leaves every forcing to the interpreter (2026-10-30): a
-  `ResolveFuture` that meets an unresolved future exits, once per future
-  a clause's end forces -- in practice every slot clause exits at least
-  once per run of it -- and the instruction runs again in machine code
-  once the forcing returns ([execution.md](design/execution.md), "Stage
-  4: closures, non-local return, allocation and the barrier"). Forcing
-  in machine code needs a compiled call that carries
-  `Continuation::Future` -- recording the value, chaining the forcing of
-  a future the computation answered, abandoning the chain at an unwind
-  -- which the exit's materialization would then have to write into the
-  computation's frame. `InitializeSlot` handed a future for a value's
-  slot exits through the generic leaf's refusal as before, and its frame
-  goes on interpreted. Whether a clause's exit costs enough to matter is
-  unmeasured.
+- **A future met where no value is taken still leaves machine code**
+  (noted 2026-10-31). `ResolveFuture` forces a future by a compiled call
+  of its `resolve`, but `InitializeSlot` handed a future for a value's
+  slot, and a leaf that declined for a future among its operands, exit,
+  and the interpreter forces the future under `Continuation::Reexecute`
+  and runs the instruction again interpreted
+  ([execution.md](design/execution.md), "Running an instruction again
+  after forcing a future"); so does a future's `resolve` forcing a future
+  its computation answered, through the mirror row
+  `futureValue:ifFail:`, which machine code does not run. Each is a path
+  a program reaches only by passing a future on; whether one costs enough
+  to matter is unmeasured.
 - **A private nested class sent from a subclass instance never takes the
   cached field** (noted 2026-10-22). A private site's entry is guarded by
   N's application, and its hidden-slot index is that application's, so a

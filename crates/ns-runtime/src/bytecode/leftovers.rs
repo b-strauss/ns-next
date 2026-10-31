@@ -121,8 +121,9 @@ pub(crate) fn check(
 ///
 /// A frame is asked at the program counter its header stores. Every
 /// instruction that hands control to a frame above its own stores its
-/// own index first -- a send (`vm::send`, `vm::send_mirror`), an
-/// instruction that forces a future (`vm::force_and_reexecute`), and an
+/// own index first -- a send (`vm::send`, `vm::send_mirror`), and so a
+/// `ResolveFuture` that calls a future's `resolve`, an `InitializeSlot`
+/// that forces a future (`vm::force_and_reexecute`), and an
 /// instruction that raises an error (`vm::raise`), below whose `signal`
 /// the frame stays while the handler runs -- so a frame below the top is
 /// asked before the instruction it stopped at, and the registers at and

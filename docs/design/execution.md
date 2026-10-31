@@ -752,11 +752,11 @@ activations from its callers'.
   activation — the next step of a nested class's creation — which
   `Mutator::push_continuation` pushes in the popped activation's place, or
   a signal, an unwind carried on ("The trampoline" below). A future's
-  forcing, `Continuation::Future`, is the one `finish` does not hand to
-  `resume`: `Mutator::future_computed` records the value, and the loop
-  delivers it, forces the next future of a chain, or runs the caller's
-  stopped instruction again ("Running an instruction again after forcing a
-  future" below). An activation whose sender is suspended carries
+  `resolve` pushed for an instruction that could not take its value,
+  `Continuation::Reexecute`, is the one `finish` does not hand to
+  `resume`: the loop drops the value and runs the caller's stopped
+  instruction again ("Running an instruction again after forcing a future"
+  below). An activation whose sender is suspended carries
   `Continuation::ReturnToSuspended`, `finish`'s second arm, cold and out of
   line: it resumes the sender and then applies the continuation it wraps
   ("Suspending and resuming" above).
@@ -878,8 +878,9 @@ An activation's `program_counter` is written **only by the instructions that can
 activation to an observer**: every send, since a nested activation runs above it;
 `MakeClosure`, since the activation escapes into the object graph — the store
 comes just before `reify`, which copies it into the frame it creates; and
-`NonLocalReturn`, since control leaves with a signal; an instruction that
-meets an unresolved future (`vm::force_and_reexecute`), since the forcing
+`NonLocalReturn`, since control leaves with a signal; `ResolveFuture`
+when it calls a future's `resolve`, as a send; an `InitializeSlot` that
+meets a future not resolved (`vm::force_and_reexecute`), since the forcing
 runs above it and the loop runs that instruction again; and every
 instruction that raises an error (`vm::raise`), since the raising
 activation stays on the stack below the error's `signal` while the
@@ -6057,7 +6058,7 @@ run-to-run spread (min to max 1.70–1.98 against 1.19–1.34 ms for the hello).
 Simultaneous slots ([object-model.md](object-model.md), "Simultaneous
 slots") put three things on or beside the paths every program runs: four
 instructions in `vm::run`'s dispatch and a refusal branch in
-`InitializeSlot`'s arm; a `Continuation::Future` arm in `vm::finish`; and
+`InitializeSlot`'s arm; a `Continuation::Reexecute` arm in `vm::finish`; and
 the search for a future among a leaf's operands. None of the four fixtures
 makes a future, so none runs any of it past a flag test. What they can pay
 is the shape of the code around it.
@@ -8767,41 +8768,44 @@ it did and how far that reasoning is evidence.
 
 ## Running an instruction again after forcing a future
 
-An instruction that meets an unresolved future where it needs the value -- `ResolveFuture`, `InitializeSlot` into a value's
-slot, and a send whose leaf declined, raised or answered "no" because an
-operand is a future -- cannot force it in Rust, since nothing re-enters the
-loop. It answers a step instead: the future's computation -- its block
-activated, or `value` sent to anything else -- under
-`Continuation::Future`, whose `FutureForcing` carries
-`AfterForcing::Reexecute`. For `ResolveFuture` and `InitializeSlot`,
-`vm::force_and_reexecute` stores the instruction's `program_counter` -- `run`'s
-doc comment lists the instructions that must -- and pushes that step; a send
-has stored its `program_counter` already, and pushes a leaf's step as it
-pushes any. When the computation returns, `vm::finish` hands its value
-to `Mutator::future_computed`, which records it and answers a
-`FutureOutcome`: `Reexecute`, and `vm::reexecute` switches back to the
-caller at the stored `program_counter`, so the same instruction runs again
-and finds the future resolved -- in the caller's machine code when the
-caller stopped there, as machine code's `ResolveFuture` leaves it ("Stage
-4: closures, non-local return, allocation and the barrier");
-`Deliver`, for a forcing a message to the
-future started (`futureValue:ifFail:`, `AfterForcing::Deliver`), and the
-value goes to that send as any return's does; or `Force`, when the block
-answered another unresolved future, whose forcing is pushed in the popped
-activation's place with this one chained behind it. Every other
-continuation still goes through `Mutator::resume`.
+Forcing a future is its own `resolve`, a Newspeak method of the kernel's
+`FutureImplementation` ([object-model.md](object-model.md), "Simultaneous
+slots"), so the runtime forces one by pushing that method
+(`Mutator::forcing`), never by running its computation itself. Where the
+instruction that met the future takes its value, the push is a send's:
+`ResolveFuture` calls `resolve` above its frame's window and takes the
+answer into its destination as a send takes its callee's
+(`vm::resolve_future`; `vm::send_destination` names its destination), and
+so does `futureValue:ifFail:`, the mirror row by which `resolve` forces a
+future its computation answered. Machine code makes the first call as a
+compiled send ("Stage 4: closures, non-local return, allocation and the
+barrier").
+
+An instruction that meets a future where it cannot take its value --
+`InitializeSlot` into a value's slot, and a send whose leaf declined,
+raised or answered "no" because an operand is a future -- answers a step
+instead: `resolve` pushed under `Continuation::Reexecute`
+(`Mutator::forcing_then_reexecute`). For `InitializeSlot`,
+`vm::force_and_reexecute` stores the instruction's `program_counter` --
+`run`'s doc comment lists the instructions that must -- and pushes that
+step; a send has stored its `program_counter` already, and pushes a leaf's
+step as it pushes any. When `resolve` returns, `vm::finish` drops its
+value and `vm::reexecute` switches back to the caller at the stored
+`program_counter`, so the same instruction runs again and finds the future
+resolved. Only the interpreter forces a future this way: machine code
+hands such an instruction to the interpreter before it forces anything.
+Every other continuation still goes through `Mutator::resume`.
 
 Running an instruction twice is safe because the first run wrote nothing:
-`ResolveFuture` and `InitializeSlot` force before they write, and **a leaf
-that declines or raises has changed nothing** ([dispatch.md](dispatch.md),
-"Primitives"), so running again the send that ran it is running it once.
-A forcing whose activation an unwind pops, or which `push_step` refuses --
-the depth limit, or a block's arity -- is thrown away through
-`Mutator::abandon`, which leaves its future, and every future chained behind
-it, unresolved again. A host's send has no instruction to run again: a
-forcing that was to run one and finds the run's floor below it ends the run
-with an error (`interpreter::future::host_passed_a_future`). The design is
-[object-model.md](object-model.md), "Simultaneous slots".
+`InitializeSlot` forces before it writes, and **a leaf that declines or
+raises has changed nothing** ([dispatch.md](dispatch.md), "Primitives"),
+so running again the send that ran it is running it once. A forcing an
+unwind abandons, or one of whose pushes the run loop refuses -- the depth
+limit, or a computation's arity -- leaves its future unresolved again by
+`resolve`'s own `ifCurtailed:`; the continuation has nothing to undo. A
+host's send has no instruction to run again: a forcing that was to run one
+and finds the run's floor below it ends the run with an error
+(`interpreter::future::host_passed_a_future`).
 
 ## The loop over locals
 
@@ -11249,8 +11253,9 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   indirection vectors, which the optimized lowering adopted, so only
   its fallback blocks of an inlined conditional and the reference
   lowering read a frame's registers by reference.
-- **A future is made inline and seen through inline; its forcing is the
-  interpreter's** (`jit::closures`'s `make_future`, `resolve_future`).
+- **A future is made inline and seen through inline; its forcing is a
+  compiled send of its `resolve`** (`jit::closures`'s `make_future`,
+  `resolve_future`).
   `MakeFuture` bump-allocates the future as `Mutator::new_future` makes
   it, under the `FutureImplementation` header and class word the machine
   words hold (`MachineWord::FutureHeader`, `FutureClass`). The header
@@ -11258,21 +11263,22 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   (`Mutator::futures_made`, the flag every check for a future reads), so
   the heap's first future, one past eden's limit and an operand that is
   no closure are the generic leaf's. `ResolveFuture` moves a value that
-  is no future and loads a resolved future's value inline. An unresolved
-  future it exits for: its forcing runs the computation under
-  `Continuation::Future`, which records the value, may chain the forcing
-  of a future the computation answered, and abandons the chain when an
-  unwind passes it ("Running an instruction again after forcing a
-  future") -- a continuation other than `Deliver`, which no compiled call
-  carries and no materialized frame records. Writing the "being forced"
-  mark in a leaf instead would leave a leaf that changed the future
-  answering "re-execute", which a leaf may not. The exit keeps the frame
-  stopped in machine code at the instruction (`jit`'s
-  `resumption_after_exit`), so that once the forcing returns,
-  `vm::reexecute` runs the instruction again in machine code, where it
-  finds the future resolved; and it spends no exit budget, since a slot
-  clause's end takes it once per future it forces
-  (`JitStatistics::forcing_exits`).
+  is no future and loads a resolved future's value inline. Any other
+  future -- unresolved, being computed, or with fields no forcing wrote
+  -- it forces by a compiled call of the future's `resolve`, which the
+  forcing leaf decides as the interpreter's `vm::resolve_future` does
+  (`Leaf::Forcing`, `Mutator::forcing`), counting and compiling the
+  method at its second entry as the miss leaf does, and whose value the
+  template stores into its destination as a send's: the tail an
+  initializer invocation's call shares (`sends::call_decided`). The
+  callee lies above the frame's window, where the interpreter's push of
+  it lies, so that an exit inside it materializes the frame stopped at
+  the call (`sends::call_slots`) and its return delivers the value there
+  (`vm::send_destination`). Before `resolve` is compiled the leaf answers
+  0 and the instruction exits, and the interpreter pushes the method.
+  Forcing is a Newspeak method rather than the interpreter's own because
+  a forcing in Rust needs a continuation of its own, which no compiled
+  call carries, and would cost an exit per future a clause's end forces.
 - **Non-local return is cut by a routine of its own, as Cog's
   `ceNonLocalReturn` cuts it** (`cointerp.c:12761-13100`): machine code
   calls the cut, which walks the compiled frames of the current stretch

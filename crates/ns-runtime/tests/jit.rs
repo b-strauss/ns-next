@@ -95,7 +95,6 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         called_entries: after.called_entries - before.called_entries,
         exits: after.exits - before.exits,
         leaf_calls: after.leaf_calls - before.leaf_calls,
-        forcing_exits: after.forcing_exits - before.forcing_exits,
     }
 }
 
@@ -2135,6 +2134,10 @@ const AUDITED_LEAF_ROWS: &[(&str, &[&str])] = &[
     (
         "a value's derived equality and hash read the states on a bounded work stack of their own, allocate no object and send nothing, or decline having written nothing",
         &["value:sameAs:ifFail:", "valueHash:ifFail:"],
+    ),
+    (
+        "reads its operand's class word and answers a Boolean, never declining and writing nothing",
+        &["objectIsFuture:ifFail:"],
     ),
     (
         "answers the class, an identity, the identity hash or a new String, or declines for a future, having written nothing",
@@ -4310,17 +4313,15 @@ const SIMULTANEOUS: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
-    /// `MakeFuture` and `ResolveFuture` run in machine code: by the fifth
-    /// run, once `run` too is compiled, every future is made inline, and
-    /// every exit but a safepoint's is a `ResolveFuture`'s forcing of an
-    /// unresolved future, one per future a clause's end forces, after
-    /// which the instruction runs again in machine code and finds it
-    /// resolved -- or, for `Assigned`'s `first`, finds no future at all.
-    /// No body is abandoned, and both lowerings answer what the
-    /// interpreter does. The reference lowering's uncached sends exit, so
-    /// that `thrice:` exits at once and is interpreted whole: only the
-    /// optimized lowering forces all seven futures in machine code.
-    fn simultaneous_slots_leave_machine_code_only_to_force(lowering) {
+    /// `MakeFuture` and `ResolveFuture` run in machine code, and so does
+    /// the forcing of every future: `ResolveFuture` calls the future's
+    /// `resolve` as a compiled send, so that by the fifth run, once `run`
+    /// and `resolve` are compiled, no exit leaves machine code under the
+    /// optimized lowering but a safepoint's, and no body is abandoned.
+    /// Both lowerings answer what the interpreter does; the reference
+    /// lowering's uncached sends exit, so that only the optimized one
+    /// runs the forcings without an exit.
+    fn simultaneous_slots_run_without_an_exit(lowering) {
         let run = |jit: bool| {
             let (mut interpreter, class) = load_with(SIMULTANEOUS, lowering);
             interpreter.set_jit_enabled(jit);
@@ -4338,25 +4339,9 @@ ns_runtime::for_each_lowering! {
         let (interpreted, _) = run(false);
         assert_eq!(compiled, interpreted);
         assert_eq!(compiled, 215);
-        if !a_stress_mode_is_on() {
-            assert!(statistics.forcing_exits > 0, "a clause's end forces in machine code");
-            assert_eq!(
-                statistics.exits,
-                statistics.safepoint_exits + statistics.forcing_exits,
-                "every other exit is a safepoint's"
-            );
-            assert_eq!(statistics.abandoned_bodies, 0, "a forcing spends no budget");
-            assert!(
-                statistics.resumed_entries >= statistics.forcing_exits,
-                "each forcing's instruction runs again in machine code: {}",
-                statistics.resumed_entries
-            );
-        }
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            assert_eq!(
-                statistics.forcing_exits, 70,
-                "seven forcings a turn, ten turns"
-            );
+            assert_ran_in_machine_code(&statistics, "run");
+            assert_eq!(statistics.abandoned_bodies, 0, "no body is abandoned");
         }
     }
 }

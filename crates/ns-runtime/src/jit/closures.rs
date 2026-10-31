@@ -693,20 +693,20 @@ pub(super) fn make_future(body: &mut BodyAssembler, destination: u16, closure: u
 }
 
 /// `ResolveFuture`: the destination `:=` the value in `source`, seen
-/// through a future, as `future::resolve_for_instruction` sees it: a value
-/// that is no future -- an immediate, or an object whose class word is not
+/// through a future, as `vm::resolve_future` sees it: a value that is no
+/// future -- an immediate, or an object whose class word is not
 /// `FutureImplementation`'s (`MachineWord::FutureClass`), which no program
-/// can subclass -- moved; a resolved future's value loaded. Every other
-/// future exits before anything is written, and the interpreter runs the
-/// instruction again: an unresolved one it forces, whose forcing --
-/// `Continuation::Future` on the computation's activation, which may chain
-/// a further forcing -- is a continuation other than `Deliver`, which no
-/// compiled call carries, after which the instruction runs again in this
-/// frame's machine code (`vm::reexecute`); one being computed, and one
-/// whose fields no forcing wrote, it raises. A future made by the runtime
-/// has its two fields -- the decoder refuses a record with any other
-/// count -- so the template reads them unchecked, and its state compares
-/// equal to the resolved `SmallInteger` word only when it is one.
+/// can subclass -- moved; a resolved future's value loaded, inline. Every
+/// other future -- unresolved, being computed, or with fields no forcing
+/// wrote -- is forced by a compiled call of its `resolve`, above the
+/// frame's window, which the forcing leaf decides (`Leaf::Forcing`) and
+/// whose value is stored into the destination as a send's is
+/// (`sends::call_decided`): the method computes the future, or signals
+/// its error. A future made by the runtime has its two fields -- the
+/// decoder refuses a record with any other count -- so the template reads
+/// them unchecked, and its state compares equal to the resolved
+/// `SmallInteger` word only when it is one. The field displacements are
+/// pinned to `FIELD_COUNT` by `a_futures_fields_lie_inside_its_layout`.
 pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source: u16) -> Lowering {
     let layout = Heap::machine_layout();
     let resolved = Heap::machine_count_word(
@@ -721,9 +721,11 @@ pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source:
         ..
     } = ClosureRegisters::of(&body.macro_assembler);
     let program_counter = body.program_counter;
+    let window_end = body.window_end;
     let macro_assembler = &mut body.macro_assembler;
     let object_space = macro_assembler.roles().object_space;
-    let (moved, forced) = (
+    let (moved, forced, done) = (
+        macro_assembler.assembler().label(),
         macro_assembler.assembler().label(),
         macro_assembler.assembler().label(),
     );
@@ -750,7 +752,7 @@ pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source:
         MacroAssembler::machine_word(spare, MachineWord::FutureClass),
     );
     assembler.jump_if(Condition::NotEqual, moved);
-    // A future: resolved, or forced by the interpreter.
+    // A future: resolved, or forced by its `resolve`.
     assembler.load(
         Width::Word64,
         class_word,
@@ -770,7 +772,7 @@ pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source:
         },
     );
     // A resolved future's value is never a future: one that is was
-    // written by crafted code, and the interpreter raises its error.
+    // written by crafted code, and its `resolve` signals the error.
     macro_assembler.jump_unless_object(value, moved);
     class_word_of(macro_assembler, value);
     let assembler = macro_assembler.assembler();
@@ -781,7 +783,20 @@ pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source:
     assembler.jump_if(Condition::Equal, forced);
     assembler.bind(moved);
     macro_assembler.store_frame_register(destination, value);
-    macro_assembler.exit_at(forced, ExitKind::Reexecute, program_counter);
+    let frame = macro_assembler.roles().frame;
+    let assembler = macro_assembler.assembler();
+    assembler.jump(done);
+    assembler.bind(forced);
+    macro_assembler.call_leaf(
+        Leaf::Forcing.index(),
+        [
+            Operand::Register(frame),
+            Operand::Immediate(u64::from(program_counter)),
+            Operand::CodeAddress,
+        ],
+    );
+    super::sends::call_decided(body, window_end, 0, destination);
+    body.macro_assembler.assembler().bind(done);
     Lowering::Template
 }
 
@@ -1313,5 +1328,32 @@ fn divorced_field(
         OuterAccess::Store { .. } => {
             macro_assembler.store_with_barrier(frame, displacement, value, spare);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::future_field;
+    use crate::heap::Heap;
+    use crate::interpreter::future::{COMPUTATION_FIELD, FIELD_COUNT, STATE_FIELD};
+
+    /// `make_future` writes, and `resolve_future` reads, a future's two
+    /// fields at displacements fixed when the body is compiled, unchecked,
+    /// on the word that a future made by the runtime, or decoded, has
+    /// exactly `FIELD_COUNT` fields: both displacements must lie apart and
+    /// inside those fields, or the template reads past the object.
+    #[test]
+    fn a_futures_fields_lie_inside_its_layout() {
+        let layout = Heap::machine_layout();
+        let fields = i32::try_from(FIELD_COUNT * 8).expect("a future has two fields");
+        let end = layout.fields_displacement + fields;
+        for field in [COMPUTATION_FIELD, STATE_FIELD] {
+            let displacement = future_field(field);
+            assert!(
+                displacement >= layout.fields_displacement && displacement + 8 <= end,
+                "field {field} at {displacement} lies outside the future's fields"
+            );
+        }
+        assert_ne!(future_field(COMPUTATION_FIELD), future_field(STATE_FIELD));
     }
 }

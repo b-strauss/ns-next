@@ -953,15 +953,15 @@ string or symbol none at all, and a frame object is exempt as a register
 file is, below. The
 marker then finds a future that only object fields reached unreachable, and
 the compaction reclaims it. A resolved future's value is never itself a
-future (`Mutator::future_computed` follows a future of a future before it
-records one, and one whose fields crafted code made so is malformed and
-left in place), so one pass leaves none behind.
+future (its `resolve` forces a future its computation answered before it
+records the value, and one whose fields crafted code made so is malformed
+and left in place), so one pass leaves none behind.
 
 Registers and host roots are exempt -- a reified frame's, the activation
-stack's, and every `Root`. `FutureImplementation`'s own
-`doesNotUnderstand:`, whose activation forced it and is still returning its
-answer, runs with the future as `self` -- a register that must keep naming an instance of the
-class whose method runs -- and a host that holds the future holds that
+stack's, and every `Root`. `FutureImplementation`'s own `resolve` and
+`doesNotUnderstand:`, whose activations forced it and are still returning
+their answers, run with the future as `self` -- a register that must keep
+naming an instance of the class whose method runs -- and a host that holds the future holds that
 object and may ask for its state; rewriting either would change what they
 read. A future held there
 survives the collection and is replaced by the first one after it lets go,

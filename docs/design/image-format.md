@@ -365,8 +365,8 @@ Instructions:
   running method's defining class, the object `outer N m` sends to.
 - 36 `MakeFuture`: §6.3.2, a new unresolved future of a closure,
   `destination` and `closure`, both `u16`.
-- 37 `ResolveFuture`: a value seen through a future, forcing it first if it is
-  unresolved, `destination` and `source`, both `u16`.
+- 37 `ResolveFuture`: a value seen through a future, forcing it by its
+  `resolve` if it is not resolved, `destination` and `source`, both `u16`.
 - 38 `LoadOwnSlot`: `self`'s own slot read back without a getter send,
   `destination` a `u16` and `own_index` a `u32`, addressed as `InitializeSlot`
   addresses it.
@@ -2455,10 +2455,10 @@ for what each activation's `Continuation` carries in Rust: a nested class's
 `NestedClassCreation`, the unwind an `ensure:` block's return carries
 on (`Unwind`, holding a `PendingUnwind`: its target frame and whether it returns
 a value, restarts or terminates), the end of the run a VM error's `signal`
-returns into (`VmErrorSignalled`) and a future's forcing (`Future`, holding a
-`FutureForcing`). An image records none of them today, and a suspended
-activation without its continuation would resume without the rest of the
-class creation, the unwind or the forcing it belongs to. The depth limit's
+returns into (`VmErrorSignalled`) and the instruction a future's forcing
+runs again (`Reexecute`). An image records none of them today, and a
+suspended activation without its continuation would resume without the
+rest of the class creation, the unwind or the instruction it belongs to. The depth limit's
 reserve (`Mutator.depth_reserve`), a frame held while an error near the limit is
 signalled, would have to travel with the stack as well
 ([execution.md](execution.md), "The depth limit"). Every reified frame has

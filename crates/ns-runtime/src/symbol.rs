@@ -48,7 +48,7 @@ macro_rules! well_known_symbols {
 well_known_symbols! {
     NEW => "new",
     VALUE => "value",
-    VALUE_OF => "valueOf:",
+    RESOLVE => "resolve",
     DOES_NOT_UNDERSTAND => "doesNotUnderstand:",
     CARET => "^",
     OBJECT => "Object",

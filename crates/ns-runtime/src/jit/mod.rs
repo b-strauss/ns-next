@@ -153,11 +153,6 @@ pub struct JitStatistics {
     /// Calls machine code made of a leaf (`jit::leaves`), of every kind:
     /// a template's, a stub's and the exit's walk's.
     pub leaf_calls: u64,
-    /// Exits of machine code at a `ResolveFuture` that met a future it
-    /// must force, which the interpreter forces before the instruction
-    /// runs again in machine code: counted among `exits`, and spending no
-    /// exit budget.
-    pub forcing_exits: u64,
 }
 
 /// What a body's `JitSlot` says once it is compiled, and so entered at a
@@ -1789,8 +1784,10 @@ pub(crate) fn entered(
 /// A frame returned to, which an exit above it left stopped in machine
 /// code (`Heap::activation_is_compiled`), its callee's value delivered:
 /// runs its machine code from `program_counter`, the instruction after the
-/// send, when its body has machine code in this zone, or clears the bit
-/// and goes on interpreted.
+/// call -- a cached send, an initializer invocation, or a `ResolveFuture`
+/// that called a future's `resolve` (`sends::call_slots`) -- when its body
+/// has machine code in this zone, or clears the bit and goes on
+/// interpreted.
 #[cold]
 #[inline(never)]
 pub(crate) fn resumed(
@@ -2229,7 +2226,6 @@ fn resumption_after_exit(
     kind: u64,
     innermost: ActivationReference,
 ) -> Resumption {
-    use crate::bytecode::Instruction;
     use stubs::MachineExit;
 
     let exit = stubs::decode_exit(block, kind);
@@ -2249,35 +2245,12 @@ fn resumption_after_exit(
     if at_a_send {
         mutator.jit.statistics.send_exits += 1;
     }
-    // A `ResolveFuture` that met a future it must force: the forcing, a
-    // continuation other than `Deliver`, is the interpreter's
-    // (`closures::resolve_future`), and once it is done the instruction
-    // runs again in the frame's machine code (`vm::reexecute`), so the
-    // frame stands stopped in machine code at the instruction -- the
-    // stretch's entry frame too, which no walk marked -- and the exit,
-    // which a slot clause takes once per future its end forces, spends
-    // no budget.
-    let forcing = match exit {
-        MachineExit::Reexecute { program_counter } => matches!(
-            mutator
-                .heap
-                .activation_code(innermost)
-                .instruction(program_counter as usize),
-            Instruction::ResolveFuture { .. }
-        )
-        .then_some(program_counter),
-        _ => None,
-    };
-    if forcing.is_some() {
-        mutator.jit.statistics.forcing_exits += 1;
-    }
     // The stress mode enters every body at every push, however often it
     // leaves.
     if matches!(
         exit,
         MachineExit::Reexecute { .. } | MachineExit::PushRefused
-    ) && forcing.is_none()
-        && !mutator.jit.install_bodies_exiting_at_once
+    ) && !mutator.jit.install_bodies_exiting_at_once
     {
         let code = mutator.heap.activation_code(innermost);
         if code.jit.note_exit() {
@@ -2285,14 +2258,8 @@ fn resumption_after_exit(
         }
     }
     // The innermost frame goes on interpreted from here: it no longer
-    // stands in machine code, which only the frames below it still do --
-    // but for a forcing's, which the instruction run again resumes.
-    match forcing {
-        Some(program_counter) => mutator
-            .heap
-            .mark_stopped_in_machine_code(innermost, program_counter),
-        None => mutator.heap.clear_compiled(innermost),
-    }
+    // stands in machine code, which only the frames below it still do.
+    mutator.heap.clear_compiled(innermost);
     match exit {
         MachineExit::Returned { .. } => {
             unreachable!("internal: a return is answered before the exit is decoded")

@@ -278,7 +278,11 @@ impl Primitive {
                 | ModulePrimitive::ClassNamed
                 | ModulePrimitive::Record,
             ) => false,
-            Primitive::Future(FuturePrimitive::Value | FuturePrimitive::Made) => false,
+            // `IsFuture` answers `false` exactly when its operand is no future:
+            // what it asks about is the future itself, never its value.
+            Primitive::Future(
+                FuturePrimitive::Value | FuturePrimitive::Made | FuturePrimitive::IsFuture,
+            ) => false,
             Primitive::Weak(
                 WeakPrimitive::Allocate
                 | WeakPrimitive::Size
@@ -807,15 +811,18 @@ pub enum ModulePrimitive {
     Record,
 }
 
-/// The two leaves of the futures (`docs/design/object-model.md`,
-/// "Simultaneous slots"): `FutureImplementation`'s and `Future`'s.
+/// The three leaves of the futures (`docs/design/object-model.md`,
+/// "Simultaneous slots"), all `FutureImplementation`'s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FuturePrimitive {
-    /// The future's value, forcing it first when it is unresolved.
+    /// The future's value: a resolved one's at once, any other's by a
+    /// send of its `resolve`, which forces it.
     Value,
     /// Notes that `FutureImplementation`'s factory made a future, which
     /// turns on the runtime's looking for one (`Mutator::futures_made`).
     Made,
+    /// Whether the operand is a future, answered without forcing it.
+    IsFuture,
 }
 
 /// The leaves the shipped mirrors module reads structure and state
@@ -1738,6 +1745,14 @@ pub const MIRROR: &[MirrorEntry] = &[
         "value",
         Primitive::Future(FuturePrimitive::Value),
     ),
+    // Leaf: reads its operand's class word and answers a Boolean; it never
+    // declines and writes nothing (`builtins::future`).
+    leaf(mirror(
+        "objectIsFuture:ifFail:",
+        // Unary: the object is the row's subject.
+        "isFuture",
+        Primitive::Future(FuturePrimitive::IsFuture),
+    )),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).

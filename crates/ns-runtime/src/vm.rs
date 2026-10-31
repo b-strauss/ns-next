@@ -17,9 +17,7 @@ use std::rc::Rc;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterBase};
-use crate::interpreter::future::{
-    not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
-};
+use crate::interpreter::future::{not_a_closure, value_for_a_value_slot, Resolution};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{body_too_large_error, unresolved_identifier_error};
@@ -169,9 +167,11 @@ impl Handoff {
 /// resumes it from that `program_counter`), `MakeClosure` (it reifies the
 /// activation, so the frame starts from the `program_counter` stored just
 /// before), `NonLocalReturn` (control leaves with a signal), and
-/// `ResolveFuture` and `InitializeSlot` when either meets an unresolved
-/// future (`force_and_reexecute` pushes the forcing above it, and the loop
-/// must come back to this same instruction once the future resolves),
+/// `ResolveFuture` when it meets a future that is not resolved (it pushes
+/// the future's `resolve` above it, whose value it takes as a send takes
+/// its callee's), `InitializeSlot` when it meets one in a value's slot
+/// (`force_and_reexecute` pushes the forcing above it, and the loop must
+/// come back to this same instruction once the future resolves),
 /// and every instruction that raises an error -- `SignalNonBoolean`,
 /// `LoadLiteral`'s error path, a refused slot or vector access (`raise`).
 /// Nothing resumes a raising activation, since an `Error` is not resumable
@@ -2424,15 +2424,15 @@ fn stopped(mutator: &Mutator<'_>, resumption: Resumption, handoff: &mut Handoff)
 /// `activation` has returned `value`: pop it and do what its continuation says.
 /// A value -- the usual case -- goes to the send in the caller, which resumes,
 /// or out of `run` when there is no caller in this run; a continuation may
-/// instead decide another activation -- the `valueOf:` that sends a future's
-/// computation `value`, or a nested class's next step -- which runs in the
-/// popped activation's place. `Mutator::resume` applies the
-/// continuation and
-/// `Mutator::push_continuation` pushes what it decided, depth count included;
-/// the loop only forwards the popped frame's flag. A future's forcing
-/// (`Mutator::future_computed`) may also run the caller's stopped
-/// instruction again (`reexecute`) rather than resume after it. A caller
-/// suspended into its frame is resumed first (`return_to_suspended`).
+/// instead decide another activation -- a nested class's next step --
+/// which runs in the popped activation's place. `Mutator::resume` applies
+/// the continuation and `Mutator::push_continuation` pushes what it
+/// decided, depth count included; the loop only forwards the popped
+/// frame's flag. A future's `resolve` pushed for an instruction that could
+/// not take its value (`Continuation::Reexecute`) runs the caller's
+/// stopped instruction again (`reexecute`) rather than resume after it. A
+/// caller suspended into its frame is resumed first
+/// (`return_to_suspended`).
 fn finish<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -2473,19 +2473,9 @@ fn apply_continuation<'gc>(
         Continuation::ReturnToSuspended(suspended) => {
             return return_to_suspended(mutator, *suspended, counted, value, floor, handoff);
         }
-        // A future's computation returned: what happens next is
-        // `interpreter::future`'s to decide, and the loop carries it out.
-        Continuation::Future(forcing) => match mutator.future_computed(*forcing, value) {
-            Ok(FutureOutcome::Deliver(value)) => value,
-            Ok(FutureOutcome::Reexecute) => return reexecute(mutator, floor, handoff),
-            Ok(FutureOutcome::Force(step)) => {
-                return match mutator.push_continuation(step, counted) {
-                    Ok(next) => handoff.switch_to(mutator, next, 0),
-                    Err(signal) => unwind(mutator, signal, floor, handoff),
-                };
-            }
-            Err(signal) => return unwind(mutator, signal, floor, handoff),
-        },
+        // A future's `resolve` returned to an instruction that could not
+        // take its value: the instruction runs again and finds it resolved.
+        Continuation::Reexecute => return reexecute(mutator, floor, handoff),
         then => match mutator.resume(then, value) {
             // Forgotten rather than dropped, as `deliver` forgets a value's
             // step.
@@ -2657,15 +2647,13 @@ fn machine_code_switch<'gc>(
 }
 
 /// The instruction the popped activation's caller is stopped at, run again
-/// rather than resumed after: it met an unresolved future, which is now
-/// resolved (`interpreter::future`, `AfterForcing::Reexecute`). It wrote
-/// nothing before it forced the future, so running it again is running it
-/// once. A host's send has no instruction to run again; a future it passes
-/// in straight to a leaf ends the run. A caller that stopped in machine code
-/// -- machine code's `ResolveFuture`, which leaves a forcing to the
-/// interpreter and keeps its frame compiled (`jit::resumption_after_exit`)
-/// -- runs the instruction again in its machine code, as a caller returned
-/// to resumes there (`resume_caller`).
+/// rather than resumed after: it met a future that was not resolved, and
+/// the future's `resolve` has now resolved it (`Continuation::Reexecute`).
+/// It wrote nothing before it forced the future, so running it again is
+/// running it once. A host's send has no instruction to run again; a
+/// future it passes in straight to a leaf ends the run. Only the
+/// interpreter forces a future this way, so the caller runs the
+/// instruction again interpreted, as it met the future.
 fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handoff) -> Transfer {
     if mutator.heap.activation_stack_top() == floor {
         let error = crate::interpreter::future::host_passed_a_future();
@@ -2676,7 +2664,6 @@ fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handof
         .top_activation()
         .expect("internal: an activation above the run's floor has a caller");
     let program_counter = mutator.heap.activation_program_counter(caller);
-    handoff.resume_in_machine_code = mutator.heap.activation_is_compiled(caller);
     handoff.switch_to(mutator, caller, program_counter)
 }
 
@@ -2820,8 +2807,9 @@ fn initialize_applied_level(
 // slots cost").
 
 /// `InitializeSlot` refused a value's slot: if the value is a future, what
-/// it stands for belongs there, stored and checked again, or forced first
-/// and the instruction run again (`future::value_for_a_value_slot`).
+/// it stands for belongs there, stored and checked again when the future
+/// is resolved, or forced first and the instruction run again
+/// (`future::value_for_a_value_slot`).
 #[inline(never)]
 #[expect(
     clippy::too_many_arguments,
@@ -2847,7 +2835,7 @@ fn initialize_slot_refused<'gc>(
     let value = read_local(&mutator.heap, activation, source);
     match value_for_a_value_slot(mutator, value) {
         None => raise(mutator, program_counter, signal, floor, handoff),
-        Some(Ok(Resolution::Value(resolved))) => {
+        Some(Resolution::Value(resolved)) => {
             let receiver = mutator.heap.activation_receiver(activation);
             let base = mutator.heap.activation_slot_base(activation);
             match check_value_slot(mutator, activation, receiver, own_index as usize, resolved) {
@@ -2863,10 +2851,9 @@ fn initialize_slot_refused<'gc>(
                 Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
             }
         }
-        Some(Ok(Resolution::Force(step))) => {
+        Some(Resolution::Force(step)) => {
             force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
         }
-        Some(Err(signal)) => raise(mutator, program_counter, signal, floor, handoff),
     }
 }
 
@@ -2981,8 +2968,12 @@ pub(crate) fn make_future_into<'gc>(
     Ok(())
 }
 
-/// `ResolveFuture`: the value `source` holds, seen through a future --
-/// forced first, and the instruction run again, when it is unresolved.
+/// `ResolveFuture`: the value `source` holds, seen through a future:
+/// itself when it is none, a resolved future's value, and for any other
+/// future what its `resolve` answers -- the push of that method, above the
+/// frame's window, delivers its value to `destination` as a send's callee
+/// does (`Mutator::forcing`, `send_destination`), or signals the error of
+/// a future being computed or malformed.
 fn resolve_future<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -2993,16 +2984,26 @@ fn resolve_future<'gc>(
     handoff: &mut Handoff,
 ) -> Transfer {
     let value = read_local(&mutator.heap, activation, source);
-    match resolve_for_instruction(mutator, value) {
-        Ok(Resolution::Value(value)) => {
-            write_local(&mut mutator.heap, activation, destination, value);
-            Transfer::Next
-        }
-        Ok(Resolution::Force(step)) => {
-            force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
-        }
-        Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
-    }
+    let Some(future) = mutator.as_future(value) else {
+        write_local(&mut mutator.heap, activation, destination, value);
+        return Transfer::Next;
+    };
+    let register_base = mutator.heap.activation_register_base(activation);
+    send(
+        mutator,
+        Sender {
+            activation,
+            register_base,
+            destination,
+            inlinable: false,
+        },
+        program_counter,
+        ArgumentSlots::new(register_base, 0, 0),
+        None,
+        floor,
+        handoff,
+        |mutator, _| Ok(mutator.forcing(future)),
+    )
 }
 
 /// `LoadOwnSlot`: `self`'s field at the slot base plus `own_index`.
@@ -3049,11 +3050,12 @@ fn initialize_slot_provisionally<'gc>(
     Transfer::Next
 }
 
-/// An instruction met an unresolved future: store where it stands, push the
-/// forcing, and switch to it; `Reexecute` brings the loop back to this same
-/// instruction once the future is resolved (`reexecute`). One of the
-/// instructions whose `program_counter` must be stored before it hands
-/// control elsewhere (`run`'s doc comment).
+/// `InitializeSlot` met a future that is not resolved: store where it
+/// stands, push the future's `resolve`, and switch to it;
+/// `Continuation::Reexecute` brings the loop back to this same instruction
+/// once the future is resolved (`reexecute`). One of the instructions
+/// whose `program_counter` must be stored before it hands control
+/// elsewhere (`run`'s doc comment).
 #[inline(never)]
 fn force_and_reexecute<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -3169,7 +3171,9 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
         // A leaf that activates a block (`value:`, `do:`) resumes its
         // caller here.
         | CompactInstruction::SendMirror { destination, .. }
-        // A factory's or an initializer's initializer returns here.
+        // A factory's or an initializer's initializer returns here, and
+        // the `resolve` of a future `ResolveFuture` met.
+        | CompactInstruction::ResolveFuture { destination, .. }
         | CompactInstruction::InitializeInstance { destination, .. }
         | CompactInstruction::InitializeSuperclass { destination, .. }
         | CompactInstruction::InitializeAppliedLevel { destination, .. } => u16::from(destination),
@@ -3185,6 +3189,7 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
         }
         CompactInstruction::Wide { index } => match code.body().wide(index as usize) {
             Instruction::SendMirror { destination, .. }
+            | Instruction::ResolveFuture { destination, .. }
             | Instruction::InitializeInstance { destination, .. }
             | Instruction::InitializeSuperclass { destination, .. }
             | Instruction::InitializeAppliedLevel { destination, .. } => *destination,

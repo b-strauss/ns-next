@@ -422,10 +422,11 @@ pub enum Continuation<'gc> {
     /// exceptions. Boxed so that every other continuation stays as small as
     /// it was.
     VmErrorSignalled(Box<NewspeakError<'gc>>),
-    /// A future's computation returned (`interpreter::future`): record its
-    /// value, then deliver it or run the instruction that forced it again.
-    /// Boxed, as every continuation that carries state is.
-    Future(Box<crate::interpreter::future::FutureForcing<'gc>>),
+    /// A future's `resolve`, pushed for an instruction that could not take
+    /// its value, returned (`Mutator::forcing_then_reexecute`): the value
+    /// is dropped, and the caller runs the instruction that met the future
+    /// again, which now finds it resolved (`vm::reexecute`).
+    Reexecute,
     /// The activation was resumed from a suspended frame whose sender is
     /// suspended too (`Heap::resume_activation`): its own continuation is
     /// applied as before, and control then goes to the sender, resumed in
