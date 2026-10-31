@@ -59,23 +59,26 @@ pub(crate) fn string_hash(text: &str) -> i64 {
     crate::hash::content_hash(text)
 }
 
-/// Told apart from a String's hash of the same text: a Symbol is never
-/// equal to a String, so nothing requires the two to hash alike, and a
-/// collection holding both keeps them in different buckets. Any 32-bit
-/// constant would do; this one mixes the bits evenly.
-const SYMBOL_HASH_SALT: i64 = 0x5bd1_e995;
-
-/// A symbol's hash: its text's, never a number, since a program-made
-/// symbol has none until its text is interned and its hash must not change
-/// when the canonical table adopts it. §5.1.6 makes equal symbols one
-/// object, so it agrees with `Symbol>>=` by construction. The text's hash
-/// is a non-negative sub-2^32 integer, and so is this, since the salt has
-/// no bit past 32. `None` for anything but a Symbol.
+/// A symbol's hash: its text's (`symbol::hash_of_symbol_text`), never its
+/// number. §5.1.6 makes equal symbols one object, so it agrees with
+/// `Symbol>>=` by construction. An interned symbol reads the hash the
+/// interner stored -- one probe of the canonical table and one read, as
+/// DeltaBlue's symbol-keyed lookups need it (`docs/design/execution.md`).
+/// Only a program-made symbol whose text nothing has interned walks its
+/// text: it is not cached, since such a symbol names no selector, slot or
+/// class, and a word per entry of the weak table would be paid by every
+/// one of them for the few a program hashes. `None` for anything but a
+/// Symbol.
 pub(crate) fn symbol_hash<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<i64> {
+    if let Some(symbol) = heap.symbol_value(object) {
+        return Some(symbol.text_hash());
+    }
     if !heap.is_symbol(object) {
         return None;
     }
-    Some(heap.string_hash(object)? ^ SYMBOL_HASH_SALT)
+    Some(crate::symbol::hash_of_symbol_text(
+        heap.string_hash(object)?,
+    ))
 }
 
 /// Mirrors `ns_syntax::lexer`'s string-literal escaping (`lex_string`): a

@@ -4879,7 +4879,7 @@ impl<'gc> Heap<'gc> {
         if self.program_symbols.is_empty() {
             return None;
         }
-        let hash = crate::hash::content_hash(text);
+        let hash = self.program_symbols.bucket(text.chars());
         self.program_symbols
             .candidates(hash)
             .iter()
@@ -4896,9 +4896,16 @@ impl<'gc> Heap<'gc> {
     /// growth limit (`limits::TableLimits`).
     pub(crate) fn record_program_symbol(&mut self, object: ObjectReference<'gc>) {
         self.check_object_origin(object);
-        let Some(hash) = self.string_hash(object) else {
+        let Some(string) = self.packed_string(object) else {
             unreachable!("internal: a program-made symbol is a String")
         };
+        // Every unit is a scalar value by construction; the replacement
+        // character stands in for a panic, as in `string_hash`.
+        let hash =
+            self.program_symbols
+                .bucket(string.code_points().map(|code_point| {
+                    char::from_u32(code_point).unwrap_or(char::REPLACEMENT_CHARACTER)
+                }));
         self.program_symbols.insert(hash, object);
         if self
             .table_limits
@@ -12324,6 +12331,40 @@ mod tests {
         let short = heap.allocate_string(class, crate::CodePoints::from("abc"));
         let longer = heap.allocate_string(class, crate::CodePoints::from("abcd"));
         assert_eq!(heap.strings_equal(short, longer), Some(false));
+    }
+
+    /// The image decoder refuses a symbol record whose text a living
+    /// program-made symbol spells, as it refuses a second record of one
+    /// text (`Heap::has_symbol_object`): once the text is interned, the
+    /// program-made object counts as the text's object though the
+    /// canonical table holds none, until the prune or `new_symbol` adopts
+    /// it.
+    #[test]
+    fn a_living_program_made_symbol_makes_its_interned_text_a_duplicate() {
+        let mut heap = Heap::new();
+        let symbol_class = builtin_named_class(&mut heap, "Symbol", Some(BuiltinClass::Symbol));
+        let text = "a text a heap test made, interned only afterwards";
+        assert_eq!(Symbol::lookup(text), None);
+        let object = heap.allocate_string(symbol_class, crate::CodePoints::from(text));
+        heap.record_program_symbol(object);
+        assert_eq!(heap.symbol_value(object), None);
+        assert_eq!(heap.symbol_text(object).as_deref(), Some(text));
+        assert!(heap
+            .program_symbol_named(text)
+            .is_some_and(|found| found.same(object)));
+
+        let symbol = Symbol::intern(text);
+        assert!(heap.canonical_symbol(symbol).is_none());
+        assert!(
+            heap.has_symbol_object(symbol),
+            "the decoder must refuse a record of the text"
+        );
+        assert_eq!(heap.symbol_value(object), Some(symbol));
+        assert!(heap
+            .adopt_program_symbol(symbol)
+            .is_some_and(|adopted| adopted.same(object)));
+        assert!(heap.has_symbol_object(symbol));
+        assert_eq!(heap.table_sizes().program_symbols, 0);
     }
 
     #[test]

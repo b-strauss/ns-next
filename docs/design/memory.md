@@ -1924,16 +1924,22 @@ answers with the Ephemeron's refusal of a value as its key).
   `PERM_REFCOUNT` (`prior-art/jdk/src/hotspot/share/oops/symbol.hpp:99-102`,
   `:167-169`). A program-made symbol is a `Symbol` object whose text
   nothing has interned; compiled code, a cache key, a return site, a
-  frame header and an image record can never hold one. A text a program
-  chooses is interned in only two places, each bounded by the runs: the
-  selector of the error a run ends with, which the host's `HostError`
-  names as a `Symbol` (`Activation`'s termination, and the error an
-  unhandled `doesNotUnderstand:` at the depth limit reports).
+  frame header and an image record can never hold one. A run never
+  interns a text a program chose, or a host that keeps one interpreter
+  would grow the interner with every run: the error a run ends with,
+  whose `HostError` names its selector as a `Symbol`, reports a
+  program-made selector as `signal`'s (`Activation`'s termination) or
+  `doesNotUnderstand:`'s (the depth limit's report of an unhandled
+  `doesNotUnderstand:`), its text in the error's message.
 - **The weak table** (`heap::symbols::ProgramSymbols`), per heap, beside
-  `canonical_symbols`: the program-made symbols keyed by the content hash
-  of their text (`Heap::string_hash`, an `i64` below 2^32) and compared by
-  text, so it keeps no copy of the text, with an inverse from an object's
-  offset to its hash, as `symbol_of` is the canonical table's. It is weak
+  `canonical_symbols`: the program-made symbols keyed by a hash of their
+  text and compared by text, so it keeps no copy of the text, with an
+  inverse from an object's offset to its hash, as `symbol_of` is the
+  canonical table's. The hash is SipHash under a key drawn per heap
+  (`std::hash::RandomState`), since a program chooses the texts and could
+  otherwise collide them on purpose into one bucket every `asSymbol`
+  scans; no output depends on the draw, since a lookup compares texts and
+  no answer depends on the order of a bucket. It is weak
   as the canonical table is: never a root, pruned with
   `prune_canonical_symbols`, forwarded by a scavenge's weak pass
   (`Heap::forward_weak_program_symbols`) beside `forward_weak_symbols`,
@@ -1970,7 +1976,10 @@ answers with the Ephemeron's refusal of a value as its key).
   declines to its not-found result. A reader of the text reads the
   object's own (`Heap::symbol_text`). A symbol's `hash` is its text's,
   told apart from a String's of the same text, so it does not change when
-  the canonical table adopts the object. No leaf of machine code reads a
+  the canonical table adopts the object: the interner stores it with each
+  text it interns (`Symbol::text_hash`), so an interned symbol's `hash` is
+  one probe and one read, and only a program-made symbol whose text
+  nothing has interned computes it from its text. No leaf of machine code reads a
   symbol object's number: the mirror leaves and the stubs read the
   selector of the send, always a permanent number, and `sendTo:` is no
   leaf.

@@ -341,9 +341,13 @@ since a Symbol never equals a String. §5.1.6 makes equal symbols one
 object, so it agrees with `Symbol>>=` by construction. It is never the
 interner's number: a symbol a program makes has none until its text is
 interned, and its hash must not change when the canonical table adopts it
-([memory.md](memory.md), "Weak references"). Hashed in place, without
-building the text, as a String's is; being the text's, it is the same in
-every process and survives a snapshot.
+([memory.md](memory.md), "Weak references"). The interner computes it
+once per text it interns and stores it beside the text, so an interned
+symbol's `hash` is one probe of the canonical table and one read, as the
+symbol-keyed lookups of DeltaBlue need it ([execution.md](execution.md));
+only a program-made symbol whose text nothing has interned hashes its
+text, in place. Being the text's, it is the same in every process and
+survives a snapshot.
 
 **Strings are code points in two widths.** A `String` is an object of the
 byte-indexed format while every code point fits Latin-1, one byte per code

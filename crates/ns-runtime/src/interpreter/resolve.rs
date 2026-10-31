@@ -716,16 +716,14 @@ impl<'gc> Mutator<'gc> {
                     Arguments::Values(&[message].as_slice()),
                 )
             }
-            // Named by its text in the error rather than by a symbol, which
-            // the text does not have.
-            _ => Err(Signal::Error(NewspeakError::error(
-                Symbol::DOES_NOT_UNDERSTAND,
+            // The error names the selector by its text; its `Symbol` is
+            // `doesNotUnderstand:`'s, since the text has none and a run
+            // interns no text a program chose.
+            _ => Err(unhandled_error_named(
                 receiver,
-                format!(
-                    "doesNotUnderstand: {} (and no doesNotUnderstand: found anywhere in the                      class chain)",
-                    self.heap.str_value(selector).unwrap_or_default()
-                ),
-            ))),
+                Symbol::DOES_NOT_UNDERSTAND,
+                &self.heap.str_value(selector).unwrap_or_default(),
+            )),
         }
     }
 
@@ -786,11 +784,17 @@ fn handler_method_step<'gc>(
 
 /// A send nothing handles, not even `doesNotUnderstand:`.
 fn unhandled_error<'gc>(receiver: Value<'gc>, selector: Symbol) -> Signal<'gc> {
+    unhandled_error_named(receiver, selector, selector.as_str())
+}
+
+/// `unhandled_error`, its selector reported as `selector` and named in
+/// the text as `text`.
+fn unhandled_error_named<'gc>(receiver: Value<'gc>, selector: Symbol, text: &str) -> Signal<'gc> {
     Signal::Error(NewspeakError::error(
         selector,
         receiver,
         format!(
-            "doesNotUnderstand: {selector} (and no doesNotUnderstand: found anywhere in the \
+            "doesNotUnderstand: {text} (and no doesNotUnderstand: found anywhere in the \
              class chain)"
         ),
     ))

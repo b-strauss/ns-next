@@ -4,11 +4,13 @@
 //! A symbol a program makes from a string (`asSymbol`) whose text nothing
 //! has interned takes no number: it is only its object, a String of the
 //! `Symbol` class, and this table is what makes it the one object of its
-//! text (§5.1.6). Keyed by the content hash of the text, the hash
-//! `Heap::string_hash` answers for the object, and compared by the text
-//! the object holds, so the table keeps no copy of it. It is weak, as the
+//! text (§5.1.6). Keyed by a hash of the text seeded per heap, and
+//! compared by the text the object holds, so the table keeps no copy of
+//! it. It is weak, as the
 //! canonical symbol table is: the collector prunes it and forwards it, and
 //! never keeps an object alive through it.
+
+use std::hash::{BuildHasher, Hasher, RandomState};
 
 use crate::hash::IdentityMap;
 
@@ -18,14 +20,21 @@ use super::ObjectReference;
 /// means nothing against another heap.
 #[derive(Default)]
 pub(crate) struct ProgramSymbols<'gc> {
-    /// Every program-made symbol, under the content hash of its text. A
+    /// The key of the buckets' hash. A program chooses the texts, so with
+    /// an unseeded hash it could make them collide on purpose and every
+    /// `asSymbol` scan one growing bucket; SipHash under a key drawn per
+    /// heap leaves it nothing to aim at. The draw makes no output differ
+    /// between runs: a lookup compares texts, and no answer depends on the
+    /// order of a bucket or of the table.
+    seed: RandomState,
+    /// Every program-made symbol, under its text's `bucket` hash. A
     /// bucket holds the symbols whose texts share the hash, each text
     /// once.
-    by_hash: IdentityMap<i64, Vec<ObjectReference<'gc>>>,
+    by_hash: IdentityMap<u64, Vec<ObjectReference<'gc>>>,
     /// The inverse: each symbol's offset, and the hash it is filed under.
     /// Keyed by offset, so that it holds no handle, and so that whether
     /// an object is a program-made symbol is one probe.
-    members: IdentityMap<u64, i64>,
+    members: IdentityMap<u64, u64>,
 }
 
 impl<'gc> ProgramSymbols<'gc> {
@@ -44,15 +53,29 @@ impl<'gc> ProgramSymbols<'gc> {
         self.members.contains_key(&offset)
     }
 
+    /// The bucket hash of the text `characters` spell, the same for a
+    /// `&str` as for a String object's code points: both write the same
+    /// UTF-8 bytes, a character at a time, then `0xff`, as `str`'s `Hash`
+    /// ends its text.
+    pub(crate) fn bucket(&self, characters: impl Iterator<Item = char>) -> u64 {
+        let mut hasher = self.seed.build_hasher();
+        let mut encoded = [0u8; 4];
+        for character in characters {
+            hasher.write(character.encode_utf8(&mut encoded).as_bytes());
+        }
+        hasher.write_u8(0xff);
+        hasher.finish()
+    }
+
     /// The symbols filed under `hash`, among which the one of a text of
     /// that hash is, if any.
-    pub(crate) fn candidates(&self, hash: i64) -> &[ObjectReference<'gc>] {
+    pub(crate) fn candidates(&self, hash: u64) -> &[ObjectReference<'gc>] {
         self.by_hash.get(&hash).map_or(&[], Vec::as_slice)
     }
 
     /// Files `object`, a symbol whose text no symbol of the table spells,
     /// under `hash`, its text's.
-    pub(crate) fn insert(&mut self, hash: i64, object: ObjectReference<'gc>) {
+    pub(crate) fn insert(&mut self, hash: u64, object: ObjectReference<'gc>) {
         self.by_hash.entry(hash).or_default().push(object);
         let previous = self.members.insert(object.offset.get(), hash);
         debug_assert!(previous.is_none(), "internal: a symbol is filed twice");

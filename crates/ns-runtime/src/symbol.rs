@@ -74,8 +74,28 @@ well_known_symbols! {
     MAIN_ARGUMENTS => "main:args:",
 }
 
+/// Told apart from a String's hash of the same text: a Symbol is never
+/// equal to a String, so nothing requires the two to hash alike, and a
+/// collection holding both keeps them in different buckets. Any 32-bit
+/// constant would do; this one mixes the bits evenly.
+const SYMBOL_HASH_SALT: i64 = 0x5bd1_e995;
+
+/// The hash `Symbol>>hash` answers for a symbol of `text`: the text's
+/// content hash, salted apart from a String's, and never a number, since a
+/// program-made symbol has none until its text is interned and its hash
+/// must not change when the canonical table adopts it. The content hash is
+/// a non-negative sub-2^32 integer, and so is this, since the salt has no
+/// bit past 32.
+pub(crate) fn hash_of_symbol_text(content_hash: i64) -> i64 {
+    content_hash ^ SYMBOL_HASH_SALT
+}
+
 struct Interner {
     strings: Vec<&'static str>,
+    /// Each interned text's `hash_of_symbol_text`, computed once at the
+    /// interning, so that a canonical symbol's `hash` reads it rather than
+    /// walking its text on every call.
+    hashes: Vec<i64>,
     lookup: HashMap<&'static str, Symbol>,
 }
 
@@ -85,6 +105,7 @@ impl Interner {
     fn new() -> Self {
         let mut interner = Interner {
             strings: Vec::new(),
+            hashes: Vec::new(),
             lookup: HashMap::new(),
         };
         for text in WELL_KNOWN {
@@ -104,6 +125,8 @@ impl Interner {
                 "the symbol table is exhausted: a thread numbers its symbols up to u32::MAX",
             ));
         self.strings.push(text);
+        self.hashes
+            .push(hash_of_symbol_text(crate::hash::content_hash(text)));
         self.lookup.insert(text, symbol);
         symbol
     }
@@ -151,6 +174,12 @@ impl Symbol {
         INTERNER.with_borrow(|interner| interner.strings.len())
     }
 
+    /// The hash a Symbol object of this symbol answers (`Symbol>>hash`),
+    /// stored at the interning (`hash_of_symbol_text`).
+    pub(crate) fn text_hash(self) -> i64 {
+        INTERNER.with_borrow(|interner| interner.hashes[self.0 as usize])
+    }
+
     pub fn as_str(self) -> &'static str {
         INTERNER.with_borrow(|interner| interner.strings[self.0 as usize])
     }
@@ -193,6 +222,18 @@ mod tests {
         let count = Symbol::interned_count();
         assert_eq!(Symbol::lookup("never interned by anything"), None);
         assert_eq!(Symbol::interned_count(), count);
+    }
+
+    /// The hash stored at the interning is the one a program-made symbol of
+    /// the same text computes from its text, so a symbol's hash does not
+    /// change when the canonical table adopts it.
+    #[test]
+    fn the_stored_hash_is_the_one_the_text_computes() {
+        for text in ["hash:of:", "", "\u{20ac}uro \u{1f600}", "a"] {
+            let computed =
+                super::hash_of_symbol_text(crate::hash::content_hash_of_characters(text.chars()));
+            assert_eq!(Symbol::intern(text).text_hash(), computed, "{text:?}");
+        }
     }
 
     #[test]
