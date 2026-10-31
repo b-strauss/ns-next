@@ -3438,9 +3438,10 @@ one desugaring before both lowerings (`compiler/simultaneous.rs`) emits
 or a read, `ResolveFuture` and a checked write at the clause's end
 (instruction tags 36 to 39); `Kernel.ns`'s private `FutureImplementation`
 (builtin class tag 30), after Primordial Soup's `Proxy`, forwards through
-`doesNotUnderstand:`; forcing is a trampoline step under
-`Continuation::Future`, and an instruction or a leaf that meets an
-unresolved future forces it and runs again (`vm::reexecute`), which rests on
+`doesNotUnderstand:`; forcing is its private `resolve`, a Newspeak
+method the runtime pushes where it meets a future that is not resolved,
+and an `InitializeSlot` or a leaf that meets one forces it and runs again
+(`vm::reexecute`), which rests on
 a leaf that declines or raises having changed nothing, and a leaf's callers
 look for a future only on its failure path; ill-founded recursion is an
 ordinary error; an abandoned clause leaves its futures unresolved, to be
@@ -6333,7 +6334,8 @@ element. The mirror rows `block:whileTrue:ifFail:`,
 `block:whileFalse:ifFail:` and `collection:do:ifFail:`, the native loops
 `WhileLoop` and `DoLoop`, `LoopAction`, the continuations
 `WhileCondition`, `WhileBody` and `DoElement`, and `Closure>>valueOf:with:`
-are gone; `Closure>>valueOf:` stays, for a future's forcing. The reference
+are gone, and so is `Closure>>valueOf:`, since a future's `resolve`
+sends its computation `value` itself. The reference
 lowering, which inlined nothing, sent `Closure>>whileTrue:`'s own loop to
 itself until the depth limit, so it now lowers a `whileTrue:` or
 `whileFalse:` over two block literals as a naive loop -- real closures,

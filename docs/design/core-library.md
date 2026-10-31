@@ -4857,11 +4857,13 @@ bare `Proxy` understands none of them. The private `FutureImplementation`
 is such a subclass: its `doesNotUnderstand:` forces the future by its own
 private `resolve` and sends the message on to its value with
 `Message>>sendTo:`; its state is the two slots `computation` and `state`,
-which only `resolve` writes, and the runtime forces a future by pushing
+which only a `resolve` writes, and the runtime forces a future by pushing
 that method (`interpreter/future.rs`). `resolve` asks whether a value is a
-future through the mirror row `objectIsFuture:ifFail:`, and forces a
-future its computation answered through `futureValue:ifFail:`
-(`builtins/future.rs`). Like `Activation`, it is
+future through the mirror row `objectIsFuture:ifFail:`, and takes over the
+futures of a chain its computation answered through the rows
+`futureState:ifFail:`, `futureComputation:ifFail:`,
+`futureTakeOver:ifFail:`, `future:resolveTo:ifFail:` and
+`futureAbandon:ifFail:` (`builtins/future.rs`). Like `Activation`, it is
 private, `Object` declares no accessor for it, and an image names it,
 `Kernel FutureImplementation`, only where it must (an unresolved future's
 record). The

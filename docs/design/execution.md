@@ -8775,11 +8775,10 @@ slots"), so the runtime forces one by pushing that method
 instruction that met the future takes its value, the push is a send's:
 `ResolveFuture` calls `resolve` above its frame's window and takes the
 answer into its destination as a send takes its callee's
-(`vm::resolve_future`; `vm::send_destination` names its destination), and
-so does `futureValue:ifFail:`, the mirror row by which `resolve` forces a
-future its computation answered. Machine code makes the first call as a
-compiled send ("Stage 4: closures, non-local return, allocation and the
-barrier").
+(`vm::resolve_future`; `vm::send_destination` names its destination).
+Machine code makes the call as a compiled send ("Stage 4: closures,
+non-local return, allocation and the barrier"). A future a computation
+answered is no forcing of the runtime's: `resolve` takes it over itself.
 
 An instruction that meets a future where it cannot take its value --
 `InitializeSlot` into a value's slot, and a send whose leaf declined,
@@ -10375,9 +10374,11 @@ sends and the inline caches in machine code.
   global cache as the interpreter's miss fills them, but acts on nothing:
   for a method machine code runs as an activation, and for a factory's
   body, it counts the callee's entry, compiling and installing it at its
-  second -- one of the two leaves that may compile, with the initializer
-  leaf, from inside machine code, which holds no address an install
-  moves -- and answers its machine entry, the receiver and class handed
+  second -- one of the three leaves that may compile, with the
+  initializer leaf and the forcing leaf, which decide a compiled call at
+  the same moment and share its tail (`sends::call_decided`), from inside
+  machine code, which holds no address an install moves -- and answers
+  its machine entry, the receiver and class handed
   over in the machine words (`CalleeReceiver`, `CalleeClass`); for a
   target that is no method with code it answers the stub its cell names;
   for everything else it refuses the call. **A factory send is a compiled

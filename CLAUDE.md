@@ -431,8 +431,8 @@ second interpreter.** Four rules keep the baseline JIT
 into the frame only after its last decline or exit, so an exit, which
 hands the instruction to the interpreter, never re-applies it. A leaf
 (`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
-activation and never pushes; only the miss leaf and the initializer leaf
-compile and install a callee; and a leaf answers "re-execute" only
+activation and never pushes; only the miss leaf, the initializer leaf
+and the forcing leaf compile and install a callee; and a leaf answers "re-execute" only
 before it changed anything but a send's argument slots, which the mirror
 leaf places as the interpreter does and which nothing reads after the
 send but the send re-executed. No leaf reifies a frame machine code

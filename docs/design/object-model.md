@@ -1101,7 +1101,7 @@ to `Object` without its override in `Proxy` fails
 `a_proxy_overrides_every_public_member_of_object_as_protected`. Its state is
 two private slots, `computation` — what computes it until it is resolved,
 then its value — and `state`, 0 unresolved, 1 resolving, 2 resolved,
-which only its private `resolve` writes once the future is made.
+which only a `resolve` writes once the future is made.
 **Forcing is that method**, ordinary Newspeak, as the canonical
 implementation's `Future>>resolve` is, so that machine code compiles it as
 it compiles any method and calls it as it calls any other: a resolved
@@ -1110,22 +1110,33 @@ computation evaluated -- a block, or any other object sent `value` -- and
 the value stored with the resolved state; one being computed signals the
 divergent-evaluation error. The mark is set inside a block its
 `ifCurtailed:` protects, which sets the future unresolved again when an
-unwind abandons the forcing, its computation kept. Crafted code can store
-into the slots once it holds a future, so they are read as untrusted: any
-other state, or a resolved future whose value is a future, signals an
-ordinary error, "a malformed future: its fields are no future's"
-([image-format.md](image-format.md), "Futures in a graph"); the runtime,
-which reads the slots by position, calls that state
-`FutureState::Malformed` and sees through only a well-formed resolved
-future. A computation that answers another future has that one forced in
-turn, by a send of its own `resolve` through the mirror row
-`futureValue:ifFail:` (`builtins/future.rs`) -- one future cannot send
-another's private method -- whose value is then this one's: §6.3.2's
-pipelined promise, as the canonical `resolve` loops, so a resolved
-future's value is never a future. A chain of futures each answering the
-next is therefore a recursion of one forcing per link, bounded by the depth
-limit as any recursion is (`tests/future.rs`); `resolve` asks whether a
-value is a future through `objectIsFuture:ifFail:`, which never forces it.
+unwind abandons the forcing, its computation kept. A computation that
+answers another future makes that one's value this one's -- §6.3.2's
+pipelined promise -- so a resolved future's value is never a future: a
+resolved one's value is taken as it is, and an unresolved one is **taken
+over**: marked resolving, recorded, and its computation run by the same
+`resolve`, in the same activation, and so on along the chain; at the end
+the value is recorded in every future taken over, and the `ifCurtailed:`
+sets them all unresolved again when an unwind abandons the forcing. One
+future cannot send another its private methods, so `resolve` reads and
+writes the futures it takes over through leaf-safe rows of the VM mirror
+(`builtins/future.rs`): `futureState:ifFail:`, which also answers its own
+state, normalized to a small integer, `futureComputation:ifFail:`,
+`futureTakeOver:ifFail:`, `future:resolveTo:ifFail:` and
+`futureAbandon:ifFail:`, beside `objectIsFuture:ifFail:`, which asks
+whether a value is a future without forcing it. A chain of futures each
+answering the next is therefore resolved at a depth that does not grow
+with its length, as the forcing in Rust was (`tests/future.rs`, two
+hundred thousand links), where the canonical `resolve`, which sends the
+next future `resolve`, recurses once per link; and the loop is leaf
+calls only, so machine code runs it without an exit. Crafted code can
+store into the slots once it holds a future, so they are read as
+untrusted: any other state, or a resolved future whose value is a
+future, signals an ordinary error, "a malformed future: its fields are
+no future's" ([image-format.md](image-format.md), "Futures in a
+graph"); the leaf that answers the state calls it 3, the runtime
+`FutureState::Malformed`, and only a well-formed resolved future is seen
+through.
 A program has no message of its own that forces a future, since a public
 `resolve` would tell an escaped future from its value: a future is forced
 only where the runtime needs the value it stands for -- a message sent to
