@@ -2459,7 +2459,9 @@ pub struct CollectorStatistics {
     pub table_collections: u64,
     /// How many times a reservation beside the space gave committed pages
     /// back after a full collection or a compaction of the code zone
-    /// (`heap::limits::Shrink`), and how many bytes in all.
+    /// (`heap::limits::Shrink`), and how many bytes in all: only what the
+    /// system took back, so a Windows code zone's pages, whose commit
+    /// charge stays, count nothing (`CodeWriter::decommit_above`).
     pub decommits: u64,
     pub decommitted_bytes: u64,
 }
@@ -10788,7 +10790,7 @@ impl<'gc> Heap<'gc> {
     /// memory back").
     pub(crate) fn shrink_reservations(&mut self) {
         let pairs = self.shrink_pairs;
-        let bytes = self.stack.frames.shrink(pairs.stack);
+        let bytes = self.stack.frames.shrink(pairs.stack, pairs.damped);
         self.count_decommit(bytes);
         #[cfg(ns_jit)]
         {
@@ -10796,6 +10798,7 @@ impl<'gc> Heap<'gc> {
             let bytes = self.machine_entries.shrink(
                 self.tables.codes.len(),
                 pairs.machine_entries,
+                pairs.damped,
                 |rows| machine_words.set(MachineWord::MachineEntryRows, rows as u64),
             );
             self.count_decommit(bytes);
@@ -10805,7 +10808,9 @@ impl<'gc> Heap<'gc> {
                 <= self.application_ids.rows() as u64,
             "internal: the application id rows' bound lies at the rows recorded"
         );
-        let bytes = self.application_ids.shrink(pairs.application_ids);
+        let bytes = self
+            .application_ids
+            .shrink(pairs.application_ids, pairs.damped);
         self.count_decommit(bytes);
     }
 

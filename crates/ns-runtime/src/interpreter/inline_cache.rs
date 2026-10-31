@@ -411,8 +411,13 @@ impl InlineCaches {
     /// and the pool's, by `shrink` (`Cells::shrink`), and answers how many
     /// bytes that was: run at the end of a full collection, after a slide
     /// moved the live ranges down and truncated the table.
-    pub(crate) fn shrink_cells(&mut self, shrink: crate::heap::limits::Shrink) -> usize {
-        self.cells.shrink(self.sites.len(), self.pool.len(), shrink)
+    pub(crate) fn shrink_cells(
+        &mut self,
+        shrink: crate::heap::limits::Shrink,
+        damped: bool,
+    ) -> usize {
+        self.cells
+            .shrink(self.sites.len(), self.pool.len(), shrink, damped)
     }
 
     /// Drops every family whose root body only the family holds and whose

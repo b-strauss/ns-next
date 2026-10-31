@@ -85,15 +85,48 @@ impl Default for TableLimits {
 
 /// When a reservation gives committed memory back, after a full
 /// collection (`docs/design/memory.md`, "Giving committed memory back"):
-/// once more than `threshold` bytes lie committed above what it still
-/// uses -- its high mark -- everything above the high mark plus
-/// `headroom` is decommitted. Spur's `attemptToShrink` after a full
+/// a band, which says whether it shrinks and to what end, and a damping,
+/// which says how much of the way it goes.
+///
+/// **The band.** Once more than `threshold` bytes lie committed above what
+/// the reservation still uses -- its high mark -- and more than twice the
+/// end it would keep, `round_up_to_page(high_mark + headroom)`, it
+/// shrinks towards that end. Spur's `attemptToShrink` after a full
 /// collection, its `shrinkThreshold` against its `growHeadroom`
-/// (`cointerp.c:50168, 50244-50249`). The headroom below the threshold is
-/// the hysteresis: a high mark that rises and falls again within one
-/// collection's cycle grows back into the headroom without a commit, and
-/// a reservation shrunk once is not shrunk again until the high mark
-/// falls by more than the threshold less the headroom.
+/// (`cointerp.c:50168, 50244-50249`). Spur grows additively, by the larger
+/// of what it needs and its headroom (`cointerp.c:26019`,
+/// `:50328-50329`), and its pair is stable because the threshold is at
+/// least the headroom plus one growth step. The reservations here grow by
+/// doubling what they have committed (`heap::frames`, the cells, the
+/// machine entry and application id tables), so their growth step from a
+/// kept end is that end itself, and the second condition, `committed > 2
+/// * end` -- a shrink keeps less than half of what is committed -- is
+/// Spur's invariant restated for a doubling growth: one regrowth from a
+/// kept end never puts the reservation back in the band. It is the band
+/// HotSpot keeps between `MinHeapFreeRatio` and `MaxHeapFreeRatio`
+/// (`prior-art/jdk/src/hotspot/share/gc/serial/tenuredGeneration.cpp:153-224`),
+/// in bytes rather than ratios.
+///
+/// **The damping** (`ShrinkDamping`). A collection the band says shrink at
+/// gives back only a factor's percent of what lies above the end, rounded
+/// down to a page: 0% the first time, then 10%, 40% and 100%, and a
+/// collection the band says no at sets the factor back to 0. HotSpot's
+/// `ShrinkHeapInSteps` (`tenuredGeneration.cpp:145-151, 218-231`;
+/// `prior-art/jdk/src/hotspot/share/memory/metaspace.cpp:425-427,
+/// 503-522`), whose comment gives the reason: a program that collects
+/// between phases would otherwise give back at once what its next phase
+/// grows again. It counts collections, never time.
+///
+/// The guarantee: of the collections in a row that a reservation's band
+/// says shrink at, the first gives back nothing, the second 10% of what
+/// lies above the band's end, the third 40% of what is left above it, and
+/// the fourth and every later one all of it; one collection out of the
+/// band in between starts the count again. After a shrink kept `end` for
+/// a high mark `h`, a cycle whose peak lies within
+/// one doubling of `end` never puts it back in the band at a collection
+/// whose high mark is `h` or above, so a sawtooth back to the same peak
+/// does not thrash. The code zone commits only what an install needs, so
+/// the band's second condition only makes its shrink rarer.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shrink {
@@ -105,12 +138,12 @@ pub struct Shrink {
 }
 
 impl Shrink {
-    /// The committed end, in bytes, a reservation that uses `high_mark`
-    /// bytes of its `committed` keeps: the high mark plus the headroom,
-    /// rounded up to a page, when more than the threshold lies above the
-    /// high mark and that end lies below what is committed; `None`
-    /// otherwise.
-    pub(crate) fn keep(&self, high_mark: usize, committed: usize) -> Option<usize> {
+    /// The band: the committed end, in bytes, a reservation that uses
+    /// `high_mark` bytes of its `committed` shrinks towards -- the high
+    /// mark plus the headroom, rounded up to a page -- when more than the
+    /// threshold lies above the high mark and more than twice that end is
+    /// committed; `None` otherwise.
+    pub(crate) fn band(&self, high_mark: usize, committed: usize) -> Option<usize> {
         let unused = committed.checked_sub(high_mark)?;
         if unused <= self.threshold {
             return None;
@@ -119,7 +152,100 @@ impl Shrink {
         let end = high_mark
             .checked_add(self.headroom)?
             .checked_next_multiple_of(page)?;
-        (end < committed).then_some(end)
+        (committed > end.checked_mul(2)?).then_some(end)
+    }
+
+    /// The committed end a reservation keeps when the band answers `end`
+    /// and the damping's factor is `factor` percent: `factor` percent of
+    /// what lies above the end given back, rounded down to a page; `None`
+    /// when that is nothing. Multiplied before it is divided, unlike
+    /// HotSpot (`tenuredGeneration.cpp:226`), whose division first guards
+    /// a `size_t` against overflow: what lies above a reservation's end is
+    /// at most a few GiB here, and the division first would leave up to 99
+    /// bytes, and so a whole page, behind at 100%, which one doubling from
+    /// that end would put back in the band.
+    fn damped_end(end: usize, committed: usize, factor: usize) -> Option<usize> {
+        let page = ns_memory::Reservation::page_size();
+        let given_back = (committed - end).saturating_mul(factor) / 100 / page * page;
+        (given_back > 0).then(|| committed - given_back)
+    }
+
+    /// The committed end a reservation that uses `high_mark` bytes of its
+    /// `committed` keeps after this collection, by the band and the
+    /// damping's factor, which this advances or resets
+    /// (`ShrinkDamping::take`, `advance`); `None` for no shrink. Undamped
+    /// (`damped` false, the stress modes'), a collection the band says
+    /// shrink at gives back all of the way at once, and the factor is left
+    /// alone.
+    pub(crate) fn keep(
+        &self,
+        damping: &mut ShrinkDamping,
+        damped: bool,
+        high_mark: usize,
+        committed: usize,
+    ) -> Option<usize> {
+        let factor = damping.take(damped);
+        let end = self.band(high_mark, committed)?;
+        damping.advance(damped, factor);
+        Shrink::damped_end(end, committed, factor)
+    }
+
+    /// `keep` for a reservation of several regions, each with its high mark
+    /// and committed bytes, which shrink together under one damping: the
+    /// factor advances once if the band says shrink for any of them.
+    pub(crate) fn keep_each<const COUNT: usize>(
+        &self,
+        damping: &mut ShrinkDamping,
+        damped: bool,
+        regions: [(usize, usize); COUNT],
+    ) -> [Option<usize>; COUNT] {
+        let factor = damping.take(damped);
+        let ends = regions.map(|(high_mark, committed)| {
+            self.band(high_mark, committed).map(|end| (end, committed))
+        });
+        if ends.iter().any(Option::is_some) {
+            damping.advance(damped, factor);
+        }
+        ends.map(|band| {
+            band.and_then(|(end, committed)| Shrink::damped_end(end, committed, factor))
+        })
+    }
+}
+
+/// A reservation's damping of its shrinks (`Shrink`): the percent of what
+/// lies above the band's end the next collection that is in the band
+/// gives back. HotSpot's `_shrink_factor`, read and reset at the start of
+/// each collection's resizing and advanced only when it shrinks
+/// (`tenuredGeneration.cpp:145-151, 226-231`; `metaspace.cpp:425-427,
+/// 511-521`). Undamped, it is 100 throughout, as `_shrink_factor` is
+/// without `ShrinkHeapInSteps` (`tenuredGeneration.cpp:294-295`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ShrinkDamping {
+    factor: usize,
+}
+
+impl ShrinkDamping {
+    /// The factor this collection uses, the state reset to 0 as HotSpot
+    /// resets `_shrink_factor` before it decides: a collection out of the
+    /// band leaves it at 0. Undamped, 100, the state untouched.
+    fn take(&mut self, damped: bool) -> usize {
+        if damped {
+            std::mem::take(&mut self.factor)
+        } else {
+            100
+        }
+    }
+
+    /// After a collection in the band that used `factor`: 10 after 0, else
+    /// four times it, at most 100.
+    fn advance(&mut self, damped: bool, factor: usize) {
+        if damped {
+            self.factor = if factor == 0 {
+                10
+            } else {
+                (factor * 4).min(100)
+            };
+        }
     }
 }
 
@@ -163,6 +289,10 @@ pub struct ShrinkPairs {
     pub machine_entries: Shrink,
     pub application_ids: Shrink,
     pub code_zone: Shrink,
+    /// Whether every shrink is damped (`ShrinkDamping`); false gives back
+    /// all of the way at the first collection in the band, as the collect
+    /// and zone stress modes do.
+    pub damped: bool,
 }
 
 impl Default for ShrinkPairs {
@@ -173,6 +303,7 @@ impl Default for ShrinkPairs {
             machine_entries: MACHINE_ENTRIES_SHRINK,
             application_ids: APPLICATION_IDS_SHRINK,
             code_zone: CODE_ZONE_SHRINK,
+            damped: true,
         }
     }
 }
@@ -244,7 +375,10 @@ pub struct TableSizes {
     pub stack_committed_bytes: usize,
     /// Bytes of the activation stack below its top: its high mark.
     pub stack_used_bytes: usize,
-    /// Bytes of the code zone committed.
+    /// Bytes of the code zone its writer counts committed
+    /// (`CodeWriter::committed`): pages it gave back are not counted, though
+    /// on Windows, and for a POSIX shared memory object outside Linux, the
+    /// system may still charge them.
     pub zone_committed_bytes: usize,
     /// Bytes of the cells' reservation committed.
     pub cells_committed_bytes: usize,
@@ -272,24 +406,80 @@ mod tests {
         assert_eq!(limit.limit, usize::MAX);
     }
 
-    /// A reservation shrinks only past its threshold, to its high mark
-    /// plus the headroom on a page boundary, and never to an end at or
-    /// above what it has committed.
+    /// The band: a reservation shrinks only past its threshold and past
+    /// twice what it keeps, towards its high mark plus the headroom on a
+    /// page boundary, so that one doubling from a kept end never puts it
+    /// back in the band.
     #[test]
-    fn a_shrink_keeps_the_headroom_once_past_the_threshold() {
+    fn the_band_is_past_the_threshold_and_twice_the_kept_end() {
         let page = ns_memory::Reservation::page_size();
         let shrink = Shrink {
             threshold: 4 * page,
             headroom: 2 * page,
         };
-        assert_eq!(shrink.keep(page, 5 * page), None, "at the threshold");
-        assert_eq!(shrink.keep(page, 6 * page), Some(3 * page));
-        assert_eq!(shrink.keep(page + 1, 6 * page), Some(4 * page));
-        assert_eq!(shrink.keep(7 * page, 6 * page), None, "above the end");
+        assert_eq!(shrink.band(page, 5 * page), None, "at the threshold");
+        assert_eq!(shrink.band(page, 7 * page), Some(3 * page));
+        assert_eq!(shrink.band(page + 1, 9 * page), Some(4 * page));
+        assert_eq!(shrink.band(7 * page, 6 * page), None, "above the end");
+        // A shrink kept 4 pages for a high mark of one page and a byte;
+        // one doubling commits 8, and a collection at the same high mark,
+        // past the threshold by more than a page, is out of the band.
+        assert_eq!(shrink.band(page + 1, 8 * page), None, "one regrowth");
+        assert_eq!(
+            shrink.band(0, 8 * page),
+            Some(2 * page),
+            "a lower high mark"
+        );
         let wide = Shrink {
             threshold: page,
             headroom: 8 * page,
         };
-        assert_eq!(wide.keep(0, 4 * page), None, "the headroom past the end");
+        assert_eq!(wide.band(0, 4 * page), None, "the headroom past the end");
+    }
+
+    /// The damping: in the band, 0%, 10%, 40% and then all of what lies
+    /// above the end, each rounded down to a page; one collection out of
+    /// the band starts the ramp again; undamped, all of it at once and the
+    /// ramp untouched.
+    #[test]
+    fn a_shrink_is_damped_zero_ten_forty_then_all() {
+        let page = ns_memory::Reservation::page_size();
+        let shrink = Shrink {
+            threshold: page,
+            headroom: page,
+        };
+        let mut damping = ShrinkDamping::default();
+        let mut committed = 1001 * page;
+        assert_eq!(shrink.keep(&mut damping, true, 0, committed), None);
+        let excess = committed - page;
+        committed -= excess * 10 / 100 / page * page;
+        assert_eq!(
+            shrink.keep(&mut damping, true, 0, 1001 * page),
+            Some(committed)
+        );
+        let excess = committed - page;
+        let after_forty = committed - excess * 40 / 100 / page * page;
+        assert_eq!(
+            shrink.keep(&mut damping, true, 0, committed),
+            Some(after_forty)
+        );
+        assert_eq!(shrink.keep(&mut damping, true, 0, after_forty), Some(page));
+        // At 100 it stays; a collection out of the band resets it.
+        assert_eq!(shrink.keep(&mut damping, true, 0, 1001 * page), Some(page));
+        assert_eq!(
+            shrink.keep(&mut damping, true, 1000 * page, 1001 * page),
+            None
+        );
+        assert_eq!(
+            shrink.keep(&mut damping, true, 0, 1001 * page),
+            None,
+            "reset"
+        );
+        let mut undamped = ShrinkDamping::default();
+        assert_eq!(
+            shrink.keep(&mut undamped, false, 0, 1001 * page),
+            Some(page)
+        );
+        assert_eq!(undamped, ShrinkDamping::default());
     }
 }

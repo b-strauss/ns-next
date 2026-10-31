@@ -106,6 +106,8 @@ pub(crate) struct MachineEntries {
     /// check a read of the reservation makes. Rust's alone, kept by every
     /// write of a row.
     named_entries: Vec<u64>,
+    /// How far the next shrink goes (`shrink`).
+    damping: super::limits::ShrinkDamping,
 }
 
 impl MachineEntries {
@@ -119,6 +121,7 @@ impl MachineEntries {
             reservation,
             rows: 0,
             named_entries: Vec::new(),
+            damping: super::limits::ShrinkDamping::default(),
         }
     }
 
@@ -259,10 +262,16 @@ impl MachineEntries {
         &mut self,
         high_rows: usize,
         shrink: super::limits::Shrink,
+        damped: bool,
         lower_bound: impl FnOnce(usize),
     ) -> usize {
         let committed = self.rows * ROW_BYTES;
-        let Some(end) = shrink.keep(high_rows.min(self.rows) * ROW_BYTES, committed) else {
+        let Some(end) = shrink.keep(
+            &mut self.damping,
+            damped,
+            high_rows.min(self.rows) * ROW_BYTES,
+            committed,
+        ) else {
             return 0;
         };
         self.rows = end / ROW_BYTES;

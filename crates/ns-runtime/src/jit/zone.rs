@@ -470,7 +470,11 @@ impl JitState {
     /// survivors down and at the end of a full collection: nothing runs
     /// from past the last body, and the next install there commits the
     /// pages again (`CodeWriter::decommit_above`).
-    pub(crate) fn shrink_zone(&mut self, shrink: crate::heap::limits::Shrink) -> usize {
+    pub(crate) fn shrink_zone(
+        &mut self,
+        shrink: crate::heap::limits::Shrink,
+        damped: bool,
+    ) -> usize {
         #[cfg(debug_assertions)]
         assert_eq!(
             self.entries_in_progress, 0,
@@ -479,7 +483,12 @@ impl JitState {
         let Some(zone) = self.zone.as_mut() else {
             return 0;
         };
-        match shrink.keep(zone.next_offset as usize, zone.writer.committed()) {
+        match shrink.keep(
+            &mut self.zone_damping,
+            damped,
+            zone.next_offset as usize,
+            zone.writer.committed(),
+        ) {
             Some(end) => zone.writer.decommit_above(end),
             None => 0,
         }
@@ -829,7 +838,8 @@ impl Mutator<'_> {
         self.jit.slide(&plan);
         // After the slide, which lowered the zone's next offset: what the
         // freed bodies left past it is given back by the code zone's pair.
-        let bytes = self.jit.shrink_zone(self.heap.shrink_pairs().code_zone);
+        let pairs = self.heap.shrink_pairs();
+        let bytes = self.jit.shrink_zone(pairs.code_zone, pairs.damped);
         self.heap.count_decommit(bytes);
         let enough = self
             .jit

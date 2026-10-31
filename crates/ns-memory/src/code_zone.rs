@@ -384,22 +384,26 @@ impl CodeWriter {
         platform::executable_view_is_writable(&self.zone.mapping, self.committed)
     }
 
-    /// The bytes from the base the writer has committed, a whole number of
-    /// pages.
+    /// The bytes from the base the writer counts committed, a whole number
+    /// of pages: what it commits again before it writes past them. Pages
+    /// `decommit_above` gave back are not counted, though the system may
+    /// still charge them (`decommit_above`).
     pub fn committed(&self) -> usize {
         self.committed
     }
 
     /// Gives back the pages from `end`, rounded up to a page, to the
-    /// committed prefix's end, and answers how many bytes that was: 0 for
-    /// an end at or past it. The writer stops counting them as committed
-    /// first, so that the next write past `end` commits them again; what
-    /// they held is gone, and code is never run from them before a write
-    /// stores it there again. A refusal of the system leaves the pages as
-    /// they were and answers 0. What the system takes back differs by
-    /// platform (`platform::decommit_code`): on Windows a section's pages
-    /// stay charged against the commit limit, and only their physical
-    /// memory is released.
+    /// committed prefix's end, and answers how many bytes of them the
+    /// system took back: 0 for an end at or past the prefix's end. The
+    /// writer stops counting them as committed first, whatever the system
+    /// does with them, so that the next write past `end` commits them
+    /// again; what they held is gone, and code is never run from them
+    /// before a write stores it there again. What the system takes back
+    /// differs by platform (`platform::decommit_code`), and only what it
+    /// takes is answered: on Windows a section's pages stay charged
+    /// against the commit limit, only their physical memory released, and
+    /// a POSIX shared memory object outside Linux keeps them, so both
+    /// answer 0, as a refusal of the system does.
     pub fn decommit_above(&mut self, end: usize) -> usize {
         let page = platform::page_size();
         let Some(end) = end.checked_next_multiple_of(page) else {
@@ -416,8 +420,8 @@ impl CodeWriter {
         // holds mutably. Nothing runs from the range: its caller, which
         // decides the zone's layout, holds no code there it still runs.
         match unsafe { platform::decommit_code(&self.zone.mapping, end, from - end) } {
-            Ok(()) => from - end,
-            Err(_) => 0,
+            Ok(true) => from - end,
+            Ok(false) | Err(_) => 0,
         }
     }
 
@@ -554,10 +558,10 @@ mod tests {
         zone.write(CodeOffset(0), &[1]).expect("written");
         zone.write(CodeOffset(last), &[2]).expect("written");
         assert_eq!(zone.committed(), 4 * page);
-        assert_eq!(
-            zone.decommit_above(page + 1),
-            2 * page,
-            "from the next page on"
+        let given_back = zone.decommit_above(page + 1);
+        assert!(
+            given_back == 2 * page || given_back == 0,
+            "from the next page on, or nothing the system takes: {given_back}"
         );
         assert_eq!(zone.committed(), 2 * page);
         assert_eq!(zone.bytes(0..1), Some(&[1][..]), "below the end is kept");

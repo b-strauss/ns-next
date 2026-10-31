@@ -194,8 +194,9 @@ pub struct ActivationReference {
   It is committed from its base as the stack deepens -- doubling what is
   committed, by at least 64 KiB and at most 16 MiB at a time unless a push
   needs more (`FrameStack::grow`) -- and given back above its top and a
-  headroom of 2 MiB at the end of a full collection that finds more than
-  4 MiB committed above the top ([memory.md](memory.md), "Giving committed
+  headroom of 2 MiB by full collections that find more than 4 MiB, and
+  more than twice what they would keep, committed above the top, damped
+  over successive collections ([memory.md](memory.md), "Giving committed
   memory back"). A frame is its arguments, the header -- `frame_header::COUNT`
   words, 13 in every build, a debug build's generation riding in the flags
   word -- then the rest of its registers, innermost highest; a send's own
@@ -11197,7 +11198,8 @@ room (`jit/zone.rs`); a full collection frees the code of the bodies
 that died without waiting for that. So a program that keeps compiling
 keeps doing so in a zone of fixed size, and after each compaction and
 each full collection the zone gives its committed pages back above its
-next offset and 1 MiB, once more than 2 MiB lies unused there
+next offset and 1 MiB, by the band and the damping every reservation
+beside the object space shrinks by
 ([memory.md](memory.md), "Giving committed memory back"). The default zone is 16 MiB
 (`jit::DEFAULT_ZONE_BYTES`), a first guess within the 128 MiB bound;
 Cog's default is 1,433,600 bytes (`defaultCogCodeSize`, `:6851-6856`).

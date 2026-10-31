@@ -312,7 +312,8 @@ pub(crate) unsafe fn commit_code(
 /// -- `VirtualFree` refuses a view's pages, and `CreateFileMappingW` says
 /// a `SEC_RESERVE` section's pages once committed stay so -- so they stay
 /// charged against the commit limit; `DiscardVirtualMemory` releases their
-/// physical memory, and a later write faults fresh pages in.
+/// physical memory, and a later write faults fresh pages in. Answers
+/// false: the commit the system charged is not given back.
 ///
 /// # Safety
 /// `offset..offset + bytes` lies inside the mapping's committed zone and
@@ -321,7 +322,7 @@ pub(crate) unsafe fn decommit_code(
     mapping: &CodeMapping,
     offset: usize,
     bytes: usize,
-) -> Result<(), i32> {
+) -> Result<bool, i32> {
     // SAFETY: the caller guarantees the range is inside the committed
     // views and unborrowed; discarding through the writable view discards
     // the section's pages behind both.
@@ -336,7 +337,7 @@ pub(crate) unsafe fn decommit_code(
         )
     };
     match i32::try_from(answer) {
-        Ok(0) => Ok(()),
+        Ok(0) => Ok(false),
         Ok(code) => Err(code),
         Err(_) => Err(i32::MAX),
     }

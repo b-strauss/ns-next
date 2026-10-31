@@ -715,6 +715,11 @@ fn a_deep_recursion_gives_its_stack_pages_back() {
     // that is still high, and the explicit one finds less than the
     // threshold above the top it returned to.
     interpreter.set_stress_collect(false);
+    // The band's end, not the damping's ramp, is what this pins.
+    interpreter.set_shrink_pairs(ns_runtime::ShrinkPairs {
+        damped: false,
+        ..ns_runtime::ShrinkPairs::default()
+    });
     let depth = 50_000;
     assert_eq!(recurse(&mut interpreter, &class, depth), depth);
     let before = interpreter.collector_statistics();
@@ -735,25 +740,202 @@ fn a_deep_recursion_gives_its_stack_pages_back() {
     assert_eq!(recurse(&mut interpreter, &class, depth), depth);
 }
 
-/// A recursion 1 MiB of frames deeper than the stack's headroom -- about
-/// 3 MiB, at the 112 bytes a `down:` frame takes -- then a shallow one, a
-/// hundred times, each followed by a full collection: the stack shrinks
-/// at most once, since a recursion that grows back into the headroom
-/// commits no more than the threshold above the top it returns to.
+/// A module whose `cycle:` recurses as deep as it is asked, then asks for
+/// a full collection from a few frames above the bottom, which the next
+/// safepoint serves at a top that is not 0; `downCollecting:` asks for
+/// one at the bottom of its recursion, served near its peak.
+const SAWTOOTH: &str = indoc! {"
+    class Sawtooth usingPlatform: platform = Object new (
+      |
+        kernel = platform kernel.
+      |
+    ) (
+      public down: count = (
+        count = 0 ifTrue: [^0].
+        ^(self down: count - 1) + 1
+      )
+      public cycle: depth = (
+        ^self above: 3 cycle: depth
+      )
+      public downCollecting: count = (
+        count = 0 ifTrue: [
+          kernel garbageCollect.
+          ^0
+        ].
+        ^(self downCollecting: count - 1) + 1
+      )
+      above: levels cycle: depth = (
+        | answer |
+        levels = 0 ifFalse: [^self above: levels - 1 cycle: depth].
+        answer:: self down: depth.
+        kernel garbageCollect.
+        ^answer + 0
+      )
+    ) : ()
+"};
+
+/// Shrinks of the activation stack alone: every other reservation's
+/// threshold lies out of reach. Damped as by default when `damped`.
+fn only_the_stack_shrinks(damped: bool) -> ns_runtime::ShrinkPairs {
+    let never = ns_runtime::Shrink {
+        threshold: usize::MAX,
+        headroom: 0,
+    };
+    ns_runtime::ShrinkPairs {
+        cells: never,
+        machine_entries: never,
+        application_ids: never,
+        code_zone: never,
+        damped,
+        ..ns_runtime::ShrinkPairs::default()
+    }
+}
+
+/// A recursion that commits 8 MiB of the activation stack and collects
+/// from inside it, at a top a few frames above the bottom, shrinks the
+/// stack to the headroom above that top, 2 MiB and a page; then a hundred
+/// recursions 1 MiB of frames deeper than the headroom -- about 3 MiB, at
+/// the 112 bytes a `down:` frame takes -- each collecting the same way,
+/// grow it back by one doubling every time and never shrink it again
+/// (`heap::limits::Shrink`, the hysteresis): the stack decommits once.
+/// Only the stack may shrink, so that no other reservation's decommit is
+/// counted.
 #[test]
 fn a_sawtooth_of_recursions_does_not_thrash() {
-    let (mut interpreter, class) = load(DEEP);
+    let (mut interpreter, class) = load(SAWTOOTH);
     // The collections this pins are one per cycle, at its low point: the
     // collect stress mode's, at every safepoint of the recursion, are a
     // collection cycle of their own each.
     interpreter.set_stress_collect(false);
-    let deep = 28_500;
+    // Undamped, so that the first cycle shrinks at once: the band is what
+    // this pins (`a_shrink_is_damped_over_successive_collections` pins the
+    // damping).
+    interpreter.set_shrink_pairs(only_the_stack_shrinks(false));
+    let platform = interpreter.platform();
+    let subject =
+        expect_ok(interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]));
+    let cycle = |interpreter: &mut Interpreter, depth: i64| {
+        let count = interpreter.stash(Value::small_integer(depth));
+        let answer = expect_ok(interpreter.send(&subject, Symbol::intern("cycle:"), &[count]));
+        assert_eq!(
+            interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+            depth
+        );
+    };
     let before = interpreter.collector_statistics();
+    cycle(&mut interpreter, 75_000);
+    let shrunk = interpreter.collector_statistics();
+    assert!(
+        shrunk.collections > before.collections,
+        "the cycle collected"
+    );
+    assert_eq!(
+        shrunk.decommits - before.decommits,
+        1,
+        "the first cycle shrinks"
+    );
+    let kept = interpreter.table_sizes().stack_committed_bytes;
+    assert!(
+        kept > 2 << 20,
+        "{kept} bytes kept above a top that is not 0"
+    );
     for _ in 0..100 {
-        assert_eq!(recurse(&mut interpreter, &class, deep), deep);
-        assert_eq!(recurse(&mut interpreter, &class, 10), 10);
-        interpreter.collect_now();
+        cycle(&mut interpreter, 28_500);
     }
-    let decommits = interpreter.collector_statistics().decommits - before.decommits;
-    assert!(decommits <= 1, "{decommits} decommits");
+    let after = interpreter.collector_statistics();
+    assert!(
+        after.collections >= shrunk.collections + 100,
+        "every cycle collected"
+    );
+    let decommits = after.decommits - shrunk.decommits;
+    assert_eq!(decommits, 0, "{decommits} decommits after the first");
+}
+
+/// `SAWTOOTH` loaded, its collect stress mode off and only the stack
+/// shrinking, damped as by default, and instantiated with the platform;
+/// then one `down:` 75,000 deep, which commits 16 MiB of the stack.
+fn deep_once() -> (Interpreter, Root) {
+    let (mut interpreter, class) = load(SAWTOOTH);
+    interpreter.set_stress_collect(false);
+    interpreter.set_shrink_pairs(only_the_stack_shrinks(true));
+    let platform = interpreter.platform();
+    let subject =
+        expect_ok(interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]));
+    let count = interpreter.stash(Value::small_integer(75_000));
+    let answer = expect_ok(interpreter.send(&subject, Symbol::intern("down:"), &[count]));
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+        75_000
+    );
+    (interpreter, subject)
+}
+
+/// What a damped shrink keeps of `committed` when its band's end is `end`
+/// and its factor `factor` percent (`heap::limits::Shrink`): the factor's
+/// percent of what lies above the end given back, rounded down to a page.
+fn damped(committed: usize, end: usize, factor: usize) -> usize {
+    let page = ns_memory::Reservation::page_size();
+    committed - (committed - end) * factor / 100 / page * page
+}
+
+/// Collections at a top of 0 after a deep recursion, each in the stack's
+/// band: the first gives back nothing, the second 10% of what lies above
+/// the 2 MiB the band keeps, the third 40% of what is left above it, the
+/// fourth all of it, HotSpot's ramp (`heap::limits::ShrinkDamping`).
+#[test]
+fn a_shrink_is_damped_over_successive_collections() {
+    let (mut interpreter, _) = deep_once();
+    let end = 2 << 20;
+    let mut committed = interpreter.table_sizes().stack_committed_bytes;
+    assert!(committed > 2 * end, "{committed} bytes committed");
+    for factor in [0, 10, 40, 100] {
+        interpreter.collect_now();
+        let sizes = interpreter.table_sizes();
+        assert_eq!(sizes.stack_used_bytes, 0);
+        let expected = damped(committed, end, factor);
+        assert_eq!(
+            sizes.stack_committed_bytes, expected,
+            "at {factor}%, from {committed} bytes"
+        );
+        committed = expected;
+    }
+    assert_eq!(committed, end, "all of the excess given back");
+}
+
+/// A collection out of the band -- at the peak, from inside a deep
+/// recursion -- between two at the bottom resets the damping, so that the
+/// next collection at the bottom, though in the band and one after
+/// another in it, gives back nothing again.
+#[test]
+fn a_returning_peak_resets_the_damping() {
+    let (mut interpreter, subject) = deep_once();
+    let committed = interpreter.table_sizes().stack_committed_bytes;
+    interpreter.collect_now();
+    assert_eq!(
+        interpreter.table_sizes().stack_committed_bytes,
+        committed,
+        "the first collection in the band gives back nothing"
+    );
+    let count = interpreter.stash(Value::small_integer(75_000));
+    let answer = expect_ok(interpreter.send(&subject, Symbol::intern("downCollecting:"), &[count]));
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+        75_000
+    );
+    assert_eq!(
+        interpreter.table_sizes().stack_committed_bytes,
+        committed,
+        "the collection at the peak is out of the band"
+    );
+    interpreter.collect_now();
+    assert_eq!(
+        interpreter.table_sizes().stack_committed_bytes,
+        committed,
+        "the ramp starts again at 0%"
+    );
+    interpreter.collect_now();
+    assert!(
+        interpreter.table_sizes().stack_committed_bytes < committed,
+        "and goes on to 10%"
+    );
 }

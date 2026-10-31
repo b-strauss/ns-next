@@ -6081,6 +6081,8 @@ ns_runtime::for_each_lowering! {
                 threshold: 0,
                 headroom: 0,
             },
+            // The band's end, not the damping's ramp, is what this pins.
+            damped: false,
             ..ns_runtime::ShrinkPairs::default()
         });
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -6127,6 +6129,8 @@ ns_runtime::for_each_lowering! {
                 threshold,
                 headroom,
             },
+            // The band's end, not the damping's ramp, is what this pins.
+            damped: false,
             ..ns_runtime::ShrinkPairs::default()
         });
         let edits = 600;
@@ -6136,16 +6140,20 @@ ns_runtime::for_each_lowering! {
                 assert_eq!(send_unary(&mut interpreter, &subject, "run"), 3 + number);
             }
         }
+        interpreter.collect_now();
+        // After the collection, which frees the dead bodies but moves
+        // none: only the compaction lowers the zone's next offset.
         let filled = interpreter.table_sizes().zone_committed_bytes;
         let before = interpreter.collector_statistics();
-        interpreter.collect_now();
         interpreter.compact_jit_zone();
         let sizes = interpreter.table_sizes();
+        let used = sizes.zone_used_bytes;
+        // Shrunk, or within the threshold, or within one doubling of
+        // what a shrink would keep (`heap::limits::Shrink`).
         assert!(
-            sizes.zone_committed_bytes <= sizes.zone_used_bytes + threshold + page,
-            "{} bytes committed past {} used",
-            sizes.zone_committed_bytes,
-            sizes.zone_used_bytes
+            sizes.zone_committed_bytes <= (used + threshold).max(2 * (used + headroom)) + 2 * page,
+            "{} bytes committed past {used} used",
+            sizes.zone_committed_bytes
         );
         let after = interpreter.collector_statistics();
         for _ in 0..3 {
@@ -6155,13 +6163,19 @@ ns_runtime::for_each_lowering! {
         // installed; a stress mode compacts and collects on its own.
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(
-                sizes.zone_committed_bytes <= sizes.zone_used_bytes + headroom + page,
-                "{} bytes committed past {} used, {filled} before",
-                sizes.zone_committed_bytes,
-                sizes.zone_used_bytes
+                sizes.zone_committed_bytes <= used + headroom + page,
+                "{} bytes committed past {used} used, {filled} before",
+                sizes.zone_committed_bytes
             );
             assert!(sizes.zone_committed_bytes < filled, "the zone shrank");
-            assert!(after.decommits > before.decommits, "the compaction decommitted");
+            // Counted only where the system takes the pages back: a
+            // Windows section keeps their commit charge
+            // (`CodeWriter::decommit_above`).
+            if cfg!(windows) {
+                assert_eq!(after.decommits, before.decommits);
+            } else {
+                assert!(after.decommits > before.decommits, "the compaction decommitted");
+            }
         }
     }
 }

@@ -436,8 +436,9 @@ pub(crate) unsafe fn commit_code(
 
 /// Gives back the memory behind `offset..offset + bytes` of the memory
 /// object, whose contents are gone and read as zeros through both views
-/// until written again: a hole punched into it, its size kept. A file
-/// system without holes gives nothing back.
+/// until written again: a hole punched into it, its size kept. Answers
+/// whether the system took the memory back: a file system without holes
+/// gives nothing back, and answers false.
 ///
 /// # Safety
 /// `offset..offset + bytes` lies inside the mapping's zone and is
@@ -447,7 +448,7 @@ pub(crate) unsafe fn decommit_code(
     mapping: &CodeMapping,
     offset: usize,
     bytes: usize,
-) -> Result<(), i32> {
+) -> Result<bool, i32> {
     let start = libc::off_t::try_from(offset).map_err(|_| libc::EINVAL)?;
     let length = libc::off_t::try_from(bytes).map_err(|_| libc::EINVAL)?;
     loop {
@@ -462,11 +463,11 @@ pub(crate) unsafe fn decommit_code(
             )
         };
         if answer == 0 {
-            return Ok(());
+            return Ok(true);
         }
         match errno() {
             libc::EINTR => {}
-            libc::EOPNOTSUPP => return Ok(()),
+            libc::EOPNOTSUPP => return Ok(false),
             code => return Err(code),
         }
     }
@@ -474,7 +475,7 @@ pub(crate) unsafe fn decommit_code(
 
 /// Lets the system take back the memory behind `offset..offset + bytes`
 /// of the one `MAP_JIT` mapping, whose contents are undefined until
-/// written again.
+/// written again. Answers true: the pages are the system's to take.
 ///
 /// # Safety
 /// `offset..offset + bytes` lies inside the mapping's zone and is
@@ -484,7 +485,7 @@ pub(crate) unsafe fn decommit_code(
     mapping: &CodeMapping,
     offset: usize,
     bytes: usize,
-) -> Result<(), i32> {
+) -> Result<bool, i32> {
     // SAFETY: the caller guarantees the range is ours and unborrowed;
     // `MADV_FREE` changes no mapping and only lets its pages go.
     let answer = unsafe {
@@ -495,14 +496,15 @@ pub(crate) unsafe fn decommit_code(
         )
     };
     if answer == 0 {
-        Ok(())
+        Ok(true)
     } else {
         Err(errno())
     }
 }
 
 /// Nothing: a POSIX shared memory object has no portable way to give back
-/// pages inside its size, so they stay until the zone is unmapped.
+/// pages inside its size, so they stay until the zone is unmapped, and
+/// the answer is false.
 ///
 /// # Safety
 /// None.
@@ -515,8 +517,8 @@ pub(crate) unsafe fn decommit_code(
     _mapping: &CodeMapping,
     _offset: usize,
     _bytes: usize,
-) -> Result<(), i32> {
-    Ok(())
+) -> Result<bool, i32> {
+    Ok(false)
 }
 
 /// # Safety

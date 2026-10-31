@@ -231,6 +231,9 @@ pub(crate) struct Cells {
     global: Region,
     sites: Region,
     blocks: Region,
+    /// How far the next shrink of the site and block regions goes
+    /// (`shrink`).
+    damping: crate::heap::limits::ShrinkDamping,
 }
 
 impl Cells {
@@ -244,6 +247,7 @@ impl Cells {
             global: Region::new(0, GLOBAL_REGION_BYTES),
             sites: Region::new(GLOBAL_REGION_BYTES, SITE_REGION_BYTES),
             blocks: Region::new(GLOBAL_REGION_BYTES + SITE_REGION_BYTES, BLOCK_REGION_BYTES),
+            damping: crate::heap::limits::ShrinkDamping::default(),
         }
     }
 
@@ -266,18 +270,18 @@ impl Cells {
         sites: usize,
         blocks: usize,
         shrink: crate::heap::limits::Shrink,
+        damped: bool,
     ) -> usize {
-        shrink_region(
-            &mut self.reservation,
-            &mut self.sites,
-            sites * CELL_BYTES,
-            shrink,
-        ) + shrink_region(
-            &mut self.reservation,
-            &mut self.blocks,
-            blocks * BLOCK_BYTES,
-            shrink,
-        )
+        let [sites_end, blocks_end] = shrink.keep_each(
+            &mut self.damping,
+            damped,
+            [
+                (sites * CELL_BYTES, self.sites.committed),
+                (blocks * BLOCK_BYTES, self.blocks.committed),
+            ],
+        );
+        shrink_region(&mut self.reservation, &mut self.sites, sites_end)
+            + shrink_region(&mut self.reservation, &mut self.blocks, blocks_end)
     }
 
     /// The address of site `index`'s cell: the site cells' base plus
@@ -512,16 +516,11 @@ fn ensure_committed(reservation: &mut Reservation, region: &mut Region, end: usi
     true
 }
 
-/// Decommits `region` above `high_mark` bytes and `shrink`'s headroom
-/// once more than its threshold lies unused above the high mark, and
-/// answers how many bytes that was (`Cells::shrink`).
-fn shrink_region(
-    reservation: &mut Reservation,
-    region: &mut Region,
-    high_mark: usize,
-    shrink: crate::heap::limits::Shrink,
-) -> usize {
-    let Some(end) = shrink.keep(high_mark, region.committed) else {
+/// Decommits `region` above `end` bytes from its start, the end its
+/// shrink keeps, if there is one, and answers how many bytes that was
+/// (`Cells::shrink`).
+fn shrink_region(reservation: &mut Reservation, region: &mut Region, end: Option<usize>) -> usize {
+    let Some(end) = end else {
         return 0;
     };
     let from = region.committed;

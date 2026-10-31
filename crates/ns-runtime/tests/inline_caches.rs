@@ -1247,6 +1247,8 @@ fn the_cells_shrink_after_a_slide() {
             threshold: 64 << 10,
             headroom: 32 << 10,
         },
+        // The band's end, not the damping's ramp, is what this pins.
+        damped: false,
         ..ns_runtime::ShrinkPairs::default()
     });
     let before = interpreter.table_sizes().cells_committed_bytes;

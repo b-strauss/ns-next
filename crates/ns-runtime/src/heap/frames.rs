@@ -456,6 +456,8 @@ pub(super) struct FrameStack {
     /// The machine words, whose `OrdinaryStackEnd` mirrors `ordinary_end`
     /// for machine code (`set_ordinary_end`).
     machine_words: MachineWords,
+    /// How far the next shrink goes (`shrink`).
+    damping: super::limits::ShrinkDamping,
     /// Whether every push seats `ordinary_end` at the new top, for a test
     /// that puts a frame's window end exactly at the ordinary end.
     #[cfg(test)]
@@ -499,6 +501,7 @@ impl FrameStack {
             ordinary_limit: limit - limit / RESERVE_FRACTION,
             ordinary_end: 0,
             machine_words,
+            damping: super::limits::ShrinkDamping::default(),
             #[cfg(test)]
             seat_ordinary_end_at_top: false,
             #[cfg(test)]
@@ -775,9 +778,10 @@ impl FrameStack {
     /// machine code compares a push with -- is lowered to the new
     /// committed end before a page goes, so that a push past it takes the
     /// growth, which commits the pages again.
-    pub(super) fn shrink(&mut self, shrink: super::limits::Shrink) -> usize {
+    pub(super) fn shrink(&mut self, shrink: super::limits::Shrink, damped: bool) -> usize {
         let committed_bytes = self.committed * 8;
-        let Some(end) = shrink.keep(self.top * 8, committed_bytes) else {
+        let Some(end) = shrink.keep(&mut self.damping, damped, self.top * 8, committed_bytes)
+        else {
             return 0;
         };
         self.committed = end / 8;

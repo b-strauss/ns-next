@@ -824,6 +824,8 @@ pub(crate) struct JitState {
     /// full collection that finds a quarter of the bodies' room so freed
     /// asks for a compaction (`JitState::note_full_collection`).
     bytes_freed_since_compaction: u32,
+    /// How far the zone's next shrink goes (`shrink_zone`).
+    zone_damping: crate::heap::limits::ShrinkDamping,
     /// How many entries into machine code are in progress, raised around
     /// `CodeZone::enter`: a compaction, which moves the code, asserts there
     /// are none. Rust's alone; machine code never reads it. Debug builds
@@ -926,6 +928,7 @@ impl JitState {
             held_compiles: 0,
             fruitless_compactions: 0,
             bytes_freed_since_compaction: 0,
+            zone_damping: crate::heap::limits::ShrinkDamping::default(),
             #[cfg(debug_assertions)]
             entries_in_progress: 0,
             abandoned: Vec::new(),
@@ -1265,6 +1268,7 @@ impl JitState {
             held_compiles: 0,
             fruitless_compactions: 0,
             bytes_freed_since_compaction: 0,
+            zone_damping: crate::heap::limits::ShrinkDamping::default(),
             #[cfg(debug_assertions)]
             entries_in_progress: 0,
             abandoned: Vec::new(),

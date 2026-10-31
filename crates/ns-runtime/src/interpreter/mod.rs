@@ -713,6 +713,7 @@ impl Interpreter {
             // exercise every slide (`InlineCaches::plan_slide`).
             let eager_slides = interpreter.stress_collect.is_some();
             interpreter.world.set_eager_slides(eager_slides);
+            interpreter.shrink_pairs_for_stress();
             // A fixture run small enough that every insert contends for the
             // same group (`run_goldens.rs`); anything not twice a decimal
             // power of two is ignored rather than refused, since this reads

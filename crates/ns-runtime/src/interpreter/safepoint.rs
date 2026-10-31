@@ -392,7 +392,37 @@ impl Interpreter {
     pub fn set_stress_collect(&mut self, enabled: bool) {
         self.stress_collect = enabled.then(StressSchedule::default);
         self.world.set_eager_slides(enabled);
+        self.shrink_pairs_for_stress();
         self.hold_safepoints_for_stress();
+    }
+
+    /// Under the collect or the zone stress mode, every reservation's shrink
+    /// pair is one page of threshold and one of headroom, undamped, so that
+    /// each of the modes' collections and compactions in the band gives
+    /// back nearly everything above a high mark at once, and every later push, row
+    /// and install takes the growth again: the stress runs then check that
+    /// every bound machine code reads is lowered before its pages go
+    /// (`heap::limits::Shrink`). Otherwise the default pairs. Turning
+    /// either mode on or off sets the pairs afresh, over any a test set.
+    pub(super) fn shrink_pairs_for_stress(&mut self) {
+        let pairs = if self.stress_collect.is_some() || self.stress_zone.is_some() {
+            let page = ns_memory::Reservation::page_size();
+            let one_page = crate::Shrink {
+                threshold: page,
+                headroom: page,
+            };
+            crate::ShrinkPairs {
+                stack: one_page,
+                cells: one_page,
+                machine_entries: one_page,
+                application_ids: one_page,
+                code_zone: one_page,
+                damped: false,
+            }
+        } else {
+            crate::ShrinkPairs::default()
+        };
+        self.world.set_shrink_pairs(pairs);
     }
 
     /// Turns the scavenge stress mode on or off for this interpreter,
@@ -420,6 +450,7 @@ impl Interpreter {
     /// mode is on (`hold_safepoints_for_stress`).
     pub fn set_stress_zone(&mut self, enabled: bool) {
         self.stress_zone = enabled.then(StressSchedule::default);
+        self.shrink_pairs_for_stress();
         self.hold_safepoints_for_stress();
     }
 

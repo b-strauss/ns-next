@@ -423,10 +423,10 @@ impl World {
         let pairs = self.mutator.heap.shrink_pairs();
         // First: it asserts that no machine code runs, whose frames would
         // lie above the stack's top.
-        let bytes = self.mutator.jit.shrink_zone(pairs.code_zone);
+        let bytes = self.mutator.jit.shrink_zone(pairs.code_zone, pairs.damped);
         self.mutator.heap.count_decommit(bytes);
         self.mutator.heap.shrink_reservations();
-        let bytes = self.mutator.caches.shrink_cells(pairs.cells);
+        let bytes = self.mutator.caches.shrink_cells(pairs.cells, pairs.damped);
         self.mutator.heap.count_decommit(bytes);
     }
 

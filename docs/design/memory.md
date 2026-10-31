@@ -1782,21 +1782,70 @@ Decided with the user on 2026-10-30, one of the six decisions that make
 everything that grows reclaimable (plan
 `docs/superpowers/plans/2026-10-30-0103-jit-closures.md`, "Part 4d").
 
-**Committed memory is given back with hysteresis** (`heap::limits::Shrink
-{ threshold, headroom }`, `Shrink::keep`). At the end of every full
-collection (`World::shrink_committed_memory`), and after every compaction
-of the code zone, each reservation beside the space whose committed bytes
-exceed its high mark by more than its threshold is decommitted above the
-high mark plus its headroom, rounded up to a page; one within its
-threshold keeps what it has, so a sawtooth that returns to its peak every
-cycle never decommits and commits again, and nothing decommits anywhere
-else, so a high mark that rises and falls within one collection's cycle
-never does. It is Spur's `attemptToShrink` after a full collection, which
-shrinks only when the free old space exceeds `shrinkThreshold` and keeps
-`growHeadroom` (`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:50168`,
-`:50244-50249`; its defaults of 32 MiB and 16 MiB, `:51088-51094`). The
-pairs are constants named per reservation in `heap/limits.rs`, and a test
-sets them all at once (`Interpreter::set_shrink_pairs`):
+**Committed memory is given back by a band and a damping**
+(`heap::limits::Shrink { threshold, headroom }`, `ShrinkDamping`). At the
+end of every full collection (`World::shrink_committed_memory`), and after
+every compaction of the code zone, each reservation beside the space is
+asked whether it lies in its band, and nothing decommits anywhere else, so
+a high mark that rises and falls within one collection's cycle never does.
+
+**The band** (`Shrink::band`): more than the threshold committed above the
+high mark, and more than twice the end the reservation would keep, the
+high mark plus its headroom rounded up to a page. Its first condition is
+Spur's `attemptToShrink` after a full collection, which shrinks only when
+the free old space exceeds `shrinkThreshold` and keeps `growHeadroom`
+(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:50168`,
+`:50244-50249`; its defaults of 32 MiB and 16 MiB, `:51088-51094`). Spur
+grows additively, by the larger of what it needs and its headroom
+(`cointerp.c:26019`, `:50328-50329`), and its pair is stable because its
+threshold is at least the headroom plus one growth step. The stack, the
+cells and the two id tables grow by doubling what they have committed, so
+their step from a kept end is that end, and one regrowth from it would
+cross a threshold of twice the headroom whenever the high mark is above 0:
+a sawtooth back to the same peak would shrink and grow at every
+collection. The second condition -- a shrink keeps less than half of what
+is committed -- restates Spur's invariant for a doubling growth, the band
+HotSpot keeps between `MinHeapFreeRatio` and `MaxHeapFreeRatio`
+(`prior-art/jdk/src/hotspot/share/gc/serial/tenuredGeneration.cpp:153-224`)
+in bytes rather than ratios. The code zone commits only what an install
+needs, so the second condition only makes its shrink rarer.
+
+**The damping** (`ShrinkDamping`, one per reservation, the cells' two
+regions sharing theirs): a collection in the band gives back a factor's
+percent of what lies above the band's end, rounded down to a page, the
+factor 0 the first time, then 10, 40 and 100, and a collection out of the
+band sets it back to 0. It is HotSpot's `ShrinkHeapInSteps`, its
+`_shrink_factor` read and reset before each resizing and advanced only by
+a shrink (`tenuredGeneration.cpp:145-151, 218-231`;
+`prior-art/jdk/src/hotspot/share/memory/metaspace.cpp:425-427, 503-522`),
+whose comment gives the reason: a program that collects between phases
+would otherwise give back at once what its next phase grows again. It
+counts collections, never time; the share is multiplied before it is
+divided, where HotSpot divides first, so that 100% reaches the band's end
+exactly.
+
+The guarantee: of the collections in a row that a reservation's band says
+shrink at, the first gives back nothing, the second 10% of what lies
+above the band's end, the third 40% of what is left above it, and the
+fourth and every later one all of it; one collection out of the band in
+between starts the count again. After a shrink kept `end` for a high mark
+`h`, a cycle whose peak lies within one doubling of `end` never puts the
+reservation back in the band at a collection whose high mark is `h` or
+above. Pinned by `tests/collector.rs`: `a_sawtooth_of_recursions_does_not_thrash`
+(collections at a top above 0, the stack decommitted once in a hundred
+cycles; it fails without the band's second condition),
+`a_shrink_is_damped_over_successive_collections` and
+`a_returning_peak_resets_the_damping`.
+
+The pairs are constants named per reservation in `heap/limits.rs`, and a
+test sets them all at once, the damping with them
+(`Interpreter::set_shrink_pairs`, `ShrinkPairs::damped`). Under the
+collect and the zone stress modes every pair is one page of threshold and
+one of headroom, undamped -- HotSpot without `ShrinkHeapInSteps`, its
+factor 100 throughout (`tenuredGeneration.cpp:294-295`) --
+(`Interpreter::shrink_pairs_for_stress`), so that every collection and
+compaction in the band gives back nearly everything above its high mark
+and the stress runs check that each bound is lowered before its pages go:
 
 | Reservation | Threshold / headroom | High mark | What the decommit lowers first |
 |---|---|---|---|
@@ -1810,16 +1859,26 @@ Every bound machine code compares against is lowered before a page goes,
 so machine code reads only committed memory: an id past the lowered
 machine entry rows reads as no machine entry, and the interpreter calls
 the block. The stack shrinks between entries, when no frame machine
-code pushed lies above its top. A page given back reads zeros when it is
-committed again, and each table writes what it reads there first, as it
-does for a page committed fresh. The code zone is a section on Windows,
-whose committed pages cannot be decommitted: `DiscardVirtualMemory`
-releases their physical memory, and their commit charge stays; Linux
-punches a hole into the zone's memory object, Apple AArch64 frees its
-`MAP_JIT` pages with `MADV_FREE`, and a POSIX shared memory object
-elsewhere keeps its pages (`platform::decommit_code`).
-`CollectorStatistics.decommits` and `decommitted_bytes` count the
-decommits and their bytes.
+code pushed lies above its top. A page of a table given back reads zeros
+when it is committed again, and each table writes what it reads there
+first, as it does for a page committed fresh. The code zone is a section
+on Windows, whose committed pages cannot be decommitted:
+`DiscardVirtualMemory` releases their physical memory -- a 64 MiB zone
+written through and discarded took the process's working set from 68 MiB
+back to 4 MiB, measured on 2026-10-31 -- and their commit charge stays;
+Linux punches a hole into the zone's memory object, Apple AArch64 frees
+its `MAP_JIT` pages with `MADV_FREE`, and a POSIX shared memory object
+elsewhere keeps its pages (`platform::decommit_code`). A zone page given
+back reads zeros on Linux, and stops or zeros on Windows and Apple
+AArch64, where its contents are undefined until written and the
+compaction wrote stops over it first; either way no code runs from it
+before an install writes it again. `CollectorStatistics.decommits` and
+`decommitted_bytes` count only what the system took back: a Windows zone
+page, whose charge stays, a POSIX shared memory object's and a hole a file
+system refuses count nothing. `TableSizes.zone_committed_bytes` is what
+the zone's writer counts committed, the pages it commits again before it
+writes past them, which on those platforms may be less than the system
+still charges.
 
 ### Weak references
 

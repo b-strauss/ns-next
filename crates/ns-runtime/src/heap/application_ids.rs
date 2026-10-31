@@ -139,6 +139,8 @@ pub(crate) struct ApplicationIds {
     reservation: Reservation,
     committed: usize,
     rows: usize,
+    /// How far the next shrink goes (`shrink`).
+    damping: super::limits::ShrinkDamping,
 }
 
 impl ApplicationIds {
@@ -152,6 +154,7 @@ impl ApplicationIds {
             reservation,
             committed: 0,
             rows: 0,
+            damping: super::limits::ShrinkDamping::default(),
         }
     }
 
@@ -218,8 +221,13 @@ impl ApplicationIds {
     /// the bound -- the rows recorded, which machine code compares an index
     /// with -- back to the application table's length: the bound lies at
     /// or below the high mark, so no page machine code reads goes.
-    pub(crate) fn shrink(&mut self, shrink: super::limits::Shrink) -> usize {
-        let Some(end) = shrink.keep(self.rows * ROW_BYTES, self.committed) else {
+    pub(crate) fn shrink(&mut self, shrink: super::limits::Shrink, damped: bool) -> usize {
+        let Some(end) = shrink.keep(
+            &mut self.damping,
+            damped,
+            self.rows * ROW_BYTES,
+            self.committed,
+        ) else {
             return 0;
         };
         let from = self.committed;

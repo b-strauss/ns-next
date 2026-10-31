@@ -406,13 +406,13 @@ with the JIT off, the one run in which the interpreter runs every body:
 ```bash
 NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace    # moving everything at the run loop's safepoints
 NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace   # vacating every inline cache at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace  # collecting at every safepoint, sliding the site ranges whenever one is free
+NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace  # collecting at every safepoint, sliding the site ranges whenever one is free, every reservation given back down to a page above its high mark
 NS_NEXT_STRESS_SCAVENGE=1 cargo nextest run --workspace # scavenging at every safepoint after a check of the remembered set
 NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace     # every instruction in its wide form
 NS_NEXT_STRESS_SUSPEND=1 cargo nextest run --workspace  # suspending every activation into its frame at safepoints
 NS_NEXT_STRESS_JIT=1 cargo nextest run --workspace      # every body compiled at its first entry, and entered at every push even when its machine code exits at once
 NS_NEXT_STRESS_EXIT=1 cargo nextest run --workspace     # every poll in machine code -- every backward jump it takes -- taking its exit, as if a safepoint were requested
-NS_NEXT_STRESS_ZONE=1 cargo nextest run --workspace     # compacting the code zone at safepoints, every body no activation runs freed
+NS_NEXT_STRESS_ZONE=1 cargo nextest run --workspace     # compacting the code zone at safepoints, every body no activation runs freed, the reservations given back as under COLLECT
 NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every body interpreted, in every build
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
