@@ -1928,9 +1928,11 @@ answers with the Ephemeron's refusal of a value as its key).
   interns a text a program chose, or a host that keeps one interpreter
   would grow the interner with every run: the error a run ends with,
   whose `HostError` names its selector as a `Symbol`, reports a
-  program-made selector as `signal`'s (`Activation`'s termination) or
-  `doesNotUnderstand:`'s (the depth limit's report of an unhandled
-  `doesNotUnderstand:`), its text in the error's message.
+  program-made selector as `doesNotUnderstand:`'s, whether the kernel's
+  `defaultAction` ends the run (`Activation`'s termination) or the depth
+  limit's report does, its text in the error's message
+  (`tests/exceptions.rs`'s
+  `an_unhandled_unnamed_selector_is_reported_as_does_not_understand_on_both_paths`).
 - **The weak table** (`heap::symbols::ProgramSymbols`), per heap, beside
   `canonical_symbols`: the program-made symbols keyed by a hash of their
   text and compared by text, so it keeps no copy of the text, with an

@@ -363,21 +363,27 @@ fn inherits_mixin_of<'gc>(
 /// program can make an unhandled exception carry on: a subclass's
 /// `description` may answer anything, which is rendered -- a String's or a
 /// Symbol's text as it is, anything else as `Heap::describe` names it --
-/// and a selector that is no Symbol is reported as `signal`'s. So is a
-/// program-made symbol whose text nothing has interned: the host's error
-/// names its selector as a `Symbol`, and a run never interns a text a
-/// program chose, or a host that keeps one interpreter would grow the
-/// interner by one text per failed run; the description carries the text.
+/// and a selector that is no Symbol is reported as `signal`'s. A
+/// program-made symbol whose text nothing has interned is reported as
+/// `doesNotUnderstand:`'s, as the depth limit's report of the same
+/// unhandled message is (`unwind.rs`, `does_not_understand_error`): the
+/// host's error names its selector as a `Symbol`, and a run never interns
+/// a text a program chose, or a host that keeps one interpreter would grow
+/// the interner by one text per failed run; the description carries the
+/// text.
 fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: Arguments<'_, 'gc>) -> Signal<'gc> {
     let argument = |position: usize| {
         arguments
             .try_get(&mutator.heap, position)
             .unwrap_or(Value::nil())
     };
-    let selector = argument(0)
-        .as_object()
-        .and_then(|object| mutator.heap.symbol_value(object))
-        .unwrap_or(Symbol::SIGNAL);
+    let selector = match argument(0).as_object() {
+        Some(object) if mutator.heap.is_symbol(object) => mutator
+            .heap
+            .symbol_value(object)
+            .unwrap_or(Symbol::DOES_NOT_UNDERSTAND),
+        _ => Symbol::SIGNAL,
+    };
     let description = argument(2);
     // A Symbol is a String, so its text is read the same way.
     let message = description
