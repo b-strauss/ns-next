@@ -2196,6 +2196,41 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   closes it: the range is recorded and reclaimed as a family's is, and
   the ranges slide at a full collection (the same section, "Planned: the
   ranges slide at a full collection").
+- **The site table never shrinks for a hole in its middle** (2026-10-31).
+  A full collection frees the ranges of families nothing runs, but only a
+  free range at the table's end truncates it (`InlineCaches::forget_families`);
+  a hole below a live range is reused first-fit and otherwise kept, so a
+  long-lived family late in the table holds the table at its peak.
+  Part 4d's design closes it (Task 22): the live ranges slide down at a
+  full collection when a quarter of the table is free
+  ([dispatch.md](design/dispatch.md), "Code families", "Planned: the
+  ranges slide at a full collection").
+- **A program-made symbol is interned for good** (2026-10-31).
+  `asSymbol` and its kin intern their text (`Symbol::intern`), and the
+  interner is append-only, per thread, its texts leaked: the symbol object
+  dies with the weak canonical table, its number and its text never do,
+  so a program that makes symbols from fresh strings grows the interner
+  without bound. Part 4d's design closes it (Task 21): a program-made
+  symbol takes no number and lives in a weak table of its own
+  ([memory.md](design/memory.md), "Weak references", "Planned: a
+  program-made symbol takes no number and dies with its object").
+- **No side table requests a full collection** (2026-10-31). A full
+  collection is requested only by the old space's growth, the exhaustion
+  of dispatch ids and `garbageCollect`, so code ids, mixin and
+  application rows and site ranges grow between collections with nothing
+  to bound them but what a program happens to promote. Part 4d's design
+  closes it (Task 17): each table has a growth limit past which it
+  requests one ([memory.md](design/memory.md), "The trigger and the
+  growth policy", "Planned: the side tables' growth limits, and memory
+  given back").
+- **Nothing beside the object space gives committed memory back**
+  (2026-10-31). The activation stack, the cells' reservation, the machine
+  entry table, the application id table and the code zone keep every page
+  a peak committed. Part 4d's design closes it (Task 23): after a full
+  collection, and after a compaction of the code zone, each decommits
+  above its high mark plus a headroom once its threshold is passed
+  ([memory.md](design/memory.md), "The trigger and the growth policy",
+  "Planned: the side tables' growth limits, and memory given back").
 - **A superseded class side held after its instance side was dropped
   names itself `class side`** (2026-10-20). A full collection drops a
   superseded instance side that only the table holds while a Rust holder

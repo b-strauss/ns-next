@@ -10841,7 +10841,7 @@ lowering of one instruction:
   unconditional jumps to labels, calls, returns -- and one encoder each for
   x64 and AArch64, with labels, branches sized in one pass (forward
   branches at their longest, backward ones exactly, as Cog's
-  `generateInstructionsAt` does, `:38527-38596`), and one contract on the
+  `generateInstructionsAt` does, `:38529-38596`), and one contract on the
   condition flags that every encoder honours: each operation sets, keeps
   or clobbers them, and says which conditions it defines. AArch64
   materializes a constant in place with a `movz`/`movk` sequence of at
@@ -11166,10 +11166,11 @@ everything that grows reclaimable (plan
   only sets a flag when a compile finds no room
   (`callForCogCompiledCodeCompaction`, `cointerp.c:12068-12074`, from a
   failed compile such as `cogitX64SysV.c:4147-4149`) and compacts at its
-  next event check (`cointerp.c:65051-65054`). While the zone stays
-  exhausted after a compaction (`JitState.zone_exhausted`), entries keep
-  counting but compile nothing, so a zone full of active code does not
-  compact at every safepoint; the next full collection clears it.
+  next event check (`cointerp.c:65051-65054`). The refused compile also
+  sets `JitState.zone_exhausted`; while it holds, entries keep counting
+  but compile nothing, and a compaction that frees a quarter of the zone
+  clears it, else the next full collection does, so a zone full of
+  active code does not compact at every safepoint.
 - **The usage counts** (`InstalledBody.usage`), Cog's `cmUsageCount`:
   - a body is born at 2, what Cog's `initialMethodUsageCount` answers
     for a method whose primitive has no machine-code generator
@@ -11205,7 +11206,9 @@ everything that grows reclaimable (plan
     `methodBytesFreedSinceLastCompaction`, which `freeMethod` adds each
     freed method's size to, `:12887`).
   - An abandoned body is marked free at once: abandonment runs only
-    between entries, where no frame is stopped in its code.
+    between entries, where no return address into the zone exists, and
+    a frame an exit left stopped in its code resumes interpreted, as
+    every frame stopped in freed code does (below).
 - **The slide and the fix-ups**, in Cog's order (`compactCogCompiledCode`,
   `:5723-5743`):
   1. mark the active bodies (Cog's `markActiveMethodsAndReferents`,
@@ -11250,8 +11253,9 @@ everything that grows reclaimable (plan
   it found uncoggable after every compaction (`nilUncoggableMethods`,
   `cointerp.c:14432-14433`) and as HotSpot, which stops compiling when
   its code cache is full (`share/compiler/compileBroker.cpp:2371-2377`),
-  starts again once a sweep freed memory
-  (`CodeCache::maybe_restart_compiler`, `share/code/codeCache.cpp:1083-1093`). Only
+  starts again once a collection's code unloading freed memory
+  (`CodeCache::maybe_restart_compiler`, `share/code/codeCache.cpp:1083-1093`,
+  from `share/gc/shared/classUnloadingContext.cpp:121`). Only
   a body past the `u16` instruction count or one the assembler cannot
   lay out stays refused.
 - **A stress mode** (`NS_NEXT_STRESS_ZONE`, debug builds) compacts at

@@ -1872,11 +1872,11 @@ a program-made symbol to be collectable (`testSymbolTableWeakness1` and
 user on 2026-10-30.
 
 - **Why no number.** Recycling the number and the text, the decision's
-  first wording, cannot be built safely: `Symbol::as_str` answers a
-  `&'static str` that `intern` leaked, and freeing it would take
-  `Box::from_raw`, which `ns-runtime` forbids, or a non-`'static` text
-  API at every caller of `as_str`; the interner is one per
-  thread, shared by every interpreter on it, so one heap's collection
+  first wording, cannot be built as worded without `unsafe`:
+  `Symbol::as_str` answers a `&'static str` that `intern` leaked, and
+  freeing it would take `Box::from_raw`, which `ns-runtime` forbids, or
+  a non-`'static` text API at every caller of `as_str`; the interner is
+  one per thread, shared by every interpreter on it, so one heap's collection
   cannot know whether another heap still holds a number; and a `Symbol`
   is a `Copy` `u32` held by compiled code, cache keys, return sites,
   frame headers and every Rust table, each of which a recycled number
