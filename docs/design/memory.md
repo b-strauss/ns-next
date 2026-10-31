@@ -1775,38 +1775,51 @@ seems idle and again after a watchdog delay
 (`prior-art/v8/src/heap/memory-reducer.cc:41-42`, `:56-90`), is
 rejected for that reason.
 
-#### Planned: memory given back
+#### Giving committed memory back
 
-Would change: the reservations beside the space give back what a peak
-committed. Today nothing but the old space ever decommits. Decided with
-the user on 2026-10-30, one of the six decisions that make everything
-that grows reclaimable (plan
+The reservations beside the space give back what a peak committed.
+Decided with the user on 2026-10-30, one of the six decisions that make
+everything that grows reclaimable (plan
 `docs/superpowers/plans/2026-10-30-0103-jit-closures.md`, "Part 4d").
 
 **Committed memory is given back with hysteresis** (`heap::limits::Shrink
-{ threshold, headroom }`). After every full collection, and after a
-compaction of the code zone, each reservation beside the space whose
-committed bytes exceed its high mark by more than its threshold is
-decommitted above the high mark plus its headroom, rounded up to a page;
-one within its threshold keeps what it has, so a sawtooth that returns
-to its peak every cycle never decommits and commits again. It is Spur's
-`attemptToShrink` after a full collection, which shrinks only when the
-free old space exceeds `shrinkThreshold` and keeps `growHeadroom`
-(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:50244-50249`; its
-defaults of 32 MiB and 16 MiB, `:51088-51094`):
+{ threshold, headroom }`, `Shrink::keep`). At the end of every full
+collection (`World::shrink_committed_memory`), and after every compaction
+of the code zone, each reservation beside the space whose committed bytes
+exceed its high mark by more than its threshold is decommitted above the
+high mark plus its headroom, rounded up to a page; one within its
+threshold keeps what it has, so a sawtooth that returns to its peak every
+cycle never decommits and commits again, and nothing decommits anywhere
+else, so a high mark that rises and falls within one collection's cycle
+never does. It is Spur's `attemptToShrink` after a full collection, which
+shrinks only when the free old space exceeds `shrinkThreshold` and keeps
+`growHeadroom` (`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:50168`,
+`:50244-50249`; its defaults of 32 MiB and 16 MiB, `:51088-51094`). The
+pairs are constants named per reservation in `heap/limits.rs`, and a test
+sets them all at once (`Interpreter::set_shrink_pairs`):
 
-| Reservation | Threshold / headroom | High mark |
-|---|---|---|
-| the cells (1 GiB reserved) | 32 MiB / 16 MiB, Spur's | the end of `sites` after the sites' slide ([dispatch.md](dispatch.md), "Code families"), and the polymorphic pool's length; the global rows never shrink |
-| the activation stack | 4 MiB / 2 MiB | the stack's top; a 100,000-deep recursion commits about 16 MiB |
-| the machine entry table | 1 MiB / 512 KiB | the code table's length after its truncation |
-| the application id table | 1 MiB / 512 KiB | the bound after the application rows' truncation |
-| the code zone (16 MiB by default) | 2 MiB / 1 MiB | the zone's next offset after its compaction ([execution.md](execution.md), "The code zone") |
+| Reservation | Threshold / headroom | High mark | What the decommit lowers first |
+|---|---|---|---|
+| the cells (1 GiB reserved) | 32 MiB / 16 MiB, Spur's | the end of `sites` after the sites' slide ([dispatch.md](dispatch.md), "Code families"), and the polymorphic pool's length; the global rows never shrink | each region's committed end, which only Rust reads: machine code reads a site's cell only for a live range and a block's only for one a site names |
+| the activation stack | 4 MiB / 2 MiB | the stack's top; a 100,000-deep recursion commits about 16 MiB | the committed end and the ordinary end, with its machine word `OrdinaryStackEnd` (`FrameStack::shrink`) |
+| the machine entry table | 1 MiB / 512 KiB | the code table's length after its truncation | the committed rows and their machine word `MachineEntryRows`, which the closure stubs compare an id with |
+| the application id table | 1 MiB / 512 KiB | the rows recorded after the application rows' truncation | nothing: machine code's bound, `ApplicationIdRows`, is the rows recorded, which the truncation lowered |
+| the code zone (16 MiB by default) | 2 MiB / 1 MiB | the zone's next offset, after its compaction slid the survivors down ([execution.md](execution.md), "The code zone") | the writer's committed end (`CodeWriter::decommit_above`) |
 
-A decommit lowers with it every bound machine code compares against --
-the stack's ordinary end, the machine entry rows, the application id
-table's committed rows -- so machine code reads only committed memory.
-`CollectorStatistics.decommitted_bytes` and `decommits` count them.
+Every bound machine code compares against is lowered before a page goes,
+so machine code reads only committed memory: an id past the lowered
+machine entry rows reads as no machine entry, and the interpreter calls
+the block. The stack shrinks between entries, when no frame machine
+code pushed lies above its top. A page given back reads zeros when it is
+committed again, and each table writes what it reads there first, as it
+does for a page committed fresh. The code zone is a section on Windows,
+whose committed pages cannot be decommitted: `DiscardVirtualMemory`
+releases their physical memory, and their commit charge stays; Linux
+punches a hole into the zone's memory object, Apple AArch64 frees its
+`MAP_JIT` pages with `MADV_FREE`, and a POSIX shared memory object
+elsewhere keeps its pages (`platform::decommit_code`).
+`CollectorStatistics.decommits` and `decommitted_bytes` count the
+decommits and their bytes.
 
 ### Weak references
 
@@ -2393,8 +2406,9 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   `prior-art/strongtalk/vm/runtime/os_nt.cpp:403-414`).
   The heap's activation stack is the second: 16 GiB on a 64-bit target
   and 256 MiB otherwise (`STACK_RESERVATION`, `heap/frames.rs`),
-  committed from its base as the stack deepens and never decommitted
-  while the heap lives. Where the operating system limits address
+  committed from its base as the stack deepens and given back above its
+  top and a headroom after a full collection ("Giving committed memory
+  back"). Where the operating system limits address
   space, either reservation falls back, halving the request down to no
   less than 1 GiB (`reserve_falling_back`, `heap/space.rs`; a request
   already below that is tried alone).
@@ -2495,7 +2509,8 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   most 128 MiB mapped twice, one view executable and one writable
   (`MAP_JIT` with its per-thread switch on Apple AArch64), the one writer
   of code, which commits pages as code is installed and flushes the
-  instruction cache over what it wrote, the entry, the block the entry
+  instruction cache over what it wrote and gives pages back above an
+  end (`decommit_above`, "Giving committed memory back"), the entry, the block the entry
   hands machine code (`EntryBlock`, `Cell`s behind an `Rc`, kept from
   one entry to the next), and the shim through which machine code calls
   Rust ([execution.md](execution.md), "The baseline JIT's foundation",
@@ -2521,7 +2536,10 @@ base plus its index times its size -- while the `Vec`s of entries beside
 it move as they grow. Each region is committed as it grows, doubling what
 it has and at least 64 KiB, or exactly what it needs where the system
 refuses more, and `heap::out_of_memory` past that; a page newly committed
-reads 0, so every cell a table grows by is written vacant explicitly. The
+reads 0, so every cell a table grows by is written vacant explicitly. After
+a full collection the site and block regions give their pages back above
+the table's end, the pool's length and a headroom (`Cells::shrink`;
+"Giving committed memory back"); the global mirror never shrinks. The
 addresses come from `Reservation::base_address`, and every slice Rust
 borrows of it is derived afresh, as the object space's are. A cell names
 no handle, so nothing traces it.
@@ -2557,7 +2575,9 @@ code"). It has three writers:
 registered, `Heap::free_application` records zeros -- the id
 `DispatchId::NONE` -- when a full collection reclaims the application,
 and `Heap::truncate_application_rows` takes the bound back with the table
-of applications. An application's row never changes after it is built,
+of applications, after which the end of a full collection gives the
+pages past the bound and a headroom back (`ApplicationIds::shrink`;
+"Giving committed memory back"). An application's row never changes after it is built,
 and a class object's application word, which `class_set_application`
 changes, is read afresh by machine code, so nothing else writes it. A
 word that is no `SmallInteger`, or an index at or past the bound, names

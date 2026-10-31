@@ -695,7 +695,8 @@ impl HostRoots {
 /// its header. A send's own callee lies on the sender's argument slots,
 /// which are its arguments, its header where they end; every other frame
 /// starts at or past the window end of the one below. The reservation is
-/// committed as the stack deepens and never decommitted, so once it has
+/// committed as the stack deepens and given back only above the top and a
+/// headroom after a full collection (`FrameStack::shrink`), so once it has
 /// grown to the program's depth a push commits nothing.
 struct ActivationStack {
     frames: FrameStack,
@@ -2183,6 +2184,12 @@ pub struct Heap<'gc> {
     /// How many collections a table's limit requested and the space's
     /// did not.
     table_collections: u64,
+    /// The pair of threshold and headroom by which each reservation beside
+    /// the space gives committed memory back (`limits::Shrink`), and how
+    /// many times one did and how many bytes in all (`count_decommit`).
+    shrink_pairs: limits::ShrinkPairs,
+    decommits: u64,
+    decommitted_bytes: u64,
     /// How many collections have run, and how long they have taken in total
     /// and at the longest (`Interpreter::collector_statistics`,
     /// `--collector-statistics`). `World::collect` is the only writer,
@@ -2450,6 +2457,11 @@ pub struct CollectorStatistics {
     /// Collections a table's growth limit requested and the space's limit
     /// did not (`heap::limits`).
     pub table_collections: u64,
+    /// How many times a reservation beside the space gave committed pages
+    /// back after a full collection or a compaction of the code zone
+    /// (`heap::limits::Shrink`), and how many bytes in all.
+    pub decommits: u64,
+    pub decommitted_bytes: u64,
 }
 
 /// A frame object's fixed fields as values and handles, before
@@ -2616,6 +2628,9 @@ impl<'gc> Heap<'gc> {
             table_limits: limits::TableLimits::default(),
             table_collection_requested: false,
             table_collections: 0,
+            shrink_pairs: limits::ShrinkPairs::default(),
+            decommits: 0,
+            decommitted_bytes: 0,
             collections: 0,
             total_pause: std::time::Duration::ZERO,
             longest_pause: std::time::Duration::ZERO,
@@ -10755,10 +10770,61 @@ impl<'gc> Heap<'gc> {
             application_rows: self.tables.applications.len(),
             program_symbols: self.program_symbols.len(),
             stack_committed_bytes: self.stack.frames.committed_words() * 8,
+            stack_used_bytes: self.stack.frames.top() * 8,
             machine_entry_rows_committed,
             application_id_rows_committed: self.application_ids.committed_rows(),
             ..limits::TableSizes::default()
         }
+    }
+
+    /// Gives back the committed memory of the reservations the heap holds
+    /// beside the space -- the activation stack, the machine entry table
+    /// and the application id table -- above each one's high mark and
+    /// headroom, where more than its threshold lies unused
+    /// (`limits::Shrink`). Run at the end of a full collection, between
+    /// entries, after `reclaim_ids` truncated the code and application
+    /// tables: each bound machine code reads is at or below what is kept
+    /// before a page goes (`docs/design/memory.md`, "Giving committed
+    /// memory back").
+    pub(crate) fn shrink_reservations(&mut self) {
+        let pairs = self.shrink_pairs;
+        let bytes = self.stack.frames.shrink(pairs.stack);
+        self.count_decommit(bytes);
+        #[cfg(ns_jit)]
+        {
+            let machine_words = &self.machine_words;
+            let bytes = self.machine_entries.shrink(
+                self.tables.codes.len(),
+                pairs.machine_entries,
+                |rows| machine_words.set(MachineWord::MachineEntryRows, rows as u64),
+            );
+            self.count_decommit(bytes);
+        }
+        debug_assert!(
+            self.machine_words.get(MachineWord::ApplicationIdRows)
+                <= self.application_ids.rows() as u64,
+            "internal: the application id rows' bound lies at the rows recorded"
+        );
+        let bytes = self.application_ids.shrink(pairs.application_ids);
+        self.count_decommit(bytes);
+    }
+
+    /// Counts one decommit of `bytes`, nothing for none.
+    pub(crate) fn count_decommit(&mut self, bytes: usize) {
+        if bytes > 0 {
+            self.decommits += 1;
+            self.decommitted_bytes += bytes as u64;
+        }
+    }
+
+    /// Each reservation's shrink pair (`limits::ShrinkPairs`).
+    pub(crate) fn shrink_pairs(&self) -> limits::ShrinkPairs {
+        self.shrink_pairs
+    }
+
+    /// Sets each reservation's shrink pair (`Interpreter::set_shrink_pairs`).
+    pub(crate) fn set_shrink_pairs(&mut self, pairs: limits::ShrinkPairs) {
+        self.shrink_pairs = pairs;
     }
 
     /// Sets every table's floor and next limit but the sites', which lie
@@ -11259,6 +11325,8 @@ impl<'gc> Heap<'gc> {
             longest_pause: self.longest_pause,
             live_objects: self.object_count + self.machine_allocations(),
             table_collections: self.table_collections,
+            decommits: self.decommits,
+            decommitted_bytes: self.decommitted_bytes,
         }
     }
 

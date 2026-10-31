@@ -304,7 +304,8 @@ fn word_as_address(word: u64) -> usize {
 pub struct CodeWriter {
     zone: Rc<CodeZone>,
     /// The bytes from the base the writer committed: code is installed
-    /// from the base up, so the committed pages are a prefix.
+    /// from the base up, so the committed pages are a prefix, which
+    /// `decommit_above` shortens.
     committed: usize,
 }
 
@@ -381,6 +382,43 @@ impl CodeWriter {
     #[cfg(test)]
     pub fn executable_view_is_writable(&self) -> bool {
         platform::executable_view_is_writable(&self.zone.mapping, self.committed)
+    }
+
+    /// The bytes from the base the writer has committed, a whole number of
+    /// pages.
+    pub fn committed(&self) -> usize {
+        self.committed
+    }
+
+    /// Gives back the pages from `end`, rounded up to a page, to the
+    /// committed prefix's end, and answers how many bytes that was: 0 for
+    /// an end at or past it. The writer stops counting them as committed
+    /// first, so that the next write past `end` commits them again; what
+    /// they held is gone, and code is never run from them before a write
+    /// stores it there again. A refusal of the system leaves the pages as
+    /// they were and answers 0. What the system takes back differs by
+    /// platform (`platform::decommit_code`): on Windows a section's pages
+    /// stay charged against the commit limit, and only their physical
+    /// memory is released.
+    pub fn decommit_above(&mut self, end: usize) -> usize {
+        let page = platform::page_size();
+        let Some(end) = end.checked_next_multiple_of(page) else {
+            return 0;
+        };
+        if end >= self.committed {
+            return 0;
+        }
+        let from = self.committed;
+        self.committed = end;
+        // SAFETY: `end..from` is page-aligned and inside the zone's
+        // committed prefix, and no slice into the zone is alive: only
+        // `bytes` lends one, borrowing this writer, which `decommit_above`
+        // holds mutably. Nothing runs from the range: its caller, which
+        // decides the zone's layout, holds no code there it still runs.
+        match unsafe { platform::decommit_code(&self.zone.mapping, end, from - end) } {
+            Ok(()) => from - end,
+            Err(_) => 0,
+        }
     }
 
     /// Commits the pages from the committed prefix's end through `end`.
@@ -504,6 +542,29 @@ mod tests {
             zone.bytes(0..past + 1).is_none(),
             "the third page is not committed"
         );
+    }
+
+    /// A decommit gives back the pages above its end and no others, and a
+    /// write past it commits them again: what is written there reads back.
+    #[test]
+    fn a_decommitted_range_is_committed_again_by_a_write() {
+        let page = platform::page_size();
+        let mut zone = CodeZone::reserve(8 * page).expect("a zone");
+        let last = u32::try_from(4 * page - 1).expect("small");
+        zone.write(CodeOffset(0), &[1]).expect("written");
+        zone.write(CodeOffset(last), &[2]).expect("written");
+        assert_eq!(zone.committed(), 4 * page);
+        assert_eq!(
+            zone.decommit_above(page + 1),
+            2 * page,
+            "from the next page on"
+        );
+        assert_eq!(zone.committed(), 2 * page);
+        assert_eq!(zone.bytes(0..1), Some(&[1][..]), "below the end is kept");
+        assert!(zone.bytes(0..last + 1).is_none(), "no longer committed");
+        assert_eq!(zone.decommit_above(4 * page), 0, "nothing above the prefix");
+        zone.write(CodeOffset(last), &[3]).expect("written again");
+        assert_eq!(zone.bytes(last..last + 1), Some(&[3][..]));
     }
 
     #[test]

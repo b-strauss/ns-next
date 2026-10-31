@@ -39,7 +39,9 @@
 //!
 //! The bound, `MachineWord::MachineEntryRows`, is the number of rows
 //! committed, so that machine code never reads past what is committed: an
-//! id at or past it reads as no machine entry.
+//! id at or past it reads as no machine entry. A full collection gives the
+//! pages above the code table's length and a headroom back, the bound
+//! lowered first (`MachineEntries::shrink`).
 //!
 //! Aliasing: machine code reaches the rows through the reservation's own
 //! pointer (`Reservation::base_address`), while Rust writes them through a
@@ -242,6 +244,39 @@ impl MachineEntries {
             slots.fill(0);
         }
         self.named_entries.fill(0);
+    }
+
+    /// Gives back the committed pages above `high_rows` rows and `shrink`'s
+    /// headroom once more than its threshold lies above them
+    /// (`limits::Shrink`), and answers how many bytes that was.
+    /// `high_rows` is the code table's length after a full collection
+    /// truncated it: every row past it holds no entry, the collection
+    /// having cleared the row of every id it freed. `lower_bound` is handed
+    /// the new number of rows before a page goes, to write the bound
+    /// machine code compares an id with (`MachineWord::MachineEntryRows`),
+    /// so that no id past it is ever read from a page given back.
+    pub(crate) fn shrink(
+        &mut self,
+        high_rows: usize,
+        shrink: super::limits::Shrink,
+        lower_bound: impl FnOnce(usize),
+    ) -> usize {
+        let committed = self.rows * ROW_BYTES;
+        let Some(end) = shrink.keep(high_rows.min(self.rows) * ROW_BYTES, committed) else {
+            return 0;
+        };
+        self.rows = end / ROW_BYTES;
+        debug_assert!(
+            (self.rows..committed / ROW_BYTES).all(|row| !self.names_entry(row)),
+            "internal: a row past the code table names a machine entry"
+        );
+        self.named_entries.truncate(self.rows.div_ceil(64));
+        lower_bound(self.rows);
+        match self.reservation.decommit(end..committed) {
+            Ok(()) => committed - end,
+            // Counted uncommitted, the next growth commits them again.
+            Err(_) => 0,
+        }
     }
 
     /// Commits the rows through `row`, and a generous margin past it, which

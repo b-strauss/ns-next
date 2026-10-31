@@ -463,6 +463,28 @@ impl JitState {
         self.compaction_requested
     }
 
+    /// Gives back the zone's committed pages above the end of its last
+    /// body and `shrink`'s headroom once more than its threshold lies
+    /// unused there (`heap::limits::Shrink`), and answers how many bytes
+    /// that was. Run between entries, after a compaction slid the
+    /// survivors down and at the end of a full collection: nothing runs
+    /// from past the last body, and the next install there commits the
+    /// pages again (`CodeWriter::decommit_above`).
+    pub(crate) fn shrink_zone(&mut self, shrink: crate::heap::limits::Shrink) -> usize {
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            self.entries_in_progress, 0,
+            "internal: the zone shrinks only between entries"
+        );
+        let Some(zone) = self.zone.as_mut() else {
+            return 0;
+        };
+        match shrink.keep(zone.next_offset as usize, zone.writer.committed()) {
+            Some(end) => zone.writer.decommit_above(end),
+            None => 0,
+        }
+    }
+
     /// The index in `bodies` of the body `code`'s slot names in this zone,
     /// whether or not the JIT is on, while it is not freed.
     pub(super) fn named_body(&self, code: &CompiledCode) -> Option<usize> {
@@ -805,6 +827,10 @@ impl Mutator<'_> {
         #[cfg(ns_jit)]
         self.heap.remap_machine_entries(&plan);
         self.jit.slide(&plan);
+        // After the slide, which lowered the zone's next offset: what the
+        // freed bodies left past it is given back by the code zone's pair.
+        let bytes = self.jit.shrink_zone(self.heap.shrink_pairs().code_zone);
+        self.heap.count_decommit(bytes);
         let enough = self
             .jit
             .zone

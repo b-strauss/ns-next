@@ -6037,3 +6037,131 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+/// `count` blocks, each of its own body, kept in `kept` so that their code
+/// ids stay named across collections, and `callBlock:`, which makes a
+/// block of a body of its own, sends it `value:` and lets it go, so that
+/// a collection frees its id.
+fn many_blocks(count: usize) -> String {
+    let blocks: String = (0..count).map(|index| format!("[{index}]. ")).collect();
+    formatdoc! {"
+        class Subject = Object new (
+          |
+            kept ::= nil.
+            held ::= nil.
+          |
+        ) (
+          public keepAll = ( kept:: {{ {blocks}}}. ^kept size )
+          public callBlock: value = (
+            | answer |
+            held:: [:number | number + 1].
+            answer:: held value: value.
+            held:: nil.
+            ^answer
+          )
+        ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// After a full collection lowered the machine entry table's committed
+    /// rows to the code table's length -- the shrink pair at nothing, so
+    /// that every page past it goes -- the code ids of two hundred kept
+    /// blocks take the table past the lowered bound, and the block
+    /// `callBlock:` makes takes an id past it: machine code's send of
+    /// `value:` compares that id with the bound
+    /// (`MachineWord::MachineEntryRows`), which was lowered before the
+    /// pages went, finds no row, and leaves the call to the interpreter,
+    /// which answers right; a read past the bound would fault on a page
+    /// given back.
+    fn a_machine_entry_row_past_the_lowered_bound_reads_as_none(lowering) {
+        let (mut interpreter, class) = load_with(&many_blocks(200), lowering);
+        interpreter.set_shrink_pairs(ns_runtime::ShrinkPairs {
+            machine_entries: ns_runtime::Shrink {
+                threshold: 0,
+                headroom: 0,
+            },
+            ..ns_runtime::ShrinkPairs::default()
+        });
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for value in 0..4 {
+            assert_eq!(send_number(&mut interpreter, &subject, "callBlock:", value), value + 1);
+        }
+        let committed = interpreter.table_sizes().machine_entry_rows_committed;
+        interpreter.collect_now();
+        let lowered = interpreter.table_sizes().machine_entry_rows_committed;
+        assert_eq!(send_unary(&mut interpreter, &subject, "keepAll"), 200);
+        let code_ids = interpreter.table_sizes().code_ids;
+        for value in 10..14 {
+            assert_eq!(send_number(&mut interpreter, &subject, "callBlock:", value), value + 1);
+        }
+        // The reference lowering's bodies exit at once and record no row;
+        // a stress mode's collections free and mint the ids meanwhile.
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                lowered < committed,
+                "the collection lowered the rows from {committed} to {lowered}"
+            );
+            assert!(
+                code_ids > lowered,
+                "{code_ids} code ids past {lowered} committed rows"
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Six hundred edits of a hot method fill the code zone with bodies
+    /// that die with their versions; a full collection frees them, and a
+    /// compaction slides the survivors down and gives the zone's pages
+    /// back past their end and the headroom, the code zone's shrink pair
+    /// lowered to 64 KiB and 16 KiB (`heap::limits::Shrink`). The next
+    /// compile commits them again, and every run answers right.
+    fn the_zone_gives_back_its_pages_after_a_compaction(lowering) {
+        let threshold = 64 << 10;
+        let headroom = 16 << 10;
+        let page = 64 << 10;
+        let (mut interpreter, subject, _) = edited_answer(lowering);
+        interpreter.set_shrink_pairs(ns_runtime::ShrinkPairs {
+            code_zone: ns_runtime::Shrink {
+                threshold,
+                headroom,
+            },
+            ..ns_runtime::ShrinkPairs::default()
+        });
+        let edits = 600;
+        for number in 1..=edits {
+            assert_eq!(send_number(&mut interpreter, &subject, "edit:", number), number);
+            for _ in 0..3 {
+                assert_eq!(send_unary(&mut interpreter, &subject, "run"), 3 + number);
+            }
+        }
+        let filled = interpreter.table_sizes().zone_committed_bytes;
+        let before = interpreter.collector_statistics();
+        interpreter.collect_now();
+        interpreter.compact_jit_zone();
+        let sizes = interpreter.table_sizes();
+        assert!(
+            sizes.zone_committed_bytes <= sizes.zone_used_bytes + threshold + page,
+            "{} bytes committed past {} used",
+            sizes.zone_committed_bytes,
+            sizes.zone_used_bytes
+        );
+        let after = interpreter.collector_statistics();
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 3 + edits);
+        }
+        // The reference lowering's bodies exit at once and are never
+        // installed; a stress mode compacts and collects on its own.
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                sizes.zone_committed_bytes <= sizes.zone_used_bytes + headroom + page,
+                "{} bytes committed past {} used, {filled} before",
+                sizes.zone_committed_bytes,
+                sizes.zone_used_bytes
+            );
+            assert!(sizes.zone_committed_bytes < filled, "the zone shrank");
+            assert!(after.decommits > before.decommits, "the compaction decommitted");
+        }
+    }
+}

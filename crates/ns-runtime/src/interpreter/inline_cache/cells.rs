@@ -252,6 +252,34 @@ impl Cells {
         self.global.committed + self.sites.committed + self.blocks.committed
     }
 
+    /// Gives back the committed pages of the site cells above the first
+    /// `sites` cells and of the blocks' cells above the first `blocks`
+    /// blocks, each past `shrink`'s headroom once more than its threshold
+    /// lies unused (`limits::Shrink`), and answers how many bytes that
+    /// was. The global mirror never shrinks: its rows are a fixed number.
+    /// Machine code reads a site's cell only for a site of a live range,
+    /// below the table's end, and a block's only for a block a site names,
+    /// in the pool; a cell past either reads as vacant to Rust, and the
+    /// next write past it commits it again.
+    pub(crate) fn shrink(
+        &mut self,
+        sites: usize,
+        blocks: usize,
+        shrink: crate::heap::limits::Shrink,
+    ) -> usize {
+        shrink_region(
+            &mut self.reservation,
+            &mut self.sites,
+            sites * CELL_BYTES,
+            shrink,
+        ) + shrink_region(
+            &mut self.reservation,
+            &mut self.blocks,
+            blocks * BLOCK_BYTES,
+            shrink,
+        )
+    }
+
     /// The address of site `index`'s cell: the site cells' base plus
     /// `index` cells, fixed for the reservation's life.
     pub(crate) fn site_address(&self, index: usize) -> usize {
@@ -482,6 +510,28 @@ fn ensure_committed(reservation: &mut Reservation, region: &mut Region, end: usi
         crate::heap::out_of_memory(needed - region.committed)
     };
     true
+}
+
+/// Decommits `region` above `high_mark` bytes and `shrink`'s headroom
+/// once more than its threshold lies unused above the high mark, and
+/// answers how many bytes that was (`Cells::shrink`).
+fn shrink_region(
+    reservation: &mut Reservation,
+    region: &mut Region,
+    high_mark: usize,
+    shrink: crate::heap::limits::Shrink,
+) -> usize {
+    let Some(end) = shrink.keep(high_mark, region.committed) else {
+        return 0;
+    };
+    let from = region.committed;
+    region.committed = end;
+    // The region's start is a whole number of pages into the reservation.
+    match reservation.decommit(region.start + end..region.start + from) {
+        Ok(()) => from - end,
+        // Counted uncommitted, the next write commits them again.
+        Err(_) => 0,
+    }
 }
 
 #[cfg(test)]

@@ -1215,6 +1215,15 @@ impl Interpreter {
         self.world.set_table_floors(floors);
     }
 
+    /// Sets the threshold and the headroom by which each reservation beside
+    /// the object space gives committed memory back after a full collection
+    /// (`heap::limits::Shrink`), so that a test crosses a threshold without
+    /// committing up to the default first. A test hook.
+    #[doc(hidden)]
+    pub fn set_shrink_pairs(&mut self, pairs: crate::ShrinkPairs) {
+        self.world.set_shrink_pairs(pairs);
+    }
+
     /// Replaces the global cache with a fresh one sized for `entries`,
     /// vacating whatever it held. A test hook (`NS_NEXT_GLOBAL_CACHE_ENTRIES`,
     /// `run_goldens.rs`), not an input path a program can reach: `entries`

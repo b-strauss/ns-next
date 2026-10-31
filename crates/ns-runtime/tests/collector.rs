@@ -678,3 +678,82 @@ fn a_churn_of_families_requests_a_collection_at_the_site_limit() {
         "the sites' growth limit requested no collection"
     );
 }
+
+/// A module whose `down:` recurses as deep as it is asked and answers the
+/// depth it reached.
+const DEEP: &str = indoc! {"
+    class Deep = Object new () (
+      public down: count = (
+        count = 0 ifTrue: [^0].
+        ^(self down: count - 1) + 1
+      )
+    ) : ()
+"};
+
+/// Sends `down: depth` to a new `Deep`, answering what it answers.
+fn recurse(interpreter: &mut Interpreter, class: &Root, depth: i64) -> i64 {
+    let instance = expect_ok(interpreter.instantiate(class, &[]));
+    let count = interpreter.stash(Value::small_integer(depth));
+    let answer = expect_ok(interpreter.send(&instance, Symbol::intern("down:"), &[count]));
+    interpreter.enter(|mutator| integer_of(mutator.fetch(&answer)))
+}
+
+/// The bytes past the high mark and the headroom a shrunk reservation may
+/// still hold: its end is rounded up to a page, 64 KiB at the most on the
+/// platforms ns-next runs on.
+const A_PAGE: usize = 64 << 10;
+
+/// A recursion 50,000 deep commits several MiB of the activation stack,
+/// which a full collection after it returned gives back down to the
+/// headroom above the top, 2 MiB (`heap::limits::STACK_SHRINK`); a second
+/// recursion as deep commits the pages again and answers right.
+#[test]
+fn a_deep_recursion_gives_its_stack_pages_back() {
+    let (mut interpreter, class) = load(DEEP);
+    // The collections this pins are its own: under the collect stress
+    // mode one made while the recursion unwinds shrinks the stack to a top
+    // that is still high, and the explicit one finds less than the
+    // threshold above the top it returned to.
+    interpreter.set_stress_collect(false);
+    let depth = 50_000;
+    assert_eq!(recurse(&mut interpreter, &class, depth), depth);
+    let before = interpreter.collector_statistics();
+    interpreter.collect_now();
+    let sizes = interpreter.table_sizes();
+    assert!(
+        sizes.stack_committed_bytes <= sizes.stack_used_bytes + (2 << 20) + A_PAGE,
+        "{} bytes committed above a top at {}",
+        sizes.stack_committed_bytes,
+        sizes.stack_used_bytes
+    );
+    let after = interpreter.collector_statistics();
+    assert!(
+        after.decommits > before.decommits && after.decommitted_bytes > before.decommitted_bytes,
+        "the collection gave the pages back"
+    );
+    assert_eq!(recurse(&mut interpreter, &class, depth), depth);
+    assert_eq!(recurse(&mut interpreter, &class, depth), depth);
+}
+
+/// A recursion 1 MiB of frames deeper than the stack's headroom -- about
+/// 3 MiB, at the 112 bytes a `down:` frame takes -- then a shallow one, a
+/// hundred times, each followed by a full collection: the stack shrinks
+/// at most once, since a recursion that grows back into the headroom
+/// commits no more than the threshold above the top it returns to.
+#[test]
+fn a_sawtooth_of_recursions_does_not_thrash() {
+    let (mut interpreter, class) = load(DEEP);
+    // The collections this pins are one per cycle, at its low point: the
+    // collect stress mode's, at every safepoint of the recursion, are a
+    // collection cycle of their own each.
+    interpreter.set_stress_collect(false);
+    let deep = 28_500;
+    let before = interpreter.collector_statistics();
+    for _ in 0..100 {
+        assert_eq!(recurse(&mut interpreter, &class, deep), deep);
+        assert_eq!(recurse(&mut interpreter, &class, 10), 10);
+        interpreter.collect_now();
+    }
+    let decommits = interpreter.collector_statistics().decommits - before.decommits;
+    assert!(decommits <= 1, "{decommits} decommits");
+}

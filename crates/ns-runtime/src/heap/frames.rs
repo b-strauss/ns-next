@@ -427,8 +427,9 @@ pub(super) fn stack_offset(offset: usize) -> u32 {
 pub(super) struct ReservationExhausted;
 
 /// The frames of the running activations: one reservation of words,
-/// committed from its base as the stack deepens and never decommitted
-/// while it lives. Everything it lends is `[0, top)`. The caller of a push
+/// committed from its base as the stack deepens, and given back above its
+/// top after a full collection once enough lies unused there (`shrink`).
+/// Everything it lends is `[0, top)`. The caller of a push
 /// writes the header and the registers the frame reads before it writes
 /// them, and no other: a scratch register keeps whatever the stack last
 /// held there, and so does a register a pop gives back, until the
@@ -764,6 +765,29 @@ impl FrameStack {
         self.committed = self.committed.max(end / 8);
         self.set_ordinary_end(self.committed.min(self.ordinary_limit));
         Ok(())
+    }
+
+    /// Gives back the committed pages above the top and `shrink`'s
+    /// headroom once more than its threshold lies unused above the top
+    /// (`limits::Shrink`), and answers how many bytes that was. Run after
+    /// a full collection, between entries, so that no frame machine code
+    /// pushed lies above the top. The ordinary end -- and the machine word
+    /// machine code compares a push with -- is lowered to the new
+    /// committed end before a page goes, so that a push past it takes the
+    /// growth, which commits the pages again.
+    pub(super) fn shrink(&mut self, shrink: super::limits::Shrink) -> usize {
+        let committed_bytes = self.committed * 8;
+        let Some(end) = shrink.keep(self.top * 8, committed_bytes) else {
+            return 0;
+        };
+        self.committed = end / 8;
+        self.set_ordinary_end(self.committed.min(self.ordinary_limit));
+        match self.reservation.decommit(end..committed_bytes) {
+            Ok(()) => committed_bytes - end,
+            // The pages the system refused to take are still counted
+            // inaccessible, and the next growth commits them again.
+            Err(_) => 0,
+        }
     }
 
     /// The words of every frame, `[0, top)`: one comparison, of the top

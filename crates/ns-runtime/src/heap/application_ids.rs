@@ -31,6 +31,8 @@
 //! recorded, so that machine code never reads past what is committed: an
 //! index at or past it -- none a class object of this heap holds, unless
 //! the table ran out of room -- is a miss, which the miss leaf decides.
+//! A full collection gives the pages past the bound and a headroom back
+//! once the truncation lowered it (`ApplicationIds::shrink`).
 //!
 //! Aliasing: machine code reaches the rows through the reservation's own
 //! pointer (`Reservation::base_address`), while Rust writes them through
@@ -207,6 +209,26 @@ impl ApplicationIds {
             };
         }
         self.rows = rows;
+    }
+
+    /// Gives back the committed pages above the recorded rows and
+    /// `shrink`'s headroom once more than its threshold lies above them
+    /// (`limits::Shrink`), and answers how many bytes that was. Run after
+    /// a full collection, once `Heap::truncate_application_rows` has taken
+    /// the bound -- the rows recorded, which machine code compares an index
+    /// with -- back to the application table's length: the bound lies at
+    /// or below the high mark, so no page machine code reads goes.
+    pub(crate) fn shrink(&mut self, shrink: super::limits::Shrink) -> usize {
+        let Some(end) = shrink.keep(self.rows * ROW_BYTES, self.committed) else {
+            return 0;
+        };
+        let from = self.committed;
+        self.committed = end;
+        match self.reservation.decommit(end..from) {
+            Ok(()) => from - end,
+            // Counted uncommitted, the next growth commits them again.
+            Err(_) => 0,
+        }
     }
 
     /// The words row `row` records; `None` past the bound.

@@ -959,6 +959,11 @@ impl JitState {
         (used_bytes, self.bodies.len(), self.returns.len())
     }
 
+    /// The bytes of the code zone committed (`Interpreter::table_sizes`).
+    pub(crate) fn zone_committed_bytes(&self) -> usize {
+        self.zone.as_ref().map_or(0, |zone| zone.writer.committed())
+    }
+
     /// Whether bodies are compiled and entered: the one load an
     /// interpreter's send of a block makes before it looks for the
     /// block's machine code (`Mutator::enter_sent`).

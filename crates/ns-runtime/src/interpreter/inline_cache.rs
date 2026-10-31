@@ -407,6 +407,14 @@ impl InlineCaches {
         self.cells.committed_bytes()
     }
 
+    /// Gives back the cells' committed pages above the site table's end
+    /// and the pool's, by `shrink` (`Cells::shrink`), and answers how many
+    /// bytes that was: run at the end of a full collection, after a slide
+    /// moved the live ranges down and truncated the table.
+    pub(crate) fn shrink_cells(&mut self, shrink: crate::heap::limits::Shrink) -> usize {
+        self.cells.shrink(self.sites.len(), self.pool.len(), shrink)
+    }
+
     /// Drops every family whose root body only the family holds and whose
     /// range no live closure or activation names (`live_bases`), and every
     /// decoded closure's range none names, vacates its sites and frees its

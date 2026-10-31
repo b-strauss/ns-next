@@ -1232,6 +1232,42 @@ fn a_churn_of_families_keeps_the_site_table_bounded() {
     }
 }
 
+/// The churn of `a_churn_of_families_keeps_the_site_table_bounded`, with
+/// the cells' shrink pair lowered to 64 KiB and 32 KiB: the slide leaves
+/// the site table a fraction of what the churn grew it to, and the
+/// collection gives the cells' pages above it back
+/// (`heap::limits::Shrink`); `keeper` still hits its moved entries, and
+/// every cell agrees with its entry.
+#[cfg(debug_assertions)]
+#[test]
+fn the_cells_shrink_after_a_slide() {
+    let (mut interpreter, _, churn) = churned(2_000);
+    interpreter.set_shrink_pairs(ns_runtime::ShrinkPairs {
+        cells: ns_runtime::Shrink {
+            threshold: 64 << 10,
+            headroom: 32 << 10,
+        },
+        ..ns_runtime::ShrinkPairs::default()
+    });
+    let before = interpreter.table_sizes().cells_committed_bytes;
+    let slides = interpreter.cache_statistics().site_slides;
+    interpreter.collect_now();
+    assert!(
+        interpreter.cache_statistics().site_slides > slides,
+        "the ranges slid"
+    );
+    let after = interpreter.table_sizes().cells_committed_bytes;
+    assert!(
+        after < before,
+        "{after} bytes of cells committed after the slide, {before} before"
+    );
+    let kept = send(&mut interpreter, &churn, "keeper", &[]);
+    assert_eq!(small_integer(&mut interpreter, &kept), 2_000);
+    if let Err(message) = interpreter.verify_cells() {
+        panic!("after the shrink: {message}");
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// A closure made before a slide, stored in a slot, runs at its
     /// family's moved range after it: the collection rewrote its feedback

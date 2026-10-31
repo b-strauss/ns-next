@@ -405,7 +405,34 @@ impl World {
         if for_a_table {
             self.mutator.heap.count_table_collection();
         }
+        self.shrink_committed_memory();
         self.mutator.heap.record_collection(start.elapsed());
+    }
+
+    /// Gives committed memory back above each reservation's high mark and
+    /// headroom, where more than its threshold lies unused
+    /// (`heap::limits::Shrink`): the code zone's, the activation stack's,
+    /// the machine entry table's, the application id table's and the
+    /// cells'. Only here, at the end of a full collection, after every
+    /// table was truncated and the site ranges slid, and after a
+    /// compaction of the code zone (`Mutator::compact_code_zone`), so that
+    /// a high mark that rises and falls within one collection's cycle
+    /// never decommits (`docs/design/memory.md`, "Giving committed memory
+    /// back").
+    fn shrink_committed_memory(&mut self) {
+        let pairs = self.mutator.heap.shrink_pairs();
+        // First: it asserts that no machine code runs, whose frames would
+        // lie above the stack's top.
+        let bytes = self.mutator.jit.shrink_zone(pairs.code_zone);
+        self.mutator.heap.count_decommit(bytes);
+        self.mutator.heap.shrink_reservations();
+        let bytes = self.mutator.caches.shrink_cells(pairs.cells);
+        self.mutator.heap.count_decommit(bytes);
+    }
+
+    /// Sets each reservation's shrink pair (`Interpreter::set_shrink_pairs`).
+    pub(crate) fn set_shrink_pairs(&mut self, pairs: crate::ShrinkPairs) {
+        self.mutator.heap.set_shrink_pairs(pairs);
     }
 
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
@@ -422,6 +449,7 @@ impl World {
             zone_used_bytes,
             zone_bodies,
             zone_returns,
+            zone_committed_bytes: mutator.jit.zone_committed_bytes(),
             cells_committed_bytes: mutator.caches.cells_committed_bytes(),
             ..mutator.heap.table_sizes()
         }

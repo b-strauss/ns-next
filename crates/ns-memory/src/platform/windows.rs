@@ -12,10 +12,11 @@ use std::ptr::NonNull;
 
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Memory::{
-    CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, VirtualAlloc, VirtualFree, VirtualProtect,
-    FILE_MAP, FILE_MAP_EXECUTE, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS,
-    MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE,
-    PAGE_NOACCESS, PAGE_PROTECTION_FLAGS, PAGE_READWRITE, SEC_RESERVE,
+    CreateFileMappingW, DiscardVirtualMemory, MapViewOfFile, UnmapViewOfFile, VirtualAlloc,
+    VirtualFree, VirtualProtect, FILE_MAP, FILE_MAP_EXECUTE, FILE_MAP_READ, FILE_MAP_WRITE,
+    MEMORY_MAPPED_VIEW_ADDRESS, MEM_COMMIT, MEM_DECOMMIT, MEM_RELEASE, MEM_RESERVE,
+    PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_NOACCESS, PAGE_PROTECTION_FLAGS,
+    PAGE_READWRITE, SEC_RESERVE,
 };
 use windows_sys::Win32::System::SystemInformation::{GetSystemInfo, SYSTEM_INFO};
 use windows_sys::Win32::System::Threading::{GetCurrentThreadStackLimits, SetThreadStackGuarantee};
@@ -303,6 +304,41 @@ pub(crate) unsafe fn commit_code(
         Err(last_error())
     } else {
         Ok(())
+    }
+}
+
+/// Gives back the physical memory behind `offset..offset + bytes`, whose
+/// contents are gone. A section's committed pages cannot be decommitted
+/// -- `VirtualFree` refuses a view's pages, and `CreateFileMappingW` says
+/// a `SEC_RESERVE` section's pages once committed stay so -- so they stay
+/// charged against the commit limit; `DiscardVirtualMemory` releases their
+/// physical memory, and a later write faults fresh pages in.
+///
+/// # Safety
+/// `offset..offset + bytes` lies inside the mapping's committed zone and
+/// is page-aligned, and no reference into it is alive.
+pub(crate) unsafe fn decommit_code(
+    mapping: &CodeMapping,
+    offset: usize,
+    bytes: usize,
+) -> Result<(), i32> {
+    // SAFETY: the caller guarantees the range is inside the committed
+    // views and unborrowed; discarding through the writable view discards
+    // the section's pages behind both.
+    let answer = unsafe {
+        DiscardVirtualMemory(
+            mapping
+                .writable
+                .as_ptr()
+                .wrapping_add(offset)
+                .cast::<c_void>(),
+            bytes,
+        )
+    };
+    match i32::try_from(answer) {
+        Ok(0) => Ok(()),
+        Ok(code) => Err(code),
+        Err(_) => Err(i32::MAX),
     }
 }
 

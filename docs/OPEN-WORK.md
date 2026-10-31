@@ -2199,14 +2199,6 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   "Weak references", "A program-made symbol takes no number and dies
   with its object"). Making it weak there would need the decoder's first
   pass to tell a symbol record's text from a text the code names.
-- **Nothing beside the object space gives committed memory back**
-  (2026-10-31). The activation stack, the cells' reservation, the machine
-  entry table, the application id table and the code zone keep every page
-  a peak committed. Part 4d's design closes it (Task 23): after a full
-  collection, and after a compaction of the code zone, each decommits
-  above its high mark plus a headroom once its threshold is passed
-  ([memory.md](design/memory.md), "The trigger and the growth policy",
-  "Planned: memory given back").
 - **A superseded class side held after its instance side was dropped
   names itself `class side`** (2026-10-20). A full collection drops a
   superseded instance side that only the table holds while a Rust holder
