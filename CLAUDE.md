@@ -442,11 +442,17 @@ popped offset; a debug build asserts it as the leaf's view is released.
 The cut (`cut.rs`), which carries out a non-local return in machine
 code, is the one routine that reads and pops activations other than
 its own: it runs no Newspeak code, never collects, never pushes, reads
-only the compiled frames of the current stretch and pops only them --
-each as its return pops it, a reified one divorced and its count taken
-off -- and changes nothing before it has found the home among them with
-no unwind marker's activation between, answering the exit otherwise, so
-that the interpreter's one unwinder carries the return.
+only the compiled frames of the current stretch and pops only those
+above the home and a home machine code pushed -- each as its return pops
+it, a reified one divorced and its count taken off -- while a home that
+is the stretch's entry frame it divorces and uncounts as that frame's
+return does, and returns through the entry stub, whose run loop pops
+it. It changes nothing before it has found the home among them, and
+answers the exit -- so that the interpreter's one unwinder carries the
+return -- for a body that is no block's, a block that is the entry
+frame, a home not running, suspended or below the entry frame, an
+unwind marker's activation between, a return address into a stub
+before the home, and a home that catches no return.
 A new instruction is one arm of `jit::baseline::lower` plus the
 macro-assembler idioms it lacks, never a second dispatch; the run loop
 enters machine code through `jit::entered` and `jit::resumed`, a send it
