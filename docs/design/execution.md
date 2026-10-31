@@ -7714,6 +7714,86 @@ measured 1.174 ms at `master` and 1.165 at `76b6fc85`. Storage's first
 iterations after the warm-up are still about 15% slower than its steady
 state on both sides, which is what `--iterations 8` samples.
 
+### What closures in machine code moved
+
+**Measured 2026-10-31, `f476f86c` against `master` (`b96b55ab`) and
+against `451f72d8`**, the branch before closures ran in machine code
+(after "What allocation and the barrier in machine code moved"), by the
+same protocol: three pinned release builds a side with debug
+information, a, b and c laid out as there (`vm::run` spans about 52.5,
+56.4 and 61.2 KB at `f476f86c`, and no build has a `run_stretch` or a
+`vm::run` closure of its own); three rounds in one sitting, the order of
+the nine binaries rotated each round; `--iterations 3` for CD, Havlak,
+Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest. Each
+cell is a side's medians per build pooled by geometric mean, in
+milliseconds.
+
+| Program | master (ms) | `451f72d8` (ms) | `f476f86c` (ms) | range | vs master | separated | vs `451f72d8` | separated |
+|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 0.669 | 0.587 | 0.212 | 0.211–0.213 | -68.3% | faster | -63.9% | faster |
+| `CD` | 3281.194 | 3164.176 | 3164.719 | 3154.863–3176.111 | -3.5% | faster | +0.0% | no |
+| `DeltaBlue` | 545.794 | 518.432 | 283.311 | 281.472–285.286 | -48.1% | faster | -45.4% | faster |
+| `DeltaBlueTon80` | 4.522 | 4.215 | 1.937 | 1.929–1.945 | -57.2% | faster | -54.0% | faster |
+| `Havlak` | 2889.657 | 2257.520 | 2207.470 | 2181.989–2232.266 | -23.6% | faster | -2.2% | faster |
+| `Json` | 5.543 | 4.767 | 3.603 | 3.567–3.675 | -35.0% | faster | -24.4% | faster |
+| `List` | 0.193 | 0.193 | 0.193 | 0.191–0.196 | +0.1% | no | +0.3% | no |
+| `Mandelbrot` | 1907.865 | 1855.917 | 1807.850 | 1802.456–1812.783 | -5.2% | faster | -2.6% | faster |
+| `NBody` | 1699.122 | 1605.058 | 1512.335 | 1490.308–1535.549 | -11.0% | faster | -5.8% | faster |
+| `Permute` | 2.008 | 1.530 | 0.376 | 0.374–0.380 | -81.3% | faster | -75.4% | faster |
+| `Queens` | 1.559 | 1.208 | 1.223 | 1.221–1.225 | -21.6% | faster | +1.2% | slower (see below) |
+| `Richards` | 44.596 | 41.067 | 16.999 | 16.794–17.134 | -61.9% | faster | -58.6% | faster |
+| `RichardsTon80` | 3.302 | 3.186 | 3.184 | 3.163–3.226 | -3.6% | faster | -0.0% | no |
+| `Sieve` | 1.325 | 1.137 | 0.362 | 0.337–0.407 | -72.7% | faster | -68.2% | faster |
+| `Storage` | 1.333 | 1.329 | 0.673 | 0.664–0.684 | -49.5% | faster | -49.4% | faster |
+| `Towers` | 1.996 | 1.543 | 0.488 | 0.486–0.491 | -75.6% | faster | -68.4% | faster |
+| `bench_block` | 7.781 | 7.065 | 0.857 | 0.850–0.868 | -89.0% | faster | -87.9% | faster |
+| `bench_loop` | 0.812 | 0.517 | 0.543 | 0.542–0.544 | -33.1% | faster | +5.1% | slower (see below) |
+| `bench_megamorphic` | 4.588 | 4.687 | 4.731 | 4.711–4.745 | +3.1% | slower (see below) | +1.0% | no |
+| `bench_send` | 0.776 | 0.508 | 0.508 | 0.508–0.508 | -34.6% | faster | -0.1% | no |
+| `bench_signal` | 21.840 | 21.740 | 18.522 | 18.347–18.673 | -15.2% | faster | -14.8% | faster |
+| `bench_while` | 47.027 | 44.629 | 6.149 | 6.138–6.164 | -86.9% | faster | -86.2% | faster |
+| `bench_recursion` | 0.665 | 0.667 | 0.684 | 0.658–0.698 | +3.0% | no | +2.7% | no (see below) |
+
+The geometric mean over the twenty-three sources is -48.0% against
+`master` and -41.2% against `451f72d8`. The gains are where a block ran
+interpreted or crossed the bridge before: `bench_block` and
+`bench_while` (-88% and -86%) are a block sent `value` and a
+`whileTrue:` loop over blocks, every activation now a call into the
+block's machine code; Permute, Towers, Sieve and Bounce (-64% to
+-75%) and Richards and DeltaBlue (-59%, -45%) iterate with `do:`,
+`to:do:` and blocks passed to their collections; `bench_signal`
+(-15%) runs its handler search with each step kept in registers.
+
+**What is slower, and why.** A first measurement of the same tree
+before four fixes measured CD +2.0%, Queens +5.8% and `bench_signal`
++3.5% against `451f72d8`; the fixes removed a store-forwarding stall on
+every call from the interpreter into machine code, put the divorce back
+inline into the pop, let an interpreted `value` send ask the block's
+machine entry row before it reads the closure, and kept the handler
+search's steps in registers. What the table still shows slower:
+
+- `bench_loop` (+5.1%) runs machine code instruction for instruction
+  the same as at `451f72d8`; the larger stubs before it move its body
+  in the code zone, and padding the zone alone moves the same binary
+  by up to 7% ("A program in machine code measures where its bodies
+  land in the code zone" in [OPEN-WORK.md](../OPEN-WORK.md)).
+- Queens (+1.2%): builds a and b of both sides lie within 0.3%; the
+  gap is `451f72d8`'s build c, about 1.5% faster than its own a and b
+  in every round. What remains is the check before an interpreted
+  `value` send calls a compiled block, about 0.3–0.5%.
+- `bench_megamorphic` (+3.1% against `master`, level against
+  `451f72d8`) did not reproduce: three builds a side, two rounds of 30
+  iterations, measured it level, and a loop twenty times as long
+  91.3–92.7 ms at `master` against 90.7–91.8 at `f476f86c`. Its loop
+  runs interpreted.
+- `bench_recursion` (+2.7%) is a real cost: `fib:`'s `ifTrue: [^1]`
+  has a `MakeClosure` on the path a receiver that is no Boolean takes,
+  which makes the body reify its frame, and the reifying prologue, the
+  program counter stored before each send and the test at each return
+  are paid on the Boolean path too ("What a conditional's fallback
+  closure costs its body's Boolean path" in
+  [OPEN-WORK.md](../OPEN-WORK.md)).
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
