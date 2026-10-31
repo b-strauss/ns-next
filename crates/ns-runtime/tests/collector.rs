@@ -593,31 +593,62 @@ fn churn_method_edits(interpreter: &mut Interpreter, class: &Root, count: i64) {
     assert!(answered_true, "an edited method answered another value");
 }
 
-/// A program that edits methods without promoting much grows the code ids
-/// and the application rows, not the old space; their growth limits
-/// request the full collections that reclaim them, so that after one the
-/// tables stay within twice their floors (`heap::limits`).
+/// Runs `METHOD_EDIT_CHURN` for `edits` edits with every table's floor at
+/// `floor`, and answers how many table collections it took and the
+/// tables' sizes after a collection that follows it.
+fn churn_with_floors(floor: usize, edits: i64) -> (u64, ns_runtime::TableSizes) {
+    let (mut interpreter, class) = load(METHOD_EDIT_CHURN);
+    interpreter.set_table_floors(ns_runtime::TableFloors::all(floor));
+    churn_method_edits(&mut interpreter, &class, edits);
+    let table_collections = interpreter.collector_statistics().table_collections;
+    interpreter.collect_now();
+    (table_collections, interpreter.table_sizes())
+}
+
+/// A program that edits methods without promoting much grows the code ids,
+/// the application rows and the sites, not the old space; their growth
+/// limits request the full collections that reclaim them, so that each
+/// table's size follows what is live, not how many edits ran: a churn
+/// eight times longer leaves no table larger than a short one's bound
+/// (`heap::limits`). The sites and the application id table's committed
+/// rows, the application rows' high mark, show it plainly. The floors are
+/// lowered so that both churns pass them several times over.
 #[test]
 fn a_churn_of_method_edits_collects_without_old_space_growth() {
-    let (mut interpreter, class) = load(METHOD_EDIT_CHURN);
-    churn_method_edits(&mut interpreter, &class, 5_000);
+    let floor = 256;
+    let (short_collections, short) = churn_with_floors(floor, 1_000);
+    let (long_collections, long) = churn_with_floors(floor, 8_000);
     assert!(
-        interpreter.collector_statistics().table_collections > 0,
-        "no table's growth limit requested a collection"
+        short_collections > 0 && long_collections > short_collections,
+        "the table limits requested {short_collections} and {long_collections} collections"
     );
-    interpreter.collect_now();
-    let sizes = interpreter.table_sizes();
-    let floors = ns_runtime::TableFloors::default();
-    assert!(
-        sizes.mixin_rows < 2 * floors.mixin_rows,
-        "{} mixin rows after a collection",
-        sizes.mixin_rows
-    );
-    assert!(
-        sizes.code_ids < 2 * floors.code_ids,
-        "{} code ids after a collection",
-        sizes.code_ids
-    );
+    // A bound the short churn meets, independent of the number of edits:
+    // twice the larger of the floor and the short churn's rows, which
+    // count what stays live.
+    let bound = |short_size: usize| 2 * floor.max(short_size);
+    for (table, short_size, long_size) in [
+        (
+            "application rows",
+            short.application_rows,
+            long.application_rows,
+        ),
+        ("code ids", short.code_ids, long.code_ids),
+        ("mixin rows", short.mixin_rows, long.mixin_rows),
+        ("sites", short.sites, long.sites),
+        // The application id table commits as the application rows grow,
+        // so its committed rows keep their high mark through the
+        // truncation of the rows `collect_now` frees.
+        (
+            "application id rows committed",
+            short.application_id_rows_committed,
+            long.application_id_rows_committed,
+        ),
+    ] {
+        assert!(
+            long_size <= bound(short_size),
+            "{long_size} {table} after 8,000 edits, {short_size} after 1,000"
+        );
+    }
 }
 
 /// Each install runs a fresh family -- the edited `answer` sends

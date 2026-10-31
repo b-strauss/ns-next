@@ -85,7 +85,7 @@ fn matches_under_one_lowering(source: &Path, lowering: &str) -> Result<(), Faile
         &expectation,
         &format!("under the {lowering} lowering"),
     )?;
-    if let Some(statistics) = statistics {
+    if let Some(statistics) = common::require_collector_statistics(statistics, &expectation)? {
         common::no_program_reaches_a_table_limit(&statistics, &expectation)?;
     }
     Ok(())

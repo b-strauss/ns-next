@@ -1724,14 +1724,20 @@ objects grow collects for the space:
 
 | Table | Size measured | Floor |
 |---|---|---|
-| code ids | `Tables.codes.len()` | `CODE_ID_FLOOR = 16_384` |
-| mixin rows | `Tables.mixins.len()` | `MIXIN_ROW_FLOOR = 4_096` |
-| application rows | `Tables.applications.len()` | `APPLICATION_ROW_FLOOR = 4_096` |
-| sites | `InlineCaches.sites.len()` | `SITE_FLOOR = 262_144`, 8 MiB of cells |
+| code ids | `Tables.codes` less `free_codes` | `CODE_ID_FLOOR = 16_384` |
+| mixin rows | `Tables.mixins` less `free_mixins` | `MIXIN_ROW_FLOOR = 4_096` |
+| application rows | `Tables.applications` less `free_applications` | `APPLICATION_ROW_FLOOR = 4_096` |
+| sites | `InlineCaches.sites` less the free ranges' sites | `SITE_FLOOR = 262_144`, 8 MiB of cells |
 | program-made symbols | none yet, so their limit is never reached | `PROGRAM_SYMBOL_FLOOR = 65_536` |
 
-Each mint of a new row -- one that grows its table rather than reusing a
-freed row -- compares the table's size with its limit: a code id in
+A table's size is its rows in use -- its length less its free rows, the
+sites less those the free ranges hold -- never its length alone: under a
+churn whose live row is the table's last, no truncation shortens it, so
+a limit on the length would let the table double at every cycle, its
+length growing with what was minted rather than what is live. A freed
+row is minted again before the table grows, so its length stays within
+the high mark of its rows in use. Every mint, a freed row's included,
+compares the rows in use with the table's limit: a code id in
 `Heap::register_code_uncached`, behind `Heap::code_id`'s cache, a mixin
 row in `push_mixin_row`, an application row in `register_application`,
 and a new range in `InlineCaches::fresh_range`. A reached limit calls
@@ -1748,7 +1754,7 @@ nothing for it: `feedback_base_for` mints, and asks, only on its cold
 path. The collection is served at the next safepoint, as the heap's own
 request is. `CollectorStatistics.table_collections` counts the
 collections a table requested and the space's limit did not;
-`Interpreter::table_sizes` reads every table's size and what the
+`Interpreter::table_sizes` reads every table's length and what the
 reservations beside the space have committed, and
 `Interpreter::set_table_floors` lowers the floors for a test
 (`tests/collector.rs`'s churns of method edits). HotSpot requests a
@@ -2120,9 +2126,12 @@ object in the space is counted until a collection reclaims it, so between
 two scavenges the count includes eden's dead objects; a test that counts
 collects first. A program that discards n closures is back at its starting
 size after a collection; one that keeps n closures keeps n frames.
-`--collector-statistics` prints the scavenges and their total and longest
-pause, the full collections and theirs, and the objects lying in the space,
-on one line to stderr (`crates/ns-cli/src/entry.rs`).
+`ns-next run` and `bench` take `--collector-statistics`, which prints the
+scavenges and their total and longest pause, the full collections and
+theirs, the objects lying in the space, and the collections a table's
+growth limit requested (`CollectorStatistics.table_collections`, "The
+trigger and the growth policy"), on one line to stderr after the run
+(`crates/ns-cli/src/entry.rs`).
 
 ### How the collector is measured
 
@@ -2895,7 +2904,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
 `World::scavenge` lends the heap and `StepRoots` side
 by side, and times the scavenge as `World::collect` times a collection;
 `--collector-statistics` reports the scavenges and their pauses beside the
-full collections ("The gates the collector needs").
+full collections and the table collections ("The gates the collector
+needs").
 
 ### Every mover realigns a `ByteArray`'s data
 

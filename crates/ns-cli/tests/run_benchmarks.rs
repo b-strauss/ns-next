@@ -138,7 +138,7 @@ fn matches_under_one_lowering(run: &common::BenchmarkRun, lowering: &str) -> Res
         &run.expectation,
         &format!("under the {lowering} lowering"),
     )?;
-    if let Some(statistics) = statistics {
+    if let Some(statistics) = common::require_collector_statistics(statistics, &run.expectation)? {
         common::no_program_reaches_a_table_limit(&statistics, &run.expectation)?;
     }
     Ok(())

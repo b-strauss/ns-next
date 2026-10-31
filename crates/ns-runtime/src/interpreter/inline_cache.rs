@@ -182,6 +182,9 @@ pub(crate) const GLOBAL_CACHE_ENTRIES: usize = 1024;
 struct FreeRanges {
     /// Start -> size.
     ranges: std::collections::BTreeMap<u32, u32>,
+    /// The sites the ranges hold together, kept by every change to them:
+    /// what the sites' growth limit subtracts from the table's length.
+    free_sites: usize,
 }
 
 impl FreeRanges {
@@ -197,6 +200,7 @@ impl FreeRanges {
         if range_size > size {
             self.ranges.insert(start + size, range_size - size);
         }
+        self.free_sites -= size as usize;
         Some(start)
     }
 
@@ -206,6 +210,7 @@ impl FreeRanges {
         // An empty range would sit at another one's start or end and break
         // the rule that no two are adjacent.
         debug_assert!(size > 0, "internal: an empty range is never freed");
+        self.free_sites += size as usize;
         let mut start = start;
         let mut size = size;
         if let Some((&before_start, &before_size)) = self.ranges.range(..start).next_back() {
@@ -229,6 +234,7 @@ impl FreeRanges {
             return None;
         }
         self.ranges.remove(&start);
+        self.free_sites -= size as usize;
         Some((start, size))
     }
 }
@@ -351,7 +357,22 @@ impl InlineCaches {
     /// left of them (`heap::limits::GrowthLimit::reset`).
     pub(crate) fn reset_site_limit(&mut self) {
         self.collection_wanted = false;
-        self.site_limit.reset(self.sites.len());
+        self.site_limit.reset(self.sites_in_use());
+    }
+
+    /// The sites no free range holds: what the sites' growth limit
+    /// measures, since a freed range is minted again before the table
+    /// grows, so the table's length follows the sites in use.
+    fn sites_in_use(&self) -> usize {
+        self.sites.len().saturating_sub(self.free_ranges.free_sites)
+    }
+
+    /// Records that a new range may have brought the sites in use to their
+    /// growth limit (`wants_collection`).
+    fn check_site_limit(&mut self) {
+        if self.site_limit.reached(self.sites_in_use()) {
+            self.collection_wanted = true;
+        }
     }
 
     /// Sets the sites' floor and next limit (`Interpreter::set_table_floors`).
@@ -426,6 +447,7 @@ impl InlineCaches {
     /// for -- which leaves every site of the family uncached.
     pub(crate) fn fresh_range(&mut self, size: u32) -> FeedbackBase {
         if let Some(start) = self.free_ranges.take_first_fit(size) {
+            self.check_site_limit();
             return FeedbackBase(start);
         }
         let start = self.sites.len();
@@ -437,9 +459,7 @@ impl InlineCaches {
             Some(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
                 self.sites.resize(end as usize, CacheEntry::vacant());
                 self.cells.vacate_sites(start..end as usize);
-                if self.site_limit.reached(self.sites.len()) {
-                    self.collection_wanted = true;
-                }
+                self.check_site_limit();
                 // `end` fits 32 bits, and `start` lies `size` below it.
                 FeedbackBase(end - size)
             }

@@ -2313,6 +2313,16 @@ fn collection_limit(floor: usize, live: usize) -> usize {
     floor.max(live.saturating_mul(2))
 }
 
+/// The rows of a table of `rows` rows that `free` does not hold: what a
+/// table's growth limit measures. Its length would stay at its high mark
+/// under a churn whose live row is its last, which no truncation removes,
+/// so a limit measured by it would let the table double at every cycle;
+/// a freed row is minted again before the table grows, so its length
+/// follows the rows in use.
+fn rows_in_use(rows: usize, free: &FreeIndices) -> usize {
+    rows.saturating_sub(free.len())
+}
+
 /// The tracer a move or a collection forwards every handle with. In a debug
 /// build it also checks each handle it forwards: one from another heap, or
 /// one already stale, was stored in this heap by a mistake the rewrite would
@@ -5243,16 +5253,15 @@ impl<'gc> Heap<'gc> {
             Some(free) => free as usize,
             None => {
                 self.tables.mixins.push(None);
-                if self
-                    .table_limits
-                    .mixin_rows
-                    .reached(self.tables.mixins.len())
-                {
-                    self.request_table_collection();
-                }
                 self.tables.mixins.len() - 1
             }
         };
+        if self.table_limits.mixin_rows.reached(rows_in_use(
+            self.tables.mixins.len(),
+            &self.tables.free_mixins,
+        )) {
+            self.request_table_collection();
+        }
         let id = MixinId::from_index(row).expect("more than u32::MAX mixins in one heap");
         self.tables.mixins[row] = Some(MixinRow {
             current: Rc::clone(mixin),
@@ -5459,16 +5468,15 @@ impl<'gc> Heap<'gc> {
             Some(free) => free as usize,
             None => {
                 self.tables.applications.push(None);
-                if self
-                    .table_limits
-                    .application_rows
-                    .reached(self.tables.applications.len())
-                {
-                    self.request_table_collection();
-                }
                 self.tables.applications.len() - 1
             }
         };
+        if self.table_limits.application_rows.reached(rows_in_use(
+            self.tables.applications.len(),
+            &self.tables.free_applications,
+        )) {
+            self.request_table_collection();
+        }
         let index =
             ApplicationIndex::from_index(row).expect("more than u32::MAX applications in one heap");
         application.index = index;
@@ -5670,12 +5678,15 @@ impl<'gc> Heap<'gc> {
             Some(free) => free as usize,
             None => {
                 self.tables.codes.push(None);
-                if self.table_limits.code_ids.reached(self.tables.codes.len()) {
-                    self.request_table_collection();
-                }
                 self.tables.codes.len() - 1
             }
         };
+        if self.table_limits.code_ids.reached(rows_in_use(
+            self.tables.codes.len(),
+            &self.tables.free_codes,
+        )) {
+            self.request_table_collection();
+        }
         let id = CodeId::from_index(row).expect("more than u32::MAX compiled bodies in one heap");
         self.tables.codes[row] = Some(CodeEntry {
             code: code.clone(),
@@ -10510,16 +10521,19 @@ impl<'gc> Heap<'gc> {
         self.table_collections += 1;
     }
 
-    /// After a collection: every table's next limit, from the sizes the
-    /// collection left (`limits::GrowthLimit::reset`). The program-made
-    /// symbols have no table yet, so their limit stays at its floor.
+    /// After a collection: every table's next limit, from the rows the
+    /// collection left in use (`limits::GrowthLimit::reset`). The
+    /// program-made symbols have no table yet, so their limit stays at its
+    /// floor.
     pub(crate) fn reset_table_limits(&mut self) {
         self.table_collection_requested = false;
-        self.table_limits.code_ids.reset(self.tables.codes.len());
-        self.table_limits.mixin_rows.reset(self.tables.mixins.len());
-        self.table_limits
-            .application_rows
-            .reset(self.tables.applications.len());
+        let tables = &self.tables;
+        let codes = rows_in_use(tables.codes.len(), &tables.free_codes);
+        let mixins = rows_in_use(tables.mixins.len(), &tables.free_mixins);
+        let applications = rows_in_use(tables.applications.len(), &tables.free_applications);
+        self.table_limits.code_ids.reset(codes);
+        self.table_limits.mixin_rows.reset(mixins);
+        self.table_limits.application_rows.reset(applications);
         self.table_limits.program_symbols.reset(0);
     }
 

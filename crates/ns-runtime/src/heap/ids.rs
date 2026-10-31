@@ -44,15 +44,8 @@ impl FreeIndices {
         self.free.is_empty()
     }
 
-    /// How many indices are free. Read by the tests that check the
-    /// collection's reclamation of dead rows.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the tests that check the collection's reclamation of dead rows"
-        )
-    )]
+    /// How many indices are free: what a table's growth limit subtracts
+    /// from its length (`heap.rs`'s `rows_in_use`).
     pub(crate) fn len(&self) -> usize {
         self.free.len()
     }

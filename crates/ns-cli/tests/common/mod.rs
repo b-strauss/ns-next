@@ -531,19 +531,48 @@ pub fn ns_next(arguments: &[&std::ffi::OsStr]) -> (bool, String, String) {
 /// Removes `--collector-statistics`'s line from `output`'s stderr and
 /// answers it; `None` when the run stopped before it printed one, as a
 /// program that does not compile does.
+///
+/// The line is the last one that starts `collector: ` and ends with the
+/// table collections: the run prints it after everything the program
+/// wrote, so a line of the program's own that looks alike comes before
+/// it, and a program's stderr that ends without a newline is fused with
+/// it, which leaves the program's part in place.
 pub fn take_collector_statistics(output: &mut std::process::Output) -> Option<String> {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let mut statistics = None;
-    let mut rest = String::new();
-    for line in stderr.split_inclusive('\n') {
-        if statistics.is_none() && line.starts_with("collector: ") {
-            statistics = Some(line.trim_end().to_string());
-        } else {
-            rest.push_str(line);
+    let start = stderr
+        .match_indices("collector: ")
+        .map(|(start, _)| start)
+        .filter(|start| {
+            let line = stderr[*start..].lines().next().unwrap_or_default();
+            line.ends_with(" table collections")
+        })
+        .last()?;
+    let line_end = stderr[start..]
+        .find('\n')
+        .map_or(stderr.len(), |offset| start + offset + 1);
+    let statistics = stderr[start..line_end].trim_end().to_string();
+    output.stderr = format!("{}{}", &stderr[..start], &stderr[line_end..]).into_bytes();
+    Some(statistics)
+}
+
+/// The collector's statistics a run under `expectation` printed, which
+/// every program that reached its entry send must print
+/// (`take_collector_statistics`) -- one that succeeds, or one whose entry
+/// send ended in an uncaught error: a run that stopped printing them would
+/// otherwise pass the table check unchecked. A program that fails before
+/// its entry send, as one that does not compile does, prints none.
+pub fn require_collector_statistics(
+    statistics: Option<String>,
+    expectation: &Expectation,
+) -> Result<Option<String>, String> {
+    let reached_the_entry_send =
+        expectation.succeeds() || expectation.stderr.starts_with("Uncaught Newspeak error: ");
+    match statistics {
+        None if reached_the_entry_send => {
+            Err("the run printed no `--collector-statistics` line".to_string())
         }
+        statistics => Ok(statistics),
     }
-    output.stderr = rest.into_bytes();
-    statistics
 }
 
 /// No golden or benchmark program grows a table beside the object space
