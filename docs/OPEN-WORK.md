@@ -395,6 +395,18 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   16 MiB today (`jit::DEFAULT_ZONE_BYTES`), a first guess. What the
   stages so far leave to the ones after them (noted in their reviews,
   2026-10-27 to 2026-10-29):
+  - **Without allocation, a rarely exiting body waits longer at each
+    abandonment.** In a run that allocates nothing the exit counts never
+    decay, and an abandoned body is revived only by its interpreted
+    entries, 4,096 of them and twice as many at each further abandonment
+    (`jit::REVIVAL_ENTRIES`; [execution.md](design/execution.md), "The
+    baseline JIT's foundation"). A body that exits once in N calls so
+    runs 64·N calls in machine code between waits that keep doubling,
+    and ends the run mostly interpreted, as an always-exiting one should.
+    Telling the two apart needs the count of the body's calls in machine
+    code, which the hot path does not keep; whether to count them, or to
+    pace the decay by something other than allocation (polls, entries),
+    is to be measured with stage 4, when most exits are gone.
   - **A block the interpreter pushes above its sender's window pays the
     bridge** (accepted with the user on 2026-10-29 until stage 4): an
     interpreted `value` send and its kin call a block's machine code

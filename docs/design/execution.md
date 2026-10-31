@@ -10298,32 +10298,63 @@ of the first two.
     own budgets. A loop whose callee makes a block, which machine code
     does not do yet, otherwise paid an exit and an entry on every turn; a
     region of bodies that keep leaving ends up interpreted, and one that
-    does not stays in machine code. `ABANDONED` lies above `COMPILED`
-    with `EXITS_AT_ONCE` and `REFUSED`, so the push's test of a body
-    stays one compare (`JitSlot::is_armed`).
+    does not stays in machine code. `ABANDONED` lies between the counts
+    of entries and `COMPILED`, so that a push of an abandoned body is
+    armed and counts its entry (`jit::entered`, before it reads anything
+    else of the frame), while the push's test of every body stays one
+    compare (`JitSlot::is_armed`); a body that is refused or exits at once
+    lies above `COMPILED` and pays only that compare.
 
-    The budget bounds the exits of a stretch of the run, not of its
-    lifetime, so that a rare exit does not end a long run interpreted:
-    every scavenge and every full collection halves the exit count of
-    every body compiled into the zone and of every abandoned one
-    (`JitState::decay_exits`, from `World::scavenge` and
-    `World::collect`), as Strongtalk divides each nmethod's uncommon-trap
-    counter by its decay factor at every sweeper step
-    (`prior-art/strongtalk/vm/code/nmethod.cpp:953-966`, which the zone
-    sweeper runs for each nmethod, `vm/runtime/sweeper.cpp:218`); Cog
-    halves its methods' usage counts at each compaction instead. An
-    abandoned body whose count falls below 32 (`REVIVAL_EXITS`, half the
-    budget) is **revived** (`JitStatistics::revived_bodies`): it goes back
-    to counting its entries (`JitSlot::forget`) and is compiled anew at
-    its second, its old code long freed. Whenever one is revived, every
-    cell whose entry address the JIT's state now answers differently is
-    written afresh from its entry (`InlineCaches::refresh_all_cells`), so
-    the cells of its callers name the miss stub again instead of the
-    refusing stub, the miss compiles it, and the cascade reverses: its
-    callers call it and stop spending their budgets. Revival needs two
-    halvings from 64, so a body that always exits is compiled at most
-    once per two scavenges. The JIT stress mode never abandons a body
-    (`resumption_after_exit`), so it never revives one either.
+    Abandonment is not for good: an abandoned body is **revived**
+    (`JitStatistics::revived_bodies`) on either of two paths, and then
+    goes back to counting its entries (`JitSlot::forget`) and is compiled
+    anew at its second, its old code long freed.
+    - **The decay.** Every scavenge and every full collection halves the
+      exit count of every body compiled into the zone and of every
+      abandoned one (`JitState::decay_exits`, from `World::scavenge` and
+      `World::collect`), as Strongtalk divides each nmethod's
+      uncommon-trap counter by its decay factor at every sweeper step
+      (`prior-art/strongtalk/vm/code/nmethod.cpp:953-966`, which the zone
+      sweeper runs for each nmethod, `vm/runtime/sweeper.cpp:218`); Cog
+      halves its methods' usage counts at each compaction instead. So in
+      a run that allocates, the budget bounds the exits between two
+      collector events rather than over the run's lifetime, and an
+      abandoned body whose count falls below 32 (`REVIVAL_EXITS`, half
+      the budget) is revived: two halvings from 64, so a body that always
+      exits is compiled at most once per two scavenges. The pace is the
+      allocation's, not time's: a run that allocates nothing never
+      decays.
+    - **The entries.** So a run that allocates nothing does not keep a
+      lifetime budget either: an abandoned body is revived once it has
+      been entered interpreted 4,096 times since its abandonment
+      (`REVIVAL_ENTRIES`, 64 times the budget;
+      `JitState::note_abandoned_entry`), a count that doubles at each
+      further abandonment of the same body (`revival_entries`, at most
+      19 doublings, as many as a `u32` holds). An exit and its resumption
+      cost about a hundred interpreted instructions, so a body that
+      always exits wastes about 6,400 instructions' worth and one compile
+      per revival, against at least 4,096 interpreted entries: under two
+      instructions' worth an entry at the first revival, halving with
+      each doubling, and its compiles are logarithmic in its entries.
+      Deterministic, since it counts entries, never time; and machine
+      code pays nothing for it, since only the interpreted pushes of an
+      abandoned body count. A body revived this way whose exits stay
+      rare spends 64 of them in machine code before it is abandoned
+      again and waits twice as long: in a run that allocates nothing, a
+      body that exits once in N calls runs in machine code for about
+      64·N calls between waits of 4,096, 8,192, ... interpreted calls.
+
+    Whenever a body is revived, every cell that names the refusing stub
+    is written afresh from its entry (`InlineCaches::refresh_all_cells`),
+    since a revival changes only those: the cells of its callers name the
+    miss stub again, the miss compiles it, and the cascade reverses: its
+    callers call it and stop spending their budgets. A body compiled
+    again into a replaced zone (`Interpreter::set_jit_zone_bytes`) counts
+    its exits from none, as every compile does (`JitSlot::compiled`): the
+    budget is that of its machine code, and the old code's count, which
+    the decay no longer reaches, is not carried over. The JIT stress mode
+    never abandons a body (`resumption_after_exit`), so it never revives
+    one either.
 
   A body the compiler refuses -- more instructions
   than a `u16` counts, code the assembler cannot lay out, more bytes than

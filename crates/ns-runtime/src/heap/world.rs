@@ -291,7 +291,8 @@ impl World {
 
     /// Halves the JIT's exit counts (`JitState::decay_exits`) after a
     /// scavenge or a full collection, the run's periodic events, and
-    /// writes every cell afresh from its entry when that revived a body,
+    /// writes the cells that name the refusing stub afresh from their
+    /// entries when that revived a body,
     /// so that the cells that refused the calls of an abandoned body call
     /// it again.
     fn decay_exits(&mut self) {

@@ -1039,7 +1039,9 @@ ns_runtime::for_each_lowering! {
     /// of it in the loop's own machine code, compiled at its second entry
     /// and refused since, leaves at that send on every run and spends the
     /// loop's budget, so that the program goes on interpreted rather than
-    /// paying an exit and an entry per turn.
+    /// paying an exit and an entry per turn -- but for a revival of
+    /// `step:` now and then, each waiting twice as many interpreted entries
+    /// as the one before.
     fn a_body_that_keeps_leaving_is_abandoned(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -1081,7 +1083,15 @@ ns_runtime::for_each_lowering! {
                 "resumed only until the budgets are spent: {}",
                 done.resumed_entries
             );
-            assert_eq!(done.abandoned_bodies, 2, "`step:`, then `run`");
+            // `step:`, then `run`; and `step:` again after each revival
+            // its interpreted entries earn it, at 4,096 of them and then
+            // twice as many each time: at most five in 81,000.
+            assert!(done.abandoned_bodies >= 2, "`step:`, then `run`");
+            assert!(done.revived_bodies <= 5, "revived {} times", done.revived_bodies);
+            assert!(
+                done.abandoned_bodies <= done.revived_bodies + 2,
+                "abandoned again only after a revival: {done:?}"
+            );
         }
     }
 }
@@ -5689,6 +5699,151 @@ ns_runtime::for_each_lowering! {
                 last.compiled_calls >= 1000,
                 "`drive:` calls `leave:` through its cell: {}",
                 last.compiled_calls
+            );
+        }
+    }
+}
+
+/// `hot:`, which loops and then, when its argument is 0, sends `handles:`
+/// to its class, whose mirror send leaves machine code: `handles:` exits
+/// at every call until it is abandoned, and from then on its refused call
+/// is an exit of `hot:`'s. The interpreter runs both without allocating,
+/// so `hot: 0` exits and `hot: 1` does not, and neither allocates.
+/// `run:exitEvery:` sends `hot:` `count` times from a loop, its argument 0
+/// at every `period`th turn.
+const ALLOCATION_FREE: &str = indoc! {"
+    class Subject = Object new () (
+      public hot: value = (
+        |
+          index ::= 0.
+        |
+        [index < 2] whileTrue: [
+          index:: index + 1.
+        ].
+        ^value = 0
+          ifTrue: [(self class handles: value) ifTrue: [0] ifFalse: [2]]
+          ifFalse: [index]
+      )
+      public run: count exitEvery: period = (
+        |
+          sum ::= 0.
+          index ::= 0.
+          countdown ::= period.
+        |
+        [index < count] whileTrue: [
+          countdown:: countdown - 1.
+          sum:: sum + (self hot: (countdown = 0
+            ifTrue: [
+              countdown:: period.
+              0
+            ]
+            ifFalse: [1])).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// Sends `run: count exitEvery: period` to `subject`, answering what the
+/// JIT did meanwhile and whether a scavenge or a full collection ran.
+fn run_allocation_free(
+    interpreter: &mut Interpreter,
+    subject: &Root,
+    count: i64,
+    period: i64,
+) -> (JitStatistics, bool) {
+    let collector = interpreter.collector_statistics();
+    let before = interpreter.jit_statistics();
+    let count_argument = interpreter.stash(Value::small_integer(count));
+    let period_argument = interpreter.stash(Value::small_integer(period));
+    let answer = expect_ok(
+        interpreter.send(
+            subject,
+            Symbol::intern("run:exitEvery:"),
+            &[count_argument, period_argument],
+        ),
+        "run:exitEvery:",
+    );
+    let answer = interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("run:exitEvery: expected a small integer"),
+    });
+    assert_eq!(answer, 2 * count);
+    let done = since(interpreter.jit_statistics(), before);
+    let after = interpreter.collector_statistics();
+    let collected =
+        after.scavenges != collector.scavenges || after.collections != collector.collections;
+    (done, collected)
+}
+
+ns_runtime::for_each_lowering! {
+    /// A run that allocates nothing never scavenges, so its exit counts
+    /// never decay; a hot body that leaves machine code once in a thousand
+    /// calls is abandoned at its sixty-fourth exit all the same, and
+    /// revived once it has been entered interpreted often enough, so that
+    /// a long run goes on in machine code.
+    fn a_rare_exit_without_allocation_does_not_end_a_long_run_interpreted(lowering) {
+        let (mut interpreter, class) = load_with(ALLOCATION_FREE, lowering);
+        interpreter.set_jit_counting(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let measured = lowering == Lowering::Optimized && !a_stress_mode_is_on();
+        // `handles:` is compiled too, and leaves at its mirror send: the
+        // first 64 rare exits are its own, and abandon it, and from then
+        // on its refused call is `hot:`'s exit. `hot:` is abandoned at
+        // about the 128,000th call and revived 4,096 interpreted calls
+        // later; its next abandonment would come 64,000 calls after that.
+        let count = if measured { 150_000 } else { 10_000 };
+        let (long_run, collected) = run_allocation_free(&mut interpreter, &subject, count, 1_000);
+        let (last, _) = run_allocation_free(&mut interpreter, &subject, 1_000, 2_000);
+        if measured {
+            assert!(!collected, "the run allocates nothing");
+            assert!(
+                long_run.abandoned_bodies >= 2,
+                "`handles:` and `hot:` spent their budgets: {long_run:?}"
+            );
+            assert!(long_run.revived_bodies >= 1, "`hot:`'s entries revived it");
+            assert_eq!(
+                last.exits, 0,
+                "the last thousand calls stay in machine code: {last:?}"
+            );
+            assert!(
+                last.compiled_calls >= 1000,
+                "`run:exitEvery:` calls `hot:` through its cell: {}",
+                last.compiled_calls
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Bodies that exit at every call, in a run that allocates nothing, are
+    /// revived by their entries after a wait that doubles at each
+    /// abandonment, so that each is compiled a number of times logarithmic
+    /// in its entries.
+    fn an_always_exiting_body_recompiles_logarithmically_in_its_entries(lowering) {
+        let (mut interpreter, class) = load_with(ALLOCATION_FREE, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let measured = lowering == Lowering::Optimized && !a_stress_mode_is_on();
+        let count = if measured { 300_000 } else { 10_000 };
+        let (done, collected) = run_allocation_free(&mut interpreter, &subject, count, 1);
+        if measured {
+            assert!(!collected, "the run allocates nothing");
+            // The first revival waits 4,096 entries, each later one twice
+            // the one before: after k of them at least 4,096 * (2^k - 1)
+            // entries have passed. Two bodies take turns: `handles:`,
+            // which leaves at its mirror send, and `hot:`, whose call of
+            // `handles:` is refused while that is abandoned.
+            let bound = u64::from((count.unsigned_abs() / 4096 + 1).next_power_of_two().trailing_zeros());
+            assert!(
+                (3..=2 * bound).contains(&done.revived_bodies),
+                "revived {} times in {count} entries of each, at most {bound} each: {done:?}",
+                done.revived_bodies
+            );
+            assert!(
+                done.compiled_bodies <= done.revived_bodies + 3,
+                "one compile per revival: {} compiles",
+                done.compiled_bodies
             );
         }
     }
