@@ -3865,6 +3865,94 @@ fn a_non_local_return_into_an_interpreted_caller_cuts_into_the_call_stub() {
     }
 }
 
+/// `findSeven` returns out of the block `do:` sends `value:`: sent from
+/// the host, it is the frame the run loop pushes and, once compiled,
+/// enters machine code at, so that its `^` is cut to the stretch's entry
+/// frame and returns through the entry stub.
+const SEVEN: &str = indoc! {"
+    class Subject = Object new (
+      |
+        numbers = {1. 2. 3. 4. 5. 6. 7. 8. 9. 10}.
+      |
+    ) (
+      public findSeven = (
+        numbers do: [:each | each = 7 ifTrue: [^each]].
+        ^0.
+      )
+    ) : ()
+"};
+
+/// A home the run loop entered machine code at is cut to as well: the cut
+/// divorces it and takes its count off as its return would, the entry
+/// stub adds the count back for the run loop's pop, and the depth count
+/// ends where it began.
+#[test]
+fn a_non_local_return_to_the_entry_frame_is_cut() {
+    let (mut interpreter, class) = load_with(SEVEN, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let depth = interpreter.enter(|mutator| mutator.heap().counted_depth());
+    for _ in 0..3 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "findSeven"), 7);
+    }
+    let before = interpreter.jit_statistics();
+    for _ in 0..5 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "findSeven"), 7);
+    }
+    let statistics = since(interpreter.jit_statistics(), before);
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.heap().counted_depth()),
+        depth,
+        "the cut and the entry stub left the count as they found it"
+    );
+    if !a_stress_mode_is_on() {
+        assert_eq!(
+            statistics.machine_entries, 5,
+            "each send enters at the push"
+        );
+        assert_eq!(statistics.exits, 0, "no return left machine code");
+        assert_eq!(statistics.cuts, 5, "every return was cut");
+    }
+}
+
+/// `scan`, sent once, stays interpreted, and its `value:` calls the
+/// block, compiled at its second entry, through the closure call stub.
+const INTERPRETED_VALUE: &str = indoc! {"
+    class Subject = Object new () (
+      public scan = (
+        |
+          check = [:each | each = 30 ifTrue: [^each]. 0].
+          index ::= 0.
+        |
+        [index < 50] whileTrue: [
+          index:: index + 1.
+          check value: index.
+        ].
+        ^0.
+      )
+    ) : ()
+"};
+
+/// A `^` from a block an interpreted `value:` called is not cut: its
+/// return address lies in the closure call stub, so its home -- the
+/// interpreted sender -- runs no machine code to resume, and the block
+/// exits so that the interpreter's unwinder returns from `scan`.
+#[test]
+fn a_non_local_return_from_a_block_an_interpreted_value_called_exits() {
+    let (mut interpreter, class) = load_with(INTERPRETED_VALUE, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let before = interpreter.jit_statistics();
+    assert_eq!(send_unary(&mut interpreter, &subject, "scan"), 30);
+    let statistics = since(interpreter.jit_statistics(), before);
+    if !a_stress_mode_is_on() {
+        assert!(
+            statistics.called_entries > 0,
+            "the interpreted `value:` calls the compiled block"
+        );
+        assert_eq!(statistics.cuts, 0, "the return is not cut");
+        assert!(statistics.exits >= 1, "the return exits");
+    }
+}
+
 /// A loop of block literals, whose blocks the reference lowering
 /// activates, each sent `value` by a `SendInlinable` of `run` itself, and
 /// so exempt from the depth count; each reads `count`, a local of `run`,
