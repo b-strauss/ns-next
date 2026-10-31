@@ -188,6 +188,19 @@ fn the_cache_stress_mode_invalidates_at_every_safepoint_and_changes_no_answer() 
 /// How a run of `source`'s `run` ended, as text -- its answer, or the
 /// error it ended in -- and how often the suspend stress mode fired.
 fn run_suspended(source: &str, lowering: Lowering, suspend: bool) -> (String, usize) {
+    let (outcome, suspensions, _) = run_suspended_with(source, lowering, suspend, None);
+    (outcome, suspensions)
+}
+
+/// `run_suspended`, and what the JIT did meanwhile, with the JIT stress
+/// mode -- every body compiled at its first entry -- set as `jit_stress`
+/// says, or as the environment does for `None`.
+fn run_suspended_with(
+    source: &str,
+    lowering: Lowering,
+    suspend: bool,
+    jit_stress: Option<bool>,
+) -> (String, usize, ns_runtime::JitStatistics) {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(
         module,
@@ -197,14 +210,11 @@ fn run_suspended(source: &str, lowering: Lowering, suspend: bool) -> (String, us
     .expect("resolve");
     let mut interpreter = Interpreter::bootstrap_with(lowering);
     let class = interpreter.load_module(&resolved);
-    // The suspend mode suspends at the run loop's safepoints, which a
-    // recursion compiled at its first entry -- the JIT stress mode's --
-    // never reaches: its machine code grows the stack itself
-    // (`jit::leaves::grow_stack`) and polls at back edges alone. A body
-    // compiled at its second entry leaves the first frames of each to the
-    // interpreter, as a program meets them.
-    interpreter.set_jit_stress(false);
+    if let Some(jit_stress) = jit_stress {
+        interpreter.set_jit_stress(jit_stress);
+    }
     interpreter.set_stress_suspend(suspend);
+    let jit_before = interpreter.jit_statistics();
     // Counted from here, as `run_every_continuation` counts its moves.
     let suspensions_before = interpreter.stress_suspensions();
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -216,9 +226,14 @@ fn run_suspended(source: &str, lowering: Lowering, suspend: bool) -> (String, us
         Err(HostSignal::Return) => "a non-local return escaped".to_string(),
         Err(HostSignal::Error(error)) => format!("failed: {}", error.message),
     };
+    let jit_after = interpreter.jit_statistics();
+    let mut jit = jit_after;
+    jit.compiled_bodies = jit_after.compiled_bodies - jit_before.compiled_bodies;
+    jit.materialized_frames = jit_after.materialized_frames - jit_before.materialized_frames;
     (
         outcome,
         interpreter.stress_suspensions() - suspensions_before,
+        jit,
     )
 }
 
@@ -234,11 +249,18 @@ fn assert_runs_on_from_suspended_frames(source: &str, lowering: Lowering, expect
 }
 
 /// Two thousand activations deep, every one of them suspended and resumed
-/// on the way down and summing on the way back up.
+/// on the way down and summing on the way back up. Each runs a short loop
+/// first, whose back edge is a safepoint, so that the suspend mode stops a
+/// recursion machine code runs, compiled at its first entry or its second
+/// alike: machine code polls at back edges and grows the stack itself
+/// (`jit::leaves::grow_stack`), and a recursion without a loop would reach
+/// no safepoint of the run loop until it returned.
 const DEEP_RECURSION: &str = indoc! {"
     class Deep = Object new (
     ) (
       sumTo: count = (
+        | index ::= 0. |
+        [index < 2] whileTrue: [index:: index + 1].
         ^count = 0 ifTrue: [0] ifFalse: [count + (self sumTo: count - 1)]
       )
       public run = (
@@ -250,6 +272,30 @@ const DEEP_RECURSION: &str = indoc! {"
 ns_runtime::for_each_lowering! {
     fn a_deep_recursion_runs_on_from_suspended_frames(lowering) {
         assert_runs_on_from_suspended_frames(DEEP_RECURSION, lowering, "answered 2001000");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The JIT stress mode and the suspend mode together: every body
+    /// compiled at its first entry, so that every frame of the recursion is
+    /// one machine code pushed, and every one the suspend mode stops at a
+    /// loop's back edge is first materialized by the exit there
+    /// (`materialized_frames`), then suspended into its frame and resumed.
+    fn a_deep_recursion_in_machine_code_runs_on_from_suspended_frames(lowering) {
+        let (plain, _, _) = run_suspended_with(DEEP_RECURSION, lowering, false, Some(true));
+        assert_eq!(plain, "answered 2001000", "the control");
+        let (suspended, suspensions, jit) =
+            run_suspended_with(DEEP_RECURSION, lowering, true, Some(true));
+        assert_eq!(suspended, plain);
+        assert!(suspensions > 0, "the suspend stress mode never suspended");
+        // Where machine code ran at all: not without the JIT, nor in a
+        // build without an encoder.
+        if jit.compiled_bodies > 0 {
+            assert!(
+                jit.materialized_frames > 0,
+                "no frame machine code pushed was materialized to be suspended"
+            );
+        }
     }
 }
 

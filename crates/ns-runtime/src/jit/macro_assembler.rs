@@ -2263,6 +2263,21 @@ impl MacroAssembler {
                             Operand::Immediate(0),
                         ],
                     );
+                    // A debug build's check of the handover: every scratch
+                    // register it does not keep, the idioms' own among
+                    // them -- but the leaf's answer,
+                    // read below -- holds the dead register's word, whatever
+                    // the convention's callee preserved, so that a register
+                    // a prologue reads after its check and the handover
+                    // misses fails at once on the growth path, as it would
+                    // only by chance in a release build.
+                    #[cfg(debug_assertions)]
+                    for &register in self.roles.scratch.iter().chain([&self.roles.idiom_scratch]) {
+                        if register != self.roles.leaf_result && !handover.contains(&register) {
+                            self.assembler
+                                .move_immediate(register, crate::heap::Word::DEAD_REGISTER_BITS);
+                        }
+                    }
                     for register in handover.into_iter().rev() {
                         self.assembler.pop(register);
                     }
