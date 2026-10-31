@@ -48,6 +48,40 @@ pub(crate) const MAXIMUM_USAGE: u8 = 7;
 /// reaches the maximum.
 pub(crate) const LINKED_USAGE_CEILING: u8 = MAXIMUM_USAGE / 2;
 
+/// The compiles an exhausted zone holds before it asks for a compaction
+/// again, after one compaction left it exhausted; each further fruitless
+/// compaction in a row doubles it.
+///
+/// Cog compacts at every compile that finds no room
+/// (`callForCogCompiledCodeCompaction`, `cointerp.c:12068-12074`), so its
+/// zone is never exhausted for longer than the next failed compile; here
+/// a compaction also walks every cell, so a zone full of active code
+/// would pay that walk at every held entry. Doubling bounds the fruitless
+/// compactions to the logarithm of the entries held, and the wait for the
+/// first compaction after the active code returned to at most twice the
+/// entries held since the zone became exhausted -- counted in entries, so
+/// the rule depends neither on allocation, as a full collection does, nor
+/// on time. A held compile is an interpreted entry of a body that came
+/// due, and a fruitless compaction costs a walk over the cells and the
+/// bodies, the order of a few dozen such entries: 64 keeps the retries
+/// below what the held entries cost.
+pub(crate) const COMPILES_HELD_BEFORE_RETRY: u32 = 64;
+
+/// The most doublings of `COMPILES_HELD_BEFORE_RETRY`: past 2^30 held
+/// compiles the count would overflow, and a retry that rare is as good as
+/// none.
+const MAXIMUM_RETRY_DOUBLINGS: u32 = 24;
+
+/// The compiles an exhausted zone holds before it asks for a compaction
+/// again, after `fruitless_compactions` compactions in a row left it
+/// exhausted.
+pub(crate) fn compiles_held_before_retry(fruitless_compactions: u32) -> u32 {
+    let doublings = fruitless_compactions
+        .saturating_sub(1)
+        .min(MAXIMUM_RETRY_DOUBLINGS);
+    COMPILES_HELD_BEFORE_RETRY << doublings
+}
+
 /// Which bodies a compaction frees beyond those always freed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Freeing {
@@ -219,36 +253,126 @@ impl CompactionPlan {
 impl JitState {
     /// Marks the body at `index` freed: no lookup finds it from now on,
     /// its returns are removed, and the next compaction reclaims its
-    /// bytes. Only between entries, where no return address into it
-    /// exists.
+    /// bytes, which count towards the quarter a full collection asks for a
+    /// compaction at. Only between entries, where no return address into
+    /// it exists.
     pub(super) fn free_body(&mut self, index: u32) {
+        if self.mark_free(index) {
+            self.returns.retain(|_, site| site.body != index);
+        }
+    }
+
+    /// Marks the body at `index` freed, counting it and its bytes, and
+    /// answers whether it was not already; its returns are the caller's.
+    fn mark_free(&mut self, index: u32) -> bool {
         #[cfg(debug_assertions)]
         assert_eq!(
             self.entries_in_progress, 0,
             "internal: machine code is freed only between entries"
         );
         let Some(body) = self.bodies.get_mut(index as usize) else {
-            return;
+            return false;
         };
         if body.free {
-            return;
+            return false;
         }
         body.free = true;
-        self.returns.retain(|_, site| site.body != index);
+        let size = body.size();
+        self.bytes_freed_since_compaction = self.bytes_freed_since_compaction.saturating_add(size);
+        self.statistics.freed_bodies += 1;
+        true
     }
 
-    /// Whether a compile found no room since the last compaction: the run
-    /// loop's safepoint compacts the zone (`Interpreter::safepoint`).
+    /// Whether the body at `index` is still what its code's slot names:
+    /// its code lives, and it was neither abandoned nor compiled again.
+    fn still_named(&self, index: usize) -> bool {
+        self.bodies[index]
+            .code
+            .upgrade()
+            .is_some_and(|code| self.named_body(&code) == Some(index))
+    }
+
+    /// Frees the machine code of every installed body that died -- its
+    /// code no longer upgrades: its mixin's row was freed or superseded,
+    /// and nothing runs it -- or that its slot no longer names, without
+    /// waiting for the zone to fill, as Cog's full collection frees the
+    /// machine code of every unmarked method (`freeUnmarkedMachineCode`,
+    /// `cogitX64SysV.c:7473-7505`, from `cointerp.c:54977`). Run by a full
+    /// collection after the ids are reclaimed (`World::collect`), between
+    /// entries. Answers the bytes freed, which count towards the quarter
+    /// the collection asks for a compaction at.
+    ///
+    /// No holder needs writing: a dead body's code is held by no cache
+    /// entry, whose method would hold it, so no cell names it; its code id
+    /// was freed with it, which cleared its machine entry row; and no
+    /// activation runs it. A frame stopped in a body its slot no longer
+    /// names resumes interpreted (`jit::resumed`).
+    pub(crate) fn free_dead_bodies(&mut self) -> u32 {
+        let before = self.bytes_freed_since_compaction;
+        let mut freed = Vec::new();
+        for index in 0..self.bodies.len() {
+            if self.bodies[index].free || self.still_named(index) {
+                continue;
+            }
+            let Ok(number) = u32::try_from(index) else {
+                unreachable!("internal: a body's index fits its slot's map");
+            };
+            if self.mark_free(number) {
+                freed.push(number);
+            }
+        }
+        if !freed.is_empty() {
+            // Ascending, as `bodies` is walked.
+            self.returns
+                .retain(|_, site| freed.binary_search(&site.body).is_err());
+        }
+        self.bytes_freed_since_compaction.saturating_sub(before)
+    }
+
+    /// Whether a compile found no room since the last compaction, a held
+    /// compile found the zone exhausted long enough, or a full collection
+    /// freed a quarter of the bodies' room: the run loop's safepoint
+    /// compacts the zone (`Interpreter::safepoint`).
     pub(crate) fn compaction_requested(&self) -> bool {
         self.compaction_requested
     }
 
-    /// A full collection ran: a zone exhausted by active code is tried
-    /// again, so that the next compile that finds no room compacts it once
-    /// more, now that the code the collection's run left may no longer be
-    /// active.
-    pub(crate) fn note_full_collection(&mut self) {
+    /// A compile held because the zone is exhausted: once
+    /// `compiles_held_before_retry` of them were held since the last
+    /// compaction, another is asked for, which frees what the active code
+    /// that exhausted the zone has since left. Every compaction halves the
+    /// usage counts, so each retry finds less of what ran before kept.
+    pub(super) fn hold_compile(&mut self) {
+        self.held_compiles = self.held_compiles.saturating_add(1);
+        if self.held_compiles >= compiles_held_before_retry(self.fruitless_compactions) {
+            self.compaction_requested = true;
+        }
+    }
+
+    /// A full collection ran, after it freed the dead bodies' code
+    /// (`free_dead_bodies`): once the bytes freed since the last
+    /// compaction reach a quarter of the bodies' room -- what Cog keeps as
+    /// `methodBytesFreedSinceLastCompaction` (`cogitX64SysV.c:12887`)
+    /// against the quarter its compaction aims at (`:12907-12911`) -- a
+    /// compaction is asked for. Cog compacts only when a compile finds no
+    /// room; asking here as well keeps the zone's committed end near what
+    /// lives, and a compile from finding the zone full of dead code. A
+    /// zone exhausted by active code is tried again, so that the next
+    /// compile that finds no room compacts it once more. Answers whether a
+    /// compaction is asked for, which the caller passes on to the
+    /// safepoint request.
+    pub(crate) fn note_full_collection(&mut self) -> bool {
         self.zone_exhausted = false;
+        // The next compile tries for itself, and asks again if it finds
+        // no room.
+        self.wanted_bytes = 0;
+        if let Some(zone) = self.zone.as_ref() {
+            let room = zone.room();
+            if room > 0 && self.bytes_freed_since_compaction >= room / 4 {
+                self.compaction_requested = true;
+            }
+        }
+        self.compaction_requested
     }
 
     /// The index in `bodies` of the body `code`'s slot names in this zone,
@@ -324,30 +448,25 @@ impl JitState {
     /// compiled again, or compiled into another zone since.
     fn free_unnamed(&mut self) {
         for index in 0..self.bodies.len() {
-            let body = &self.bodies[index];
-            if body.free {
+            if self.bodies[index].free || self.still_named(index) {
                 continue;
             }
-            let named = body
-                .code
-                .upgrade()
-                .is_some_and(|code| self.named_body(&code) == Some(index));
-            if !named {
-                self.bodies[index].free = true;
-            }
+            // The slide drops the returns of every freed body.
+            self.bodies[index].free = true;
+            self.statistics.freed_bodies += 1;
         }
     }
 
     /// Step 3, Cog's `freeOlderMethodsForCompaction` (`:12897-12925`):
     /// frees bodies by their usage as `freeing` says, each put back to
-    /// counting its entries. A quarter is of the bodies' room, past the
-    /// stubs, as Cog's zone size is of its method zone, past the
-    /// trampolines.
-    fn free_by_usage(&mut self, freeing: Freeing) {
+    /// counting its entries, until the freed bodies and the room past the
+    /// last body count `wanted` bytes. Answers whether it freed any, and
+    /// the bytes so counted.
+    fn free_by_usage(&mut self, freeing: Freeing, wanted: u32) -> (bool, u32) {
         let Some(zone) = self.zone.as_ref() else {
-            return;
+            return (false, 0);
         };
-        let wanted = self.wanted_free_bytes(zone);
+        let mut freed_any = false;
         let mut free_bytes = zone.limit.saturating_sub(zone.next_offset)
             + self
                 .bodies
@@ -363,12 +482,14 @@ impl JitState {
         while freeable < MAXIMUM_USAGE {
             for body in &mut self.bodies {
                 if freeing == Freeing::ToAQuarter && free_bytes >= wanted {
-                    return;
+                    return (freed_any, free_bytes);
                 }
                 if body.free || body.usage.get() > freeable {
                     continue;
                 }
                 body.free = true;
+                freed_any = true;
+                self.statistics.freed_bodies += 1;
                 free_bytes += body.size();
                 // Alive: a body whose code died was freed in step 2.
                 if let Some(code) = body.code.upgrade() {
@@ -376,9 +497,37 @@ impl JitState {
                 }
             }
             if freeing == Freeing::EveryInactiveBody {
-                return;
+                return (freed_any, free_bytes);
             }
             freeable += 1;
+        }
+        (freed_any, free_bytes)
+    }
+
+    /// Steps 3 and 4: frees by usage until the plan of the survivors'
+    /// new places leaves `wanted` bytes past the last, and answers that
+    /// plan. Step 3 counts the freed bodies' sizes, which lie apart, while
+    /// the room the plan leaves is one gap past the re-aligned survivors,
+    /// which can be less: so step 3 runs again for the shortfall until the
+    /// plan leaves enough or nothing more is freed, and a compaction that
+    /// reached its aim by its own count never leaves the zone exhausted.
+    fn plan_freeing(&mut self, freeing: Freeing, wanted: u32) -> Option<CompactionPlan> {
+        let mut counted = wanted;
+        let mut first = true;
+        loop {
+            let (freed_any, free_bytes) = self.free_by_usage(freeing, counted);
+            let plan = self.plan()?;
+            let left = self
+                .zone
+                .as_ref()
+                .map_or(0, |zone| zone.limit.saturating_sub(plan.new_end()));
+            if freeing == Freeing::EveryInactiveBody || left >= wanted || !(freed_any || first) {
+                return Some(plan);
+            }
+            // The shortfall past what step 3 counted, so that it frees at
+            // least one more body, or finds none left to free.
+            counted = free_bytes.saturating_add(wanted - left);
+            first = false;
         }
     }
 
@@ -423,11 +572,9 @@ impl JitState {
         let mut renumbered: Vec<Option<(u32, u32)>> = Vec::with_capacity(old_bodies.len());
         let mut survivors = plan.survivors().iter();
         let mut moved_bytes = 0u64;
-        let mut freed_bodies = 0u64;
         for mut body in old_bodies {
             if body.free {
                 renumbered.push(None);
-                freed_bodies += 1;
                 continue;
             }
             let Some(survivor) = survivors.next() else {
@@ -497,7 +644,6 @@ impl JitState {
         fill_with_stops(zone, covered, plan.old_end());
         zone.next_offset = plan.new_end();
         self.statistics.zone_compactions += 1;
-        self.statistics.freed_bodies += freed_bodies;
         self.statistics.moved_bytes += moved_bytes;
     }
 }
@@ -549,28 +695,46 @@ impl Mutator<'_> {
             "internal: the zone is compacted only between entries"
         );
         self.jit.compaction_requested = false;
-        if self.jit.zone.is_none() {
+        self.jit.held_compiles = 0;
+        self.jit.bytes_freed_since_compaction = 0;
+        let Some(wanted) = self
+            .jit
+            .zone
+            .as_ref()
+            .map(|zone| self.jit.wanted_free_bytes(zone))
+        else {
             self.jit.zone_exhausted = false;
             return;
-        }
+        };
         let active = self.heap.active_codes();
         self.jit.mark_active(&active);
         drop(active);
         self.jit.free_unnamed();
-        self.jit.free_by_usage(freeing);
-        let Some(plan) = self.jit.plan() else {
+        let Some(plan) = self.jit.plan_freeing(freeing, wanted) else {
             return;
         };
         self.caches.remap_cell_entries(&plan);
         #[cfg(ns_jit)]
         self.heap.remap_machine_entries(&plan);
         self.jit.slide(&plan);
-        if let Some(zone) = self.jit.zone.as_ref() {
-            if zone.limit.saturating_sub(zone.next_offset) >= self.jit.wanted_free_bytes(zone) {
-                self.jit.zone_exhausted = false;
-            }
+        let enough = self
+            .jit
+            .zone
+            .as_ref()
+            .is_some_and(|zone| zone.limit.saturating_sub(zone.next_offset) >= wanted);
+        if enough {
+            self.jit.zone_exhausted = false;
+            self.jit.fruitless_compactions = 0;
+            self.jit.wanted_bytes = 0;
+        } else if self.jit.zone_exhausted {
+            // The next retry waits for twice the compiles this one did,
+            // and aims at what the refused compile needed still: a retry
+            // that freed a quarter but not that would end the exhaustion
+            // only for the compile to find no room again at once.
+            self.jit.fruitless_compactions = self.jit.fruitless_compactions.saturating_add(1);
+        } else {
+            self.jit.wanted_bytes = 0;
         }
-        self.jit.wanted_bytes = 0;
         #[cfg(all(ns_jit, debug_assertions))]
         self.verify_code_zone_holders();
     }

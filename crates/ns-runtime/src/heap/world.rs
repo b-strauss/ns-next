@@ -358,12 +358,19 @@ impl World {
         // After the prune, whose survivors keep their mixins, and before
         // the compaction, while the mark bits still say what lives.
         self.mutator.reclaim_ids(gathered);
+        // After `reclaim_ids`, which let the bodies of freed code rows die:
+        // their machine code is freed now, not when the zone fills.
+        self.mutator.jit.free_dead_bodies();
         let mut forwarder = self.mutator.heap.compact();
         self.forward_step_state(&mut forwarder);
         self.mutator.heap.reset_collection_limits();
         // A code zone full of active code is tried again: what the
-        // collection's run left active may be no longer.
-        self.mutator.jit.note_full_collection();
+        // collection's run left active may be no longer. And a quarter of
+        // the zone freed asks for a compaction, which the run loop's next
+        // safepoint serves.
+        if self.mutator.jit.note_full_collection() {
+            self.mutator.heap.request_safepoint();
+        }
         // After `reclaim_ids`, from what it left of each table.
         self.mutator.heap.reset_table_limits();
         self.mutator.caches.reset_site_limit();

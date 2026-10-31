@@ -11141,8 +11141,9 @@ a move would take them with the body and a free would free them with it.
 
 The zone installs by appending (`Zone.next_offset`, `jit/mod.rs`), and
 is compacted, as Cog compacts its method zone, when a compile finds no
-room (`jit/zone.rs`), so a program that keeps compiling keeps doing so in
-a zone of fixed size. The default zone is 16 MiB
+room (`jit/zone.rs`); a full collection frees the code of the bodies
+that died without waiting for that. So a program that keeps compiling
+keeps doing so in a zone of fixed size. The default zone is 16 MiB
 (`jit::DEFAULT_ZONE_BYTES`), a first guess within the 128 MiB bound;
 Cog's default is 1,433,600 bytes (`defaultCogCodeSize`, `:6851-6856`).
 Decided with the user on 2026-10-30, as the first of the six decisions
@@ -11168,13 +11169,36 @@ that make everything that grows reclaimable (plan
   (`cointerp.c:65051-65054`). The refused compile also sets
   `JitState.zone_exhausted`, and records the bytes it needed
   (`JitState.wanted_bytes`); while the exhaustion holds, entries keep
-  counting -- held at the entry that compiles -- but compile nothing, and
-  a compaction that leaves a quarter of the bodies' room free, and at
-  least what the refused compile needed, clears it, else the next full
-  collection does, so a zone full of active code neither assembles a hot
-  body again at every second entry nor compacts at every safepoint. A
-  body larger than the zone's whole room past its stubs is refused for
-  good (`Refusal::TooLarge`), since no compaction could make room for it.
+  counting -- held at the entry that compiles -- but compile nothing, so
+  a zone full of active code neither assembles a hot body again at every
+  second entry nor compacts at every safepoint. A compaction that leaves
+  a quarter of the bodies' room free, and at least what the refused
+  compile needed, clears it; one that does not keeps both, so that a
+  retry ends the exhaustion only once the refused body would fit.
+- **The exhaustion ends by entries, not by allocation.** Every entry a
+  zone exhausted holds (`JitState::hold_compile`) counts, and at 64 of
+  them (`zone::COMPILES_HELD_BEFORE_RETRY`) a compaction is asked for
+  again; each compaction in a row that leaves the zone exhausted doubles
+  the count the next waits for (`zone::compiles_held_before_retry`, at
+  most 2^24 times 64), and one that ends it resets it. A full collection
+  also clears the exhaustion (`JitState::note_full_collection`), but a
+  program that allocates little may never run one, and meanwhile every
+  cell a compaction pointed at the miss stub costs the miss leaf on every
+  hit -- those hits are held entries too, and pay towards the retry. Cog
+  compacts at every compile that finds no room
+  (`callForCogCompiledCodeCompaction`, `cointerp.c:12068-12074`); a
+  compaction here walks every cell, so a retry at every held entry would
+  cost that walk per entry while active code fills the zone. The
+  doubling bounds the fruitless compactions by the logarithm of the
+  entries held, and the wait after the active code has returned by twice
+  the entries held since the zone filled; every compaction halves the
+  usage counts, so a body active at one retry and idle since is freed at
+  the next. Pinned by `an_exhausted_zone_compiles_again_without_a_collection`
+  and `a_zone_full_of_active_code_does_not_compact_at_every_safepoint`
+  (`tests/jit.rs`).
+- **A body too large.** A body larger than the zone's whole room past
+  its stubs is refused for good (`Refusal::TooLarge`), since no
+  compaction could make room for it.
 - **The usage counts** (`InstalledBody.usage`), Cog's `cmUsageCount`:
   - a body is born at 2 (`zone::INITIAL_USAGE`), what Cog's
     `initialMethodUsageCount` answers for a method whose primitive has no
@@ -11198,13 +11222,34 @@ that make everything that grows reclaimable (plan
     upgrades: its mixin's row was freed or superseded) and a body its
     slot no longer names (abandoned, compiled again, or compiled into
     another zone).
+  - A full collection frees them at once, after it reclaimed the ids
+    (`JitState::free_dead_bodies`, from `World::collect`), as Cog's full
+    collection frees the machine code of every unmarked method
+    (`freeUnmarkedMachineCode`, `:7473-7505`, from `cointerp.c:54977`).
+    No holder needs writing: a cache entry holds its method, and so its
+    code, so no cell names a dead body; its code id was freed with it,
+    which cleared its machine entry row; and no activation runs it. The
+    bytes freed since the last compaction -- by a collection or an
+    abandonment -- are counted (`JitState.bytes_freed_since_compaction`,
+    Cog's `methodBytesFreedSinceLastCompaction`, `:12887`), and once they
+    reach a quarter of the bodies' room, the quarter Cog's compaction
+    aims at (`freeOlderMethodsForCompaction`, `:12907-12911`), the
+    collection asks for a compaction, which the run loop's next safepoint
+    serves. Cog compacts only when a compile finds no room; asking at the
+    collection as well keeps a zone full of dead code from refusing the
+    next compile first.
   - Then bodies are freed by usage, every body whose count is at most 0,
     then at most 1, and so on below 7, until the free bytes -- the gap at
     the zone's end and the bodies marked free -- reach a quarter of the
     bodies' room past the stubs, as Cog's zone size is its method zone's
     past the trampolines, and what the refused compile needed
     (`freeOlderMethodsForCompaction`, `:12897-12927`). A body freed this
-    way goes back to counting its entries.
+    way goes back to counting its entries. The freed bodies lie apart,
+    and the survivors, re-aligned, can leave less than their sum, so the
+    plan is made and, short of the aim, freeing goes on for the
+    shortfall until the plan reaches it or nothing more is freed
+    (`JitState::plan_freeing`): a compaction that reached its aim by its
+    own count reaches it in the zone too.
   - An abandoned body is marked free at once (`JitState::free_body`, which
     removes its return sites): abandonment runs only between entries,
     where no return address into the zone exists, and a frame an exit
@@ -11278,10 +11323,11 @@ that make everything that grows reclaimable (plan
   from `share/gc/shared/classUnloadingContext.cpp:121`). Only a body
   past the `u16` instruction count, one the assembler cannot lay out and
   one larger than the zone's room stay refused.
-- **The statistics** count the compactions, the bodies they freed and
-  the bytes they moved (`JitStatistics::zone_compactions`,
+- **The statistics** count the compactions, the bodies freed -- when
+  they are freed, at a collection, an abandonment or a compaction -- and
+  the bytes the compactions moved (`JitStatistics::zone_compactions`,
   `freed_bodies`, `moved_bytes`), and `Interpreter::table_sizes` the
-  bytes, bodies and return sites the zone holds after them.
+  bytes, bodies and return sites the zone holds.
 - **A stress mode** (`NS_NEXT_STRESS_ZONE`, debug builds) compacts at
   the safepoints its schedule picks (`StressSchedule`, beside the collect
   stress mode's), freeing every body that is not active
@@ -11289,22 +11335,18 @@ that make everything that grows reclaimable (plan
   bodies freed, compiled again and moved; like the exit stress mode, it
   forces the JIT on.
 
-#### Planned: the full collection frees code
+#### Planned: the code of a moved range is freed
 
-Would change: a full collection frees the code of the bodies that died,
-without waiting for the zone to fill. Decided with the compaction above.
-
-- A full collection frees the code of every body that died or that its
-  slot no longer names, and of every body compiled against a feedback
-  base that moved ([dispatch.md](dispatch.md), "Code families"), as Cog's
-  full collection frees the machine code of every unmarked method
-  (`freeUnmarkedMachineCode`, `:7473-7505`, from `cointerp.c:54977`),
-  and requests a compaction once the bytes freed since the last one
-  reach a quarter of the zone (the count Cog keeps as
-  `methodBytesFreedSinceLastCompaction`, which `freeMethod` adds each
-  freed method's size to, `:12887`). Today a full collection only clears
-  the zone's exhaustion (`JitState::note_full_collection`), and a dead
-  body's bytes wait for the next compaction a full zone asks for.
+Would change: a full collection that slides the site ranges
+([dispatch.md](dispatch.md), "Code families", "Planned: the ranges
+slide at a full collection") frees the machine code of every body
+compiled against a feedback base that moved. A body's compiled sends
+address their cells from the base it was compiled against
+(`InstalledBody.feedback_base`), so its code is stale once the base
+moves. No base moves today -- a family's range is freed only when its
+code is dead, and its bodies with it -- so nothing is to be freed for
+it yet; the slide frees them where `JitState::free_dead_bodies` frees
+the dead ones, marking each free and putting its slot back to counting.
 
 ### Polls and the depth check
 

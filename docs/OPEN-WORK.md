@@ -478,34 +478,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     whether a `^` from a block several calls deep below its home is worth
     a walk in machine code that hands the frames over at once is to be
     measured with the stage.
-  - **The code zone frees code only when it is full.** A compile that
-    finds no room has the zone compacted, Cog's way (`jit/zone.rs`), but
-    a body that died with its mixin's row, one abandoned, and one
-    compiled against a feedback base that moved keep their bytes until
-    then, and a full collection only clears the zone's exhaustion. Part
-    4d's design closes it (Task 19): a full collection frees the code of
-    the bodies that died and requests a compaction once a quarter of the
-    zone is freed ([execution.md](design/execution.md), "The code zone",
-    "Planned: the full collection frees code").
-  - **An exhausted zone stays exhausted until a full collection**
-    (2026-10-31). A compaction that cannot free a quarter of the bodies'
-    room, and what the refused compile needed, leaves
-    `JitState.zone_exhausted` set, and only a full collection clears it
-    (`JitState::note_full_collection`): a program that allocates little
-    compiles nothing more for the rest of its run, even once the active
-    code that filled the zone has returned. Meanwhile every cell a
-    compaction pointed at the miss stub -- a freed body's -- calls the
-    miss leaf on every hit, which compiles nothing while the zone is
-    exhausted and writes the miss stub back. And step 3 counts the freed
-    bodies' sizes, which lie apart, while the check after the slide
-    measures the one gap the re-aligned survivors leave, so a compaction
-    that reached its aim by its own count can still leave the zone
-    exhausted. For Task 19's triggers: clear the exhaustion after a count
-    of entries or safepoints that does not wait on a collection, count
-    the gap the new layout leaves (or allow for the alignment slack), and
-    let a cell of a body that may compile but not now name a stub that
-    does not call the miss leaf ([execution.md](design/execution.md),
-    "The code zone").
   - **A body shared by two interpreters would ping-pong between their
     zones.** A body's `JitSlot` names one zone, and `jit::note_entry`
     compiles a body whose slot names another into the running
@@ -2220,7 +2192,9 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   Part 4d's design closes it (Task 22): the live ranges slide down at a
   full collection when a quarter of the table is free
   ([dispatch.md](design/dispatch.md), "Code families", "Planned: the
-  ranges slide at a full collection").
+  ranges slide at a full collection"), and the machine code compiled
+  against a range that moved is freed ([execution.md](design/execution.md),
+  "Planned: the code of a moved range is freed").
 - **A program-made symbol is interned for good** (2026-10-31).
   `asSymbol` and its kin intern their text (`Symbol::intern`), and the
   interner is append-only, per thread, its texts leaked: the symbol object

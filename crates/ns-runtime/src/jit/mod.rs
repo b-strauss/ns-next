@@ -163,10 +163,14 @@ pub struct JitStatistics {
     /// unwinder carries them.
     pub cuts: u64,
     /// Compactions of the code zone (`jit::zone`): at a safepoint after a
-    /// compile found no room, or the zone stress mode's.
+    /// compile found no room, an exhausted zone held enough compiles, or a
+    /// full collection freed a quarter of the zone; or the zone stress
+    /// mode's.
     pub zone_compactions: u64,
-    /// Bodies the compactions freed: dead, no longer named by their
-    /// slots, abandoned, or freed by their usage.
+    /// Bodies whose machine code was freed: dead or no longer named by
+    /// their slots, at a full collection or a compaction; abandoned; or
+    /// freed by their usage. Counted when freed, before a compaction
+    /// reclaims their bytes.
     pub freed_bodies: u64,
     /// Bytes of machine code and data words the compactions slid down.
     pub moved_bytes: u64,
@@ -679,13 +683,31 @@ pub(crate) struct JitState {
     /// quarter of the zone since, nor a full collection run: entries go on
     /// counting but compile nothing, so that a zone full of active code
     /// neither assembles a hot body again at every second entry nor
-    /// compacts at every safepoint.
+    /// compacts at every safepoint. A compaction is asked for again once
+    /// enough compiles were held (`held_compiles`), so that the exhaustion
+    /// ends without a collection.
     zone_exhausted: bool,
-    /// The most bytes a compile that found no room since the last
-    /// compaction needed, its alignment's slack included: the compaction
-    /// frees at least as much, beside its quarter of the zone, so that a
-    /// zone of a few bodies' room makes room for the body that asked.
+    /// The most bytes a compile that found no room needed since the zone
+    /// last had room -- a compaction that freed that much, or a full
+    /// collection -- its alignment's slack included: a compaction frees
+    /// at least as much, beside its quarter of the zone, so that a zone of
+    /// a few bodies' room makes room for the body that asked, and a retry
+    /// of an exhausted zone ends the exhaustion only once it has.
     wanted_bytes: u32,
+    /// The compiles held since the last compaction because the zone was
+    /// exhausted: entries of bodies that came due, each counted once per
+    /// entry. At `zone::compiles_held_before_retry` of them a compaction
+    /// is asked for again.
+    held_compiles: u32,
+    /// The compactions in a row that left the zone exhausted, which
+    /// double the compiles held before the next is asked for; a compaction
+    /// that ends the exhaustion resets it.
+    fruitless_compactions: u32,
+    /// The bytes of the bodies freed since the last compaction: Cog's
+    /// `methodBytesFreedSinceLastCompaction` (`cogitX64SysV.c:12887`). A
+    /// full collection that finds a quarter of the bodies' room so freed
+    /// asks for a compaction (`JitState::note_full_collection`).
+    bytes_freed_since_compaction: u32,
     /// How many entries into machine code are in progress, raised around
     /// `CodeZone::enter`: a compaction, which moves the code, asserts there
     /// are none. Rust's alone; machine code never reads it. Debug builds
@@ -772,6 +794,9 @@ impl JitState {
             compaction_requested: false,
             zone_exhausted: false,
             wanted_bytes: 0,
+            held_compiles: 0,
+            fruitless_compactions: 0,
+            bytes_freed_since_compaction: 0,
             #[cfg(debug_assertions)]
             entries_in_progress: 0,
         }
@@ -841,6 +866,9 @@ impl JitState {
         self.compaction_requested = false;
         self.zone_exhausted = false;
         self.wanted_bytes = 0;
+        self.held_compiles = 0;
+        self.fruitless_compactions = 0;
+        self.bytes_freed_since_compaction = 0;
         self.zone = None;
         if available() {
             self.zone = reserve_zone(bytes);
@@ -1087,6 +1115,9 @@ impl JitState {
             compaction_requested: false,
             zone_exhausted: false,
             wanted_bytes: 0,
+            held_compiles: 0,
+            fruitless_compactions: 0,
+            bytes_freed_since_compaction: 0,
             #[cfg(debug_assertions)]
             entries_in_progress: 0,
         }
@@ -1745,7 +1776,9 @@ pub(crate) fn machine_entry_address(
 /// it. While the JIT is off, refuses it at once (`JitState::set_enabled`).
 /// A body that cannot be compiled is refused for good; one that found no
 /// room in the zone counts again, and while the zone stays exhausted
-/// (`JitState::zone_exhausted`) entries are counted but compile nothing.
+/// (`JitState::zone_exhausted`) entries are counted but compile nothing,
+/// each held compile counting towards the next compaction
+/// (`JitState::hold_compile`).
 /// A body compiled into a zone that is not this interpreter's -- another
 /// interpreter's, or one since replaced -- is compiled again into this
 /// one.
@@ -1772,19 +1805,24 @@ pub(crate) fn note_entry(
         // zone; no body is run by two interpreters today
         // (`docs/OPEN-WORK.md`, road step 8).
         COMPILED => {
-            if !state.zone_exhausted {
+            if state.zone_exhausted {
+                state.hold_compile();
+            } else {
                 compile_into_slot(state, code, feedback_base, method);
             }
         }
         entries => {
             let entries = entries + 1;
-            if entries >= state.compile_at_entry && !state.zone_exhausted {
-                compile_into_slot(state, code, feedback_base, method);
-            } else {
+            if entries < state.compile_at_entry {
+                slot.state.set(entries);
+            } else if state.zone_exhausted {
                 // Held at the entry that compiles, so that the first entry
                 // after the zone has room again compiles a body that came
                 // due meanwhile.
-                slot.state.set(entries.min(state.compile_at_entry));
+                slot.state.set(state.compile_at_entry);
+                state.hold_compile();
+            } else {
+                compile_into_slot(state, code, feedback_base, method);
             }
         }
     }
@@ -3351,6 +3389,39 @@ mod tests {
             state.note_full_collection();
             note_entry(&mut state, last, FeedbackBase::NOT_ASSIGNED, None);
             assert!(state.compaction_requested(), "the zone is still full");
+        }
+
+        /// An exhausted zone asks for a compaction again once it has held
+        /// `COMPILES_HELD_BEFORE_RETRY` compiles, and twice as many after
+        /// each further compaction in a row that left it exhausted: its
+        /// end waits on entries, never on allocation or time.
+        #[test]
+        fn an_exhausted_zone_asks_again_after_its_held_compiles() {
+            let mut state = JitState::for_test(12_288, true);
+            let bodies: Vec<Rc<CompiledCode>> = (0..200).map(|_| body()).collect();
+            for code in &bodies {
+                enter_twice(&mut state, code);
+            }
+            assert!(state.zone_exhausted);
+            let last = bodies.last().expect("a body");
+            for fruitless in 1..=3 {
+                // As a fruitless compaction leaves it.
+                state.compaction_requested = false;
+                state.held_compiles = 0;
+                state.fruitless_compactions = fruitless;
+                let wait = crate::jit::zone::compiles_held_before_retry(fruitless);
+                assert_eq!(
+                    wait,
+                    crate::jit::zone::COMPILES_HELD_BEFORE_RETRY << (fruitless - 1)
+                );
+                for _ in 1..wait {
+                    note_entry(&mut state, last, FeedbackBase::NOT_ASSIGNED, None);
+                }
+                assert!(!state.compaction_requested(), "one held compile short");
+                note_entry(&mut state, last, FeedbackBase::NOT_ASSIGNED, None);
+                assert!(state.compaction_requested(), "asked again");
+                assert!(state.zone_exhausted, "but compiling nothing until then");
+            }
         }
 
         /// A compiled block pushed while the JIT is off is refused for

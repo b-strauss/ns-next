@@ -8,7 +8,7 @@
 use indoc::{formatdoc, indoc};
 use ns_runtime::{
     CallSiteState, HostResult, HostSignal, Interpreter, JitStatistics, Lowering, MethodSide, Root,
-    SourceOrigin, Symbol, ValueKind,
+    SourceOrigin, Symbol, Value, ValueKind,
 };
 
 fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
@@ -5064,38 +5064,44 @@ fn chain_of(count: usize) -> String {
 
 ns_runtime::for_each_lowering! {
     /// A recursion through more bodies than the zone holds fills it with
-    /// active code: the one compaction its compile asks for frees nothing
-    /// it runs, and the zone, still full, compiles nothing more and is not
-    /// compacted again at every safepoint -- until a full collection lets
-    /// it try once more.
+    /// active code: a compaction its compile asks for frees nothing it
+    /// runs, and the zone, still full, compiles nothing more and is not
+    /// compacted again at every safepoint -- each retry waits for twice
+    /// the held compiles the last one did, so the compactions grow with
+    /// the logarithm of the entries, not with them -- and a full
+    /// collection lets it try once more.
     fn a_zone_full_of_active_code_does_not_compact_at_every_safepoint(lowering) {
         let count = 300;
         let source = chain_of(count);
         let (mut interpreter, class) = load_with(&source, lowering);
         interpreter.set_jit_zone_bytes(16_384);
         let before = interpreter.jit_statistics();
-        for _ in 0..4 {
+        let runs = 4;
+        for _ in 0..runs {
             assert_eq!(run(&mut interpreter, &class), count as i64 - 1);
         }
         let done = since(interpreter.jit_statistics(), before);
         if lowering == Lowering::Reference || a_stress_mode_is_on() {
             return;
         }
-        assert_eq!(
-            done.zone_compactions, 1,
-            "compacted once, not at every safepoint"
-        );
+        // Each run enters every body once, so at most that many compiles
+        // are held; with the retries doubling from 64 held compiles, at
+        // most log2(1,200 / 64) + 1 retries follow the first compaction.
+        let held = (runs * count) as u64;
+        let most = u64::from((held / 64).ilog2()) + 2;
         assert!(
-            done.compiled_bodies < count as u64,
-            "the zone held only part of the chain"
+            done.zone_compactions >= 1 && done.zone_compactions <= most,
+            "compacted {} times, not at every safepoint",
+            done.zone_compactions
         );
         #[cfg(debug_assertions)]
         {
+            let compactions = done.zone_compactions;
             interpreter.collect_now();
             assert_eq!(run(&mut interpreter, &class), count as i64 - 1);
             let done = since(interpreter.jit_statistics(), before);
-            assert_eq!(
-                done.zone_compactions, 2,
+            assert!(
+                done.zone_compactions > compactions,
                 "tried once more after the collection"
             );
         }
@@ -5139,5 +5145,335 @@ ns_runtime::for_each_lowering! {
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(done.moved_bytes > 0, "a survivor slid down over freed code");
         }
+    }
+}
+
+/// A program whose `answer` an `edit:` replaces through a MirrorBuilder
+/// with a body that loops and then answers `number` more, and whose `run`
+/// sends `answer` to a fresh `Edited`: every edit installs a new version,
+/// whose old body dies with it.
+const EDITED_ANSWER: &str = indoc! {"
+    class Subject usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Edited = Object new () (
+        public answer = (
+          |
+            index ::= 0.
+          |
+          [index < 3] whileTrue: [
+            index:: index + 1.
+          ].
+          ^index
+        )
+      )
+      public edited = (
+        ^Edited
+      )
+      public run = (
+        ^Edited new answer
+      )
+      public edit: number = (
+        | builder |
+        builder:: (ClassMirror reflecting: Edited) mixin declaration asBuilder.
+        builder instanceSide methods
+            addFromSource: 'public answer = ( | index ::= 0. | [index < 3] whileTrue: [ index:: index + 1 ]. ^index + ' , number printString , ' )'.
+        builder install.
+        ^number
+      )
+    ) : ()
+"};
+
+/// `EDITED_ANSWER` loaded and instantiated with the platform, and its
+/// `Edited` class.
+fn edited_answer(lowering: Lowering) -> (Interpreter, Root, Root) {
+    let (mut interpreter, class) = load_with(EDITED_ANSWER, lowering);
+    let platform = interpreter.platform();
+    let subject = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    let edited = expect_ok(
+        interpreter.send(&subject, Symbol::intern("edited"), &[]),
+        "edited",
+    );
+    (interpreter, subject, edited)
+}
+
+/// Sends `selector` to `subject` with the `SmallInteger` `number`,
+/// answering the `SmallInteger` it answers.
+fn send_number(interpreter: &mut Interpreter, subject: &Root, selector: &str, number: i64) -> i64 {
+    let argument = interpreter.stash(Value::small_integer(number));
+    let answer = expect_ok(
+        interpreter.send(subject, Symbol::intern(selector), &[argument]),
+        selector,
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("{selector}: expected a small integer"),
+    })
+}
+
+ns_runtime::for_each_lowering! {
+    /// Thousands of edits of one hot method in a zone of 64 KiB: each
+    /// edit's body dies with its version and is freed -- at a full
+    /// collection, or by the compaction a full zone asks for -- so that
+    /// every new version is compiled and runs in machine code, and the
+    /// zone's bodies and returns stay within what the zone holds, not
+    /// what the edits made.
+    fn thousands_of_edits_keep_compiling_in_a_small_zone(lowering) {
+        let zone_bytes = 65_536;
+        let (mut interpreter, subject, edited) = edited_answer(lowering);
+        interpreter.set_jit_zone_bytes(zone_bytes);
+        let edits = 3_000;
+        let checks = lowering == Lowering::Optimized && !a_stress_mode_is_on();
+        let mut most_bodies = 0;
+        let mut most_returns = 0;
+        for number in 1..=edits {
+            assert_eq!(send_number(&mut interpreter, &subject, "edit:", number), number);
+            let before = interpreter.jit_statistics();
+            for _ in 0..10 {
+                assert_eq!(send_unary(&mut interpreter, &subject, "run"), 3 + number);
+            }
+            let done = since(interpreter.jit_statistics(), before);
+            let sizes = interpreter.table_sizes();
+            most_bodies = most_bodies.max(sizes.zone_bodies);
+            most_returns = most_returns.max(sizes.zone_returns);
+            assert!(sizes.zone_used_bytes <= zone_bytes, "within the zone");
+            if checks {
+                assert!(
+                    done.machine_entries + done.called_entries >= 8,
+                    "edit {number}: every run after the first two in machine code: {done:?}"
+                );
+                assert!(
+                    interpreter
+                        .jit_body_offset(&edited, MethodSide::Instance, Symbol::intern("answer"))
+                        .is_some(),
+                    "edit {number}: the new version is compiled"
+                );
+            }
+        }
+        // No body takes fewer than 64 bytes, so the zone holds at most a
+        // thousand of them, whatever the number of edits.
+        let bound = zone_bytes / 64;
+        assert!(most_bodies <= bound, "{most_bodies} bodies at most");
+        assert!(most_returns <= bound, "{most_returns} returns at most");
+        if checks {
+            assert!(
+                interpreter.jit_statistics().freed_bodies >= 1_500,
+                "the edited-away bodies were freed"
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A full collection frees the machine code of a body that died with
+    /// its version, without waiting for the zone to fill: `freed_bodies`
+    /// rises at the collection, which compacts nothing.
+    fn a_full_collection_frees_the_code_of_a_dead_body(lowering) {
+        let (mut interpreter, subject, edited) = edited_answer(lowering);
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 3);
+        }
+        let compiled = interpreter
+            .jit_body_offset(&edited, MethodSide::Instance, Symbol::intern("answer"))
+            .is_some();
+        assert_eq!(send_number(&mut interpreter, &subject, "edit:", 1), 1);
+        let before = interpreter.jit_statistics();
+        interpreter.collect_now();
+        let done = since(interpreter.jit_statistics(), before);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 4);
+        // The zone stress mode may have freed the body before the
+        // collection; the reference lowering's body exits at once and is
+        // never installed.
+        if lowering == Lowering::Optimized && !the_zone_stress_mode_is_on() {
+            assert!(compiled, "`answer` was compiled");
+            assert!(done.freed_bodies >= 1, "the dead body's code is freed");
+            assert_eq!(done.zone_compactions, 0, "without a compaction");
+        }
+    }
+}
+
+/// `count` methods `leave0`, `leave1`, ..., each looping and then sending
+/// a message the class's `doesNotUnderstand:` answers, which machine code
+/// leaves to the interpreter, and for each a `drive` sending it 70 times,
+/// past the exit budget; and `hot`, which loops and leaves nowhere.
+fn leaving_bodies(count: usize) -> String {
+    let methods: String = (0..count)
+        .map(|index| {
+            formatdoc! {"
+                  leave{index} = (
+                    |
+                      index ::= 0.
+                    |
+                    [index < 2] whileTrue: [
+                      index:: index + 1.
+                    ].
+                    ^self missing{index} + index
+                  )
+                  drive{index} = (
+                    |
+                      sum ::= 0.
+                      index ::= 0.
+                    |
+                    [index < 70] whileTrue: [
+                      sum:: sum + self leave{index}.
+                      index:: index + 1.
+                    ].
+                    ^sum
+                  )
+            "}
+        })
+        .collect();
+    let sends: String = (0..count)
+        .map(|index| format!("    total:: total + self drive{index}.\n"))
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {methods}  public run = (
+            |
+              total ::= 0.
+            |
+        {sends}    ^total
+          )
+          public hot = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 10] whileTrue: [
+              sum:: sum + index.
+              index:: index + 1.
+            ].
+            ^sum
+          )
+          public doesNotUnderstand: message = (
+            ^1
+          )
+        ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// Five hundred bodies, each abandoned for leaving on every call, do
+    /// not fill the zone: each is freed when it is abandoned, the zone is
+    /// compacted when a compile finds it full, and a body compiled after
+    /// them all still finds room.
+    fn abandoned_bodies_do_not_fill_the_zone(lowering) {
+        let count = 500;
+        let source = leaving_bodies(count);
+        let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_jit_zone_bytes(32_768);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let before = interpreter.jit_statistics();
+        assert_eq!(
+            send_unary(&mut interpreter, &subject, "run"),
+            (count * 70 * 3) as i64
+        );
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "hot"), 45);
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.abandoned_bodies >= count as u64,
+                "every `leave` abandoned: {}",
+                done.abandoned_bodies
+            );
+            assert!(done.zone_compactions > 0, "the zone compacted");
+            assert!(
+                done.compiled_bodies >= count as u64,
+                "every `leave` compiled"
+            );
+            assert!(
+                interpreter
+                    .jit_body_offset(&class, MethodSide::Instance, Symbol::intern("hot"))
+                    .is_some(),
+                "`hot`, compiled after them all, found room"
+            );
+        }
+    }
+}
+
+/// `hot`, a loop that leaves nowhere, and `runHot:`, which sends it
+/// `count` times from a loop of its own.
+const HOT_AFTERWARDS: &str = indoc! {"
+      public hot = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 10] whileTrue: [
+          sum:: sum + index.
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public runHot: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + self hot.
+          index:: index + 1.
+        ].
+        ^sum
+      )
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A zone exhausted by active code compiles again once that code has
+    /// returned, in a program that allocates nothing and so never runs a
+    /// full collection: the compiles the exhausted zone holds ask for a
+    /// compaction again, which frees the recursion's idle bodies, and a
+    /// method hot only afterwards is compiled and runs in machine code.
+    fn an_exhausted_zone_compiles_again_without_a_collection(lowering) {
+        let count = 300;
+        let source = chain_of(count).replacen(
+            "  public run = (",
+            &format!("{HOT_AFTERWARDS}  public run = ("),
+            1,
+        );
+        let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_jit_zone_bytes(16_384);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let collections = interpreter.collector_statistics().collections;
+        let before = interpreter.jit_statistics();
+        // The second run compiles each body it enters, and so fills the
+        // zone with the code of the frames it is in.
+        for _ in 0..2 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), count as i64 - 1);
+        }
+        let filled = since(interpreter.jit_statistics(), before);
+        assert_eq!(send_number(&mut interpreter, &subject, "runHot:", 1_000), 45_000);
+        let after_hot = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "runHot:", 10), 450);
+        let last = since(interpreter.jit_statistics(), after_hot);
+        if lowering == Lowering::Reference || a_stress_mode_is_on() {
+            return;
+        }
+        assert!(
+            filled.zone_compactions >= 1,
+            "the recursion filled the zone with active code"
+        );
+        assert_eq!(
+            interpreter.collector_statistics().collections,
+            collections,
+            "no full collection ran"
+        );
+        assert!(
+            interpreter
+                .jit_body_offset(&class, MethodSide::Instance, Symbol::intern("hot"))
+                .is_some(),
+            "`hot` is compiled"
+        );
+        assert!(
+            last.machine_entries + last.called_entries >= 10,
+            "`hot` runs in machine code: {last:?}"
+        );
     }
 }
