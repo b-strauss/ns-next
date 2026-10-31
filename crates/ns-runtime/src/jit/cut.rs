@@ -136,7 +136,7 @@ pub(crate) fn cut(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     if register_base == entry_base {
         return u64::from(EXIT);
     }
-    let register_address = |register: u16| frame_address + u64::from(register) * REGISTER_BYTES;
+    let register_address = |register: u16| frame_address + u64::from(register) * register_bytes();
     let closure = heap
         .machine_frame_value(register_address(Heap::operand_register(
             code.argument_count,
@@ -240,9 +240,9 @@ pub(crate) fn cut_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         }
         let answer = CutAnswer {
             resume_address: home_return_address,
-            stack_pointer: slot + 2 * RETURN_ADDRESS_BYTES,
+            stack_pointer: slot + 2 * return_address_bytes(),
             frame_register: mutator.heap.activation_stack_base_address() as u64
-                + u64::from(caller_base) * REGISTER_BYTES,
+                + u64::from(caller_base) * register_bytes(),
         };
         let home = (!at_entry).then_some(PassedFrame {
             offset: caller_offset,
@@ -288,7 +288,10 @@ fn pop_to_the_home(mutator: &mut Mutator<'_>, home: Option<PassedFrame>, answer:
             mutator.heap.divorce_at_machine_return(entry);
         }
     }
-    let popped = i64::try_from(passed.len()).unwrap_or(i64::MAX);
+    // The frames are bounded by the depth limit and its reserve.
+    let Ok(popped) = i64::try_from(passed.len()) else {
+        unreachable!("internal: a stretch holds fewer frames than the depth limit allows");
+    };
     mutator.heap.adjust_counted_depth(-(popped + 1));
     let walk = &mut mutator.jit.cut;
     walk.passed = passed;
@@ -330,8 +333,14 @@ fn divorce(heap: &mut Heap<'_>, frame: &PassedFrame) {
     heap.restore_stack_extent(extent);
 }
 
-/// The bytes of a frame register.
-const REGISTER_BYTES: u64 = 8;
+/// The bytes of a frame register (`sends::REGISTER_BYTES`), as an
+/// address's addend.
+fn register_bytes() -> u64 {
+    u64::from(super::sends::REGISTER_BYTES.unsigned_abs())
+}
 
-/// The bytes of a return address on the native stack.
-const RETURN_ADDRESS_BYTES: u64 = 8;
+/// The bytes of a return address on the native stack
+/// (`stubs::RETURN_ADDRESS_BYTES`), as an address's addend.
+fn return_address_bytes() -> u64 {
+    u64::from(super::stubs::RETURN_ADDRESS_BYTES.unsigned_abs())
+}

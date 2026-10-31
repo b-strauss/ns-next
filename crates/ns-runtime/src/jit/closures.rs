@@ -46,7 +46,9 @@ use super::baseline::{BodyAssembler, BodyRole, Lowering};
 use super::leaves::Leaf;
 use super::macro_assembler::{MacroAssembler, ObjectSize, Operand};
 use super::sends::{frame_slot, store_program_counter};
-use super::stubs::{BlockWord, ExitKind};
+use super::stubs::BlockWord;
+#[cfg(debug_assertions)]
+use super::stubs::ExitKind;
 
 /// The words of a closure site, in order: the epoch of the code table its
 /// ids were asked in, 0 for a site never filled -- no heap's epoch is 0 --

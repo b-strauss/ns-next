@@ -30,7 +30,7 @@ use super::macro_assembler::{MacroAssembler, Operand};
 use super::stubs::{BlockWord, ExitKind};
 
 /// The bytes of a frame register.
-const REGISTER_BYTES: i32 = 8;
+pub(super) const REGISTER_BYTES: i32 = 8;
 
 /// A cell's words' displacements from its start (`Cell`'s order).
 const CELL_GUARD: i32 = 0;

@@ -475,7 +475,7 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
 }
 
 /// The bytes a return address takes on the native stack.
-const RETURN_ADDRESS_BYTES: i32 = 8;
+pub(super) const RETURN_ADDRESS_BYTES: i32 = 8;
 
 /// The cut stub, which a `NonLocalReturn`'s template calls with the
 /// program counter in the leaf result's register, the block's register 0
