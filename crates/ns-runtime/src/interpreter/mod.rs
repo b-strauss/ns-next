@@ -708,6 +708,11 @@ impl Interpreter {
         #[cfg(debug_assertions)]
         {
             interpreter.hold_safepoints_for_stress();
+            // The collect stress mode slides the site ranges at every
+            // collection that finds one free, so that its collections
+            // exercise every slide (`InlineCaches::plan_slide`).
+            let eager_slides = interpreter.stress_collect.is_some();
+            interpreter.world.set_eager_slides(eager_slides);
             // A fixture run small enough that every insert contends for the
             // same group (`run_goldens.rs`); anything not twice a decimal
             // power of two is ignored rather than refused, since this reads
@@ -946,6 +951,18 @@ impl Interpreter {
         self.enter(|mutator| {
             method_code(mutator, class, side, method)
                 .map_or_else(Vec::new, |code| mutator.caches.states_of(&code, sent))
+        })
+    }
+
+    /// The feedback base the closure `closure` holds, raw, or `None` when
+    /// it is no closure: what a slide of the site ranges rewrites
+    /// (`InlineCaches::plan_slide`). A test hook.
+    #[doc(hidden)]
+    pub fn closure_feedback_base(&mut self, closure: &Root) -> Option<u32> {
+        self.enter(|mutator| {
+            let object = mutator.fetch(closure).as_object()?;
+            let (_, _, base) = mutator.heap.closure_activation(object)?;
+            Some(base.raw())
         })
     }
 
@@ -1895,11 +1912,11 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// A range of `size` sites for a closure an image decoded, which
-    /// carries none (`InlineCaches::fresh_range`), requesting a full
+    /// carries none (`InlineCaches::fresh_loose_range`), requesting a full
     /// collection as `feedback_base_for` does.
     #[cold]
     fn fresh_feedback_range(&mut self, size: u32) -> FeedbackBase {
-        let base = self.caches.fresh_range(size);
+        let base = self.caches.fresh_loose_range(size);
         if self.caches.wants_collection() {
             self.heap.request_table_collection();
         }

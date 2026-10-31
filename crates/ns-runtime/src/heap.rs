@@ -21,6 +21,7 @@
 use crate::builtins::primitive::ElementKind;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
+use crate::interpreter::inline_cache::SiteSlide;
 use crate::interpreter::instantiate::InitializerBody;
 use crate::interpreter::{Arguments, FeedbackBase};
 use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod};
@@ -1704,6 +1705,23 @@ impl ActivationStack {
         let innermost = (self.innermost != NO_FRAME).then_some(self.innermost);
         std::iter::successors(innermost, |offset| self.caller(*offset))
     }
+
+    /// Rewrites every live frame's feedback base through `slide`: a full
+    /// collection slid the inline caches' ranges (`Heap::compact_with`).
+    fn slide_feedback_bases(&mut self, slide: &SiteSlide) {
+        let offsets: Vec<u32> = self.offsets().collect();
+        for offset in offsets {
+            let base = frames::number_as_u32(self.header_word(offset, frame_header::FEEDBACK_BASE));
+            let moved = slide.remap(base);
+            if moved != base {
+                self.set_header_word(
+                    offset,
+                    frame_header::FEEDBACK_BASE,
+                    frames::number_word(u64::from(moved)),
+                );
+            }
+        }
+    }
 }
 
 /// What a suspended activation's frame cannot hold (`Heap::suspend_activations`):
@@ -2465,6 +2483,28 @@ pub(crate) fn out_of_memory(bytes: usize) -> ! {
 /// them from panicking.
 fn count_word(count: usize) -> Word {
     count_value(count).word()
+}
+
+/// Rewrites the feedback base of the closure whose words are `block`, its
+/// header first, through `slide`; any other object is left as it is. A
+/// closure's base is a `SmallInteger` the runtime wrote, never a word an
+/// image supplied, so a word that is none is left alone rather than
+/// refused.
+fn slide_closure_feedback_base(block: &mut [u64], slide: &SiteSlide) {
+    if Header(block[0]).format() != Format::Closure {
+        return;
+    }
+    let Some(bits) = block.get_mut(FIELDS + closure_field::FEEDBACK_BASE) else {
+        return;
+    };
+    let word = Word::from_bits(*bits);
+    if !word.is_non_negative_small_integer() {
+        return;
+    }
+    let Ok(base) = u32::try_from(frames::number_of(word)) else {
+        return;
+    };
+    *bits = count_word(slide.remap(base) as usize).bits();
 }
 
 /// Writes `words` into `slots`, in order, as their bits: a new object's
@@ -10849,8 +10889,14 @@ impl<'gc> Heap<'gc> {
         for holder in &mut self.remembered {
             *holder = forwarder.objects.apply(*holder);
         }
-        self.forward_everything(&mut forwarder);
+        self.forward_everything(&mut forwarder, None);
         forwarder
+    }
+
+    /// `compact_with`, sliding no site range: a test's collection.
+    #[cfg(test)]
+    fn compact(&mut self) -> Forwarder<ForwardingTable> {
+        self.compact_with(None)
     }
 
     /// Compacts every object the finished marking reached, in both
@@ -10862,11 +10908,15 @@ impl<'gc> Heap<'gc> {
     /// past twice the next limit; and rewrites every handle the heap itself
     /// holds into the next epoch. What the heap does not hold, the caller
     /// forwards with the answer, exactly as for a move (`World::collect`).
+    /// With `slide`, the walk that rewrites the handles also rewrites every
+    /// feedback base the heap holds through it -- each closure's and each
+    /// frame header's on the activation stack -- since the inline caches'
+    /// ranges slid in the same collection (`InlineCaches::apply_slide`).
     ///
     /// Sound only where nothing outside the heap and the interpreter holds a
     /// handle: at a safepoint of the run loop, or between runs.
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
-    pub(crate) fn compact(&mut self) -> Forwarder<ForwardingTable> {
+    pub(crate) fn compact_with(&mut self, slide: Option<&SiteSlide>) -> Forwarder<ForwardingTable> {
         self.settle_machine_allocations();
         #[cfg(debug_assertions)]
         let from_epoch = self.epoch;
@@ -10961,7 +11011,7 @@ impl<'gc> Heap<'gc> {
             to_epoch,
             objects: table,
         };
-        self.forward_everything(&mut forwarder);
+        self.forward_everything(&mut forwarder, slide);
         forwarder
     }
 
@@ -11050,7 +11100,7 @@ impl<'gc> Heap<'gc> {
                 names_young: std::cell::Cell::new(false),
             },
         };
-        self.forward_everything(&mut forwarder);
+        self.forward_everything(&mut forwarder, None);
         Ok(forwarder)
     }
 
@@ -11064,7 +11114,17 @@ impl<'gc> Heap<'gc> {
     /// reach is named here once, rather than in copies a later change can
     /// update in one and miss in another (`trace.rs`'s reason for existing,
     /// one level up).
-    fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
+    ///
+    /// With `slide`, a full collection's, every closure's feedback base is
+    /// rewritten in the same walk, and every stack frame header's after it
+    /// (`compact_with`). A suspended activation keeps no base -- it derives
+    /// it again when it resumes (`Mutator::resume_frame`) -- and a
+    /// continuation holds none, so neither side table is written.
+    fn forward_everything<M: Relocation>(
+        &mut self,
+        forwarder: &mut Forwarder<M>,
+        slide: Option<&SiteSlide>,
+    ) {
         use crate::trace::{Trace, Tracer};
         // A married frame's registers are its stack frame's, traced below
         // with the stack; its married field is a stack offset, and no stack
@@ -11078,6 +11138,9 @@ impl<'gc> Heap<'gc> {
             while position < range.end / 8 {
                 let (header, next) = object_at(words, position);
                 let block = block_range(words, header);
+                if let Some(slide) = slide {
+                    slide_closure_feedback_base(&mut words[block.clone()], slide);
+                }
                 trace_block(&mut words[block], forwarder);
                 let offset = offset_of_header(header);
                 if forwarder.objects.holder_done() && !space::is_young(offset) {
@@ -11104,6 +11167,9 @@ impl<'gc> Heap<'gc> {
         // nothing runs between the two and a second pass writes only the
         // words the first wrote.
         Self::trace_stack(&mut self.stack, &self.tables, forwarder);
+        if let Some(slide) = slide {
+            self.stack.slide_feedback_bases(slide);
+        }
         self.suspensions.trace(forwarder);
         self.continuations.trace(forwarder);
         // The table is weak -- `begin_marking` deliberately does not walk it

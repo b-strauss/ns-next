@@ -156,7 +156,9 @@ impl Handoff {
 /// safepoint is outside every one: what the loop carries from one stretch to
 /// the next is `FrameRegisters` -- the running `ActivationReference`, its
 /// code, its `program_counter`, its `FeedbackBase` and its `RegisterBase`,
-/// none of which a move changes -- so a collection may run there and nowhere
+/// none of which a move changes, and only the `FeedbackBase` a full
+/// collection's slide of the inline caches' ranges does, which the loop
+/// reads again from the frame after the safepoint -- so a collection may run there and nowhere
 /// else (`docs/design/memory.md`, "Where a collection can happen"), and a run
 /// ends inside its last entry, its answer rooted (`docs/design/memory.md`,
 /// "The brand"). Each safepoint is one compare of a flag the heap owns; what
@@ -229,6 +231,13 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
                             mutator.heap.activation_program_counter(top),
                         )
                     });
+                } else {
+                    // A full collection may have slid the inline caches'
+                    // ranges, rewriting the frame's base in its header
+                    // (`InlineCaches::plan_slide`): every other word the
+                    // loop carries stays as it was.
+                    frame.feedback_base = interpreter
+                        .enter(|mutator| mutator.heap.activation_feedback_base(frame.activation));
                 }
             }
             Leave::Exit(result) => return result,

@@ -3,7 +3,7 @@
 //! what the uncached path answers; the goldens pin that under
 //! both lowerings, these pin the caches' own states.
 
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use ns_runtime::{
     CachedTarget, CachedTargetKind, CallSiteState, HostResult, HostSignal, Interpreter, Lowering,
     MethodSide, Root, SourceOrigin, Symbol, Value, ValueKind,
@@ -1063,4 +1063,260 @@ fn an_install_vacates_every_cell() {
     assert_eq!(small_integer(&mut interpreter, &answer), 2);
     let refilled = cells(&mut interpreter);
     assert!(!refilled[0].is_vacant(), "the next send fills it again");
+}
+
+/// `count` sends of `yourself` to `self`, chained: the body of a method
+/// whose family takes `count` sites, so that its range, once freed, is a
+/// hole the slide of the site ranges closes (`docs/design/dispatch.md`,
+/// "Code families").
+#[cfg(debug_assertions)]
+fn yourself_chain(count: usize) -> String {
+    format!("^self{}", " yourself".repeat(count))
+}
+
+/// A module whose `Victim>>answer` is a family of a thousand sites and
+/// whose `editVictim` replaces it through a MirrorBuilder, so that the old
+/// version's range is freed by the next full collection; `keep` stores a
+/// block of its own family in `kept`, `useKept:` runs it, and `deep` runs
+/// `work`, which edits the victim and then loops, a frame of `deep`'s
+/// family below it all along.
+#[cfg(debug_assertions)]
+fn sliding_source() -> String {
+    let victim = yourself_chain(1_000);
+    formatdoc! {"
+        class Subject usingPlatform: platform = Object new (
+          |
+            ClassMirror = platform mirrors ClassMirror.
+            public kept ::= nil.
+          |
+        ) (
+          class Victim = Object new () (
+            public answer = ( {victim} )
+          )
+          public victim = ( ^Victim new answer )
+          public keep = ( kept:: [:value | value yourself + 1]. ^self )
+          public useKept: value = ( ^kept value: value )
+          public editVictim = (
+            | builder |
+            builder:: (ClassMirror reflecting: Victim) mixin declaration asBuilder.
+            builder instanceSide methods addFromSource: 'public answer = ( ^0 )'.
+            builder install.
+          )
+          public spin: count = (
+            | index ::= 0. |
+            [index < count] whileTrue: [index:: index + 1].
+            ^index
+          )
+          public work = (
+            self editVictim.
+            ^self spin: 3000
+          )
+          public deep = (
+            | total |
+            total:: self work.
+            ^total yourself + 1
+          )
+        ) : ()
+    "}
+}
+
+/// `sliding_source` loaded under `lowering` and instantiated with the
+/// platform, its `victim` run first, so that the victim's family takes the
+/// low range every family run after it lies above.
+#[cfg(debug_assertions)]
+fn sliding_subject(lowering: Lowering) -> (Interpreter, Root, Root) {
+    let (mut interpreter, class) = load_with(&sliding_source(), lowering);
+    let platform = interpreter.platform();
+    let subject = send(&mut interpreter, &class, "usingPlatform:", &[platform]);
+    send(&mut interpreter, &subject, "victim", &[]);
+    (interpreter, class, subject)
+}
+
+/// A module whose `churn:` replaces `Edited>>answer` `count` times through a
+/// MirrorBuilder, each version a family of ten sites run once, and whose
+/// `keeper` is a family of its own.
+const FAMILY_CHURN: &str = indoc! {"
+    class Churn usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Edited = Object new () (
+        public answer = ( ^0 )
+      )
+      public keeper = ( ^Edited new answer yourself yourself )
+      public churn: count = (
+        1 to: count do: [:index |
+          | builder |
+          builder:: (ClassMirror reflecting: Edited) mixin declaration asBuilder.
+          builder instanceSide methods
+              addFromSource: 'public answer = ( ^' , index printString , ' yourself yourself yourself yourself yourself yourself yourself yourself yourself yourself )'.
+          builder install.
+          Edited new answer = index ifFalse: [^false]].
+        ^true
+      )
+    ) : ()
+"};
+
+/// `FAMILY_CHURN` run for `edits` edits and then its `keeper`, with no
+/// collection meanwhile -- every floor and the collection floor far above
+/// what the edits allocate, the collect stress mode off -- so that every
+/// version but the last is still in the table when `collect_now` runs.
+/// Answers the interpreter, the module's class and its instance.
+#[cfg(debug_assertions)]
+fn churned(edits: i64) -> (Interpreter, Root, Root) {
+    let (mut interpreter, class) = load(FAMILY_CHURN);
+    interpreter.set_stress_collect(false);
+    interpreter.set_collection_floor(1 << 30);
+    interpreter.set_table_floors(ns_runtime::TableFloors::all(1 << 24));
+    let platform = interpreter.platform();
+    let churn = send(&mut interpreter, &class, "usingPlatform:", &[platform]);
+    let count = integer_argument(&interpreter, edits);
+    let answered = send(&mut interpreter, &churn, "churn:", &[count]);
+    let answered_true = interpreter
+        .enter(|mutator| matches!(mutator.fetch(&answered).kind(), ValueKind::Boolean(true)));
+    assert!(answered_true, "an edited method answered another value");
+    let kept = send(&mut interpreter, &churn, "keeper", &[]);
+    assert_eq!(small_integer(&mut interpreter, &kept), edits);
+    (interpreter, class, churn)
+}
+
+/// A churn of families keeps the site table bounded: two thousand edits,
+/// each version's family run once and dead at the next collection, leave
+/// a hole of nearly twenty thousand sites below `keeper`, the long-lived
+/// family run last, at the table's tail; the full collection slides the
+/// live ranges down over it, so that the table is at most twice the sites
+/// of the same families after a single edit. `keeper`'s entries move with
+/// its range, so that its next run hits them where its family now lies.
+#[cfg(debug_assertions)]
+#[test]
+fn a_churn_of_families_keeps_the_site_table_bounded() {
+    let (mut once, _, _) = churned(1);
+    once.collect_now();
+    let live = once.table_sizes().sites;
+    let (mut interpreter, class, churn) = churned(2_000);
+    let before = interpreter.cache_statistics();
+    interpreter.collect_now();
+    let after = interpreter.cache_statistics();
+    let sites = interpreter.table_sizes().sites;
+    assert!(
+        sites <= 2 * live,
+        "{sites} sites after the churn, {live} after a single edit"
+    );
+    assert!(after.site_slides > before.site_slides, "the ranges slid");
+    let filled = states(
+        &mut interpreter,
+        &class,
+        MethodSide::Instance,
+        "keeper",
+        "yourself",
+    );
+    assert_eq!(filled.len(), 2);
+    assert!(
+        filled.iter().all(|state| *state != CallSiteState::Vacant),
+        "keeper's entries moved with its range: {filled:?}"
+    );
+    let kept = send(&mut interpreter, &churn, "keeper", &[]);
+    assert_eq!(small_integer(&mut interpreter, &kept), 2_000);
+    if let Err(message) = interpreter.verify_cells() {
+        panic!("after the slide: {message}");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A closure made before a slide, stored in a slot, runs at its
+    /// family's moved range after it: the collection rewrote its feedback
+    /// base with the family's, so that its sends fill the sites the family
+    /// now names, which the states read. Under the reference lowering every
+    /// send runs uncached and no family takes a range, so only the answers
+    /// are pinned there. `collect_now` is a debug build's.
+    #[cfg(debug_assertions)]
+    fn a_closure_made_before_a_slide_hits_at_its_moved_range(lowering) {
+        let (mut interpreter, class, subject) = sliding_subject(lowering);
+        interpreter.set_stress_caches(false);
+        // What this pins is what its own collection does; the collect
+        // stress mode's collections would slide the ranges before it.
+        interpreter.set_stress_collect(false);
+        send(&mut interpreter, &subject, "keep", &[]);
+        let one = integer_argument(&interpreter, 1);
+        let answer = send(&mut interpreter, &subject, "useKept:", &[one]);
+        assert_eq!(small_integer(&mut interpreter, &answer), 2);
+        let closure = send(&mut interpreter, &subject, "kept", &[]);
+        let before = interpreter
+            .closure_feedback_base(&closure)
+            .expect("kept holds a closure");
+        send(&mut interpreter, &subject, "editVictim", &[]);
+        let slides = interpreter.cache_statistics().site_slides;
+        interpreter.collect_now();
+        let after = interpreter
+            .closure_feedback_base(&closure)
+            .expect("kept holds a closure");
+        let two = integer_argument(&interpreter, 2);
+        let answer = send(&mut interpreter, &subject, "useKept:", &[two]);
+        assert_eq!(small_integer(&mut interpreter, &answer), 3);
+        if lowering == Lowering::Optimized {
+            assert!(
+                interpreter.cache_statistics().site_slides > slides,
+                "the collection slid the ranges"
+            );
+            assert!(
+                after < before,
+                "the closure's base moved down with its family, from {before} to {after}"
+            );
+            let filled = states(&mut interpreter, &class, MethodSide::Instance, "keep", "yourself");
+            assert_eq!(filled.len(), 1);
+            assert_ne!(
+                filled[0],
+                CallSiteState::Vacant,
+                "the closure filled its site at the moved range"
+            );
+            if let Err(message) = interpreter.verify_cells() {
+                panic!("after the slide: {message}");
+            }
+        }
+    }
+}
+
+/// A frame suspended across a slide resumes at its family's moved range:
+/// `deep`'s frame lies below `work`, which edits the victim and loops, so
+/// that the suspend stress mode suspends it before the install and keeps it
+/// suspended until `work` returns, while the collect stress mode's
+/// collections free the victim's old range and slide `deep`'s down. The
+/// resumed frame derives its base again, and its send of `yourself` fills
+/// the site its family now names.
+#[cfg(debug_assertions)]
+#[test]
+fn a_suspended_frame_resumes_at_its_moved_range() {
+    let (mut interpreter, class, subject) = sliding_subject(Lowering::Optimized);
+    interpreter.set_stress_caches(false);
+    let slides = interpreter.cache_statistics().site_slides;
+    interpreter.set_stress_suspend(true);
+    interpreter.set_stress_collect(true);
+    let answer = send(&mut interpreter, &subject, "deep", &[]);
+    assert_eq!(small_integer(&mut interpreter, &answer), 3001);
+    assert!(
+        interpreter.stress_suspensions() > 0,
+        "the run suspended frames"
+    );
+    assert!(interpreter.stress_collections() > 0, "the run collected");
+    assert!(
+        interpreter.cache_statistics().site_slides > slides,
+        "a collection slid the ranges"
+    );
+    let filled = states(
+        &mut interpreter,
+        &class,
+        MethodSide::Instance,
+        "deep",
+        "yourself",
+    );
+    assert_eq!(filled.len(), 1);
+    assert_ne!(
+        filled[0],
+        CallSiteState::Vacant,
+        "the resumed frame filled its site at the moved range"
+    );
+    if let Err(message) = interpreter.verify_cells() {
+        panic!("after the run: {message}");
+    }
 }

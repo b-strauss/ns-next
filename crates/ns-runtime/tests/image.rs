@@ -13497,6 +13497,75 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     );
 }
 
+/// A decoded closure's range is reclaimed: the closure an image carries is
+/// given a range of its own at its first activation, recorded as a loose
+/// range, and once the program drops the closure, the next full collection
+/// frees the range as it frees a dead family's. `collect_now` is a debug
+/// build's.
+#[cfg(debug_assertions)]
+#[test]
+fn a_decoded_closures_range_is_reclaimed() {
+    let source = indoc! {"
+        class Keeper = Object new (
+            | keep ::= nil. |
+        ) (
+            public prepare = ( keep:: [:each | each + 1]. ^self )
+            public apply: value = ( ^keep value: value )
+            public drop = ( keep:: nil )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("prepare"), &[]),
+        "prepare",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("keeper.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let keeper = loaded.roots[0].clone();
+    let one = loaded.interpreter.stash(Value::small_integer(1));
+    expect_ok(
+        loaded
+            .interpreter
+            .send(&keeper, Symbol::intern("apply:"), &[one]),
+        "apply: after load",
+    );
+    assert_eq!(
+        loaded.interpreter.cache_statistics().loose_ranges,
+        1,
+        "the decoded closure took a range of its own"
+    );
+    loaded.interpreter.collect_now();
+    assert_eq!(
+        loaded.interpreter.cache_statistics().loose_ranges,
+        1,
+        "the range lives while the closure does"
+    );
+    expect_ok(
+        loaded
+            .interpreter
+            .send(&keeper, Symbol::intern("drop"), &[]),
+        "drop",
+    );
+    loaded.interpreter.collect_now();
+    assert_eq!(
+        loaded.interpreter.cache_statistics().loose_ranges,
+        0,
+        "the dropped closure's range is freed"
+    );
+}
+
 /// A metaclass that reaches the graph is rebuilt **over `Class`**: its
 /// application is applied over `Class`'s, exactly as the live
 /// `Mutator::attach_metaclass` builds it (`newspeak-spec.pdf` §6, a

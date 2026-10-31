@@ -2191,29 +2191,6 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   oxc) are hand-written recursive descent too, and the cost is building
   the tree, which any algorithm building this AST pays; how much the
   parser's speculative parses re-read on a clean source is not measured.
-- **The feedback range a decoded closure is given is never reclaimed**
-  (2026-10-20). A closure an image decoded carries no base and is given a
-  range of its own on its first activation (`InlineCaches::fresh_range`,
-  from `Mutator`'s closure push), which belongs to no family in the
-  family map, so the full collection that frees the ranges of families
-  nothing runs (`InlineCaches::forget_families`) never frees it, even once
-  the closure is dead. The table grows by one range per decoded closure
-  ever run, bounded by the image, not by how often anything runs.
-  [dispatch.md](design/dispatch.md), "Code families". Part 4d's design
-  closes it: the range is recorded and reclaimed as a family's is, and
-  the ranges slide at a full collection (the same section, "Planned: the
-  ranges slide at a full collection").
-- **The site table never shrinks for a hole in its middle** (2026-10-31).
-  A full collection frees the ranges of families nothing runs, but only a
-  free range at the table's end truncates it (`InlineCaches::forget_families`);
-  a hole below a live range is reused first-fit and otherwise kept, so a
-  long-lived family late in the table holds the table at its peak.
-  Part 4d's design closes it (Task 22): the live ranges slide down at a
-  full collection when a quarter of the table is free
-  ([dispatch.md](design/dispatch.md), "Code families", "Planned: the
-  ranges slide at a full collection"), and the machine code compiled
-  against a range that moved is freed ([execution.md](design/execution.md),
-  "Planned: the code of a moved range is freed").
 - **A program-made symbol an image carries becomes permanent at load**
   (2026-10-31). The decoder interns every text of an image's symbol
   table, so a symbol a program made, which takes no number and dies with

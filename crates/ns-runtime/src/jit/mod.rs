@@ -1098,9 +1098,12 @@ impl JitState {
     }
 
     /// For each installed body, a return address into it -- the address
-    /// one past its start -- and the body, while it lives.
+    /// one past its start -- the body, while it lives, and whether it is
+    /// freed: a freed body's returns are gone, though its code may live
+    /// on, as a slide of the site ranges frees the code of a live body
+    /// whose base moved.
     #[cfg(all(test, debug_assertions))]
-    pub(crate) fn installed_bodies_for_test(&self) -> Vec<(usize, Option<Rc<CompiledCode>>)> {
+    pub(crate) fn installed_bodies_for_test(&self) -> Vec<(usize, Option<Rc<CompiledCode>>, bool)> {
         let Some(zone) = self.zone.as_ref() else {
             return Vec::new();
         };
@@ -1111,7 +1114,7 @@ impl JitState {
                     .writer
                     .zone()
                     .executable_address(CodeOffset(body.start));
-                (start + 1, body.code.upgrade())
+                (start + 1, body.code.upgrade(), body.free)
             })
             .collect()
     }

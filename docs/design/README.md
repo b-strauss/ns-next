@@ -406,7 +406,7 @@ with the JIT off, the one run in which the interpreter runs every body:
 ```bash
 NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace    # moving everything at the run loop's safepoints
 NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace   # vacating every inline cache at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace  # collecting at every safepoint
+NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace  # collecting at every safepoint, sliding the site ranges whenever one is free
 NS_NEXT_STRESS_SCAVENGE=1 cargo nextest run --workspace # scavenging at every safepoint after a check of the remembered set
 NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace     # every instruction in its wide form
 NS_NEXT_STRESS_SUSPEND=1 cargo nextest run --workspace  # suspending every activation into its frame at safepoints

@@ -749,6 +749,11 @@ mod tests {
         let (mut interpreter, outer) = load(OUTER);
         interpreter.set_jit_enabled(true);
         interpreter.set_jit_stress(true);
+        // The ids minted again are what this pins; the collect stress
+        // mode's slide at every collection frees the code of every body
+        // whose family moved, so that no live body would be left to name
+        // one. The test collects for itself.
+        interpreter.set_stress_collect(false);
         let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
         let id = id_of(&mut interpreter, &outer);
         // Every body each id was answered for, by its allocation.
@@ -771,7 +776,7 @@ mod tests {
             drop(answer);
             interpreter.collect_now();
             interpreter.enter(|mutator| {
-                for (return_address, body) in mutator.jit.installed_bodies_for_test() {
+                for (return_address, body, free) in mutator.jit.installed_bodies_for_test() {
                     let answered = mutator.jit.body_at(return_address, &mut mutator.heap);
                     match (body, answered) {
                         (Some(body), Some((code_id, _))) => {
@@ -784,6 +789,9 @@ mod tests {
                             }
                         }
                         (None, None) => died += 1,
+                        // A slide of the site ranges frees the code of a
+                        // live body whose base moved, and its returns.
+                        (Some(_), None) if free => {}
                         (Some(_), None) => panic!("a live body's return address answers nothing"),
                         (None, Some(_)) => panic!("a dead body's return address answers a body"),
                     }

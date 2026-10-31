@@ -371,11 +371,25 @@ impl World {
         // After the prune, whose survivors keep their mixins, and before
         // the compaction, while the mark bits still say what lives.
         self.mutator.reclaim_ids(gathered);
+        // After `forget_families`, which freed the ranges of the families
+        // nothing runs any more: once enough of the table is free, the
+        // live ranges slide down, and every holder of a base is rewritten
+        // within this collection -- the caches' now, the heap's by the
+        // compaction's walk, and the machine code compiled against a moved
+        // base freed after both, so that no freed body is ever entered at a
+        // stale base (`docs/design/dispatch.md`, "Code families").
+        let slide = self.mutator.caches.plan_slide();
+        if let Some(slide) = &slide {
+            self.mutator.caches.apply_slide(slide);
+        }
         // After `reclaim_ids`, which let the bodies of freed code rows die:
         // their machine code is freed now, not when the zone fills.
         self.mutator.jit.free_dead_bodies();
-        let mut forwarder = self.mutator.heap.compact();
+        let mut forwarder = self.mutator.heap.compact_with(slide.as_ref());
         self.forward_step_state(&mut forwarder);
+        if let Some(slide) = &slide {
+            self.mutator.free_code_of_moved_bases(slide);
+        }
         self.mutator.heap.reset_collection_limits();
         // A code zone full of active code is tried again: what the
         // collection's run left active may be no longer. And a quarter of
@@ -411,6 +425,13 @@ impl World {
             cells_committed_bytes: mutator.caches.cells_committed_bytes(),
             ..mutator.heap.table_sizes()
         }
+    }
+
+    /// Whether every full collection slides the site ranges once any is
+    /// free (`InlineCaches::set_eager_slides`): the collect stress mode's.
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_eager_slides(&mut self, eager: bool) {
+        self.mutator.caches.set_eager_slides(eager);
     }
 
     /// Sets every table's growth floor and next limit

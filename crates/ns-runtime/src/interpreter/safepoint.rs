@@ -391,6 +391,7 @@ impl Interpreter {
     /// (`hold_safepoints_for_stress`).
     pub fn set_stress_collect(&mut self, enabled: bool) {
         self.stress_collect = enabled.then(StressSchedule::default);
+        self.world.set_eager_slides(enabled);
         self.hold_safepoints_for_stress();
     }
 

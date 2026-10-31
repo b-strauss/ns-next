@@ -5934,3 +5934,107 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+/// A module whose `Victim>>answer` is a family of a thousand sites, run
+/// first so that its range lies below every other, and whose `editVictim`
+/// replaces it through a MirrorBuilder, freeing that range at the next
+/// full collection; `run` loops and sends, a family above it.
+fn moved_family_source() -> String {
+    let victim = format!("^self{}", " yourself".repeat(1_000));
+    formatdoc! {"
+        class Subject usingPlatform: platform = Object new (
+          |
+            ClassMirror = platform mirrors ClassMirror.
+          |
+        ) (
+          class Victim = Object new () (
+            public answer = ( {victim} )
+          )
+          public victim = ( ^Victim new answer )
+          public editVictim = (
+            | builder |
+            builder:: (ClassMirror reflecting: Victim) mixin declaration asBuilder.
+            builder instanceSide methods addFromSource: 'public answer = ( ^0 )'.
+            builder install.
+          )
+          public run = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 10] whileTrue: [
+              sum:: sum + index yourself.
+              index:: index + 1.
+            ].
+            ^sum
+          )
+        ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// The machine code of a family a slide moved is freed and compiled
+    /// again: `run`'s body was compiled against its family's base, which
+    /// the collection after the victim's edit moves down over the victim's
+    /// freed range, so `freed_bodies` rises at the collection and the body
+    /// is compiled against the new base at its second entry after it, and
+    /// runs in machine code from then on. `collect_now` is a debug build's.
+    #[cfg(debug_assertions)]
+    fn machine_code_of_a_moved_family_compiles_again(lowering) {
+        let (mut interpreter, class) = load_with(&moved_family_source(), lowering);
+        // What this pins is what its own collection does; the collect
+        // stress mode's collections would slide the ranges before it.
+        interpreter.set_stress_collect(false);
+        let platform = interpreter.platform();
+        let subject = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        expect_ok(
+            interpreter.send(&subject, Symbol::intern("victim"), &[]),
+            "victim",
+        );
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 45);
+        }
+        let run = Symbol::intern("run");
+        let compiled = interpreter
+            .jit_body_offset(&class, MethodSide::Instance, run)
+            .is_some();
+        expect_ok(
+            interpreter.send(&subject, Symbol::intern("editVictim"), &[]),
+            "editVictim",
+        );
+        let slides = interpreter.cache_statistics().site_slides;
+        let before = interpreter.jit_statistics();
+        interpreter.collect_now();
+        let collected = since(interpreter.jit_statistics(), before);
+        let slid = interpreter.cache_statistics().site_slides > slides;
+        let freed_at_once = interpreter
+            .jit_body_offset(&class, MethodSide::Instance, run)
+            .is_none();
+        for _ in 0..2 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 45);
+        }
+        let recompiled = interpreter
+            .jit_body_offset(&class, MethodSide::Instance, run)
+            .is_some();
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 45);
+        let third = since(interpreter.jit_statistics(), before);
+        if let Err(message) = interpreter.verify_cells() {
+            panic!("after the slide: {message}");
+        }
+        // The reference lowering's sends run uncached, so its families take
+        // no range and nothing slides; its body exits at once. The zone
+        // stress mode frees and compiles bodies at its own safepoints.
+        if lowering == Lowering::Optimized && !the_zone_stress_mode_is_on() {
+            assert!(compiled, "`run` was compiled");
+            assert!(slid, "the collection slid the ranges");
+            assert!(collected.freed_bodies >= 1, "the moved family's code is freed");
+            assert!(freed_at_once, "no machine code is left for `run`");
+            assert!(recompiled, "`run` is compiled again at its second entry");
+            assert!(third.machine_entries > 0, "`run` runs in machine code again");
+        }
+    }
+}

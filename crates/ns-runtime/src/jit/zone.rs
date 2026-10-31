@@ -28,9 +28,18 @@ use ns_memory::CodeOffset;
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
+use crate::interpreter::inline_cache::SiteSlide;
 use crate::interpreter::Mutator;
 
 use super::{InstalledBody, JitState, BODY_ALIGNMENT, COMPILED};
+
+/// A body a slide freed (`JitState::free_bodies_with_moved_bases`): its
+/// code, while it lives, whose machine entry row names it, and its entry's
+/// offset, which cells may name.
+pub(crate) struct FreedBody {
+    code: Option<std::rc::Rc<CompiledCode>>,
+    start: CodeOffset,
+}
 
 /// The usage a body is born with: what Cog's `initialMethodUsageCount`
 /// answers for a method whose primitive has no machine-code generator
@@ -330,6 +339,51 @@ impl JitState {
             self.returns
                 .retain(|_, site| freed.binary_search(&site.body).is_err());
         }
+    }
+
+    /// Frees the machine code of every installed body compiled against a
+    /// feedback base `slide` moved, or against one it holds no range for:
+    /// its compiled sends address their cells from that base, and its
+    /// closure templates write it into every closure they make, so the
+    /// code would read and fill another family's sites. A body its slot
+    /// still names is put back to counting its entries, so that it is
+    /// compiled again against its family's new base on demand. Run by a
+    /// full collection that slid the ranges, after `free_dead_bodies`,
+    /// between entries; answers the bodies freed, each with its code while
+    /// it lives and its entry's offset, for the holders the caller writes
+    /// (`Mutator::free_code_of_moved_bases`).
+    pub(crate) fn free_bodies_with_moved_bases(&mut self, slide: &SiteSlide) -> Vec<FreedBody> {
+        let mut freed = Vec::new();
+        let mut indices = Vec::new();
+        for index in 0..self.bodies.len() {
+            let body = &self.bodies[index];
+            if body.free || !slide.moves(body.feedback_base) {
+                continue;
+            }
+            let code = body.code.upgrade();
+            let start = body.start;
+            if let Some(code) = &code {
+                if self.named_body(code) == Some(index) {
+                    code.jit.forget();
+                }
+            }
+            let Ok(number) = u32::try_from(index) else {
+                unreachable!("internal: a body's index fits its slot's map");
+            };
+            if self.mark_free(number) {
+                indices.push(number);
+                freed.push(FreedBody {
+                    code,
+                    start: CodeOffset(start),
+                });
+            }
+        }
+        if !indices.is_empty() {
+            // Ascending, as `bodies` is walked.
+            self.returns
+                .retain(|_, site| indices.binary_search(&site.body).is_err());
+        }
+        freed
     }
 
     /// Whether a compile found no room since the last compaction, a held
@@ -769,6 +823,39 @@ impl Mutator<'_> {
         }
         #[cfg(all(ns_jit, debug_assertions))]
         self.verify_code_zone_holders();
+    }
+
+    /// Step 4 of a slide (`docs/design/dispatch.md`, "Code families"):
+    /// frees the machine code of every body compiled against a feedback
+    /// base `slide` moved (`JitState::free_bodies_with_moved_bases`), then
+    /// clears each one's machine entry row, whose `FeedbackBase` word names
+    /// the old base, and writes every cell that named one afresh from its
+    /// entry, which names the miss stub now -- so that no closure stub and
+    /// no cached send enters freed code. A frame stopped in a freed body
+    /// resumes interpreted (`jit::resumed`). Run by `World::collect` after
+    /// the caches and the heap took the new bases, between entries.
+    pub(crate) fn free_code_of_moved_bases(&mut self, slide: &SiteSlide) {
+        let freed = self.jit.free_bodies_with_moved_bases(slide);
+        if freed.is_empty() {
+            return;
+        }
+        let Some(zone) = self.jit.zone.as_ref() else {
+            return;
+        };
+        let mut entries: Vec<u64> = freed
+            .iter()
+            .map(|body| zone.writer.zone().executable_address(body.start) as u64)
+            .collect();
+        entries.sort_unstable();
+        for body in &freed {
+            if let Some(code) = &body.code {
+                #[cfg(ns_jit)]
+                self.heap.forget_machine_entry(code);
+                #[cfg(not(ns_jit))]
+                let _ = code;
+            }
+        }
+        self.caches.refresh_cells_entering_any(&entries, &self.jit);
     }
 
     /// A debug build's check, after every compaction, that every holder of

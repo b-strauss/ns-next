@@ -832,9 +832,11 @@ it to, since the stretch's entry has ended before it: `FrameRegisters` — the
 running `ActivationReference`, the word offset of its frame on the stack, and
 no stack frame moves (a rebuilt stack is read again, above); its
 `Rc<CompiledCode>`, which holds no handle; its `program_counter`; its
-`FeedbackBase`, a number; and its `RegisterBase`, the word offset of its first
-register, which a move does not touch — and the run's floor, a word offset on
-the stack. Every value the loop works on is read from
+`FeedbackBase`, a number, which `run` reads again from the frame after the
+safepoint, since a full collection that slides the inline caches' ranges
+rewrites it in the header ([dispatch.md](dispatch.md), "Code families"); and
+its `RegisterBase`, the word offset of its first register, which a move does
+not touch — and the run's floor, a word offset on the stack. Every value the loop works on is read from
 a register or an operand when an instruction needs it and written back before
 the next, so at a safepoint every handle is in a word of a stack frame,
 in the heap's side table of continuations or of suspended
@@ -11392,18 +11394,29 @@ that make everything that grows reclaimable (plan
   bodies freed, compiled again and moved; like the exit stress mode, it
   forces the JIT on.
 
-#### Planned: the code of a moved range is freed
+#### The code of a moved range is freed
 
-Would change: a full collection that slides the site ranges
-([dispatch.md](dispatch.md), "Code families", "Planned: the ranges
-slide at a full collection") frees the machine code of every body
-compiled against a feedback base that moved. A body's compiled sends
+A full collection that slides the site ranges
+([dispatch.md](dispatch.md), "Code families", "The ranges slide at a
+full collection") frees the machine code of every body compiled against
+a feedback base that moved, or against one no live range holds
+(`JitState::free_bodies_with_moved_bases`): a body's compiled sends
 address their cells from the base it was compiled against
-(`InstalledBody.feedback_base`), so its code is stale once the base
-moves. No base moves today -- a family's range is freed only when its
-code is dead, and its bodies with it -- so nothing is to be freed for
-it yet; the slide frees them where `JitState::free_dead_bodies` frees
-the dead ones, marking each free and putting its slot back to counting.
+(`InstalledBody.feedback_base`), and its closure templates write that
+base into every closure they make, so its code is stale once the base
+moves. It runs after `free_dead_bodies` and after the caches and the
+heap took the new bases (`Mutator::free_code_of_moved_bases`): each body
+is marked free as a dead one is, its returns dropped, and its slot, when
+it still names it, put back to counting, so that the body is compiled
+again against its family's new base at its second entry after the
+collection. Its machine entry row is cleared (`Heap::forget_machine_entry`)
+and every cell whose entry address named it is written afresh from its
+entry (`InlineCaches::refresh_cells_entering_any`), which names the miss
+stub; a frame stopped in it resumes interpreted (`jit::resumed`). The
+freed bytes count towards the quarter at which the collection asks for a
+compaction. Nothing else in the zone holds a base: a closure site and an
+outer-local site name code ids and epochs, and neither the entry block's
+words nor the machine words name one.
 
 ### Polls and the depth check
 
