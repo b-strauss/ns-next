@@ -1,7 +1,8 @@
 //! Every member of a shipped core-library module is documented
 //! (CLAUDE.md, "Conventions"): a `///` comment directly above every class,
-//! slot and method, whatever its access. A module whose comments carry doc
-//! tags is held to them as well.
+//! slot and method, whatever its access, of two or more lines, with a
+//! `@param` for each parameter in the pattern's order, one `@answers` for
+//! a method, and one `@factory` for a class whose header names its factory.
 
 use std::path::Path;
 
@@ -20,20 +21,6 @@ const DOCUMENTED_MODULES: [&str; 8] = [
     "platform/CollectionsFactory.ns",
     "platform/TypedArraysFactory.ns",
     "platform/MirrorsFactory.ns",
-];
-
-/// The modules whose comments carry doc tags and are checked for them. A
-/// module joins when its comments are migrated, so the list fills module by
-/// module until it is every documented module and is removed.
-const TAGGED_MODULES: &[&str] = &[
-    "Manifest.ns",
-    "platform/TranscriptFactory.ns",
-    "platform/TimeFactory.ns",
-    "PlatformFactory.ns",
-    "platform/CollectionsFactory.ns",
-    "platform/MirrorsFactory.ns",
-    "platform/TypedArraysFactory.ns",
-    "Kernel.ns",
 ];
 
 /// Reads a core-library module and parses it.
@@ -70,9 +57,9 @@ fn every_member_of_a_documented_module_has_a_comment() {
 }
 
 #[test]
-fn every_member_of_a_tagged_module_has_its_tags() {
+fn every_member_of_a_documented_module_has_its_tags() {
     let mut faults = Vec::new();
-    for name in TAGGED_MODULES {
+    for name in DOCUMENTED_MODULES {
         let (source, module) = read_module(name);
         faults.extend(tag_faults(name, &source, &module));
     }
@@ -83,9 +70,8 @@ fn every_member_of_a_tagged_module_has_its_tags() {
     );
 }
 
-/// The checker is tested on a module of its own before any shipped module
-/// is listed, so that a rule it silently stopped enforcing shows here and
-/// not as a module that passes.
+/// The checker is tested on a module of its own, so that a rule it
+/// silently stopped enforcing shows here and not as a module that passes.
 #[test]
 fn the_tag_check_finds_each_fault() {
     let source = indoc! {"
