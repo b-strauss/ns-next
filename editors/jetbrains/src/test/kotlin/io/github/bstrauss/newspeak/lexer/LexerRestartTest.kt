@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.lexer
 
+import com.intellij.lexer.Lexer
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.nio.file.Files
@@ -7,8 +8,8 @@ import java.nio.file.Path
 
 private data class LexedToken(val type: String, val start: Int, val end: Int, val state: Int)
 
-private fun lexFrom(text: String, start: Int, state: Int): List<LexedToken> {
-    val lexer = NewspeakLexer()
+private fun lexFrom(newLexer: () -> Lexer, text: String, start: Int, state: Int): List<LexedToken> {
+    val lexer = newLexer()
     lexer.start(text, start, text.length, state)
     val tokens = mutableListOf<LexedToken>()
     while (true) {
@@ -23,10 +24,14 @@ private fun lexFrom(text: String, start: Int, state: Int): List<LexedToken> {
  * The editor re-lexes from any token boundary with the state it stored there;
  * doing so must answer exactly the tokens a full lex answers from that point.
  */
-fun assertRestartsCorrectly(text: String, context: String) {
-    val full = lexFrom(text, 0, 0)
+fun assertRestartsCorrectly(text: String, context: String, newLexer: () -> Lexer = ::NewspeakLexer) {
+    val full = lexFrom(newLexer, text, 0, 0)
     for ((index, token) in full.withIndex()) {
-        assertEquals("$context, restarted at ${token.start}", full.subList(index, full.size), lexFrom(text, token.start, token.state))
+        assertEquals(
+            "$context, restarted at ${token.start}",
+            full.subList(index, full.size),
+            lexFrom(newLexer, text, token.start, token.state),
+        )
     }
 }
 

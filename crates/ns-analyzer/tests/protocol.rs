@@ -97,6 +97,7 @@ fn an_editor_session() {
         true
     );
     assert_eq!(capabilities["capabilities"]["codeActionProvider"], true);
+    assert_eq!(capabilities["capabilities"]["hoverProvider"], true);
     notify(&client, "initialized", json!({}));
 
     // Non-ASCII text before the error on its line, so a position counted in
@@ -143,6 +144,24 @@ fn an_editor_session() {
     let data = tokens["data"].as_array().expect("token data");
     assert!(!data.is_empty(), "the fixed module has classified names");
     assert_eq!(data.len() % 5, 0, "five integers per token");
+
+    // Over the parameter's use: its declaration, as a `newspeak` block.
+    let use_column = fixed.find("^argument").expect("the use") as u64 + 1;
+    let hover = request(
+        &client,
+        4,
+        "textDocument/hover",
+        json!({ "textDocument": { "uri": URI }, "position": { "line": 0, "character": use_column + 2 } }),
+    );
+    assert_eq!(hover["contents"]["kind"], "markdown");
+    assert_eq!(hover["contents"]["value"], "```newspeak\nargument\n```");
+    assert_eq!(
+        hover["range"],
+        json!({
+            "start": { "line": 0, "character": use_column },
+            "end": { "line": 0, "character": use_column + "argument".len() as u64 }
+        })
+    );
 
     let unknown = request(
         &client,
@@ -307,7 +326,7 @@ fn an_unknown_request_is_method_not_found() {
         .sender
         .send(Message::Request(Request::new(
             RequestId::from(2),
-            "textDocument/hover".to_string(),
+            "textDocument/definition".to_string(),
             json!({}),
         )))
         .expect("send");

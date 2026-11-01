@@ -14,16 +14,16 @@ use lsp_types::notification::{
     Notification as NotificationKind, PublishDiagnostics,
 };
 use lsp_types::request::{
-    CodeActionRequest, DocumentSymbolRequest, FoldingRangeRequest, Formatting,
+    CodeActionRequest, DocumentSymbolRequest, FoldingRangeRequest, Formatting, HoverRequest,
     Request as RequestKind, SemanticTokensFullRequest,
 };
 use lsp_types::{
     CodeActionParams, CodeActionProviderCapability, Diagnostic, DiagnosticSeverity,
     DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRangeParams,
-    FoldingRangeProviderCapability, LogMessageParams, MessageType, OneOf, PublishDiagnosticsParams,
-    Range, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri,
+    FoldingRangeProviderCapability, HoverParams, HoverProviderCapability, LogMessageParams,
+    MessageType, OneOf, PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensServerCapabilities,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use ns_syntax::{Severity, Span};
 
@@ -33,6 +33,7 @@ use crate::document_symbols;
 use crate::documents::LineIndex;
 use crate::file_uri::file_path_of;
 use crate::folding;
+use crate::hover;
 use crate::semantic_tokens;
 
 pub type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -75,6 +76,7 @@ fn capabilities() -> ServerCapabilities {
         document_symbol_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -123,6 +125,7 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
         DocumentSymbolRequest::METHOD => document_symbols_of(documents, request),
         Formatting::METHOD => formatting_of(documents, request),
         CodeActionRequest::METHOD => code_actions_of(documents, request),
+        HoverRequest::METHOD => hover_of(documents, request),
         _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
@@ -322,6 +325,39 @@ fn semantic_tokens_of(documents: &HashMap<String, Document>, request: Request) -
             data,
         },
     )
+}
+
+/// The hover over the name at a position of an open document: the
+/// declaration it names in that document, if the classifier placed it at
+/// one (`hover.rs`). None for a document never opened, as for its folds,
+/// and for a position outside the document.
+fn hover_of(documents: &HashMap<String, Document>, request: Request) -> Response {
+    let params: HoverParams = match serde_json::from_value(request.params) {
+        Ok(params) => params,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            )
+        }
+    };
+    let position = params.text_document_position_params;
+    let hover = documents
+        .get(position.text_document.uri.as_str())
+        .and_then(|document| {
+            let offset = document
+                .line_index
+                .offset(&document.text, position.position)?;
+            hover::hover(
+                &document.analysis.references,
+                &document.analysis.declarations,
+                offset,
+                &document.text,
+                &document.line_index,
+            )
+        });
+    Response::new_ok(request.id, hover)
 }
 
 /// Applies a document notification; answers the URI whose diagnostics must be

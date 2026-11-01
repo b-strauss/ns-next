@@ -39,6 +39,14 @@ object NewspeakColors {
     @JvmField val STRING = createTextAttributesKey("NEWSPEAK_STRING", Default.STRING)
     @JvmField val SYMBOL = createTextAttributesKey("NEWSPEAK_SYMBOL", Default.CONSTANT)
     @JvmField val COMMENT = createTextAttributesKey("NEWSPEAK_COMMENT", Default.BLOCK_COMMENT)
+    /**
+     * A block of two or more `///` lines, which documents what follows it as
+     * Java's doc comments do, and takes their colour; a single `///` line
+     * stays a comment. The highlighting lexer (`NewspeakHighlightingLexer`)
+     * answers such a block as one token, so the colour stands from the
+     * editor's first paint.
+     */
+    @JvmField val DOC_COMMENT = createTextAttributesKey("NEWSPEAK_DOC_COMMENT", Default.DOC_COMMENT)
     @JvmField val PARENTHESES = createTextAttributesKey("NEWSPEAK_PARENTHESES", Default.PARENTHESES)
     @JvmField val BRACKETS = createTextAttributesKey("NEWSPEAK_BRACKETS", Default.BRACKETS)
     @JvmField val BRACES = createTextAttributesKey("NEWSPEAK_BRACES", Default.BRACES)
@@ -57,7 +65,7 @@ object NewspeakColors {
 
     val ALL: List<TextAttributesKey> = listOf(
         KEYWORD, RESERVED_WORD, RETURN, IDENTIFIER, KEYWORD_SELECTOR, SETTER_KEYWORD, BINARY_SELECTOR, ANGLE_BRACKET, ASSIGNMENT,
-        NUMBER, STRING, SYMBOL, COMMENT, PARENTHESES, BRACKETS, BRACES, SLOT_BARS, DOT, SEMICOLON,
+        NUMBER, STRING, SYMBOL, COMMENT, DOC_COMMENT, PARENTHESES, BRACKETS, BRACES, SLOT_BARS, DOT, SEMICOLON,
         BAD_CHARACTER, PARAMETER, LOCAL_VARIABLE, SLOT, IMMUTABLE_SLOT, CLASS_NAME, METHOD_DECLARATION, SEND,
     )
 }

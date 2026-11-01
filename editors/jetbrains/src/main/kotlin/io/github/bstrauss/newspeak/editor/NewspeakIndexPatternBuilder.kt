@@ -15,8 +15,14 @@ class NewspeakIndexPatternBuilder : IndexPatternBuilder {
     override fun getIndexingLexer(file: PsiFile): Lexer? = if (file is NewspeakFile) NewspeakLexer() else null
     override fun getCommentTokenSet(file: PsiFile): TokenSet? =
         if (file is NewspeakFile) NewspeakParserDefinition.COMMENTS else null
+    // The indexing lexer never answers a doc comment, which only the
+    // highlighting lexer merges; were it to, a doc comment opens with `///` too.
     override fun getCommentStartDelta(tokenType: IElementType?): Int =
-        if (tokenType == NewspeakTokenTypes.LINE_COMMENT) 3 else 2
+        if (tokenType in LINE_COMMENTS) 3 else 2
     override fun getCommentEndDelta(tokenType: IElementType?): Int =
-        if (tokenType == NewspeakTokenTypes.LINE_COMMENT) 0 else 2
+        if (tokenType in LINE_COMMENTS) 0 else 2
+
+    private companion object {
+        val LINE_COMMENTS = setOf(NewspeakTokenTypes.LINE_COMMENT, NewspeakTokenTypes.DOC_COMMENT)
+    }
 }

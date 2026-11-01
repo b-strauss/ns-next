@@ -1,13 +1,12 @@
 /// The transcript's module: answers, to `build`, the program's standard
-/// output, the `Transcript` `platform transcript` is. Built once, on
-/// first demand.
-///
-/// mirror: the VM mirror, through which the transcript writes.
+/// output, the `Transcript` `platform transcript` is. Built on its first
+/// demand, or by the loader when an image names it.
 ///
 /// The factory pattern `PlatformFactory.ns` is written in: this root holds
 /// the VM mirror, which the platform's root hands it, and nothing hands its
-/// instance to a program. The platform's root builds it once, through the
-/// mirror, on its first use and keeps it in a private lazy slot, and
+/// instance to a program. The platform's root builds it through the
+/// mirror on its first use -- again after an unwind interrupted that use,
+/// which records nothing -- and keeps it in a private lazy slot, and
 /// each platform's `transcript` getter sends it `build`, its one public
 /// member. Its nested classes are private and reach the mirror lexically,
 /// as members of this root, never through a slot of their own. Nothing a
@@ -24,6 +23,13 @@
 ///
 /// A value (§3.1.1): stateless but for the mirror the host hands it, so
 /// every transcript is equal to every other.
+///
+/// @factory makes the transcript's module over `mirror`, copied into its
+/// slot `vmMirror`. The platform's root sends it to the class the mirror
+/// answers on the module's first demand, and again on the next demand
+/// after an unwind interrupted one, which records nothing; the loader
+/// sends it instead when an image names the module.
+/// @param mirror the VM mirror, through which the transcript writes.
 class TranscriptFactory usingVmMirror: mirror = Value (
   |
     /// The VM mirror the factory was given: the one object through which
@@ -35,40 +41,52 @@ class TranscriptFactory usingVmMirror: mirror = Value (
   /// printed form of any object, as UTF-8, in the order they are sent.
   ///
   /// `show:` writes a string as it is and refuses anything else, as an
-  /// ordinary error; `print:` writes any object's `printString`, as
-  /// canonical Newspeak's transcript does. The leaf never declines, so
-  /// the failure blocks never run.
+  /// ordinary error; `print:` writes any object's `printString`. The
+  /// leaf never declines, so the failure blocks never run.
   private class Transcript = Value () (
-    /// Writes `text` to standard output as it is, flushed at once, and
-    /// answers the receiver.
+    /// Writes `text` to standard output as it is, flushed at once.
     ///
-    /// text: a String or a Symbol.
-    ///
-    /// Signals an ArgumentError carrying `text`, 'show: requires a
-    /// String, got …', for any other argument; nothing is written.
+    /// @param text a String or a Symbol.
+    /// @answers the receiver.
+    /// @signals ArgumentError carrying `text`, 'show: requires a String,
+    /// got …', for any other argument; nothing is written.
     public show: text = (
       ^vmMirror transcript: self show: text ifFail: [nil].
     )
 
-    /// Writes a line break to standard output and answers the
-    /// receiver.
+    /// Writes a line break to standard output, after everything written
+    /// before it.
+    ///
+    /// @answers the receiver.
     public newLine = (
       ^vmMirror transcriptNewLine: self ifFail: [nil].
     )
 
     /// Writes the `printString` of `object` to standard output, as
-    /// `show:` does, and answers the receiver.
+    /// `show:` does.
     ///
-    /// object: any object; sent `printString`, whose answer must be a
-    /// String or a Symbol, or `show:` signals its ArgumentError.
+    /// A method of its own rather than a `show:` that takes any object,
+    /// since `show:` writes a String as it is and a String's `printString`
+    /// quotes it: `print: 'text'` writes 'text', quotes included, where
+    /// `show: 'text'` writes text.
+    ///
+    /// @param object any object; sent `printString`, whose answer must be
+    /// a String or a Symbol, or `show:` signals its ArgumentError.
+    /// @answers the receiver.
+    /// @signals ArgumentError the one `show:` signals, carrying the answer
+    /// of `printString`, when that answer is neither a String nor a Symbol.
+    /// @signals Error every one `object`'s `printString` signals, before
+    /// anything is written.
+    /// @see `show:`.
     public print: object = (
       ^self show: object printString.
     )
   )
 
-  /// Answers a new `Transcript`: the program's standard output, the
-  /// one public member of the module, named `build` like every shipped
-  /// factory's.
+  /// Builds the program's standard output: the one public member of the
+  /// module, named `build` like every shipped factory's.
+  ///
+  /// @answers a new `Transcript`, the program's standard output.
   public build = (
     ^Transcript new.
   )

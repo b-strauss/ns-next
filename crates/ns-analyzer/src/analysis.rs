@@ -3,10 +3,13 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use std::collections::HashMap;
+
 use ns_syntax::{Diagnostic, Severity, Span};
 
 use crate::document_symbols::{self, Symbol};
 use crate::folding::{self, Fold};
+use crate::hover::{Declared, Reference};
 use crate::semantic_tokens::{self, Classified};
 
 /// One error to show, with the message `ns-next` itself produces.
@@ -29,6 +32,10 @@ impl From<Diagnostic> for Finding {
 pub struct Analysis {
     pub findings: Vec<Finding>,
     pub classified: Vec<Classified>,
+    /// Each name placed at a declaration of the document, and each such
+    /// declaration, for the hover (`hover.rs`).
+    pub references: Vec<Reference>,
+    pub declarations: HashMap<Span, Declared>,
     pub folds: Vec<Fold>,
     pub symbols: Vec<Symbol>,
     pub hints: Vec<crate::hints::Hint>,
@@ -62,6 +69,8 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
                     severity: Severity::Error,
                 }],
                 classified: Vec::new(),
+                references: Vec::new(),
+                declarations: HashMap::new(),
                 folds: Vec::new(),
                 symbols: Vec::new(),
                 hints: Vec::new(),
@@ -91,7 +100,11 @@ fn analyze_unguarded(text: &str) -> Analysis {
     // clashing-member error; an unbound name is a send in Newspeak, not an
     // error (`docs/design/frontend.md`, "Recovery").
     let resolution = ns_runtime::resolve_for_editor(module);
-    let classified = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
+    let semantic_tokens::Classification {
+        classified,
+        references,
+        declarations,
+    } = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
     let folds = folding::folds(&resolution.module, &comments, text);
     let symbols = document_symbols::symbols(&resolution.module, &resolution.bindings);
     // Only a source that parses without error gets hints: their fixes are
@@ -103,9 +116,16 @@ fn analyze_unguarded(text: &str) -> Analysis {
         message: error.message,
         severity: Severity::Error,
     }));
+    findings.extend(crate::doc_tags::findings(
+        &resolution.module,
+        &comments,
+        text,
+    ));
     Analysis {
         findings,
         classified,
+        references,
+        declarations,
         folds,
         symbols,
         hints,

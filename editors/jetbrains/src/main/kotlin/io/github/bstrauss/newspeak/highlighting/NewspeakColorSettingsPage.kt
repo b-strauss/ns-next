@@ -29,6 +29,7 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
         AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.literals.string"), NewspeakColors.STRING),
         AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.literals.symbol"), NewspeakColors.SYMBOL),
         AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.comment"), NewspeakColors.COMMENT),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.doc.comment"), NewspeakColors.DOC_COMMENT),
         AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.braces.parentheses"), NewspeakColors.PARENTHESES),
         AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.braces.brackets"), NewspeakColors.BRACKETS),
         AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.braces.braces"), NewspeakColors.BRACES),
@@ -57,6 +58,8 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
     )
 
     override fun getDemoText(): String = """
+        /// Counts up to a limit.
+        /// Reports each step.
         class <class>Counter</class> usingPlatform: <parameter>platform</parameter> = Object <send>new</send> (
           /// A counter. TODO: reset
           | private <slot>count</slot> ::= 0. private <immutable>limit</immutable> = 16rFF. |

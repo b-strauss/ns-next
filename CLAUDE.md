@@ -8,7 +8,10 @@ Rust 1.98.0, edition 2021, seven crates:
   the AST is lossless except for layout -- parentheses, literal spellings,
   type annotations as tokens, the prologue, `<-:`, members in source order
   -- and every comment is attached to its node (`attach.rs`;
-  `docs/design/frontend.md`, "AST", "Comments"); `parse` refuses a source
+  `docs/design/frontend.md`, "AST", "Comments"); a doc comment's tags and
+  summary are `doc_comment.rs`'s, the grammar the JetBrains plugin's
+  `NewspeakDocTags` repeats (`docs/design/editor-support.md`, "Doc
+  comments"); `parse` refuses a source
   with errors, `parse_for_editor` answers a recovered module for the editor,
   its recovery bounded by a work budget (`docs/design/frontend.md`,
   "Recovery"); the printer (`printer/`: `print_module` writes a module back
@@ -114,7 +117,8 @@ Rust 1.98.0, edition 2021, seven crates:
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols, formatting,
-  hints and their quick fixes);
+  hints and their quick fixes, and a hover with a declaration's signature
+  and doc comment);
   `dump-tokens`, which the JetBrains plugin's lexer is checked against;
   `parse`, `parse-corpus`, `disasm` and `inspect`; and `fmt`, the one command
   that writes, which rewrites `.ns` files in the formatter's layout
@@ -665,17 +669,27 @@ and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
 - Comments explain the decision — what a check prevents — not the mechanics.
 - **Every member of a shipped core-library module is documented** to the
   standard of Javadoc. Every method, slot and class of `Kernel.ns`,
-  `PlatformFactory.ns`, `TranscriptFactory.ns`, `TimeFactory.ns`,
-  `CollectionsFactory.ns`, `TypedArraysFactory.ns` and `MirrorsFactory.ns`
-  -- public, protected and
-  private -- has a `///` comment directly above it that says what it
-  does and what it answers, each argument and what it must be, every Error
-  it signals and when, and what it guarantees about order, identity,
-  copying and mutation, as long as that takes; a section that would say
-  nothing is left out. It names no other implementation. A comment that
-  explains a decision, as the rule above asks, goes after it.
+  `Manifest.ns`, `PlatformFactory.ns`, `TranscriptFactory.ns`,
+  `TimeFactory.ns`, `CollectionsFactory.ns`, `TypedArraysFactory.ns` and
+  `MirrorsFactory.ns` -- public, protected and private -- has a doc
+  comment directly above it, a block of two or more `///` lines
+  (`docs/design/editor-support.md`, "Doc comments"): a description of
+  what it does and what it guarantees about order, identity, copying and
+  mutation, as long as that takes, then its tags -- a `@param` for each
+  argument, in the pattern's order, saying what it must be; for a method
+  one `@answers`, what it answers; a `@signals` for each Error class it
+  signals, saying when; and a `@see` for a related member worth naming. A
+  class whose header names its factory has one `@factory`, what the
+  factory does, and its `@param`s are the factory's. A section that would
+  say nothing is left out. It names no other implementation. A comment
+  that explains a decision, as the rule above asks, goes after it.
   `crates/ns-runtime/tests/core_library_documentation.rs` holds every
-  member to having one.
+  member to having a doc comment, its `@param`s, its `@answers` and its
+  `@factory`. A comment is part of the shipped source, so editing one
+  outside `Manifest.ns` changes the fingerprint in
+  `crates/ns-runtime/tests/fixtures/golden-image.bin`, which
+  `regenerate_the_golden_fixture` (`tests/image.rs`) rewrites in the same
+  commit (`core-library.md`, "The embedded shipped code").
 - **Every encoding constant of `ns-assembler` is a named `const` documented with its
   official source** -- the Intel SDM volume and section title for x64, the
   developer.arm.com page of the instruction for AArch64 -- and no integer literal

@@ -25,6 +25,44 @@ class NewspeakLineCommentEnterTest : BasePlatformTestCase() {
         )
     }
 
+    // A doc comment is one token of the highlighter's; Enter continues the
+    // caret's own line of it, wherever in the block that is.
+
+    fun testEnterAtTheEndOfTheFirstLineOfABlockContinuesIt() {
+        enter(
+            "class M = () (\n  /// one<caret>\n  /// two\n  size = (",
+            "class M = () (\n  /// one\n  /// <caret>\n  /// two\n  size = (",
+        )
+    }
+
+    fun testEnterAtTheEndOfABlockContinuesIt() {
+        enter(
+            "class M = () (\n  /// one\n  /// two<caret>\n  size = (",
+            "class M = () (\n  /// one\n  /// two\n  /// <caret>\n  size = (",
+        )
+    }
+
+    fun testEnterInTheMiddleOfABlockContinuesItsLine() {
+        enter(
+            "class M = () (\n  /// one\n  ///   - two <caret>three\n  /// four\n  size = (",
+            "class M = () (\n  /// one\n  ///   - two\n  ///   <caret>three\n  /// four\n  size = (",
+        )
+    }
+
+    fun testEnterInABlockInABodyStaysAtItsIndentation() {
+        enter(
+            "  foo = (\n    /// one\n    /// two<caret>\n    ^1",
+            "  foo = (\n    /// one\n    /// two\n    /// <caret>\n    ^1",
+        )
+    }
+
+    fun testEnterBeforeTheSlashesOfABlocksSecondLineIsAPlainEnter() {
+        enter(
+            "class M = () (\n  /// one\n  <caret>/// two",
+            "class M = () (\n  /// one\n  \n  <caret>/// two",
+        )
+    }
+
     fun testEnterInsideALineCommentCarriesTheRestOn() {
         enter("  /// Answers the <caret>size.", "  /// Answers the\n  /// <caret>size.")
     }

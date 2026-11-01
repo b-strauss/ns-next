@@ -8,6 +8,7 @@ use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind}
 use ns_syntax::{Span, Token, TokenKind};
 
 use crate::documents::{utf16_length, LineIndex};
+use crate::hover::{self, Container, Declared, DeclaredKind, Reference};
 
 /// The token types of the legend, in legend order (`legend`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +129,16 @@ struct ClassMembers {
 /// indexes.
 #[derive(Default)]
 struct SideMembers {
-    members: HashMap<String, MemberKind>,
+    members: HashMap<String, Member>,
+}
+
+/// What a name a side declares is, and the node that declares it: the
+/// slot for its setter too, the factory pattern (`factory_span`) for the
+/// factory.
+#[derive(Clone, Copy)]
+struct Member {
+    kind: MemberKind,
+    declaration: Span,
 }
 
 #[derive(Clone, Copy)]
@@ -151,10 +161,10 @@ impl ClassMembers {
             .factory
             .as_ref()
             .map_or_else(|| "new".to_string(), selector_of);
-        class_side
-            .members
-            .entry(factory)
-            .or_insert(MemberKind::Method);
+        class_side.members.entry(factory).or_insert(Member {
+            kind: MemberKind::Method,
+            declaration: factory_span(declaration),
+        });
         ClassMembers {
             instance_side: SideMembers::of(&declaration.instance_side),
             class_side,
@@ -165,26 +175,27 @@ impl ClassMembers {
 impl SideMembers {
     fn of(body: &ast::ClassBody) -> SideMembers {
         let mut members = HashMap::new();
+        let member = |kind, declaration| Member { kind, declaration };
         for slot in body.slots() {
             let readonly = slot.mutability == ast::SlotMutability::Immutable;
             members
                 .entry(slot.name.name.clone())
-                .or_insert(MemberKind::Slot { readonly });
+                .or_insert(member(MemberKind::Slot { readonly }, slot.span));
             if !readonly {
                 members
                     .entry(format!("{}:", slot.name.name))
-                    .or_insert(MemberKind::SlotSetter);
+                    .or_insert(member(MemberKind::SlotSetter, slot.span));
             }
         }
         for method in body.methods() {
             members
                 .entry(selector_of(&method.pattern))
-                .or_insert(MemberKind::Method);
+                .or_insert(member(MemberKind::Method, method.span));
         }
         for nested in body.nested_classes() {
             members
                 .entry(nested.name.name.clone())
-                .or_insert(MemberKind::NestedClass);
+                .or_insert(member(MemberKind::NestedClass, nested.span));
         }
         SideMembers { members }
     }
@@ -200,6 +211,42 @@ fn selector_of(pattern: &ast::MessagePattern) -> String {
             .iter()
             .map(|part| format!("{}:", part.keyword.name))
             .collect(),
+    }
+}
+
+/// The node a class's factory is declared at, the key of its hover: the
+/// header's factory pattern, from its selector through its last parameter
+/// and that parameter's type, or, for the default `new`, which the source
+/// does not spell, the empty span at the class's name -- a span no other
+/// declaration has.
+fn factory_span(declaration: &ast::ClassDeclaration) -> Span {
+    let parameter_end = |parameter: &ast::Parameter| {
+        parameter
+            .type_annotation
+            .as_ref()
+            .map_or(parameter.name.span.end, |annotation| annotation.span.end)
+    };
+    match &declaration.factory {
+        Some(ast::MessagePattern::Unary {
+            selector,
+            type_parameters,
+        }) => Span::new(
+            selector.span.start,
+            type_parameters
+                .as_ref()
+                .map_or(selector.span.end, |annotation| annotation.span.end),
+        ),
+        Some(ast::MessagePattern::Binary {
+            selector,
+            parameter,
+        }) => Span::new(selector.span.start, parameter_end(parameter)),
+        Some(ast::MessagePattern::Keyword { parts }) => match (parts.first(), parts.last()) {
+            (Some(first), Some(last)) => {
+                Span::new(first.keyword.span.start, parameter_end(&last.parameter))
+            }
+            _ => Span::new(declaration.name.span.start, declaration.name.span.start),
+        },
+        None => Span::new(declaration.name.span.start, declaration.name.span.start),
     }
 }
 
@@ -221,9 +268,19 @@ struct Classifier<'a> {
     bindings: &'a HashMap<Span, Binding>,
     tokens: &'a [Token],
     /// The local scopes entered, innermost last, each a list of names in
-    /// declaration order.
-    scopes: Vec<Vec<(String, LocalKind)>>,
+    /// declaration order with the node that declares each.
+    scopes: Vec<Vec<(String, LocalKind, Span)>>,
     output: Vec<Classified>,
+    references: Vec<Reference>,
+    declarations: HashMap<Span, Declared>,
+}
+
+/// What the classifier answers: every name's colour, and for the hover each
+/// name placed at a declaration of the module and each such declaration.
+pub struct Classification {
+    pub classified: Vec<Classified>,
+    pub references: Vec<Reference>,
+    pub declarations: HashMap<Span, Declared>,
 }
 
 /// Every name in `module` the resolver can place; see this task's mapping.
@@ -231,15 +288,21 @@ pub fn classify(
     module: &ast::Module,
     bindings: &HashMap<Span, Binding>,
     tokens: &[Token],
-) -> Vec<Classified> {
+) -> Classification {
     let mut classifier = Classifier {
         bindings,
         tokens,
         scopes: Vec::new(),
         output: Vec::new(),
+        references: Vec::new(),
+        declarations: HashMap::new(),
     };
-    classifier.class(&module.root_class, &[]);
-    classifier.output
+    classifier.class(&module.root_class, &[], None);
+    Classification {
+        classified: classifier.output,
+        references: classifier.references,
+        declarations: classifier.declarations,
+    }
 }
 
 impl Classifier<'_> {
@@ -252,17 +315,110 @@ impl Classifier<'_> {
         });
     }
 
+    /// `emit`, and the name names the declaration whose node is `target`.
+    fn emit_to(
+        &mut self,
+        span: Span,
+        category: TokenCategory,
+        declaration: bool,
+        readonly: bool,
+        target: Option<Span>,
+    ) {
+        self.emit(span, category, declaration, readonly);
+        if let Some(declaration) = target {
+            self.references.push(Reference { span, declaration });
+        }
+    }
+
+    fn declare(&mut self, node: Span, declared: Declared) {
+        self.declarations.entry(node).or_insert(declared);
+    }
+
     /// `enclosing` is the chain around this declaration, innermost first --
     /// the resolver's `class_chain` without this class's own level, each
     /// level the side the class nested in it is declared on.
-    fn class(&mut self, declaration: &ast::ClassDeclaration, enclosing: &[&SideMembers]) {
+    fn class(
+        &mut self,
+        declaration: &ast::ClassDeclaration,
+        enclosing: &[&SideMembers],
+        container: Option<Container>,
+    ) {
         let own = ClassMembers::of(declaration);
         let mut chain: Vec<&SideMembers> = vec![&own.instance_side];
         chain.extend_from_slice(enclosing);
         let mut class_side_chain: Vec<&SideMembers> = vec![&own.class_side];
         class_side_chain.extend_from_slice(enclosing);
 
-        self.emit(declaration.name.span, TokenCategory::Class, true, false);
+        let header_end = declaration
+            .instance_side
+            .delimiters
+            .map_or(declaration.span.end, |delimiters| delimiters.open.start);
+        self.declare(
+            declaration.span,
+            Declared {
+                kind: DeclaredKind::Class,
+                signature: Span::new(declaration.span.start, header_end),
+                initializer: None,
+                documentation: hover::doc_comment(&declaration.comments),
+                container,
+                class: None,
+            },
+        );
+        self.emit_to(
+            declaration.name.span,
+            TokenCategory::Class,
+            true,
+            false,
+            Some(declaration.span),
+        );
+        let instance_member = Some(Container {
+            name: declaration.name.span,
+            class_side: false,
+        });
+        let class_side_member = Some(Container {
+            name: declaration.name.span,
+            class_side: true,
+        });
+        let factory = factory_span(declaration);
+        self.declare(
+            factory,
+            Declared {
+                kind: DeclaredKind::Factory,
+                signature: factory,
+                initializer: None,
+                documentation: None,
+                container: class_side_member,
+                class: Some(declaration.span),
+            },
+        );
+        // The header's factory pattern declares the class side's factory
+        // method, as a method's pattern declares the method.
+        match &declaration.factory {
+            Some(
+                ast::MessagePattern::Unary { selector, .. }
+                | ast::MessagePattern::Binary { selector, .. },
+            ) => {
+                self.emit_to(
+                    selector.span,
+                    TokenCategory::Method,
+                    true,
+                    false,
+                    Some(factory),
+                );
+            }
+            Some(ast::MessagePattern::Keyword { parts }) => {
+                for part in parts {
+                    self.emit_to(
+                        part.keyword.span,
+                        TokenCategory::Method,
+                        true,
+                        false,
+                        Some(factory),
+                    );
+                }
+            }
+            None => {}
+        }
         // A module root's clauses bind nothing; a nested class's receivers
         // resolve against the chain enclosing it. `resolve_superclass_clause`
         // records a binding at the receiver's span for every prefix, not
@@ -291,7 +447,7 @@ impl Classifier<'_> {
         // Slot initializers, initializer expressions and the clauses'
         // message arguments run in the instance initializer, where the
         // factory's parameters are locals.
-        let factory_parameters: Vec<&ast::Identifier> = declaration
+        let factory_parameters: Vec<&ast::Parameter> = declaration
             .factory
             .as_ref()
             .map(pattern_parameters)
@@ -299,7 +455,7 @@ impl Classifier<'_> {
         self.enter_scope(&factory_parameters, &[]);
         for slot in declaration.instance_side.slots().filter(|slot| !slot.lazy) {
             let readonly = slot.mutability == ast::SlotMutability::Immutable;
-            self.emit(slot.name.span, TokenCategory::Property, true, readonly);
+            self.slot_declaration(slot, instance_member, readonly);
             if let Some(initializer) = &slot.initializer {
                 self.expression(initializer, &chain);
             }
@@ -315,7 +471,13 @@ impl Classifier<'_> {
             // The clause's messages go to the class its receiver names -- a
             // message to an object like any other.
             for message in &clause.messages {
-                self.selector(clause.receiver.span, message, TokenCategory::Method, false);
+                self.selector(
+                    clause.receiver.span,
+                    message,
+                    TokenCategory::Method,
+                    false,
+                    None,
+                );
                 for argument in &message.arguments {
                     self.expression(argument, &chain);
                 }
@@ -331,7 +493,7 @@ impl Classifier<'_> {
                 self.emit(modifier, TokenCategory::Keyword, false, false);
             }
             let readonly = slot.mutability == ast::SlotMutability::Immutable;
-            self.emit(slot.name.span, TokenCategory::Property, true, readonly);
+            self.slot_declaration(slot, instance_member, readonly);
             if let Some(initializer) = &slot.initializer {
                 self.enter_scope(&[], &[]);
                 self.expression(initializer, &chain);
@@ -342,34 +504,90 @@ impl Classifier<'_> {
         if let Some(class_side) = &declaration.class_side {
             for slot in class_side.slots() {
                 let readonly = slot.mutability == ast::SlotMutability::Immutable;
-                self.emit(slot.name.span, TokenCategory::Property, true, readonly);
+                self.slot_declaration(slot, class_side_member, readonly);
             }
         }
-        let mut sides = vec![(&declaration.instance_side, &chain)];
+        let mut sides = vec![(&declaration.instance_side, &chain, instance_member)];
         if let Some(class_side) = &declaration.class_side {
-            sides.push((class_side, &class_side_chain));
+            sides.push((class_side, &class_side_chain, class_side_member));
         }
-        for &(body, side_chain) in &sides {
+        for &(body, side_chain, member) in &sides {
             for method in body.methods() {
-                self.method(method, side_chain);
+                self.method(method, side_chain, member);
             }
         }
-        for &(body, side_chain) in &sides {
+        for &(body, side_chain, member) in &sides {
             for nested in body.nested_classes() {
-                self.class(nested, side_chain);
+                self.class(nested, side_chain, member);
             }
         }
     }
 
-    fn method(&mut self, method: &ast::MethodDeclaration, chain: &[&SideMembers]) {
+    /// A slot's name, as a declaration of a member of `container`.
+    fn slot_declaration(
+        &mut self,
+        slot: &ast::SlotDeclaration,
+        container: Option<Container>,
+        readonly: bool,
+    ) {
+        self.declare(
+            slot.span,
+            Declared {
+                kind: DeclaredKind::Slot,
+                signature: slot.span,
+                initializer: slot
+                    .initializer
+                    .as_ref()
+                    .map(|initializer| initializer.span),
+                documentation: hover::doc_comment(&slot.comments),
+                container,
+                class: None,
+            },
+        );
+        self.emit_to(
+            slot.name.span,
+            TokenCategory::Property,
+            true,
+            readonly,
+            Some(slot.span),
+        );
+    }
+
+    fn method(
+        &mut self,
+        method: &ast::MethodDeclaration,
+        chain: &[&SideMembers],
+        container: Option<Container>,
+    ) {
+        let pattern_end = method
+            .body_delimiters
+            .map_or(method.span.end, |delimiters| delimiters.open.start);
+        self.declare(
+            method.span,
+            Declared {
+                kind: DeclaredKind::Method,
+                signature: Span::new(method.span.start, pattern_end),
+                initializer: None,
+                documentation: hover::doc_comment(&method.comments),
+                container,
+                class: None,
+            },
+        );
+        let target = Some(method.span);
         match &method.pattern {
             ast::MessagePattern::Unary { selector, .. }
             | ast::MessagePattern::Binary { selector, .. } => {
-                self.emit(selector.span, TokenCategory::Method, true, false);
+                self.emit_to(selector.span, TokenCategory::Method, true, false, target);
             }
             ast::MessagePattern::Keyword { parts } => {
                 for part in parts {
-                    self.emit(part.keyword.span, TokenCategory::Method, true, false);
+                    self.emit_to(
+                        part.keyword.span,
+                        TokenCategory::Method,
+                        true,
+                        false,
+                        target,
+                    );
                 }
             }
         }
@@ -379,7 +597,7 @@ impl Classifier<'_> {
 
     fn body(
         &mut self,
-        parameters: &[&ast::Identifier],
+        parameters: &[&ast::Parameter],
         body: &ast::CodeBody,
         chain: &[&SideMembers],
     ) {
@@ -398,20 +616,63 @@ impl Classifier<'_> {
     /// Pushes a scope and emits each parameter's and temporary's declaration.
     fn enter_scope(
         &mut self,
-        parameters: &[&ast::Identifier],
+        parameters: &[&ast::Parameter],
         temporaries: &[ast::SlotDeclaration],
     ) {
         let mut scope = Vec::new();
         for parameter in parameters {
-            self.emit(parameter.span, TokenCategory::Parameter, true, false);
-            scope.push((parameter.name.clone(), LocalKind::Parameter));
+            let name = &parameter.name;
+            let end = parameter
+                .type_annotation
+                .as_ref()
+                .map_or(name.span.end, |annotation| annotation.span.end);
+            self.declare(
+                name.span,
+                Declared {
+                    kind: DeclaredKind::Parameter,
+                    signature: Span::new(name.span.start, end),
+                    initializer: None,
+                    documentation: None,
+                    container: None,
+                    class: None,
+                },
+            );
+            self.emit_to(
+                name.span,
+                TokenCategory::Parameter,
+                true,
+                false,
+                Some(name.span),
+            );
+            scope.push((name.name.clone(), LocalKind::Parameter, name.span));
         }
         for temporary in temporaries {
             let readonly = temporary.mutability == ast::SlotMutability::Immutable;
-            self.emit(temporary.name.span, TokenCategory::Variable, true, readonly);
+            self.declare(
+                temporary.span,
+                Declared {
+                    kind: DeclaredKind::Local,
+                    signature: temporary.span,
+                    initializer: temporary
+                        .initializer
+                        .as_ref()
+                        .map(|initializer| initializer.span),
+                    documentation: None,
+                    container: None,
+                    class: None,
+                },
+            );
+            self.emit_to(
+                temporary.name.span,
+                TokenCategory::Variable,
+                true,
+                readonly,
+                Some(temporary.span),
+            );
             scope.push((
                 temporary.name.name.clone(),
                 LocalKind::Temporary { readonly },
+                temporary.span,
             ));
         }
         self.scopes.push(scope);
@@ -447,11 +708,7 @@ impl Classifier<'_> {
                 self.expression(value, chain);
             }
             ExpressionKind::Block(block) => {
-                let parameters: Vec<&ast::Identifier> = block
-                    .parameters
-                    .iter()
-                    .map(|parameter| &parameter.name)
-                    .collect();
+                let parameters: Vec<&ast::Parameter> = block.parameters.iter().collect();
                 self.body(&parameters, &block.body, chain);
             }
             ExpressionKind::DynamicArray { elements, .. } => {
@@ -475,8 +732,8 @@ impl Classifier<'_> {
         }
         match self.bindings.get(&identifier.span) {
             Some(Binding::Local(_) | Binding::OuterLocal { .. }) => {
-                let (category, readonly) = self.local(&identifier.name);
-                self.emit(identifier.span, category, false, readonly);
+                let (category, readonly, target) = self.local(&identifier.name);
+                self.emit_to(identifier.span, category, false, readonly, target);
             }
             Some(Binding::LexicalSend { .. }) => {
                 self.member_use(identifier.span, &identifier.name, chain);
@@ -491,13 +748,15 @@ impl Classifier<'_> {
         let span = self.setter_token(target.span);
         match self.bindings.get(&target.span) {
             Some(Binding::Local(_) | Binding::OuterLocal { .. }) => {
-                let (category, readonly) = self.local(&target.name);
-                self.emit(span, category, false, readonly);
+                let (category, readonly, declaration) = self.local(&target.name);
+                self.emit_to(span, category, false, readonly, declaration);
             }
             Some(Binding::LexicalSend { depth }) => {
                 let setter = format!("{}:", target.name);
                 let (category, readonly) = member_category(chain, *depth, &setter);
-                self.emit(span, category, false, readonly);
+                let declaration =
+                    member_of(chain, *depth, &setter).map(|member| member.declaration);
+                self.emit_to(span, category, false, readonly, declaration);
             }
             _ => {}
         }
@@ -559,15 +818,23 @@ impl Classifier<'_> {
     fn send_selector(&mut self, send: &ast::Send, chain: &[&SideMembers]) {
         match self.bindings.get(&send.span).copied() {
             Some(Binding::LexicalSend { depth }) => {
-                let (category, readonly) =
-                    member_category(chain, depth, selector_name(&send.message.selector));
-                self.selector(send.receiver.span, &send.message, category, readonly);
+                let name = selector_name(&send.message.selector);
+                let (category, readonly) = member_category(chain, depth, name);
+                let target = member_of(chain, depth, name).map(|member| member.declaration);
+                self.selector(
+                    send.receiver.span,
+                    &send.message,
+                    category,
+                    readonly,
+                    target,
+                );
             }
             Some(Binding::SuperSend) => self.selector(
                 send.receiver.span,
                 &send.message,
                 TokenCategory::Method,
                 false,
+                None,
             ),
             _ => self.explicit_receiver_selector(&send.receiver, send.receiver.span, &send.message),
         }
@@ -588,7 +855,7 @@ impl Classifier<'_> {
         {
             return;
         }
-        self.selector(receiver_span, message, TokenCategory::Method, false);
+        self.selector(receiver_span, message, TokenCategory::Method, false, None);
     }
 
     /// Emits the selector tokens of `message`: inside the message's span, but
@@ -600,6 +867,7 @@ impl Classifier<'_> {
         message: &ast::MessageSend,
         category: TokenCategory,
         readonly: bool,
+        target: Option<Span>,
     ) {
         let excluded: Vec<Span> = std::iter::once(receiver)
             .chain(message.arguments.iter().map(|argument| argument.span))
@@ -642,7 +910,7 @@ impl Classifier<'_> {
             .map(|token| token.span)
             .collect();
         for span in selector_spans {
-            self.emit(span, category, false, readonly);
+            self.emit_to(span, category, false, readonly, target);
         }
     }
 
@@ -652,30 +920,45 @@ impl Classifier<'_> {
             _ => return,
         };
         let (category, readonly) = member_category(chain, depth, name);
-        self.emit(span, category, false, readonly);
+        let target = member_of(chain, depth, name).map(|member| member.declaration);
+        self.emit_to(span, category, false, readonly, target);
     }
 
-    /// The innermost local of that name in the scopes entered. The resolver
-    /// has already decided the name is a local; this only asks which kind.
-    fn local(&self, name: &str) -> (TokenCategory, bool) {
+    /// The innermost local of that name in the scopes entered, and the node
+    /// that declares it. The resolver has already decided the name is a
+    /// local; this only asks which kind, and where.
+    fn local(&self, name: &str) -> (TokenCategory, bool, Option<Span>) {
         for scope in self.scopes.iter().rev() {
-            if let Some((_, kind)) = scope.iter().rev().find(|(local, _)| local == name) {
+            if let Some((_, kind, declaration)) =
+                scope.iter().rev().find(|(local, _, _)| local == name)
+            {
                 return match kind {
-                    LocalKind::Parameter => (TokenCategory::Parameter, false),
-                    LocalKind::Temporary { readonly } => (TokenCategory::Variable, *readonly),
+                    LocalKind::Parameter => (TokenCategory::Parameter, false, Some(*declaration)),
+                    LocalKind::Temporary { readonly } => {
+                        (TokenCategory::Variable, *readonly, Some(*declaration))
+                    }
                 };
             }
         }
-        (TokenCategory::Variable, false)
+        (TokenCategory::Variable, false, None)
     }
+}
+
+/// The member `name` of the class `depth` levels out, when that class
+/// declares it.
+fn member_of(chain: &[&SideMembers], depth: u16, name: &str) -> Option<Member> {
+    chain
+        .get(depth as usize)
+        .and_then(|members| members.members.get(name))
+        .copied()
 }
 
 /// What `name` is in the class `depth` levels out, or a send when that class
 /// does not declare it.
 fn member_category(chain: &[&SideMembers], depth: u16, name: &str) -> (TokenCategory, bool) {
-    match chain
-        .get(depth as usize)
-        .and_then(|members| members.members.get(name))
+    match member_of(chain, depth, name)
+        .map(|member| member.kind)
+        .as_ref()
     {
         Some(MemberKind::Slot { readonly }) => (TokenCategory::Property, *readonly),
         Some(MemberKind::SlotSetter) => (TokenCategory::Property, false),
@@ -684,12 +967,12 @@ fn member_category(chain: &[&SideMembers], depth: u16, name: &str) -> (TokenCate
     }
 }
 
-fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {
+fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Parameter> {
     match pattern {
         ast::MessagePattern::Unary { .. } => Vec::new(),
-        ast::MessagePattern::Binary { parameter, .. } => vec![&parameter.name],
+        ast::MessagePattern::Binary { parameter, .. } => vec![parameter],
         ast::MessagePattern::Keyword { parts } => {
-            parts.iter().map(|part| &part.parameter.name).collect()
+            parts.iter().map(|part| &part.parameter).collect()
         }
     }
 }
@@ -754,6 +1037,11 @@ mod tests {
     #[test]
     fn declarations() {
         assert_eq!(classified_at("Shapes", 0), Some((Class, true, false)));
+        // The header's factory pattern declares the class side's factory.
+        assert_eq!(
+            classified_at("usingPlatform:", 0),
+            Some((Method, true, false))
+        );
         assert_eq!(classified_at("platform", 0), Some((Parameter, true, false)));
         assert_eq!(classified_at("count", 0), Some((Property, true, false)));
         assert_eq!(classified_at("limit", 0), Some((Property, true, true)));

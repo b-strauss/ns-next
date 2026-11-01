@@ -1419,13 +1419,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   enclosing object and a module can be instantiated with different
   arguments, so only running the instantiation knows, and the analyzer
   never runs a program.
-- **A hover with the comment above a declaration.** `textDocument/hover` on
-  a class, slot or method shows the `Comment::text` of the `///` block (or
-  `(* ... *)`) directly above its declaration, rendered as Markdown.
-  `ns_syntax::Comment` answers the text, and the attachment puts the
-  comment above a declaration on it (`Before`); what is missing is the
-  request in the server ([frontend.md](design/frontend.md), "Comments";
-  [editor-support.md](design/editor-support.md)).
 - **Hints for a class's header slots**, deferred (decided with the user on
   2026-10-14): the hints are given for the locals of methods and closures
   only. A header slot needs more than its class's text to prove a fix
@@ -1435,6 +1428,41 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   read-only fix could lift a value object's refusal of a mutable slot,
   while whether a class's instances are values is not in its declaration
   ([editor-support.md](design/editor-support.md), "Hints").
+- **`@deprecated`**, not a doc comment tag for now (decided with the user
+  on 2026-11-01); until it is, it is an unknown tag, shown in the
+  description and warned about. Adding it means a section of its own and
+  the grammar in both parsers; striking a deprecated member's uses through,
+  as Java's editor does, would need the uses' declarations across files
+  ([editor-support.md](design/editor-support.md), "Doc comments").
+- **`@since`, `@author` and `@version`**, not doc comment tags (decided
+  with the user on 2026-11-01); each is an unknown tag today. Adding one
+  means a section of the table and the grammar in both parsers.
+- **Links in doc comments** (decided with the user on 2026-11-01): no
+  `[Name]` link; a reference stays in backticks until go to definition
+  (above) exists, which a link needs to resolve a name to a declaration in
+  this or another module.
+- **Completion showing a member's summary.** The summary of a doc comment
+  (`{@summary …}`, else its first sentence) is shown by the structure
+  view's hover only; there is no completion yet, and when there is, its
+  items should carry the summary as Java's carry the first sentence
+  ([editor-support.md](design/editor-support.md), "Doc comments").
+- **`{@inheritDoc}`, undecided.** An override's comment cannot take its
+  overridden method's documentation, so an override in the core library
+  repeats or rephrases it; whether to add Javadoc's `{@inheritDoc}` (or to
+  inherit a missing comment, as Javadoc does) is not decided, and both need
+  the superclass's members, which the server sees only within one file.
+- **A doc comment's prose is not escaped as HTML.** The hover's Markdown
+  and the rendered view pass the description and the tags' text on as
+  they are. In JetBrains, the platform's `DocMarkdownToHtmlConverter`
+  escapes a tag it does not know -- `<Integer>`, `<selector>`, even
+  `<script>` show as written, in prose and in the section table's cells,
+  which the core library relies on where it writes a placeholder outside
+  backticks -- but passes a known HTML tag through: `<b>` is honoured, and
+  `</td></tr></table>` typed in a comment closes the hover's table early.
+  Another LSP client may render the raw HTML in the hover's Markdown as
+  it is. Escaping `<` and `&` outside code spans in both `hover.rs` and
+  `NewspeakDocTags` would make prose safe everywhere
+  ([editor-support.md](design/editor-support.md), "Doc comments").
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
@@ -1981,15 +2009,33 @@ classes and a class from source with no predecessor are not edited
   close it. The editor's hint B stays conservative regardless, never making
   such a local `=` ([editor-support.md](design/editor-support.md), "Hints").
   Noted 2026-10-14.
+- **`Exception>>pass` with no outer handler returns into the handler that
+  sent it** (found by a review of `Kernel.ns`'s doc comments,
+  2026-11-01, reproduced by a probe, not yet pinned by a golden: a `pass`
+  with no outer handler, in a subclass whose `defaultAction` answers 42,
+  answers 42 to the handler, whose completion then signals 'return: sent
+  to an exception that is not being handled'). With no enabled handler
+  outside the running one, `pass` runs `defaultAction` and answers its
+  value to the handler that sent `pass`; when that handler then completes,
+  its return signals 'return: sent to an exception that is not being
+  handled'. ANSI defines `pass` as `outer`, "except that control does not
+  return to the currently active handler": `defaultAction`'s value should
+  become the value of the `signal` that raised the exception, and the
+  handler should not run on. `Kernel.ns` documents
+  `pass` as it behaves today; the fix changes that comment with it. A
+  golden of an exception passed with no outer handler, its expected
+  output established from ANSI's definition, would pin it.
+  [core-library.md](design/core-library.md).
 
 ## Known defects and gaps
 
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first four, which a
-program can reach and which end the process, and six a program meets as a
-gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
+program can reach and which end the process, and seven a program meets as
+a gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
 text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
-that only answers `isKindOfArray` or `isKindOfString`, the error of a
+that only answers `isKindOfArray` or `isKindOfString`, the refusals of a
+program's subclass of `String` as an argument, the error of a
 `hash` that is no Integer, and the `u16` ceilings of instantiation.
 
 - **`<<`, `Array new:`, `ByteArray new:` and `WeakArray new:` probe a
@@ -2158,6 +2204,19 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   Telling the two declines apart -- a subject that is not `String` itself
   from an argument the leaf does not read -- would close it. Found by the
   collections and strings sub-project's review, 2026-10-10.
+  [core-library.md](design/core-library.md), "What exists".
+- **An instance of a program's subclass of `String` passes the String
+  checks it then fails.** Such an instance holds no code points, and the
+  leaves decline it, but `isKindOfString` answers true for it, so the
+  members that check an argument with it let it through:
+  `StringBuilder>>add:` ends in a `MessageNotUnderstood` of `utf8Size`
+  (`String>>utf8Size`'s leaf declines and `super` has none), and
+  `String>>startsWith:` reaches `lastIndexOf:startingAt:`, whose
+  `ArgumentError` names `lastIndexOf:startingAt:` rather than the
+  'startsWith: requires a String argument' its comment says
+  (`Kernel.ns`). `String>>indexOf:` refuses it with its own
+  `ArgumentError`, as for any argument that is no String. Checked with a
+  probe, 2026-11-01; found by a review of the doc comments.
   [core-library.md](design/core-library.md), "What exists".
 - **A `hash` that answers no Integer surfaces as "does not understand
   `#\\`" from a `Map` or a `Set`.** The probes

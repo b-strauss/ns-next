@@ -34,9 +34,9 @@ import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes as Types
 object NewspeakIndentation {
     private val OPENERS = setOf(Types.LEFT_PARENTHESIS, Types.LEFT_BRACKET, Types.LEFT_BRACE)
     private val CLOSERS = setOf(Types.RIGHT_PARENTHESIS, Types.RIGHT_BRACKET, Types.RIGHT_BRACE)
-    private val COMMENTS = setOf(Types.COMMENT, Types.LINE_COMMENT)
+    private val COMMENTS = setOf(Types.COMMENT, Types.LINE_COMMENT, Types.DOC_COMMENT)
 
-    private class Token(val type: IElementType, val start: Int)
+    private class Token(val type: IElementType, val start: Int, val end: Int)
 
     /**
      * The indentation of the line holding [offset], or null inside a string
@@ -55,6 +55,9 @@ object NewspeakIndentation {
             return indentationOfLineHolding(editor, lastCode.start) + " ".repeat(NewspeakCodeStyle.INDENT_SIZE)
         }
         val last = previous.firstOrNull() ?: return ""
+        // A doc comment is one token over several lines, each starting its
+        // line: the line before is measured, not the comment's first.
+        if (last.type == Types.DOC_COMMENT) return indentationOfLineHolding(editor, minOf(last.end, lineStart - 1))
         return indentationOfLineHolding(editor, last.start)
     }
 
@@ -88,6 +91,11 @@ object NewspeakIndentation {
         return opener.start == opening && opens && closer.start == closing && closer.type in CLOSERS
     }
 
+    /**
+     * Whether [offset] lies in a comment's token -- for a doc comment, the
+     * whitespace between its lines included. Its one caller asks about a
+     * bracket pair Enter splits, which never stands in that whitespace.
+     */
     fun isInComment(editor: Editor, offset: Int): Boolean =
         tokensFrom(editor, offset).firstOrNull()?.let { token -> token.type in COMMENTS } == true
 
@@ -154,11 +162,16 @@ object NewspeakIndentation {
         return text.subSequence(lineStart, end).toString()
     }
 
-    /** Whether the line break before [lineStart] belongs to a string or comment, which the line then continues. */
+    /**
+     * Whether the line break before [lineStart] belongs to a string or
+     * comment, which the line then continues. A doc comment's line breaks
+     * do not: each of its lines is a `///` line starting its line, indented
+     * as any other.
+     */
     private fun continuesAToken(editor: Editor, lineStart: Int): Boolean {
         if (lineStart == 0) return false
         val token = tokensFrom(editor, lineStart - 1).firstOrNull() ?: return false
-        return token.type != TokenType.WHITE_SPACE
+        return token.type != TokenType.WHITE_SPACE && token.type != Types.DOC_COMMENT
     }
 
     private fun onLineOf(editor: Editor, lineStart: Int, offset: Int): Boolean = lineStartOf(editor, offset) == lineStart
@@ -173,7 +186,7 @@ object NewspeakIndentation {
         if (offset >= editor.document.textLength) return@sequence
         val iterator = editor.highlighter.createIterator(offset)
         while (!iterator.atEnd()) {
-            yield(Token(iterator.tokenType, iterator.start))
+            yield(Token(iterator.tokenType, iterator.start, iterator.end))
             iterator.advance()
         }
     }
@@ -183,7 +196,7 @@ object NewspeakIndentation {
         if (offset <= 0) return@sequence
         val iterator = editor.highlighter.createIterator(offset - 1)
         while (!iterator.atEnd()) {
-            if (iterator.start < offset) yield(Token(iterator.tokenType, iterator.start))
+            if (iterator.start < offset) yield(Token(iterator.tokenType, iterator.start, iterator.end))
             iterator.retreat()
         }
     }

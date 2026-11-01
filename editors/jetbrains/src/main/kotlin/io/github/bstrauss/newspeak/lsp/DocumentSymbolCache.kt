@@ -1,5 +1,7 @@
 package io.github.bstrauss.newspeak.lsp
 
+import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
@@ -10,6 +12,7 @@ import com.intellij.openapi.util.Pair
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.LspClient
 import com.intellij.platform.lsp.api.LspClientManager
+import com.intellij.psi.PsiManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.DocumentSymbolParams
@@ -64,6 +67,23 @@ class DocumentSymbolCache(private val project: Project) {
         val stamp = documentStamp(file)
         if (requested.put(file.url, stamp) == stamp) return
         ask(file, stamp, onAnswer, attempt = 1)
+    }
+
+    /**
+     * The current answer for a daemon pass, which never waits: without one it
+     * asks and restarts the file's daemon once an answer is kept, so the pass
+     * runs again with it.
+     */
+    fun currentForDaemon(file: VirtualFile): List<DocumentSymbol>? =
+        current(file) ?: null.also { request(file) { restartDaemon(file) } }
+
+    private fun restartDaemon(file: VirtualFile) {
+        ApplicationManager.getApplication().invokeLater({
+            // The answer can arrive after the file is deleted; `findFile` logs a warning for an invalid file.
+            if (!file.isValid) return@invokeLater
+            val psiFile = PsiManager.getInstance(project).findFile(file) ?: return@invokeLater
+            DaemonCodeAnalyzer.getInstance(project).restart(psiFile, "Newspeak document symbols arrived")
+        }, project.disposed)
     }
 
     private fun ask(file: VirtualFile, stamp: Long, onAnswer: () -> Unit, attempt: Int) {

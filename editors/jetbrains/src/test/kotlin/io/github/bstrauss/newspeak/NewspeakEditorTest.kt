@@ -52,6 +52,14 @@ class NewspeakEditorTest : BasePlatformTestCase() {
         assertEquals(1, PsiTodoSearchHelper.getInstance(project).findTodoItems(myFixture.file).size)
     }
 
+    /** The TODO index reads the highlighter's tokens, in which a doc comment is one token of its own. */
+    fun testTodoInADocCommentIsFound() {
+        myFixture.configureByText("Module.ns", "/// Counts.\n/// TODO: finish\nx")
+        val search = PsiTodoSearchHelper.getInstance(project)
+        assertEquals(1, search.findTodoItems(myFixture.file).size)
+        assertEquals(1, search.getTodoItemsCount(myFixture.file))
+    }
+
     fun testTodoInACommentIsFound() {
         myFixture.configureByText("Module.ns", "(* TODO: finish *) x")
         assertEquals(1, PsiTodoSearchHelper.getInstance(project).findTodoItems(myFixture.file).size)

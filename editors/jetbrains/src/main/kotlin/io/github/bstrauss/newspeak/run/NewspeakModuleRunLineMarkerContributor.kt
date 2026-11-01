@@ -1,16 +1,11 @@
 package io.github.bstrauss.newspeak.run
 
-import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.execution.lineMarker.RunLineMarkerContributor
 import com.intellij.icons.AllIcons
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.DumbAware
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.util.getOffsetInDocument
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiManager
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes
 import io.github.bstrauss.newspeak.lsp.DocumentSymbolCache
@@ -32,12 +27,7 @@ class NewspeakModuleRunLineMarkerContributor : RunLineMarkerContributor(), DumbA
         val psiFile = element.containingFile ?: return null
         val file = psiFile.virtualFile ?: return null
         val project = element.project
-        val cache = DocumentSymbolCache.getInstance(project)
-        val symbols = cache.current(file)
-        if (symbols == null) {
-            cache.request(file) { restartDaemon(project, file) }
-            return null
-        }
+        val symbols = DocumentSymbolCache.getInstance(project).currentForDaemon(file) ?: return null
         val main = runnableMain(symbols) ?: return null
         val document = PsiDocumentManager.getInstance(project).getDocument(psiFile) ?: return null
         if (getOffsetInDocument(document, main.selectionRange.start) != element.textRange.startOffset) return null
@@ -46,14 +36,5 @@ class NewspeakModuleRunLineMarkerContributor : RunLineMarkerContributor(), DumbA
             AllIcons.RunConfigurations.TestState.Run,
             arrayOf(NewspeakRunAction(file, null, NewspeakCommand.RUN), NewspeakRunAction(file, null, NewspeakCommand.BENCH)),
         ) { _ -> NewspeakBundle.message("run.marker.tooltip.module", className) }
-    }
-
-    private fun restartDaemon(project: Project, file: VirtualFile) {
-        ApplicationManager.getApplication().invokeLater({
-            // The answer can arrive after the file is deleted; `findFile` logs a warning for an invalid file.
-            if (!file.isValid) return@invokeLater
-            val psiFile = PsiManager.getInstance(project).findFile(file) ?: return@invokeLater
-            DaemonCodeAnalyzer.getInstance(project).restart(psiFile, "Newspeak document symbols arrived")
-        }, project.disposed)
     }
 }

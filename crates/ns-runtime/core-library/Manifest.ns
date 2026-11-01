@@ -1,15 +1,46 @@
 /// What a project's root receives as `packageUsing:`'s argument: every
 /// module the project file names, answered by the name its source declares
-/// (docs/design/image-format.md, "Packaging"). Newspeak on Squeak's `Namespacing.ns` and Primordial
-/// Soup's `CompilerApp.ns` answer the same way, from `doesNotUnderstand:`
-/// over a map. Not privileged: it holds no mirror and is compiled into the
-/// program like any module, so an application may keep it.
+/// (docs/design/image-format.md, "Packaging"). A unary send of a module's
+/// name answers that module's definition, found by `doesNotUnderstand:`
+/// in the two arrays the factory was given. Not privileged: it holds no
+/// mirror and is compiled into the program like any module, so an
+/// application may keep it.
+///
+/// @factory makes the manifest over `moduleNames` and `moduleDefinitions`,
+/// keeping both arrays as they are, neither copied nor checked; the host
+/// makes one per assembled application.
+/// @param moduleNames an Array of Symbols, each module's name as its source
+/// declares it, in module order.
+/// @param moduleDefinitions an Array of the modules' definitions, the class
+/// objects (§6.4), not instances; the one at an index is the definition
+/// of the name at the same index of `moduleNames`, and it is as long.
 class Manifest names: moduleNames definitions: moduleDefinitions = (
   |
+    /// The modules' names, the Array the factory was given: searched from
+    /// the first to the last, never written.
     private names = moduleNames.
+    /// The modules' definitions, the Array the factory was given: the one
+    /// at an index belongs to the name at the same index, never written.
     private definitions = moduleDefinitions.
   |
 ) (
+  /// Answers the definition of the module whose name is `message`'s
+  /// selector, the first such name in module order; a message naming no
+  /// module is passed to the superclass's `doesNotUnderstand:`. Only a send
+  /// the manifest does not understand reaches it, so a module named like a
+  /// message `Object` understands is answered by that message, never by
+  /// this lookup.
+  ///
+  /// @param message the `Message` nothing understood; its selector is
+  /// compared with each name by `=`, its arguments are ignored.
+  /// @answers the module definition, a class object, when a name matches;
+  /// otherwise what the superclass's `doesNotUnderstand:` answers, which
+  /// is false for a unary selector that begins with `isKindOf`.
+  /// @signals MessageNotUnderstood through the superclass's
+  /// `doesNotUnderstand:`, carrying `message` and the receiver, for a
+  /// selector that names no module, unless it is a unary selector that
+  /// begins with `isKindOf`.
+  /// @see `Object`'s `doesNotUnderstand:`.
   protected doesNotUnderstand: message = (
     |
       index ::= 1.
