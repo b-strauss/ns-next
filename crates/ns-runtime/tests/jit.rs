@@ -5199,6 +5199,50 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
+    /// A compaction that keeps a body keeps the exits its machine code
+    /// made: `a`, which leaves at every call, is abandoned at its
+    /// sixty-fourth exit, though forty of them came before the compaction,
+    /// so that how often the zone fills never resets the exit budget.
+    fn a_compaction_keeps_the_exits_of_a_surviving_body(lowering) {
+        let (mut interpreter, class) = load_with(MOVING, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let start = interpreter.jit_statistics();
+        let mut sends = 0;
+        while since(interpreter.jit_statistics(), start).exits < 40 && sends < 200 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "a"), 1);
+            sends += 1;
+        }
+        let before_compaction = since(interpreter.jit_statistics(), start);
+        let offset = |interpreter: &mut Interpreter| {
+            interpreter.jit_body_offset(&class, MethodSide::Instance, Symbol::intern("a"))
+        };
+        let offset_before = offset(&mut interpreter);
+        interpreter.compact_jit_zone();
+        let offset_after = offset(&mut interpreter);
+        while since(interpreter.jit_statistics(), start).abandoned_bodies == 0 && sends < 200 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "a"), 1);
+            sends += 1;
+        }
+        let done = since(interpreter.jit_statistics(), start);
+        // The reference lowering leaves every send uncached, `<` among
+        // them, so that its body exits at once and is never compiled.
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(before_compaction.abandoned_bodies, 0, "`a` still compiled");
+            assert!(
+                offset_before.is_some() && offset_after.is_some(),
+                "`a` survives the compaction: {offset_before:?} to {offset_after:?}"
+            );
+            assert_eq!(done.zone_compactions, 1, "the one compaction");
+            assert_eq!(done.abandoned_bodies, 1, "`a` is abandoned");
+            assert_eq!(
+                done.exits, 64,
+                "at its sixty-fourth exit, those before the compaction counted"
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
     /// A compaction slides a block's body down, and its machine entry row
     /// moves with it: the closure stub, and an interpreter's `value:`,
     /// enter its machine code at its new place.

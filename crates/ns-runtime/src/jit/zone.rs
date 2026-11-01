@@ -157,6 +157,17 @@ pub(crate) struct PlannedBody {
     pub(crate) free: bool,
 }
 
+/// Whether a body is freed by a compaction or between compactions: the
+/// bytes of one freed between them count towards the quarter a full
+/// collection asks for a compaction at (`bytes_freed_since_compaction`),
+/// while a compaction reclaims the bytes of those it frees itself, and so
+/// counts none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FreedBy {
+    BetweenCompactions,
+    TheCompaction,
+}
+
 /// What a plan says of an address outside the bodies that names one.
 enum Remapped {
     /// No body's: a stub's, or none.
@@ -272,19 +283,21 @@ impl JitState {
     /// it exists.
     pub(super) fn free_body(&mut self, index: u32) {
         let twin = self.bodies.get(index as usize).and_then(|body| body.twin);
-        if self.mark_free(index) {
+        if self.mark_free(index, FreedBy::BetweenCompactions) {
             self.returns.retain(|_, site| site.body != index);
         }
         if let Some(twin) = twin {
-            if self.mark_free(twin) {
+            if self.mark_free(twin, FreedBy::BetweenCompactions) {
                 self.returns.retain(|_, site| site.body != twin);
             }
         }
     }
 
-    /// Marks the body at `index` freed, counting it and its bytes, and
-    /// answers whether it was not already; its returns are the caller's.
-    fn mark_free(&mut self, index: u32) -> bool {
+    /// Marks the body at `index` freed, counting it, and its bytes as
+    /// `freed_by` says, and answers whether it was not already; its returns
+    /// are the caller's. The one way a body is marked freed, so that every
+    /// caller asserts it runs between entries.
+    fn mark_free(&mut self, index: u32, freed_by: FreedBy) -> bool {
         #[cfg(debug_assertions)]
         assert_eq!(
             self.entries_in_progress, 0,
@@ -298,8 +311,11 @@ impl JitState {
         }
         body.free = true;
         let size = body.size();
-        self.bytes_freed_since_compaction = self.bytes_freed_since_compaction.saturating_add(size);
         self.statistics.count_freed(body.lean.is_some());
+        if freed_by == FreedBy::BetweenCompactions {
+            self.bytes_freed_since_compaction =
+                self.bytes_freed_since_compaction.saturating_add(size);
+        }
         true
     }
 
@@ -350,7 +366,7 @@ impl JitState {
             let Ok(number) = u32::try_from(index) else {
                 unreachable!("internal: a body's index fits its slot's map");
             };
-            if self.mark_free(number) {
+            if self.mark_free(number, FreedBy::BetweenCompactions) {
                 freed.push(number);
             }
         }
@@ -386,7 +402,7 @@ impl JitState {
             // A twin, compiled against its lean body's base, is freed with
             // it; no cell and no machine entry row names it.
             if body.lean.is_some() {
-                if self.mark_free(number) {
+                if self.mark_free(number, FreedBy::BetweenCompactions) {
                     indices.push(number);
                 }
                 continue;
@@ -398,7 +414,7 @@ impl JitState {
                     code.jit.forget();
                 }
             }
-            if self.mark_free(number) {
+            if self.mark_free(number, FreedBy::BetweenCompactions) {
                 indices.push(number);
                 freed.push(FreedBody {
                     code,
@@ -696,10 +712,11 @@ impl JitState {
             if self.bodies[index].free || self.still_named(index) {
                 continue;
             }
+            let Ok(number) = u32::try_from(index) else {
+                unreachable!("internal: a body's index fits its slot's map");
+            };
             // The slide drops the returns of every freed body.
-            self.bodies[index].free = true;
-            self.statistics
-                .count_freed(self.bodies[index].lean.is_some());
+            self.mark_free(number, FreedBy::TheCompaction);
         }
     }
 
@@ -730,25 +747,26 @@ impl JitState {
                 if freeing == Freeing::ToAQuarter && free_bytes >= wanted {
                     return (freed_any, free_bytes);
                 }
-                let body = &mut self.bodies[index];
+                let body = &self.bodies[index];
                 // A twin goes with its lean body, never alone.
                 if body.free || body.lean.is_some() || body.usage.get() > freeable {
                     continue;
                 }
-                body.free = true;
+                let (size, code, twin) = (body.size(), body.code.upgrade(), body.twin);
+                let Ok(number) = u32::try_from(index) else {
+                    unreachable!("internal: a body's index fits its slot's map");
+                };
+                self.mark_free(number, FreedBy::TheCompaction);
                 freed_any = true;
-                self.statistics.freed_bodies += 1;
-                free_bytes += body.size();
+                free_bytes += size;
                 // Alive: a body whose code died was freed in step 2.
-                if let Some(code) = body.code.upgrade() {
+                if let Some(code) = code {
                     code.jit.forget();
                 }
-                if let Some(twin) = body.twin {
-                    let twin = &mut self.bodies[twin as usize];
-                    if !twin.free {
-                        twin.free = true;
-                        self.statistics.freed_twins += 1;
-                        free_bytes += twin.size();
+                if let Some(twin) = twin {
+                    let twin_size = self.bodies[twin as usize].size();
+                    if self.mark_free(twin, FreedBy::TheCompaction) {
+                        free_bytes += twin_size;
                     }
                 }
             }
@@ -814,7 +832,8 @@ impl JitState {
     /// Steps 6 to 8: slides each survivor's bytes, code and data words, down
     /// to its new start in ascending order, through a buffer the writer
     /// reads back (Cog's `compactCompiledCode`, `:12740-12825`); rewrites the
-    /// installed bodies, each survivor's slot and the return sites keyed by
+    /// installed bodies, where each survivor's slot says its code lies (its
+    /// exits kept, `JitSlot::relocated`), and the return sites keyed by
     /// zone offset, a freed body's dropped; moves the zone's next offset to
     /// the end of the last survivor; and halves every survivor's usage
     /// (`:12756-12757`, `:12806-12807`).
@@ -864,8 +883,12 @@ impl JitState {
             // A twin's slot is its lean body's, which names the lean body.
             if let Some(code) = body.code.upgrade().filter(|_| body.lean.is_none()) {
                 let first_instruction = code.jit.first_instruction.get() - delta;
-                code.jit.compiled(
+                debug_assert_eq!(
+                    code.jit.zone.get(),
                     identity,
+                    "internal: a survivor's slot names this zone"
+                );
+                code.jit.relocated(
                     [CodeOffset(body.start), CodeOffset(first_instruction)],
                     index,
                 );

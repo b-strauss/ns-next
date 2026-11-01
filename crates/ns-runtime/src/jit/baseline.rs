@@ -836,9 +836,14 @@ impl BodyAssembler {
     /// `ReturnSlotIfFilled`: a lazy slot's getter returns the receiver's
     /// own slot `own_index` as `Return` returns a value once the slot is
     /// filled, anything but `nil` (`interpreter::locals::filled_own_slot`),
-    /// and goes on to compute it otherwise. It is the getter's first
-    /// instruction, before anything could reify the frame, so its return
-    /// divorces nothing (`sends::return_from`).
+    /// and goes on to compute it otherwise. Its return tests no reified
+    /// word, as the twin's `Return` does (`sends::return_from`), since it
+    /// is the getter's first instruction: a frame that runs it in machine
+    /// code was either pushed just before -- by machine code, a call stub
+    /// or the run loop -- and is not reified, or was reified while it
+    /// stood suspended at program counter 0 and is resumed in the twin
+    /// (`jit::resumed`) as the run loop's entry frame, whose pop by the
+    /// run loop divorces it (`vm::finish`).
     fn return_slot_if_filled(&mut self, own_index: u32) -> Lowering {
         let registers = self.registers();
         let Some((_, address, failed)) = self.own_slot(own_index, registers) else {

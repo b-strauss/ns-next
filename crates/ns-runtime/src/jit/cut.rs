@@ -121,9 +121,15 @@ pub(crate) fn cut(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     else {
         unreachable!("internal: the cut is called at a NonLocalReturn");
     };
-    if code.kind != CodeKind::Block || code.unwind_marker.is_some() {
+    if code.kind != CodeKind::Block {
         return u64::from(EXIT);
     }
+    // The markers the walk below exits at are its frames'; only a method
+    // of the kernel's `Closure` carries one (`compiler::unwind_marker`).
+    debug_assert!(
+        code.unwind_marker.is_none(),
+        "internal: no block's body carries an unwind marker"
+    );
     let heap = &mutator.heap;
     let Some(register_base) = heap.machine_register_base_index(frame_address) else {
         unreachable!("internal: a frame's registers lie in the activation stack");

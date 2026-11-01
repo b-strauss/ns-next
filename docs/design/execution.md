@@ -10646,7 +10646,10 @@ the baseline JIT's foundation moved" that of the first two.
     again into a replaced zone (`Interpreter::set_jit_zone_bytes`) counts
     its exits from none, as every compile does (`JitSlot::compiled`): the
     budget is that of its machine code, and the old code's count, which
-    the decay no longer reaches, is not carried over. The JIT stress mode
+    the decay no longer reaches, is not carried over. A compaction that
+    slides a body's machine code keeps its count (`JitSlot::relocated`):
+    the code is the same, only where it lies changed, so how often the
+    zone fills never resets the budget. The JIT stress mode
     never abandons a body (`resumption_after_exit`), so it never revives
     one either.
 
@@ -10658,7 +10661,11 @@ the baseline JIT's foundation moved" that of the first two.
   later does not revive it, so that a disabled JIT costs every later push
   only the compare. Switching the JIT off also refuses every body
   abandoned at the time (`JitState::refuse_abandoned`), whose push
-  counts inline and would reach `jit::entered` only at its revival. A
+  counts inline and would reach `jit::entered` only at its revival, and
+  so does a replaced zone that could not be reserved, which leaves the
+  JIT off (`JitState::replace_zone`); one reserved keeps them abandoned,
+  since none has machine code in either zone and a revival compiles into
+  the new one. A
   body that found no room left in the zone counts its
   entries again instead, and the zone is compacted ("Planned: the
   baseline JIT", "The code zone"). A body compiled by another interpreter, whose slot names

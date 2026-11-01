@@ -1839,7 +1839,11 @@ whose comment gives the reason: a program that collects between phases
 would otherwise give back at once what its next phase grows again. It
 counts collections, never time; the share is multiplied before it is
 divided, where HotSpot divides first, so that 100% reaches the band's end
-exactly.
+exactly. The code zone's counts its shrinks instead, since the zone is
+asked after each of its compactions as well as at the end of a full
+collection: a safepoint that serves both a compaction and a collection
+advances it twice, and the second ask finds the zone's growth flag
+already taken by the first (`JitState::zone_damping`).
 
 **Growth is demand** (decided with the user on 2026-10-31). A reservation
 that grew since the previous collection is out of the band at this one:

@@ -519,6 +519,25 @@ impl JitSlot {
         self.map.set(map);
         self.needed.set(0);
     }
+
+    /// Records the body's machine code moved by a compaction's slide
+    /// (`jit::zone`) to `offset`, its instruction at program counter 0 to
+    /// `first_instruction`, its installed body renumbered `map`, within
+    /// the zone it was compiled into. Only where the code lies changes:
+    /// the machine code is the same, so its exits keep counting towards
+    /// the budget -- which only their decay halves -- and the body stays
+    /// compiled, as a compaction may move it however often the zone fills.
+    fn relocated(&self, offsets: [CodeOffset; 2], map: u32) {
+        debug_assert_eq!(
+            self.state.get(),
+            COMPILED,
+            "internal: a compaction moves only a body its slot names"
+        );
+        let [offset, first_instruction] = offsets;
+        self.offset.set(offset.0);
+        self.first_instruction.set(first_instruction.0);
+        self.map.set(map);
+    }
 }
 
 /// The machine offset, from the body's start, at which each instruction's
@@ -952,7 +971,12 @@ pub(crate) struct JitState {
     /// full collection that finds a quarter of the bodies' room so freed
     /// asks for a compaction (`JitState::note_full_collection`).
     bytes_freed_since_compaction: u32,
-    /// How far the zone's next shrink goes (`shrink_zone`).
+    /// How far the zone's next shrink goes (`shrink_zone`). It advances at
+    /// every shrink the band allows, after a compaction and at the end of a
+    /// full collection alike, so its ramp counts shrinks, not collections:
+    /// a safepoint that serves both a compaction and a collection advances
+    /// it twice, the second time with the growth flag the first took
+    /// (`docs/design/memory.md`, "Giving committed memory back").
     zone_damping: crate::heap::limits::ShrinkDamping,
     /// How many entries into machine code are in progress, raised around
     /// `CodeZone::enter`: a compaction, which moves the code, asserts there
@@ -1178,6 +1202,13 @@ impl JitState {
     /// new one at its next entry, since its slot names the old zone. A
     /// cell that names an address in the old zone must be vacated with it
     /// (`Interpreter::set_jit_zone_bytes` invalidates the caches).
+    ///
+    /// The abandoned bodies stay abandoned: none has machine code in
+    /// either zone, and the revival compiles it into the new one, so the
+    /// replacement leaves their waits as they are. Only a replacement that
+    /// leaves the JIT off -- the new zone could not be reserved -- refuses
+    /// them, as switching the JIT off does (`refuse_abandoned`), so that a
+    /// JIT off never revives one.
     pub(crate) fn replace_zone(&mut self, bytes: usize) {
         self.bodies.clear();
         self.returns.clear();
@@ -1192,6 +1223,9 @@ impl JitState {
             self.reserve(bytes);
         }
         self.enabled = self.enabled && self.zone.is_some();
+        if !self.enabled {
+            self.refuse_abandoned();
+        }
         self.mark_block_stale();
     }
 
@@ -3941,6 +3975,29 @@ mod tests {
             }
             assert!(!state.decay_exits(), "nothing to revive");
             assert_eq!(format!("{:?}", code.jit), "JitSlot::Refused");
+        }
+
+        /// A replaced zone keeps an abandoned body abandoned, to be revived
+        /// into the new zone; a replacement that leaves the JIT off, its
+        /// zone not reserved, refuses it as switching the JIT off does.
+        #[test]
+        fn a_replaced_zone_refuses_an_abandoned_body_only_when_the_jit_is_left_off() {
+            let mut state = JitState::for_test(1 << 16, true);
+            let code = body();
+            enter_twice(&mut state, &code);
+            code.jit.abandon(state.revival_base);
+            state.abandoned.push(Rc::downgrade(&code));
+            state.replace_zone(1 << 16);
+            assert!(state.is_enabled());
+            assert!(
+                code.jit.is_abandoned(),
+                "kept, to be revived into the new zone"
+            );
+            let refused = state.statistics().refused_bodies;
+            state.replace_zone(16);
+            assert!(!state.is_enabled(), "the stubs do not fit");
+            assert_eq!(format!("{:?}", code.jit), "JitSlot::Refused");
+            assert_eq!(state.statistics().refused_bodies, refused + 1);
         }
 
         #[test]
