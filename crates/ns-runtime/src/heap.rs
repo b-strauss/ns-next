@@ -53,7 +53,7 @@ mod symbols;
 mod tables;
 mod value;
 mod world;
-use compaction::ForwardingTable;
+use compaction::{ForwardingTable, IdleTable};
 #[cfg(debug_assertions)]
 use compaction::{Shift, ShiftedRegion};
 use frames::{frame_header, kind_tag, FrameFlags, FrameStack};
@@ -2079,6 +2079,11 @@ pub struct Heap<'gc> {
     /// remembered bit set; the roots a scavenge adds to the activation
     /// stack's and the host's.
     remembered: Vec<NonZeroU64>,
+    /// The forwarding table's buffer between full collections, every chunk
+    /// clear, so that a collection writes only the chunks of what is
+    /// occupied (`compaction::IdleTable`); `recycle_forwarding` gives it
+    /// back.
+    idle_forwarding: IdleTable,
     /// Whether every allocation goes old: the image decoder's graph pass
     /// sets it (`set_allocating_old`).
     allocating_old: bool,
@@ -2609,6 +2614,7 @@ impl<'gc> Heap<'gc> {
             object_count: 0,
             young_objects: 0,
             remembered: Vec::new(),
+            idle_forwarding: IdleTable::default(),
             allocating_old: false,
             scavenge_requested: false,
             tenure_all_requested: false,
@@ -11017,7 +11023,12 @@ impl<'gc> Heap<'gc> {
             self.epoch = to_epoch;
         }
         let [past, eden, old_range] = self.space.occupied();
-        let mut table = ForwardingTable::with_words(old_range.end / 8, NURSERY_END / 8);
+        let mut table = ForwardingTable::over(
+            std::mem::take(&mut self.idle_forwarding),
+            [&past, &eden, &old_range].map(|range| range.start / 8..range.end / 8),
+            NURSERY_END / 8,
+            self.space.committed() / 8,
+        );
         let mut live_objects = 0;
         let words = self.space.words();
         for range in [&past, &eden, &old_range] {
@@ -11031,7 +11042,7 @@ impl<'gc> Heap<'gc> {
                 position = next;
             }
         }
-        let live_words = table.summarize(NURSERY_END / 8 / 64);
+        let live_words = table.summarize();
         // The remembered bits go first, at the offsets the set holds now:
         // once everything is old, nothing needs remembering.
         for holder in std::mem::take(&mut self.remembered) {
@@ -11103,6 +11114,13 @@ impl<'gc> Heap<'gc> {
         };
         self.forward_everything(&mut forwarder, slide);
         forwarder
+    }
+
+    /// Takes back the forwarding table of the collection `compact_with`
+    /// answered once the caller has forwarded its own roots through it,
+    /// cleared and sized to the committed memory, for the next collection.
+    pub(crate) fn recycle_forwarding(&mut self, forwarder: Forwarder<ForwardingTable>) {
+        self.idle_forwarding = forwarder.objects.into_idle(self.space.committed() / 8);
     }
 
     /// Forwards every object of `old` to the object of `new` at the same
@@ -11912,6 +11930,7 @@ impl<'gc> Heap<'gc> {
         for root in roots.iter_mut() {
             forwarder.value(root);
         }
+        self.recycle_forwarding(forwarder);
     }
 }
 
@@ -12382,6 +12401,57 @@ mod tests {
         );
         heap.collect_for_test(&mut []);
         assert!(heap.mixin_object(id).is_none());
+    }
+
+    /// A full collection whose eden is shorter than the last one's, over
+    /// the forwarding table the last one gave back, compacts to what it
+    /// compacts to over a fresh table: the live bits the long eden left
+    /// are cleared, or they would count as live words and leave holes in
+    /// the old space.
+    #[test]
+    fn a_collection_after_a_longer_eden_compacts_as_over_a_fresh_table() {
+        let run = |recycle: bool| {
+            let mut heap = Heap::new();
+            let array_class = named_class(&mut heap, "Array");
+            let mut kept = Vec::new();
+            for index in 0..2000 {
+                let element = [Value::small_integer(index); 3];
+                let survivor = heap.allocate_array(array_class, &element);
+                let _garbage = heap.allocate_array(array_class, &element);
+                kept.push(Value::object(survivor));
+            }
+            let mut long_root = Value::object(heap.allocate_array(array_class, &kept));
+            heap.collect_for_test(&mut [&mut long_root]);
+            let array_class = heap.object_class(rooted(long_root));
+            if !recycle {
+                heap.idle_forwarding = IdleTable::default();
+            }
+            let elements: Vec<Value<'_>> = (10..13)
+                .map(|index| {
+                    Value::object(heap.allocate_array(array_class, &[Value::small_integer(index)]))
+                })
+                .collect();
+            let mut short_root = Value::object(heap.allocate_array(array_class, &elements));
+            heap.collect_for_test(&mut [&mut short_root]);
+            let contents: Vec<Vec<Value<'_>>> = heap
+                .array_elements(rooted(short_root))
+                .expect("the root is an array")
+                .iter()
+                .map(|element| {
+                    heap.array_elements(rooted(*element))
+                        .expect("each element is an array")
+                })
+                .collect();
+            let contents: Vec<i64> = contents
+                .iter()
+                .flatten()
+                .map(|value| value.as_small_integer().expect("a SmallInteger"))
+                .collect();
+            (heap.space.occupied_bytes(), heap.object_count, contents)
+        };
+        let recycled = run(true);
+        assert_eq!(recycled, run(false));
+        assert_eq!(recycled.2, vec![10, 11, 12]);
     }
 
     /// Only the canonical object of a mixin is read as one: neither a
