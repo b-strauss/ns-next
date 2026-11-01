@@ -392,6 +392,7 @@ impl World {
         self.mutator.jit.free_dead_bodies();
         let mut forwarder = self.mutator.heap.compact_with(slide.as_ref());
         self.forward_step_state(&mut forwarder);
+        self.mutator.heap.recycle_forwarding(forwarder);
         if let Some(slide) = &slide {
             self.mutator.free_code_of_moved_bases(slide);
         }

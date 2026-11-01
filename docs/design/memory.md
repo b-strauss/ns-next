@@ -1502,8 +1502,9 @@ Mark-compact was chosen for four reasons:
   figure step 5 exists to fix.
 - **Rewriting is the cheap part here rather than the expensive one.** The
   forwarding table is a live-word bitmap with a prefix count per 64 words:
-  O(1) per handle, one cache line a lookup, about 3% of the space while a
-  collection runs ("Compaction and forwarding" below). Nova, the one engine
+  O(1) per handle, one cache line a lookup, about 3% of the committed
+  space, and a collection writes only the chunks of what is occupied
+  ("Compaction and forwarding" below). Nova, the one engine
   whose handles are not addresses, pays more than it needs to: its
   `CompactionList` stores shift runs and binary-searches per handle
   (`prior-art/nova/nova_vm/src/heap/heap_bits.rs:1345`, `:1457`).
@@ -1616,10 +1617,37 @@ is served by the collection with it. The third walk is the existing
 `Forwarder` over everything that holds a handle -- the roots and every
 object by its format (`forward_everything`) -- each offset looked up in the
 table. The table takes two `u64`s per 64 words of the space below the old
-space's top, about 3%, and lives only while the collection runs (decided
-with the user on 2026-10-03; "Decisions" below). Why the full collection
-compacts both generations into the old space, and what was rejected, is
-decision 2 under "Generations".
+space's top, about 3% (decided with the user on 2026-10-03; "Decisions"
+below). Why the full collection compacts both generations into the old
+space, and what was rejected, is decision 2 under "Generations".
+
+The table covers what is occupied, not what is reserved. It stays indexed
+from word 0, so a lookup is one index and needs no range check per
+forwarded handle; but its span includes the whole nursery's reservation,
+10 MiB, about 20,000 chunks, while what the nursery holds at a collection
+is only the past survivor space's and eden's filled prefixes. Allocated
+and zeroed afresh, and summarized chunk by chunk, the table made every
+collection cost the reservation however little lived: under the collect
+stress mode, which collects at every safepoint of a program with a hundred
+live objects, three quarters of the time went to it. So a collection
+writes and reads only the chunks that cover the occupied ranges: `set_live`
+marks inside them, and `summarize` fills in their prefixes, the old space's
+first, then the past survivor space's and eden's, and leaves the gaps
+between them untouched -- a chunk in a gap holds no live word, adds
+nothing to a prefix and is never asked for a destination. The buffer
+outlives the collection: `World::collect` hands the `Forwarder` back
+(`Heap::recycle_forwarding`) once it has forwarded the interpreter's
+roots, and the table clears the chunks it covered as it goes
+(`IdleTable`). Every chunk outside the occupied ranges is therefore clear
+whenever a collection begins -- including a chunk a longer eden covered
+last time, whose live bits would otherwise count as live words and leave
+holes in the old space, and would make a word in a gap read as live to the
+debug build's check that every forwarded handle names a survivor. A table
+not handed back takes its buffer with it, and the next collection starts
+from an empty, and so clear, one. The buffer is kept to the chunks of the
+committed memory, so its footprint follows the space a collection gives
+back ("Giving committed memory back") rather than the highest top the
+space ever had; it grows when the old space's top has grown past it.
 
 Frames are objects in the same space, so a closure's captured frame, a
 frame's sender and home and the objects a frame holds are one graph with one
@@ -3701,7 +3729,8 @@ moved".
   of a surviving object, and per chunk of 64 words the live words before
   it, so a survivor's new offset is one table entry, a mask and a
   `popcount` away -- O(1) per handle, one cache line per lookup, about 3% of
-  the space while a collection runs. Rejected: a sorted list of old and new
+  the committed space, kept between collections and written only where the
+  space is occupied. Rejected: a sorted list of old and new
   offsets with a binary search per handle, O(log n) dependent loads, the
   cost Nova's `CompactionList` pays
   (`prior-art/nova/nova_vm/src/heap/heap_bits.rs:1345`, `:1457`); and a dense
