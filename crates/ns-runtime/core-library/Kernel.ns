@@ -96,11 +96,14 @@ class Kernel vmMirror: mirror = Value (
     /// LargeIntegers are true. §3.1.1 makes a class below `Value` that
     /// declares `==` no value class, and the runtime refuses to instantiate
     /// one ('cannot instantiate <class>: a value class may not define ==,
-    /// and <class> defines it'). A class that is no value may declare `==`
+    /// and <declaring class> defines it', naming the class instantiated
+    /// and the class of the chain that declares `==`). A class that is no value may declare `==`
     /// -- `Behavior` does, so that a class object of a value answers what
     /// its `=` does -- and its `==` then answers what its declaration says.
     /// A `Proxy` answers `==` from outside through its `doesNotUnderstand:`
-    /// (`Proxy>>==`).
+    /// (`Proxy>>==`), and a proxy that forwards it to its target breaks
+    /// the equivalence: it is not identical to itself from outside, and
+    /// its target is not identical to it.
     ///
     /// @param other any object.
     /// @answers whether `other` is the receiver itself, a Boolean; for a
@@ -130,6 +133,10 @@ class Kernel vmMirror: mirror = Value (
     ///   signalling, false for one it does not know;
     /// - it agrees with `hash`: whenever `x = y` is true, `x hash = y hash`
     ///   is too, so a class that declares `=` declares `hash` with it.
+    ///
+    /// A `Proxy` that forwards `=` to its target breaks the contract from
+    /// outside: neither reflexive nor symmetric wherever its target's `=`
+    /// is the kernel's (`Proxy>>=`).
     ///
     /// `=` is never true between two objects of unrelated classes unless a
     /// class says so: `Object`'s is identity, `Value`'s compares classes
@@ -171,7 +178,8 @@ class Kernel vmMirror: mirror = Value (
     /// `Map` and a `Set` find an entry by its `hash` and only then compare
     /// with `=`: a key whose hash disagrees with its `=` is missed by a
     /// lookup with an equal key, and stored a second time beside it. A key
-    /// whose hash changes while a Map or a Set holds it is not found again.
+    /// whose hash changes while a Map or a Set holds it may not be found
+    /// again.
     /// An `IdentityMap` sends neither: it finds a key by its
     /// `identityHash` and compares with `==`.
     ///
@@ -202,8 +210,10 @@ class Kernel vmMirror: mirror = Value (
     /// hash that agrees with `==` as `hash` agrees with `=`.
     ///
     /// Identical objects have one identity hash. The reverse does not
-    /// hold: the hash is 22 bits wide, so distinct objects may share one,
-    /// and do once 2^22 - 1 objects have drawn one. An object has none
+    /// hold: the hash is 22 bits wide, so distinct objects may share one.
+    /// The counter has 2^22 - 1 numbers, so the 2^22-th object to draw a
+    /// hash after another gets that one's again, which two living objects
+    /// then share. An object has none
     /// until something asks: the first `identityHash` -- or `hash`, where
     /// it is `Object`'s -- draws the next number of a counter, which skips
     /// 0 and wraps within the 22 bits; nothing about the object's address
@@ -2066,7 +2076,7 @@ class Kernel vmMirror: mirror = Value (
   /// that are equal are, to a program, one value: `'abc' == ('abcd'
   /// copyFrom: 1 to: 3)` and `1 == 1.0` are true, and an `IdentityMap`
   /// keeps equal values as one key. Only reflection still sees two
-  /// objects -- §3.1.1 makes values immutable "only at the base level",
+  /// objects -- §3.1.1: "Values are only immutable at the base level",
   /// and §3.7 isolates actors "modulo reflection" -- as an object mirror
   /// compares its reflectee as the object it is.
   ///
@@ -2366,14 +2376,20 @@ class Kernel vmMirror: mirror = Value (
     /// is the binary fraction its bits denote, so `0.1 = (1/10)` is false
     /// and an integer beyond 2^53 equals only the Float of exactly its
     /// value. A LargeInteger is never equal to a SmallInteger, whose
-    /// range of values it lies outside. Three cases differ from
-    /// IEEE 754's comparison, which `<` and its siblings keep: a NaN
-    /// equals every NaN and nothing else, so that `=` stays reflexive;
-    /// `0.0` and `-0.0` are equal, and equal to `0`; an infinity equals
-    /// only the infinity of its sign. So the equality is an equivalence --
-    /// reflexive, symmetric, transitive -- whichever side is which class,
-    /// and `hash` agrees with it. Through `Value>>==`, `==` answers the
-    /// same: `1 == 1.0` and a NaN with itself are true.
+    /// range of values it lies outside. Between two Floats it is IEEE
+    /// 754's equality but for one case: a NaN equals every NaN and nothing
+    /// else, so that `=` stays reflexive. `0.0` and `-0.0` are equal, as
+    /// IEEE has them, and equal to `0`; an infinity equals only the
+    /// infinity of its sign. Across classes it differs from IEEE's
+    /// comparison after a conversion to Float, since it converts nothing:
+    /// `(10 raisedTo: 400) = (1.0 / 0.0)` is false, and so is
+    /// `9007199254740993 = 9007199254740993 asFloat`, 2^53 + 1 against the
+    /// Float it rounds to. `<` and its siblings compare exactly across
+    /// classes too, and agree with IEEE only in answering false for a NaN.
+    /// So the equality is an equivalence -- reflexive, symmetric,
+    /// transitive -- whichever side is which class, and `hash` agrees with
+    /// it. Through `Value>>==`, `==` answers the same: `1 == 1.0` and a
+    /// NaN with itself are true.
     ///
     /// A receiver that holds no number -- `Number new`, `Fraction new`,
     /// an instance of a program's subclass -- is compared by
@@ -2396,9 +2412,11 @@ class Kernel vmMirror: mirror = Value (
     /// range: a SmallInteger hashes as itself, and `3`, `3.0` and `(6/2)`,
     /// `0.5` and `(1/2)` hash alike, as `=` makes them equal. `0.0` and
     /// `-0.0` hash as `0`; every NaN answers one constant and each
-    /// infinity another, its sign's. Unequal numbers may share a hash -- a
-    /// LargeInteger and the SmallInteger it is congruent to, for one --
-    /// which the contract allows. A number never changes, and neither does
+    /// infinity another, its sign's, which a Fraction whose denominator is
+    /// a multiple of 2^61 - 1 answers too, having no inverse to reduce by.
+    /// Unequal numbers may share a hash -- a LargeInteger and the
+    /// SmallInteger it is congruent to, for one -- which the contract
+    /// allows. A number never changes, and neither does
     /// its hash; `identityHash` answers it too (`Value>>identityHash`).
     ///
     /// @answers an Integer, alike for every two numbers `=` makes equal.

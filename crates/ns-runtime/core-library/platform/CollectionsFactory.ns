@@ -861,10 +861,11 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// keys are one key -- `1`, `1.0` and `(2/2)` are one, and so are two
   /// Strings of one text -- while `'abc'` and `#abc` are two. The key
   /// looked up is the receiver of every `=`, sent a stored key, so a key
-  /// whose `=` is not symmetric is found only from its own side. A key
-  /// whose `hash` disagrees with its `=`, or changes while the map holds
-  /// it, is not found by an equal key and may be stored twice; a
-  /// forwarding `Proxy` is such a key (`Proxy>>=`).
+  /// whose `=` is not symmetric is found only from its own side, and one
+  /// whose `=` is not reflexive is not found at all and may be stored
+  /// twice -- a forwarding `Proxy` is such a key (`Proxy>>=`). A key whose
+  /// `hash` disagrees with its `=`, or changes while the map holds it,
+  /// may not be found by an equal key and may be stored twice.
   ///
   /// A Collection whose elements are the values: `do:`, `includes:` and
   /// the rest of Collection's protocol visit them, and `collect:`,
@@ -1417,9 +1418,10 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// hash never changes, however its state does; a key that is a value is
   /// found by every value equal to it -- `'abc'` and a copy of it, `1`
   /// and `1.0`, two equal LargeIntegers, two class objects of one value's
-  /// nested class under equal values. A forwarding `Proxy` as a key is
-  /// found by its target's identity, but not by itself
-  /// (`Proxy>>identityHash`).
+  /// nested class under equal values. A map holding a target finds it
+  /// when looked up with a forwarding `Proxy` of it, but a forwarding
+  /// proxy stored as a key is found by nothing, neither itself nor its
+  /// target, and is stored again (`Proxy>>identityHash`).
   ///
   /// @factory makes an empty identity map with room for `capacity` keys
   /// before it grows, as `Map new:` makes a map, and signals what it

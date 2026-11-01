@@ -214,8 +214,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// on a copy of it are unequal although the two Strings are `==`, and
     /// mirrors on `1` and on `1.0` are unequal. An immediate is the same
     /// object wherever it occurs, and so is a Float of the same bits, so
-    /// two mirrors on `3` are equal. A future is compared as the future,
-    /// never forced. Among mirrors it keeps `Object>>=`'s contract, and
+    /// two mirrors on `3` are equal. A reflectee that is a future is
+    /// compared as the future, never forced; a future passed as `other` is
+    /// forced by the first message sent to it. Among mirrors it keeps `Object>>=`'s contract, and
     /// `hash` agrees; it asks `other` whether it is an object mirror and
     /// for its reflectee, so an object of a program's that claims to be one
     /// may answer so, and the symmetry with it is that object's own.
@@ -537,8 +538,14 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// classes and answers false, so that a class it holds back never
     /// reaches program code through `reflects:`.
     ///
+    /// A program's subclass of `ClassMirror` is asymmetric against a plain
+    /// `ClassMirror` too: it trusts its own class and the module's mirror
+    /// classes, while the plain mirror trusts the module's classes and its
+    /// own, so `sub = plain` can be true where `plain = sub` is false.
+    ///
     /// It keeps `Object>>=`'s contract among the module's own mirrors, and
-    /// `hash` agrees; the asymmetry above is the one exception.
+    /// `hash` agrees; the two asymmetries above, both with a program's
+    /// subclass, are the exceptions.
     ///
     /// @param other any object; sent `reflects:` only when `trusts:` trusts
     /// its class, so that the class is handed to no other code.
