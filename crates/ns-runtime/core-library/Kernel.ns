@@ -71,29 +71,121 @@ class Kernel vmMirror: mirror = Value (
       ^vmMirror objectClass: self ifFail: [^super class].
     )
 
-    /// Tests the receiver's identity with `other`.
+    /// Tests whether `other` is the receiver itself: identity, the same
+    /// object. It sends no message to either side and never signals
+    /// itself; only forcing a future, below, runs any code.
     ///
-    /// @param other any object. Two Floats of the same bits are the same
-    /// object; nothing else is compared by content.
-    /// @answers whether `other` is the receiver itself, a Boolean.
+    /// Every object is identical to itself and to nothing else, however
+    /// equal another object is to it: `Object new == Object new` is
+    /// false. Identity is an equivalence relation -- reflexive, symmetric,
+    /// transitive -- and holds for as long as the objects live: a
+    /// collection moves objects, an install of a MirrorBuilder migrates
+    /// them to a new layout and an image carries them to another process,
+    /// and none of them makes two objects identical or one object two.
+    /// `identityHash` agrees with it. A future on either side stands for
+    /// its value (§6.3.2): it is forced -- its computation run the first
+    /// time -- and the value is compared in its place.
+    ///
+    /// `==` is a message, so a class may declare its own, and this method
+    /// answers only for an object that is no value. A value's class
+    /// inherits `Value>>==`, which sends `=`, so for a value identity is
+    /// equality: an immediate -- a SmallInteger, a SmallFloat64, `true`,
+    /// `false`, `nil` -- is identical to every value equal to it, and so
+    /// is a boxed Float, a LargeInteger, a Fraction, a String or a Symbol:
+    /// `3 == 3.0`, `0.0 == -0.0` and two separately computed equal
+    /// LargeIntegers are true. §3.1.1 makes a class below `Value` that
+    /// declares `==` no value class, and the runtime refuses to instantiate
+    /// one ('cannot instantiate <class>: a value class may not define ==,
+    /// and <declaring class> defines it', naming the class instantiated
+    /// and the class of the chain that declares `==`). A class that is no value may declare `==`
+    /// -- `Behavior` does, so that a class object of a value answers what
+    /// its `=` does -- and its `==` then answers what its declaration says.
+    /// A `Proxy` answers `==` from outside through its `doesNotUnderstand:`
+    /// (`Proxy>>==`), and a proxy that forwards it to its target breaks
+    /// the equivalence: it is not identical to itself from outside, and
+    /// its target is not identical to it.
+    ///
+    /// @param other any object.
+    /// @answers whether `other` is the receiver itself, a Boolean; for a
+    /// future, whether its value is.
+    /// @see `=`, `identityHash` and `Value>>==`.
     public == other = (
       ^vmMirror object: self identicalTo: other ifFail: [^super == other].
     )
 
-    /// Compares the receiver with `other` by identity: an object without
-    /// an `=` of its own equals only itself. It never signals.
+    /// Compares the receiver with `other` for equality: here by identity,
+    /// so an object whose class declares no `=` of its own equals only
+    /// itself. It sends no message to either side and never signals
+    /// itself; a future on either side stands for its value, as for `==`.
+    ///
+    /// The contract: a class that declares `=` makes it an equivalence
+    /// relation over every object, and the core library -- `Map`, `Set`,
+    /// `includes:`, `indexOf:` -- relies on it:
+    ///
+    /// - reflexive: `x = x` is true;
+    /// - symmetric: `x = y` is true exactly when `y = x` is;
+    /// - transitive: `x = y` and `y = z` make `x = z` true;
+    /// - consistent: `x = y` answers the same on every send while neither
+    ///   side's state that `=` reads changes, and a value's never changes;
+    /// - `x = nil` is false for every `x` but `nil` itself and what stands
+    ///   for it, a future whose value is nil or a proxy forwarding to nil;
+    /// - it answers a Boolean for an argument of any class rather than
+    ///   signalling, false for one it does not know;
+    /// - it agrees with `hash`: whenever `x = y` is true, `x hash = y hash`
+    ///   is too, so a class that declares `=` declares `hash` with it.
+    ///
+    /// A `Proxy` that forwards `=` to its target breaks the contract from
+    /// outside: neither reflexive nor symmetric wherever its target's `=`
+    /// is the kernel's (`Proxy>>=`).
+    ///
+    /// `=` is never true between two objects of unrelated classes unless a
+    /// class says so: `Object`'s is identity, `Value`'s compares classes
+    /// before slots, a String equals only a String and a Symbol only
+    /// itself. The numbers say so: an Integer, a LargeInteger, a Float and
+    /// a Fraction are equal by exact value, whatever their classes (`1 =
+    /// 1.0`, `(1/2) = 0.5`; `Number>>=`).
+    ///
+    /// Where `=` and `==` differ: for an object that is no value they
+    /// agree until its class declares `=`; then `=` is the class's
+    /// equivalence and `==` stays identity, so two equal objects may be
+    /// two. For a value (§3.1.1) identity is equality: `Value>>==` sends
+    /// `=`, so two equal values are identical. `'abc' == ('abcd' copyFrom:
+    /// 1 to: 3)` is true, and so is a String a StringBuilder built against
+    /// the literal of its text; two equal LargeIntegers are identical;
+    /// `1 == 1.0` is true, as `1 = 1.0` is; a NaN Float is `=` and `==` to
+    /// itself and to every other NaN, unlike IEEE 754's comparison; and two
+    /// instances of a program's value class whose slots are equal are
+    /// identical. An `IdentityMap`, which compares keys with `==`,
+    /// therefore holds one key for equal values, as a `Map` does.
     ///
     /// @param other any object.
-    /// @answers whether `other` is the receiver itself, a Boolean.
+    /// @answers whether `other` is the receiver itself, a Boolean; for a
+    /// future, whether its value is.
+    /// @see `==`, `hash` and `Value>>=`.
     public = other = (
       ^vmMirror object: self equals: other ifFail: [^super = other].
     )
 
     /// Hashes the receiver by its identity, so that the hash agrees with
-    /// `=`, which is identity here.
+    /// `=`, which is identity here: it answers what `identityHash` does.
     ///
-    /// @answers the receiver's identity hash, an Integer that stays the
-    /// same for the object's lifetime and agrees with `==`.
+    /// The contract every `hash` keeps: two objects `=` makes equal hash
+    /// alike; two unequal ones may hash alike too, which costs a hashed
+    /// collection a longer search but never a wrong answer; and an
+    /// object's hash stays the same while the state its `=` reads does not
+    /// change. It answers an Integer. A class that declares `=` declares
+    /// `hash` with it, computed from the state its `=` compares, since a
+    /// `Map` and a `Set` find an entry by its `hash` and only then compare
+    /// with `=`: a key whose hash disagrees with its `=` is missed by a
+    /// lookup with an equal key, and stored a second time beside it. A key
+    /// whose hash changes while a Map or a Set holds it may not be found
+    /// again.
+    /// An `IdentityMap` sends neither: it finds a key by its
+    /// `identityHash` and compares with `==`.
+    ///
+    /// @answers the receiver's identity hash, an Integer from 1 to
+    /// 2^22 - 1 that stays the same for the object's lifetime.
+    /// @see `=` and `identityHash`.
     public hash = (
       ^vmMirror objectHash: self ifFail: [^super hash].
     )
@@ -114,11 +206,37 @@ class Kernel vmMirror: mirror = Value (
       ^self.
     )
 
-    /// Hashes the receiver by its identity, whatever its `hash` is; a
-    /// value overrides it with its `hash`.
+    /// Hashes the receiver by its identity, whatever its `hash` is: the
+    /// hash that agrees with `==` as `hash` agrees with `=`.
     ///
-    /// @answers the receiver's identity hash, an Integer that stays the
-    /// same for its lifetime.
+    /// Identical objects have one identity hash. The reverse does not
+    /// hold: the hash is 22 bits wide, so distinct objects may share one.
+    /// The counter has 2^22 - 1 numbers, so the 2^22-th object to draw a
+    /// hash after another gets that one's again, which two living objects
+    /// then share. An object has none
+    /// until something asks: the first `identityHash` -- or `hash`, where
+    /// it is `Object`'s -- draws the next number of a counter, which skips
+    /// 0 and wraps within the 22 bits; nothing about the object's address
+    /// or the order objects were made in goes into it. The object keeps it
+    /// for its lifetime: across every collection, which moves objects;
+    /// across an install of a MirrorBuilder, which migrates an instance to
+    /// its new layout and hands it the old one's hash; and through an
+    /// image, which carries it verbatim, the counter going on past the
+    /// largest hash the image holds when it is loaded.
+    ///
+    /// A value overrides it with its `hash` (`Value>>identityHash`): a
+    /// value's identity is its equality, so its identity hash has to agree
+    /// with `=`. An immediate -- a SmallInteger, a SmallFloat64, `true`,
+    /// `false`, `nil` -- is a value and answers its `hash`, `3 identityHash`
+    /// 3 and `nil identityHash` 0, and two equal Strings answer one
+    /// identity hash. An `IdentityMap` finds a key by its `identityHash`
+    /// and compares it with `==`, so it treats a value key as a `Map`
+    /// does -- equal values are one key -- and every other key by
+    /// identity.
+    ///
+    /// @answers the receiver's identity hash, an Integer from 1 to
+    /// 2^22 - 1, the same on every send for the object's lifetime.
+    /// @see `==`, `hash` and `Value>>identityHash`.
     public identityHash = (
       ^vmMirror objectHash: self ifFail: [^super identityHash].
     )
@@ -461,39 +579,72 @@ class Kernel vmMirror: mirror = Value (
     /// rather than sending `=`, so that comparing two class objects
     /// with `==` costs no activation.
     ///
+    /// A nested class's class object is made per enclosing object (§6.1),
+    /// so its equality follows its enclosing object's: two `Outer new
+    /// Inner` of an ordinary `Outer` are unequal, while for a value class
+    /// `Outer` whose factory takes `x:`, `(Outer x: 1) Inner = (Outer x:
+    /// 1.0) Inner` is true, and two instances of those two classes whose
+    /// slots are equal are equal too. Every class the kernel declares
+    /// is a value, its enclosing object being the kernel. It keeps
+    /// `Object>>=`'s contract, `hash` agreeing, wherever the enclosing
+    /// objects' and the superclasses' own `=` keep it.
+    ///
     /// @param other any object.
     /// @answers whether `other` is the receiver or, for a class object
     /// whose enclosing object is a value, a class object of the same
     /// declaration whose enclosing object and superclass are equal to the
     /// receiver's, compared with `=`. A Boolean wherever the leaf decides;
     /// where it declines, what `behaviorEquals:` answers.
-    /// @see `behaviorEquals:`.
+    /// @see `behaviorEquals:` and `Object>>=`.
     public = other = (
       ^vmMirror value: self sameAs: other ifFail: [^self behaviorEquals: other].
     )
 
     /// Compares the receiver with `other` as `=` does: a value class
-    /// object has no identity of its own.
+    /// object has no identity of its own, and any other class object's
+    /// `=` is identity already.
+    ///
+    /// `Behavior` is no subclass of `Value`, so declaring `==` costs a
+    /// class object nothing of §3.1.1: whether one is a value is decided
+    /// by its enclosing object alone. For a class object that is no value
+    /// it answers identity, as `Object>>==` would; for one that is a value
+    /// it answers what `=` does, as §3.1.1 asks of a value's identity
+    /// method, so that two equal class objects are identical -- the class
+    /// of one value's instance is `==` to the class of an equal value's.
     ///
     /// @param other any object.
     /// @answers what `=` answers.
-    /// @see `=`.
+    /// @see `=` and `Object>>==`.
     public == other = (
       ^vmMirror value: self sameAs: other ifFail: [^self behaviorEquals: other].
     )
 
     /// Hashes the receiver so that the hash agrees with `=`.
     ///
-    /// @answers an Integer: the hash of the class's name for a class
-    /// object that is a value, its identity hash for any other.
+    /// A class object that is a value hashes as its name -- a metaclass as
+    /// its class's name followed by ' class' -- since equal class objects
+    /// apply one mixin and so share a name, and a name, unlike anything
+    /// the runtime numbers, survives a copy and an image. Class objects of
+    /// one declaration under unequal enclosing objects hash alike, which
+    /// the contract allows. Any other class object, whose `=` is identity,
+    /// answers its identity hash.
+    ///
+    /// @answers an Integer: the hash of the class's name, as a String's,
+    /// for a class object that is a value; its identity hash, from 1 to
+    /// 2^22 - 1, for any other.
+    /// @see `Object>>hash`.
     public hash = (
       ^vmMirror valueHash: self ifFail: [^super hash].
     )
 
-    /// Hashes the receiver as `hash` does: a value's identity is its
-    /// equality.
+    /// Hashes the receiver as `hash` does, so that the identity hash
+    /// agrees with `==`, which answers what `=` does: a value class
+    /// object's identity is its equality, and any other's `hash` is its
+    /// identity hash already. An `IdentityMap` therefore finds a value
+    /// class object by any class object equal to it.
     ///
     /// @answers the receiver's `hash`.
+    /// @see `Object>>identityHash`.
     public identityHash = (
       ^self hash.
     )
@@ -630,7 +781,10 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// A metaclass's enclosing object is its class's and its superclass
     /// is always `Class`, so its class is all its state: two metaclasses
-    /// are equal exactly when their classes are. `==` is the same
+    /// are equal exactly when their classes are, and keep `Object>>=`'s
+    /// contract as their classes do. Its `hash` is `Behavior>>hash`, its
+    /// class's name followed by ' class' for a metaclass that is a value,
+    /// which equal metaclasses share. `==` is the same
     /// forwarder as `=`, as `Behavior`'s is, so that it answers what `=`
     /// answers (§3.1.1) and costs no activation.
     ///
@@ -639,6 +793,7 @@ class Kernel vmMirror: mirror = Value (
     /// receiver's class. A Boolean wherever the leaf decides; where it
     /// declines, what the class's `=` answers, which a class side may
     /// declare for itself.
+    /// @see `Behavior>>=` and `Object>>=`.
     public = other = (
       ^vmMirror value: self sameAs: other ifFail: [
         ^(self thisClassOf: self) = (self thisClassOf: other).
@@ -646,11 +801,12 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// Compares the receiver with `other` as `=` does, through the same
-    /// leaf.
+    /// leaf: identity for a metaclass that is no value, equality for one
+    /// that is, as `Behavior>>==` answers for a class.
     ///
     /// @param other any object.
     /// @answers what `=` answers.
-    /// @see `=`.
+    /// @see `=` and `Behavior>>==`.
     public == other = (
       ^vmMirror value: self sameAs: other ifFail: [
         ^(self thisClassOf: self) = (self thisClassOf: other).
@@ -1561,10 +1717,24 @@ class Kernel vmMirror: mirror = Value (
   /// declares them protected, and a bare `Integer` or `self class` inside
   /// a proxy keeps the accessor's direct answer.
   public class Proxy = Object () (
-    /// As `Object>>==`, for a send from inside the proxy only.
+    /// As `Object>>==`, for a send from inside the proxy only: `self ==
+    /// other` there is the proxy's own identity.
     ///
-    /// @param other any object. Two Floats of the same bits are the same
-    /// object; nothing else is compared by content.
+    /// Protected, so that a proxy can stand for its target: a `==` from
+    /// outside reaches `doesNotUnderstand:`, and what it answers is the
+    /// subclass's. A bare `Proxy` signals MessageNotUnderstood. A subclass
+    /// that forwards every message sends `==` on to its target, so the
+    /// holder of a proxy sees the target's identity from the proxy's side
+    /// only: `proxy == target` is true, but `target == proxy` is false
+    /// for every target whose `==` is the kernel's, which sees the proxy
+    /// as the other object it is, and so is `proxy == proxy`, which is
+    /// `target == proxy` -- such a proxy is not identical to itself from
+    /// outside, and keeps neither the symmetry nor the reflexivity of
+    /// `Object>>==`. A future is the exception:
+    /// the runtime sees through it on either side, so a future is
+    /// identical to its value and to itself.
+    ///
+    /// @param other any object.
     /// @answers whether `other` is the receiver itself, a Boolean.
     /// @see `Object>>==`.
     protected == other = (
@@ -1572,6 +1742,16 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// As `Object>>=`, for a send from inside the proxy only.
+    ///
+    /// Protected for the reason `==` is. A forwarding subclass sends `=`
+    /// on to its target, so `proxy = x` answers what `target = x` does,
+    /// while `x = proxy` is `x`'s own comparison with an object of
+    /// another class, which every `=` of the kernel answers false: for a
+    /// target of the kernel's classes or of a class without an `=` of its
+    /// own the equality is not symmetric, and `proxy = proxy` is false. A
+    /// forwarding proxy stored as a key of a `Map` or an element of a
+    /// `Set` is then never found again, by itself or by its target. A
+    /// future is seen through on either side, as for `==`.
     ///
     /// @param other any object.
     /// @answers whether `other` is the receiver itself, a Boolean.
@@ -1581,6 +1761,10 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// As `Object>>hash`, for a send from inside the proxy only.
+    ///
+    /// Protected for the reason `==` is: a forwarding subclass answers
+    /// its target's `hash` from outside, so a proxy and its target hash
+    /// alike, as the proxy's `=` with its target demands.
     ///
     /// @answers the receiver's identity hash, an Integer.
     /// @see `Object>>hash`.
@@ -1597,7 +1781,13 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// As `Object>>identityHash`, for a send from inside the proxy
-    /// only.
+    /// only: `self identityHash` there is the proxy's own.
+    ///
+    /// Protected for the reason `==` is: a forwarding subclass answers its
+    /// target's identity hash from outside, so a proxy and its target
+    /// share one, as `proxy == target` demands. An `IdentityMap` holding
+    /// the target finds it by the proxy; one holding a forwarding proxy
+    /// does not find it again wherever its `==` with itself is false.
     ///
     /// @answers the receiver's identity hash, an Integer.
     /// @see `Object>>identityHash`.
@@ -1867,12 +2057,37 @@ class Kernel vmMirror: mirror = Value (
   )
 
   /// The superclass of every value class: its instances are deeply
-  /// immutable, and two are equal when their classes are equal and their
-  /// slots are equal.
+  /// immutable, two are equal when their classes are equal and their
+  /// slots are equal, and a value has no identity of its own -- its `==`
+  /// is its `=` and its `identityHash` its `hash`.
   ///
   /// §3.1.1: an object is a value object -- deeply immutable and globally
   /// unique -- only if "its class inherits from class `Value`", so every
   /// class whose instances are values hangs below this one.
+  ///
+  /// "Globally unique, in the sense that no other object is equal to it":
+  /// a value is its state, so its equality is derived from its class and
+  /// its slots, never from which object holds them. §3.1.1 lets a value be
+  /// copied freely across an actor boundary or shared, as the
+  /// implementation chooses, so no program may tell a copy from its
+  /// original: the copy is equal to it, identical to it by `==`, and has
+  /// to hash like it -- which an identity hash, the copy's own, would not.
+  /// Hence `==` sends `=` and `identityHash` answers `hash`, and two values
+  /// that are equal are, to a program, one value: `'abc' == ('abcd'
+  /// copyFrom: 1 to: 3)` and `1 == 1.0` are true, and an `IdentityMap`
+  /// keeps equal values as one key. Only reflection still sees two
+  /// objects -- §3.1.1: "Values are only immutable at the base level",
+  /// and §3.7 isolates actors "modulo reflection" -- as an object mirror
+  /// compares its reflectee as the object it is.
+  ///
+  /// A subclass may declare an `=` and a `hash` of its own -- the numbers,
+  /// `String` and `Symbol` do, `True` and `False` declare `hash` -- and
+  /// must then keep `Object>>=`'s contract, the two agreeing; its `==` and
+  /// `identityHash` follow without being declared again. A subclass that
+  /// declares `=` without `hash` keeps this `hash`, which then hashes its
+  /// slots with their own `hash`, and is right only where its `=` compares
+  /// exactly those slots. A subclass that declares `==` is no value class
+  /// (§3.1.1), and the runtime refuses to instantiate it.
   ///
   /// Each class below it already declares the `hash` its own `=` demands:
   /// whenever `x = y` is true, `x hash = y hash` must be too. Since a
@@ -1891,11 +2106,25 @@ class Kernel vmMirror: mirror = Value (
     /// slot's class brings its own `=`, because a leaf may not send;
     /// `valueEquals:` then sends it.
     ///
+    /// The classes are compared first, with `=`: two instances of one
+    /// class, or of two class objects equal by `Behavior>>=` -- one value's
+    /// nested class under two equal enclosing values -- and nothing else,
+    /// so a value never equals an object of another class, nor `nil`. Then
+    /// the slots, in declaration order, each pair with the slot's own `=`:
+    /// `3` and `3.0` in one slot are equal, as they are anywhere. It keeps
+    /// `Object>>=`'s contract wherever the slots' `=` keep it, and `hash`
+    /// agrees. The numbers, Strings and Symbols decide their own `=`;
+    /// `true`, `false` and `nil` are compared here, each equal only to
+    /// itself. A receiver that holds no number although its class is a
+    /// number's -- `Fraction new`, an instance of a program's subclass of
+    /// `Number` -- lands here when its own `=` declines, and equals only
+    /// an instance of its class whose slots are equal.
+    ///
     /// @param other any object.
     /// @answers whether `other` is of a class equal to the receiver's and
     /// its slots, in declaration order, are equal to the receiver's, each
     /// compared with `=`; a Boolean.
-    /// @see `valueEquals:`.
+    /// @see `valueEquals:` and `Object>>=`.
     public = other = (
       ^vmMirror value: self sameAs: other ifFail: [^self valueEquals: other].
     )
@@ -1907,9 +2136,19 @@ class Kernel vmMirror: mirror = Value (
     /// must return the same results as `Value`'s equality method". A send
     /// of `=` makes that true by construction, for every subclass.
     ///
+    /// So two equal values are identical, whichever class decides their
+    /// equality: `'abc' == ('abcd' copyFrom: 1 to: 3)`, a String a
+    /// StringBuilder built with the literal of its text, two equal
+    /// LargeIntegers, `1 == 1.0`, `0.0 == -0.0`, a NaN with every NaN, and
+    /// two instances of a program's value class whose slots are equal --
+    /// all true. Identity is then exactly as much an equivalence as `=`
+    /// is. A subclass may not declare `==` of its own: §3.1.1 makes it no
+    /// value class, and the runtime refuses to instantiate it.
+    ///
     /// @param other any object.
     /// @answers what `=` answers; a subclass's own `=` decides it, so it
     /// is a Boolean only where that `=` answers one.
+    /// @see `=` and `Object>>==`.
     public == other = (
       ^self = other.
     )
@@ -1917,8 +2156,22 @@ class Kernel vmMirror: mirror = Value (
     /// Hashes the receiver by its slots, so that the hash agrees with
     /// `=`.
     ///
+    /// It reads only the state `=` compares, never the object's identity,
+    /// so a copy of a value hashes like its original, and two values `=`
+    /// makes equal hash alike whatever their slots' classes: a number slot
+    /// hashes by its exact value, so `3` and `3.0` count alike. The class
+    /// does not enter it, so instances of two classes with equal slots may
+    /// hash alike, which the contract allows. The leaf hashes every slot it
+    /// can by the rule of the slot's own class; where a slot's class
+    /// declares an `=` of its own it declines, as `=`'s leaf does on the
+    /// same values, and the answer is the slot count plus each slot's own
+    /// `hash` -- so a value whose slot's class declares `=` relies on that
+    /// class's `hash` agreeing with it. A value never changes, and neither
+    /// does its hash.
+    ///
     /// @answers an Integer computed from the slots, alike for every two
     /// values `=` makes equal.
+    /// @see `=` and `Object>>hash`.
     public hash = (
       ^vmMirror valueHash: self ifFail: [^self valueHashOfSlots].
     )
@@ -1926,7 +2179,18 @@ class Kernel vmMirror: mirror = Value (
     /// Hashes the receiver as `hash` does: a value's identity is its
     /// equality.
     ///
+    /// Two equal values are identical by `==`, so their identity hashes
+    /// must agree, and only a hash of the state does: an identity hash
+    /// drawn per object would split equal values. An immediate -- a
+    /// SmallInteger, a SmallFloat64, `true`, `false`, `nil` -- answers its
+    /// `hash` too: `3 identityHash` is 3, `nil identityHash` 0. An
+    /// `IdentityMap`, which finds a key by `identityHash` and compares it
+    /// with `==`, therefore holds equal values as one key, as a `Map` does:
+    /// `1` and `1.0` are one key of either, and so are a String and a copy
+    /// of it.
+    ///
     /// @answers the receiver's `hash`.
+    /// @see `hash` and `Object>>identityHash`.
     public identityHash = (
       ^self hash.
     )
@@ -2106,9 +2370,35 @@ class Kernel vmMirror: mirror = Value (
     /// class: `1 = 1.0`, `(1/2) = 0.5`; a NaN equals a NaN. It never
     /// signals.
     ///
+    /// The numbers are the one family of classes whose `=` is true across
+    /// classes: an Integer, a LargeInteger, a Float and a Fraction are
+    /// equal when they denote the same number, compared exactly -- a Float
+    /// is the binary fraction its bits denote, so `0.1 = (1/10)` is false
+    /// and an integer beyond 2^53 equals only the Float of exactly its
+    /// value. A LargeInteger is never equal to a SmallInteger, whose
+    /// range of values it lies outside. Between two Floats it is IEEE
+    /// 754's equality but for one case: a NaN equals every NaN and nothing
+    /// else, so that `=` stays reflexive. `0.0` and `-0.0` are equal, as
+    /// IEEE has them, and equal to `0`; an infinity equals only the
+    /// infinity of its sign. Across classes it differs from IEEE's
+    /// comparison after a conversion to Float, since it converts nothing:
+    /// `(10 raisedTo: 400) = (1.0 / 0.0)` is false, and so is
+    /// `9007199254740993 = 9007199254740993 asFloat`, 2^53 + 1 against the
+    /// Float it rounds to. `<` and its siblings compare exactly across
+    /// classes too, and agree with IEEE only in answering false for a NaN.
+    /// So the equality is an equivalence -- reflexive, symmetric,
+    /// transitive -- whichever side is which class, and `hash` agrees with
+    /// it. Through `Value>>==`, `==` answers the same: `1 == 1.0` and a
+    /// NaN with itself are true.
+    ///
+    /// A receiver that holds no number -- `Number new`, `Fraction new`,
+    /// an instance of a program's subclass -- is compared by
+    /// `Value>>=` instead, by class and slots; it equals no number.
+    ///
     /// @param other any object; anything that is no number is unequal.
     /// @answers whether `other` is a number of the same exact value, a
     /// Boolean.
+    /// @see `hash`, `Value>>=` and `Object>>=`.
     public = other = (
       ^vmMirror number: self equals: other ifFail: [^super = other].
     )
@@ -2117,7 +2407,20 @@ class Kernel vmMirror: mirror = Value (
     /// with `=` whatever the classes; an integer's is the integer
     /// itself.
     ///
+    /// Every number's hash is its exact value reduced modulo the prime
+    /// 2^61 - 1, signed as the value is and folded into the SmallInteger
+    /// range: a SmallInteger hashes as itself, and `3`, `3.0` and `(6/2)`,
+    /// `0.5` and `(1/2)` hash alike, as `=` makes them equal. `0.0` and
+    /// `-0.0` hash as `0`; every NaN answers one constant and each
+    /// infinity another, its sign's, which a Fraction whose denominator is
+    /// a multiple of 2^61 - 1 answers too, having no inverse to reduce by.
+    /// Unequal numbers may share a hash -- a LargeInteger and the
+    /// SmallInteger it is congruent to, for one -- which the contract
+    /// allows. A number never changes, and neither does
+    /// its hash; `identityHash` answers it too (`Value>>identityHash`).
+    ///
     /// @answers an Integer, alike for every two numbers `=` makes equal.
+    /// @see `=` and `Object>>hash`.
     public hash = (
       ^vmMirror numberHash: self ifFail: [^super hash].
     )
@@ -2612,7 +2915,11 @@ class Kernel vmMirror: mirror = Value (
 
     /// Hashes the receiver to a constant, unlike `false`'s.
     ///
+    /// `true` is equal only to itself (`Value>>=`), so any constant agrees
+    /// with `=`; its `identityHash` is this hash too.
+    ///
     /// @answers 1.
+    /// @see `Object>>hash`.
     public hash = (
       ^1.
     )
@@ -2721,7 +3028,11 @@ class Kernel vmMirror: mirror = Value (
 
     /// Hashes the receiver to a constant, unlike `true`'s.
     ///
+    /// `false` is equal only to itself (`Value>>=`), so any constant
+    /// agrees with `=`; its `identityHash` is this hash too.
+    ///
     /// @answers 0.
+    /// @see `Object>>hash`.
     public hash = (
       ^0.
     )
@@ -3154,9 +3465,14 @@ class Kernel vmMirror: mirror = Value (
     /// Compares the receiver with `other` by exact value: `3 = 3.0` is
     /// true. It never signals.
     ///
+    /// `Number>>=`'s equality, answered here for a SmallInteger argument
+    /// at once and for any other by the same rule, so that it stays
+    /// symmetric with a Float's, a LargeInteger's and a Fraction's.
+    ///
     /// @param other any object; anything that is no number is unequal.
     /// @answers whether `other` is a number of the same exact value, a
     /// Boolean.
+    /// @see `Number>>=`.
     public = other = (
       ^vmMirror integer: self equals: other ifFail: [^super = other].
     )
@@ -3164,7 +3480,11 @@ class Kernel vmMirror: mirror = Value (
     /// Hashes the receiver to itself, the hash every number of its value
     /// answers.
     ///
+    /// `Number>>hash`'s rule leaves an integer in the SmallInteger range
+    /// as it is, so `3.0 hash` is 3 too, and so is `3 identityHash`.
+    ///
     /// @answers the receiver.
+    /// @see `Number>>hash`.
     public hash = (
       ^self.
     )
@@ -3428,9 +3748,13 @@ class Kernel vmMirror: mirror = Value (
     /// value, never an Integer within -2^60 to 2^60 - 1, which is
     /// another value. It never signals.
     ///
+    /// `Number>>=`'s equality. Two LargeIntegers of one value are equal
+    /// however each was computed, and so identical (`Value>>==`).
+    ///
     /// @param other any object; anything that is no number is unequal.
     /// @answers whether `other` is a number of the same exact value, a
     /// Boolean.
+    /// @see `Number>>=`.
     public = other = (
       ^vmMirror largeInteger: self equals: other ifFail: [^super = other].
     )
@@ -3438,7 +3762,12 @@ class Kernel vmMirror: mirror = Value (
     /// Hashes the receiver by its value, so that the hash agrees with
     /// `=`.
     ///
+    /// `Number>>hash`'s rule: the value modulo 2^61 - 1, folded into the
+    /// SmallInteger range, so a Float of the same value hashes alike, and
+    /// the hash is a SmallInteger that some unequal SmallInteger shares.
+    ///
     /// @answers an Integer, alike for every number `=` makes equal.
+    /// @see `Number>>hash`.
     public hash = (
       ^vmMirror largeIntegerHash: self ifFail: [^super hash].
     )
@@ -3588,9 +3917,17 @@ class Kernel vmMirror: mirror = Value (
     /// class: `0.0` equals `-0.0` and `0`, every NaN every other NaN,
     /// `0.5` the Fraction 1/2. It never signals.
     ///
+    /// `Number>>=`'s equality, not IEEE 754's: a NaN is equal to itself,
+    /// so that `=` is reflexive and a NaN can be found in a Set, while
+    /// `<`, `<=`, `>` and `>=` keep IEEE's answer, false for a NaN. Two
+    /// Floats of one value are equal and so identical (`Value>>==`), the
+    /// boxed ones -- a NaN, an infinity, a magnitude outside the
+    /// SmallFloat64 range -- as much as the immediate ones.
+    ///
     /// @param other any object; anything that is no number is unequal.
     /// @answers whether `other` is a number of the same exact value, a
     /// Boolean.
+    /// @see `Number>>=`.
     public = other = (
       ^vmMirror float: self equals: other ifFail: [^super = other].
     )
@@ -3599,7 +3936,11 @@ class Kernel vmMirror: mirror = Value (
     /// with `=` whatever the classes: an integral Float's is the integer
     /// it is.
     ///
+    /// `Number>>hash`'s rule: `0.0` and `-0.0` hash as `0`, every NaN
+    /// alike, each infinity alike with itself.
+    ///
     /// @answers an Integer, alike for every number `=` makes equal.
+    /// @see `Number>>hash`.
     public hash = (
       ^vmMirror floatHash: self ifFail: [^super hash].
     )
@@ -4101,9 +4442,21 @@ class Kernel vmMirror: mirror = Value (
     /// Compares the receiver with `other` by their code points. It never
     /// signals. A Symbol never is equal.
     ///
+    /// Only a String equals a String: a Symbol of the same text is not,
+    /// and `Symbol>>=` answers false the other way round, so `'abc' =
+    /// #abc` and `#abc = 'abc'` are both false and the equality stays
+    /// symmetric. Each class hashes by its own rule, which a cross-class
+    /// equality would break. Two Strings of the same code points are
+    /// equal however each was made -- a literal, a copy, a concatenation,
+    /// a StringBuilder -- and so identical (`Value>>==`): `'abc' ==
+    /// ('abcd' copyFrom: 1 to: 3)` is true. A String never changes, so the
+    /// answer never does. An instance of a program's subclass of `String`
+    /// holds no text, and is compared by `Value>>=`.
+    ///
     /// @param other any object.
     /// @answers whether `other` is a String of the same code points, a
     /// Boolean.
+    /// @see `hash`, `Symbol>>=` and `Object>>=`.
     public = other = (
       ^vmMirror string: self equals: other ifFail: [^super = other].
     )
@@ -4111,8 +4464,14 @@ class Kernel vmMirror: mirror = Value (
     /// Hashes the receiver by its code points, so that the hash agrees
     /// with `=`.
     ///
+    /// It reads the text alone, so a copy hashes like its original, and
+    /// its `identityHash` is this hash (`Value>>identityHash`). A Symbol
+    /// of the same text hashes differently, which its being unequal
+    /// allows.
+    ///
     /// @answers a hash of the code points, an Integer alike for equal
     /// Strings.
+    /// @see `=` and `Object>>hash`.
     public hash = (
       ^vmMirror stringHash: self ifFail: [^super hash].
     )
@@ -4453,15 +4812,28 @@ class Kernel vmMirror: mirror = Value (
     /// Compares the receiver with `other` by identity, a Symbol being
     /// canonical. It never signals. A String never is equal.
     ///
+    /// There is one Symbol per text (§5.1.6), so the same object and the
+    /// same text are the same question: `#abc = 'abc' asSymbol` is true.
+    /// A String of the same text is not equal, as `String>>=` does not
+    /// find a Symbol equal, so the equality stays symmetric across the
+    /// two classes.
+    ///
     /// @param other any object.
     /// @answers whether `other` is the same Symbol, a Boolean.
+    /// @see `String>>=` and `Object>>=`.
     public = other = (
       ^vmMirror symbol: self equals: other ifFail: [^super = other].
     )
 
     /// Hashes the receiver by its text, so that the hash agrees with `=`.
     ///
+    /// By the text rather than by the object, so that the hash is the
+    /// same in every run and every process the Symbol reaches; it
+    /// differs from the hash of a String of the same text, which is
+    /// unequal to it.
+    ///
     /// @answers a hash, an Integer alike for equal Symbols.
+    /// @see `String>>hash` and `Object>>hash`.
     public hash = (
       ^vmMirror symbolHash: self ifFail: [^super hash].
     )

@@ -11,8 +11,8 @@ use crate::{Heap, Mutator, Symbol};
 /// every `=` in this module opens with, and the reason each of them names
 /// one class rather than one payload.
 ///
-/// Each class hashes by its own content, a string by its text and a symbol
-/// by its interned index, so a cross-class equality would break the one
+/// Each class hashes by its own content, a string and a symbol each by its
+/// text but differently, so a cross-class equality would break the one
 /// rule a `hash` has, that `x = y` implies `x hash = y hash`. A string
 /// equals only a string, and a symbol only a symbol.
 fn of_the_same_class<'gc>(
