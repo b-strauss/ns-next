@@ -47,12 +47,13 @@ the re-entries moved", has the full measurement protocol and its history.
    environment variables read when the binary is built
    (`option_env!`; a value is a multiple of 16 up to 4,096, or the build
    fails): build a sets neither, build b sets `NS_NEXT_ZONE_STUB_PADDING=208`
-   (bytes before the first stub) and `NS_NEXT_ZONE_BODY_PADDING=48` (bytes
+   (bytes before the first stub) and `NS_NEXT_ZONE_BODY_PADDING=32` (bytes
    between the last stub and the first body), build c sets `96` and `176`.
    The same machine code at another place in the zone ran 17% apart on
    `bench_while.ns` over seventeen paddings, and a stub's growth moves
-   every later stub and body; no two builds are 64 bytes apart in either
-   offset, so each puts the stubs and the bodies on other cache-line
+   every later stub and body; the stubs' offsets (0, 208, 96) and the bodies'
+   (the sum of the two paddings: 0, 240, 272) are pairwise distinct modulo
+   64, so each build puts the stubs and the bodies on other cache-line
    phases. Both sides take the same three; a tree from before the
    paddings existed takes none, and the report says so. A regression the
    three builds still separate is investigated as before, a sweep of

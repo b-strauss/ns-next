@@ -2683,9 +2683,10 @@ a padding of their own, two environment variables read at build time
 (`NS_NEXT_ZONE_STUB_PADDING`, the bytes before the first stub, and
 `NS_NEXT_ZONE_BODY_PADDING`, the bytes between the last stub and the first
 body, each a multiple of 16 up to 4,096): build a sets neither, build b
-`208` and `48`, build c `96` and `176`, offsets no two of which are a
-multiple of 64 apart, so the stubs and the bodies fall on other cache-line
-phases in each (`jit::ZONE_STUB_PADDING`; the first body starts at the
+`208` and `32`, build c `96` and `176`: the stubs' offsets (0, 208, 96) and
+the bodies' (the sum of the two paddings: 0, 240, 272) are pairwise
+distinct modulo 64, so the stubs and the bodies fall on other cache-line
+phases in each build (pinned by a test of `jit`) (`jit::ZONE_STUB_PADDING`; the first body starts at the
 stubs' end plus the body padding after a compaction and in a replaced zone
 as well). Machine code identical byte for byte measured 2% to 17% apart by
 its place in the zone alone. A tree from before the paddings takes none,

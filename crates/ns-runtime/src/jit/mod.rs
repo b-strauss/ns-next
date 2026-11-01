@@ -1508,7 +1508,7 @@ const fn padding_from(text: Option<&str>) -> u32 {
     value
 }
 
-/// A zone of `bytes` with both stubs installed at its base, or why there
+/// A zone of `bytes` with both stubs installed from its stub padding, or why there
 /// is none: the reservation's error -- a system without what a zone needs
 /// among them (`ns_memory::MemoryError::Unsupported`), which a host reports
 /// rather than run interpreted unawares -- or stubs that do not fit.
@@ -1520,7 +1520,7 @@ fn reserve_zone(bytes: usize) -> Result<Zone, String> {
 }
 
 /// The zone `writer` writes, installing at most `bytes`, with every stub
-/// installed at its base; `None` when they do not fit.
+/// installed from `stub_padding`; `None` when they do not fit.
 #[cfg(ns_jit)]
 fn zone_with_stubs(writer: ns_memory::CodeWriter, bytes: usize) -> Option<Zone> {
     zone_with_paddings(writer, bytes, ZONE_STUB_PADDING, ZONE_BODY_PADDING)
@@ -3845,15 +3845,45 @@ mod tests {
         #[test]
         fn a_zone_laid_out_with_paddings_starts_its_stubs_and_bodies_there() {
             let writer = ns_memory::CodeZone::reserve(1 << 16).expect("a zone");
-            let zone = crate::jit::zone_with_paddings(writer, 1 << 16, 208, 48).expect("stubs fit");
+            let mut zone = crate::jit::zone_with_paddings(writer, 1 << 16, 208, 48).expect("fits");
             assert_eq!(zone.entry_stub.0, 208, "the first stub");
-            let last_stub_end = zone.bodies_start - 48;
-            assert!(last_stub_end > 208, "the stubs take room");
-            assert_eq!(zone.next_offset, zone.bodies_start);
             let plain = ns_memory::CodeZone::reserve(1 << 16).expect("a zone");
-            let plain = crate::jit::zone_with_paddings(plain, 1 << 16, 0, 0).expect("stubs fit");
-            assert_eq!(plain.entry_stub.0, 0);
+            let plain = crate::jit::zone_with_paddings(plain, 1 << 16, 0, 0).expect("fits");
             assert_eq!(zone.bodies_start, plain.bodies_start + 208 + 48);
+            assert_eq!(zone.next_offset, zone.bodies_start);
+            let first = install(&mut zone, &[0x90; 8]).expect("room");
+            assert_eq!(first.0, zone.bodies_start, "the first body, padded");
+        }
+
+        #[test]
+        fn the_protocol_s_three_builds_have_distinct_phases() {
+            // (stub padding, body padding) of builds a, b and c
+            // (`measuring-performance`).
+            let builds = [(0u32, 0u32), (208, 32), (96, 176)];
+            for (index, (stubs, bodies)) in builds.iter().enumerate() {
+                assert!(stubs % 16 == 0 && bodies % 16 == 0);
+                for (other_stubs, other_bodies) in &builds[index + 1..] {
+                    assert_ne!(stubs % 64, other_stubs % 64, "the stubs' phases");
+                    assert_ne!(
+                        (stubs + bodies) % 64,
+                        (other_stubs + other_bodies) % 64,
+                        "the bodies' phases"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn a_padding_is_a_multiple_of_sixteen_up_to_4096() {
+            use crate::jit::padding_from;
+            assert_eq!(padding_from(None), 0);
+            assert_eq!(padding_from(Some("0")), 0);
+            assert_eq!(padding_from(Some("16")), 16);
+            assert_eq!(padding_from(Some("4096")), 4096);
+            for text in ["17", "4112", "x", ""] {
+                let outcome = std::panic::catch_unwind(|| padding_from(Some(text)));
+                assert!(outcome.is_err(), "{text:?} is refused");
+            }
         }
 
         #[test]
