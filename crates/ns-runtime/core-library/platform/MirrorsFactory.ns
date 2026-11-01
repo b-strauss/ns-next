@@ -209,10 +209,22 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// reflectees: two mirrors on two distinct objects are never equal,
     /// however equal the objects are.
     ///
+    /// The identity is the objects' own, not a value's `==`: a mirror sees
+    /// the objects a program cannot tell apart, so mirrors on `'abc'` and
+    /// on a copy of it are unequal although the two Strings are `==`, and
+    /// mirrors on `1` and on `1.0` are unequal. An immediate is the same
+    /// object wherever it occurs, and so is a Float of the same bits, so
+    /// two mirrors on `3` are equal. A future is compared as the future,
+    /// never forced. Among mirrors it keeps `Object>>=`'s contract, and
+    /// `hash` agrees; it asks `other` whether it is an object mirror and
+    /// for its reflectee, so an object of a program's that claims to be one
+    /// may answer so, and the symmetry with it is that object's own.
+    ///
     /// @param other any object; sent `isKindOfObjectMirror`, and
     /// `reflectee` when it answers true.
     /// @answers whether `other` is an object mirror on the reflectee
     /// itself, a Boolean.
+    /// @see `Object>>=`.
     public = other = (
       other isKindOfObjectMirror ifFalse: [^false].
       ^vmMirror reflectionObject: reflectee identicalTo: other reflectee ifFail: [false].
@@ -221,7 +233,13 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Hashes the receiver by its reflectee's identity, so that two
     /// mirrors on the one object hash alike.
     ///
+    /// The identity hash of the object itself, even where the reflectee
+    /// is a value, whose own `identityHash` is its `hash`: 0 for an
+    /// immediate and for every Float, the hash the counter drew for any
+    /// other object.
+    ///
     /// @answers the reflectee's identity hash.
+    /// @see `=`.
     public hash = (
       ^vmMirror objectHash: reflectee ifFail: [0].
     )
@@ -507,6 +525,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// however each was reached; two applications of one mixin are two
     /// classes.
     ///
+    /// The identity is the class objects' own, not `Behavior>>==`: two
+    /// class objects of one value's nested class under two equal values
+    /// are equal and `==` to a program, yet a mirror on each is a mirror on
+    /// another class object, and the two mirrors are unequal.
+    ///
     /// Asymmetric for a program's subclass of `ClassMirror` against a
     /// mirror reached by navigation: the subclass's mirror trusts the
     /// module's `NavigatedClassMirror` and answers true for one on its
@@ -514,9 +537,13 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// classes and answers false, so that a class it holds back never
     /// reaches program code through `reflects:`.
     ///
+    /// It keeps `Object>>=`'s contract among the module's own mirrors, and
+    /// `hash` agrees; the asymmetry above is the one exception.
+    ///
     /// @param other any object; sent `reflects:` only when `trusts:` trusts
     /// its class, so that the class is handed to no other code.
     /// @answers whether `other` is a class mirror on the same class.
+    /// @see `Object>>=`.
     public = other = (
       (vmMirror reflectionObject: self identicalTo: other ifFail: [false]) ifTrue: [^true].
       (self trusts: (vmMirror objectClass: other ifFail: [nil])) ifFalse: [^false].
@@ -551,7 +578,12 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Hashes the receiver by its class's identity, so that two mirrors on
     /// the one class hash alike.
     ///
+    /// The class object's own identity hash, not its `hash`, which for a
+    /// class object that is a value is its name's: `=` compares the class
+    /// objects themselves, and so does this.
+    ///
     /// @answers the class's identity hash.
+    /// @see `=`.
     public hash = (
       ^vmMirror objectHash: self reflectedClass ifFail: [0].
     )
@@ -893,11 +925,17 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// object that stands for the mixin, however each mirror was reached;
     /// the mixin of two applications is one mixin.
     ///
+    /// There is one object per mixin, so the identity of the mixin and of
+    /// that object are one question, and the equality keeps `Object>>=`'s
+    /// contract, `hash` agreeing: only a mixin mirror, whose class no
+    /// program can name, is asked whether it reflects the mixin.
+    ///
     /// @param other any object; sent `reflects:` only when it is an
     /// instance of this module's `MixinMirror` or of the receiver's class,
     /// so that the reified mixin is handed to no other code.
     /// @answers whether `other` is a mixin mirror on the same mixin, a
     /// Boolean.
+    /// @see `Object>>=`.
     public = other = (
       (vmMirror reflectionObject: self identicalTo: other ifFail: [false]) ifTrue: [^true].
       (self trusts: (vmMirror objectClass: other ifFail: [nil])) ifFalse: [^false].
@@ -924,7 +962,12 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Hashes the receiver by the reified mixin's identity, so that two
     /// mirrors on the one mixin hash alike.
     ///
+    /// The one object that stands for the mixin is what `=` compares,
+    /// and it keeps its identity hash as every object does, so the hash
+    /// agrees with `=`.
+    ///
     /// @answers the reified mixin's identity hash.
+    /// @see `=`.
     public hash = (
       ^vmMirror objectHash: subject ifFail: [0].
     )
@@ -1027,10 +1070,17 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Compares the receiver with `other` by their instance sides: a
     /// declaration is never equal to either of its sides.
     ///
+    /// A declaration is named by its instance side's mixin, so the
+    /// comparison is `MixinMirror>>=`'s and keeps the contract as that
+    /// does, `hash` agreeing; it asks `other` whether it is a declaration
+    /// mirror and for its instance side, so an object of a program's that
+    /// claims to be one decides the symmetry with it.
+    ///
     /// @param other any object; sent `isKindOfClassDeclarationMirror`, and
     /// `instanceSide` when it answers true.
     /// @answers whether `other` is a class declaration mirror on the same
     /// declaration: one whose instance side is the receiver's; a Boolean.
+    /// @see `MixinMirror>>=` and `Object>>=`.
     public = other = (
       other isKindOfClassDeclarationMirror ifFalse: [^false].
       ^self instanceSide = other instanceSide.
@@ -1039,7 +1089,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Hashes the receiver as its instance side's mirror hashes, so that
     /// two mirrors on the one declaration hash alike.
     ///
+    /// The instance side's mirror hashes by the mixin's identity, which is
+    /// what `=` compares.
+    ///
     /// @answers the hash of the declaration's instance side.
+    /// @see `=` and `MixinMirror>>hash`.
     public hash = (
       ^self instanceSide hash.
     )
@@ -1113,10 +1167,18 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Compares the receiver with `other` by the identity of their
     /// selectors and by their defining mixins.
     ///
+    /// A selector is a Symbol, one object per text, so its identity is its
+    /// equality; the mixins are compared by `MixinMirror>>=`. Among method
+    /// mirrors it keeps `Object>>=`'s contract, `hash` agreeing; it asks
+    /// `other` whether it is a method mirror, for its name and for its
+    /// mixin, so an object of a program's that claims to be one decides
+    /// the symmetry with it.
+    ///
     /// @param other any object; sent `isKindOfMethodMirror`, and `name` and
     /// `definingMixin` when it answers true.
     /// @answers whether `other` is a method mirror on the same selector of
     /// the same mixin, a Boolean.
+    /// @see `Object>>=`.
     public = other = (
       other isKindOfMethodMirror ifFalse: [^false].
       (vmMirror reflectionObject: selector identicalTo: other name ifFail: [false]) ifFalse: [
@@ -1128,7 +1190,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Combines the identity hashes of the mixin and the selector, so that
     /// two mirrors on the one method hash alike.
     ///
+    /// Both are the objects `=` compares, the one object of the mixin and
+    /// the one Symbol of the selector, so the hash agrees with `=`.
+    ///
     /// @answers a hash of the mixin and the selector.
+    /// @see `=`.
     public hash = (
       ^(vmMirror objectHash: mixin ifFail: [0]) bitXor: (vmMirror objectHash: selector ifFail: [0]).
     )
@@ -1222,10 +1288,16 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Compares the receiver with `other` by the identity of their names
     /// and by their defining mixins, a mixin declaring a name once.
     ///
+    /// As `MethodMirror>>=` compares, with the slot's name for the
+    /// selector: among slot declaration mirrors it keeps `Object>>=`'s
+    /// contract, `hash` agreeing, and an object of a program's that claims
+    /// to be one decides the symmetry with it.
+    ///
     /// @param other any object; sent `isKindOfSlotDeclarationMirror`, and
     /// `name` and `definingMixin` when it answers true.
     /// @answers whether `other` is a slot declaration mirror on the same
     /// name of the same mixin, a Boolean.
+    /// @see `MethodMirror>>=` and `Object>>=`.
     public = other = (
       other isKindOfSlotDeclarationMirror ifFalse: [^false].
       (vmMirror reflectionObject: slotName identicalTo: other name ifFail: [false]) ifFalse: [
@@ -1237,7 +1309,10 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Combines the identity hashes of the mixin and the name, so that two
     /// mirrors on the one slot declaration hash alike.
     ///
+    /// Both are the objects `=` compares, so the hash agrees with it.
+    ///
     /// @answers a hash of the mixin and the name.
+    /// @see `=`.
     public hash = (
       ^(vmMirror objectHash: mixin ifFail: [0]) bitXor: (vmMirror objectHash: slotName ifFail: [0]).
     )
