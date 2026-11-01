@@ -4020,217 +4020,270 @@ class Kernel vmMirror: mirror = Value (
 
   /// An immutable sequence of Unicode code points: a literal such as
   /// `'abc'` is one.
+  ///
+  /// A receiver holding no text -- an instance of a program's subclass
+  /// of `String`, which gets no text of its own -- makes every leaf
+  /// decline: a send that no other method above the leaf's answers ends
+  /// in `doesNotUnderstand:`, a MessageNotUnderstood, as does a method
+  /// written in Newspeak whose own sends reach such a leaf. The Errors
+  /// and answers each method below names are those of a receiver
+  /// holding a text whose class overrides none of them: a subclass's
+  /// override decides them for the methods written over it.
   public class String = Value () (
-    /// Answers true: the receiver is a String.
+    /// Identifies the receiver as a String, without a class test.
+    ///
+    /// @answers true.
     public isKindOfString = (
       ^true.
     )
 
-    /// Answers the number of code points.
+    /// Counts the receiver's code points.
+    ///
+    /// @answers the number of code points, an Integer of at least 0.
     public size = (
       ^vmMirror stringSize: self ifFail: [^super size].
     )
 
-    /// Answers the code point at `index` as an Integer.
-    ///
-    /// index: an Integer from 1 to `size`.
-    ///
-    /// Signals an ArgumentError carrying `index`: 'index … out of
-    /// range: valid indices are 1..size (size …)' for an Integer outside
-    /// 1 to `size`, a LargeInteger included, and 'at: requires an
-    /// Integer index, got …' for an index that is no Integer.
+    /// Reads the code point at `index`.
     ///
     /// Over code points, not UTF-8 bytes: `at:` answers the code point,
     /// which is the byte only for ASCII.
+    ///
+    /// @param index an Integer from 1 to `size`.
+    /// @answers the code point at `index`, an Integer.
+    /// @signals ArgumentError carrying `index`, 'index … out of range:
+    /// valid indices are 1..size (size …)', for an Integer outside 1 to
+    /// `size`, a LargeInteger included.
+    /// @signals ArgumentError carrying `index`, 'at: requires an Integer
+    /// index, got …', for an index that is no Integer.
     public at: index = (
       ^vmMirror string: self at: index ifFail: [^super at: index].
     )
 
-    /// Answers a new String of the code points from `start` to `stop`,
-    /// both included; the receiver is unchanged. A `stop` of `start - 1`
-    /// answers an empty String.
+    /// Copies the code points from `start` to `stop`, both included; the
+    /// receiver is unchanged. A `stop` of `start - 1` answers an empty
+    /// String.
     ///
-    /// start: an Integer from 1 to `size + 1`.
-    /// stop: an Integer from `start - 1` to `size`.
-    ///
-    /// Signals an ArgumentError: 'copyFrom: … to: … out of range: valid
+    /// @param start an Integer from 1 to `size + 1`.
+    /// @param stop an Integer from `start - 1` to `size`.
+    /// @answers a new String of the code points from `start` to `stop`.
+    /// @signals ArgumentError 'copyFrom: … to: … out of range: valid
     /// ranges lie within 1..size, an empty range ends just before it
-    /// starts (size …)' for bounds outside that, carrying `start`
-    /// unless it is in range and `stop` otherwise; and 'copyFrom:to:
-    /// requires an Integer index, got …', carrying the first bound
-    /// that is no Integer.
+    /// starts (size …)' for bounds outside that, carrying `start` unless
+    /// it is in range and `stop` otherwise.
+    /// @signals ArgumentError 'copyFrom:to: requires an Integer index,
+    /// got …', carrying the first bound that is no Integer.
     public copyFrom: start to: stop = (
       ^vmMirror string: self copyFrom: start to: stop ifFail: [^super copyFrom: start to: stop].
     )
 
-    /// Answers a new String of the receiver's code points followed by
-    /// those of `other`; neither is changed.
+    /// Concatenates the receiver's code points and those of `other`;
+    /// neither is changed.
     ///
-    /// other: a String or a Symbol.
-    ///
-    /// Signals an ArgumentError carrying `other`, 'String concatenation
-    /// (,) requires a String argument, got …', for any other
-    /// argument.
+    /// @param other a String or a Symbol.
+    /// @answers a new String of the receiver's code points followed by
+    /// those of `other`.
+    /// @signals ArgumentError carrying `other`, 'String concatenation (,)
+    /// requires a String argument, got …', for any other argument.
     public , other = (
       ^vmMirror string: self concatenate: other ifFail: [^super , other].
     )
 
-    /// Answers whether `other` is a String of the same code points.
+    /// Compares the receiver with `other` by their code points. It never
+    /// signals. A Symbol never is equal.
     ///
-    /// other: any object; never signals. A Symbol never is equal.
+    /// @param other any object.
+    /// @answers whether `other` is a String of the same code points, a
+    /// Boolean.
     public = other = (
       ^vmMirror string: self equals: other ifFail: [^super = other].
     )
 
-    /// Answers a hash of the code points, alike for equal Strings.
+    /// Hashes the receiver by its code points, so that the hash agrees
+    /// with `=`.
+    ///
+    /// @answers a hash of the code points, an Integer alike for equal
+    /// Strings.
     public hash = (
       ^vmMirror stringHash: self ifFail: [^super hash].
     )
 
-    /// Answers the Symbol of the same text, the one object of it.
+    /// Converts the receiver to the canonical Symbol of its text.
+    ///
+    /// @answers the Symbol of the same text, the one object of it.
     public asSymbol = (
       ^vmMirror stringAsSymbol: self ifFail: [^super asSymbol].
     )
 
-    /// Answers a new String of the receiver as a literal writes it:
-    /// between single quotes, each quote inside doubled.
+    /// Prints the receiver as a literal writes it: between single
+    /// quotes, each quote inside doubled.
+    ///
+    /// @answers a new String: the receiver's text as its literal.
     public printString = (
       ^vmMirror stringPrintString: self ifFail: [^super printString].
     )
 
-    /// Answers the receiver itself.
+    /// Converts the receiver to a String, which it already is.
+    ///
+    /// @answers the receiver itself.
     public asString = (
       ^self.
     )
 
-    /// Answers a new ByteArray of the receiver's code points encoded as
-    /// UTF-8, in order: one byte for a code point below 128, up to four
-    /// for one past 65535. `String fromUtf8:` decodes it back to an equal
-    /// String. The receiver is unchanged, and each send answers a new
-    /// ByteArray.
+    /// Encodes the receiver's code points as UTF-8, in order: one byte for
+    /// a code point below 128, up to four for one past 65535.
+    /// `String fromUtf8:` decodes it back to an equal String. The receiver
+    /// is unchanged, and each send answers a new ByteArray.
     ///
-    /// Signals an ArgumentError carrying the receiver, 'asUtf8 cannot
-    /// allocate a ByteArray of … bytes', only for a String whose bytes
-    /// the heap cannot hold.
+    /// @answers a new ByteArray of the receiver's UTF-8 bytes.
+    /// @signals ArgumentError carrying the receiver, 'asUtf8 cannot
+    /// allocate a ByteArray of … bytes', only for a String whose bytes the
+    /// heap cannot hold.
     public asUtf8 = (
       ^vmMirror stringAsUtf8: self ifFail: [^super asUtf8].
     )
 
-    /// Answers the number of bytes the receiver takes as UTF-8, the size
-    /// of `asUtf8`'s answer, counted without making it; never signals.
+    /// Counts the bytes the receiver takes as UTF-8 without making them;
+    /// never signals.
     ///
     /// `StringBuilder` asks it before it appends a String.
+    ///
+    /// @answers the number of bytes, an Integer: the size of `asUtf8`'s
+    /// answer.
     public utf8Size = (
       ^vmMirror stringUtf8Size: self ifFail: [^super utf8Size].
     )
 
     /// Evaluates `action` with each code point, an Integer, from the
-    /// first. Answers the receiver.
+    /// first.
     ///
-    /// action: a one-argument block, or anything understanding
-    ///     `value:`.
+    /// @param action a one-argument block, or anything understanding
+    /// `value:`.
+    /// @answers the receiver.
     public do: action = (
       1 to: self size do: [:index | action value: (self at: index)].
     )
 
-    /// Answers whether the String has no code point.
+    /// Tells whether the String has no code point.
+    ///
+    /// @answers whether `size` is 0, a Boolean.
     public isEmpty = (
       ^self size = 0.
     )
 
-    /// Answers the first code point, an Integer.
+    /// Reads the first code point.
     ///
-    /// Signals the ArgumentError of `at:`, carrying 1, for an empty
-    /// String.
+    /// @answers the first code point, an Integer.
+    /// @signals ArgumentError of `at:`, carrying 1, for an empty String.
     public first = (
       ^self at: 1.
     )
 
-    /// Answers the last code point, an Integer.
+    /// Reads the last code point.
     ///
-    /// Signals the ArgumentError of `at:`, carrying 0, for an empty
-    /// String.
+    /// @answers the last code point, an Integer.
+    /// @signals ArgumentError of `at:`, carrying 0, for an empty String.
     public last = (
       ^self at: self size.
     )
 
-    /// Answers a new String of the one code point at `index`; for a
-    /// Symbol too.
+    /// Copies the one code point at `index` into a String; for a Symbol
+    /// too.
     ///
-    /// index: an Integer from 1 to `size`.
-    ///
-    /// Signals the ArgumentError of `at:` for any other index.
+    /// @param index an Integer from 1 to `size`.
+    /// @answers a new String of the one code point at `index`.
+    /// @signals ArgumentError of `at:` for any other index.
     public stringAt: index = (
       self at: index.
       ^self copyFrom: index to: index.
     )
 
-    /// Answers what `copyFrom: start to: stop` answers: a new String of
-    /// the code points from `start` to `stop`.
+    /// Copies the code points from `start` to `stop`, as
+    /// `copyFrom: start to: stop` does.
     ///
-    /// Signals what `copyFrom:to:` signals.
+    /// @param start as `copyFrom:to:`'s.
+    /// @param stop as `copyFrom:to:`'s.
+    /// @answers what `copyFrom: start to: stop` answers: a new String of
+    /// the code points from `start` to `stop`.
+    /// @signals ArgumentError `copyFrom:to:` signals, for a range the
+    /// receiver does not hold or a bound that is no Integer.
+    /// @see `copyFrom:to:`.
     public copyStringFrom: start to: stop = (
       ^self copyFrom: start to: stop.
     )
 
-    /// Answers the index of the first occurrence of `substring`, or 0;
+    /// Finds the first occurrence of `substring`:
     /// `indexOf: substring startingAt: 1`.
+    ///
+    /// @param substring a String or a Symbol.
+    /// @answers the index of the first occurrence of `substring`, or 0.
+    /// @signals ArgumentError of `indexOf:startingAt:`, carrying
+    /// `substring`, for a `substring` that is no String.
+    /// @see `indexOf:startingAt:`.
     public indexOf: substring = (
       ^self indexOf: substring startingAt: 1.
     )
 
-    /// Answers the code-point index at which the first occurrence of
-    /// `substring` that starts at or after `start` begins, or 0 when
-    /// there is none. An empty `substring` is found at `start`.
+    /// Finds the first occurrence of `substring` that starts at or after
+    /// `start`. An empty `substring` is found at `start`.
     ///
-    /// substring: a String or a Symbol.
-    /// start: an Integer from 1 to `size + 1`.
-    ///
-    /// Signals an ArgumentError carrying `substring`,
-    /// 'indexOf:startingAt: requires a String argument, got …', for a
-    /// `substring` that is no String, and one carrying `start`,
-    /// 'indexOf:startingAt: … out of range: valid starts are 1..…
-    /// (size …)', for a `start` outside 1 to `size + 1`, or
-    /// 'indexOf:startingAt: requires an Integer index, got …'.
+    /// @param substring a String or a Symbol.
+    /// @param start an Integer from 1 to `size + 1`.
+    /// @answers the code-point index at which that occurrence begins, or 0
+    /// when there is none.
+    /// @signals ArgumentError carrying `substring`, 'indexOf:startingAt:
+    /// requires a String argument, got …', for a `substring` that is no
+    /// String.
+    /// @signals ArgumentError carrying `start`, 'indexOf:startingAt: … out
+    /// of range: valid starts are 1..… (size …)', for a `start` outside 1
+    /// to `size + 1`, or 'indexOf:startingAt: requires an Integer index,
+    /// got …'.
     public indexOf: substring startingAt: start = (
       ^vmMirror string: self indexOf: substring startingAt: start ifFail: [
         ^super indexOf: substring startingAt: start.
       ].
     )
 
-    /// Answers the index of the last occurrence of `substring`, or 0;
+    /// Finds the last occurrence of `substring`:
     /// `lastIndexOf: substring startingAt: size + 1`.
+    ///
+    /// @param substring a String or a Symbol.
+    /// @answers the index of the last occurrence of `substring`, or 0.
+    /// @signals ArgumentError of `lastIndexOf:startingAt:`, carrying
+    /// `substring`, for a `substring` that is no String.
+    /// @see `lastIndexOf:startingAt:`.
     public lastIndexOf: substring = (
       ^self lastIndexOf: substring startingAt: self size + 1.
     )
 
-    /// Answers the code-point index at which the last occurrence of
-    /// `substring` that starts at or before `start` begins, or 0 when
-    /// there is none. An empty `substring` is found at `start`.
+    /// Finds the last occurrence of `substring` that starts at or before
+    /// `start`. An empty `substring` is found at `start`.
     ///
-    /// substring: a String or a Symbol.
-    /// start: an Integer from 1 to `size + 1`.
-    ///
-    /// Signals the ArgumentErrors `indexOf:startingAt:` signals, their
-    /// texts naming 'lastIndexOf:startingAt:'.
+    /// @param substring a String or a Symbol.
+    /// @param start an Integer from 1 to `size + 1`.
+    /// @answers the code-point index at which that occurrence begins, or 0
+    /// when there is none.
+    /// @signals ArgumentError `indexOf:startingAt:` signals, for the same
+    /// arguments, its text naming 'lastIndexOf:startingAt:'.
+    /// @see `indexOf:startingAt:`.
     public lastIndexOf: substring startingAt: start = (
       ^vmMirror string: self lastIndexOf: substring startingAt: start ifFail: [
         ^super lastIndexOf: substring startingAt: start.
       ].
     )
 
-    /// Answers whether the receiver begins with `prefix`; true for an
-    /// empty `prefix`.
-    ///
-    /// prefix: a String or a Symbol.
-    ///
-    /// Signals an ArgumentError carrying `prefix`, 'startsWith:
-    /// requires a String argument, got …' and its `printString`, for a
-    /// `prefix` that is no String.
+    /// Tells whether the receiver begins with `prefix`; true for an empty
+    /// `prefix`.
     ///
     /// Looks for an occurrence starting at 1 at the latest, so only the
     /// first position is compared, whatever the receiver's length; the
     /// search leaf still reads the whole receiver before it compares.
+    ///
+    /// @param prefix a String or a Symbol.
+    /// @answers whether the receiver begins with `prefix`, a Boolean.
+    /// @signals ArgumentError carrying `prefix`, 'startsWith: requires a
+    /// String argument, got …' and its `printString`, for a `prefix` that
+    /// is no String.
     public startsWith: prefix = (
       prefix isKindOfString ifFalse: [
         ^(outer
@@ -4241,17 +4294,17 @@ class Kernel vmMirror: mirror = Value (
       ^(self lastIndexOf: prefix startingAt: 1) = 1.
     )
 
-    /// Answers whether the receiver ends with `suffix`; true for an
-    /// empty `suffix`.
-    ///
-    /// suffix: a String or a Symbol.
-    ///
-    /// Signals an ArgumentError carrying `suffix`, 'endsWith: requires
-    /// a String argument, got …' and its `printString`, for a `suffix`
-    /// that is no String.
+    /// Tells whether the receiver ends with `suffix`; true for an empty
+    /// `suffix`.
     ///
     /// The last occurrence is the one at the end when there is one
     /// there.
+    ///
+    /// @param suffix a String or a Symbol.
+    /// @answers whether the receiver ends with `suffix`, a Boolean.
+    /// @signals ArgumentError carrying `suffix`, 'endsWith: requires a
+    /// String argument, got …' and its `printString`, for a `suffix` that
+    /// is no String.
     public endsWith: suffix = (
       |
         position
@@ -4266,38 +4319,45 @@ class Kernel vmMirror: mirror = Value (
       ^(position > 0) and: [position = (self size - suffix size + 1)].
     )
   ) : (
-    /// Answers a new String of one code point, `code`.
-    ///
-    /// code: an Integer from 0 to 1114111 outside 55296 to 57343.
-    ///
-    /// Signals an ArgumentError carrying `code`, 'with: requires a
-    /// Unicode code point, an Integer from 0 to 1114111 outside 55296 to
-    /// 57343, got …', for any other argument.
+    /// Makes a String of one code point, `code`.
     ///
     /// It takes a code point, not a byte. The leaf answers only for
     /// `String` itself, the only subject a flat class side is sent from;
     /// any other falls to `super`, where nothing understands `with:`, so
     /// the send signals rather than answering nil.
+    ///
+    /// @param code an Integer from 0 to 1114111 outside 55296 to 57343.
+    /// @answers a new String of the one code point `code`.
+    /// @signals ArgumentError carrying `code`, 'with: requires a Unicode
+    /// code point, an Integer from 0 to 1114111 outside 55296 to 57343,
+    /// got …', for any other argument.
     public with: code = (
       ^vmMirror stringClass: self with: code ifFail: [^super with: code].
     )
 
-    /// Answers a new String of the code points of `codePoints`, in its
-    /// `do:` order, or a new String of the same code points when
-    /// `codePoints` is a String.
+    /// Makes a String of the code points of `codePoints`, in its `do:`
+    /// order.
     ///
-    /// codePoints: a String, or a Collection of Integers, each a
-    ///     Unicode code point: from 0 to 1114111 and outside 55296 to
-    ///     57343. Anything else answering `size` and `do:` is gathered
-    ///     into an Array first.
+    /// The leaf answers only for `String` itself, the only subject a flat
+    /// class side is sent from. It declines for an argument that answers
+    /// `isKindOfArray` or `isKindOfString` true without being an Array or
+    /// a String, and the method then answers nil.
     ///
-    /// Signals an ArgumentError carrying the first element that is no
-    /// code point, 'withAll: requires Unicode code points, Integers
-    /// from 0 to 1114111 outside 55296 to 57343, got …', and the
-    /// MessageNotUnderstood of `size` or `do:` for an argument that
-    /// lacks it. Sent to a subclass, answers nil, as `with:` does, and
-    /// so it does for an argument that answers `isKindOfArray` or
-    /// `isKindOfString` true without being an Array or a String.
+    /// @param codePoints a String, or a Collection of Integers, each a
+    /// Unicode code point: from 0 to 1114111 and outside 55296 to 57343.
+    /// Anything else answering `size` and `do:` is gathered into an Array
+    /// first.
+    /// @answers a new String of the code points of `codePoints`, a new
+    /// String of the same code points when `codePoints` is a String; nil
+    /// for an argument that answers `isKindOfArray` or `isKindOfString`
+    /// true without being an Array or a String.
+    /// @signals ArgumentError carrying the first element that is no code
+    /// point, 'withAll: requires Unicode code points, Integers from 0 to
+    /// 1114111 outside 55296 to 57343, got …'.
+    /// @signals MessageNotUnderstood of `size` or `do:` for an argument
+    /// that lacks it.
+    /// @signals ArgumentError of `Array new:` for an argument gathered
+    /// into an Array whose `size` is no Integer of at least 0.
     public withAll: codePoints = (
       ^vmMirror stringClass: self withAll: codePoints ifFail: [
         (codePoints isKindOfArray or: [codePoints isKindOfString]) ifTrue: [
@@ -4308,18 +4368,20 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
 
-    /// Answers a new String of the code points the UTF-8 bytes of `bytes`
-    /// encode: `fromUtf8: bytes from: 1 to: bytes size`.
-    ///
-    /// bytes: a ByteArray.
-    ///
-    /// Signals an ArgumentError carrying `bytes`, 'fromUtf8: requires a
-    /// ByteArray, got …' and its `printString`, for any other argument,
-    /// and the one `fromUtf8:from:to:` signals for bytes that are no
-    /// UTF-8.
+    /// Decodes the UTF-8 bytes of `bytes`:
+    /// `fromUtf8: bytes from: 1 to: bytes size`.
     ///
     /// The argument is checked first, since `bytes size` of anything else
     /// could answer anything, or nothing.
+    ///
+    /// @param bytes a ByteArray.
+    /// @answers a new String of the code points the UTF-8 bytes of `bytes`
+    /// encode.
+    /// @signals ArgumentError carrying `bytes`, 'fromUtf8: requires a
+    /// ByteArray, got …' and its `printString`, for any other argument.
+    /// @signals ArgumentError `fromUtf8:from:to:` signals for bytes that
+    /// are no UTF-8.
+    /// @see `fromUtf8:from:to:`.
     public fromUtf8: bytes = (
       bytes isKindOfByteArray ifFalse: [
         ^(outer Kernel ArgumentError value: bytes) signal: 'fromUtf8: requires a ByteArray, got '
@@ -4328,34 +4390,34 @@ class Kernel vmMirror: mirror = Value (
       ^self fromUtf8: bytes from: 1 to: bytes size.
     )
 
-    /// Answers a new String of the code points the UTF-8 bytes of `bytes`
-    /// from `start` to `stop`, both included, encode; `bytes` is
-    /// unchanged. A `stop` of `start - 1` answers an empty String.
-    ///
-    /// bytes: a ByteArray.
-    /// start: an Integer from 1 to `bytes size + 1`.
-    /// stop: an Integer from `start - 1` to `bytes size`.
+    /// Decodes the UTF-8 bytes of `bytes` from `start` to `stop`, both
+    /// included; `bytes` is unchanged. A `stop` of `start - 1` answers an
+    /// empty String.
     ///
     /// Decodes strictly: a truncated sequence, a range that ends inside a
     /// character among them, a stray continuation byte, an overlong
     /// encoding, a surrogate and a code point past 1114111 are an
-    /// ArgumentError carrying `bytes`, 'fromUtf8: invalid UTF-8 at byte
-    /// …', which names the first byte of the bad sequence by its index in
-    /// `bytes`, not in the range. A byte-order mark is kept, as the code
-    /// point 65279.
-    ///
-    /// Signals, besides, an ArgumentError carrying `bytes`,
-    /// 'fromUtf8:from:to: requires a ByteArray, got …', for a `bytes`
-    /// that is no ByteArray; and for a range `bytes` does not hold the
-    /// ArgumentError `copyFrom:to:` signals, its text beginning 'from: …
-    /// to: …' and the bound that is no Integer named by
-    /// 'fromUtf8:from:to:'.
+    /// ArgumentError. A byte-order mark is kept, as the code point 65279.
     ///
     /// Strict rather than a replacement character for each bad sequence,
     /// so that nothing is lost silently. The leaf answers only for
     /// `String` itself, the only subject a flat class side is sent from;
     /// any other falls to `super`, where nothing understands
     /// `fromUtf8:from:to:`, so the send signals rather than answering nil.
+    ///
+    /// @param bytes a ByteArray.
+    /// @param start an Integer from 1 to `bytes size + 1`.
+    /// @param stop an Integer from `start - 1` to `bytes size`.
+    /// @answers a new String of the code points the bytes from `start` to
+    /// `stop` encode.
+    /// @signals ArgumentError carrying `bytes`, 'fromUtf8: invalid UTF-8
+    /// at byte …', for bytes that are no UTF-8, which names the first byte
+    /// of the bad sequence by its index in `bytes`, not in the range.
+    /// @signals ArgumentError carrying `bytes`, 'fromUtf8:from:to: requires
+    /// a ByteArray, got …', for a `bytes` that is no ByteArray.
+    /// @signals ArgumentError `copyFrom:to:` signals for a range `bytes`
+    /// does not hold, its text beginning 'from: … to: …' and the bound that
+    /// is no Integer named by 'fromUtf8:from:to:'.
     public fromUtf8: bytes from: start to: stop = (
       ^vmMirror stringClass: self fromUtf8: bytes from: start to: stop ifFail: [
         ^super fromUtf8: bytes from: start to: stop.
@@ -4368,24 +4430,32 @@ class Kernel vmMirror: mirror = Value (
   /// understands what a String does; `,` and `copyFrom:to:` answer a
   /// String.
   public class Symbol = String () (
-    /// Answers a new String of the Symbol's text.
+    /// Copies the Symbol's text into a String, which is not canonical.
+    ///
+    /// @answers a new String of the Symbol's text.
     public asString = (
       ^vmMirror symbolAsString: self ifFail: [^super asString].
     )
 
-    /// Answers whether `other` is the same Symbol.
+    /// Compares the receiver with `other` by identity, a Symbol being
+    /// canonical. It never signals. A String never is equal.
     ///
-    /// other: any object; never signals. A String never is equal.
+    /// @param other any object.
+    /// @answers whether `other` is the same Symbol, a Boolean.
     public = other = (
       ^vmMirror symbol: self equals: other ifFail: [^super = other].
     )
 
-    /// Answers a hash, alike for equal Symbols.
+    /// Hashes the receiver by its text, so that the hash agrees with `=`.
+    ///
+    /// @answers a hash, an Integer alike for equal Symbols.
     public hash = (
       ^vmMirror symbolHash: self ifFail: [^super hash].
     )
 
-    /// Answers a new String of the Symbol's text after a '#'.
+    /// Prints the Symbol's text after a '#'.
+    ///
+    /// @answers a new String of the Symbol's text after a '#'.
     public printString = (
       ^vmMirror symbolPrintString: self ifFail: [^super printString].
     )
@@ -4397,37 +4467,44 @@ class Kernel vmMirror: mirror = Value (
   /// `size` counts code points, as a String's does. Equality and `hash` are
   /// identity.
   ///
-  /// capacity: an Integer of at least 0, the number of UTF-8 bytes to make
-  ///     room for at the start; a hint, since the builder grows as needed.
-  ///
-  /// Signals the ArgumentError of `ByteArray new:` for a capacity that is
+  /// @factory makes an empty builder whose ByteArray has room for
+  /// `capacity` bytes.
+  /// @param capacity an Integer of at least 0, the number of UTF-8 bytes
+  /// to make room for at the start; a hint, since the builder grows as
+  /// needed.
+  /// @signals ArgumentError of `ByteArray new:` for a capacity that is
   /// negative, no Integer or too large to allocate.
   public class StringBuilder new: capacity = Object (
     |
       /// The UTF-8 bytes appended so far, then unused room; never handed
       /// out, so the first `byteCount` of them are always valid UTF-8.
       private data ::= outer Kernel ByteArray new: capacity.
-      /// How many bytes of `data` are used.
+      /// How many bytes of `data` are used: an Integer from 0 to
+      /// `data size`, to which every append adds the bytes it wrote.
       private byteCount ::= 0.
-      /// How many code points those bytes encode.
+      /// How many code points those bytes encode: the builder's `size`,
+      /// at most `byteCount`, since a code point takes one byte or more.
       private codePointCount ::= 0.
     |
   ) (
-    /// Answers true: the receiver is a StringBuilder.
+    /// Identifies the receiver as a StringBuilder, without a class test.
+    ///
+    /// @answers true.
     public isKindOfStringBuilder = (
       ^true.
     )
 
-    /// Appends the code points of `aString` and answers it.
+    /// Appends the code points of `aString`.
     ///
-    /// aString: a String or a Symbol.
-    ///
-    /// Signals an ArgumentError carrying `aString`, 'add: requires a
-    /// String, got …' and its `printString`, for any other argument, a
-    /// ByteArray included; the builder is unchanged.
-    ///
-    /// Signals the ArgumentError of `checkState:` when the receiver's state
-    /// is not one its own members leave.
+    /// @param aString a String or a Symbol.
+    /// @answers `aString`.
+    /// @signals ArgumentError carrying `aString`, 'add: requires a String,
+    /// got …' and its `printString`, for any other argument, a ByteArray
+    /// included; the builder is unchanged.
+    /// @signals ArgumentError of `checkState:` when the receiver's state is
+    /// not one its own members leave.
+    /// @signals ArgumentError of `ensureRoom:` when the appended bytes need
+    /// room the heap cannot allocate; the builder is unchanged.
     public add: aString = (
       |
         byteTotal
@@ -4445,19 +4522,21 @@ class Kernel vmMirror: mirror = Value (
       ^aString.
     )
 
-    /// Appends one code point and answers it.
-    ///
-    /// codePoint: an Integer from 0 to 1114111 outside 55296 to 57343.
-    ///
-    /// Signals an ArgumentError carrying `codePoint`, 'addCodePoint:
-    /// requires a Unicode scalar value, got …' and its `printString`, for
-    /// any other argument; nothing is appended.
-    ///
-    /// Signals the ArgumentError of `checkState:` when the receiver's state
-    /// is not one its own members leave.
+    /// Appends one code point.
     ///
     /// The value is checked here, before the write, so that the error
     /// names `addCodePoint:` rather than the ByteArray store behind it.
+    ///
+    /// @param codePoint an Integer from 0 to 1114111 outside 55296 to
+    /// 57343.
+    /// @answers `codePoint`.
+    /// @signals ArgumentError carrying `codePoint`, 'addCodePoint: requires
+    /// a Unicode scalar value, got …' and its `printString`, for any other
+    /// argument; nothing is appended.
+    /// @signals ArgumentError of `checkState:` when the receiver's state is
+    /// not one its own members leave.
+    /// @signals ArgumentError of `ensureRoom:` when the code point needs
+    /// room the heap cannot allocate; nothing is appended.
     public addCodePoint: codePoint = (
       self checkState: #addCodePoint:.
       (codePoint isKindOfInteger and: [
@@ -4477,69 +4556,77 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// Appends the code points of `aString` and then a newline, code point
-    /// 10, and answers the receiver.
+    /// 10.
     ///
-    /// aString: a String or a Symbol.
-    ///
-    /// Signals the ArgumentErrors of `add:`; the builder is unchanged.
+    /// @param aString a String or a Symbol.
+    /// @answers the receiver.
+    /// @signals ArgumentError of `add:`, any of them; the builder is
+    /// unchanged.
+    /// @signals ArgumentError of `ensureRoom:` when the newline needs room
+    /// the heap cannot allocate; `aString` stays appended.
     public writeln: aString = (
       self add: aString.
       self addCodePoint: 10.
       ^self.
     )
 
-    /// Answers how many code points have been appended.
+    /// Counts the code points appended so far.
     ///
-    /// Signals the ArgumentError of `checkState:` when the receiver's state
-    /// is not one its own members leave.
+    /// @answers how many code points have been appended, an Integer of at
+    /// least 0.
+    /// @signals ArgumentError of `checkState:` when the receiver's state is
+    /// not one its own members leave.
     public size = (
       self checkState: #size.
       ^codePointCount.
     )
 
-    /// Answers whether nothing has been appended.
+    /// Tells whether nothing has been appended.
     ///
-    /// Signals the ArgumentError of `checkState:` when the receiver's state
-    /// is not one its own members leave.
+    /// @answers whether nothing has been appended, a Boolean.
+    /// @signals ArgumentError of `checkState:` when the receiver's state is
+    /// not one its own members leave.
     public isEmpty = (
       self checkState: #isEmpty.
       ^codePointCount = 0.
     )
 
-    /// Answers a new String of everything appended, in order; a new one
-    /// on every send, so the receiver's later appends do not reach it.
+    /// Decodes everything appended, in order, into a String; a new one on
+    /// every send, so the receiver's later appends do not reach it.
     ///
-    /// Signals the ArgumentError of `checkState:` when the receiver's state
-    /// is not one its own members leave.
+    /// @answers a new String of everything appended.
+    /// @signals ArgumentError of `checkState:` when the receiver's state is
+    /// not one its own members leave.
     public asString = (
       self checkState: #asString.
       ^outer Kernel String fromUtf8: data from: 1 to: byteCount.
     )
 
-    /// Answers a new ByteArray of the UTF-8 bytes of everything appended,
-    /// a copy: changing it leaves the receiver unchanged.
+    /// Copies the UTF-8 bytes of everything appended: changing the copy
+    /// leaves the receiver unchanged.
     ///
-    /// Signals the ArgumentError of `checkState:` when the receiver's state
-    /// is not one its own members leave.
+    /// @answers a new ByteArray of the UTF-8 bytes of everything appended.
+    /// @signals ArgumentError of `checkState:` when the receiver's state is
+    /// not one its own members leave.
     public asUtf8 = (
       self checkState: #asUtf8.
       ^data copyFrom: 1 to: byteCount.
     )
 
-    /// Answers the receiver when its slots hold what its own members leave
+    /// Checks that the receiver's slots hold what its own members leave
     /// in them: `data` a ByteArray, `byteCount` an Integer from 0 to
     /// `data size`, and `codePointCount` an Integer from 0 to `byteCount`.
-    ///
-    /// selector: the Symbol of the message the program sent.
-    ///
-    /// Signals an ArgumentError carrying the receiver, '<selector> found a
-    /// StringBuilder whose state is not its own', for any other state,
-    /// which only a crafted image can make; nothing is changed.
     ///
     /// Every member that reads the slots sends it first, so that a crafted
     /// builder is refused under the selector the program sent, rather than
     /// by whatever send first meets the wrong object, or by none when the
     /// counts are wrong but still Integers.
+    ///
+    /// @param selector the Symbol of the message the program sent.
+    /// @answers the receiver, when its slots hold that.
+    /// @signals ArgumentError carrying the receiver, '<selector> found a
+    /// StringBuilder whose state is not its own', for any other state,
+    /// which only a crafted image can make; nothing is changed.
     private checkState: selector = (
       (data isKindOfByteArray and: [
         byteCount isKindOfInteger and: [
@@ -4559,10 +4646,13 @@ class Kernel vmMirror: mirror = Value (
     /// ByteArray of that size or of one and a half times its current size,
     /// whichever is more, that begins with the used bytes.
     ///
-    /// byteTotal: an Integer of at least `byteCount`.
-    ///
     /// Growing by a fraction of the size rather than a fixed step is what
     /// keeps the cost of an append amortised constant.
+    ///
+    /// @param byteTotal an Integer of at least `byteCount`.
+    /// @answers the receiver.
+    /// @signals ArgumentError of `ByteArray new:` for a size too large to
+    /// allocate.
     private ensureRoom: byteTotal = (
       |
         grown
@@ -4573,7 +4663,10 @@ class Kernel vmMirror: mirror = Value (
       data:: grown.
     )
   ) : (
-    /// Answers a new, empty StringBuilder with room for 16 bytes.
+    /// Makes an empty StringBuilder with room for 16 bytes, as
+    /// `new: 16` does.
+    ///
+    /// @answers a new, empty StringBuilder with room for 16 bytes.
     public new = (
       ^self new: 16.
     )
@@ -4585,101 +4678,123 @@ class Kernel vmMirror: mirror = Value (
   /// member here, each written over `do:`; to `collect:`, `select:` or
   /// `reject:` it also defines `newForCollectUsingAdd:`. A subclass
   /// overrides any member it can answer faster.
+  ///
+  /// A subclass that does not define `do:` signals `do:`'s Error from
+  /// every member written over it. The Errors and answers each member
+  /// below names are those of a subclass that defines `do:` and
+  /// overrides no other member: an override decides them for the members
+  /// written over it.
   public class Collection = Object () (
-    /// Answers true: the receiver is a Collection.
+    /// Identifies the receiver as a Collection, without a class test.
+    ///
+    /// @answers true.
     public isKindOfCollection = (
       ^true.
     )
 
-    /// Evaluates `action` with each element in turn.
+    /// Evaluates `action` with each element in turn; every subclass
+    /// defines it.
     ///
-    /// action: a one-argument block, or anything understanding
-    ///     `value:`.
-    ///
-    /// Here, signals the Error of `subclassResponsibility`,
-    /// 'Collection>>do: is abstract: … must implement it': every
-    /// subclass defines it.
+    /// @param action a one-argument block, or anything understanding
+    /// `value:`.
+    /// @answers nothing here, where it never returns; a subclass's own
+    /// decides its answer, the receiver for every shipped collection.
+    /// @signals Error of `subclassResponsibility`, here,
+    /// 'Collection>>do: is abstract: … must implement it': every subclass
+    /// defines it.
     public do: action = (
       ^self subclassResponsibility.
     )
 
-    /// Answers a new, empty collection that `collect:`, `select:` and
+    /// Makes the new, empty collection that `collect:`, `select:` and
     /// `reject:` fill by sending it `add:` once per element they keep.
-    ///
-    /// capacity: an Integer of at least 0, the receiver's size: room
-    ///     enough for every element.
-    ///
-    /// Here, signals the Error of `subclassResponsibility`,
-    /// 'Collection>>newForCollectUsingAdd: is abstract: … must
-    /// implement it'.
     ///
     /// The kernel cannot name the collections module's `List`, so a
     /// collection says itself what its `collect:` answers.
+    ///
+    /// @param capacity an Integer of at least 0, the receiver's size: room
+    /// enough for every element.
+    /// @answers nothing here, where it never returns; a subclass's own
+    /// answers the new, empty collection.
+    /// @signals Error of `subclassResponsibility`, here,
+    /// 'Collection>>newForCollectUsingAdd: is abstract: … must implement
+    /// it'.
     protected newForCollectUsingAdd: capacity = (
       ^self subclassResponsibility.
     )
 
-    /// Answers whether `predicate` answers true for every element; true
-    /// for an empty collection. Stops at the first element for which it
+    /// Tells whether `predicate` answers true for every element; true for
+    /// an empty collection. Stops at the first element for which it
     /// answers false.
     ///
-    /// predicate: a one-argument block answering a Boolean.
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers whether `predicate` answers true for every element, a
+    /// Boolean.
     public allSatisfy: predicate = (
       self do: [:element | (predicate value: element) ifFalse: [^false]].
       ^true.
     )
 
-    /// Answers whether `predicate` answers true for some element; false
-    /// for an empty collection. Stops at the first element for which it
+    /// Tells whether `predicate` answers true for some element; false for
+    /// an empty collection. Stops at the first element for which it
     /// answers true.
     ///
-    /// predicate: a one-argument block answering a Boolean.
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers whether `predicate` answers true for some element, a
+    /// Boolean.
     public anySatisfy: predicate = (
       self do: [:element | (predicate value: element) ifTrue: [^true]].
       ^false.
     )
 
-    /// Answers whether `predicate` answers false for every element; true
-    /// for an empty collection. Stops at the first element for which it
+    /// Tells whether `predicate` answers false for every element; true for
+    /// an empty collection. Stops at the first element for which it
     /// answers true.
     ///
-    /// predicate: a one-argument block answering a Boolean.
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers whether `predicate` answers false for every element, a
+    /// Boolean.
     public noneSatisfy: predicate = (
       self do: [:element | (predicate value: element) ifTrue: [^false]].
       ^true.
     )
 
-    /// Answers the first element, in `do:` order, for which `predicate`
+    /// Finds the first element, in `do:` order, for which `predicate`
     /// answers true.
     ///
-    /// predicate: a one-argument block answering a Boolean.
-    ///
-    /// Signals an Error, 'No matching element detected', when it answers
-    /// true for none.
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers the first element for which `predicate` answers true.
+    /// @signals Error 'No matching element detected' when it answers true
+    /// for none.
+    /// @see `detect:ifNone:`.
     public detect: predicate = (
       ^self detect: predicate ifNone: [
         (outer Kernel Error new) signal: 'No matching element detected'.
       ].
     )
 
-    /// Answers the first element, in `do:` order, for which `predicate`
-    /// answers true, or the value of `onNone` when it answers true for
+    /// Finds the first element, in `do:` order, for which `predicate`
+    /// answers true, falling back on `onNone` when it answers true for
     /// none.
     ///
-    /// predicate: a one-argument block answering a Boolean.
-    /// onNone: anything understanding `value`; sent it only when no
-    ///     element matches.
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @param onNone anything understanding `value`; sent it only when no
+    /// element matches.
+    /// @answers the first element for which `predicate` answers true, or
+    /// the value of `onNone` when it answers true for none.
     public detect: predicate ifNone: onNone = (
       self do: [:element | (predicate value: element) ifTrue: [^element]].
       ^onNone value.
     )
 
-    /// Evaluates `action` with each element in `do:` order, and
-    /// `between` between every two of them: not before the first, not
-    /// after the last. Answers the receiver.
+    /// Evaluates `action` with each element in `do:` order, and `between`
+    /// between every two of them: not before the first, not after the
+    /// last.
     ///
-    /// action: a one-argument block, or anything understanding `value:`.
-    /// between: anything understanding `value`.
+    /// @param action a one-argument block, or anything understanding
+    /// `value:`.
+    /// @param between anything understanding `value`.
+    /// @answers the receiver.
     public do: action separatedBy: between = (
       |
         first ::= true.
@@ -4690,20 +4805,25 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
 
-    /// Answers whether some element is `=` to `object`; each element is
-    /// sent `=` with `object` as its argument, in `do:` order, until one
+    /// Tells whether some element is `=` to `object`; each element is sent
+    /// `=` with `object` as its argument, in `do:` order, until one
     /// answers true.
+    ///
+    /// @param object any object.
+    /// @answers whether some element is `=` to `object`, a Boolean.
     public includes: object = (
       self do: [:element | element = object ifTrue: [^true]].
       ^false.
     )
 
-    /// Folds the elements from the left: answers `initial` for an empty
-    /// collection, otherwise the last answer of `fold value: accumulated
-    /// value: element`, where `accumulated` starts as `initial` and
-    /// becomes each answer in turn.
+    /// Folds the elements from the left, `accumulated` starting as
+    /// `initial` and becoming each answer of
+    /// `fold value: accumulated value: element` in turn.
     ///
-    /// fold: a two-argument block.
+    /// @param initial any object; the first `accumulated`.
+    /// @param fold a two-argument block.
+    /// @answers `initial` for an empty collection, otherwise the last
+    /// answer of `fold`.
     public inject: initial into: fold = (
       |
         accumulated ::= initial.
@@ -4712,20 +4832,24 @@ class Kernel vmMirror: mirror = Value (
       ^accumulated.
     )
 
-    /// Answers whether the collection holds no element.
+    /// Tells whether the collection holds no element.
+    ///
+    /// @answers whether `size` is 0, a Boolean.
     public isEmpty = (
       ^self size = 0.
     )
 
     /// Folds the elements from the left, starting with the first: a
     /// one-element collection answers that element without sending
-    /// `merge`; a longer one answers the last answer of `merge value:
-    /// accumulated value: element` over the rest.
+    /// `merge`.
     ///
-    /// merge: a two-argument block.
-    ///
-    /// Signals an Error, 'Cannot reduce an empty collection', for an
-    /// empty collection.
+    /// @param merge a two-argument block.
+    /// @answers the only element of a one-element collection; for a longer
+    /// one the last answer of `merge value: accumulated value: element`
+    /// over the rest.
+    /// @signals Error 'Cannot reduce an empty collection' for an empty
+    /// collection.
+    /// @see `reduce:ifEmpty:`.
     public reduce: merge = (
       ^self reduce: merge ifEmpty: [
         (outer Kernel Error new) signal: 'Cannot reduce an empty collection'.
@@ -4735,9 +4859,12 @@ class Kernel vmMirror: mirror = Value (
     /// As `reduce:`, but answers the value of `onEmpty` for an empty
     /// collection.
     ///
-    /// merge: a two-argument block.
-    /// onEmpty: anything understanding `value`; sent it only when the
-    ///     collection is empty.
+    /// @param merge a two-argument block.
+    /// @param onEmpty anything understanding `value`; sent it only when the
+    /// collection is empty.
+    /// @answers what `reduce:` answers for a collection that is not empty,
+    /// the value of `onEmpty` for an empty one.
+    /// @see `reduce:`.
     public reduce: merge ifEmpty: onEmpty = (
       |
         first ::= true.
@@ -4755,14 +4882,14 @@ class Kernel vmMirror: mirror = Value (
       ^accumulated.
     )
 
-    /// Answers a new collection, from `newForCollectUsingAdd:`, holding
-    /// `transform`'s answer for each element, added in `do:` order. The
-    /// receiver is unchanged.
+    /// Transforms each element, in `do:` order, into a new collection.
+    /// The receiver is unchanged.
     ///
-    /// transform: a one-argument block.
-    ///
-    /// Signals what `newForCollectUsingAdd:` signals when the subclass
-    /// does not define it.
+    /// @param transform a one-argument block.
+    /// @answers a new collection, from `newForCollectUsingAdd:`, holding
+    /// `transform`'s answer for each element, added in `do:` order.
+    /// @signals Error of `subclassResponsibility`, from
+    /// `newForCollectUsingAdd:`, when the subclass does not define it.
     public collect: transform = (
       |
         result = self newForCollectUsingAdd: self size.
@@ -4771,14 +4898,14 @@ class Kernel vmMirror: mirror = Value (
       ^result.
     )
 
-    /// Answers a new collection, from `newForCollectUsingAdd:`, holding
+    /// Selects the elements for which `predicate` answers true into a new
+    /// collection. The receiver is unchanged.
+    ///
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers a new collection, from `newForCollectUsingAdd:`, holding
     /// the elements for which `predicate` answers true, in `do:` order.
-    /// The receiver is unchanged.
-    ///
-    /// predicate: a one-argument block answering a Boolean.
-    ///
-    /// Signals what `newForCollectUsingAdd:` signals when the subclass
-    /// does not define it.
+    /// @signals Error of `subclassResponsibility`, from
+    /// `newForCollectUsingAdd:`, when the subclass does not define it.
     public select: predicate = (
       |
         result = self newForCollectUsingAdd: self size.
@@ -4787,14 +4914,14 @@ class Kernel vmMirror: mirror = Value (
       ^result.
     )
 
-    /// Answers a new collection, from `newForCollectUsingAdd:`, holding
+    /// Selects the elements for which `predicate` answers false into a
+    /// new collection. The receiver is unchanged.
+    ///
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers a new collection, from `newForCollectUsingAdd:`, holding
     /// the elements for which `predicate` answers false, in `do:` order.
-    /// The receiver is unchanged.
-    ///
-    /// predicate: a one-argument block answering a Boolean.
-    ///
-    /// Signals what `newForCollectUsingAdd:` signals when the subclass
-    /// does not define it.
+    /// @signals Error of `subclassResponsibility`, from
+    /// `newForCollectUsingAdd:`, when the subclass does not define it.
     public reject: predicate = (
       |
         result = self newForCollectUsingAdd: self size.
@@ -4803,7 +4930,9 @@ class Kernel vmMirror: mirror = Value (
       ^result.
     )
 
-    /// Answers the number of elements, counted through `do:`.
+    /// Counts the elements through `do:`.
+    ///
+    /// @answers the number of elements, an Integer of at least 0.
     public size = (
       |
         count ::= 0.
@@ -4829,69 +4958,85 @@ class Kernel vmMirror: mirror = Value (
   /// applies it over `Collection` to make the typed arrays); no facet
   /// hands it to a program, which meets it only through the classes that
   /// apply it.
+  ///
+  /// The Errors and answers each member below names are those of a class
+  /// whose `at:`, `at:put:`, `size` and `newOfSize:` are a shipped
+  /// class's: a class that overrides one, or another member, decides them
+  /// for the members written over it.
   public class IndexedCollection = Collection () (
-    /// Answers a new instance of the receiver's kind holding `size`
+    /// Makes the new instance the sequence protocol builds its answers in;
+    /// every class applying the mixin defines it.
+    ///
+    /// @param size an Integer of at least 0.
+    /// @answers nothing here, where it never returns; the applying class's
+    /// own answers a new instance of the receiver's kind holding `size`
     /// elements, each the empty element of that kind.
-    ///
-    /// size: an Integer of at least 0.
-    ///
-    /// Here, signals the Error of `subclassResponsibility`,
+    /// @signals Error of `subclassResponsibility`, here,
     /// 'IndexedCollection>>newOfSize: is abstract: … must implement it':
     /// every class applying the mixin defines it.
     protected newOfSize: size = (
       ^self subclassResponsibility.
     )
 
-    /// Answers whether the receiver has no element.
+    /// Tells whether the receiver has no element.
+    ///
+    /// @answers whether `size` is 0, a Boolean.
     public isEmpty = (
       ^self size = 0.
     )
 
-    /// Answers the first element.
+    /// Reads the first element.
     ///
-    /// Signals what `at:` signals for the index 1 when the receiver is
-    /// empty: for an Array, an ArgumentError carrying 1.
+    /// @answers the first element.
+    /// @signals ArgumentError carrying 1, `at:`'s for the index 1, when
+    /// the receiver is empty.
     public first = (
       ^self at: 1.
     )
 
-    /// Answers the last element.
+    /// Reads the last element.
     ///
-    /// Signals what `at:` signals for the index 0 when the receiver is
-    /// empty: for an Array, an ArgumentError carrying 0.
+    /// @answers the last element.
+    /// @signals ArgumentError carrying 0, `at:`'s for the index 0, when
+    /// the receiver is empty.
     public last = (
       ^self at: self size.
     )
 
-    /// Answers the index of the first element `=` to `element`, or 0
-    /// when there is none. Each element is sent `=` with `element`, from
-    /// the first, until one answers true.
+    /// Finds the first element `=` to `element`. Each element is sent `=`
+    /// with `element`, from the first, until one answers true.
+    ///
+    /// @param element any object.
+    /// @answers the index of the first element `=` to `element`, or 0 when
+    /// there is none.
     public indexOf: element = (
       1 to: self size do: [:index | (self at: index) = element ifTrue: [^index]].
       ^0.
     )
 
-    /// Evaluates `action` with each index and the element there, from
-    /// the first, reading each element when it reaches it. Answers the
-    /// receiver.
+    /// Evaluates `action` with each index and the element there, from the
+    /// first, reading each element when it reaches it.
     ///
-    /// action: a two-argument block, given the index and the element.
+    /// @param action a two-argument block, given the index and the
+    /// element.
+    /// @answers the receiver.
     public keysAndValuesDo: action = (
       1 to: self size do: [:index | action value: index value: (self at: index)].
     )
 
-    /// Answers a new collection of the receiver's kind holding the
-    /// elements from `start` to `stop`, in order; empty when `stop` is
-    /// `start - 1`. The receiver is unchanged.
+    /// Copies the elements from `start` to `stop`, in order; empty when
+    /// `stop` is `start - 1`. The receiver is unchanged.
     ///
-    /// start, stop: Integers with 1 <= start <= stop + 1 and
-    ///     stop <= size.
-    ///
-    /// Signals an Array's ArgumentErrors for the range: carrying the
+    /// @param start an Integer with 1 <= start <= stop + 1.
+    /// @param stop an Integer with start - 1 <= stop <= size.
+    /// @answers a new collection of the receiver's kind holding the
+    /// elements from `start` to `stop`.
+    /// @signals ArgumentError an Array signals for the range, carrying the
     /// bound out of range, 'copyFrom: … to: … out of range: valid ranges
     /// lie within 1..size, an empty range ends just before it starts
-    /// (size …)', or 'copyFrom:to: requires an Integer index, got …' for
-    /// a bound that is no Integer.
+    /// (size …)'.
+    /// @signals ArgumentError an Array signals, 'copyFrom:to: requires an
+    /// Integer index, got …', for a bound that is no Integer.
     public copyFrom: start to: stop = (
       |
         result
@@ -4905,28 +5050,34 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// Stores the elements of `source` from `sourceStart` on into the
-    /// receiver's positions `start` to `stop`, and answers the
-    /// receiver. Correct when `source` is the receiver and the ranges
-    /// overlap: every element is read before any is stored.
-    ///
-    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
-    /// source: anything answering `size` and `at:` -- an Array, a List,
-    ///     a String, whose elements are its code points.
-    /// sourceStart: an Integer with 1 <= sourceStart and
-    ///     sourceStart + (stop - start) <= source size.
-    ///
-    /// Signals, before it reads or stores any element, an Array's
-    /// ArgumentErrors: for a range the receiver does not hold, the one
-    /// `copyFrom:to:` signals, its text beginning 'replaceFrom: … to: …';
-    /// for a bound or a `sourceStart` that is no Integer,
-    /// 'replaceFrom:to:with:startingAt: requires an Integer index, got
-    /// …'; and for a source too short, one carrying `sourceStart`,
-    /// 'startingAt: … out of range: the source holds … elements, the
-    /// range needs … from …'. Then signals what `at:put:` signals for an
-    /// element the receiver cannot hold.
+    /// receiver's positions `start` to `stop`. Correct when `source` is
+    /// the receiver and the ranges overlap: every element is read before
+    /// any is stored.
     ///
     /// The elements the range needs are copied into an Array first, which
     /// is what makes an overlapping range correct.
+    ///
+    /// @param start a range's first position in the receiver, as for
+    /// `copyFrom:to:`.
+    /// @param stop a range's last position in the receiver, as for
+    /// `copyFrom:to:`.
+    /// @param source anything answering `size` and `at:` -- an Array, a
+    /// List, a String, whose elements are its code points.
+    /// @param sourceStart an Integer with 1 <= sourceStart and
+    /// sourceStart + (stop - start) <= source size.
+    /// @answers the receiver.
+    /// @signals ArgumentError, before it reads or stores any element, an
+    /// Array's: for a range the receiver does not hold, the one
+    /// `copyFrom:to:` signals, its text beginning 'replaceFrom: … to: …'.
+    /// @signals ArgumentError, before it reads or stores any element, an
+    /// Array's, 'replaceFrom:to:with:startingAt: requires an Integer
+    /// index, got …', for a bound or a `sourceStart` that is no Integer.
+    /// @signals ArgumentError, before it reads or stores any element, an
+    /// Array's, carrying `sourceStart`, 'startingAt: … out of range: the
+    /// source holds … elements, the range needs … from …', for a source
+    /// too short.
+    /// @signals ArgumentError `at:put:` signals for an element the
+    /// receiver cannot hold, after the elements before it are stored.
     public replaceFrom: start to: stop with: source startingAt: sourceStart = (
       |
         count
@@ -4945,24 +5096,31 @@ class Kernel vmMirror: mirror = Value (
       1 to: count do: [:index | self at: start + index - 1 put: (elements at: index)].
     )
 
-    /// Answers the receiver when `start` to `stop` is a range it holds --
-    /// 1 <= start <= stop + 1 and stop <= size, the empty range included
-    /// -- and otherwise signals the ArgumentError an Array's leaf signals
-    /// for it: carrying the start unless it is a position the receiver
-    /// has, one past the end included, and then the stop, with the text
-    /// '<keyword> … to: … out of range: valid ranges lie within 1..size,
-    /// an empty range ends just before it starts (size …)'.
-    ///
-    /// keyword: the String naming the selector's first keyword,
-    ///     'copyFrom:' or 'replaceFrom:'.
-    /// refuse: a block, evaluated when a bound is no Integer, that
-    ///     signals the selector's own 'requires an Integer index' error.
+    /// Checks that `start` to `stop` is a range the receiver holds --
+    /// 1 <= start <= stop + 1 and stop <= size, the empty range included.
     ///
     /// The texts are an Array leaf's, so that a receiver of any kind fails
     /// as an Array does. A bound that is no Integer is refused by that
     /// leaf on an empty Array, since the description of an arbitrary
     /// object is the leaf's to give; checking the range itself allocates
     /// nothing, whatever the receiver's size.
+    ///
+    /// @param start the range's first position, any object; refused
+    /// through `refuse` unless it is an Integer.
+    /// @param stop the range's last position, any object; refused through
+    /// `refuse` unless it is an Integer.
+    /// @param keyword the String naming the selector's first keyword,
+    /// 'copyFrom:' or 'replaceFrom:'.
+    /// @param refuse a block, evaluated when a bound is no Integer, that
+    /// signals the selector's own 'requires an Integer index' error.
+    /// @answers the receiver, when the range is one it holds.
+    /// @signals ArgumentError an Array's leaf signals for a range it does
+    /// not hold: carrying the start unless it is a position the receiver
+    /// has, one past the end included, and then the stop, with the text
+    /// '<keyword> … to: … out of range: valid ranges lie within 1..size,
+    /// an empty range ends just before it starts (size …)'.
+    /// @signals ArgumentError `refuse` signals, for a bound that is no
+    /// Integer.
     private checkRangeFrom: start to: stop keyword: keyword ifNoInteger: refuse = (
       |
         receiverSize
@@ -4984,18 +5142,24 @@ class Kernel vmMirror: mirror = Value (
           , ')'.
     )
 
-    /// Answers the receiver when a source of `sourceSize` elements holds
-    /// `count` of them from `sourceStart` on, and otherwise signals the
-    /// ArgumentError an Array's `replaceFrom:to:with:startingAt:` leaf
-    /// signals for it, carrying `sourceStart`: 'startingAt: … out of
-    /// range: the source holds … elements, the range needs … from …', or
-    /// 'replaceFrom:to:with:startingAt: requires an Integer index, got …'
-    /// for a `sourceStart` that is no Integer.
-    ///
-    /// count, sourceSize: Integers of at least 0.
+    /// Checks that a source of `sourceSize` elements holds `count` of them
+    /// from `sourceStart` on.
     ///
     /// The texts are the leaf's, as `checkRangeFrom:to:keyword:ifNoInteger:`'s
     /// are, and so is the refusal of a start that is no Integer.
+    ///
+    /// @param sourceStart the source's position the first element is read
+    /// from, any object; refused unless it is an Integer.
+    /// @param count an Integer of at least 0, the number of elements read.
+    /// @param sourceSize an Integer of at least 0, the source's size.
+    /// @answers the receiver, when the source holds them.
+    /// @signals ArgumentError an Array's `replaceFrom:to:with:startingAt:`
+    /// leaf signals, carrying `sourceStart`, 'startingAt: … out of range:
+    /// the source holds … elements, the range needs … from …', for a
+    /// source that does not hold them.
+    /// @signals ArgumentError the same leaf signals, carrying
+    /// `sourceStart`, 'replaceFrom:to:with:startingAt: requires an Integer
+    /// index, got …', for a `sourceStart` that is no Integer.
     private checkSourceStart: sourceStart count: count sourceSize: sourceSize = (
       sourceStart isKindOfInteger ifFalse: [
         ^(outer Kernel Array new: 0) replaceFrom: 1
@@ -5015,15 +5179,15 @@ class Kernel vmMirror: mirror = Value (
           , sourceStart printString.
     )
 
-    /// Answers a new collection of the receiver's kind holding the
-    /// receiver's elements followed by those of `collection`. The
+    /// Concatenates the receiver's elements and those of `collection`. The
     /// receiver is unchanged.
     ///
-    /// collection: anything answering `size` and `at:` -- an Array, a
-    ///     List, a String, whose elements are its code points.
-    ///
-    /// Signals what `at:put:` signals for an element of `collection` the
-    /// receiver's kind cannot hold.
+    /// @param collection anything answering `size` and `at:` -- an Array,
+    /// a List, a String, whose elements are its code points.
+    /// @answers a new collection of the receiver's kind holding the
+    /// receiver's elements followed by those of `collection`.
+    /// @signals ArgumentError `at:put:` signals for an element of
+    /// `collection` the receiver's kind cannot hold.
     public , collection = (
       |
         result = self newOfSize: self size + collection size.
@@ -5033,11 +5197,14 @@ class Kernel vmMirror: mirror = Value (
       ^result.
     )
 
-    /// Answers a new collection of the receiver's kind one longer than
-    /// the receiver, `element` last. The receiver is unchanged.
+    /// Copies the receiver with `element` added last. The receiver is
+    /// unchanged.
     ///
-    /// Signals what `at:put:` signals for an `element` the receiver's
-    /// kind cannot hold.
+    /// @param element an element the receiver's kind can hold.
+    /// @answers a new collection of the receiver's kind one longer than
+    /// the receiver, `element` last.
+    /// @signals ArgumentError `at:put:` signals for an `element` the
+    /// receiver's kind cannot hold.
     public copyWith: element = (
       |
         result = self copyWithSize: self size + 1.
@@ -5046,16 +5213,17 @@ class Kernel vmMirror: mirror = Value (
       ^result.
     )
 
-    /// Answers a new collection of the receiver's kind of `newSize`
-    /// elements: the receiver's first ones, cut off when `newSize` is
-    /// smaller than `size`, followed by the empty element of that kind
-    /// -- nil for an Array -- when it is larger. The receiver is
-    /// unchanged.
+    /// Copies the receiver's first `newSize` elements, cut off when
+    /// `newSize` is smaller than `size`, followed by the empty element of
+    /// the receiver's kind -- nil for an Array -- when it is larger. The
+    /// receiver is unchanged.
     ///
-    /// newSize: an Integer of at least 0.
-    ///
-    /// Signals what `newOfSize:` signals for a `newSize` that is negative
-    /// or no Integer: for an Array, the ArgumentError of `Array new:`.
+    /// @param newSize an Integer of at least 0.
+    /// @answers a new collection of the receiver's kind of `newSize`
+    /// elements.
+    /// @signals ArgumentError `newOfSize:` signals for a `newSize` that is
+    /// negative, no Integer or too large to allocate: for an Array, that
+    /// of `Array new:`.
     public copyWithSize: newSize = (
       |
         result = self newOfSize: newSize.
@@ -5065,11 +5233,13 @@ class Kernel vmMirror: mirror = Value (
       ^result.
     )
 
-    /// Answers a new Array of `transform`'s answer for each element, in
-    /// order: an Array whatever the receiver's kind, since `transform`
-    /// may answer anything. The receiver is unchanged.
+    /// Transforms each element, in order, into a new Array: an Array
+    /// whatever the receiver's kind, since `transform` may answer
+    /// anything. The receiver is unchanged.
     ///
-    /// transform: a one-argument block.
+    /// @param transform a one-argument block.
+    /// @answers a new Array of `transform`'s answer for each element, in
+    /// order.
     public collect: transform = (
       |
         result = outer Kernel Array new: self size.
@@ -5078,11 +5248,12 @@ class Kernel vmMirror: mirror = Value (
       ^result.
     )
 
-    /// Answers a new collection of the receiver's kind holding the
-    /// elements for which `predicate` answers true, in order. The
-    /// receiver is unchanged.
+    /// Selects the elements for which `predicate` answers true into a new
+    /// collection of the receiver's kind. The receiver is unchanged.
     ///
-    /// predicate: a one-argument block answering a Boolean.
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers a new collection of the receiver's kind holding the
+    /// elements for which `predicate` answers true, in order.
     public select: predicate = (
       |
         result = self newOfSize: self size.
@@ -5099,35 +5270,29 @@ class Kernel vmMirror: mirror = Value (
       ^result copyFrom: 1 to: count.
     )
 
-    /// Answers a new collection of the receiver's kind holding the
-    /// elements for which `predicate` answers false, in order. The
-    /// receiver is unchanged.
+    /// Selects the elements for which `predicate` answers false into a
+    /// new collection of the receiver's kind. The receiver is unchanged.
     ///
-    /// predicate: a one-argument block answering a Boolean.
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers a new collection of the receiver's kind holding the
+    /// elements for which `predicate` answers false, in order.
     public reject: predicate = (
       ^self select: [:element | (predicate value: element) not].
     )
 
     /// Sorts the elements in place, stably -- elements that may precede
-    /// each other both ways keep their order -- and answers the
-    /// receiver.
+    /// each other both ways keep their order.
     ///
-    /// lessOrEqual: a two-argument block answering whether its first
-    ///     argument may precede its second.
+    /// @param lessOrEqual a two-argument block answering whether its first
+    /// argument may precede its second.
+    /// @answers the receiver.
+    /// @see `sortFrom:to:by:`.
     public sort: lessOrEqual = (
       ^self sortFrom: 1 to: self size by: lessOrEqual.
     )
 
     /// Sorts the elements from `start` to `stop` in place, stably, as
-    /// `sort:` does, and answers the receiver; the rest stay where they
-    /// are.
-    ///
-    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
-    /// lessOrEqual: a two-argument block answering whether its first
-    ///     argument may precede its second.
-    ///
-    /// Signals the ArgumentError of `copyFrom:to:` for a range the
-    /// receiver does not hold.
+    /// `sort:` does; the rest stay where they are.
     ///
     /// A bottom-up merge sort over a copy of the range and a buffer of
     /// the same size, trading the two each pass: no recursion, so its
@@ -5135,6 +5300,17 @@ class Kernel vmMirror: mirror = Value (
     /// receiver's kind the size of the range as extra memory. Taking from
     /// the left run while its element may precede the right run's keeps
     /// it stable.
+    ///
+    /// @param start a range's first position in the receiver, as for
+    /// `copyFrom:to:`.
+    /// @param stop a range's last position in the receiver, as for
+    /// `copyFrom:to:`.
+    /// @param lessOrEqual a two-argument block answering whether its first
+    /// argument may precede its second.
+    /// @answers the receiver.
+    /// @signals ArgumentError of `copyFrom:to:` for a range the receiver
+    /// does not hold or a bound that is no Integer.
+    /// @see `sort:`.
     public sortFrom: start to: stop by: lessOrEqual = (
       |
         source ::= self copyFrom: start to: stop.
@@ -5165,6 +5341,18 @@ class Kernel vmMirror: mirror = Value (
     /// cut off at `count` -- into the same positions of `target`,
     /// taking from the first run while its element may precede the
     /// second's.
+    ///
+    /// @param source the collection the runs are read from with `at:`.
+    /// @param target a collection of at least `count` elements, written
+    /// with `at:put:` at the runs' positions only.
+    /// @param left the position the first run starts at, an Integer from 1
+    /// to `count`.
+    /// @param width the length of a run that is not cut off, an Integer of
+    /// at least 1.
+    /// @param count the number of elements of `source` being sorted, an
+    /// Integer; no run reaches past it.
+    /// @param lessOrEqual as `sort:`'s.
+    /// @answers the receiver.
     private merge: source into: target from: left width: width count: count by: lessOrEqual = (
       |
         middle ::= left + width - 1.
@@ -5193,9 +5381,11 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
 
-    /// Answers a new Array of the receiver's elements, in order. The
+    /// Copies the receiver's elements, in order, into an Array. The
     /// receiver is unchanged, and later changes to either do not reach
     /// the other.
+    ///
+    /// @answers a new Array of the receiver's elements.
     public asArray = (
       |
         result = outer Kernel Array new: self size.
