@@ -10275,7 +10275,7 @@ of the first two.
   outlives an exit, and a collection runs only at an exit or between
   entries, so a body with a compiled frame is always one that runs. A
   push in `vm::run_stretch` pays one load
-  and one compare (`JitSlot::is_armed`); everything else is
+  and one compare (`JitSlot::push_is_armed`); everything else is
   `jit::entered`, out of line and `#[cold]`. A send of a method in the
   run loop pays three loads, from the method to its code to the slot,
   and one compare (`JitSlot::is_compiled`, inline in
@@ -10315,12 +10315,18 @@ of the first two.
     own budgets. A loop whose callee makes a block, which machine code
     does not do yet, otherwise paid an exit and an entry on every turn; a
     region of bodies that keep leaving ends up interpreted, and one that
-    does not stays in machine code. `ABANDONED` lies between the counts
-    of entries and `COMPILED`, so that a push of an abandoned body is
-    armed and counts its entry (`jit::entered`, before it reads anything
-    else of the frame), while the push's test of every body stays one
-    compare (`JitSlot::is_armed`); a body that is refused or exits at once
-    lies above `COMPILED` and pays only that compare.
+    does not stays in machine code. An abandoned body's state lies
+    between `COMPILED` and the states of a body that exits at once or is
+    refused, and counts its interpreted entries itself: its abandonment
+    settles it its wait short of `EXITS_AT_ONCE`, and the push's test
+    (`JitSlot::push_is_armed`) adds one inline while it stays below
+    `LAST_ABANDONED`, so that only the push that revives it calls
+    `jit::entered`. A push of a counting or compiled body still pays one
+    compare, of a refused one or one that exits at once two. Armed
+    instead, so that every push of an abandoned body called `jit::entered`
+    out of line, `bench_signal`, which keeps `descend:` abandoned and
+    pushes it about 255,000 times a send, ran 29.5% slower, about 20 ns a
+    push.
 
     Abandonment is not for good: an abandoned body is **revived**
     (`JitStatistics::revived_bodies`) on either of two paths, and then
@@ -10357,7 +10363,8 @@ of the first two.
       a tenth of one once the wait is capped. Deterministic, since it
       counts entries, never time; and machine code pays nothing for it,
       since only the interpreted pushes of an abandoned body
-      (`jit::entered`) and a factory's miss (`decide_at`) count; a
+      (`JitSlot::push_is_armed`, inline) and a factory's miss
+      (`decide_at`) count; a
       method's miss, the initializer leaf and the forcing leaf count no
       entry of an abandoned body (`note_entry_by_call`), and every one
       of them still passes through `jit::after_compile_trigger`, which

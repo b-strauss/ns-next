@@ -105,6 +105,8 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         freed_twins: after.freed_twins - before.freed_twins,
         moved_bytes: after.moved_bytes - before.moved_bytes,
         revived_bodies: after.revived_bodies - before.revived_bodies,
+        abandoned_entries_out_of_line: after.abandoned_entries_out_of_line
+            - before.abandoned_entries_out_of_line,
     }
 }
 
@@ -6170,6 +6172,15 @@ ns_runtime::for_each_lowering! {
                 done.compiled_bodies <= done.revived_bodies + 3,
                 "one compile per revival: {} compiles",
                 done.compiled_bodies
+            );
+            // The tens of thousands of interpreted pushes that waited are
+            // counted inline: only the push that revives a body leaves the
+            // run loop for it.
+            assert!(
+                (1..=done.revived_bodies).contains(&done.abandoned_entries_out_of_line),
+                "{} pushes of an abandoned body out of line, {} revivals",
+                done.abandoned_entries_out_of_line,
+                done.revived_bodies
             );
         }
     }

@@ -282,7 +282,7 @@ fn run_stretch<'gc>(
         resume_in_machine_code: false,
     };
     // The run's base activation, entered as a push is (`run`).
-    if std::mem::take(entering) && code.jit.is_armed() {
+    if std::mem::take(entering) && code.jit.push_is_armed() {
         let switched = machine_code_switch(
             mutator,
             &mut handoff,
@@ -1353,7 +1353,7 @@ fn run_stretch<'gc>(
                 // the test of whether it stopped in machine code, whose
                 // machine code it resumes (`jit::resumed`).
                 let resume = std::mem::take(&mut handoff.resume_in_machine_code);
-                if resume || (program_counter == 0 && code.jit.is_armed()) {
+                if resume || (program_counter == 0 && code.jit.push_is_armed()) {
                     // A switch is a safepoint: a real request made meanwhile
                     // -- the collection `garbageCollect` asks for before its
                     // method returns -- is taken before machine code runs
@@ -2630,7 +2630,7 @@ fn machine_code_switch<'gc>(
                         // A switch is a safepoint: one requested meanwhile
                         // is taken before machine code runs again.
                         if mutator.heap.safepoint_requested()
-                            || !(resume || (program_counter == 0 && code.jit.is_armed()))
+                            || !(resume || (program_counter == 0 && code.jit.push_is_armed()))
                         {
                             // Interpreted from here, even the frame that
                             // stopped in machine code: its bit goes.
