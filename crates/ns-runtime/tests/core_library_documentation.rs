@@ -33,6 +33,7 @@ const TAGGED_MODULES: &[&str] = &[
     "platform/CollectionsFactory.ns",
     "platform/MirrorsFactory.ns",
     "platform/TypedArraysFactory.ns",
+    "Kernel.ns",
 ];
 
 /// Reads a core-library module and parses it.
