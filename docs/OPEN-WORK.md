@@ -120,7 +120,7 @@ included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
 "Working in this repository"), and the three builds a side vary the block
 layout inside `vm::run` as that section says, and the current tree's
 three lay the code zone out at three paddings as "What reclamation moved"
-says. Six of the ten measurement sources are
+says. Seven of the eleven measurement sources are
 under `benchmarks/micro/`, `bench_signal.ns` the one an exception's
 handler search moves and `bench_while.ns` the one that runs `whileTrue:`
 and `whileFalse:` over blocks held in slots, which the compiler does not
@@ -615,11 +615,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     - *Code that says less than it could*: `Heap::machine_word_count_bits`
       builds a header of guard `DispatchId::NONE` and format
       `FixedPointers` and relies on both encoding as 0, where an accessor
-      of `heap/header.rs` for a word count's bits would state it; and the
-      module comment of `jit/closures.rs` still says that forcing an
-      unresolved future is the interpreter's, where `ResolveFuture` now
-      calls the forcing leaf and makes a compiled call of the future's
-      `resolve`.
+      of `heap/header.rs` for a word count's bits would state it.
     - *Wasted writes*: a compaction fills the room it frees with stops
       and a site slide writes vacant cells over ranges that the shrink
       after the collection then gives back (`jit/zone.rs`,

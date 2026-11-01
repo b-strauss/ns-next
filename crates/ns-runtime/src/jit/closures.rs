@@ -36,8 +36,8 @@
 //!
 //! So are the futures of a simultaneous slot clause (`make_future`,
 //! `resolve_future`): a future made by the inline bump, as a closure is,
-//! and seen through once resolved; forcing an unresolved one is the
-//! interpreter's, the instruction then running again in machine code.
+//! and seen through once resolved; forcing an unresolved one is a
+//! compiled call of its `resolve`, which the forcing leaf decides.
 
 use ns_assembler::{Condition, Label, Memory, Register, Width};
 
