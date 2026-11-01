@@ -19,6 +19,20 @@ class NewspeakColorSettingsPageTest {
         assertEquals(page.getAdditionalHighlightingTagToDescriptorMap().keys, tags)
     }
 
+    /** The page shows a doc comment's colour only where its highlighter merges a block. */
+    @Test fun theDemoTextHasADocComment() {
+        val text = page.getDemoText().replace(Regex("</?[a-z]+>"), "")
+        val lexer = page.highlighter.highlightingLexer
+        lexer.start(text, 0, text.length, 0)
+        var docComments = 0
+        while (true) {
+            val type = lexer.tokenType ?: break
+            if (NewspeakColors.DOC_COMMENT in page.highlighter.getTokenHighlights(type)) docComments += 1
+            lexer.advance()
+        }
+        assertEquals(1, docComments)
+    }
+
     @Test fun everyKeyHasADescriptor() {
         val described = page.getAttributeDescriptors().map { descriptor -> descriptor.key }.toSet()
         assertEquals(NewspeakColors.ALL.toSet(), described)

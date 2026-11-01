@@ -1134,10 +1134,11 @@ Components:
   Every `(* … *)` comment — nested ones included — and every string is a
   single token, so the lexer restarts in state 0 at any token boundary, which
   the platform's incremental lexing needs. A `///` comment is one token per
-  line, of its own type `LINE_COMMENT`: a token that spanned a block of
-  lines would make the lexer's state depend on the lines before it, so the
-  plugin's lexer merges nothing and leaves blocks to the Rust side
-  ([frontend.md](frontend.md), "Comments"). Unlike the Rust lexer it also emits
+  line, of its own type `LINE_COMMENT`: this lexer -- the parser's, the
+  PSI's, the TODO search's -- mirrors the Rust lexer token for token, which
+  the lexer comparison holds, so it merges nothing and leaves blocks to the
+  Rust side ([frontend.md](frontend.md), "Comments"); only the highlighting
+  lexer, below, merges a doc comment. Unlike the Rust lexer it also emits
   whitespace and comment tokens, since the platform requires every character
   to belong to a token.
 - **A flat `ParserDefinition`** — every token under a single file node, no
@@ -1164,11 +1165,27 @@ Components:
   platform's schemes); a single `///` line, and a `///` after code, keep the
   comment key. The block is the Rust lexer's (`continues_line_block`: lines
   that each start their line, one line break and only whitespace between
-  them), but a line's colour depends on the lines around it and the
-  highlighter relexes only from an edited line on, so the lexer, one token a
-  line, cannot decide it: `NewspeakDocCommentAnnotator` does, a `DumbAware`
-  annotator over the flat PSI's comment and whitespace leaves, by the rule
-  in `editor/NewspeakDocComments.kt`, which the rendered view reads too.
+  them), the rule `editor/NewspeakDocComments.kt` states over the PSI for
+  the rendered view. A line's colour depends on the lines around it, and
+  the editor paints the highlighter's colours before any daemon pass, so
+  the colour comes from the highlighting lexer, `NewspeakHighlightingLexer`,
+  which the `SyntaxHighlighter` alone answers: the parsing lexer's tokens,
+  but a block as one `DOC_COMMENT` token from its first line's `///` to the
+  end of its last line's text, the whitespace between included. An
+  annotator runs only after the file is shown, so every doc comment would
+  show grey first. The lexer reads whether a `///` starts its line from
+  the buffer, so it restarts at any token; its state says whether a token
+  starts its line (0) or not (1), because the editor relexes an edit from
+  two tokens before it, walked back to a token in state 0, and stops only
+  at one in state 0 that matches the old tokens: a `///` typed on the line
+  under a single one relexes from that line, which starts its line, not
+  from the whitespace after it, and a relex never stops inside a line,
+  whose start decides whether a `///` further on is a remark. Every reader
+  of the highlighter's tokens takes the merged token: the indentation, for
+  which each of its lines is a `///` line of its own; Enter in a `///`
+  comment, which continues the caret's line of a block; and the TODO
+  index, which reads the highlighter's tokens against the parser
+  definition's comment set, `DOC_COMMENT` included.
 - **Rendered doc comments** — every doc comment, and only those, renders in
   place as Java's do: `NewspeakInlineDocumentationProvider`, the platform's
   `inlineDocumentationProvider` extension point (every language's, so it
@@ -1604,6 +1621,13 @@ The server's own tests are described under its section, above ("Testing").
   `check` up to date;
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
+- the highlighting lexer (`NewspeakHighlightingLexerTest`) — which `///`
+  lines merge into a doc comment (a block of two and of three, at the
+  text's start and end, and not a single line, a block split by a blank
+  line or code, a trailing remark, or a line beside a `(* *)` comment), the
+  state of each token, restarts over the goldens, and, over every golden,
+  benchmark and core-library module, the parsing lexer's tokens wherever it
+  merges nothing and a block's lines where it does;
 - plugin tests on `BasePlatformTestCase` (`NewspeakEditorTest`) — file type,
   brace matching, commenting; `NewspeakOneLineMethodFoldingTest`, the
   one-line methods' folds (which bodies fold and which stay open, the
@@ -1617,14 +1641,22 @@ The server's own tests are described under its section, above ("Testing").
   line kept at the one before it, past a blank line and a string spanning
   lines; Enter inside a string not re-indented; Tab inserting two spaces,
   also under settings of eight and tabs; smart Backspace in the
-  indentation; and the editor's right margin at 100 where the project's is
+  indentation, also of a doc comment's line, and Enter after a doc comment
+  at its last line's indentation; and the editor's right margin at 100 where the project's is
   120; `NewspeakLineCommentEnterTest`, Enter in a `///` comment (at its end,
   in its middle, after a bare `///`, with wider spacing, in a body, after
   code at its end and in its middle, before the slashes, and in a block
-  comment); `NewspeakDocCommentAnnotatorTest`, which `///` lines take the
-  doc-comment colour (a block of two, at the file's start too, and not a
-  single line, a block split by a blank line or code, a trailing remark, or
-  a line beside a `(* *)` comment); `NewspeakInlineDocumentationProviderTest`,
+  comment) and in a doc comment (at the end of its first and of its last
+  line, in the middle of a line, in a body, and before a later line's
+  slashes); `NewspeakSyntaxHighlighterTest`, which ranges the editor's
+  highlighter colours as a doc comment (the cases of the lexer's test), and
+  the highlighter kept equal to a fresh lex while typing: a line typed
+  under a single one and above it, by Enter and slash by slash, two lines
+  joined across a blank line, the code before a line deleted, a line typed
+  under a remark that came to start its line, and a block broken by a line
+  deleted, by its slashes broken and by code typed before either line;
+  `NewspeakEditorTest` also finds a TODO in a doc comment through the TODO
+  index; `NewspeakInlineDocumentationProviderTest`,
   the rendered doc comments (every block and no single line, the Markdown
   rendered, the owner from the server's symbols and none without them, an
   item found by its range, nothing for another language's file);

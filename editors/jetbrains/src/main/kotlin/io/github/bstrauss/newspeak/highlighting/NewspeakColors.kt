@@ -42,8 +42,9 @@ object NewspeakColors {
     /**
      * A block of two or more `///` lines, which documents what follows it as
      * Java's doc comments do, and takes their colour; a single `///` line
-     * stays a comment. Set by `NewspeakDocCommentAnnotator`, since the lexer
-     * sees one line at a time.
+     * stays a comment. The highlighting lexer (`NewspeakHighlightingLexer`)
+     * answers such a block as one token, so the colour stands from the
+     * editor's first paint.
      */
     @JvmField val DOC_COMMENT = createTextAttributesKey("NEWSPEAK_DOC_COMMENT", Default.DOC_COMMENT)
     @JvmField val PARENTHESES = createTextAttributesKey("NEWSPEAK_PARENTHESES", Default.PARENTHESES)

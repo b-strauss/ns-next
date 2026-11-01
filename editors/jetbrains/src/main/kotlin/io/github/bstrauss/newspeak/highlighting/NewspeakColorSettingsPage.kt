@@ -55,12 +55,11 @@ class NewspeakColorSettingsPage : ColorSettingsPage {
         "declaration" to NewspeakColors.METHOD_DECLARATION,
         "send" to NewspeakColors.SEND,
         "lazy" to NewspeakColors.KEYWORD,
-        "doc" to NewspeakColors.DOC_COMMENT,
     )
 
     override fun getDemoText(): String = """
-        <doc>/// Counts up to a limit.</doc>
-        <doc>/// Reports each step.</doc>
+        /// Counts up to a limit.
+        /// Reports each step.
         class <class>Counter</class> usingPlatform: <parameter>platform</parameter> = Object <send>new</send> (
           /// A counter. TODO: reset
           | private <slot>count</slot> ::= 0. private <immutable>limit</immutable> = 16rFF. |

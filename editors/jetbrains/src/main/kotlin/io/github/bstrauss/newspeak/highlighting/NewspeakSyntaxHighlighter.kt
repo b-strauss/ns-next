@@ -9,11 +9,11 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.TokenType
 import com.intellij.psi.tree.IElementType
-import io.github.bstrauss.newspeak.lexer.NewspeakLexer
+import io.github.bstrauss.newspeak.lexer.NewspeakHighlightingLexer
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes as Types
 
 class NewspeakSyntaxHighlighter : SyntaxHighlighterBase() {
-    override fun getHighlightingLexer(): Lexer = NewspeakLexer()
+    override fun getHighlightingLexer(): Lexer = NewspeakHighlightingLexer()
 
     override fun getTokenHighlights(tokenType: IElementType?): Array<TextAttributesKey> =
         pack(ATTRIBUTES[tokenType])
@@ -41,6 +41,7 @@ class NewspeakSyntaxHighlighter : SyntaxHighlighterBase() {
             Types.SYMBOL to NewspeakColors.SYMBOL,
             Types.COMMENT to NewspeakColors.COMMENT,
             Types.LINE_COMMENT to NewspeakColors.COMMENT,
+            Types.DOC_COMMENT to NewspeakColors.DOC_COMMENT,
             Types.LEFT_PARENTHESIS to NewspeakColors.PARENTHESES,
             Types.RIGHT_PARENTHESIS to NewspeakColors.PARENTHESES,
             Types.LEFT_BRACKET to NewspeakColors.BRACKETS,

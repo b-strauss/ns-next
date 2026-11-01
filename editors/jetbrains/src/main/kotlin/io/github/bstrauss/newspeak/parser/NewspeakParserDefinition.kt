@@ -41,7 +41,13 @@ class NewspeakParserDefinition : ParserDefinition {
 
     companion object {
         @JvmField val FILE = IFileElementType(NewspeakLanguage)
-        @JvmField val COMMENTS: TokenSet = TokenSet.create(NewspeakTokenTypes.COMMENT, NewspeakTokenTypes.LINE_COMMENT)
+        /**
+         * The parser never sees a doc comment, which only the highlighting
+         * lexer answers; the TODO index reads the highlighter's tokens
+         * against this set, so a TODO in a doc comment is found.
+         */
+        @JvmField val COMMENTS: TokenSet =
+            TokenSet.create(NewspeakTokenTypes.COMMENT, NewspeakTokenTypes.LINE_COMMENT, NewspeakTokenTypes.DOC_COMMENT)
         @JvmField val STRINGS: TokenSet = TokenSet.create(NewspeakTokenTypes.STRING)
     }
 }

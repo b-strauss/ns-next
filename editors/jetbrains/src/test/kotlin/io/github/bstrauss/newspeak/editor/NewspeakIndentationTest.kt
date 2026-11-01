@@ -178,6 +178,17 @@ class NewspeakIndentationTest : BasePlatformTestCase() {
         myFixture.checkResult("  foo = (\n    <caret>x.\n  )")
     }
 
+    /** A doc comment is one token of the highlighter's, but each of its lines is indented as a `///` line is. */
+    fun testBackspaceInTheIndentationOfADocCommentsLineRemovesTwoSpaces() {
+        myFixture.configureByText("Module.ns", "  foo = (\n    /// one\n        <caret>/// two\n    x.\n  )")
+        myFixture.performEditorAction(IdeActions.ACTION_EDITOR_BACKSPACE)
+        myFixture.checkResult("  foo = (\n    /// one\n    <caret>/// two\n    x.\n  )")
+    }
+
+    fun testEnterAfterADocCommentKeepsTheIndentationOfItsLastLine() {
+        enter("    /// one\n      /// two<caret>", "    /// one\n      /// two\n      /// <caret>")
+    }
+
     // The width.
 
     /**

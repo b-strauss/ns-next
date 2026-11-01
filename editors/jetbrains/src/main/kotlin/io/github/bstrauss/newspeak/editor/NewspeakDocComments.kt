@@ -9,10 +9,10 @@ import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes as Types
 
 /**
  * A doc comment: a block of two or more `///` lines, which documents what
- * follows it as a Java doc comment does. The colour
- * (`NewspeakDocCommentAnnotator`) and the rendered view
- * (`NewspeakInlineDocumentationProvider`) both read this one rule, so what
- * shows green is what renders.
+ * follows it as a Java doc comment does. The rendered view
+ * (`NewspeakInlineDocumentationProvider`) reads this rule, and the colour
+ * (`NewspeakHighlightingLexer`, which merges a block into one token) states
+ * the same one over the text, so what shows green is what renders.
  *
  * A block is the server's (`ns-syntax`'s `continues_line_block`): `///`
  * lines that each start their line, with only whitespace and one line break

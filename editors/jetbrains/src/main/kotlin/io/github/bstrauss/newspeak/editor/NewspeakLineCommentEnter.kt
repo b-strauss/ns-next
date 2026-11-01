@@ -35,13 +35,17 @@ class NewspeakLineCommentEnter : EnterHandlerDelegate {
         val offset = caretOffset.get()
         if (offset < PREFIX.length) return Result.Continue
         val iterator = editor.highlighter.createIterator(offset - 1)
-        if (iterator.atEnd() || iterator.tokenType != Types.LINE_COMMENT) return Result.Continue
-        val commentStart = iterator.start
-        if (offset < commentStart + PREFIX.length) return Result.Continue
-
+        if (iterator.atEnd() || iterator.tokenType != Types.LINE_COMMENT && iterator.tokenType != Types.DOC_COMMENT) {
+            return Result.Continue
+        }
         val document = editor.document
         val text = document.charsSequence
         val lineStart = document.getLineStartOffset(document.getLineNumber(offset))
+        // A doc comment is one token of the highlighter's over all its lines;
+        // the line continued is the caret's own, whose `///` starts after its indentation.
+        val commentStart = if (iterator.start >= lineStart) iterator.start else skipSpaces(text, lineStart)
+        if (offset < commentStart + PREFIX.length || !text.startsWith(PREFIX, commentStart)) return Result.Continue
+
         val startsItsLine = (lineStart until commentStart).all { index -> text[index] == ' ' || text[index] == '\t' }
         val textAfter = skipSpaces(text, offset)
         val atLineEnd = textAfter >= text.length || text[textAfter] == '\n'
