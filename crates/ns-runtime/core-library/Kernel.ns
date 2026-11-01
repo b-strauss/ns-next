@@ -5694,7 +5694,7 @@ class Kernel vmMirror: mirror = Value (
 
     /// Evaluates `action` with each byte in turn, from the first, reading
     /// each byte only when it reaches it, so that a store ahead of the
-    /// walk is seen. It signals what `action`'s `value:` signals.
+    /// walk is seen.
     ///
     /// The size is read through its leaf rather than `self size`, which
     /// for a receiver holding no bytes -- an instance of a subclass --
@@ -5906,7 +5906,7 @@ class Kernel vmMirror: mirror = Value (
     /// Finds the last occurrence of `element`:
     /// `lastIndexOf: element startingAt: size + 1`.
     ///
-    /// @param element as for `indexOf:startingAt:`.
+    /// @param element as for `lastIndexOf:startingAt:`.
     /// @answers the index of the last occurrence of `element`, or 0.
     /// @see `lastIndexOf:startingAt:`.
     public lastIndexOf: element = (
@@ -6103,7 +6103,7 @@ class Kernel vmMirror: mirror = Value (
 
     /// Evaluates `action` with the object in each slot in turn, from the
     /// first, nil for a slot that holds none, reading each slot only when
-    /// it reaches it. It signals what `action`'s `value:` signals.
+    /// it reaches it.
     ///
     /// The size is read through its leaf rather than `self size`, which
     /// for a receiver holding no slots -- an instance of a subclass --
@@ -6126,8 +6126,7 @@ class Kernel vmMirror: mirror = Value (
 
     /// Evaluates `action` with each index and the object in the slot
     /// there, from the first, nil for a slot that holds none, reading
-    /// each slot only when it reaches it. It signals what `action`'s
-    /// `value:value:` signals.
+    /// each slot only when it reaches it.
     ///
     /// @param action a two-argument block, given the index and the
     /// object.
@@ -6653,11 +6652,12 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
 
-    /// Refuses an access to a view whose `bytes` holds anything but a
+    /// Refuses an access to a view whose `bytes` answers anything but a
     /// ByteArray: an object that answers true to `isKindOfByteArray`
-    /// without being one, which `over:` and `on:byteOrder:` accept, or one
-    /// only a crafted image can put there. It never returns: an Error is
-    /// not resumable.
+    /// without being one, which `over:` and `on:byteOrder:` accept;
+    /// whatever a program's subclass that overrides `bytes` answers; or
+    /// one only a crafted image can put there. It never returns: an Error
+    /// is not resumable.
     ///
     /// Protected rather than private, since each subclass's accessors
     /// signal it.
