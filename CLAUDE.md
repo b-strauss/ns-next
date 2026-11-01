@@ -509,10 +509,12 @@ entry row and record that names an address in it, and a body holds no
 address of its own but those relative to `rip`.
 No word machine code reads or writes between two leaf calls lives inline
 in `Mutator`: frame registers and object fields lie in the activation
-stack's and the object space's reservations, the cells, the closure
-sites, the application id table and the machine entry table in
-reservations of their own, all
-outside it, and every other such word lives in the heap's machine words
+stack's and the object space's reservations, the cells, the
+application id table and the machine entry table in reservations of
+their own, a body's closure and outer-local sites among its data words
+in the code zone, moved and freed with it and written only through the
+zone's writer (`JitState::write_body_words`), all outside it, and
+every other such word lives in the heap's machine words
 (`heap/machine_words.rs`) or the entry block (`ns_memory::EntryBlock`),
 `Cell`s behind an `Rc` each. `CodeZone::enter` holds the mutator as a
 protected `&mut`, so machine code's access to a word inside it is
