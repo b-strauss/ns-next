@@ -61,6 +61,7 @@ first.
 | A one-line method in the JetBrains plugin folded as Java's one-liners: brackets and their spaces in the folds, the server's method fold containing them | Complete | 2026-11-01 | — |
 | Doc comments: a block of `///` lines coloured and rendered in place as Markdown, a hover with a declaration's signature and doc comment, Java-style tags (`@param`, `@answers`, `@signals`, `@see`, `@factory`, `{@summary}`) as sections with the server's warnings, and the whole core library documented with them | Complete | 2026-11-01 | [doc-comment-tags](superpowers/plans/2026-11-01-1608-doc-comment-tags.md) |
 | Identity and equality documented: the contract of `==`, `=`, `hash` and `identityHash` at `Object`, what a value's identity is, and every class's own | Complete | 2026-11-01 | — |
+| `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
 
 ## Notes
@@ -6732,3 +6733,15 @@ forwarding `Proxy` breaks it from outside, recorded in
 
 - `3b4a5b81`, `8567ade1`, `02a9c310`, `4d8633d8` -- the comments.
 - `ddcfb966`, `e95ce6df` -- the forwarding `Proxy` in the open work.
+
+## Float's constants and the NaN decision written out (2026-11-01)
+
+`Float nan`, `Float infinity` and `Float negativeInfinity` answer the three
+values a program otherwise parses or divides for, on `Float`'s class side
+alone, beyond Primordial Soup's API; there is no literal for them and no
+subclass for the NaN. The decision that a NaN equals a NaN, confirmed with
+the user, now records the options weighed against §3.1.1 and the prior art
+([core-library.md](design/core-library.md), "A NaN equals a NaN").
+
+- `786d36a1` -- the decision written out.
+- `b3b9ff6a` -- the constants and their golden.
