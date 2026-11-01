@@ -1594,8 +1594,9 @@ allocation, its overflow word included, as live in the forwarding table, a
 `ForwardingTable` (`heap/compaction.rs`): one bit per word of the space up
 to the old space's top, the nursery included, and, per chunk of 64 words,
 the number of live words before the chunk, filled in once the bits are
-(`summarize`). The table is summarized in two segments, the old space's
-chunks first and the nursery's after them, so a survivor's new position is
+(`summarize`). The table is summarized over the chunks of the three
+occupied ranges, the old space's first, then the past survivor space's and
+eden's, the gaps between them skipped, so a survivor's new position is
 the old space's first offset (`NURSERY_END`) plus the live words before it
 in that order -- the chunk's prefix plus the `popcount` of the live bits
 below it in the chunk -- one entry, a mask and a `popcount` per lookup, the
@@ -1621,15 +1622,15 @@ space's top, about 3% (decided with the user on 2026-10-03; "Decisions"
 below). Why the full collection compacts both generations into the old
 space, and what was rejected, is decision 2 under "Generations".
 
-The table covers what is occupied, not what is reserved. It stays indexed
+The table covers what is occupied, not what is reserved. It is indexed
 from word 0, so a lookup is one index and needs no range check per
 forwarded handle; but its span includes the whole nursery's reservation,
 10 MiB, about 20,000 chunks, while what the nursery holds at a collection
-is only the past survivor space's and eden's filled prefixes. Allocated
-and zeroed afresh, and summarized chunk by chunk, the table made every
-collection cost the reservation however little lived: under the collect
+is only the past survivor space's and eden's filled prefixes. A table
+allocated, zeroed and summarized over its whole span would make every
+collection cost the reservation however little lives: under the collect
 stress mode, which collects at every safepoint of a program with a hundred
-live objects, three quarters of the time went to it. So a collection
+live objects, three quarters of the time would go to it. So a collection
 writes and reads only the chunks that cover the occupied ranges: `set_live`
 marks inside them, and `summarize` fills in their prefixes, the old space's
 first, then the past survivor space's and eden's, and leaves the gaps
@@ -1647,7 +1648,10 @@ not handed back takes its buffer with it, and the next collection starts
 from an empty, and so clear, one. The buffer is kept to the chunks of the
 committed memory, so its footprint follows the space a collection gives
 back ("Giving committed memory back") rather than the highest top the
-space ever had; it grows when the old space's top has grown past it.
+space ever had. When the old space's top has grown past it, it grows to
+the chunks of the committed memory, which grows by doubling, so an old
+top that rises at every collection copies the buffer only as often as the
+space commits more.
 
 Frames are objects in the same space, so a closure's captured frame, a
 frame's sender and home and the objects a frame holds are one graph with one
@@ -2890,8 +2894,9 @@ objects lie end to end from the region's start up to its top.
   `planCompactSavingForwarders`,
   `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:61596`, `:62399`).
   The mark bit is in the header ("Marking"); the forwarding addresses live
-  in a side table while a collection runs, a live-word bitmap with a prefix
-  count per 64 words, where Spur saves each object's first field to make
+  in a side table, a live-word bitmap with a prefix count per 64 words,
+  whose buffer is kept between collections and whose chunks a collection
+  writes only where the space is occupied, where Spur saves each object's first field to make
   room for one ("Compaction and forwarding"). Between full collections a
   copying scavenger collects the nursery ("Generations").
 - **The weak symbol table and the replacement of resolved futures** walk
