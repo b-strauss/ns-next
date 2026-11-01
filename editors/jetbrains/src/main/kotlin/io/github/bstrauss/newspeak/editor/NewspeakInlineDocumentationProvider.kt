@@ -28,7 +28,9 @@ import org.eclipse.lsp4j.DocumentSymbol
  * all the same; the daemon runs again once they arrive.
  */
 class NewspeakInlineDocumentationProvider : InlineDocumentationProvider {
-    override fun inlineDocumentationItems(file: PsiFile?): Collection<InlineDocumentation> {
+    override fun inlineDocumentationItems(file: PsiFile?): Collection<InlineDocumentation> = comments(file)
+
+    private fun comments(file: PsiFile?): List<NewspeakDocComment> {
         // The extension point is every language's.
         if (file == null || file.language != NewspeakLanguage) return emptyList()
         val document = PsiDocumentManager.getInstance(file.project).getDocument(file) ?: return emptyList()
@@ -42,7 +44,8 @@ class NewspeakInlineDocumentationProvider : InlineDocumentationProvider {
     }
 
     override fun findInlineDocumentation(file: PsiFile, textRange: TextRange): InlineDocumentation? =
-        inlineDocumentationItems(file).firstOrNull { it.documentationRange == textRange }
+        // Matched on the comment's own range: getDocumentationRange is override-only, never called by a plugin.
+        comments(file).firstOrNull { it.range == textRange }
 
     /** The range of the first symbol, in pre-order, that starts on the line after `comment`. */
     private fun owner(symbols: List<DocumentSymbol>, comment: TextRange, document: Document): TextRange? {
@@ -64,7 +67,7 @@ class NewspeakInlineDocumentationProvider : InlineDocumentationProvider {
 private class NewspeakDocComment(
     private val project: Project,
     private val markdown: String,
-    private val range: TextRange,
+    val range: TextRange,
     private val owner: TextRange?,
 ) : InlineDocumentation {
     override fun getDocumentationRange(): TextRange = range

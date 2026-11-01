@@ -4,7 +4,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.ide.projectView.PresentationData
 import com.intellij.ide.structureView.StructureViewTreeElement
 import com.intellij.navigation.ItemPresentation
-import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
@@ -183,7 +183,7 @@ class NewspeakStructureElement(
     private fun withSummary(tooltip: String?): String? {
         val file = psiFile ?: return tooltip
         val line = symbol.range?.start?.line ?: return tooltip
-        val summary = runReadAction { NewspeakDocComments.summaryAbove(file, line) } ?: return tooltip
+        val summary = ReadAction.computeBlocking<String?, RuntimeException> { NewspeakDocComments.summaryAbove(file, line) } ?: return tooltip
         val lines = listOfNotNull(tooltip, summary).map(StringUtil::escapeXmlEntities)
         return lines.joinToString("<br>", prefix = "<html>", postfix = "</html>")
     }
