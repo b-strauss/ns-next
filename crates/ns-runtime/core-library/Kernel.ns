@@ -2007,6 +2007,13 @@ class Kernel vmMirror: mirror = Value (
   /// and §5.1.1's numeric literals are its instances. Iteration is here
   /// so that an `Integer`, a `LargeInteger` and a `Float` receiver share
   /// one body. The compiler does not inline them; they are sent.
+  ///
+  /// A receiver holding no number -- `Number new`, `Fraction new`, an
+  /// instance of a program's subclass of `Number` -- makes every leaf
+  /// decline: a send that no other method above the leaf's answers ends
+  /// in `doesNotUnderstand:`, a MessageNotUnderstood, as does a method
+  /// written in Newspeak whose own sends reach such a leaf. The Errors
+  /// each method below names are those of a receiver holding a number.
   public class Number = Value () (
     /// Identifies the receiver as a Number, without a class test.
     ///
@@ -2174,8 +2181,8 @@ class Kernel vmMirror: mirror = Value (
       ^vmMirror number: self floorDivide: other ifFail: [^super // other].
     )
 
-    /// The remainder of `//`, `self - (self // other * other)`, which
-    /// takes the sign of `other`.
+    /// Takes the remainder of `//`, `self - (self // other * other)`,
+    /// which has the sign of `other`.
     ///
     /// @param other as `//`'s.
     /// @answers the remainder of `//`: exact when neither is a Float, a
@@ -2204,8 +2211,9 @@ class Kernel vmMirror: mirror = Value (
       ^vmMirror number: self quotient: other ifFail: [^super quo: other].
     )
 
-    /// The remainder of `quo:`, `self - ((self quo: other) * other)`,
-    /// which takes the sign of the receiver.
+    /// Takes the remainder of `quo:`,
+    /// `self - ((self quo: other) * other)`, which has the sign of the
+    /// receiver.
     ///
     /// @param other as `//`'s.
     /// @answers the remainder of `quo:`: exact when neither is a Float, a
@@ -2530,6 +2538,7 @@ class Kernel vmMirror: mirror = Value (
     /// @signals ArgumentError carrying the block, 'wrong number of block
     /// arguments: block takes …, got 0', for a `trueBlock` that declares
     /// any parameter.
+    /// @see `ifTrue:ifFalse:`.
     public ifTrue: trueBlock = (
       ^trueBlock value.
     )
@@ -2646,6 +2655,7 @@ class Kernel vmMirror: mirror = Value (
     /// @signals ArgumentError carrying the block, 'wrong number of block
     /// arguments: block takes …, got 0', for a `falseBlock` that declares
     /// any parameter.
+    /// @see `ifTrue:ifFalse:`.
     public ifFalse: falseBlock = (
       ^falseBlock value.
     )
@@ -2771,8 +2781,8 @@ class Kernel vmMirror: mirror = Value (
       ^vmMirror integer: self floorDivide: other ifFail: [^super // other].
     )
 
-    /// The remainder of `//`, `self - (self // other * other)`, which
-    /// takes the sign of `other`.
+    /// Takes the remainder of `//`, `self - (self // other * other)`,
+    /// which has the sign of `other`.
     ///
     /// @param other as `//`'s.
     /// @answers the remainder of `//`: exact for an integer or a
@@ -3186,8 +3196,8 @@ class Kernel vmMirror: mirror = Value (
       ^vmMirror integerAsString: self ifFail: [^super asString].
     )
   ) : (
-    /// Reads the Integer `text` writes in decimal: `parse:radix:` with
-    /// radix 10, and its ArgumentErrors.
+    /// Reads the Integer `text` writes in decimal, as `parse:radix:`
+    /// does with radix 10.
     ///
     /// @param text a String.
     /// @answers what `parse:radix:` answers for `text` and radix 10.
