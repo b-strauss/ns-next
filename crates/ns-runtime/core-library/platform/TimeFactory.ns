@@ -24,7 +24,10 @@
 /// it is an object, as `CollectionsFactory.ns`'s `List` is.
 ///
 /// @factory makes the clock's module over `mirror`, copied into its slot
-/// `vmMirror`; the platform's root sends it once, through the mirror.
+/// `vmMirror`. The platform's root sends it to the class the mirror
+/// answers on the module's first demand, and again on the next demand
+/// after an unwind interrupted one, which records nothing; the loader
+/// sends it instead when an image names the module.
 /// @param mirror the VM mirror, through which a stopwatch reads the clock.
 class TimeFactory usingVmMirror: mirror = Value (
   |
