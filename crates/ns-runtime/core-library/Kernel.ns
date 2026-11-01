@@ -29,7 +29,7 @@
 /// nested here, meets §3.1.1's enclosing-object condition.
 ///
 /// @factory makes the kernel module over `mirror`, which it copies into
-/// `vmMirror` and hands to nothing; the host sends it once, at boot, after
+/// `vmMirror` and hands to no other object; the host sends it once, at boot, after
 /// the bootstrap has filled the builtin class objects from the nested
 /// classes.
 /// @param mirror the VM mirror, which the host alone holds; every native
@@ -531,8 +531,8 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// Reads the enclosing object `subject`'s own level reaches, through
-    /// the VM mirror; it differs from `enclosingOf:`'s only for a
-    /// declaration without a body.
+    /// the VM mirror; it differs from `enclosingOf:`'s only for the class
+    /// object of a declaration without a body and for its metaclass.
     ///
     /// @param subject as `enclosingOf:`'s.
     /// @answers the one the class its last clause named has, for the class
@@ -753,7 +753,7 @@ class Kernel vmMirror: mirror = Value (
     /// runs the handler of the first that does on top of the stack,
     /// with every `on:do:` passed disabled while it runs. A handler
     /// that returns instead of resuming makes its `on:do:` answer. With
-    /// no handler, `defaultAction` runs, which ends the run.
+    /// no handler, `defaultAction` runs; `Exception`'s ends the run.
     ///
     /// ANSI's signal: the handler runs on top of the stack, above this
     /// activation, and nothing is unwound until it decides.
@@ -1048,7 +1048,13 @@ class Kernel vmMirror: mirror = Value (
     /// passed, `activation` last.
     /// @answers nothing to its sender: the handler's value ends the
     /// `on:do:` through `return:`, and a handler that resumes, retries,
-    /// returns or leaves by a `^` leaves past it.
+    /// returns or leaves by a `^` leaves past it. The exception: a handler
+    /// that sent `pass` with no handler outside, whose `pass` a subclass's
+    /// `defaultAction` let answer, has no handler running once it
+    /// completes, so its `return:` signals instead.
+    /// @signals Error 'return: sent to an exception that is not being
+    /// handled', in that case: the search that found no handler cleared
+    /// the handler activation.
     /// @see `return:`.
     private invokeHandlerAt: activation disabling: handlers = (
       |
@@ -1086,7 +1092,8 @@ class Kernel vmMirror: mirror = Value (
     /// declares these on its own class side; `handles:` is `Class`'s.
     ///
     /// @answers what the new exception's `signal` answers: the value a
-    /// handler resumes it with.
+    /// handler resumes it with; nothing to its sender when the handler
+    /// returns instead.
     /// @signals Exception a new one, without a `messageText`.
     /// @see `Exception>>signal`.
     public signal = (
@@ -1098,7 +1105,8 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// @param text the description, usually a String; stored as it is.
     /// @answers what the new exception's `signal` answers: the value a
-    /// handler resumes it with.
+    /// handler resumes it with; nothing to its sender when the handler
+    /// returns instead.
     /// @signals Exception a new one carrying `text`.
     /// @see `Exception>>signal:`.
     public signal: text = (
@@ -1194,7 +1202,8 @@ class Kernel vmMirror: mirror = Value (
     /// which carries no message.
     ///
     /// @answers what the new exception's `signal` answers: the value a
-    /// handler resumes it with.
+    /// handler resumes it with; nothing to its sender when the handler
+    /// returns instead.
     /// @signals MessageNotUnderstood a new one, without a message or a
     /// `messageText`.
     /// @see `Exception class>>signal`.
@@ -1207,7 +1216,8 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// @param text the description, usually a String; stored as it is.
     /// @answers what the new exception's `signal` answers: the value a
-    /// handler resumes it with.
+    /// handler resumes it with; nothing to its sender when the handler
+    /// returns instead.
     /// @signals MessageNotUnderstood a new one carrying `text` and no
     /// message.
     /// @see `Exception class>>signal:`.
@@ -1222,7 +1232,8 @@ class Kernel vmMirror: mirror = Value (
     /// As `Exception class>>signal`: signals a new Halt.
     ///
     /// @answers what the new exception's `signal` answers: the value a
-    /// handler resumes it with.
+    /// handler resumes it with; nothing to its sender when the handler
+    /// returns instead.
     /// @signals Halt a new one, without a `messageText`.
     /// @see `Exception class>>signal`.
     public signal = (
@@ -1233,7 +1244,8 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// @param text the description, usually a String; stored as it is.
     /// @answers what the new exception's `signal` answers: the value a
-    /// handler resumes it with.
+    /// handler resumes it with; nothing to its sender when the handler
+    /// returns instead.
     /// @signals Halt a new one carrying `text`.
     /// @see `Exception class>>signal:`.
     public signal: text = (
