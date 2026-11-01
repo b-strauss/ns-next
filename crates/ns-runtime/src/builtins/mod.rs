@@ -117,7 +117,7 @@ pub(crate) fn execute<'gc>(
         Primitive::Module(primitive) => {
             module::execute(mutator, primitive, receiver).map(wrap_error)
         }
-        Primitive::Future(primitive) => future::execute(mutator, primitive, receiver),
+        Primitive::Future(primitive) => future::execute(mutator, primitive, receiver, arguments),
         Primitive::Weak(primitive) => {
             weak::execute(mutator, primitive, receiver, selector, arguments).map(wrap_error)
         }

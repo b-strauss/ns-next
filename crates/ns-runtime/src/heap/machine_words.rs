@@ -2,12 +2,13 @@
 //! leaf calls other than frame registers and object fields, which lie in
 //! the activation stack's and the object space's reservations -- today
 //! the safepoint request, which a back edge polls, the depth count and
-//! limit, the end of the activation stack's ordinary room and the
-//! immediates' classes and guards; eden's top and limit, which bump
-//! allocation is to read and write in place, are to join them -- held in
-//! an allocation of their own rather
-//! than inline in the heap
-//! (`docs/design/execution.md`, "The machine words").
+//! limit, the end of the activation stack's ordinary room, the
+//! immediates' classes and guards, and what an allocation in machine code
+//! writes and counts -- held in an allocation of their own rather than
+//! inline in the heap (`docs/design/execution.md`, "The machine words").
+//! Eden's top and limit, which machine code bumps in place, lie in an
+//! allocation of `ns-memory`'s, the reservation's own cursor
+//! (`ns_memory::SharedCursor`), for the same reason.
 //!
 //! # Why apart from the heap
 //!
@@ -48,7 +49,12 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// The words of the area. Every word's index is fixed: the fieldless words
 /// 0 to 3, the immediates' classes 4 to 8 and their guards 9 to 13, the
 /// next generation 14, the callee's receiver and class 15 and 16, the
-/// application id table's address and bound 17 and 18, the rest free for
+/// application id table's address and bound 17 and 18, the objects
+/// machine code allocated 19, an `Array`'s class word and header 20 and
+/// 21, the callee's kind 22, a closure's class word and header 23 and 24,
+/// a frame object's 25 and 26, the code table's epoch 27, the machine
+/// entry table's bound 28, the callee closure and whether it counts 29
+/// and 30, a future's class word and header 31 and 32, the rest free for
 /// the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
@@ -70,7 +76,7 @@ pub(crate) enum MachineWord {
     OrdinaryStackEnd,
     /// The class object of immediate `index`, as the word a heap object
     /// stores for it: rewritten by the heap after every scavenge,
-    /// compaction and move (`Mutator::rewrite_immediate_classes`).
+    /// compaction and move (`Mutator::rewrite_machine_classes`).
     ImmediateClass(usize),
     /// The dispatch id an inline cache guards a send to immediate `index`
     /// on (`Heap::dispatch_id`).
@@ -99,6 +105,69 @@ pub(crate) enum MachineWord {
     /// How many rows of the application id table are recorded: an
     /// application index at or past it is read nowhere.
     ApplicationIdRows,
+    /// How many objects machine code's inline bump placed in eden since
+    /// the heap last counted them into its own counts
+    /// (`Heap::settle_machine_allocations`): one add per allocation
+    /// rather than a call, so that the heap's counts stay the
+    /// interpreter's.
+    MachineAllocations,
+    /// The kernel's `Array` class object, as the class word of an object
+    /// stores it: rewritten after every scavenge, compaction and move, as
+    /// `ImmediateClass` is.
+    ArrayClass,
+    /// The header word of an `Array` of no words, guarding on its
+    /// application's dispatch id: an allocation in machine code adds its
+    /// word count (`Heap::machine_word_count_bits`).
+    ArrayHeader,
+    /// The kind tag of the frame the initializer leaf decided, shifted to
+    /// where a flags word holds it (`Heap::hand_machine_initializer`):
+    /// what the callee's prologue adds to its flags word, since an
+    /// initializer's code does not say which of its mixin's bodies it runs
+    /// as (`jit::sends::prologue`). Read only right after it was written,
+    /// as `CalleeReceiver` is.
+    CalleeKind,
+    /// The kernel's `Closure` class object, as `ArrayClass` holds the
+    /// `Array` class: the class word of a closure `MakeClosure` makes in
+    /// machine code (`jit::closures`).
+    ClosureClass,
+    /// The header word of a closure of no words, as `ArrayHeader` is an
+    /// `Array`'s.
+    ClosureHeader,
+    /// The kernel-private `Activation` class object, the class word of a
+    /// frame object `MakeClosure` reifies in machine code.
+    FrameClass,
+    /// The header word of a frame object of no words.
+    FrameHeader,
+    /// The epoch of the heap's code table (`Heap::code_table_epoch`),
+    /// renewed whenever a full collection frees a code id: a closure
+    /// site's code ids, which machine code stores into the frame objects
+    /// and closures it makes, name their bodies only while the site
+    /// records this epoch (`jit::closures`).
+    CodeTableEpoch,
+    /// How many rows of the machine entry table are committed
+    /// (`heap/machine_entries.rs`): a code id at or past it is read
+    /// nowhere, and its body is called by the interpreter alone.
+    MachineEntryRows,
+    /// The closure an interpreter's send calls a block's body for, as
+    /// `CalleeReceiver` is the receiver: the closure call stub hands it to
+    /// the block's prologue (`Roles::callee_closure`), which stores it as
+    /// its frame's operand. Read only right after it was written.
+    CalleeClosure,
+    /// 1 when the closure's activation the interpreter's send calls counts
+    /// against the depth limit, 0 when the control flow exempts it
+    /// (`Roles::callee_counted`), handed over as `CalleeClosure` is.
+    CalleeCounted,
+    /// The kernel-private `FutureImplementation` class object, as
+    /// `ArrayClass` holds the `Array` class: what `ResolveFuture` in
+    /// machine code compares a value's class word with, and the class word
+    /// of a future `MakeFuture` makes there (`jit::closures`).
+    FutureClass,
+    /// The header word of a future of no words, as `ArrayHeader` is an
+    /// `Array`'s -- or 0 until the heap has made a future
+    /// (`Mutator::futures_made`), which only Rust sets, so that machine
+    /// code's `MakeFuture` leaves the first one to the generic leaf, which
+    /// sets it, and never makes a future the runtime would not look for.
+    FutureHeader,
 }
 
 impl MachineWord {
@@ -123,15 +192,29 @@ impl MachineWord {
             MachineWord::CalleeClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 2,
             MachineWord::ApplicationIds => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 3,
             MachineWord::ApplicationIdRows => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 4,
+            MachineWord::MachineAllocations => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 5,
+            MachineWord::ArrayClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 6,
+            MachineWord::ArrayHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 7,
+            MachineWord::CalleeKind => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 8,
+            MachineWord::ClosureClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 9,
+            MachineWord::ClosureHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 10,
+            MachineWord::FrameClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 11,
+            MachineWord::FrameHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 12,
+            MachineWord::CodeTableEpoch => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 13,
+            MachineWord::MachineEntryRows => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 14,
+            MachineWord::CalleeClosure => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 15,
+            MachineWord::CalleeCounted => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 16,
+            MachineWord::FutureClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 17,
+            MachineWord::FutureHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 18,
         }
     }
 }
 
 /// The words the area holds: `MachineWord`'s, and room for the words the
 /// later stages put here, so that adding one moves none.
-const WORD_COUNT: usize = 32;
+const WORD_COUNT: usize = 40;
 
-const _: () = assert!(MachineWord::ApplicationIdRows.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::FutureHeader.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -169,7 +252,7 @@ impl MachineWords {
     #[cfg(any(ns_jit, test))]
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "an index lies below `WORD_COUNT`, 32"
+        reason = "an index lies below `WORD_COUNT`, 40"
     )]
     pub(crate) fn offset(word: MachineWord) -> i32 {
         const BYTES_PER_WORD: i32 = 8;
@@ -202,9 +285,23 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::CalleeClass));
         offsets.push(MachineWords::offset(MachineWord::ApplicationIds));
         offsets.push(MachineWords::offset(MachineWord::ApplicationIdRows));
+        offsets.push(MachineWords::offset(MachineWord::MachineAllocations));
+        offsets.push(MachineWords::offset(MachineWord::ArrayClass));
+        offsets.push(MachineWords::offset(MachineWord::ArrayHeader));
+        offsets.push(MachineWords::offset(MachineWord::CalleeKind));
+        offsets.push(MachineWords::offset(MachineWord::ClosureClass));
+        offsets.push(MachineWords::offset(MachineWord::ClosureHeader));
+        offsets.push(MachineWords::offset(MachineWord::FrameClass));
+        offsets.push(MachineWords::offset(MachineWord::FrameHeader));
+        offsets.push(MachineWords::offset(MachineWord::CodeTableEpoch));
+        offsets.push(MachineWords::offset(MachineWord::MachineEntryRows));
+        offsets.push(MachineWords::offset(MachineWord::CalleeClosure));
+        offsets.push(MachineWords::offset(MachineWord::CalleeCounted));
+        offsets.push(MachineWords::offset(MachineWord::FutureClass));
+        offsets.push(MachineWords::offset(MachineWord::FutureHeader));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 9 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 23 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

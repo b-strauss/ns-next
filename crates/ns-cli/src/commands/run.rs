@@ -11,6 +11,7 @@ pub(crate) fn execute(
     file: &Path,
     lowering: ns_runtime::Lowering,
     cache_statistics: bool,
+    collector_statistics: bool,
     script: Option<&str>,
     program_arguments: &[String],
 ) -> ExitCode {
@@ -23,6 +24,7 @@ pub(crate) fn execute(
         Err(code) => return code,
     };
     let mut loaded = program::load_program(&program, lowering);
+    entry::report_jit_unavailable(&loaded.interpreter);
     let application = match program::instantiate_application(&program, &mut loaded) {
         Ok(application) => application,
         Err(code) => return code,
@@ -32,6 +34,9 @@ pub(crate) fn execute(
     // stdout any differently for it.
     if cache_statistics {
         entry::print_cache_statistics(&loaded.interpreter.cache_statistics());
+    }
+    if collector_statistics {
+        entry::print_collector_statistics(&loaded.interpreter.collector_statistics());
     }
     entry::report_entry_send(result)
 }

@@ -186,25 +186,35 @@ object's sends on, a copy stamped from its application's ids
 **A symbol is a heap object, and a canonical one**: each `Heap` keeps a
 canonical table, `Vec<Option<ObjectReference>>` indexed by the number inside a
 `Symbol` -- which the interner assigns densely -- and `Mutator::new_symbol`
-answers the table's object, allocating it only the first time. It is the one way
-to make a symbol, so a symbol literal, `asSymbol` and every selector handed to
+answers the table's object, allocating it only the first time. A symbol a
+program makes from a string (`asSymbol`) whose text nothing has interned takes
+no number: `Mutator::program_symbol` answers the object a second, weak table
+holds for the text, keyed by the text's hash, or makes one and records it
+there, and once something interns the text the canonical table adopts that very
+object ([memory.md](memory.md), "Weak references"). Those are the only ways to
+make a symbol, so a symbol literal, `asSymbol` and every selector handed to
 `doesNotUnderstand:` all reach the same object for the same text, which is what
-§5.1.6 and §3.1.1 make two equal symbols. The table is per heap because a handle
-means nothing against another heap. It is weak: the collector clears an entry
-whose symbol nothing else holds ([memory.md](memory.md), "Weak references").
+§5.1.6 and §3.1.1 make two equal symbols. The tables are per heap because a
+handle means nothing against another heap. Both are weak: the collector clears
+an entry whose symbol nothing else holds.
 This is what every reference does -- Primordial Soup's weak `symbolTable`
 (`KernelForPrimordialSoup.ns`), SOMns's `Symbols.symbolFor`, Squeak's symbol
 table -- and it keeps a symbol an indexable object, so that `Symbol` is a
 subclass of `String` in `Kernel.ns`, as the references declare it: a symbol's
 words are a string's, in the same two widths, and only its class tells it
 from one ("Strings have two widths" below). The symbol a symbol object is,
-`Heap::symbol_value`, is the table's inverse, kept beside it per heap and
-keyed by the object's byte offset, so the object stores nothing but its code points
-and no lookup reads them. Rejected: a symbol
+`Heap::symbol_value`, is the canonical table's inverse, kept beside it per heap
+and keyed by the object's byte offset, so the object stores nothing but its code
+points and no lookup of a canonical symbol reads them; a program-made symbol
+answers the number of its text once something interned it and `None` before,
+which names nothing, since every selector, slot name and class name is interned.
+A symbol's `hash` is its text's, told apart from a String's, never its number,
+so a program-made symbol hashes the same before and after its adoption. Rejected: a symbol
 as an immediate, a tag of its own, which no reference does and which every
 string primitive, and later the Newspeak kernel, would have to accept as a
-non-object. An image carries a symbol as a record; the decoder enters each one
-into the loading heap's table and refuses a second record of the same text
+non-object. An image carries a symbol as a record of its text, never a number;
+the decoder interns each text and enters each record into the loading heap's
+canonical table, and refuses a second record of the same text
 ([image-format.md](image-format.md), "Verification").
 
 **An `ObjectReference` is an offset, not a pointer.** Every object lives in one
@@ -690,6 +700,28 @@ and the selector it had before the factory was code. A host's
 `Interpreter::instantiate` runs the same factory body
 (`decide_instantiation`), so a host and a program make the same instance.
 
+**Machine code makes the ordinary instance inline and leaves every other
+case to the same function.** A factory send in machine code is a compiled
+call of the factory body, and its `AllocateInstance` bumps eden's cursor
+inline ([execution.md](execution.md), "Sends, returns and the exit that
+materializes", "The miss leaf"), reading what `allocate_for_factory`
+reads: the class object's format, its builtin field and its value
+refusal, afresh at every instantiation, and the header of the
+application's instances. That header is the second word of the
+application's row in the application id table, the one table machine code
+reads an application by ([memory.md](memory.md), "The application id
+table"): `Heap::register_application` writes it from the application's
+`instance_header` when it records the row, and writes 0 where
+`allocate_for_factory` would make no ordinary instance of the
+application's count -- an instantiation refusal, or a count that needs an
+overflow word -- so that a 0 sends the template to the generic leaf,
+which runs `allocate_instance` itself. A row never changes after it is
+built, since an edit makes a new application, so no instantiation reads a
+header that no longer describes its class's layout; a builtin's own
+instances, the VM mirror's class among them, and a refusal are decided by
+the leaf, which raises nothing itself and exits so that the interpreter
+raises the refusal with its text and selector.
+
 **Each level's initializer is a body on its mixin, outside the method
 table, reached only by the instructions that initialize** (decision 2).
 The references name it ``initializer`sel:`` and put it in the method table,
@@ -1080,11 +1112,13 @@ diverges the same way. **A clause abandoned by an exception** —
 an initializer raises and a handler outside the instantiation takes it —
 leaves the futures it had not resolved as they are, wherever they escaped
 to: the next message forces one and runs its initializer then, and one
-whose initializer raised raises again for the same cause. A forcing whose
-activation an unwind pops, or which the run loop refuses to push, leaves its
-future unresolved again rather than stuck resolving (`Mutator::abandon`).
-Nothing answers wrongly, and it costs nothing; marking them broken would put
-an `ifCurtailed:` around every simultaneous clause.
+whose initializer raised raises again for the same cause. A forcing an
+unwind abandons -- its computation raised, or the run loop refused one of
+its pushes -- leaves its future unresolved again rather than stuck
+resolving: `resolve` marks the future resolving inside the block its
+`ifCurtailed:` protects, and the `ifCurtailed:` undoes the mark. Nothing
+answers wrongly, and it costs nothing; marking the clause's futures broken
+would put an `ifCurtailed:` around every simultaneous clause.
 
 **The future.** `Kernel.ns`'s private `FutureImplementation`, which no
 program can name (as `Activation`), is a subclass of the public `Proxy`,
@@ -1093,35 +1127,54 @@ after Primordial Soup's: `Proxy` overrides every public member of `Object`
 protocol, `halt` — as protected, and `Object` itself declares `class` and
 the class accessors protected, so every message from outside reaches
 `doesNotUnderstand:`, and
-`FutureImplementation`'s forces the future through the mirror row
-`futureValue:ifFail:` (`builtins/future.rs`) and forwards the message to
-the value with `Message>>sendTo:`. A member added to `Object` without its
-override in `Proxy` fails
+`FutureImplementation`'s forces the future by its own `resolve` and
+forwards the message to the value with `Message>>sendTo:`. A member added
+to `Object` without its override in `Proxy` fails
 `a_proxy_overrides_every_public_member_of_object_as_protected`. Its state is
 two private slots, `computation` — what computes it until it is resolved,
 then its value — and `state`, 0 unresolved, 1 resolving, 2 resolved,
-which only `interpreter/future.rs` reads and writes once the future is
-made. It reads them as untrusted, since crafted code can store into them
-once it holds a future: any other state, or a resolved future whose value
-is a future, is `FutureState::Malformed`, and forcing it is an ordinary
-error ([image-format.md](image-format.md), "Futures in a graph"). Forcing
-is a trampoline step under `Continuation::Future`, never a call back into
-Newspeak: it activates the computation when it is a block, and otherwise
-sends it `value` (`Mutator::send_value_then`); once that returns,
-`vm::finish` hands its value to
-`Mutator::future_computed`, which records it and either delivers it to the
-send that forced the future (`AfterForcing::Deliver`) or runs the
-instruction that met the future again (`AfterForcing::Reexecute`;
-[execution.md](execution.md), "Running an instruction again after forcing
-a future"). A block that answers another unresolved future forces that one
-next, the waiting forcing chained behind it, so both resolve to its value —
-§6.3.2's pipelined promise, as Primordial Soup's `resolve` loops. Nothing
-bounds that chain's length, so every walk of it loops rather than recursing
-once per link. A program has no message of its own that forces a future,
-since a public `resolve` would tell an escaped future from its value: a
-future is forced only where the runtime needs the value it stands for -- a
-message sent to it, an instruction that must not hold one, or a leaf that
-could not answer for it as an operand. A simultaneous clause's futures are
+which only a `resolve` writes once the future is made.
+**Forcing is that method**, ordinary Newspeak, as the canonical
+implementation's `Future>>resolve` is, so that machine code compiles it as
+it compiles any method and calls it as it calls any other: a resolved
+future answers its value; an unresolved one is marked resolving, its
+computation evaluated -- a block, or any other object sent `value` -- and
+the value stored with the resolved state; one being computed signals the
+divergent-evaluation error. The mark is set inside a block its
+`ifCurtailed:` protects, which sets the future unresolved again when an
+unwind abandons the forcing, its computation kept. A computation that
+answers another future makes that one's value this one's -- §6.3.2's
+pipelined promise -- so a resolved future's value is never a future: a
+resolved one's value is taken as it is, and an unresolved one is **taken
+over**: marked resolving, recorded, and its computation run by the same
+`resolve`, in the same activation, and so on along the chain; at the end
+the value is recorded in every future taken over, and the `ifCurtailed:`
+sets them all unresolved again when an unwind abandons the forcing. One
+future cannot send another its private methods, so `resolve` reads and
+writes the futures it takes over through leaf-safe rows of the VM mirror
+(`builtins/future.rs`): `futureState:ifFail:`, which also answers its own
+state, normalized to a small integer, `futureComputation:ifFail:`,
+`futureTakeOver:ifFail:`, `future:resolveTo:ifFail:` and
+`futureAbandon:ifFail:`, beside `objectIsFuture:ifFail:`, which asks
+whether a value is a future without forcing it. A chain of futures each
+answering the next is therefore resolved at a depth that does not grow
+with its length, as the forcing in Rust was (`tests/future.rs`, two
+hundred thousand links), where the canonical `resolve`, which sends the
+next future `resolve`, recurses once per link; and the loop is leaf
+calls only, so machine code runs it without an exit. Crafted code can
+store into the slots once it holds a future, so they are read as
+untrusted: any other state, or a resolved future whose value is a
+future, signals an ordinary error, "a malformed future: its fields are
+no future's" ([image-format.md](image-format.md), "Futures in a
+graph"); the leaf that answers the state calls it 3, the runtime
+`FutureState::Malformed`, and only a well-formed resolved future is seen
+through.
+A program has no message of its own that forces a future, since a public
+`resolve` would tell an escaped future from its value: a future is forced
+only where the runtime needs the value it stands for -- a message sent to
+it, an instruction that must not hold one, or a leaf that could not answer
+for it as an operand -- and there the runtime pushes `resolve`
+(`Mutator::forcing`). A simultaneous clause's futures are
 made by the runtime (`Mutator::new_future`, which `MakeFuture` calls), of
 a block. `Future computing:`, a program's way to make one, sends
 `FutureImplementation`'s factory `computing:` instead -- the one kernel
@@ -1202,12 +1255,12 @@ instance of `FutureImplementation` until the program has made one.
   cold `see_through_a_failed_leaf` behind it (`send_inlined` tests the flag
   itself and goes to the cold `mirror::see_through_a_failed_row`);
   `builtins::execute` itself is the plain dispatch to the leaf. A resolved one
-  is replaced by its value and the leaf runs again, in Rust. An unresolved one
+  is replaced by its value and the leaf runs again, in Rust. Any other one
   cannot be forced in Rust, since nothing re-enters the loop: the answer is a
-  step that runs the future's computation under `Continuation::Future` with
-  `AfterForcing::Reexecute`, which records that activation's value and runs
-  the caller's instruction again instead of the next one (`vm::reexecute`);
-  the second time the future is resolved. This rests on an invariant written
+  step that pushes the future's `resolve` under `Continuation::Reexecute`,
+  whose return drops the value and runs the caller's instruction again
+  instead of the next one (`vm::reexecute`); the second time the future is
+  resolved, or `resolve` signalled its error. This rests on an invariant written
   on `builtins::execute` and checked leaf by leaf: **a leaf that declines or
   raises has changed nothing** ([dispatch.md](dispatch.md), "Primitives").
 - *The leaves that answer "no" rather than declining* — identity and the
@@ -1233,8 +1286,9 @@ instance of `FutureImplementation` until the program has made one.
   `returnValue:`'s value), and a future there is the value it stands for to
   whoever reads it later. On a leaf's failure path, though, every future
   operand is seen through: an unresolved one the leaf would only have stored
-  is forced first, and one still being computed raises the
-  divergent-evaluation error in place of the leaf's own error.
+  is forced first, and one still being computed signals the
+  divergent-evaluation error, from its `resolve`, in place of the leaf's own
+  error.
 - *The reflection leaves* (`Primitive::Reflection`), which only
   `MirrorsFactory.ns` sends, are never seen through: a mirror reflects the
   object it is given, a future the future itself, so a reflection leaf that
@@ -1246,8 +1300,14 @@ instance of `FutureImplementation` until the program has made one.
   sends its reflectee nothing").
 - *`InitializeSlot` into a value* looks for a future only on its refusal
   path (`check_value_slot`, then `future::value_for_a_value_slot`): it
-  stores and checks a resolved one's value, and forces an unresolved one
-  through the same `Reexecute` (`vm::force_and_reexecute`).
+  stores and checks a resolved one's value, and forces any other through
+  the same `Continuation::Reexecute` (`vm::force_and_reexecute`).
+- *`ResolveFuture`* moves a value that is no future and loads a resolved
+  one's value; for any other it calls the future's `resolve` above its
+  frame's window and takes the answer into its destination as a send takes
+  its callee's (`vm::resolve_future`, `send_destination`), and machine code
+  makes the same call as a compiled send ([execution.md](execution.md),
+  "Running an instruction again after forcing a future").
 - *A host* that passes a future straight to `Interpreter::send` has no
   instruction to run again: a resolved one is seen through in Rust as
   anywhere else, and an unresolved one is forced, after which the run ends
@@ -2541,8 +2601,8 @@ code points in two widths").
 
 `Symbol` is a subclass of `String`, as in every reference kernel: a symbol's
 words are a string's, and only its class tells it from one.
-`Mutator::new_symbol` is the only way to make one: instantiating `Symbol` is
-refused, and `String new` answers an empty one-byte string
+`Mutator::new_symbol` and `Mutator::program_symbol` are the only ways to make
+one: instantiating `Symbol` is refused, and `String new` answers an empty one-byte string
 (`goldens/library/string/symbol_new_is_refused.ns`,
 `string_new_answers_an_empty_string.ns`). `=` is class-tight both ways:
 `'foo' = #foo` and `#foo = 'foo'` both answer `false`, since `Symbol>>=` is
@@ -2621,6 +2681,11 @@ slot's getter and the entered level's factory selector otherwise, as the
 §3.1.1 slot refusal's is. An immediate receiver passes, and the access
 answers its usual error. A receiver replaced by another instance of the
 level's own application keeps the guard and never reaches the cold path.
+Machine code makes the same check, the compare inline and the cold path
+through a leaf that records the guard in the frame, and reads the slot
+base from the entered level's row of the application id table
+([execution.md](execution.md), "The baseline JIT's foundation", "Own
+slots in machine code").
 
 The level is the one the activation was *entered* at, by its full-width
 `ApplicationIndex`, not the class object's *current* application: the

@@ -8,6 +8,16 @@
 //! str` this interner hands out, and the interner's own table, are a
 //! separate store outside the heap that the collector never traces --
 //! nothing reclaims them, and nothing is meant to.
+//!
+//! So only a text the runtime names is interned: what the compiler, the
+//! resolver, the image decoder and the runtime's own constants name,
+//! bounded by the source compiled and the images loaded. A running
+//! program never interns: a symbol it makes from a string (`asSymbol`)
+//! whose text nothing has interned takes no number and lives only as its
+//! object, in the heap's weak table of program-made symbols
+//! (`Mutator::program_symbol`; `docs/design/memory.md`, "Weak
+//! references"), and a name a program looks up is probed with `lookup`,
+//! which inserts nothing.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -48,7 +58,7 @@ macro_rules! well_known_symbols {
 well_known_symbols! {
     NEW => "new",
     VALUE => "value",
-    VALUE_OF => "valueOf:",
+    RESOLVE => "resolve",
     DOES_NOT_UNDERSTAND => "doesNotUnderstand:",
     CARET => "^",
     OBJECT => "Object",
@@ -64,8 +74,28 @@ well_known_symbols! {
     MAIN_ARGUMENTS => "main:args:",
 }
 
+/// Told apart from a String's hash of the same text: a Symbol is never
+/// equal to a String, so nothing requires the two to hash alike, and a
+/// collection holding both keeps them in different buckets. Any 32-bit
+/// constant would do; this one mixes the bits evenly.
+const SYMBOL_HASH_SALT: i64 = 0x5bd1_e995;
+
+/// The hash `Symbol>>hash` answers for a symbol of `text`: the text's
+/// content hash, salted apart from a String's, and never a number, since a
+/// program-made symbol has none until its text is interned and its hash
+/// must not change when the canonical table adopts it. The content hash is
+/// a non-negative sub-2^32 integer, and so is this, since the salt has no
+/// bit past 32.
+pub(crate) fn hash_of_symbol_text(content_hash: i64) -> i64 {
+    content_hash ^ SYMBOL_HASH_SALT
+}
+
 struct Interner {
     strings: Vec<&'static str>,
+    /// Each interned text's `hash_of_symbol_text`, computed once at the
+    /// interning, so that a canonical symbol's `hash` reads it rather than
+    /// walking its text on every call.
+    hashes: Vec<i64>,
     lookup: HashMap<&'static str, Symbol>,
 }
 
@@ -75,6 +105,7 @@ impl Interner {
     fn new() -> Self {
         let mut interner = Interner {
             strings: Vec::new(),
+            hashes: Vec::new(),
             lookup: HashMap::new(),
         };
         for text in WELL_KNOWN {
@@ -83,16 +114,19 @@ impl Interner {
         interner
     }
 
-    /// Interns `text` under the next number. A running program interns
-    /// symbols of its choosing (`asSymbol`), and no caller of `intern` can
-    /// answer an error, so a symbol past the number `u32::MAX` on one thread
-    /// exhausts the table and aborts, as an image field past `u32` does.
+    /// Interns `text` under the next number. No caller of `intern` can
+    /// answer an error, so a symbol past the number `u32::MAX` on one
+    /// thread exhausts the table and aborts, as an image field past `u32`
+    /// does; the texts interned are bounded by the source compiled and the
+    /// images loaded, never by what a program makes.
     fn insert(&mut self, text: &'static str) -> Symbol {
         let symbol =
             Symbol(u32::try_from(self.strings.len()).expect(
                 "the symbol table is exhausted: a thread numbers its symbols up to u32::MAX",
             ));
         self.strings.push(text);
+        self.hashes
+            .push(hash_of_symbol_text(crate::hash::content_hash(text)));
         self.lookup.insert(text, symbol);
         symbol
     }
@@ -123,6 +157,27 @@ impl Symbol {
             }
             interner.insert(Box::leak(text.to_string().into_boxed_str()))
         })
+    }
+
+    /// The symbol `text` already is, or `None` while nothing has interned
+    /// it. A probe that inserts nothing: what a program makes or looks up
+    /// by a text of its choosing goes through here, so that no run grows
+    /// the interner (`Mutator::program_symbol`). Since every selector, slot
+    /// name and class name is interned, `None` means that nothing has this
+    /// name.
+    pub fn lookup(text: &str) -> Option<Symbol> {
+        INTERNER.with_borrow(|interner| interner.lookup.get(text).copied())
+    }
+
+    /// How many symbols this thread has interned (`Interpreter::table_sizes`).
+    pub(crate) fn interned_count() -> usize {
+        INTERNER.with_borrow(|interner| interner.strings.len())
+    }
+
+    /// The hash a Symbol object of this symbol answers (`Symbol>>hash`),
+    /// stored at the interning (`hash_of_symbol_text`).
+    pub(crate) fn text_hash(self) -> i64 {
+        INTERNER.with_borrow(|interner| interner.hashes[self.0 as usize])
     }
 
     pub fn as_str(self) -> &'static str {
@@ -158,6 +213,27 @@ mod tests {
         let first = Symbol::intern("foo:");
         let second = Symbol::intern("bar:");
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_lookup_finds_what_was_interned_and_inserts_nothing() {
+        let interned = Symbol::intern("looked:up:");
+        assert_eq!(Symbol::lookup("looked:up:"), Some(interned));
+        let count = Symbol::interned_count();
+        assert_eq!(Symbol::lookup("never interned by anything"), None);
+        assert_eq!(Symbol::interned_count(), count);
+    }
+
+    /// The hash stored at the interning is the one a program-made symbol of
+    /// the same text computes from its text, so a symbol's hash does not
+    /// change when the canonical table adopts it.
+    #[test]
+    fn the_stored_hash_is_the_one_the_text_computes() {
+        for text in ["hash:of:", "", "\u{20ac}uro \u{1f600}", "a"] {
+            let computed =
+                super::hash_of_symbol_text(crate::hash::content_hash_of_characters(text.chars()));
+            assert_eq!(Symbol::intern(text).text_hash(), computed, "{text:?}");
+        }
     }
 
     #[test]

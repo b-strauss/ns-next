@@ -217,6 +217,22 @@ fn write_wrapper(scratch: &Path, module: &Path, send: &str) -> Result<PathBuf, S
     Ok(project)
 }
 
+/// `stderr` without the line a child `ns-next run` or `load` begins it
+/// with when the JIT is off (`entry::report_jit_unavailable`), which says
+/// nothing of the module, whose recorded stderr it would never match:
+/// printed once by this process instead, the first time a child prints it.
+fn without_jit_warning(stderr: String) -> String {
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Some(rest) = stderr.strip_prefix(crate::entry::JIT_OFF_WARNING) else {
+        return stderr;
+    };
+    let (reason, after) = rest.split_once('\n').unwrap_or((rest, ""));
+    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{}{}", crate::entry::JIT_OFF_WARNING, reason.trim_end());
+    }
+    after.to_string()
+}
+
 /// Runs the application through a *child* `ns-next run`.
 ///
 /// A child process rather than an in-process call on purpose: the module's
@@ -234,7 +250,7 @@ fn run_one(executable: &Path, project: &Path, lowering: &str) -> Result<RunOutco
     Ok(RunOutcome {
         status: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        stderr: without_jit_warning(String::from_utf8_lossy(&out.stderr).into_owned()),
     })
 }
 
@@ -313,7 +329,7 @@ fn run_one_binary(
     Ok(RunOutcome {
         status: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        stderr: without_jit_warning(String::from_utf8_lossy(&out.stderr).into_owned()),
     })
 }
 

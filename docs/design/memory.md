@@ -30,7 +30,9 @@
 > across runs only as `Root`s, and a debug-build stress mode moves
 > everything at the safepoints to check all of it (step 2b); and every
 > movable handle carries a lifetime brand, so that holding one across a
-> safepoint is a compile error (step 2c). The canonical symbol table, a
+> safepoint is a compile error (step 2c). The canonical symbol table, the
+> table of the symbols a program made, which take no number and die with
+> their objects, a
 > `WeakArray`'s slots and the fields of an `Ephemeron` whose key nothing
 > else reaches are weak, and the table of reified mixins is weak in a full
 > collection, which a scavenge traces strongly; everything else the
@@ -38,12 +40,21 @@
 > collection gives back the per-heap ids nothing live names any more --
 > applications, guard ids, mixin trees, compiled bodies, cache ranges --
 > gathered while marking ("Marking"; [object-model.md](object-model.md),
-> "An application has two ids").
+> "An application has two ids"). Every such table has a growth limit
+> that requests a full collection, so that a program that mints rows
+> without allocating much still collects, and after every full collection
+> the reservations beside the space -- the activation stack, the cells,
+> the two id tables of machine code and the code zone -- give back what a
+> peak committed, by a band and a damping ("The trigger and the growth
+> policy", "Giving committed memory back").
 > Allocation is inline (road step 6, "Inline allocation"): a young object
 > whose header holds its word count is one comparison against a limit
 > below eden's scavenge threshold, a bump of the cursor `ns-memory`'s
 > reservation holds, and its header and class word written; every other
-> allocation takes the cold path, `Heap::allocate_block`.
+> allocation takes the cold path, `Heap::allocate_block`. Machine code
+> bumps the same cursor inline and makes the write barrier's decision
+> inline, calling a leaf only for what the cold path and `remember` do
+> ("The fast path", "The write barrier").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the
 > handle types and their brand, every accessor and allocation, the write
 > barrier and the remembered set, the host root table, the move, the
@@ -60,7 +71,12 @@
 > `heap/header.rs` (the header word),
 > `heap/records.rs` (the seam's value types), `heap/tables.rs` (the per-heap
 > tables of mixins, applications and code, and a body's `CodeIdCache`),
-> `heap/mark.rs` (the marker's work list), `heap/world.rs` (the step
+> `heap/mark.rs` (the marker's work list), `heap/limits.rs` (the growth
+> limits of the tables beside the space, and the band and damping by
+> which each reservation beside it gives memory back), `heap/symbols.rs`
+> (the weak table of the symbols a program makes), `heap/machine_entries.rs`
+> (the machine entry table, whose rows a full collection's free of a code
+> id clears and whose committed rows it gives back), `heap/world.rs` (the step
 > state at rest, the entry that lends it out, `StepRoots`, `World::collect`
 > and `World::scavenge`),
 > `interpreter/mod.rs` (`Mutator`, and `Interpreter::enter` with the
@@ -69,8 +85,9 @@
 > `interpreter/safepoint.rs`
 > (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
 > the switches of the memory-facing stress modes: moves, caches, collection,
-> scavenges, every instruction wide, and suspensions; the two JIT modes' are
-> in `jit/mod.rs`),
+> scavenges, every instruction wide, suspensions and the code zone's
+> compaction; the JIT's and the exits' are in `jit/mod.rs`, which also
+> reads the zone's to force the JIT on),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `mixin.rs` (layout, and the one remaining iterative
@@ -486,14 +503,15 @@ application id table" below). Beside it, and for the same reason, the
 entry block machine code is entered with (`ns_memory::EntryBlock`) is
 `Cell`s behind an `Rc` of its own, held by the JIT's state outside the
 mutator: its lasting words -- the object space's, the activation stack's
-and the machine words' addresses, the stubs, the cells, the global
-cache's mask -- are written when `JitState::mark_block_stale` says what
-they name changed (a zone made or replaced, the global cache resized),
-not at every entry, and only a debug build's check at every entry
+and the machine words' addresses, eden's bump cursor's address, the
+stubs, the cells, the global cache's mask -- are written when
+`JitState::mark_block_stale` says what they name changed (a zone made
+or replaced, the global cache resized), not at every entry, and only a
+debug build's check at every entry
 catches a missed mark ([execution.md](execution.md), "The entry at a
 send"). The machine words' one handle-like word is an immediate's
 class, a stored word the collector does not trace, so
-`Mutator::rewrite_immediate_classes` writes them afresh after every
+`Mutator::rewrite_machine_classes` writes them afresh after every
 scavenge, compaction, move and bulk forward; the hand-over words are read
 only right after they are written, and no collection runs between. When the flag is
 set the stretch writes its frame back and leaves its entry, and `run` calls
@@ -952,15 +970,15 @@ string or symbol none at all, and a frame object is exempt as a register
 file is, below. The
 marker then finds a future that only object fields reached unreachable, and
 the compaction reclaims it. A resolved future's value is never itself a
-future (`Mutator::future_computed` follows a future of a future before it
-records one, and one whose fields crafted code made so is malformed and
-left in place), so one pass leaves none behind.
+future (its `resolve` forces a future its computation answered before it
+records the value, and one whose fields crafted code made so is malformed
+and left in place), so one pass leaves none behind.
 
 Registers and host roots are exempt -- a reified frame's, the activation
-stack's, and every `Root`. `FutureImplementation`'s own
-`doesNotUnderstand:`, whose activation forced it and is still returning its
-answer, runs with the future as `self` -- a register that must keep naming an instance of the
-class whose method runs -- and a host that holds the future holds that
+stack's, and every `Root`. `FutureImplementation`'s own `resolve` and
+`doesNotUnderstand:`, whose activations forced it and are still returning
+their answers, run with the future as `self` -- a register that must keep
+naming an instance of the class whose method runs -- and a host that holds the future holds that
 object and may ask for its state; rewriting either would change what they
 read. A future held there
 survives the collection and is replaced by the first one after it lets go,
@@ -1702,6 +1720,224 @@ bounded by the input, since every instruction consumed at least one wire byte.
 
 In a release build the two triggers are what the safepoint's slow path serves.
 
+**Every side table has a growth limit** (`heap/limits.rs`'s
+`GrowthLimit`), of the collection limit's shape: after every full
+collection a table's limit becomes `max(floor, 2 × size)`, `size` the
+table's size after the collection reclaimed what it could
+(`World::collect` resets them after `reclaim_ids`, beside
+`reset_collection_limits`). The space's own limit asks for a collection
+only when objects grow, so a program that edits methods or runs fresh
+families without promoting much would otherwise grow these tables
+between collections without bound. The floors lie above what a small
+program mints, so it never collects for a table: `run_goldens.rs` and
+`run_benchmarks.rs` hold every golden and benchmark program to no table
+collection, through the count that `ns-next run --collector-statistics`
+and `bench --collector-statistics` print, except a golden whose `.toml`
+says which rows it keeps live past a floor (`reaches_a_table_limit`) --
+`a_chain_deeper_than_the_depth_limit_overflows.ns`, whose 102,001
+classes are as many live applications. Such a program collects for the
+table a logarithmic number of times as it grows, as one whose live
+objects grow collects for the space:
+
+| Table | Size measured | Floor |
+|---|---|---|
+| code ids | `Tables.codes` less `free_codes` | `CODE_ID_FLOOR = 16_384` |
+| mixin rows | `Tables.mixins` less `free_mixins` | `MIXIN_ROW_FLOOR = 4_096` |
+| application rows | `Tables.applications` less `free_applications` | `APPLICATION_ROW_FLOOR = 4_096` |
+| sites | `InlineCaches.sites` less the free ranges' sites | `SITE_FLOOR = 262_144`, 8 MiB of cells |
+| program-made symbols | `ProgramSymbols`' live entries | `PROGRAM_SYMBOL_FLOOR = 65_536` |
+
+A table's size is its rows in use -- its length less its free rows, the
+sites less those the free ranges hold -- never its length alone: under a
+churn whose live row is the table's last, no truncation shortens it, so
+a limit on the length would let the table double at every cycle, its
+length growing with what was minted rather than what is live. A freed
+row is minted again before the table grows, so its length stays within
+the high mark of its rows in use. Every mint, a freed row's included,
+compares the rows in use with the table's limit: a code id in
+`Heap::register_code_uncached`, behind `Heap::code_id`'s cache, a mixin
+row in `push_mixin_row`, an application row in `register_application`,
+a program-made symbol in `Heap::record_program_symbol`, and a new range
+in `InlineCaches::fresh_range`. A reached limit calls
+`Heap::request_table_collection`, which, like `request_collection`, only
+sets flags, so a mint inside a leaf or while an object is half-wired may
+call it. The heap's limits are its `TableLimits`; the sites' lies with
+the sites, since `InlineCaches` has no heap: `fresh_range` records the
+reached limit, `InlineCaches::wants_collection` answers it, and the
+mutator that asked for the range requests the collection --
+`Mutator::feedback_base_for`, through which every caller of `base_for`
+goes, machine code's leaves included, and `fresh_feedback_range` for a
+closure an image decoded. A family that already has its range pays
+nothing for it: `feedback_base_for` mints, and asks, only on its cold
+path. The collection is served at the next safepoint, as the heap's own
+request is. `CollectorStatistics.table_collections` counts the
+collections a table requested and the space's limit did not;
+`Interpreter::table_sizes` reads every table's length and what the
+reservations beside the space have committed, and
+`Interpreter::set_table_floors` lowers the floors for a test
+(`tests/collector.rs`'s churns of method edits). HotSpot requests a
+collection when class metadata reach a high-water mark, and resizes the
+mark after the collection from what is still in use
+(`prior-art/jdk/src/hotspot/share/memory/metaspace.cpp:272-300`,
+`MetaspaceGC::compute_new_size`, `:424-490`); V8 starts marking when the
+memory its objects hold outside the heap passes a limit, and raises the
+limit to what is held then (`Heap::UpdateExternalMemory`,
+`prior-art/v8/src/heap/heap.cc:6915-6968`).
+
+**No time-based watchdog.** No collection is started by the clock: every
+one follows from what the program allocated or minted, so a run is
+deterministic, and the growth limits bound every table without one.
+V8's memory reducer, which starts marking from a timer when the mutator
+seems idle and again after a watchdog delay
+(`prior-art/v8/src/heap/memory-reducer.cc:41-42`, `:56-90`), is
+rejected for that reason.
+
+#### Giving committed memory back
+
+The reservations beside the space give back what a peak committed.
+Decided with the user on 2026-10-30, one of the six decisions that make
+everything that grows reclaimable (plan
+`docs/superpowers/plans/2026-10-30-0103-jit-closures.md`, "Part 4d").
+
+**Committed memory is given back by a band and a damping**
+(`heap::limits::Shrink { threshold, headroom }`, `ShrinkDamping`). At the
+end of every full collection (`World::shrink_committed_memory`), and after
+every compaction of the code zone, each reservation beside the space is
+asked whether it lies in its band, and nothing decommits anywhere else, so
+a high mark that rises and falls within one collection's cycle never does.
+
+**The band** (`Shrink::band`): more than the threshold committed above the
+high mark, and more than twice the end the reservation would keep, the
+high mark plus its headroom rounded up to a page. Its first condition is
+Spur's `attemptToShrink` after a full collection, which shrinks only when
+the free old space exceeds `shrinkThreshold` and keeps `growHeadroom`
+(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:50168`,
+`:50244-50249`; its defaults of 32 MiB and 16 MiB, `:51088-51094`). Spur
+grows additively, by the larger of what it needs and its headroom
+(`cointerp.c:26019`, `:50328-50329`), and its pair is stable because its
+threshold is at least the headroom plus one growth step. The stack, the
+cells and the two id tables grow by doubling what they have committed, so
+their step from a kept end is that end, and one regrowth from it would
+cross a threshold of twice the headroom whenever the high mark is above 0:
+a sawtooth back to the same peak would shrink and grow at every
+collection. The second condition -- a shrink keeps less than half of what
+is committed -- restates Spur's invariant for a doubling growth, the band
+HotSpot keeps between `MinHeapFreeRatio` and `MaxHeapFreeRatio`
+(`prior-art/jdk/src/hotspot/share/gc/serial/tenuredGeneration.cpp:153-224`)
+in bytes rather than ratios. The code zone commits only what an install
+needs, so the second condition only makes its shrink rarer.
+
+**The damping** (`ShrinkDamping`, one per reservation, the cells' two
+regions sharing theirs): a collection in the band gives back a factor's
+percent of what lies above the band's end, rounded down to a page, the
+factor 0 the first time, then 10, 40 and 100, and a collection out of the
+band sets it back to 0. It is HotSpot's `ShrinkHeapInSteps`, its
+`_shrink_factor` read and reset before each resizing and advanced only by
+a shrink (`tenuredGeneration.cpp:145-151, 218-231`;
+`prior-art/jdk/src/hotspot/share/memory/metaspace.cpp:425-427, 503-522`),
+whose comment gives the reason: a program that collects between phases
+would otherwise give back at once what its next phase grows again. It
+counts collections, never time; the share is multiplied before it is
+divided, where HotSpot divides first, so that 100% reaches the band's end
+exactly. The code zone's damping counts its shrinks instead, since the zone is
+asked after each of its compactions as well as at the end of a full
+collection: a safepoint that serves both a compaction and a collection
+advances it twice, and the second ask finds the zone's growth flag
+already taken by the first (`JitState::zone_damping`).
+
+**Growth is demand** (decided with the user on 2026-10-31). A reservation
+that grew since the previous collection is out of the band at this one:
+it does not shrink, and its damping starts again at 0. HotSpot resets its
+factor wherever the generation does not want to shrink -- it reads and
+zeroes it before each resizing, and its expanding branch returns with it
+0 (`tenuredGeneration.cpp:146-151, 181-193`) -- and a generation sees its
+demand in what is used after a collection. A collection here runs at a
+low point -- the stack's top between two recursions, the tables just
+truncated -- and does not see the peak between two, so growth since the
+last one stands for it: a flag each reservation sets in its cold growth
+path and its shrink takes. Growth past what is committed alone does not
+show a peak that fits what the damping left committed, and a peak
+returning every cycle would thrash still, at every partial step that
+cut into it (16 decommits in 30 cycles of a 6 MiB recursion, measured).
+So the stack, whose push already compares with an ordinary end in the
+cold path, lowers that end to the band's end at every collection in its
+band, whatever the damping gives back (`FrameStack::shrink`), and a push
+past it is a growth too, which raises the end again without a commit
+(`FrameStack::grow_to`) -- machine code's push past it calls the growth
+leaf, which does the same and lets the push go on
+(`jit::leaves::grow_stack`). The tables grow only by minting rows
+between two collections, so their high mark at a collection is their
+peak.
+
+The guarantee: of the collections in a row that a reservation's band says
+shrink at and that follow no growth, the first gives back nothing, the
+second 10% of what lies above the band's end, the third 40% of what is
+left above it, and the fourth and every later one all of it; one
+collection out of the band, or after a growth, in between starts the
+count again. So a program whose peak returns between every two
+collections keeps what it committed, whatever the peak's depth, and one
+that stops peaking gives it back over the ramp. After a shrink kept `end`
+for a high mark `h`, a cycle whose peak lies within one doubling of `end`
+never puts the reservation back in the band at a collection whose high
+mark is `h` or above. Pinned by `tests/collector.rs`:
+`a_sawtooth_of_recursions_does_not_thrash` (collections at a top above 0,
+the stack decommitted once in a hundred cycles; it fails without the
+band's second condition), `a_recurring_peak_beyond_a_doubling_does_not_thrash`
+(a 6 MiB recursion between collections at a top near 0, at most two
+decommits in thirty cycles, then given back once it stops; 29 without
+the growth, 16 with growth past the committed end alone),
+`a_shrink_is_damped_over_successive_collections` and
+`a_returning_peak_resets_the_damping`.
+
+The pairs are constants named per reservation in `heap/limits.rs`, and a
+test sets them all at once, the damping with them
+(`Interpreter::set_shrink_pairs`, `ShrinkPairs::damped`). Under the
+collect and the zone stress modes every pair is one page of threshold and
+one of headroom, undamped -- HotSpot without `ShrinkHeapInSteps`, its
+factor 100 throughout (`tenuredGeneration.cpp:294-295`) --
+(`Interpreter::shrink_pairs_for_stress`), so that every collection and
+compaction in the band gives back nearly everything above its high mark
+and the stress runs check that each bound is lowered before its pages go:
+
+| Reservation | Threshold / headroom | High mark | What the decommit lowers first |
+|---|---|---|---|
+| the cells (1 GiB reserved) | 32 MiB / 16 MiB, Spur's | the end of `sites` after the sites' slide ([dispatch.md](dispatch.md), "Code families"), and the polymorphic pool's length; the global rows never shrink | each region's committed end, which only Rust reads: machine code reads a site's cell only for a live range and a block's only for one a site names |
+| the activation stack | 4 MiB / 2 MiB | the stack's top; a 100,000-deep recursion commits about 16 MiB | the committed end and the ordinary end, with its machine word `OrdinaryStackEnd` (`FrameStack::shrink`) |
+| the machine entry table | 1 MiB / 512 KiB | the code table's length after its truncation | the committed rows and their machine word `MachineEntryRows`, which the closure stubs compare an id with |
+| the application id table | 1 MiB / 512 KiB | the rows recorded after the application rows' truncation | nothing: machine code's bound, `ApplicationIdRows`, is the rows recorded, which the truncation lowered |
+| the code zone (16 MiB by default) | 2 MiB / 1 MiB | the zone's next offset, after its compaction slid the survivors down ([execution.md](execution.md), "The code zone") | the writer's committed end (`CodeWriter::decommit_above`) |
+
+Every bound machine code compares against is lowered before a page goes,
+so machine code reads only committed memory: an id past the lowered
+machine entry rows reads as no machine entry, and the interpreter calls
+the block. The stack shrinks between entries, when no frame machine
+code pushed lies above its top. A page of a table given back reads zeros
+when it is committed again, and each table writes what it reads there
+first, as it does for a page committed fresh. On Windows the code zone
+is made of chunks of 1 MiB, each a pagefile-backed section of its own
+mapped into both views in place of a placeholder, and it commits and
+gives back whole chunks: a chunk given back has both its views unmapped
+back to placeholders and its section closed, which returns its pages and
+their commit charge, as ZGC maps and unmaps its heap
+(`prior-art/jdk/src/hotspot/os/windows/gc/z/zMapper_windows.cpp:62-75`,
+`:258-312`; HotSpot's placeholders,
+`prior-art/jdk/src/hotspot/os/windows/os_windows.cpp:3573-3618`); the
+zone needs Windows 10 version 1803 for it, and refuses to be made
+without it (`CodeZone::reserve`, `MemoryError::Unsupported`). Linux
+punches a hole into the zone's memory object, Apple AArch64 frees its
+`MAP_JIT` pages with `MADV_FREE`, and a POSIX shared memory object
+elsewhere keeps its pages (`platform::decommit_code`). A zone page given
+back reads zeros on Linux and on Windows, where a chunk mapped again is a
+fresh section, and stops or zeros on Apple AArch64, where its contents
+are undefined until written and the compaction wrote stops over it
+first; either way no code runs from it before an install writes it
+again. `CollectorStatistics.decommits` and `decommitted_bytes` count only
+what the system took back: a POSIX shared memory object's pages and a
+hole a file system refuses count nothing. `TableSizes.zone_committed_bytes`
+is what the zone's writer counts committed, the pages it commits again
+before it writes past them, which for a POSIX shared memory object may be
+less than the system still holds.
+
 ### Weak references
 
 In the space, four things are weak: the canonical symbol table, the table
@@ -1771,13 +2007,120 @@ checked for its heap and its epoch as the scavenger checks a handle it
 traces, and rebranded into the scavenge's epoch.
 
 This does not weaken §5.1.6. Equal symbols are one object as long as
-`Mutator::new_symbol` is the only way to make one. If a symbol object is
-collected then nothing held it — anything that did would have been a root and
+`Mutator::new_symbol` and `Mutator::program_symbol` are the only ways to
+make one. If a symbol object is collected then nothing held it — anything that did would have been a root and
 kept it live — so the next `new_symbol` mints a fresh one whose identity is
 again unique, and no live comparison can tell the difference. An identity hash
 belongs to the object rather than to the symbol; a program that keeps the
 number `identityHash` answered instead of the object has no guarantee today
 either, and Squeak's weak symbol table behaves the same way.
+
+**A program-made symbol takes no number and dies with its object.** A
+symbol a program makes from a string -- `asSymbol` and its kin -- does not
+intern its text, so a run that makes a million distinct symbols and keeps
+none leaves the interner as it was
+(`tests/builtins_text.rs`'s
+`a_million_program_made_symbols_leave_the_interner_as_it_was`). The
+interner (`symbol.rs`) is append-only: `Symbol::intern` leaks one text per
+new spelling, per thread, for good, so a weak table of numbered symbols
+would let the object die but never its number or its text. Newspeak's own
+tests require a program-made symbol to be collectable
+(`testSymbolTableWeakness1` and `2`,
+`prior-art/newspeak/KernelWeakTests.ns:228-243`;
+`goldens/runtime/symbols/program_symbols_are_weak.ns`, where the second
+answers with the Ephemeron's refusal of a value as its key).
+
+- **Why no number.** Recycling the number and the text cannot be built
+  without `unsafe`: `Symbol::as_str` answers a `&'static str` that
+  `intern` leaked, and freeing it would take `Box::from_raw`, which
+  `ns-runtime` forbids, or a non-`'static` text API at every caller of
+  `as_str`; the interner is one per thread, shared by every interpreter on
+  it, so one heap's collection cannot know whether another heap still
+  holds a number; and a `Symbol` is a `Copy` `u32` held by compiled code,
+  cache keys, return sites, frame headers and every Rust table, each of
+  which a recycled number would need scrubbed. A `Symbol` object already
+  holds its own text (`Heap::allocate_symbol` is `allocate_string` with
+  the `Symbol` class), so a program-made symbol whose text nothing has
+  interned needs no number at all: it is just that object, and no number
+  exists to recycle. Sends, caches and machine code see only permanent
+  numbers, where reference-counted numbers would cost on every cache
+  fill, install and text read; the user chose this mechanism as the
+  faster of the two.
+- **Permanent and program-made.** A symbol is permanent when its text
+  was interned -- by the compiler, the resolver, the image decoder or
+  the runtime's own constants -- which is every `Symbol` value Rust
+  holds; the interner stays append-only, bounded by the source compiled
+  and the images loaded, as HotSpot keeps the symbols it never frees at
+  `PERM_REFCOUNT` (`prior-art/jdk/src/hotspot/share/oops/symbol.hpp:99-102`,
+  `:167-169`). A program-made symbol is a `Symbol` object whose text
+  nothing has interned; compiled code, a cache key, a return site, a
+  frame header and an image record can never hold one. A run never
+  interns a text a program chose, or a host that keeps one interpreter
+  would grow the interner with every run: the error a run ends with,
+  whose `HostError` names its selector as a `Symbol`, reports a
+  program-made selector as `doesNotUnderstand:`'s, whether the kernel's
+  `defaultAction` ends the run (`Activation`'s termination) or the depth
+  limit's report does, its text in the error's message
+  (`tests/exceptions.rs`'s
+  `an_unhandled_unnamed_selector_is_reported_as_does_not_understand_on_both_paths`).
+- **The weak table** (`heap::symbols::ProgramSymbols`), per heap, beside
+  `canonical_symbols`: the program-made symbols keyed by a hash of their
+  text and compared by text, so it keeps no copy of the text, with an
+  inverse from an object's offset to its hash, as `symbol_of` is the
+  canonical table's. The hash is SipHash under a key drawn per heap
+  (`std::hash::RandomState`), since a program chooses the texts and could
+  otherwise collide them on purpose into one bucket every `asSymbol`
+  scans; no output depends on the draw, since a lookup compares texts and
+  no answer depends on the order of a bucket. It is weak
+  as the canonical table is: never a root, pruned with
+  `prune_canonical_symbols`, forwarded by a scavenge's weak pass
+  (`Heap::forward_weak_program_symbols`) beside `forward_weak_symbols`,
+  forwarded by every compaction and move, and counted by its live entries
+  against its growth limit ("The trigger and the growth policy") at each
+  mint (`Heap::record_program_symbol`).
+- **Making one** (`Mutator::program_symbol`): a text the interner already
+  holds (`Symbol::lookup`, a probe that inserts nothing) answers the
+  canonical object, `new_symbol` of its number; any other answers the
+  weak table's object for the text, or a new one recorded there.
+- **One text, one object.** When a text a program-made symbol spells is
+  interned afterwards -- a method of that name compiled, an image
+  loaded -- `new_symbol` adopts the existing object as the number's
+  canonical object instead of allocating another
+  (`Heap::adopt_program_symbol`), and the prune adopts every surviving
+  program-made symbol whose text has since been interned, so its
+  `symbol_value` is one probe again. The image decoder refuses a record
+  whose text a living program-made symbol spells, as it refuses a second
+  record of one text (`Heap::has_symbol_object`): the record is an object
+  of its own the decoder already built, and `load` decodes into an
+  interpreter that has run nothing of a program's, so no such symbol
+  lives there. So §5.1.6 holds across both tables: equal symbols are one
+  object while either table holds it
+  (`goldens/runtime/symbols/program_symbol_identity.ns`;
+  `tests/mixin.rs`'s
+  `a_program_made_symbol_finds_a_method_installed_after_it`).
+- **Reading one.** `Heap::symbol_value` answers a program-made symbol's
+  number only once its text is interned, `None` before. A caller that
+  only asks whether an object is a Symbol asks `is_symbol`; one that
+  looks a name up treats `None` as "nothing has this name", since every
+  selector, slot name and class name is interned: `Message>>sendTo:`
+  reaches `doesNotUnderstand:` with the symbol object in the `Message`
+  (`Mutator::decide_unnamed_send`), and a mirror's lookup by name
+  declines to its not-found result. A reader of the text reads the
+  object's own (`Heap::symbol_text`). A symbol's `hash` is its text's,
+  told apart from a String's of the same text, so it does not change when
+  the canonical table adopts the object: the interner stores it with each
+  text it interns (`Symbol::text_hash`), so an interned symbol's `hash` is
+  one probe and one read, and only a program-made symbol whose text
+  nothing has interned computes it from its text. No leaf of machine code reads a
+  symbol object's number: the mirror leaves and the stubs read the
+  selector of the send, always a permanent number, and `sendTo:` is no
+  leaf.
+- **The image format is unchanged.** A symbol's record carries its text,
+  never a number, so no tag is added, and the decoder interns every text
+  of an image's symbol table: a program-made symbol an image carries
+  becomes permanent at load, bounded by the images loaded
+  ([OPEN-WORK.md](../OPEN-WORK.md); `tests/image.rs`'s
+  `an_image_keeps_a_program_made_symbol`).
 
 **The table of reified mixins is weak** (`mixin_objects`,
 `Heap::prune_mixin_objects`), as the symbol table is, for the same
@@ -1906,13 +2249,15 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are eight stress modes, each a gate of its own at the end of a batch,
+There are nine stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
 `NS_NEXT_STRESS_COLLECT`, `NS_NEXT_STRESS_SCAVENGE` ("Finding a missed
-barrier: the scavenge stress mode"), `NS_NEXT_STRESS_SUSPEND`, each of
-these five keeping the safepoint flag set while it is on,
+barrier: the scavenge stress mode"), `NS_NEXT_STRESS_SUSPEND`,
+`NS_NEXT_STRESS_ZONE`, which compacts the code zone, freeing every body
+no activation runs ([execution.md](execution.md), "The code zone"),
+each of these six keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),
 `NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
@@ -1949,9 +2294,12 @@ object in the space is counted until a collection reclaims it, so between
 two scavenges the count includes eden's dead objects; a test that counts
 collects first. A program that discards n closures is back at its starting
 size after a collection; one that keeps n closures keeps n frames.
-`--collector-statistics` prints the scavenges and their total and longest
-pause, the full collections and theirs, and the objects lying in the space,
-on one line to stderr (`crates/ns-cli/src/entry.rs`).
+`ns-next run` and `bench` take `--collector-statistics`, which prints the
+scavenges and their total and longest pause, the full collections and
+theirs, the objects lying in the space, and the collections a table's
+growth limit requested (`CollectorStatistics.table_collections`, "The
+trigger and the growth policy"), on one line to stderr after the run
+(`crates/ns-cli/src/entry.rs`).
 
 ### How the collector is measured
 
@@ -2175,8 +2523,9 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   `prior-art/strongtalk/vm/runtime/os_nt.cpp:403-414`).
   The heap's activation stack is the second: 16 GiB on a 64-bit target
   and 256 MiB otherwise (`STACK_RESERVATION`, `heap/frames.rs`),
-  committed from its base as the stack deepens and never decommitted
-  while the heap lives. Where the operating system limits address
+  committed from its base as the stack deepens and given back above its
+  top and a headroom after a full collection ("Giving committed memory
+  back"). Where the operating system limits address
   space, either reservation falls back, halving the request down to no
   less than 1 GiB (`reserve_falling_back`, `heap/space.rs`; a request
   already below that is tried alone).
@@ -2219,8 +2568,16 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   which a debug build checks ([execution.md](execution.md),
   "Representation").
 - **A bump cursor**: the reservation holds one cursor, a top and a limit
-  in byte offsets (`BumpCursor`), and eden's young allocations take their
-  memory from it ("Inline allocation"). `set_bump` places it and refuses
+  in byte offsets, and eden's young allocations take their memory from
+  it ("Inline allocation"). Its two words lie in an allocation of their
+  own, `Cell`s behind an `Rc` (`SharedCursor`), the top word then the
+  limit word, whose address `bump_cursor_address` exposes: machine code
+  bumps the cursor in place between two calls into Rust, while its
+  caller holds the reservation's owner by `&mut`, so the words cannot lie
+  in the reservation's own bytes, for the reason the heap's machine words
+  lie apart ([execution.md](execution.md), "The machine words"); machine
+  code moves the top only by a bump that ends within the limit, as
+  `bump` does. `set_bump` places it and refuses
   an unaligned offset, a top outside the reservation or a limit past the
   committed read-write prefix; a limit below the top is allowed and
   refuses every bump. `bump` is one comparison of the words asked for
@@ -2269,7 +2626,8 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   most 128 MiB mapped twice, one view executable and one writable
   (`MAP_JIT` with its per-thread switch on Apple AArch64), the one writer
   of code, which commits pages as code is installed and flushes the
-  instruction cache over what it wrote, the entry, the block the entry
+  instruction cache over what it wrote and gives pages back above an
+  end (`decommit_above`, "Giving committed memory back"), the entry, the block the entry
   hands machine code (`EntryBlock`, `Cell`s behind an `Rc`, kept from
   one entry to the next), and the shim through which machine code calls
   Rust ([execution.md](execution.md), "The baseline JIT's foundation",
@@ -2295,30 +2653,54 @@ base plus its index times its size -- while the `Vec`s of entries beside
 it move as they grow. Each region is committed as it grows, doubling what
 it has and at least 64 KiB, or exactly what it needs where the system
 refuses more, and `heap::out_of_memory` past that; a page newly committed
-reads 0, so every cell a table grows by is written vacant explicitly. The
+reads 0, so every cell a table grows by is written vacant explicitly. After
+a full collection the site and block regions give their pages back above
+the table's end, the pool's length and a headroom (`Cells::shrink`;
+"Giving committed memory back"); the global mirror never shrinks. The
 addresses come from `Reservation::base_address`, and every slice Rust
 borrows of it is derived afresh, as the object space's are. A cell names
 no handle, so nothing traces it.
 
 ### The application id table
 
-Machine code reads an application's instances dispatch id by its index
-(`heap/application_ids.rs`): one `Reservation` of 2^22 rows of a word,
-row `index` the bits of application `index`'s instances `DispatchId`, its
-address and the number of rows recorded in the machine words
-(`ApplicationIds`, `ApplicationIdRows`). The megamorphic stub needs it at
-a `super` or private lexical site, whose guard is S's or N's application
-word while the global cache is keyed by dispatch id (decided on
-2026-10-29, so that no site kind is left to the Rust probe). It has three
-writers: `Heap::register_application` records an application's id when
-it is registered, `Heap::free_application` records `DispatchId::NONE`
-when a full collection reclaims the application, and
-`Heap::truncate_application_rows` takes the bound back with the table of
-applications. An application's ids never change after it is built, and a
-class object's application word, which `class_set_application` changes,
-is read afresh by the stub, so nothing else writes it. A word that is no
-`SmallInteger`, or an index at or past the bound, names no application,
-and the stub goes to the miss leaf, which decides.
+Machine code reads what it needs of an application by its index
+(`heap/application_ids.rs`): one `Reservation` of 2^22 rows of four words,
+its address and the number of rows recorded in the machine words
+(`ApplicationIds`, `ApplicationIdRows`). Row `index` holds, of application
+`index`:
+
+1. the bits of its instances `DispatchId`;
+2. its instances' header word, which `AllocateInstance`'s template
+   writes, or 0 where `allocate_for_factory` makes no ordinary instance
+   of the application's count: an instantiation refusal, or a count that
+   needs an overflow word (`application_ids::Row::instance_header`);
+3. its own slot base (`MixinApplication::own_slot_base`);
+4. its flags, bit 0 set when its instances' slots take §3.1.1's
+   check of what a value's slot may hold (`inherits_value`).
+
+The megamorphic stub reads the id at a `super` or private lexical site,
+whose guard is S's or N's application word while the global cache is
+keyed by dispatch id (decided on 2026-10-29, so that no site kind is left
+to the Rust probe). The own-slot instructions read the slot base of the
+level their frame was entered at, as `Heap::activation_slot_base` does,
+and `InitializeSlot` the flags of its receiver's class's application,
+whose `inherits_value` `check_value_slot` reads -- the receiver's, not the
+entered level's, since a `<:` clause can apply `Value` below the level
+(execution.md, "The baseline JIT's foundation", "Own slots in machine
+code"). It has three writers:
+`Heap::register_application` records an application's row when it is
+registered, `Heap::free_application` records zeros -- the id
+`DispatchId::NONE` -- when a full collection reclaims the application,
+and `Heap::truncate_application_rows` takes the bound back with the table
+of applications, after which the end of a full collection gives the
+pages past the bound and a headroom back (`ApplicationIds::shrink`;
+"Giving committed memory back"). An application's row never changes after it is built,
+and a class object's application word, which `class_set_application`
+changes, is read afresh by machine code, so nothing else writes it. A
+word that is no `SmallInteger`, or an index at or past the bound, names
+no application: the stub goes to the miss leaf, an own-slot instruction
+exits and `InitializeSlot` takes the generic leaf, each of which
+decides.
 
 ### The allocator of the Rust side
 
@@ -2531,7 +2913,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name eight stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name nine stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit
@@ -2697,7 +3079,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
 `World::scavenge` lends the heap and `StepRoots` side
 by side, and times the scavenge as `World::collect` times a collection;
 `--collector-statistics` reports the scavenges and their pauses beside the
-full collections ("The gates the collector needs").
+full collections and the table collections ("The gates the collector
+needs").
 
 ### Every mover realigns a `ByteArray`'s data
 
@@ -2774,9 +3157,11 @@ stored word names a young object -- and the barrier is forced inline into
 each store accessor; `remember` is out of line, and a holder whose bit is
 set already returns at once.
 
-The barrier sits in `heap.rs`'s store accessors and nowhere else, never in
-`vm.rs`, so the interpreter, the reference lowering and a JIT share one
-rule. Every store into an existing object goes through one of them:
+The barrier sits in `heap.rs`'s store accessors, never in `vm.rs`, so the
+interpreter and the reference lowering share one rule, and machine code's
+inline barrier, below, makes its comparisons and calls its `remember`.
+Every store the interpreter makes into an existing object goes through one
+of them:
 
 - `Heap::set_pointer_word`: an instance's fields, an array's elements and a
   class object's fields;
@@ -2787,6 +3172,24 @@ rule. Every store into an existing object goes through one of them:
   activation's registers into its frame object and remembers an old frame
   that one of them makes name a young object ("Frames, the activation
   stack and the marriage").
+
+Machine code makes the same decision inline. A store into an object it
+did not allocate in the same template -- `StoreVector`'s, a setter
+stub's, a private or `super` setter's, an Array's `at:put:` stub's,
+`InitializeSlot`'s and `InitializeSlotProvisionally`'s, and an outer
+local's in a divorced frame -- takes
+`MacroAssembler::store_with_barrier`: the word, then the same two
+comparisons against `NURSERY_END` behind an early out for a value that
+names no object, and one for a holder whose remembered bit is set
+already, which `remember` would answer at once; only past all four does
+it call `Leaf::Remember`, which is `remember` itself
+([execution.md](execution.md), "The baseline JIT's foundation"). Its
+initializing stores -- `MakeArray`'s elements, a closure's copied
+values, the fields of a frame object a `MakeClosure` reifies -- take
+none, for the reason `allocate_block`'s callers take none: the object is
+young, or old and born remembered, since only `Leaf::Allocate` and the
+generic leaf place one old, through `allocate_block`. An outer local in
+a married frame lies on the activation stack and takes none either.
 
 `allocate_block` remembers every old object it allocates outside the
 decoder, as above. A married frame's registers live on the activation
@@ -2996,6 +3399,30 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
   into the reserve would need a second comparison and the request inline,
   and inlining `allocate_block` itself would keep its branches and could
   not precompute the header.
+- **Machine code bumps the same cursor, against the same limit.** The
+  cursor's two words, the top then the limit, lie in an allocation of
+  their own (`ns_memory::SharedCursor`, "The memory layer"), whose
+  address the entry block names (`BlockWord::EdenCursor`), so machine
+  code reads and writes them between two calls into Rust as the
+  interpreter's fast path does (`MacroAssembler::bump_allocate`).
+  `MakeVector`, `MakeArray`, `AllocateInstance`, `MakeClosure`, the
+  frame object a twin's `MakeClosure` reifies and `MakeFuture` write
+  the header and the class word from the machine words, where the
+  interpreter's precomputed headers are copied
+  ([execution.md](execution.md), "The machine words"), and fill or store
+  every field before the next instruction, as the fast path does. Past
+  the limit, or for a block at or past the large-object threshold, they
+  call `Leaf::Allocate`, which places the object as `allocate_block`
+  does and never collects, or the generic leaf, which runs the
+  interpreter's own allocation; either requests the scavenge, which runs
+  at the next poll's exit. The objects machine code places are counted in
+  the machine word `MachineAllocations` and folded into the heap's counts
+  before a scavenge or a compaction recounts them, so the heap's
+  statistics stay the interpreter's. Cog's machine code carries on past
+  its threshold into the slack and calls a trampoline that only schedules
+  the scavenge (`cogitX64SysV.c:19053-19077`); here the limit already
+  lies below the threshold, so the leaf is the interpreter's own
+  decision, and no word of machine code holds the threshold.
 
 ### The headers precomputed
 

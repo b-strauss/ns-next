@@ -544,3 +544,493 @@ fn every_kind_of_stored_word_survives_moves_and_collections() {
         "the scavenge stress mode never scavenged"
     );
 }
+
+/// A program that replaces one method's source `count` times through a
+/// MirrorBuilder, each time with a fresh class side, and runs the edited
+/// method and its class side's after each install: every install mints
+/// code ids and application rows that only a full collection reclaims.
+const METHOD_EDIT_CHURN: &str = indoc! {"
+    class Churn usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Edited = Object new () (
+        public answer = ( ^0 )
+      ) : (
+        public tag = ( ^0 )
+      )
+      public churn: count = (
+        1 to: count do: [:index |
+          | builder |
+          builder:: (ClassMirror reflecting: Edited) mixin declaration asBuilder.
+          builder instanceSide methods
+              addFromSource: 'public answer = ( ^' , index printString , ' yourself )'.
+          builder classSide methods
+              addFromSource: 'public tag = ( ^' , index printString , ' )'.
+          builder install.
+          Edited new answer = index ifFalse: [^false].
+          Edited tag = index ifFalse: [^false]].
+        ^true
+      )
+    ) : ()
+"};
+
+/// Runs `METHOD_EDIT_CHURN` for `count` edits on `interpreter`, whose
+/// collection floor lies far above what the edits allocate, so that only
+/// a table's growth limit can request a collection.
+fn churn_method_edits(interpreter: &mut Interpreter, class: &Root, count: i64) {
+    // The tables' limits are what this pins; under `NS_NEXT_STRESS_COLLECT=1`
+    // the mode's own collections would keep every table below its limit.
+    interpreter.set_stress_collect(false);
+    interpreter.set_collection_floor(1 << 30);
+    let platform = interpreter.platform();
+    let churn = expect_ok(interpreter.send(class, Symbol::intern("usingPlatform:"), &[platform]));
+    let count = interpreter.stash(Value::small_integer(count));
+    let answered = expect_ok(interpreter.send(&churn, Symbol::intern("churn:"), &[count]));
+    let answered_true = interpreter
+        .enter(|mutator| matches!(mutator.fetch(&answered).kind(), ValueKind::Boolean(true)));
+    assert!(answered_true, "an edited method answered another value");
+}
+
+/// Runs `METHOD_EDIT_CHURN` for `edits` edits with every table's floor at
+/// `floor`, and answers how many table collections it took and the
+/// tables' sizes after a collection that follows it.
+fn churn_with_floors(floor: usize, edits: i64) -> (u64, ns_runtime::TableSizes) {
+    let (mut interpreter, class) = load(METHOD_EDIT_CHURN);
+    interpreter.set_table_floors(ns_runtime::TableFloors::all(floor));
+    churn_method_edits(&mut interpreter, &class, edits);
+    let table_collections = interpreter.collector_statistics().table_collections;
+    interpreter.collect_now();
+    (table_collections, interpreter.table_sizes())
+}
+
+/// A program that edits methods without promoting much grows the code ids,
+/// the application rows and the sites, not the old space; their growth
+/// limits request the full collections that reclaim them, so that each
+/// table's size follows what is live, not how many edits ran: a churn
+/// eight times longer leaves no table larger than a short one's bound
+/// (`heap::limits`). The sites and the application id table's committed
+/// rows, the application rows' high mark, show it plainly. The floors are
+/// lowered so that both churns pass them several times over.
+#[test]
+fn a_churn_of_method_edits_collects_without_old_space_growth() {
+    let floor = 256;
+    let (short_collections, short) = churn_with_floors(floor, 1_000);
+    let (long_collections, long) = churn_with_floors(floor, 8_000);
+    assert!(
+        short_collections > 0 && long_collections > short_collections,
+        "the table limits requested {short_collections} and {long_collections} collections"
+    );
+    // A bound the short churn meets, independent of the number of edits:
+    // twice the larger of the floor and the short churn's rows, which
+    // count what stays live.
+    let bound = |short_size: usize| 2 * floor.max(short_size);
+    for (table, short_size, long_size) in [
+        (
+            "application rows",
+            short.application_rows,
+            long.application_rows,
+        ),
+        ("code ids", short.code_ids, long.code_ids),
+        ("mixin rows", short.mixin_rows, long.mixin_rows),
+        ("sites", short.sites, long.sites),
+        // The application id table commits as the application rows grow,
+        // so its committed rows keep their high mark through the
+        // truncation of the rows `collect_now` frees.
+        (
+            "application id rows committed",
+            short.application_id_rows_committed,
+            long.application_id_rows_committed,
+        ),
+    ] {
+        assert!(
+            long_size <= bound(short_size),
+            "{long_size} {table} after 8,000 edits, {short_size} after 1,000"
+        );
+    }
+}
+
+/// Each install runs a fresh family -- the edited `answer` sends
+/// `yourself` -- whose range the caches mint, so the sites grow with the
+/// edits. A churn too short to reach the other tables' default floors
+/// requests no collection; with the sites' floor at 64 it requests one,
+/// through `InlineCaches::wants_collection`, which only the sites' limit
+/// sets.
+#[test]
+fn a_churn_of_families_requests_a_collection_at_the_site_limit() {
+    let edits = 1_000;
+    let (mut unlimited, class) = load(METHOD_EDIT_CHURN);
+    churn_method_edits(&mut unlimited, &class, edits);
+    assert_eq!(
+        unlimited.collector_statistics().table_collections,
+        0,
+        "the churn reached a table's default floor"
+    );
+    let (mut interpreter, class) = load(METHOD_EDIT_CHURN);
+    interpreter.set_table_floors(ns_runtime::TableFloors {
+        sites: 64,
+        ..ns_runtime::TableFloors::default()
+    });
+    churn_method_edits(&mut interpreter, &class, edits);
+    assert!(
+        interpreter.collector_statistics().table_collections > 0,
+        "the sites' growth limit requested no collection"
+    );
+}
+
+/// A module whose `down:` recurses as deep as it is asked and answers the
+/// depth it reached.
+const DEEP: &str = indoc! {"
+    class Deep = Object new () (
+      public down: count = (
+        count = 0 ifTrue: [^0].
+        ^(self down: count - 1) + 1
+      )
+    ) : ()
+"};
+
+/// Sends `down: depth` to a new `Deep`, answering what it answers.
+fn recurse(interpreter: &mut Interpreter, class: &Root, depth: i64) -> i64 {
+    let instance = expect_ok(interpreter.instantiate(class, &[]));
+    let count = interpreter.stash(Value::small_integer(depth));
+    let answer = expect_ok(interpreter.send(&instance, Symbol::intern("down:"), &[count]));
+    interpreter.enter(|mutator| integer_of(mutator.fetch(&answer)))
+}
+
+/// The bytes past the high mark and the headroom a shrunk reservation may
+/// still hold: its end is rounded up to a page, 64 KiB at the most on the
+/// platforms ns-next runs on.
+const A_PAGE: usize = 64 << 10;
+
+/// A recursion 50,000 deep commits several MiB of the activation stack.
+/// The first full collection after it returned sees that growth, demand,
+/// and keeps the pages; the next gives them back down to the headroom
+/// above the top, 2 MiB (`heap::limits::STACK_SHRINK`); a second recursion
+/// as deep commits the pages again and answers right.
+#[test]
+fn a_deep_recursion_gives_its_stack_pages_back() {
+    let (mut interpreter, class) = load(DEEP);
+    // The collections this pins are its own: under the collect stress
+    // mode one made while the recursion unwinds shrinks the stack to a top
+    // that is still high, and the explicit one finds less than the
+    // threshold above the top it returned to.
+    interpreter.set_stress_collect(false);
+    // The band's end, not the damping's ramp, is what this pins.
+    interpreter.set_shrink_pairs(ns_runtime::ShrinkPairs {
+        damped: false,
+        ..ns_runtime::ShrinkPairs::default()
+    });
+    let depth = 50_000;
+    assert_eq!(recurse(&mut interpreter, &class, depth), depth);
+    let grown = interpreter.table_sizes().stack_committed_bytes;
+    interpreter.collect_now();
+    assert_eq!(
+        interpreter.table_sizes().stack_committed_bytes,
+        grown,
+        "the collection after the growth keeps it"
+    );
+    let before = interpreter.collector_statistics();
+    interpreter.collect_now();
+    let sizes = interpreter.table_sizes();
+    assert!(
+        sizes.stack_committed_bytes <= sizes.stack_used_bytes + (2 << 20) + A_PAGE,
+        "{} bytes committed above a top at {}",
+        sizes.stack_committed_bytes,
+        sizes.stack_used_bytes
+    );
+    let after = interpreter.collector_statistics();
+    assert!(
+        after.decommits > before.decommits && after.decommitted_bytes > before.decommitted_bytes,
+        "the collection gave the pages back"
+    );
+    assert_eq!(recurse(&mut interpreter, &class, depth), depth);
+    assert_eq!(recurse(&mut interpreter, &class, depth), depth);
+}
+
+/// A module whose `cycle:` recurses as deep as it is asked, then asks for
+/// a full collection from a few frames above the bottom, which the next
+/// safepoint serves at a top that is not 0; `downCollecting:` asks for
+/// one at the bottom of its recursion, served near its peak.
+const SAWTOOTH: &str = indoc! {"
+    class Sawtooth usingPlatform: platform = Object new (
+      |
+        kernel = platform kernel.
+      |
+    ) (
+      public down: count = (
+        count = 0 ifTrue: [^0].
+        ^(self down: count - 1) + 1
+      )
+      public cycle: depth = (
+        ^self above: 3 cycle: depth
+      )
+      public downCollecting: count = (
+        count = 0 ifTrue: [
+          kernel garbageCollect.
+          ^0
+        ].
+        ^(self downCollecting: count - 1) + 1
+      )
+      above: levels cycle: depth = (
+        | answer |
+        levels = 0 ifFalse: [^self above: levels - 1 cycle: depth].
+        answer:: self down: depth.
+        kernel garbageCollect.
+        ^answer + 0
+      )
+    ) : ()
+"};
+
+/// Shrinks of the activation stack alone: every other reservation's
+/// threshold lies out of reach. Damped as by default when `damped`.
+fn only_the_stack_shrinks(damped: bool) -> ns_runtime::ShrinkPairs {
+    let never = ns_runtime::Shrink {
+        threshold: usize::MAX,
+        headroom: 0,
+    };
+    ns_runtime::ShrinkPairs {
+        cells: never,
+        machine_entries: never,
+        application_ids: never,
+        code_zone: never,
+        damped,
+        ..ns_runtime::ShrinkPairs::default()
+    }
+}
+
+/// A recursion that commits 8 MiB of the activation stack and collects
+/// from inside it, at a top a few frames above the bottom, shrinks the
+/// stack to the headroom above that top, 2 MiB and a page; then a hundred
+/// recursions 1 MiB of frames deeper than the headroom -- about 3 MiB, at
+/// the 112 bytes a `down:` frame takes -- each collecting the same way,
+/// grow it back by one doubling every time and never shrink it again
+/// (`heap::limits::Shrink`, the hysteresis): the stack decommits once.
+/// Only the stack may shrink, so that no other reservation's decommit is
+/// counted.
+#[test]
+fn a_sawtooth_of_recursions_does_not_thrash() {
+    let (mut interpreter, class) = load(SAWTOOTH);
+    // The collections this pins are one per cycle, at its low point: the
+    // collect stress mode's, at every safepoint of the recursion, are a
+    // collection cycle of their own each.
+    interpreter.set_stress_collect(false);
+    // The stack's own top is what its collections read: the suspend
+    // stress mode would take the recursion's frames off it.
+    interpreter.set_stress_suspend(false);
+    // Undamped, so that the first cycle shrinks at once: the band is what
+    // this pins (`a_shrink_is_damped_over_successive_collections` pins the
+    // damping).
+    interpreter.set_shrink_pairs(only_the_stack_shrinks(false));
+    let platform = interpreter.platform();
+    let subject =
+        expect_ok(interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]));
+    let cycle = |interpreter: &mut Interpreter, depth: i64| {
+        let count = interpreter.stash(Value::small_integer(depth));
+        let answer = expect_ok(interpreter.send(&subject, Symbol::intern("cycle:"), &[count]));
+        assert_eq!(
+            interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+            depth
+        );
+    };
+    let before = interpreter.collector_statistics();
+    cycle(&mut interpreter, 75_000);
+    let grown = interpreter.collector_statistics();
+    assert!(
+        grown.collections > before.collections,
+        "the cycle collected"
+    );
+    assert_eq!(grown.decommits, before.decommits, "a growth is demand");
+    cycle(&mut interpreter, 10);
+    let shrunk = interpreter.collector_statistics();
+    assert_eq!(
+        shrunk.decommits - before.decommits,
+        1,
+        "the shallow cycle after it shrinks"
+    );
+    let kept = interpreter.table_sizes().stack_committed_bytes;
+    assert!(
+        kept > 2 << 20,
+        "{kept} bytes kept above a top that is not 0"
+    );
+    for _ in 0..100 {
+        cycle(&mut interpreter, 28_500);
+    }
+    let after = interpreter.collector_statistics();
+    assert!(
+        after.collections >= shrunk.collections + 100,
+        "every cycle collected"
+    );
+    let decommits = after.decommits - shrunk.decommits;
+    assert_eq!(decommits, 0, "{decommits} decommits after the first");
+}
+
+/// `SAWTOOTH` loaded, its collect stress mode off and only the stack
+/// shrinking, damped as by default, and instantiated with the platform;
+/// then one `down:` 75,000 deep, which commits 16 MiB of the stack.
+fn deep_once() -> (Interpreter, Root) {
+    let (mut interpreter, class) = load(SAWTOOTH);
+    interpreter.set_stress_collect(false);
+    // The stack's own top is what its collections read: the suspend
+    // stress mode would take the recursion's frames off it.
+    interpreter.set_stress_suspend(false);
+    interpreter.set_shrink_pairs(only_the_stack_shrinks(true));
+    let platform = interpreter.platform();
+    let subject =
+        expect_ok(interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]));
+    let count = interpreter.stash(Value::small_integer(75_000));
+    let answer = expect_ok(interpreter.send(&subject, Symbol::intern("down:"), &[count]));
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+        75_000
+    );
+    (interpreter, subject)
+}
+
+/// What a damped shrink keeps of `committed` when its band's end is `end`
+/// and its factor `factor` percent (`heap::limits::Shrink`): the factor's
+/// percent of what lies above the end given back, rounded down to a page.
+fn damped(committed: usize, end: usize, factor: usize) -> usize {
+    let page = ns_memory::Reservation::page_size();
+    committed - (committed - end) * factor / 100 / page * page
+}
+
+/// Collections at a top of 0 after a deep recursion, each in the stack's
+/// band: the first gives back nothing, the second 10% of what lies above
+/// the 2 MiB the band keeps, the third 40% of what is left above it, the
+/// fourth all of it, HotSpot's ramp (`heap::limits::ShrinkDamping`).
+#[test]
+fn a_shrink_is_damped_over_successive_collections() {
+    let (mut interpreter, _) = deep_once();
+    let end = 2 << 20;
+    let mut committed = interpreter.table_sizes().stack_committed_bytes;
+    assert!(committed > 2 * end, "{committed} bytes committed");
+    // The recursion's growth is demand: the collection after it is out of
+    // the band, and the ramp starts at the next.
+    interpreter.collect_now();
+    assert_eq!(interpreter.table_sizes().stack_committed_bytes, committed);
+    for factor in [0, 10, 40, 100] {
+        interpreter.collect_now();
+        let sizes = interpreter.table_sizes();
+        assert_eq!(sizes.stack_used_bytes, 0);
+        let expected = damped(committed, end, factor);
+        assert_eq!(
+            sizes.stack_committed_bytes, expected,
+            "at {factor}%, from {committed} bytes"
+        );
+        committed = expected;
+    }
+    assert_eq!(committed, end, "all of the excess given back");
+}
+
+/// A collection out of the band -- at the peak, from inside a deep
+/// recursion -- between two at the bottom resets the damping, so that the
+/// next collection at the bottom, though in the band and one after
+/// another in it, gives back nothing again.
+#[test]
+fn a_returning_peak_resets_the_damping() {
+    let (mut interpreter, subject) = deep_once();
+    let committed = interpreter.table_sizes().stack_committed_bytes;
+    interpreter.collect_now();
+    assert_eq!(
+        interpreter.table_sizes().stack_committed_bytes,
+        committed,
+        "the first collection in the band gives back nothing"
+    );
+    let count = interpreter.stash(Value::small_integer(75_000));
+    let answer = expect_ok(interpreter.send(&subject, Symbol::intern("downCollecting:"), &[count]));
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+        75_000
+    );
+    assert_eq!(
+        interpreter.table_sizes().stack_committed_bytes,
+        committed,
+        "the collection at the peak is out of the band"
+    );
+    interpreter.collect_now();
+    assert_eq!(
+        interpreter.table_sizes().stack_committed_bytes,
+        committed,
+        "the ramp starts again at 0%"
+    );
+    interpreter.collect_now();
+    assert!(
+        interpreter.table_sizes().stack_committed_bytes < committed,
+        "and goes on to 10%"
+    );
+}
+
+/// A program whose recursion returns to about 6 MiB of the activation
+/// stack between every two collections, each taken at a top near 0: a
+/// peak beyond one doubling of the 2 MiB the stack's band keeps there.
+/// Each cycle's push past the ordinary end the band set -- or past what is
+/// committed -- is demand (`heap::limits::Shrink`, "Growth is demand"), so
+/// no collection gives the peak's pages back, and the stack decommits at
+/// most twice over thirty cycles, with no call refused and no body
+/// abandoned; once the program stops peaking, the collections give them
+/// back over the damping's ramp.
+#[test]
+fn a_recurring_peak_beyond_a_doubling_does_not_thrash() {
+    let (mut interpreter, class) = load(SAWTOOTH);
+    interpreter.set_stress_collect(false);
+    // The stack's own top is what its collections read: the suspend
+    // stress mode would take the recursion's frames off it.
+    interpreter.set_stress_suspend(false);
+    interpreter.set_shrink_pairs(only_the_stack_shrinks(true));
+    let platform = interpreter.platform();
+    let subject =
+        expect_ok(interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]));
+    let cycle = |interpreter: &mut Interpreter, depth: i64| {
+        let count = interpreter.stash(Value::small_integer(depth));
+        let answer = expect_ok(interpreter.send(&subject, Symbol::intern("cycle:"), &[count]));
+        assert_eq!(
+            interpreter.enter(|mutator| integer_of(mutator.fetch(&answer))),
+            depth
+        );
+    };
+    let before = interpreter.collector_statistics();
+    let jit_before = interpreter.jit_statistics();
+    for _ in 0..30 {
+        cycle(&mut interpreter, 56_000);
+    }
+    let peaked = interpreter.collector_statistics();
+    let jit_after = interpreter.jit_statistics();
+    // Machine code's push past the ordinary end the band set calls the
+    // growth leaf (`jit::leaves::grow_stack`) and goes on: no call is
+    // refused for room, and no body is abandoned for the exits it would
+    // have taken. The calls that are refused (`pushes_refused`) are
+    // refused at the safepoints the cycles' own `garbageCollect`
+    // requests, or a stress mode's, whatever the depth.
+    assert_eq!(
+        jit_after.stack_growth_refusals, jit_before.stack_growth_refusals,
+        "a push past the ordinary end refused for room"
+    );
+    assert_eq!(
+        jit_after.abandoned_bodies, jit_before.abandoned_bodies,
+        "a body abandoned"
+    );
+    // Where machine code ran at all: not without the JIT, nor in a build
+    // without an encoder.
+    if jit_after.compiled_bodies > jit_before.compiled_bodies {
+        assert!(
+            jit_after.stack_growths > jit_before.stack_growths,
+            "machine code grew the stack itself"
+        );
+    }
+    assert!(
+        peaked.collections >= before.collections + 30,
+        "every cycle collected"
+    );
+    let decommits = peaked.decommits - before.decommits;
+    assert!(decommits <= 2, "{decommits} decommits over thirty peaks");
+    let committed = interpreter.table_sizes().stack_committed_bytes;
+    for _ in 0..6 {
+        cycle(&mut interpreter, 10);
+    }
+    let kept = interpreter.table_sizes().stack_committed_bytes;
+    assert!(
+        kept <= (2 << 20) + A_PAGE && kept < committed,
+        "{kept} bytes kept of {committed} once the peaks stopped"
+    );
+}

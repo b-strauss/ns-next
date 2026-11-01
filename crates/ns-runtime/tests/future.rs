@@ -1,9 +1,9 @@
 //! The pull future of §6.3.2's simultaneous slots, driven from the host
 //! before any source makes one (`docs/design/object-model.md`,
 //! "Simultaneous slots"). Each test runs under both lowerings: the
-//! future's `doesNotUnderstand:` forces it through a mirror send, which the
-//! optimized lowering inlines as `SendMirror` and the reference lowering
-//! sends to the mirror object.
+//! future's `doesNotUnderstand:` forces it by its own `resolve`, a method
+//! like any other, whose mirror sends the optimized lowering inlines as
+//! `SendMirror` and the reference lowering sends to the mirror object.
 
 use indoc::indoc;
 use ns_runtime::interpreter::future::FutureState;
@@ -308,13 +308,17 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// The depth limit refuses a forcing's push as it refuses any other
-    /// (`Mutator::push_past_the_limit`), and abandons the forcing, so the
-    /// future is unresolved, not resolving with nothing computing it. The
-    /// forcing's push is the one refused when the error names a block's
-    /// `value`: `descend:forcing:` and the future's `doesNotUnderstand:` are
-    /// methods. Searched from the deepest recursion down, since the first
-    /// depth that fits the forcing resolves the future.
+    /// The depth limit refuses a push of a forcing as it refuses any other
+    /// (`Mutator::push_past_the_limit`) -- the future's `resolve`, its
+    /// `ifCurtailed:`, the protected block, or the computation -- and the
+    /// unwind abandons the forcing, so the future is unresolved, not
+    /// resolving with nothing computing it, at every depth that refuses
+    /// one. Some depth refuses a block's `value` -- the protected block's,
+    /// or the computation's once the future is marked resolving -- since
+    /// `descend:forcing:`, `doesNotUnderstand:`, `resolve` and
+    /// `ifCurtailed:` are methods. Searched from the deepest recursion
+    /// down, since the first depth that fits the forcing resolves the
+    /// future.
     fn the_depth_limit_refusing_a_forcing_leaves_the_future_unresolved(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");
@@ -336,11 +340,10 @@ ns_runtime::for_each_lowering! {
                 Ok(_) => break,
             };
             assert_eq!(error.message, "stack overflow: recursion too deep", "depth {depth}");
+            assert_eq!(state_of(&mut interpreter, &future), "unresolved", "depth {depth}");
+            assert_eq!(runs(&mut interpreter, &holder), 0, "depth {depth}: never ran");
             if error.selector == Symbol::intern("value") {
                 refused_forcing = true;
-                assert_eq!(state_of(&mut interpreter, &future), "unresolved", "depth {depth}");
-                assert_eq!(runs(&mut interpreter, &holder), 0, "depth {depth}: never ran");
-                break;
             }
         }
         assert!(refused_forcing, "{lowering:?}: some depth refused the forcing's push");
@@ -443,10 +446,10 @@ ns_runtime::for_each_lowering! {
 
 ns_runtime::for_each_lowering! {
     /// A chain of futures each answering the next is as long as the
-    /// program makes it, and the run loop pops each block's activation
-    /// before it pushes the next, so no depth limit bounds it: resolving,
-    /// abandoning, tracing and dropping the chain must all walk it without
-    /// recursing in Rust once per link.
+    /// program makes it, and the head's `resolve` takes each next one over
+    /// in its own activation, each block's activation popped before the
+    /// next is pushed, so no depth limit bounds it, and nothing recurses,
+    /// in Newspeak or in Rust, once per link.
     fn a_long_chain_of_futures_resolves_without_recursing_per_link(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let next = a_chain(&mut interpreter, &holder, "three");
@@ -464,8 +467,9 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// The same chain, its last block raising: the unwind abandons the
-    /// whole chain, one link at a time, and leaves the head unresolved.
+    /// The same chain, its last block raising: the head's `ifCurtailed:`
+    /// abandons the whole chain, one link at a time, and leaves the head
+    /// unresolved.
     fn a_long_chain_of_futures_is_abandoned_without_recursing_per_link(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let next = a_chain(&mut interpreter, &holder, "failing");

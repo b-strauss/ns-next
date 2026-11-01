@@ -169,20 +169,29 @@ pub(super) mod kind_tag {
 /// Where each field of `FrameFlags` sits in the flags word's
 /// `SmallInteger`: the kind tag in bits 0-7, the argument count in bits
 /// 8-23, `counted` at 24, `retains_registers` at 25, `compiled` at 26 and,
-/// in a debug build, the 31-bit generation in bits 27-57; 58 bits, inside
+/// in a debug build, the 31-bit generation in bits 27-57, and a compiled
+/// block's call shift in bits 58-59 (`CALL_SHIFT_BITS`); 60 bits, inside
 /// 61.
-const KIND_TAG_MASK: u64 = 0xFF;
+pub(crate) const KIND_TAG_MASK: u64 = 0xFF;
 pub(crate) const ARGUMENT_COUNT_SHIFT: u32 = 8;
-const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
+pub(crate) const ARGUMENT_COUNT_MASK: u64 = 0xFFFF;
 pub(crate) const COUNTED_BIT: u64 = 1 << 24;
-const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
+pub(crate) const RETAINS_REGISTERS_BIT: u64 = 1 << 25;
 pub(crate) const COMPILED_BIT: u64 = 1 << 26;
+/// Past every field of `FrameFlags`, which reads none of them: the slots a
+/// compiled call shifted a block's frame up by, so that the block writes
+/// none of the send's slots (`jit::targets`'s closure stubs). Written by the
+/// block's prologue, kept by a leaf's view of the frame
+/// (`Heap::write_machine_frame`) and read by its machine code's return,
+/// which shifts the frame register back before it returns to the send.
+#[cfg(ns_jit)]
+pub(crate) const CALL_SHIFT_BITS: u64 = 0b11 << 58;
 #[cfg(debug_assertions)]
 pub(crate) const GENERATION_SHIFT: u32 = 27;
 #[cfg(debug_assertions)]
 const GENERATION_MASK: u64 = 0x7FFF_FFFF;
 /// The bits below a `SmallInteger`'s payload.
-const SMALL_INTEGER_TAG_BITS: u32 = 3;
+pub(crate) const SMALL_INTEGER_TAG_BITS: u32 = 3;
 /// A `SmallInteger`'s tag.
 const SMALL_INTEGER_TAG: u64 = 0b001;
 
@@ -418,8 +427,9 @@ pub(super) fn stack_offset(offset: usize) -> u32 {
 pub(super) struct ReservationExhausted;
 
 /// The frames of the running activations: one reservation of words,
-/// committed from its base as the stack deepens and never decommitted
-/// while it lives. Everything it lends is `[0, top)`. The caller of a push
+/// committed from its base as the stack deepens, and given back above its
+/// top after a full collection once enough lies unused there (`shrink`).
+/// Everything it lends is `[0, top)`. The caller of a push
 /// writes the header and the registers the frame reads before it writes
 /// them, and no other: a scratch register keeps whatever the stack last
 /// held there, and so does a register a pop gives back, until the
@@ -446,7 +456,33 @@ pub(super) struct FrameStack {
     /// The machine words, whose `OrdinaryStackEnd` mirrors `ordinary_end`
     /// for machine code (`set_ordinary_end`).
     machine_words: MachineWords,
+    /// How far the next shrink goes (`shrink`).
+    damping: super::limits::ShrinkDamping,
+    /// Whether a push went past the ordinary end since the last shrink --
+    /// past what was committed, or past the end a collection's band would
+    /// keep (`shrink`): demand, which keeps the next collection from
+    /// shrinking the stack. Written in the cold growth path only.
+    grew: bool,
+    /// Whether every push seats `ordinary_end` at the new top, for a test
+    /// that puts a frame's window end exactly at the ordinary end.
+    #[cfg(test)]
+    seat_ordinary_end_at_top: bool,
+    /// Where the seat last wrote `SEAT_SENTINEL` into the words above the
+    /// seated end, which nothing may write before Rust next pushes or
+    /// pops, and how many times one was found disturbed.
+    #[cfg(test)]
+    seat_sentinel: Option<usize>,
+    #[cfg(test)]
+    seat_disturbances: u64,
 }
+
+/// The word a seat writes into the words right above a seated ordinary
+/// end, and how many of them: a store machine code makes past the end
+/// overwrites one.
+#[cfg(test)]
+const SEAT_SENTINEL: u64 = 0x5EA7_5EA7_5EA7_5EA7;
+#[cfg(test)]
+const SEAT_SENTINEL_WORDS: usize = 4;
 
 impl FrameStack {
     /// Reserves `reservation_bytes` of address space -- less when the
@@ -470,6 +506,14 @@ impl FrameStack {
             ordinary_limit: limit - limit / RESERVE_FRACTION,
             ordinary_end: 0,
             machine_words,
+            damping: super::limits::ShrinkDamping::default(),
+            grew: false,
+            #[cfg(test)]
+            seat_ordinary_end_at_top: false,
+            #[cfg(test)]
+            seat_sentinel: None,
+            #[cfg(test)]
+            seat_disturbances: 0,
         })
     }
 
@@ -480,6 +524,51 @@ impl FrameStack {
         self.ordinary_end = end;
         self.machine_words
             .set(MachineWord::OrdinaryStackEnd, end as u64);
+    }
+
+    /// Makes every push from now on seat the ordinary end at the new top
+    /// (`true`), or leave it at the committed end, for a test. A push past
+    /// a seated end takes the growth path as any push past the ordinary
+    /// end does, which commits nothing while it lies inside the committed
+    /// stack.
+    #[cfg(test)]
+    pub(super) fn set_seat_ordinary_end_at_top(&mut self, seat: bool) {
+        self.seat_ordinary_end_at_top = seat;
+    }
+
+    /// The test's seat of the ordinary end at the top after a push, with
+    /// the sentinel written into the words right above it, where the
+    /// committed stack holds them; a seat without that room is not made.
+    #[cfg(test)]
+    fn seat_if_asked(&mut self) {
+        if !self.seat_ordinary_end_at_top || self.top + SEAT_SENTINEL_WORDS > self.committed {
+            return;
+        }
+        self.set_ordinary_end(self.top);
+        let start = self.top;
+        self.reservation.accessible_mut()[start..start + SEAT_SENTINEL_WORDS].fill(SEAT_SENTINEL);
+        self.seat_sentinel = Some(start);
+    }
+
+    /// Counts the last seat's sentinel disturbed, if it is, and forgets
+    /// it: called before Rust writes the stack again -- a push or a pop
+    /// -- so that only what machine code stored since the seat is found.
+    #[cfg(test)]
+    fn check_seat_sentinel(&mut self) {
+        if let Some(start) = self.seat_sentinel.take() {
+            let words = &self.reservation.accessible()[start..start + SEAT_SENTINEL_WORDS];
+            if words.iter().any(|word| *word != SEAT_SENTINEL) {
+                self.seat_disturbances += 1;
+            }
+        }
+    }
+
+    /// How many seats' sentinels were found disturbed, the last one
+    /// checked first.
+    #[cfg(test)]
+    pub(super) fn seat_disturbances(&mut self) -> u64 {
+        self.check_seat_sentinel();
+        self.seat_disturbances
     }
 
     /// `ordinary_end`, for a test that holds it to its machine word.
@@ -522,12 +611,16 @@ impl FrameStack {
         &mut self,
         words: usize,
     ) -> Result<(usize, &[u64], &mut [u64]), ReservationExhausted> {
+        #[cfg(test)]
+        self.check_seat_sentinel();
         let start = self.top;
         let end = start + words;
         if end > self.ordinary_end {
             self.grow(words, self.ordinary_limit)?;
         }
         self.top = end;
+        #[cfg(test)]
+        self.seat_if_asked();
         let (below, frame) = self.reservation.accessible_mut()[..end].split_at_mut(start);
         Ok((start, below, frame))
     }
@@ -552,11 +645,15 @@ impl FrameStack {
             start <= self.top,
             "internal: a frame laid on its sender's slots starts below the top"
         );
+        #[cfg(test)]
+        self.check_seat_sentinel();
         let end = start + words;
         if end > self.ordinary_end {
             self.grow_to(end, self.ordinary_limit)?;
         }
         self.top = self.top.max(end);
+        #[cfg(test)]
+        self.seat_if_asked();
         Ok(&mut self.reservation.accessible_mut()[start..end])
     }
 
@@ -568,6 +665,8 @@ impl FrameStack {
     #[inline(always)]
     pub(super) fn lower_top(&mut self, top: usize) {
         debug_assert!(top <= self.top, "internal: a pop never raises the top here");
+        #[cfg(test)]
+        self.check_seat_sentinel();
         self.top = top;
     }
 
@@ -586,6 +685,8 @@ impl FrameStack {
             dead <= top && top <= self.top,
             "internal: a pop gives back dead registers below the top"
         );
+        #[cfg(test)]
+        self.check_seat_sentinel();
         self.top = top;
         let end = dead + (top - dead).next_multiple_of(4);
         let words = self.reservation.accessible_mut();
@@ -648,6 +749,15 @@ impl FrameStack {
         if needed > ceiling {
             return Err(ReservationExhausted);
         }
+        // Demand, which the next collection reads (`shrink`).
+        self.grew = true;
+        if needed <= self.committed {
+            // Past an ordinary end below the committed one -- the end a
+            // collection's band would keep: the pages are there, and the
+            // push only shows that the stack's peak still reaches them.
+            self.set_ordinary_end(self.committed.min(self.ordinary_limit));
+            return Ok(());
+        }
         let page = Reservation::page_size();
         let size = self.reservation.size();
         let committed_bytes = self.committed * 8;
@@ -675,6 +785,60 @@ impl FrameStack {
         self.committed = self.committed.max(end / 8);
         self.set_ordinary_end(self.committed.min(self.ordinary_limit));
         Ok(())
+    }
+
+    /// Gives back the committed pages above the top and `shrink`'s
+    /// headroom by the band and the damping (`limits::Shrink::decide`),
+    /// unless a push went past the ordinary end since the last call, and
+    /// answers how many bytes that was. Run after a full collection,
+    /// between entries, so that no frame machine code pushed lies above
+    /// the top. The ordinary end -- and the machine word machine code
+    /// compares a push with -- is lowered first: to the band's end while
+    /// the stack is in its band, whatever the damping gives back, so that
+    /// a push past it before the next collection is seen as the peak it
+    /// is (`grow_to`), and otherwise to what is committed. It never lies
+    /// below the top: the band's end is the top and a headroom.
+    pub(super) fn shrink(&mut self, shrink: super::limits::Shrink, damped: bool) -> usize {
+        let committed_bytes = self.committed * 8;
+        let decision = shrink.decide(
+            &mut self.damping,
+            damped,
+            std::mem::take(&mut self.grew),
+            self.top * 8,
+            committed_bytes,
+        );
+        if let Some(end) = decision.kept_end {
+            self.committed = end / 8;
+        }
+        let ordinary_end = decision
+            .band_end
+            .map_or(self.committed, |end| (end / 8).min(self.committed));
+        self.set_ordinary_end(ordinary_end.min(self.ordinary_limit));
+        let Some(end) = decision.kept_end else {
+            return 0;
+        };
+        match self.reservation.decommit(end..committed_bytes) {
+            Ok(()) => committed_bytes - end,
+            // The pages the system refused to take are still counted
+            // inaccessible, and the next growth commits them again.
+            Err(_) => 0,
+        }
+    }
+
+    /// Makes room for a frame machine code pushes, ending `end` words
+    /// from the base, past the ordinary end (the growth leaf,
+    /// `jit::leaves::grow_stack`): `grow_to` within the ordinary room, as
+    /// the interpreter's push takes it -- the pages committed, or an
+    /// ordinary end below the committed one raised -- and false, nothing
+    /// changed, where the ordinary room cannot hold it. The top stays:
+    /// machine code's frames lie above it until an exit materializes them.
+    #[cfg(ns_jit)]
+    pub(super) fn grow_for_machine_push(&mut self, end: usize) -> bool {
+        // A test's seat holds machine code to the seated end until the
+        // stack grows, here as at Rust's own push.
+        #[cfg(test)]
+        self.check_seat_sentinel();
+        self.grow_to(end, self.ordinary_limit).is_ok()
     }
 
     /// The words of every frame, `[0, top)`: one comparison, of the top
@@ -740,7 +904,6 @@ impl FrameStack {
     }
 
     /// How many words of the stack are committed.
-    #[cfg(ns_jit)]
     pub(super) fn committed_words(&self) -> usize {
         self.committed
     }

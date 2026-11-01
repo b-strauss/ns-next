@@ -1,0 +1,243 @@
+/// Setters and indexed stores sent from compiled loops
+/// (`docs/design/execution.md`, "Sends in machine code"): a public
+/// setter of field 0 and one past the 64 fields with a stub of their own
+/// (newspeak-spec.pdf 6.3.2), a private slot's setter sent from a nested
+/// class (5.9), a `super` send of a slot's setter (5.10), and `at:` and
+/// `at:put:` on Arrays and ByteArrays -- small ones, whose size the
+/// header counts, and large ones, whose size an overflow word holds -- at
+/// their bounds and past them.
+///
+/// The setters' loops run a thousand times and each fill three times, so
+/// that every method is compiled at its second entry and every send
+/// after the first hits its cell. The setters store Arrays as well as
+/// integers, through the write barrier. `bumpTimes:` answers 1000 + 2000
+/// + 999 + 1000, `sumHidden` the sum of 0 to 999 and `sumCounts` twice
+/// it; a fill sums each index modulo 256.
+class SettersAndIndexing = Object new (
+  |
+    private hidden ::= 0.
+  |
+) (
+  /// Field 0 is `first`, field 66 `last`, past the setter stubs.
+  class Holder = Object new (
+    |
+      public first ::= 0.
+      s1.
+      s2.
+      s3.
+      s4.
+      s5.
+      s6.
+      s7.
+      s8.
+      s9.
+      s10.
+      s11.
+      s12.
+      s13.
+      s14.
+      s15.
+      s16.
+      s17.
+      s18.
+      s19.
+      s20.
+      s21.
+      s22.
+      s23.
+      s24.
+      s25.
+      s26.
+      s27.
+      s28.
+      s29.
+      s30.
+      s31.
+      s32.
+      s33.
+      s34.
+      s35.
+      s36.
+      s37.
+      s38.
+      s39.
+      s40.
+      s41.
+      s42.
+      s43.
+      s44.
+      s45.
+      s46.
+      s47.
+      s48.
+      s49.
+      s50.
+      s51.
+      s52.
+      s53.
+      s54.
+      s55.
+      s56.
+      s57.
+      s58.
+      s59.
+      s60.
+      s61.
+      s62.
+      s63.
+      s64.
+      s65.
+      public last ::= 0.
+      public item ::= nil.
+    |
+  ) (
+    /// Writes `first`, `last` and `item` `times` times; answers what they
+    /// hold then.
+    public bumpTimes: times = (
+      |
+        index ::= 0.
+      |
+      [index < times] whileTrue: [
+        self first: self first + 1.
+        self last: self last + 2.
+        self item: {index. self first}.
+        index:: index + 1.
+      ].
+      ^self first + self last + (self item at: 1) + (self item at: 2).
+    )
+  )
+
+  class Reader = Object new () (
+    /// Writes the private slot `hidden` with each index and reads it
+    /// back; answers the sum.
+    public sumHidden = (
+      |
+        index ::= 0.
+        sum ::= 0.
+      |
+      [index < 1000] whileTrue: [
+        hidden: index.
+        sum:: sum + hidden.
+        index:: index + 1.
+      ].
+      ^sum.
+    )
+  )
+
+  class Base = Object new (
+    |
+      public count ::= 0.
+    |
+  ) ()
+
+  class Doubling = Base new () (
+    /// Stores twice `value` through `super`'s setter.
+    public count: value = (
+      super count: value * 2.
+    )
+
+    /// Sets `count` to each index below 1000 and sums what it reads.
+    public sumCounts = (
+      |
+        index ::= 0.
+        sum ::= 0.
+      |
+      [index < 1000] whileTrue: [
+        self count: index.
+        sum:: sum + self count.
+        index:: index + 1.
+      ].
+      ^sum.
+    )
+  )
+
+  /// Stores `value` at `index` of `indexable` and answers what `at:`
+  /// reads there.
+  store: value at: index into: indexable = (
+    indexable at: index put: value.
+    ^indexable at: index.
+  )
+
+  /// Fills every element of `indexable` with its index modulo 256 through
+  /// `store:at:into:`, then sums them with `at:`.
+  fill: indexable = (
+    |
+      index ::= 1.
+      sum ::= 0.
+    |
+    [index <= indexable size] whileTrue: [
+      sum:: sum + (store: index \\ 256 at: index into: indexable).
+      index:: index + 1.
+    ].
+    ^sum.
+  )
+
+  /// Fills `indexable` three times, then stores at its first and last
+  /// index and past them, and values no byte holds at its first, through
+  /// the compiled `store:at:into:`, printing what each answers or
+  /// refuses.
+  exercise: indexable named: name on: transcript kernel: kernel = (
+    |
+      attempt = [:index :value |
+        transcript
+            show: name;
+            show: ' ';
+            show: index printString;
+            show: ': ';
+            show: ([(store: value at: index into: indexable) printString] on: kernel ArgumentError
+                do: [:error | error messageText]);
+            newLine.
+      ].
+    |
+    1 to: 3 do: [:round |
+      transcript
+          show: name;
+          show: ' sum ';
+          show: (fill: indexable) printString;
+          newLine.
+    ].
+    attempt value: 1 value: 7.
+    attempt value: indexable size value: 255.
+    attempt value: 0 value: 7.
+    attempt value: indexable size + 1 value: 7.
+    attempt value: -1 value: 7.
+    attempt value: (2 raisedTo: 70) value: 7.
+    attempt value: 'one' value: 7.
+    attempt value: 1 value: 256.
+    attempt value: 1 value: -1.
+    attempt value: 1 value: 'seven'.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      bytes
+    |
+    1 to: 3 do: [:round |
+      transcript
+          show: (Holder new bumpTimes: 1000) printString;
+          newLine.
+      transcript
+          show: Reader new sumHidden printString;
+          newLine.
+      transcript
+          show: Doubling new sumCounts printString;
+          newLine.
+    ].
+    exercise: (Array new: 10) named: 'array' on: transcript kernel: kernel.
+    exercise: (Array new: 600) named: 'large array' on: transcript kernel: kernel.
+    exercise: (ByteArray new: 10) named: 'bytes' on: transcript kernel: kernel.
+    exercise: (ByteArray new: 4000) named: 'large bytes' on: transcript kernel: kernel.
+    bytes:: ByteArray new: 3.
+    transcript
+        show: ([bytes at: 2 put: 256] on: kernel ArgumentError do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([bytes at: 2 put: -1] on: kernel ArgumentError do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (bytes at: 2) printString;
+        newLine.
+  )
+)

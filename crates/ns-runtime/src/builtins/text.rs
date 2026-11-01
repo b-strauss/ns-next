@@ -59,12 +59,26 @@ pub(crate) fn string_hash(text: &str) -> i64 {
     crate::hash::content_hash(text)
 }
 
-/// A symbol's hash: its interned number. §5.1.6 makes equal symbols one
-/// object, so the number is as stable as the symbol is and agrees with
-/// `Symbol>>=` by construction. It is a `u32`, so it is already the
-/// non-negative sub-2^32 answer a `hash` gives.
-pub(crate) fn symbol_hash(symbol: Symbol) -> i64 {
-    symbol.index() as i64
+/// A symbol's hash: its text's (`symbol::hash_of_symbol_text`), never its
+/// number. §5.1.6 makes equal symbols one object, so it agrees with
+/// `Symbol>>=` by construction. An interned symbol reads the hash the
+/// interner stored -- one probe of the canonical table and one read, as
+/// DeltaBlue's symbol-keyed lookups need it (`docs/design/execution.md`).
+/// Only a program-made symbol whose text nothing has interned walks its
+/// text: it is not cached, since such a symbol names no selector, slot or
+/// class, and a word per entry of the weak table would be paid by every
+/// one of them for the few a program hashes. `None` for anything but a
+/// Symbol.
+pub(crate) fn symbol_hash<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<i64> {
+    if let Some(symbol) = heap.symbol_value(object) {
+        return Some(symbol.text_hash());
+    }
+    if !heap.is_symbol(object) {
+        return None;
+    }
+    Some(crate::symbol::hash_of_symbol_text(
+        heap.string_hash(object)?,
+    ))
 }
 
 /// Mirrors `ns_syntax::lexer`'s string-literal escaping (`lex_string`): a
@@ -528,7 +542,7 @@ pub(crate) fn execute_string<'gc>(
             .map(|hash| Ok(Value::small_integer(hash))),
         StringPrimitive::AsSymbol => {
             let text = mutator.heap.str_value(object)?;
-            Some(Ok(mutator.new_symbol(Symbol::intern(&text))))
+            Some(Ok(mutator.program_symbol(&text)))
         }
         StringPrimitive::PrintString => {
             let text = mutator.heap.str_value(object)?;
@@ -546,10 +560,8 @@ pub(crate) fn execute_symbol<'gc>(
     let object = receiver.as_object()?;
     match primitive {
         SymbolPrimitive::AsString => {
-            let symbol = mutator.heap.symbol_value(object)?;
-            Some(Ok(Value::object(
-                mutator.new_string(symbol.as_str().to_string()),
-            )))
+            let text = mutator.heap.symbol_text(object)?;
+            Some(Ok(Value::object(mutator.new_string(text))))
         }
         // Identity, a symbol being canonical (§5.1.6): it asks only whether
         // the receiver is one, never which.
@@ -568,14 +580,12 @@ pub(crate) fn execute_symbol<'gc>(
             .map(|answer| Ok(Value::boolean(answer)))
         }
         SymbolPrimitive::Hash => {
-            let symbol = mutator.heap.symbol_value(object)?;
-            Some(Ok(Value::small_integer(symbol_hash(symbol))))
+            let hash = symbol_hash(&mutator.heap, object)?;
+            Some(Ok(Value::small_integer(hash)))
         }
         SymbolPrimitive::PrintString => {
-            let symbol = mutator.heap.symbol_value(object)?;
-            Some(Ok(Value::object(
-                mutator.new_string(format!("#{}", symbol.as_str())),
-            )))
+            let text = mutator.heap.symbol_text(object)?;
+            Some(Ok(Value::object(mutator.new_string(format!("#{text}")))))
         }
     }
 }

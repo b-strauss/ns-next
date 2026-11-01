@@ -2,24 +2,44 @@
 //! which runs Newspeak code, collects, reads another activation or
 //! pushes one (`docs/design/execution.md`, "The foundation and the one
 //! extension point", the leaf call): an instruction's own interpreter
-//! step, the miss of a send's cell -- the one leaf that may compile and
-//! install a body -- the leaf stub's run of a target that is no method
-//! with code, a leaf-safe mirror send, and the exit's materialization of
-//! the frames machine code pushed. A template or a stub names one by its index in `table`
-//! (`Leaf::index`).
+//! step, the miss of a send's cell, the decision of an initializer
+//! invocation and that of a future's forcing -- the three leaves that may
+//! compile and install a body, each at the moment a compiled call is
+//! about to be made, before anything of the call is written, so that
+//! none holds an address an install moves -- the twin leaf, the fourth,
+//! which compiles and installs a running lean body's twin at its
+//! transfer before the transfer writes anything, the leaf stub's run of a
+//! target that is no method with code, a
+//! leaf-safe mirror send, an allocation past the inline bump's limit, the
+//! write barrier's remembering of an old object, the cold check of an
+//! own-slot instruction, the divorce of a reified frame that retains its
+//! registers at its return, the refill of a `MakeClosure`'s code ids, the
+//! activation stack's growth for a frame a prologue pushes past the
+//! ordinary end, and the exit's materialization of the frames machine
+//! code pushed. Beside
+//! them the table holds the cut's two steps (`jit::cut`), which are no
+//! leaves by that rule: they read and pop the compiled frames of the
+//! current stretch, as no leaf may. A
+//! template or a stub names one by its index in `table` (`Leaf::index`),
+//! and every call through the table is counted once
+//! (`JitStatistics::leaf_calls`).
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, Instruction};
 use crate::heap::{register_number, ActivationReference, ArgumentSlots, Word};
 use crate::interpreter::inline_cache::{self, MissAnswer};
-use crate::interpreter::locals::store_vector;
+use crate::interpreter::locals::receiver_keeps_entered_level;
 use crate::interpreter::mirror::{self, MachineMirrorAnswer};
-use crate::interpreter::{Arguments, Mutator};
+use crate::interpreter::{Arguments, Mutator, Step, StepArguments};
+use crate::jit;
+use crate::mixin::DispatchId;
 use crate::types::Value;
 use crate::vm::{
-    argument_window, load_literal_into, load_vector_into, make_array_into, make_vector_into,
+    allocate_instance_into, argument_window, initialize_slot, load_enclosing_object_into,
+    load_literal_into, make_future_into,
 };
 
+use super::cut::{cut, cut_frame};
 use super::macro_assembler::LeafIndex;
 use super::materialize;
 
@@ -42,12 +62,43 @@ pub(crate) enum Leaf {
     Act = 4,
     /// Runs a `SendMirror` of a leaf-safe row (`mirror`).
     Mirror = 5,
-    /// Stores a setter's argument into its receiver's field
-    /// (`store_field`).
-    StoreField = 6,
     /// Runs a method whose fast path is a leaf-safe mirror row
     /// (`mirror_method`).
-    MirrorMethod = 7,
+    MirrorMethod = 6,
+    /// Allocates an object the inline bump found no room for, as the
+    /// interpreter's cold path does (`allocate`).
+    Allocate = 7,
+    /// Remembers an old object machine code stored a young one into, as
+    /// the interpreter's write barrier does (`remember`).
+    Remember = 8,
+    /// The cold check of an own-slot instruction whose receiver's guard
+    /// is not the one its frame recorded (`own_slots`).
+    OwnSlots = 9,
+    /// Decides the body an initializer invocation runs (`initializer`).
+    Initializer = 10,
+    /// Divorces a reified frame that retains its registers at its return
+    /// (`divorce`).
+    Divorce = 11,
+    /// Records a `MakeClosure`'s code ids in its closure site afresh
+    /// (`closure_site`).
+    ClosureSite = 12,
+    /// Records the argument count of the body a divorced frame object an
+    /// outer-local instruction reaches runs in its site afresh
+    /// (`outer_local_site`).
+    OuterLocalSite = 13,
+    /// Decides the `resolve` a future `ResolveFuture` met calls
+    /// (`forcing`).
+    Forcing = 14,
+    /// Sets out on the cut of a non-local return (`cut::cut`).
+    Cut = 15,
+    /// Takes the cut's walk one compiled frame further down
+    /// (`cut::cut_frame`).
+    CutFrame = 16,
+    /// Makes room on the activation stack for a frame a prologue pushes
+    /// past the ordinary end (`grow_stack`).
+    GrowStack = 17,
+    /// Compiles a lean body's twin for its transfers (`twin`).
+    Twin = 18,
 }
 
 impl Leaf {
@@ -57,22 +108,47 @@ impl Leaf {
     }
 }
 
-/// The leaves, in `Leaf` order, each handed the mutator the code was
-/// entered with: one table for the process, a constant the compiler
-/// promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 8] {
+/// `leaf`, behind the count every call through the table takes
+/// (`JitStatistics::leaf_calls`): a function of its own per leaf, so that
+/// the count is made in one place and a new leaf cannot miss it, and a
+/// constant cast, so that the table is still promoted to a static.
+macro_rules! counted {
+    ($leaf:ident) => {{
+        fn counted(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+            mutator.jit.statistics.leaf_calls += 1;
+            $leaf(mutator, arguments)
+        }
+        counted as ns_memory::Leaf<Mutator<'gc>>
+    }};
+}
+
+/// The leaves, in `Leaf` order, each counted and handed the mutator the
+/// code was entered with: one table for the process, a constant the
+/// compiler promotes to a static, so that no entry builds it.
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 19] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
     &[
-        step as ns_memory::Leaf<Mutator<'gc>>,
-        miss as ns_memory::Leaf<Mutator<'gc>>,
-        materialize_frame as ns_memory::Leaf<Mutator<'gc>>,
-        materialize_innermost as ns_memory::Leaf<Mutator<'gc>>,
-        act as ns_memory::Leaf<Mutator<'gc>>,
-        mirror as ns_memory::Leaf<Mutator<'gc>>,
-        store_field as ns_memory::Leaf<Mutator<'gc>>,
-        mirror_method as ns_memory::Leaf<Mutator<'gc>>,
+        counted!(step),
+        counted!(miss),
+        counted!(materialize_frame),
+        counted!(materialize_innermost),
+        counted!(act),
+        counted!(mirror),
+        counted!(mirror_method),
+        counted!(allocate),
+        counted!(remember),
+        counted!(own_slots),
+        counted!(initializer),
+        counted!(divorce),
+        counted!(closure_site),
+        counted!(outer_local_site),
+        counted!(forcing),
+        counted!(cut),
+        counted!(cut_frame),
+        counted!(grow_stack),
+        counted!(twin),
     ]
 }
 
@@ -91,10 +167,19 @@ pub(super) const FAILED: u64 = 2;
 /// machine code holds at `arguments[0]` and whose body `arguments[2]`, an
 /// address inside it, names (`materialize::leaf_frame`), through the
 /// interpreter's own effect function, the one `vm::run_stretch` calls, so
-/// the two cannot drift. Answers `DONE`, or `REFUSED` for a vector access
-/// the interpreter refuses -- which fails before it writes anything --
-/// so that the exit after the call re-executes the instruction and the
-/// interpreter raises the error, as no leaf can.
+/// the two cannot drift: an allocated literal's load, and an
+/// `InitializeSlot` whose value §3.1.1's check of a value's slot
+/// must look at (`jit::baseline`'s own-slot templates), an
+/// `AllocateInstance` the inline bump does not make, a `MakeFuture` the
+/// inline bump does not make -- the heap's first future, which sets the
+/// flag every check for a future reads, one past eden's limit, and one of
+/// an operand that is no closure -- a `CheckAppliedClause`, and a
+/// body-less declaration's own `LoadEnclosingObject`. Answers `DONE`, or
+/// `REFUSED` for an instruction the interpreter refuses -- which fails
+/// before it writes anything -- so that the exit after the call
+/// re-executes the instruction and the interpreter raises the error, or
+/// forces the future a value's slot is handed (`vm`'s
+/// `initialize_slot_refused`), as no leaf can.
 ///
 /// # Panics
 ///
@@ -132,46 +217,42 @@ fn step_in(
             body.literal(usize::from(literal)),
         )
         .is_ok(),
-        CompactInstruction::MakeArray {
+        CompactInstruction::InitializeSlot { source, own_index } => initialize_slot(
+            mutator,
+            activation,
+            register_base,
+            u16::from(source),
+            own_index,
+        )
+        .is_ok(),
+        CompactInstruction::AllocateInstance { destination } => {
+            allocate_instance_into(mutator, activation, register_base, u16::from(destination))
+                .is_ok()
+        }
+        CompactInstruction::CheckAppliedClause { steps, selector } => mutator
+            .check_applied_clause(activation, steps, selector)
+            .is_ok(),
+        CompactInstruction::MakeFuture {
             destination,
-            elements,
-        } => {
-            make_array_into(
+            closure,
+        } => make_future_into(
+            mutator,
+            activation,
+            u16::from(destination),
+            u16::from(closure),
+        )
+        .is_ok(),
+        CompactInstruction::LoadEnclosingObject { destination, depth } => {
+            load_enclosing_object_into(
                 mutator,
+                activation,
                 register_base,
                 u16::from(destination),
-                body.register_list(usize::from(elements)),
+                depth,
+                code.is_declaration_code(),
             );
             true
         }
-        CompactInstruction::MakeVector { destination, size } => {
-            make_vector_into(mutator, register_base, u16::from(destination), size);
-            true
-        }
-        CompactInstruction::LoadVector {
-            destination,
-            vector,
-            index,
-        } => load_vector_into(
-            mutator,
-            register_base,
-            u16::from(destination),
-            u16::from(vector),
-            index,
-        )
-        .is_ok(),
-        CompactInstruction::StoreVector {
-            vector,
-            source,
-            index,
-        } => store_vector(
-            &mut mutator.heap,
-            register_base,
-            u16::from(vector),
-            index,
-            u16::from(source),
-        )
-        .is_ok(),
         CompactInstruction::Wide { index } => match body.wide(index as usize) {
             Instruction::LoadLiteral {
                 destination,
@@ -179,27 +260,30 @@ fn step_in(
             } => {
                 load_literal_into(mutator, activation, register_base, *destination, literal).is_ok()
             }
-            Instruction::MakeArray {
+            Instruction::InitializeSlot { source, own_index } => {
+                initialize_slot(mutator, activation, register_base, *source, *own_index).is_ok()
+            }
+            Instruction::AllocateInstance { destination } => {
+                allocate_instance_into(mutator, activation, register_base, *destination).is_ok()
+            }
+            Instruction::CheckAppliedClause { steps, selector } => mutator
+                .check_applied_clause(activation, *steps, *selector)
+                .is_ok(),
+            Instruction::MakeFuture {
                 destination,
-                element_registers,
-            } => {
-                make_array_into(mutator, register_base, *destination, element_registers);
+                closure,
+            } => make_future_into(mutator, activation, *destination, *closure).is_ok(),
+            Instruction::LoadEnclosingObject { destination, depth } => {
+                load_enclosing_object_into(
+                    mutator,
+                    activation,
+                    register_base,
+                    *destination,
+                    *depth,
+                    code.is_declaration_code(),
+                );
                 true
             }
-            Instruction::MakeVector { destination, size } => {
-                make_vector_into(mutator, register_base, *destination, *size);
-                true
-            }
-            Instruction::LoadVector {
-                destination,
-                vector,
-                index,
-            } => load_vector_into(mutator, register_base, *destination, *vector, *index).is_ok(),
-            Instruction::StoreVector {
-                vector,
-                index,
-                source,
-            } => store_vector(&mut mutator.heap, register_base, *vector, *index, *source).is_ok(),
             other => unreachable!("internal: the generic leaf is handed {other:?}"),
         },
         other => unreachable!("internal: the generic leaf is handed {other:?}"),
@@ -208,6 +292,238 @@ fn step_in(
         DONE
     } else {
         REFUSED
+    }
+}
+
+/// `Leaf::OwnSlots`: the cold half of `check_own_slots`
+/// (`interpreter::locals`) for the own-slot instruction at
+/// `arguments[1]`, the program counter, of the frame whose register 0
+/// machine code holds at `arguments[0]` and whose body `arguments[2]`
+/// names, as `step` finds it: whether its receiver, an object, still has
+/// the slots of the level the frame was entered at, in which case the
+/// receiver's guard is recorded in the frame, so that the accesses after
+/// it take the template's hot path, and the leaf answers `DONE`. A
+/// receiver without the level, an immediate -- whose own-slot access the
+/// interpreter answers without a field -- and an object whose guard is
+/// `NONE`, which the hot path never matches, change nothing and answer
+/// `REFUSED`, so that the exit after the call re-executes the instruction
+/// and the interpreter raises the error or answers as it does.
+fn own_slots(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [frame_address, program_counter, code_address] = arguments;
+    let Ok(program_counter) = u32::try_from(program_counter) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
+    let receiver = mutator.heap.activation_receiver(frame.activation);
+    // A receiver whose guard is `NONE` would take the cold check again at
+    // the template's second compare, which never holds for it, and again.
+    let kept = receiver.as_object().is_some()
+        && mutator.heap.dispatch_id(receiver) != DispatchId::NONE
+        && receiver_keeps_entered_level(mutator, frame.activation, receiver);
+    materialize::release_leaf_frame(mutator, frame);
+    if kept {
+        DONE
+    } else {
+        REFUSED
+    }
+}
+
+/// The initializer leaf, which an initializer invocation's template calls
+/// (`jit::sends::initialize`): decides the instruction at `arguments[1]`,
+/// the program counter, of the frame `arguments[0]` and `arguments[2]`
+/// name, as for `step` -- `InitializeInstance`, `InitializeSuperclass` or
+/// `InitializeAppliedLevel` -- through the interpreter's own decision, the
+/// one `vm.rs`'s arm hands `send`, on the arguments the template placed
+/// where the callee lies, and acts on nothing. For a body to run, it
+/// counts the callee's entry as the miss leaf does, compiling and
+/// installing it at its second (`jit::note_entry_by_call`), and answers
+/// its machine entry, the receiver, the level and the body's kind handed
+/// over in the machine words (`Heap::hand_machine_initializer`); for a
+/// decision that runs no code, the stub answering its receiver, the
+/// instance handed over as the receiver; and 0, having handed nothing
+/// over, for an error, a body without machine code and a body taking
+/// other arguments than the template placed, so that the exit after the
+/// call re-executes the instruction and the interpreter raises the error
+/// or pushes the body.
+fn initializer(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [frame_address, program_counter, code_address] = arguments;
+    let Ok(program_counter) = u32::try_from(program_counter) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
+    let answer = initializer_in(mutator, frame.activation, program_counter as usize);
+    materialize::release_leaf_frame(mutator, frame);
+    answer
+}
+
+/// `initializer`, in `activation`.
+fn initializer_in(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    program_counter: usize,
+) -> u64 {
+    let register_base = mutator.heap.activation_register_base(activation);
+    let code = mutator.heap.activation_code(activation);
+    let slots = |argument_base: u16, sources: &[u16]| {
+        ArgumentSlots::new(register_base, argument_base, register_number(sources.len()))
+    };
+    let (decided, placed) = match code.instruction(program_counter) {
+        Instruction::InitializeInstance { instance, .. } => {
+            let instance = mutator.heap.register(register_base, instance);
+            let arguments = ArgumentSlots::new(register_base, 0, code.argument_count);
+            (
+                mutator.initialize_instance(activation, instance, Arguments::Slots(arguments)),
+                code.argument_count,
+            )
+        }
+        Instruction::InitializeSuperclass {
+            steps,
+            selector,
+            argument_base,
+            argument_sources,
+            ..
+        } => {
+            let arguments = slots(argument_base, &argument_sources);
+            (
+                mutator.decide_superclass_initializer(
+                    activation,
+                    steps,
+                    selector,
+                    Arguments::Slots(arguments),
+                ),
+                arguments.count(),
+            )
+        }
+        Instruction::InitializeAppliedLevel {
+            steps,
+            argument_base,
+            argument_sources,
+            ..
+        } => {
+            let arguments = slots(argument_base, &argument_sources);
+            (
+                mutator.decide_applied_level_initializer(
+                    activation,
+                    steps,
+                    Arguments::Slots(arguments),
+                ),
+                arguments.count(),
+            )
+        }
+        other => unreachable!("internal: the initializer leaf is handed {other:?}"),
+    };
+    match decided {
+        Ok(Step::Value(instance)) => {
+            mutator.heap.hand_machine_receiver(instance);
+            mutator.jit.receiver_stub_address()
+        }
+        Ok(Step::Initializer {
+            receiver,
+            level,
+            arguments,
+            body,
+            code,
+        }) => {
+            // A passed level's initializer takes no arguments, whatever the
+            // invocation placed: its frame lies on the slots all the same,
+            // where the interpreter's push lays it above the sender's
+            // window, as it lays every activation that does not take the
+            // send's own arguments (`Mutator::push_step_placed`). The two
+            // places cannot be told apart: an invocation's slots and the
+            // registers above them are scratch of its one statement,
+            // allocated afresh for the slots and then the destination
+            // (`compiler::lower`'s clauses of a full initializer), so the
+            // sender reads none of them after the invocation but the
+            // destination, which it writes first; the leftover analysis
+            // taints every register past the slots after any send, and the
+            // slots, which this callee's header covers too, are read by
+            // nothing again. What the header leaves there -- the instance,
+            // its level, a frame object the initializer reified -- the
+            // pre-pass may trace until a later statement writes them, as it
+            // traces the arguments the interpreter's push leaves there.
+            let taken = match &arguments {
+                StepArguments::Send => placed,
+                StepArguments::Owned(values) if values.is_empty() => 0,
+                StepArguments::Owned(_) | StepArguments::ControlFlow => return 0,
+            };
+            if taken != code.argument_count {
+                return 0;
+            }
+            let base = mutator.feedback_base_for(&code);
+            jit::note_entry_by_call(&mut mutator.jit, &code, base, None);
+            jit::after_compile_trigger(mutator);
+            let Some(address) = jit::machine_entry_address(&mutator.jit, &code, base) else {
+                return 0;
+            };
+            mutator.heap.hand_machine_initializer(receiver, level, body);
+            address
+        }
+        _ => 0,
+    }
+}
+
+/// The forcing leaf, which `ResolveFuture`'s template calls for a future
+/// it does not see through inline (`jit::closures::resolve_future`):
+/// decides the instruction at `arguments[1]`, the program counter, of the
+/// frame `arguments[0]` and `arguments[2]` name, as for `step`, as the
+/// interpreter's `vm::resolve_future` does (`Mutator::forcing`), and acts
+/// on nothing. For the future's `resolve`, it counts the callee's entry as
+/// the miss leaf does, compiling and installing it at its second
+/// (`jit::note_entry_by_call`), and answers its machine entry, the future
+/// and its class handed over in the machine words as the callee's
+/// receiver and current class (`Heap::hand_machine_callee`); for a value
+/// the decision answers, the stub answering its receiver, the value
+/// handed over as the receiver; and 0, having handed nothing over, for a
+/// `resolve` without machine code, so that the exit after the call
+/// re-executes the instruction and the interpreter pushes it.
+fn forcing(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [frame_address, program_counter, code_address] = arguments;
+    let Ok(program_counter) = u32::try_from(program_counter) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
+    let answer = forcing_in(mutator, frame.activation, program_counter as usize);
+    materialize::release_leaf_frame(mutator, frame);
+    answer
+}
+
+/// `forcing`, in `activation`.
+fn forcing_in(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    program_counter: usize,
+) -> u64 {
+    let register_base = mutator.heap.activation_register_base(activation);
+    let code = mutator.heap.activation_code(activation);
+    let Instruction::ResolveFuture { source, .. } = code.instruction(program_counter) else {
+        unreachable!("internal: the forcing leaf is handed a ResolveFuture");
+    };
+    let value = mutator.heap.register(register_base, source);
+    let decided = match mutator.as_future(value) {
+        Some(future) => mutator.forcing(future),
+        None => Step::Value(value),
+    };
+    match decided {
+        Step::Value(value) => {
+            mutator.heap.hand_machine_receiver(value);
+            mutator.jit.receiver_stub_address()
+        }
+        Step::Method {
+            receiver,
+            method,
+            defining_class,
+            ..
+        } => {
+            let base = mutator.feedback_base_for(&method.code);
+            jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
+            jit::after_compile_trigger(mutator);
+            let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
+                return 0;
+            };
+            mutator.heap.hand_machine_callee(receiver, defining_class);
+            address
+        }
+        _ => unreachable!("internal: a forcing answers a value or its resolve"),
     }
 }
 
@@ -313,31 +629,6 @@ fn act_on_a_site_slot(
         None => Word::NO_VALUE_BITS,
     };
     Some(answer)
-}
-
-/// The setter stub's leaf (`targets::assemble_accessor_stubs`): stores
-/// the value `arguments[2]` into field `arguments[1]` of the receiver
-/// `arguments[0]` through the heap's store accessor and its write barrier
-/// (`Heap::instance_set_field`), and answers the receiver, as the setter
-/// `Mutator::decide_slot_accessor` runs does; or, for a receiver without
-/// that field, `Word::NO_VALUE_BITS`, having written nothing, so that the
-/// stub refuses the call and the interpreter raises the error. A leaf of
-/// its own, which reads nothing of the send: the cell decided the target,
-/// and the stub's entry names the field.
-fn store_field(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    let [receiver_bits, field, value_bits] = arguments;
-    mutator.jit.statistics.act_leaf_calls += 1;
-    let receiver = mutator.heap.machine_value(receiver_bits);
-    let value = mutator.heap.machine_value(value_bits);
-    let stored = receiver.as_object().is_some_and(|object| {
-        usize::try_from(field)
-            .is_ok_and(|field| mutator.heap.instance_set_field(object, field, value))
-    });
-    if stored {
-        receiver_bits
-    } else {
-        Word::NO_VALUE_BITS
-    }
 }
 
 /// The mirror method stub's leaf (`targets::assemble_accessor_stubs`),
@@ -507,6 +798,134 @@ fn mirror_in(
         MachineMirrorAnswer::Failed => FAILED,
         MachineMirrorAnswer::Exit => REFUSED,
     }
+}
+
+/// The allocation leaf, which a template's slow path calls when the
+/// inline bump found eden's cursor at its limit
+/// (`MacroAssembler::bump_allocate`): places an object of `arguments[0]`
+/// words after its header, its header word `arguments[1]` and its class
+/// word `arguments[2]`, as the interpreter's cold path places one
+/// (`Heap::allocate_for_machine_code`) -- in eden up to its end, asking
+/// for the scavenge, or old and remembered once eden is spent -- and
+/// answers its word, for the template to fill its fields. It never
+/// collects: a scavenge it asks for runs at the next poll's exit, as the
+/// interpreter's runs at its next safepoint.
+fn allocate(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [word_count, header, class_word] = arguments;
+    mutator
+        .heap
+        .allocate_for_machine_code(word_count, header, class_word)
+}
+
+/// The write barrier's leaf (`MacroAssembler::store_with_barrier`),
+/// which a store calls only once it has found that the old object whose
+/// word is `arguments[0]` came to name a young one and is not remembered
+/// yet: adds it to the remembered set as the interpreter's barrier does
+/// (`Heap::remember`), asking for the scavenge that tenures everything
+/// once the set is past its limit, which runs at the next poll's exit.
+/// Answers the holder's word again, so that the store finds its holder
+/// where it left it on either path: a setter answers it.
+fn remember(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [holder_word, _, _] = arguments;
+    mutator.heap.remember_for_machine_code(holder_word);
+    holder_word
+}
+
+/// The growth leaf, which a prologue (`jit::sends::prologue`) and an
+/// `InitializeInstance`'s placement call when the frame they push ends
+/// past the ordinary end, `arguments[0]` bytes from the activation
+/// stack's base: makes the room the interpreter's push would make
+/// (`Heap::grow_stack_for_machine_push`) -- the pages committed, or an
+/// ordinary end below the committed one, which a collection's band set
+/// (`FrameStack::shrink`), raised -- and answers `DONE`, so that the push
+/// goes on in machine code; `REFUSED` where the ordinary room cannot hold
+/// the frame, having changed nothing, so that the call is refused as
+/// before and the interpreter raises the overflow. It runs no Newspeak
+/// code, cannot collect, reads no activation and pushes none: only the
+/// stack's committed pages and its ordinary end -- with the machine word
+/// machine code compares a push with -- change.
+fn grow_stack(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [end_bytes, _, _] = arguments;
+    if mutator.heap.grow_stack_for_machine_push(end_bytes) {
+        mutator.jit.statistics.stack_growths += 1;
+        DONE
+    } else {
+        mutator.jit.statistics.stack_growth_refusals += 1;
+        REFUSED
+    }
+}
+
+/// The twin leaf, which a lean body's transfer calls while the data word
+/// naming the twin's code is 0 (`jit::closures::transfer_to_twin`): compiles the
+/// twin of the body `arguments[0]`, an address inside it, names -- the
+/// same instructions compiled to reify their frame -- installs it and
+/// writes every transfer word of the lean body (`jit::compile_twin_at`).
+/// Answers `DONE`, and `REFUSED` for a zone too full for it, which asks
+/// for a compaction as any compile that finds no room does, so that the
+/// exit after the call hands the `MakeClosure` to the interpreter. It runs
+/// no Newspeak code, cannot collect and reads no frame: only the zone, the
+/// installed bodies and the lean body's data words change, and no address
+/// a frame or a holder keeps, since an install only appends.
+fn twin(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [code_address, _, _] = arguments;
+    let Ok(code_address) = usize::try_from(code_address) else {
+        unreachable!("internal: an address fits the pointer width");
+    };
+    let compiled = jit::compile_twin_at(&mut mutator.jit, code_address);
+    jit::after_compile_trigger(mutator);
+    if compiled {
+        DONE
+    } else {
+        REFUSED
+    }
+}
+
+/// The divorce leaf, which the return of code that reifies its frame
+/// calls (`jit::sends::return_from`) for a reified frame whose flags say
+/// it retains its registers: the frame whose register 0 machine code
+/// holds at `arguments[0]`, returning at `arguments[1]`, the program
+/// counter, of the body `arguments[2]` names, as for `step`, divorced as
+/// its pop divorces it -- its registers copied into its frame object,
+/// which is remembered when it is old and now holds a young value
+/// (`Heap::divorce_at_machine_return`). It cannot fail: answers 0.
+fn divorce(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [frame_address, program_counter, code_address] = arguments;
+    let Ok(program_counter) = u32::try_from(program_counter) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
+    let frame = materialize::leaf_frame(mutator, frame_address, code_address, program_counter);
+    mutator.heap.divorce_at_machine_return(frame.activation);
+    materialize::release_leaf_frame(mutator, frame);
+    DONE
+}
+
+/// The closure site leaf, which a `MakeClosure`'s template calls when its
+/// site records another epoch of the code table than the heap's
+/// (`jit::closures`): the site at address `arguments[0]`, among the data
+/// words of the body `arguments[2]` names, of the `MakeClosure` at
+/// `arguments[1]`, the program counter, written afresh through the zone's
+/// writer with the code ids of the body and of the block in the heap's
+/// current epoch, which registers each body that has none. It reads and
+/// writes no frame, and cannot fail: answers 0.
+fn closure_site(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [site_address, program_counter, code_address] = arguments;
+    jit::closures::refill_site(mutator, site_address, program_counter, code_address);
+    DONE
+}
+
+/// The outer-local site leaf, which a `LoadOuterLocal`'s or a
+/// `StoreOuterLocal`'s template calls when the divorced frame object it
+/// reached, `arguments[1]`, names another code id than its site records,
+/// or the site another epoch of the code table than the heap's
+/// (`jit::closures`): the site at address `arguments[0]`, among the data
+/// words of the body `arguments[2]` names, written afresh through the
+/// zone's writer with the heap's epoch, the frame's code id word and the
+/// argument count of the body it names. It reads a frame object, no
+/// activation, writes no frame, and cannot fail: answers 0.
+fn outer_local_site(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [site_address, frame_word, code_address] = arguments;
+    jit::closures::refill_outer_site(mutator, site_address, frame_word, code_address);
+    DONE
 }
 
 /// The exit stub's call for each return address of a compiled frame,

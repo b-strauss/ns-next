@@ -102,7 +102,7 @@ pub(crate) fn forward_identity<'gc>(
     let (heap, mut roots) = split(mutator);
     let mut forwarder = heap.forward_identity(old, new)?;
     roots.trace(&mut forwarder);
-    mutator.rewrite_immediate_classes();
+    mutator.rewrite_machine_classes();
     mutator.caches.invalidate();
     Ok(())
 }
@@ -196,6 +196,12 @@ impl World {
         self.mutator.heap.collection_requested()
     }
 
+    /// Whether a compile found the code zone full since its last
+    /// compaction (`Interpreter::safepoint`).
+    pub(crate) fn code_zone_compaction_requested(&self) -> bool {
+        self.mutator.jit.compaction_requested()
+    }
+
     /// Sets the collection floor and the next limit to `floor` bytes of
     /// objects (`Interpreter::set_collection_floor`).
     #[cfg(debug_assertions)]
@@ -239,6 +245,11 @@ impl World {
         self.mutator.jit.statistics()
     }
 
+    /// Why the JIT is off though it was wanted (`Interpreter::jit_unavailable`).
+    pub(crate) fn jit_unavailable(&self) -> Option<String> {
+        self.mutator.jit.unavailable().map(str::to_owned)
+    }
+
     /// The inline caches' sizes (`Interpreter::cache_statistics`).
     pub(crate) fn cache_statistics(&self) -> crate::interpreter::inline_cache::CacheStatistics {
         self.mutator.caches.statistics()
@@ -278,8 +289,21 @@ impl World {
             use crate::trace::Trace;
             roots.trace(scavenger);
         });
-        self.mutator.rewrite_immediate_classes();
+        self.mutator.rewrite_machine_classes();
+        self.decay_exits();
         self.mutator.heap.record_scavenge(start.elapsed());
+    }
+
+    /// Halves the JIT's exit counts (`JitState::decay_exits`) after a
+    /// scavenge or a full collection, the run's periodic events, and
+    /// writes the cells that name the refusing stub afresh from their
+    /// entries when that revived a body,
+    /// so that the cells that refused the calls of an abandoned body call
+    /// it again.
+    fn decay_exits(&mut self) {
+        if self.mutator.jit.decay_exits() {
+            self.mutator.caches.refresh_all_cells(&self.mutator.jit);
+        }
     }
 
     /// Whether an allocation or the remembered set has asked for a
@@ -333,6 +357,8 @@ impl World {
     /// nothing towards it.
     pub(crate) fn collect(&mut self) {
         let start = std::time::Instant::now();
+        // Asked before the compaction lowers the space's occupancy.
+        let for_a_table = self.mutator.heap.collecting_for_a_table();
         // Before marking, so that a resolved future nothing but object
         // fields reached is garbage by the time the marker looks; a program
         // that never made a future pays nothing for it. `move_everything`
@@ -350,14 +376,102 @@ impl World {
         // After the prune, whose survivors keep their mixins, and before
         // the compaction, while the mark bits still say what lives.
         self.mutator.reclaim_ids(gathered);
-        let mut forwarder = self.mutator.heap.compact();
+        // After `forget_families`, which freed the ranges of the families
+        // nothing runs any more: once enough of the table is free, the
+        // live ranges slide down, and every holder of a base is rewritten
+        // within this collection -- the caches' now, the heap's by the
+        // compaction's walk, and the machine code compiled against a moved
+        // base freed after both, so that no freed body is ever entered at a
+        // stale base (`docs/design/dispatch.md`, "Code families").
+        let slide = self.mutator.caches.plan_slide();
+        if let Some(slide) = &slide {
+            self.mutator.caches.apply_slide(slide);
+        }
+        // After `reclaim_ids`, which let the bodies of freed code rows die:
+        // their machine code is freed now, not when the zone fills.
+        self.mutator.jit.free_dead_bodies();
+        let mut forwarder = self.mutator.heap.compact_with(slide.as_ref());
         self.forward_step_state(&mut forwarder);
+        if let Some(slide) = &slide {
+            self.mutator.free_code_of_moved_bases(slide);
+        }
         self.mutator.heap.reset_collection_limits();
+        // A code zone full of active code is tried again: what the
+        // collection's run left active may be no longer. And a quarter of
+        // the zone freed asks for a compaction, which the run loop's next
+        // safepoint serves.
+        if self.mutator.jit.note_full_collection() {
+            self.mutator.heap.request_safepoint();
+        }
+        // After `reclaim_ids`, from what it left of each table.
+        self.mutator.heap.reset_table_limits();
+        self.mutator.caches.reset_site_limit();
+        self.decay_exits();
+        if for_a_table {
+            self.mutator.heap.count_table_collection();
+        }
+        self.shrink_committed_memory();
         self.mutator.heap.record_collection(start.elapsed());
+    }
+
+    /// Gives committed memory back above each reservation's high mark and
+    /// headroom, where more than its threshold lies unused
+    /// (`heap::limits::Shrink`): the code zone's, the activation stack's,
+    /// the machine entry table's, the application id table's and the
+    /// cells'. Only here, at the end of a full collection, after every
+    /// table was truncated and the site ranges slid, and after a
+    /// compaction of the code zone (`Mutator::compact_code_zone`), so that
+    /// a high mark that rises and falls within one collection's cycle
+    /// never decommits (`docs/design/memory.md`, "Giving committed memory
+    /// back").
+    fn shrink_committed_memory(&mut self) {
+        let pairs = self.mutator.heap.shrink_pairs();
+        // First: it asserts that no machine code runs, whose frames would
+        // lie above the stack's top.
+        let bytes = self.mutator.jit.shrink_zone(pairs.code_zone, pairs.damped);
+        self.mutator.heap.count_decommit(bytes);
+        self.mutator.heap.shrink_reservations();
+        let bytes = self.mutator.caches.shrink_cells(pairs.cells, pairs.damped);
+        self.mutator.heap.count_decommit(bytes);
+    }
+
+    /// Sets each reservation's shrink pair (`Interpreter::set_shrink_pairs`).
+    pub(crate) fn set_shrink_pairs(&mut self, pairs: crate::ShrinkPairs) {
+        self.mutator.heap.set_shrink_pairs(pairs);
     }
 
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
         self.mutator.heap.heap_statistics()
+    }
+
+    /// The sizes of the tables beside the space (`Interpreter::table_sizes`).
+    pub(crate) fn table_sizes(&self) -> crate::TableSizes {
+        let mutator = &self.mutator;
+        let (zone_used_bytes, zone_bodies, zone_returns) = mutator.jit.zone_sizes();
+        crate::TableSizes {
+            sites: mutator.caches.table_len(),
+            interned_symbols: crate::Symbol::interned_count(),
+            zone_used_bytes,
+            zone_bodies,
+            zone_returns,
+            zone_committed_bytes: mutator.jit.zone_committed_bytes(),
+            cells_committed_bytes: mutator.caches.cells_committed_bytes(),
+            ..mutator.heap.table_sizes()
+        }
+    }
+
+    /// Whether every full collection slides the site ranges once any is
+    /// free (`InlineCaches::set_eager_slides`): the collect stress mode's.
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_eager_slides(&mut self, eager: bool) {
+        self.mutator.caches.set_eager_slides(eager);
+    }
+
+    /// Sets every table's growth floor and next limit
+    /// (`Interpreter::set_table_floors`).
+    pub(crate) fn set_table_floors(&mut self, floors: crate::TableFloors) {
+        self.mutator.heap.set_table_floors(floors);
+        self.mutator.caches.set_site_floor(floors.sites);
     }
 
     /// The collector's counts and pauses (`Interpreter::collector_statistics`).
@@ -375,7 +489,7 @@ impl World {
         use crate::trace::Trace;
         let (_, mut roots) = split(&mut self.mutator);
         roots.trace(forwarder);
-        self.mutator.rewrite_immediate_classes();
+        self.mutator.rewrite_machine_classes();
     }
 }
 

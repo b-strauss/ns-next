@@ -133,6 +133,7 @@ ns_runtime::for_each_lowering! {
 const DEEP: &str = indoc! {"
     class Deep usingPlatform: thePlatform = Object new (
         | private Error = thePlatform kernel Error.
+          private Message = thePlatform kernel Message.
           public deepest ::= 0.
           public reserveDeepest ::= 0.
           public passes ::= 0. |
@@ -146,6 +147,17 @@ const DEEP: &str = indoc! {"
         public notUnderstood: n to: bottom = (
             n = bottom ifTrue: [^nil foo].
             ^self notUnderstood: n + 1 to: bottom
+        )
+        public unnamedNotUnderstood: n to: bottom = (
+            ^self send: (Message new selector: ('fro' , 'bnicated') asSymbol; arguments: {}) at: n to: bottom
+        )
+        public unnamedNotUnderstoodInTheReserveAt: bottom = (
+            | message = Message new selector: ('fro' , 'bnicated') asSymbol; arguments: {}. |
+            ^[[self probe: 1] on: Error do: [:e | self send: message at: 1 to: bottom]] on: Error do: [:e | 7]
+        )
+        send: message at: n to: bottom = (
+            n = bottom ifTrue: [^message sendTo: nil].
+            ^self send: message at: n + 1 to: bottom
         )
         descendPassing: n to: bottom = (
             n = bottom ifTrue: [^[{1} at: 5] on: Error do: [:e | passes:: passes + 1. e pass]].
@@ -283,7 +295,7 @@ ns_runtime::for_each_lowering! {
             caught_outside,
             "{lowering:?}: with room, the outer handler catches the error"
         );
-        for bottom in [reserve_deepest - 2, reserve_deepest] {
+        for bottom in [reserve_deepest - 3, reserve_deepest - 2, reserve_deepest - 1] {
             let error = expect_error(
                 send_integers(&mut interpreter, &deep, "failInTheReserveAt:", &[bottom]),
                 "failInTheReserveAt:",
@@ -596,5 +608,51 @@ ns_runtime::for_each_lowering! {
             2,
             "{lowering:?}: the search passes the disabled handler in a suspended frame"
         );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// An unhandled `doesNotUnderstand:` of a program-made selector whose
+    /// text nothing has interned reaches the host with `doesNotUnderstand:`
+    /// as its selector and the text in its message, whether the kernel's
+    /// `defaultAction` ends the run (far from the depth limit) or the depth
+    /// limit's report does (at the reserve's end, where the message's
+    /// signalling overruns it) -- and neither interns the text.
+    fn an_unhandled_unnamed_selector_is_reported_as_does_not_understand_on_both_paths(lowering) {
+        let (mut interpreter, deep) = a_deep(lowering);
+        let expected = "an object does not understand #frobnicated";
+        let error = expect_error(
+            send_integers(&mut interpreter, &deep, "unnamedNotUnderstood:to:", &[1, 1]),
+            "unnamedNotUnderstood:to:",
+        );
+        assert_eq!(error.message, expected, "{lowering:?}: defaultAction");
+        assert_eq!(
+            error.selector,
+            Symbol::DOES_NOT_UNDERSTAND,
+            "{lowering:?}: defaultAction"
+        );
+        let _ = expect_error(
+            interpreter.send(&deep, Symbol::intern("measureTheReserve"), &[]),
+            "measureTheReserve",
+        );
+        let reserve_deepest = integer_slot(&mut interpreter, &deep, "reserveDeepest");
+        for bottom in [reserve_deepest - 3, reserve_deepest - 2, reserve_deepest - 1] {
+            let error = expect_error(
+                send_integers(
+                    &mut interpreter,
+                    &deep,
+                    "unnamedNotUnderstoodInTheReserveAt:",
+                    &[bottom],
+                ),
+                "unnamedNotUnderstoodInTheReserveAt:",
+            );
+            assert_eq!(error.message, expected, "{lowering:?}: the depth limit's report");
+            assert_eq!(
+                error.selector,
+                Symbol::DOES_NOT_UNDERSTAND,
+                "{lowering:?}: the depth limit's report"
+            );
+        }
+        assert_eq!(Symbol::lookup("frobnicated"), None, "{lowering:?}");
     }
 }

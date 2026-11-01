@@ -1,0 +1,58 @@
+/// A block's frame, which machine code reifies at the block's
+/// `MakeClosure` once the method making it is compiled, observed after
+/// machine code made and ran the block, as under `NS_NEXT_NO_JIT`: a `^`
+/// out of a block returns from its home while the home runs -- the
+/// method's frame, and for a block made in a block the outer block's home,
+/// which machine code finds through the outer block's closure -- and is
+/// refused, `cannotReturn`, once the home has returned and its frame was
+/// divorced at the return.
+class ReifiedFrames = Object new (
+  |
+    stored ::= nil.
+  |
+) (
+  /// Answers the first of `numbers` above `limit`, by a `^` out of the
+  /// block `do:` runs, or 0.
+  firstAbove: limit in: numbers = (
+    numbers do: [:each | each > limit ifTrue: [^each]].
+    ^0.
+  )
+
+  /// Answers the first of `numbers` above `limit`, by a `^` out of a block
+  /// made in a block, whose home is this method's frame, the outer
+  /// block's home; -1 only if the `^` returned from the outer block alone.
+  nestedFirstAbove: limit in: numbers = (
+    [:list |
+      list do: [:each | each > limit ifTrue: [^each]].
+      0.
+    ] value: numbers.
+    ^-1.
+  )
+
+  /// Keeps a block whose `^` returns from this method's frame, which has
+  /// returned by the time the block runs; answers `value`.
+  stash: value = (
+    stored:: [^value].
+    ^value.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      numbers = {3. 8. 12. 20}.
+      index ::= 0.
+    |
+    [index < 5] whileTrue: [
+      transcript
+          show: (self firstAbove: index * 4 in: numbers) printString;
+          show: ' ';
+          show: (self nestedFirstAbove: index * 4 in: numbers) printString;
+          show: ' ';
+          show: (self stash: index) printString;
+          show: ' ';
+          show: ([stored value] on: Error do: [:e | e messageText]);
+          newLine.
+      index:: index + 1.
+    ].
+  )
+)

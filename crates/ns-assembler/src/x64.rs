@@ -14,7 +14,9 @@
 //! mirrors are not linked. No numeric pattern appears in a function body;
 //! `tests/encoding_sources.rs` holds every encoder file to that.
 
-use crate::{BranchForm, BranchKind, Condition, Encoder, Memory, Operation, Register, Width};
+use crate::{
+    BranchForm, BranchKind, Condition, Encoder, LabelReference, Memory, Operation, Register, Width,
+};
 
 /// `rax`: register number 0, as ModRM, SIB and opcode fields name it.
 ///
@@ -303,7 +305,8 @@ const COMPARE_RM_WITH_REGISTER: [u8; 1] = [0x39];
 const COMPARE_REGISTER_WITH_RM: [u8; 1] = [0x3B];
 
 /// `TEST r/m64, imm32` (`F7 /0 id`) — AND a doubleword with a register for
-/// the flags only. It has no sign-extended byte form.
+/// the flags only; without REX.W, `TEST r/m32, imm32`, of the low 32 bits.
+/// It has no sign-extended byte form.
 ///
 /// Intel SDM Vol. 2B, TEST—Logical Compare.
 const TEST_IMMEDIATE: [u8; 1] = [0xF7];
@@ -357,6 +360,11 @@ const SHIFT_BY_IMMEDIATE: u8 = 0xC1;
 /// Intel SDM Vol. 2B, SAL/SAR/SHL/SHR—Shift.
 const SHIFT_LEFT_EXTENSION: u8 = 4;
 
+/// The `/5` extension of [`SHIFT_BY_IMMEDIATE`]: `SHR r/m64, imm8`.
+///
+/// Intel SDM Vol. 2B, SAL/SAR/SHL/SHR—Shift.
+const SHIFT_RIGHT_LOGICAL_EXTENSION: u8 = 5;
+
 /// The `/7` extension of [`SHIFT_BY_IMMEDIATE`]: `SAR r/m64, imm8`.
 ///
 /// Intel SDM Vol. 2B, SAL/SAR/SHL/SHR—Shift.
@@ -409,6 +417,13 @@ const LOAD_EFFECTIVE_ADDRESS: [u8; 1] = [0x8D];
 /// Intel SDM Vol. 2A, 2.2.1.6 RIP-Relative Addressing.
 const RIP_RELATIVE: u8 = 0b101;
 
+/// The size of a RIP-relative `MOV r64, m64` or `LEA r64, m`: the REX.W
+/// prefix, the one-byte opcode, the ModRM byte and the 32-bit
+/// displacement, which counts from the end of the instruction.
+///
+/// Intel SDM Vol. 2A, 2.2.1.6 RIP-Relative Addressing.
+const LABEL_REFERENCE_SIZE: i64 = 7;
+
 /// `RET` (`C3`) — near return.
 ///
 /// Intel SDM Vol. 2B, RET—Return From Procedure.
@@ -419,6 +434,12 @@ const RETURN_NEAR: u8 = 0xC3;
 ///
 /// Intel SDM Vol. 2B, UD—Undefined Instruction.
 const UNDEFINED_INSTRUCTION: [u8; 2] = [0x0F, 0x0B];
+
+/// `INT3` (`CC`) — the one-byte breakpoint, which raises a breakpoint
+/// exception at whichever byte execution enters a run of them.
+///
+/// Intel SDM Vol. 2A, INT n/INTO/INT3/INT1—Call to Interrupt Procedure.
+const BREAKPOINT: u8 = 0xCC;
 
 /// `JMP rel8` (`EB cb`) — the short unconditional jump.
 ///
@@ -666,6 +687,10 @@ fn condition_code(condition: Condition) -> u8 {
 }
 
 impl Encoder for X64 {
+    fn fill_with_stops(&self, length: usize, code: &mut Vec<u8>) {
+        code.resize(code.len() + length, BREAKPOINT);
+    }
+
     fn encode(&self, operation: Operation, code: &mut Vec<u8>) {
         match operation {
             Operation::MoveRegister { target, source } => {
@@ -810,6 +835,9 @@ impl Encoder for X64 {
             Operation::ShiftRightArithmetic { target, count } => {
                 shift(code, SHIFT_RIGHT_ARITHMETIC_EXTENSION, target, count);
             }
+            Operation::ShiftRightLogical { target, count } => {
+                shift(code, SHIFT_RIGHT_LOGICAL_EXTENSION, target, count);
+            }
             Operation::Compare { left, right } => {
                 register_register(code, &COMPARE_RM_WITH_REGISTER, right, left);
             }
@@ -826,10 +854,11 @@ impl Encoder for X64 {
                     right,
                 );
             }
-            Operation::TestImmediate { left, right } => {
-                // `test` has no sign-extended byte form.
+            Operation::TestImmediate { width, left, right } => {
+                // `test` has no sign-extended byte form; the 32-bit one
+                // differs only by the missing REX.W.
                 let left = number(left);
-                rex(code, true, 0, left, false);
+                rex(code, width == Width::Word64, 0, left, false);
                 code.extend_from_slice(&TEST_IMMEDIATE);
                 code.push(modrm(MODRM_MODE_REGISTER, TEST_IMMEDIATE_EXTENSION, left));
                 code.extend_from_slice(&right.to_le_bytes());
@@ -914,6 +943,29 @@ impl Encoder for X64 {
                 code.extend_from_slice(&relative.to_le_bytes());
             }
         }
+        true
+    }
+
+    fn encode_label_reference(
+        &self,
+        reference: LabelReference,
+        distance: i64,
+        code: &mut Vec<u8>,
+    ) -> bool {
+        // `mov target, [rip + relative]` or `lea target, [rip + relative]`:
+        // the displacement counts from the end of the instruction.
+        let Ok(relative) = i32::try_from(distance - LABEL_REFERENCE_SIZE) else {
+            return false;
+        };
+        let (opcode, target): (&[u8], Register) = match reference {
+            LabelReference::Load { target } => (&MOVE_RM_TO_REGISTER, target),
+            LabelReference::Address { target } => (&LOAD_EFFECTIVE_ADDRESS, target),
+        };
+        let target = number(target);
+        rex(code, true, target, 0, false);
+        code.extend_from_slice(opcode);
+        code.push(modrm(MODRM_MODE_NO_DISPLACEMENT, target, RIP_RELATIVE));
+        code.extend_from_slice(&relative.to_le_bytes());
         true
     }
 }

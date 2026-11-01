@@ -33,17 +33,21 @@
 //! method, a method that is a leaf-safe mirror row, and the leaf stub,
 //! which runs `act`'s arm through the leaf shim.
 
-use ns_assembler::{Assembled, Condition, Label, Memory, Width};
+use ns_assembler::{Assembled, Condition, Label, Memory, Register, Width};
 
 use super::leaves::Leaf;
-use super::macro_assembler::{Abi, MacroAssembler, Operand};
+use super::macro_assembler::{Abi, MacroAssembler, Operand, Roles};
 use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};
+use super::SHIFTED_SLOTS;
+use crate::builtins::primitive::{MachineCall, RowStub, MIRROR};
 use crate::heap::machine_words::MachineWord;
 use crate::interpreter::inline_cache::cells::{
-    BLOCK_BYTES, CELL_BYTES, CELL_WORDS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES, ROW_WORDS, VACANT_GUARD,
+    BLOCK_BYTES, CELL_BYTES, CELL_WORDS, CHAIN_START_BITS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES,
+    ROW_WORDS, VACANT_GUARD,
 };
 use crate::interpreter::inline_cache::POLYMORPHIC_WIDTH;
 use crate::interpreter::inline_cache::{RULE_TAG_BITS, RULE_TAG_LEXICAL, RULE_TAG_MASK};
+use crate::mixin::AccessorKind;
 
 /// The bytes of a word.
 const WORD_BYTES: i32 = 8;
@@ -52,6 +56,7 @@ const WORD_BYTES: i32 = 8;
 const CELL_GUARD: i32 = 0;
 const CELL_ENTRY: i32 = WORD_BYTES;
 const CELL_LEVEL: i32 = 2 * WORD_BYTES;
+const CELL_CHAIN_START: i32 = 3 * WORD_BYTES;
 
 /// A global row's words' displacements from its start (`GlobalRow`'s
 /// order).
@@ -60,6 +65,7 @@ const ROW_SELECTOR: i32 = WORD_BYTES;
 const ROW_RULE: i32 = 2 * WORD_BYTES;
 const ROW_ENTRY: i32 = 3 * WORD_BYTES;
 const ROW_LEVEL: i32 = 4 * WORD_BYTES;
+const ROW_CHAIN_START: i32 = 5 * WORD_BYTES;
 
 const _: () = assert!(CELL_WORDS == 4 && ROW_WORDS == 8);
 
@@ -157,7 +163,13 @@ pub(crate) fn assemble_polymorphic_stub(abi: Abi) -> Assembled {
     assembler.bind(found[0]);
     assembler.bind(hit);
     split_rule_tag(&mut macro_assembler);
-    emit_hit(&mut macro_assembler, CELL_LEVEL, CELL_ENTRY, miss);
+    emit_hit(
+        &mut macro_assembler,
+        CELL_LEVEL,
+        CELL_ENTRY,
+        CELL_CHAIN_START,
+        miss,
+    );
     macro_assembler.assembler().bind(miss);
     emit_miss(&mut macro_assembler);
     finish_stub(macro_assembler)
@@ -245,7 +257,13 @@ pub(crate) fn assemble_megamorphic_stub(abi: Abi) -> Assembled {
         assembler.jump(missed);
     }
     assembler.bind(hit);
-    emit_hit(&mut macro_assembler, ROW_LEVEL, ROW_ENTRY, miss);
+    emit_hit(
+        &mut macro_assembler,
+        ROW_LEVEL,
+        ROW_ENTRY,
+        ROW_CHAIN_START,
+        miss,
+    );
     macro_assembler.assembler().bind(miss);
     emit_miss(&mut macro_assembler);
     finish_stub(macro_assembler)
@@ -267,11 +285,15 @@ fn split_rule_tag(macro_assembler: &mut MacroAssembler) {
 /// (`inline_cache::rule_chain_start`) -- then a jump to the recorded
 /// entry, or to `miss` where the chain is shorter, which makes the send a
 /// miss as it makes the interpreter's (`inline_cache::materialize`).
-/// `lookup_rule`'s low bits are the rule's tag.
+/// `lookup_rule`'s low bits are the rule's tag. The callee is entered
+/// with `send_cells` moved so that the cell's or row's chain start word,
+/// at `chain_start_displacement`, lies where a cell's does: a private or
+/// `super` slot accessor's stub reads its recorded guard there.
 fn emit_hit(
     macro_assembler: &mut MacroAssembler,
     level_displacement: i32,
     entry_displacement: i32,
+    chain_start_displacement: i32,
     miss: Label,
 ) {
     let roles = macro_assembler.roles();
@@ -292,6 +314,9 @@ fn emit_hit(
     macro_assembler.walk_superclasses(class, level, miss);
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, entry, word(entry_displacement));
+    if chain_start_displacement != CELL_CHAIN_START {
+        assembler.add_immediate(cell, chain_start_displacement - CELL_CHAIN_START);
+    }
     assembler.jump_register(entry);
 }
 
@@ -337,9 +362,53 @@ pub(crate) const GETTER_STUBS: u32 = 64;
 /// past them runs through the leaf stub, as `act` runs it.
 pub(crate) const SETTER_STUBS: u32 = 64;
 
+/// How many hidden slots have a nested class accessor's stub of their
+/// own: an accessor whose slot lies past them is the interpreter's.
+pub(crate) const NESTED_CLASS_STUBS: u32 = 64;
+
 /// How many parameter positions have a stub of their own: a quick
 /// method answering a parameter past them runs through the leaf stub.
 pub(crate) const PARAMETER_STUBS: u8 = 16;
+
+/// How many arities have a closure stub of their own: `value` to
+/// `value:value:value:`, the arities of the mirror rows that activate a
+/// block (`BlockPrimitive::Value`).
+pub(crate) const CLOSURE_VALUE_ARITIES: u8 = 4;
+
+/// A closure stub (`emit_closure_stub_entry`): what a method whose fast path
+/// activates a block does, as `Mutator::act_with_base` does it, the
+/// block's frame laid past the send's slots.
+///
+/// No send writes its slots: a setter send's slot is the assignment's
+/// value, read after the send (`compiler::lower`'s `lower_setter_assign`),
+/// and the interpreter lays a block that takes anything but the send's
+/// own arguments -- `cull:`'s, the receiver -- above its sender's window.
+/// So the stub shifts the frame register up past the slots before it
+/// enters the block, the block's prologue records the shift in its flags
+/// word (`frames::CALL_SHIFT_BITS`), and its return shifts the frame
+/// register back before it returns to the send. The block's arguments lie
+/// right past the slots, its header past them, which the collector's
+/// trace checks of every frame on the stack (`Heap::trace_stack`) and the
+/// exit's walk derives from a call's return address (`jit::materialize`):
+/// a block row's, the send's own arguments, copied there from the slots;
+/// `cull:`'s one, the receiver, which the prologue places; none for
+/// `^<parameter> value`'s and `cull:`'s of none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ClosureStub {
+    /// A method whose fast path is a mirror row that activates its
+    /// receiver, a closure, with the send's `arity` arguments
+    /// (`MethodFastPath::Mirror` of a `BlockPrimitive::Value` row).
+    ClosureValue { arity: u8 },
+    /// A quick method `^<parameter> value` of `slots` arguments: the
+    /// closure at `position`, activated with none
+    /// (`MethodFastPath::ValueOfParameter`).
+    ValueOfParameter { position: u8, slots: u8 },
+    /// A quick method `^<parameter> cull: self` of `slots` arguments: the
+    /// closure at `position`, activated with the receiver when it takes
+    /// one and with none when it takes none
+    /// (`MethodFastPath::CullParameter`).
+    CullParameter { position: u8, slots: u8 },
+}
 
 /// Where each entry of the accessor stubs lies in their code, as offsets
 /// from its start (`assemble_accessor_stubs`).
@@ -352,6 +421,9 @@ pub(crate) struct AccessorEntries {
     pub(crate) parameters: Vec<u32>,
     /// The method whose fast path is mirror row `index`, by index.
     pub(crate) mirror_methods: Vec<u32>,
+    /// The method whose fast path is a row with a stub of its own, by
+    /// the stub's index (`RowStub::index`).
+    pub(crate) row_stubs: Vec<u32>,
     /// The quick methods answering `nil`, `true` and `false`.
     pub(crate) nil: u32,
     pub(crate) true_constant: u32,
@@ -360,6 +432,23 @@ pub(crate) struct AccessorEntries {
     pub(crate) receiver: u32,
     /// The leaf stub (`Leaf::Act`).
     pub(crate) act: u32,
+    /// The getter of a private or `super` chain of field `index`, by
+    /// index.
+    pub(crate) guarded_getters: Vec<u32>,
+    /// The setter of a private or `super` chain of field `index`, by
+    /// index.
+    pub(crate) guarded_setters: Vec<u32>,
+    /// The nested class accessor whose class is cached in hidden slot
+    /// `index`, by index.
+    pub(crate) nested_classes: Vec<u32>,
+    /// The closure stub of a block row of each arity, by arity.
+    pub(crate) closure_values: Vec<u32>,
+    /// The closure stub of `^<parameter> value`, by
+    /// `parameter_stub_index`.
+    pub(crate) values_of_parameters: Vec<u32>,
+    /// The closure stub of `^<parameter> cull: self`, by
+    /// `parameter_stub_index`.
+    pub(crate) culls: Vec<u32>,
 }
 
 /// The stubs a cell names for a target that is no method with code
@@ -375,11 +464,10 @@ pub(crate) struct AccessorEntries {
 ///   receiver is checked to be an instance holding it, as
 ///   `Heap::instance_field` checks it;
 /// - a setter of a public or protected chain, whose cell's guard is the
-///   receiver's dispatch id as a getter's is: the store leaf
-///   (`Leaf::StoreField`) writes the send's one argument into the field
-///   through the heap's store accessor and its write barrier, which check
-///   the receiver as `Mutator::decide_slot_accessor`'s setter does, and
-///   the stub answers the receiver;
+///   receiver's dispatch id as a getter's is: once the receiver is
+///   checked as the getter checks it, the send's one argument stored into
+///   the field through the inline write barrier
+///   (`MacroAssembler::store_with_barrier_at`), and the receiver;
 /// - a quick method's constant, its receiver or its parameter
 ///   (`MethodFastPath::Constant`, `Receiver`, `Parameter`);
 /// - a method whose fast path is a leaf-safe mirror row
@@ -387,16 +475,35 @@ pub(crate) struct AccessorEntries {
 ///   (`Leaf::MirrorMethod`) runs the row's leaf on the receiver, handed
 ///   over in the machine words, and the send's arguments in its slots, as
 ///   `Mutator::act_for_machine_code` runs it;
+/// - a method whose fast path is a row with a stub of its own
+///   (`MachineCall::Stub`): an Array's or a ByteArray's `at:` and
+///   `at:put:`, which read or write the element an index in range names
+///   as the row's leaf does -- an Array's store through the inline write
+///   barrier, a byte's without one, since a byte names no object -- and
+///   continue at the row's mirror method stub for every other case, so
+///   that the row's failures stay its leaf's;
+/// - a nested class's accessor on a public or protected chain, whose
+///   cell's guard is the receiver's dispatch id, so that the hidden slot
+///   the entry recorded is the receiver's (`nested::nested_class`'s hit):
+///   the getter's checks and load of that slot, and the class it holds;
+///   a slot that holds none yet -- nil, or a creation underway -- declines,
+///   so that the interpreter makes the class;
+/// - a getter or a setter of a private or `super` chain, whose field the
+///   lookup decided from N's or S's chain, never the receiver's: the
+///   receiver's guard compared with the one the entry recorded, which the
+///   cell carries above its chain start, as `Mutator::slot_level_holds`
+///   compares it first, then the public stubs' access; any other
+///   receiver goes on to the leaf stub, which makes the rest of the check;
 /// - the leaf stub, for every other target machine code runs this way --
-///   a private or `super` slot accessor, whose
-///   `Mutator::slot_level_holds` is the guard check, a setter past
+///   a private or `super` slot accessor whose guard differs from the
+///   recorded one or whose field is past the stubs', a setter past
 ///   `SETTER_STUBS`, a primitive that is a mirror send of a leaf-safe row,
 ///   a builtin class's accessor: the leaf runs `act`'s arm through the
 ///   shim (`Leaf::Act`) and answers its value, or the word no value is
 ///   when the arm would answer anything else, before it changed anything.
 ///
-/// Every decline -- a receiver the getter's check refuses, the word no
-/// value is from the store leaf, the mirror method leaf or the leaf
+/// Every decline -- a receiver the getter's or the setter's check
+/// refuses, the word no value is from the mirror method leaf or the leaf
 /// stub's -- refuses the call before anything is written, so that the
 /// caller re-executes the send and the interpreter runs it.
 pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) {
@@ -406,12 +513,24 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     let (field, answer, address) = (roles.accessor_field, roles.leaf_result, roles.idiom_scratch);
     let receiver = roles.callee_receiver();
     let assembler = macro_assembler.assembler();
-    let (decline, getter, setter, mirror_method) = (
+    // Beside the getter's, the registers the setter and the row stubs
+    // hold an index, an element's address and a scratch word in: none
+    // the receiver, the field or the answer is in.
+    let free: Vec<Register> = roles
+        .scratch
+        .iter()
+        .copied()
+        .filter(|register| ![receiver, field, answer, roles.send_cells].contains(register))
+        .collect();
+    let (index, element, spare) = (free[0], free[1], free[2]);
+    let (decline, getter, setter, mirror_method, act) = (
+        assembler.label(),
         assembler.label(),
         assembler.label(),
         assembler.label(),
         assembler.label(),
     );
+    let (guarded_getter, guarded_setter) = (assembler.label(), assembler.label());
     let getters: Vec<Label> = (0..GETTER_STUBS)
         .map(|index| {
             let entry = assembler.label();
@@ -427,6 +546,29 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
             assembler.bind(entry);
             assembler.move_immediate(field, u64::from(index));
             assembler.jump(setter);
+            entry
+        })
+        .collect();
+    let mut guarded = |count: u32, target: Label| -> Vec<Label> {
+        (0..count)
+            .map(|index| {
+                let entry = assembler.label();
+                assembler.bind(entry);
+                assembler.move_immediate(field, u64::from(index));
+                assembler.jump(target);
+                entry
+            })
+            .collect()
+    };
+    let guarded_getters = guarded(GETTER_STUBS, guarded_getter);
+    let guarded_setters = guarded(SETTER_STUBS, guarded_setter);
+    let nested_class = assembler.label();
+    let nested_classes: Vec<Label> = (0..NESTED_CLASS_STUBS)
+        .map(|index| {
+            let entry = assembler.label();
+            assembler.bind(entry);
+            assembler.move_immediate(field, u64::from(index));
+            assembler.jump(nested_class);
             entry
         })
         .collect();
@@ -471,68 +613,143 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     assembler.bind(receiver_entry);
     assembler.move_register(answer, receiver);
     assembler.return_();
-    // The getter: `instance_field`'s checks, then the load.
-    assembler.bind(getter);
+    // The getter: `instance_field`'s checks, then the load; and a nested
+    // class's accessor: the getter's, then whether the slot holds the
+    // class, an object -- not nil, and not the `SmallInteger` of a
+    // creation underway (`nested::is_creation_in_progress`).
+    for (entry, holds_class) in [(getter, false), (nested_class, true)] {
+        let assembler = macro_assembler.assembler();
+        assembler.bind(entry);
+        macro_assembler.jump_unless_object(receiver, decline);
+        let assembler = macro_assembler.assembler();
+        assembler.move_register(address, receiver);
+        assembler.add(address, roles.object_space);
+        assembler.load(
+            Width::Word64,
+            answer,
+            Memory {
+                base: address,
+                displacement: layout.header_displacement,
+            },
+        );
+        assembler.test_immediate(answer, layout.instance_format_bits);
+        assembler.jump_if(Condition::NotEqual, decline);
+        // The count of the words after the header, the class word first:
+        // the fields are one fewer. The header's eight-bit count reads 255
+        // for an object of 255 words or more, whose true count the heap
+        // keeps in an overflow word; the stub takes 255 as it is, so such
+        // an object has at least 254 fields here, more than any getter
+        // stub's field (`GETTER_STUBS`, asserted below), and no field a
+        // stub names is refused for it.
+        assembler.shift_right_arithmetic(answer, layout.word_count_shift);
+        assembler.and_immediate(answer, WORD_COUNT_FIELD_MASK);
+        assembler.add_immediate(answer, -1);
+        assembler.compare(answer, field);
+        assembler.jump_if(Condition::BelowOrEqual, decline);
+        assembler.shift_left(field, WORD_SHIFT);
+        assembler.add(address, field);
+        assembler.load(
+            Width::Word64,
+            answer,
+            Memory {
+                base: address,
+                displacement: layout.fields_displacement,
+            },
+        );
+        if holds_class {
+            assembler.test_immediate(answer, layout.tag_mask);
+            assembler.jump_if(Condition::NotEqual, decline);
+        }
+        assembler.return_();
+    }
+    let assembler = macro_assembler.assembler();
+    // The setter: the getter's checks, then the send's argument, in its
+    // slot 0, stored through the barrier, which keeps the receiver on
+    // both its paths: the setter answers it.
+    assembler.bind(setter);
     macro_assembler.jump_unless_object(receiver, decline);
     let assembler = macro_assembler.assembler();
-    assembler.move_register(address, receiver);
-    assembler.add(address, roles.object_space);
+    assembler.move_register(element, receiver);
+    assembler.add(element, roles.object_space);
     assembler.load(
         Width::Word64,
-        answer,
+        spare,
         Memory {
-            base: address,
+            base: element,
             displacement: layout.header_displacement,
         },
     );
-    assembler.test_immediate(answer, layout.instance_format_bits);
+    assembler.test_immediate(spare, layout.instance_format_bits);
     assembler.jump_if(Condition::NotEqual, decline);
-    // The count of the words after the header, the class word first:
-    // the fields are one fewer. The header's eight-bit count reads 255
-    // for an object of 255 words or more, whose true count the heap
-    // keeps in an overflow word; the stub takes 255 as it is, so such an
-    // object has at least 254 fields here, more than any getter stub's
-    // field (`GETTER_STUBS`, asserted below), and no field a stub names
-    // is refused for it.
-    assembler.shift_right_arithmetic(answer, layout.word_count_shift);
-    assembler.and_immediate(answer, WORD_COUNT_FIELD_MASK);
-    assembler.add_immediate(answer, -1);
-    assembler.compare(answer, field);
+    // The count as the getter takes it: a setter stub's field is below
+    // every count the header's mark stands for (`SETTER_STUBS`).
+    assembler.shift_right_arithmetic(spare, layout.word_count_shift);
+    assembler.and_immediate(spare, WORD_COUNT_FIELD_MASK);
+    assembler.add_immediate(spare, -1);
+    assembler.compare(spare, field);
     assembler.jump_if(Condition::BelowOrEqual, decline);
     assembler.shift_left(field, WORD_SHIFT);
-    assembler.add(address, field);
-    assembler.load(
-        Width::Word64,
-        answer,
+    assembler.add(element, field);
+    assembler.load(Width::Word64, answer, argument_slot(roles, 0));
+    macro_assembler.store_with_barrier_at(
+        receiver,
         Memory {
-            base: address,
+            base: element,
             displacement: layout.fields_displacement,
         },
-    );
-    assembler.return_();
-    // The setter: the send's argument, in its slot 0, stored by the
-    // store leaf, which answers the receiver.
-    assembler.bind(setter);
-    assembler.load(
-        Width::Word64,
         answer,
-        Memory {
-            base: roles.frame,
-            displacement: 0,
-        },
-    );
-    macro_assembler.call_leaf(
-        Leaf::StoreField.index(),
-        [
-            Operand::Register(receiver),
-            Operand::Register(field),
-            Operand::Register(answer),
-        ],
+        spare,
     );
     let assembler = macro_assembler.assembler();
-    assembler.compare_immediate(answer, NO_VALUE_IMMEDIATE);
-    assembler.jump_if(Condition::Equal, decline);
+    assembler.move_register(answer, receiver);
     assembler.return_();
+    for (kind, label) in [
+        (AccessorKind::Getter, guarded_getter),
+        (AccessorKind::Setter, guarded_setter),
+    ] {
+        macro_assembler.assembler().bind(label);
+        emit_guarded_accessor(
+            &mut macro_assembler,
+            kind,
+            [index, element, spare],
+            decline,
+            act,
+        );
+    }
+    let closure_body = macro_assembler.assembler().label();
+    let closure_values: Vec<Label> = (0..CLOSURE_VALUE_ARITIES)
+        .map(|arity| {
+            emit_closure_stub_entry(
+                &mut macro_assembler,
+                ClosureStub::ClosureValue { arity },
+                closure_body,
+            )
+        })
+        .collect();
+    let mut parameter_stubs = |stub: fn(u8, u8) -> ClosureStub| -> Vec<Label> {
+        (1..=SHIFTED_SLOTS)
+            .flat_map(|slots| (0..slots).map(move |position| (position, slots)))
+            .map(|(position, slots)| {
+                emit_closure_stub_entry(&mut macro_assembler, stub(position, slots), closure_body)
+            })
+            .collect()
+    };
+    let values_of_parameters =
+        parameter_stubs(|position, slots| ClosureStub::ValueOfParameter { position, slots });
+    let culls = parameter_stubs(|position, slots| ClosureStub::CullParameter { position, slots });
+    emit_closure_stub_body(&mut macro_assembler, closure_body, decline);
+    let row_stubs: Vec<Label> = RowStub::ALL
+        .into_iter()
+        .map(|stub| {
+            emit_row_stub(
+                &mut macro_assembler,
+                stub,
+                [index, element, spare],
+                mirror_method,
+            )
+        })
+        .collect();
+    let assembler = macro_assembler.assembler();
     // The mirror method: the receiver handed over in the machine words,
     // the row in the field's role, the send found by its return address.
     assembler.bind(mirror_method);
@@ -563,7 +780,6 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     // The leaf stub: the receiver handed over in the machine words, the
     // cell the send hit in `send_cells` -- its site's own on a direct hit,
     // a block's cell or a global row from a stub, 0 after the miss leaf.
-    let act = assembler.label();
     assembler.bind(act);
     macro_assembler.load_machine_words(address);
     let handed = MacroAssembler::machine_word(address, MachineWord::CalleeReceiver);
@@ -601,19 +817,489 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         setters: setters.into_iter().map(offset).collect(),
         parameters: parameters.into_iter().map(offset).collect(),
         mirror_methods: mirror_methods.into_iter().map(offset).collect(),
+        row_stubs: row_stubs.into_iter().map(offset).collect(),
         nil: offset(nil),
         true_constant: offset(true_constant),
         false_constant: offset(false_constant),
         receiver: offset(receiver_entry),
         act: offset(act),
+        guarded_getters: guarded_getters.into_iter().map(offset).collect(),
+        guarded_setters: guarded_setters.into_iter().map(offset).collect(),
+        nested_classes: nested_classes.into_iter().map(offset).collect(),
+        closure_values: closure_values.into_iter().map(offset).collect(),
+        values_of_parameters: values_of_parameters.into_iter().map(offset).collect(),
+        culls: culls.into_iter().map(offset).collect(),
     };
     (assembled, entries)
 }
+
+/// What a closure stub's entry asks of the block's parameter count, in
+/// the bits above the slot count it hands the shared body: as many as the
+/// send's slots, none, or none or one, the receiver (`ClosureStub`).
+const TAKES_THE_SLOTS: u64 = 0;
+const TAKES_NONE: u64 = 1;
+const TAKES_THE_RECEIVER: u64 = 2;
+
+/// How far the entry's demand lies above the slot count.
+const DEMAND_SHIFT: u8 = 8;
+
+/// The slot count's bits.
+const SLOTS_MASK: i32 = 0xFF;
+
+/// The entry of the closure stub `stub`, which loads the closure -- the
+/// receiver, or the argument at the stub's position -- and the send's
+/// slot count with what the block must take above it (`TAKES_THE_SLOTS`
+/// and its kin), then goes on at `shared`, the body every closure stub
+/// shares (`emit_closure_stub_body`), at the label it answers.
+fn emit_closure_stub_entry(
+    macro_assembler: &mut MacroAssembler,
+    stub: ClosureStub,
+    shared: Label,
+) -> Label {
+    let roles = macro_assembler.roles();
+    // The demand rides in the register that hands the prologue its flags,
+    // which the shared body writes last.
+    let (closure, demand) = (roles.callee_closure(), roles.callee_counted());
+    let assembler = macro_assembler.assembler();
+    let start = assembler.label();
+    assembler.bind(start);
+    let (slots, takes) = match stub {
+        ClosureStub::ClosureValue { arity } => {
+            assembler.move_register(closure, roles.callee_receiver());
+            (arity, TAKES_THE_SLOTS)
+        }
+        ClosureStub::ValueOfParameter { position, slots }
+        | ClosureStub::CullParameter { position, slots } => {
+            assembler.load(
+                Width::Word64,
+                closure,
+                argument_slot(roles, i32::from(position)),
+            );
+            let takes = if matches!(stub, ClosureStub::CullParameter { .. }) {
+                TAKES_THE_RECEIVER
+            } else {
+                TAKES_NONE
+            };
+            (slots, takes)
+        }
+    };
+    assembler.move_immediate(demand, u64::from(slots) | (takes << DEMAND_SHIFT));
+    assembler.jump(shared);
+    start
+}
+
+/// The body every closure stub shares, at `shared`: what
+/// `Mutator::act_with_base` and `Step::Block`'s push decide before the
+/// push of a block, then a jump to the block's machine entry, as Cog's
+/// `genPrimitiveFullClosureValue` jumps into a full block. The closure its
+/// entry loaded must be a closure whose code id names a row of the machine
+/// entry table (`BlockWord::MachineEntries`) with a machine entry,
+/// compiled against the closure's feedback base, whose parameter count is
+/// what its entry demands -- the send's, none, or for `cull:` none or one,
+/// the receiver, which the prologue places once its checks have passed
+/// (`Roles::callee_argument`). Then the block's prologue is handed the
+/// receiver and the current class of the frame the closure captured, the
+/// closure, and what its flags word adds (`Roles::callee_counted`): that
+/// its activation counts, which every activation a compiled send pushes
+/// does -- only a `SendInlinable` decides an exempt one, and machine code
+/// runs none -- and the send's slots, past which the frame register is
+/// shifted, a block row's arguments copied after them (`ClosureStub`).
+/// Anything else -- no
+/// closure, a body without machine code here, an arity the interpreter
+/// refuses, a closure an image decoded, whose feedback base is assigned at
+/// its first activation -- declines at `decline` before anything is
+/// written, so that the caller re-executes the send and the interpreter
+/// decides it.
+fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, decline: Label) {
+    let roles = macro_assembler.roles();
+    let layout = crate::heap::Heap::machine_layout();
+    let rows = crate::heap::Heap::machine_entry_layout();
+    let (closure, counted, argument) = (
+        roles.callee_closure(),
+        roles.callee_counted(),
+        roles.callee_argument(),
+    );
+    let (receiver, class) = (roles.callee_receiver(), roles.callee_class());
+    // The scratch registers none of the roles the block's prologue is
+    // handed are in.
+    let free: Vec<Register> = roles
+        .scratch
+        .iter()
+        .copied()
+        .filter(|register| ![receiver, class, closure, counted, argument].contains(register))
+        .collect();
+    let (address, row, entry, word) = (free[0], free[1], free[2], free[3]);
+    let field = |base: Register, displacement: i32| Memory { base, displacement };
+    let entries = macro_assembler.block_word(BlockWord::MachineEntries);
+    let no_value = crate::heap::Word::NO_VALUE_BITS;
+    let counted_word = i32::try_from(crate::heap::Heap::machine_counted_word())
+        .expect("internal: the counted bit lies in the flags word's low half");
+    macro_assembler.assembler().bind(shared);
+    macro_assembler.jump_unless_object(closure, decline);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(address, closure);
+    assembler.add(address, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        word,
+        field(address, layout.header_displacement),
+    );
+    assembler.and_immediate(word, layout.instance_format_bits);
+    assembler.compare_immediate(word, layout.closure_format);
+    assembler.jump_if(Condition::NotEqual, decline);
+    // The code id's row, within the rows committed.
+    assembler.load(
+        Width::Word64,
+        row,
+        field(address, layout.closure_code_id_displacement),
+    );
+    assembler.shift_right_logical(row, layout.tag_bits);
+    macro_assembler.load_machine_words(roles.idiom_scratch);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_memory(
+        row,
+        MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::MachineEntryRows),
+    );
+    assembler.jump_if(Condition::AboveOrEqual, decline);
+    assembler.shift_left(row, rows.row_shift);
+    assembler.load(Width::Word64, word, entries);
+    assembler.add(row, word);
+    assembler.load(Width::Word64, entry, field(row, rows.entry_displacement));
+    assembler.compare_immediate(entry, 0);
+    assembler.jump_if(Condition::Equal, decline);
+    assembler.load(
+        Width::Word64,
+        word,
+        field(address, layout.closure_feedback_base_displacement),
+    );
+    assembler.compare_memory(word, field(row, rows.feedback_base_displacement));
+    assembler.jump_if(Condition::NotEqual, decline);
+    assembler.load(
+        Width::Word64,
+        word,
+        field(row, rows.parameters_displacement),
+    );
+    // The demand split: what the block must take into `argument`, the
+    // slot count stays.
+    let (none_or_receiver, receiver_taken, no_argument) =
+        (assembler.label(), assembler.label(), assembler.label());
+    assembler.move_register(argument, counted);
+    assembler.shift_right_logical(argument, DEMAND_SHIFT);
+    assembler.and_immediate(counted, SLOTS_MASK);
+    assembler.compare_immediate(argument, small_demand(TAKES_THE_SLOTS));
+    assembler.jump_if(Condition::NotEqual, none_or_receiver);
+    assembler.compare(word, counted);
+    assembler.jump_if(Condition::NotEqual, decline);
+    assembler.jump(no_argument);
+    assembler.bind(none_or_receiver);
+    assembler.compare_immediate(word, 0);
+    assembler.jump_if(Condition::Equal, no_argument);
+    // Only `cull:` takes a block of one, its argument the receiver.
+    assembler.compare_immediate(argument, small_demand(TAKES_THE_RECEIVER));
+    assembler.jump_if(Condition::NotEqual, decline);
+    assembler.compare_immediate(word, 1);
+    assembler.jump_if(Condition::NotEqual, decline);
+    assembler.move_register(argument, receiver);
+    assembler.jump(receiver_taken);
+    assembler.bind(no_argument);
+    assembler.move_immediate(argument, no_value);
+    assembler.bind(receiver_taken);
+    // The receiver and the current class of the frame the closure
+    // captured, as `Heap::closure_activation` reads them.
+    assembler.load(
+        Width::Word64,
+        row,
+        field(address, layout.closure_captured_frame_displacement),
+    );
+    macro_assembler.jump_unless_object(row, decline);
+    let assembler = macro_assembler.assembler();
+    assembler.add(row, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        receiver,
+        field(row, layout.frame_receiver_displacement),
+    );
+    assembler.load(
+        Width::Word64,
+        class,
+        field(row, layout.frame_current_class_displacement),
+    );
+    // The frame register past the send's slots, which the flags word
+    // records beside `counted`, so that the block writes none of them
+    // (`ClosureStub`).
+    let (copied, copy) = (assembler.label(), assembler.label());
+    assembler.move_register(address, counted);
+    assembler.shift_left(address, WORD_SHIFT);
+    assembler.add(address, roles.frame);
+    // A block that takes the send's own arguments takes copies of them;
+    // `cull:`'s receiver its prologue places.
+    assembler.compare_immediate(argument, small_demand(no_value));
+    assembler.jump_if(Condition::NotEqual, copied);
+    // The copies lie past the sender's window, where nothing has made sure
+    // the stack is committed: only the block's prologue checks its frame's
+    // room. So they are made only where they end at or below the ordinary
+    // end, which never lies past the committed end, and the call declines
+    // otherwise, before anything is written, so that the interpreter's
+    // push grows the stack.
+    assembler.move_register(row, word);
+    assembler.shift_left(row, WORD_SHIFT);
+    assembler.add(row, address);
+    let stack_base = macro_assembler.block_word(BlockWord::StackBase);
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, roles.idiom_scratch, stack_base);
+    assembler.subtract(row, roles.idiom_scratch);
+    macro_assembler.load_machine_words(roles.idiom_scratch);
+    let assembler = macro_assembler.assembler();
+    assembler.load(
+        Width::Word64,
+        roles.idiom_scratch,
+        MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::OrdinaryStackEnd),
+    );
+    assembler.shift_left(roles.idiom_scratch, WORD_SHIFT);
+    assembler.compare(row, roles.idiom_scratch);
+    assembler.jump_if(Condition::BelowOrEqual, copy);
+    assembler.jump(decline);
+    // Nothing declines past here.
+    assembler.bind(copy);
+    for position in 0..i32::from(CLOSURE_VALUE_ARITIES) - 1 {
+        assembler.compare_immediate(word, position);
+        assembler.jump_if(Condition::LessOrEqual, copied);
+        assembler.load(
+            Width::Word64,
+            row,
+            field(roles.frame, position * REGISTER_BYTES),
+        );
+        assembler.store(
+            Width::Word64,
+            field(address, position * REGISTER_BYTES),
+            row,
+        );
+    }
+    assembler.bind(copied);
+    assembler.move_register(roles.frame, address);
+    assembler.shift_left(counted, crate::heap::Heap::machine_call_shift_shift());
+    assembler.add_immediate(counted, counted_word);
+    assembler.jump_register(entry);
+}
+
+/// A demand as the immediate it is compared with.
+fn small_demand(demand: u64) -> i32 {
+    i32::try_from(demand).expect("internal: a demand is a small constant")
+}
+
+// A frame shifted by a stub's slots -- the most a quick method's send or a
+// block row's places -- fits its flags word's bits.
+const _: () = assert!(
+    SHIFTED_SLOTS as u64 <= crate::heap::MAXIMUM_CALL_SHIFT
+        && (CLOSURE_VALUE_ARITIES - 1) as u64 <= crate::heap::MAXIMUM_CALL_SHIFT
+        && CLOSURE_VALUE_ARITIES as u64 <= 1 << DEMAND_SHIFT
+);
+
+/// A register's bytes, as a displacement.
+const REGISTER_BYTES: i32 = 8;
+
+/// The shared part of a getter's or a setter's stub of a private or
+/// `super` chain, the field in the field's role: `act`'s guard check made
+/// inline -- `Mutator::slot_level_holds`'s first compare, the receiver's
+/// guard against the one its entry recorded, which the cell's chain start
+/// word holds above the start (`cells::Cell`) -- then the read or the
+/// write as the public stubs make it. A receiver that is no object, a
+/// guard that differs, a cell that recorded none and a send that came
+/// from the miss leaf, whose `send_cells` is 0, go on to the leaf stub
+/// at `act`, which makes the check the interpreter makes -- the verified
+/// pair, the walk -- and the access; a receiver with the guard but not
+/// the field declines, as `act` would. `registers` are three registers
+/// it may clobber: none is the receiver's, the field's, the answer's or
+/// `send_cells`'.
+fn emit_guarded_accessor(
+    macro_assembler: &mut MacroAssembler,
+    kind: AccessorKind,
+    registers: [Register; 3],
+    decline: Label,
+    act: Label,
+) {
+    let roles = macro_assembler.roles();
+    let layout = crate::heap::Heap::machine_layout();
+    let [recorded, element, spare] = registers;
+    let (receiver, answer, field, cell) = (
+        roles.callee_receiver(),
+        roles.leaf_result,
+        roles.accessor_field,
+        roles.send_cells,
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(cell, 0);
+    assembler.jump_if(Condition::Equal, act);
+    macro_assembler.jump_unless_object(receiver, act);
+    let assembler = macro_assembler.assembler();
+    assembler.load(
+        Width::Word64,
+        recorded,
+        Memory {
+            base: cell,
+            displacement: CELL_CHAIN_START,
+        },
+    );
+    assembler.shift_right_logical(recorded, CHAIN_START_SHIFT);
+    // `DispatchId::NONE`, recorded for a receiver without the level, is
+    // never a match, whatever guard a header holds.
+    assembler.compare_immediate(recorded, 0);
+    assembler.jump_if(Condition::Equal, act);
+    assembler.move_register(element, receiver);
+    assembler.add(element, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        Memory {
+            base: element,
+            displacement: layout.header_displacement,
+        },
+    );
+    assembler.move_register(answer, spare);
+    assembler.and_immediate(answer, layout.guard_mask);
+    assembler.compare(answer, recorded);
+    assembler.jump_if(Condition::NotEqual, act);
+    // The guard holds: the public stubs' checks of the field, then the
+    // access.
+    assembler.test_immediate(spare, layout.instance_format_bits);
+    assembler.jump_if(Condition::NotEqual, decline);
+    assembler.shift_right_arithmetic(spare, layout.word_count_shift);
+    assembler.and_immediate(spare, WORD_COUNT_FIELD_MASK);
+    assembler.add_immediate(spare, -1);
+    assembler.compare(spare, field);
+    assembler.jump_if(Condition::BelowOrEqual, decline);
+    assembler.shift_left(field, WORD_SHIFT);
+    assembler.add(element, field);
+    let slot = Memory {
+        base: element,
+        displacement: layout.fields_displacement,
+    };
+    match kind {
+        AccessorKind::Getter => assembler.load(Width::Word64, answer, slot),
+        AccessorKind::Setter => {
+            assembler.load(Width::Word64, answer, argument_slot(roles, 0));
+            macro_assembler.store_with_barrier_at(receiver, slot, answer, spare);
+            macro_assembler.assembler().move_register(answer, receiver);
+        }
+    }
+    macro_assembler.assembler().return_();
+}
+
+/// How far a cell's chain start word is shifted to bring its recorded
+/// guard down (`cells::CHAIN_START_BITS`).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the chain start takes two bits"
+)]
+const CHAIN_START_SHIFT: u8 = CHAIN_START_BITS as u8;
+
+// The guarded stubs test the recorded guard against 0 for `NONE`, and
+// `cells::chain_start_word` leaves 0 above the start for an entry that
+// recorded none.
+const _: () = assert!(crate::mixin::DispatchId::NONE.bits() == 0);
+
+/// The stub of a method whose fast path is the row `stub` serves
+/// (`MachineCall::Stub`), at the label it answers: the element its
+/// index, in the send's slot 0, names -- read, or written with the value
+/// in slot 1 and the value answered -- once the receiver and the index
+/// are checked as the row's leaf checks them; every other case continues
+/// at `mirror_method` with the row's number in the field's role, so that
+/// the row's leaf decides it. `registers` are three registers it may
+/// clobber: none is the receiver's, the field's or the answer's.
+fn emit_row_stub(
+    macro_assembler: &mut MacroAssembler,
+    stub: RowStub,
+    registers: [Register; 3],
+    mirror_method: Label,
+) -> Label {
+    let roles = macro_assembler.roles();
+    let layout = crate::heap::Heap::machine_layout();
+    let [index, element, spare] = registers;
+    let (receiver, answer) = (roles.callee_receiver(), roles.leaf_result);
+    let Some(row) = MIRROR
+        .iter()
+        .position(|entry| entry.machine_call == MachineCall::Stub(stub))
+    else {
+        unreachable!("internal: every row stub serves a row");
+    };
+    let assembler = macro_assembler.assembler();
+    let (entry, fallback) = (assembler.label(), assembler.label());
+    assembler.bind(entry);
+    assembler.load(Width::Word64, index, argument_slot(roles, 0));
+    match stub {
+        RowStub::ArrayAt => {
+            macro_assembler.load_element_address(receiver, index, element, fallback);
+            let assembler = macro_assembler.assembler();
+            assembler.load(Width::Word64, answer, word_at(element));
+        }
+        RowStub::ArrayAtPut => {
+            macro_assembler.load_element_address(receiver, index, element, fallback);
+            macro_assembler
+                .assembler()
+                .load(Width::Word64, answer, argument_slot(roles, 1));
+            macro_assembler.store_with_barrier_at(receiver, word_at(element), answer, spare);
+            // The barrier's leaf keeps no scratch register: the value
+            // answered is read again.
+            macro_assembler
+                .assembler()
+                .load(Width::Word64, answer, argument_slot(roles, 1));
+        }
+        RowStub::ByteArrayAt => {
+            macro_assembler.load_byte_address(receiver, index, element, spare, fallback);
+            let assembler = macro_assembler.assembler();
+            assembler.load(Width::Byte, answer, word_at(element));
+            assembler.shift_left(answer, layout.tag_bits);
+            assembler.or_immediate(answer, layout.small_integer_tag);
+        }
+        RowStub::ByteArrayAtPut => {
+            macro_assembler.load_byte_address(receiver, index, element, spare, fallback);
+            let assembler = macro_assembler.assembler();
+            assembler.load(Width::Word64, answer, argument_slot(roles, 1));
+            // A `SmallInteger` from 0 to 255: tagged, and its word below
+            // 256's, unsigned, which a negative one's is not.
+            assembler.test_immediate(answer, layout.small_integer_tag);
+            assembler.jump_if(Condition::Equal, fallback);
+            assembler.compare_immediate(answer, BYTE_LIMIT << layout.tag_bits);
+            assembler.jump_if(Condition::AboveOrEqual, fallback);
+            assembler.move_register(spare, answer);
+            assembler.shift_right_logical(spare, layout.tag_bits);
+            assembler.store(Width::Byte, word_at(element), spare);
+        }
+    }
+    let assembler = macro_assembler.assembler();
+    assembler.return_();
+    assembler.bind(fallback);
+    assembler.move_immediate(roles.accessor_field, row as u64);
+    assembler.jump(mirror_method);
+    entry
+}
+
+/// The send's argument slot `position`, where the callee's register 0
+/// and on lie: the frame register points at the first.
+fn argument_slot(roles: Roles, position: i32) -> Memory {
+    Memory {
+        base: roles.frame,
+        displacement: position * WORD_BYTES,
+    }
+}
+
+/// The word at `address`.
+fn word_at(address: Register) -> Memory {
+    Memory {
+        base: address,
+        displacement: 0,
+    }
+}
+
+/// One past the largest byte, which `at:put:` on a ByteArray stores.
+const BYTE_LIMIT: i32 = 256;
 
 /// The eight bits of the header's word count, once shifted down.
 const WORD_COUNT_FIELD_MASK: i32 = 0xFF;
 
 const _: () = assert!((GETTER_STUBS as i32) < WORD_COUNT_FIELD_MASK - 1);
+const _: () = assert!((NESTED_CLASS_STUBS as i32) < WORD_COUNT_FIELD_MASK - 1);
+const _: () = assert!((SETTER_STUBS as i32) < WORD_COUNT_FIELD_MASK - 1);
 
 /// How far a field's index is shifted to be its byte offset.
 const WORD_SHIFT: u8 = 3;

@@ -69,6 +69,9 @@ enum Command {
         /// Print the inline caches' sizes to stderr after the run.
         #[arg(long)]
         cache_statistics: bool,
+        /// Print the collector's counts and pauses to stderr after the run.
+        #[arg(long)]
+        collector_statistics: bool,
         /// A script of the project's `newspeak.json`: its arguments go to
         /// `main:args:` first, then any given after `--`.
         #[arg(long)]
@@ -190,12 +193,14 @@ fn execute(command: Command) -> ExitCode {
             program,
             lowering,
             cache_statistics,
+            collector_statistics,
             script,
             arguments,
         } => commands::run::execute(
             &program,
             lowering.into(),
             cache_statistics,
+            collector_statistics,
             script.as_deref(),
             &arguments,
         ),

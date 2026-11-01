@@ -55,14 +55,13 @@ impl Trace for ActivationKind<'_> {
 impl Trace for Continuation<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
-            Continuation::Deliver => {}
+            Continuation::Deliver | Continuation::Reexecute => {}
             Continuation::NestedClass(state) => state.trace(tracer),
             Continuation::Unwind(pending) => pending.trace(tracer),
             Continuation::VmErrorSignalled(error) => {
                 tracer.value(&mut error.receiver);
                 tracer.value(&mut error.subject);
             }
-            Continuation::Future(forcing) => forcing.trace(tracer),
             Continuation::ReturnToSuspended(suspended) => suspended.trace(tracer),
         }
     }
@@ -73,28 +72,6 @@ impl Trace for ReturnToSuspended<'_> {
         let ReturnToSuspended { sender, then } = self;
         tracer.frame(sender);
         then.trace(tracer);
-    }
-}
-
-/// The future of every forcing in the chain: each waiting one is held by
-/// nothing but the link from the forcing it waits on. A loop rather than a
-/// recursion: a chain is as long as a run of futures each answering the
-/// next, which a program decides and no depth limit bounds.
-impl Trace for crate::interpreter::future::FutureForcing<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let mut forcing = self;
-        loop {
-            let crate::interpreter::future::FutureForcing {
-                future,
-                after: _,
-                then,
-            } = forcing;
-            tracer.object(future);
-            match then {
-                Some(waiting) => forcing = waiting,
-                None => break,
-            }
-        }
     }
 }
 

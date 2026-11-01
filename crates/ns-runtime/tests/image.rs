@@ -13497,6 +13497,189 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     );
 }
 
+/// A decoded closure's range is reclaimed: the closure an image carries is
+/// given a range of its own at its first activation, recorded as a loose
+/// range, and once the program drops the closure, the next full collection
+/// frees the range as it frees a dead family's. `collect_now` is a debug
+/// build's.
+#[cfg(debug_assertions)]
+#[test]
+fn a_decoded_closures_range_is_reclaimed() {
+    let source = indoc! {"
+        class Keeper = Object new (
+            | keep ::= nil. |
+        ) (
+            public prepare = ( keep:: [:each | each + 1]. ^self )
+            public apply: value = ( ^keep value: value )
+            public drop = ( keep:: nil )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("prepare"), &[]),
+        "prepare",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("keeper.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let keeper = loaded.roots[0].clone();
+    let one = loaded.interpreter.stash(Value::small_integer(1));
+    expect_ok(
+        loaded
+            .interpreter
+            .send(&keeper, Symbol::intern("apply:"), &[one]),
+        "apply: after load",
+    );
+    assert_eq!(
+        loaded.interpreter.cache_statistics().loose_ranges,
+        1,
+        "the decoded closure took a range of its own"
+    );
+    loaded.interpreter.collect_now();
+    assert_eq!(
+        loaded.interpreter.cache_statistics().loose_ranges,
+        1,
+        "the range lives while the closure does"
+    );
+    expect_ok(
+        loaded
+            .interpreter
+            .send(&keeper, Symbol::intern("drop"), &[]),
+        "drop",
+    );
+    loaded.interpreter.collect_now();
+    assert_eq!(
+        loaded.interpreter.cache_statistics().loose_ranges,
+        0,
+        "the dropped closure's range is freed"
+    );
+}
+
+/// A decoded closure that outlives a slide keeps its range: two closures an
+/// image carries take a range each at their first activation, the second
+/// above the first; once the program drops the first, a collection that
+/// slides -- every one, under the collect stress mode, which this turns on
+/// for it -- frees the first range and moves the second down, rewriting
+/// the live closure's base and the loose range's key alike. The closure
+/// answers as before, and the next collection keeps its range, which it
+/// would free were the key no longer the base the closure names.
+/// `collect_now` is a debug build's.
+#[cfg(debug_assertions)]
+#[test]
+fn a_decoded_closure_keeps_its_range_across_a_slide() {
+    let source = indoc! {"
+        class Keeper = Object new (
+            |
+            first ::= nil.
+            public second ::= nil.
+            |
+        ) (
+            public prepare = (
+                first:: [:each | each + 1].
+                second:: [:each | each + 2].
+                ^self
+            )
+            public applyFirst: value = ( ^first value: value )
+            public applySecond: value = ( ^second value: value )
+            public dropFirst = ( first:: nil )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("prepare"), &[]),
+        "prepare",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            false,
+            &Origin::File(PathBuf::from("keeper.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let keeper = loaded.roots[0].clone();
+    let apply = |loaded: &mut image::LoadedImage, selector: &str, value: i64| {
+        let argument = loaded.interpreter.stash(Value::small_integer(value));
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&keeper, Symbol::intern(selector), &[argument]),
+            selector,
+        );
+        loaded
+            .interpreter
+            .enter(|mutator| match mutator.fetch(&answer).kind() {
+                ValueKind::SmallInteger(integer) => integer,
+                _ => panic!("{selector} answers a small integer"),
+            })
+    };
+    assert_eq!(apply(&mut loaded, "applyFirst:", 1), 2);
+    assert_eq!(apply(&mut loaded, "applySecond:", 1), 3);
+    assert_eq!(loaded.interpreter.cache_statistics().loose_ranges, 2);
+    let second = expect_ok(
+        loaded
+            .interpreter
+            .send(&keeper, Symbol::intern("second"), &[]),
+        "second",
+    );
+    let before = loaded
+        .interpreter
+        .closure_feedback_base(&second)
+        .expect("second holds a closure");
+    expect_ok(
+        loaded
+            .interpreter
+            .send(&keeper, Symbol::intern("dropFirst"), &[]),
+        "dropFirst",
+    );
+    let slides = loaded.interpreter.cache_statistics().site_slides;
+    loaded.interpreter.set_stress_collect(true);
+    loaded.interpreter.collect_now();
+    loaded.interpreter.set_stress_collect(false);
+    let after = loaded
+        .interpreter
+        .closure_feedback_base(&second)
+        .expect("second holds a closure");
+    let statistics = loaded.interpreter.cache_statistics();
+    assert!(statistics.site_slides > slides, "the collection slid");
+    assert_eq!(
+        statistics.loose_ranges, 1,
+        "the dropped closure's range is freed"
+    );
+    assert!(
+        after < before,
+        "the live closure's base moved down, from {before} to {after}"
+    );
+    assert_eq!(apply(&mut loaded, "applySecond:", 2), 4);
+    loaded.interpreter.collect_now();
+    assert_eq!(
+        loaded.interpreter.cache_statistics().loose_ranges,
+        1,
+        "the moved range is the one the live closure names"
+    );
+    assert_eq!(apply(&mut loaded, "applySecond:", 3), 5);
+    if let Err(message) = loaded.interpreter.verify_cells() {
+        panic!("after the slide: {message}");
+    }
+}
+
 /// A metaclass that reaches the graph is rebuilt **over `Class`**: its
 /// application is applied over `Class`'s, exactly as the live
 /// `Mutator::attach_metaclass` builds it (`newspeak-spec.pdf` §6, a
@@ -18416,4 +18599,70 @@ fn an_image_past_the_verification_bound_is_refused() {
          crosses two loops or jumps into a loop past its head"
     );
     assert_eq!(decode::verify_code_table(&nested_branches(257)), Ok(()));
+}
+
+/// A program-made symbol an image carries round-trips as its text: the
+/// loaded graph holds a symbol equal and identical to one made afresh
+/// from the same text, and to the interned symbol of that text, which the
+/// decoder interns (`docs/design/memory.md`, "Weak references").
+#[test]
+fn an_image_keeps_a_program_made_symbol() {
+    let source = indoc! {"
+        class X = Object new (
+          | made = ('q' , 'x') asSymbol. |
+        ) (
+          public symbol = ( ^made )
+          public isMadeAgain = ( ^made == ('q' , 'x') asSymbol )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    assert_eq!(
+        Symbol::lookup("qx"),
+        None,
+        "nothing has interned the symbol's text before the snapshot"
+    );
+    assert_eq!(interpreter.table_sizes().program_symbols, 1);
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            true,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let again = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("isMadeAgain"), &[]),
+        "isMadeAgain",
+    );
+    let symbol = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("symbol"), &[]),
+        "symbol",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(mutator.fetch(&again).as_boolean(), Some(true));
+        let held = mutator.fetch(&symbol);
+        assert_eq!(
+            held.as_object()
+                .and_then(|object| mutator.heap().symbol_text(object))
+                .as_deref(),
+            Some("qx")
+        );
+        let interned = mutator.new_symbol(Symbol::intern("qx"));
+        assert!(
+            held.as_object()
+                .zip(interned.as_object())
+                .is_some_and(|(held, interned)| held.same(interned)),
+            "the loaded symbol is the one object of its text"
+        );
+    });
 }

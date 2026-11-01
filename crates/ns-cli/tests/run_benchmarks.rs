@@ -68,6 +68,7 @@ fn main() {
             stderr: String::new(),
             skipped: None,
             arguments: vec![name.clone()],
+            reaches_a_table_limit: None,
         };
         let checked = name.clone();
         trials.push(Trial::test(format!("java::{name}"), move || {
@@ -119,22 +120,28 @@ fn main() {
 }
 
 /// The run's exit status, stdout and stderr match its recorded outcome
-/// exactly under `lowering`.
+/// exactly under `lowering`, and no table beside the object space reached
+/// its growth limit (`common::no_program_reaches_a_table_limit`).
 fn matches_under_one_lowering(run: &common::BenchmarkRun, lowering: &str) -> Result<(), Failed> {
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let mut output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("run")
         .arg(&run.program)
         .arg("--lowering")
         .arg(lowering)
+        .arg("--collector-statistics")
         .args(common::after_the_separator(&run.arguments))
         .output()
         .map_err(|error| format!("run ns-next: {error}"))?;
+    let statistics = common::take_collector_statistics(&mut output);
     common::compare(
         &output,
         &run.expectation,
         &format!("under the {lowering} lowering"),
-    )
-    .map_err(Failed::from)
+    )?;
+    if let Some(statistics) = common::require_collector_statistics(statistics, &run.expectation)? {
+        common::no_program_reaches_a_table_limit(&statistics, &run.expectation)?;
+    }
+    Ok(())
 }
 
 /// The ns-next harness at `harness` run with `arguments`.

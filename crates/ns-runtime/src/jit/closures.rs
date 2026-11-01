@@ -1,0 +1,1490 @@
+//! `MakeClosure` in machine code (`docs/design/execution.md`, "Stage 4:
+//! closures, non-local return, allocation and the barrier"): the frame
+//! the closure keeps reified inline, as Cog marries a frame in machine
+//! code, and the closure allocated and filled after it, as
+//! `vm::make_closure_into` makes both -- in a body's twin. A body's lean
+//! code transfers its frame into the twin at the same program counter
+//! (`transfer_to_twin`; "A frame reifies only in its body's twin"), so that a
+//! body whose activations make no closure -- an inlined conditional's
+//! Boolean path -- pays nothing for the frame a closure would reify.
+//!
+//! The frame object's and the closure's code ids are the heap's, which a
+//! full collection frees once nothing names them and mints again for
+//! other bodies, while the machine code that stores them lives on with its
+//! mixin. So no code id is a constant of the code: each `MakeClosure` has
+//! a closure site of its own, which records the two ids with the epoch of
+//! the code table they were asked in, and its template compares that epoch
+//! with the heap's (`MachineWord::CodeTableEpoch`) before it reads them,
+//! calling the closure site leaf to ask them afresh whenever the two differ
+//! -- at the site's first run, and after a full collection that freed a
+//! code id.
+//!
+//! A site is three of its body's data words
+//! (`MacroAssembler::take_body_words`), in the zone right after the body's
+//! code, as Cog keeps a method's data with its code: it is installed with
+//! the body, zeroed, stays wherever the body's code stays and takes its
+//! room from the zone's, and the template reaches it relative to its own
+//! instruction, through no word of the entry block. The leaf writes it
+//! through the zone's one writer.
+//!
+//! `LoadOuterLocal` and `StoreOuterLocal` are here too (`outer_local`):
+//! the registers a block reaches by reference in the frames its closures
+//! captured, on the activation stack while a frame is married and in its
+//! frame object once divorced, the argument count that places a divorced
+//! frame's register read from an outer-local site kept as a closure site
+//! is.
+//!
+//! So are the futures of a simultaneous slot clause (`make_future`,
+//! `resolve_future`): a future made by the inline bump, as a closure is,
+//! and seen through once resolved; forcing an unresolved one is a
+//! compiled call of its `resolve`, which the forcing leaf decides.
+
+use ns_assembler::{Condition, Label, Memory, Register, Width};
+
+use crate::bytecode::{CompiledCode, Instruction};
+use crate::heap::machine_words::MachineWord;
+use crate::heap::Heap;
+use crate::interpreter::Mutator;
+
+use super::baseline::{BodyAssembler, BodyRole, Lowering, TwinTransfer};
+use super::leaves::Leaf;
+use super::macro_assembler::{MacroAssembler, ObjectSize, Operand};
+use super::sends::{frame_slot, store_program_counter};
+use super::stubs::BlockWord;
+#[cfg(debug_assertions)]
+use super::stubs::ExitKind;
+
+/// The words of a closure site, in order: the epoch of the code table its
+/// ids were asked in, 0 for a site never filled -- no heap's epoch is 0 --
+/// then the `SmallInteger` words of the code ids of the body the
+/// `MakeClosure` lies in and of its block.
+const SITE_EPOCH: usize = 0;
+const SITE_FRAME_CODE: usize = 1;
+const SITE_BLOCK_CODE: usize = 2;
+const SITE_WORDS: usize = 3;
+
+/// `Leaf::ClosureSite`: writes the closure site at `site_address`, of the
+/// `MakeClosure` at `program_counter` of the body `code_address` lies in,
+/// afresh -- the code table's current epoch, and the code ids of the body,
+/// registered with its method when it is one's body, as the frame it runs
+/// in names it (`materialize::code_id`), and of the block, as a closure of
+/// it names it -- each registered if a full collection freed it.
+pub(crate) fn refill_site(
+    mutator: &mut Mutator<'_>,
+    site_address: u64,
+    program_counter: u64,
+    code_address: u64,
+) {
+    let (Ok(site_address), Ok(program_counter), Ok(code_address)) = (
+        usize::try_from(site_address),
+        usize::try_from(program_counter),
+        usize::try_from(code_address),
+    ) else {
+        unreachable!("internal: an address and a program counter fit the pointer width");
+    };
+    let Some(installed) = mutator.jit.body_of(code_address) else {
+        unreachable!("internal: a closure site's leaf is called from an installed body");
+    };
+    let Instruction::MakeClosure { code: block, .. } = installed.code.instruction(program_counter)
+    else {
+        unreachable!("internal: a closure site's leaf is called at a `MakeClosure`");
+    };
+    let frame_code = super::materialize::code_id(
+        &mut mutator.heap,
+        &installed.code,
+        installed.method.as_ref(),
+    );
+    let block_code = mutator.heap.code_id(&block);
+    let words = [
+        mutator.heap.code_table_epoch(),
+        Heap::machine_count_word(frame_code.index()),
+        Heap::machine_count_word(block_code.index()),
+    ];
+    mutator
+        .jit
+        .write_body_words(code_address, site_address, &words);
+}
+
+/// A word that fits a 32-bit immediate: a tag, `nil`, a Boolean, a small
+/// count.
+fn small(word: u64) -> i32 {
+    i32::try_from(word).expect("internal: the word is a small constant")
+}
+
+/// The scratch registers the template takes, by role.
+struct ClosureRegisters {
+    /// The object allocated: the frame object, then the closure.
+    object: Register,
+    header: Register,
+    class_word: Register,
+    /// The object's address, which its fields are stored through.
+    address: Register,
+    value: Register,
+    spare: Register,
+}
+
+impl ClosureRegisters {
+    fn of(macro_assembler: &MacroAssembler) -> ClosureRegisters {
+        let scratch = macro_assembler.roles().scratch;
+        ClosureRegisters {
+            object: scratch[0],
+            header: scratch[1],
+            class_word: scratch[2],
+            address: scratch[3],
+            value: scratch[4],
+            spare: scratch[5],
+        }
+    }
+}
+
+/// `MakeClosure` in a body's twin (`transfer_to_twin` is the lean body's):
+/// `vm::make_closure_into`'s work, with no exit. Its
+/// program counter stored, as the interpreter stores it first; the frame
+/// reified unless its reified word names a frame object already: a frame
+/// object bump-allocated -- or placed by the allocation leaf past the
+/// bump's limit -- and filled as `Heap::reify` fills it, from the frame's
+/// header and the body's constants, its code id from the site, every
+/// register nil, then the reified word; `retains_registers` set when the
+/// block reads its creator's registers by reference; then the closure,
+/// allocated the same way, of the block's code id, the frame object, the
+/// body's feedback base and the copied values, and its word into
+/// `destination`. Every store into the two objects is a store into an
+/// object the template has just allocated, which takes no barrier
+/// (`allocate_closure_from_registers`, `allocate_frame`); the reified
+/// word and the flags are the frame's own. A debug build first checks
+/// every copied register as the interpreter's read does, which exits
+/// before anything is written.
+pub(super) fn make_closure(
+    body: &mut BodyAssembler,
+    destination: u16,
+    block: &CompiledCode,
+    copied: &[u16],
+) -> Lowering {
+    let site = body.macro_assembler.take_body_words(SITE_WORDS);
+    let registers = ClosureRegisters::of(&body.macro_assembler);
+    #[cfg(debug_assertions)]
+    for register in copied {
+        body.macro_assembler
+            .load_frame_register(registers.value, *register);
+    }
+    store_program_counter(body);
+    check_site(body, site, &registers);
+    reify_frame(body, site, &registers);
+    if block.outer_reach > 0 {
+        retain_registers(body, &registers);
+    }
+    allocate_closure(body, site, destination, copied, &registers);
+    Lowering::Template
+}
+
+/// `MakeClosure` in a lean body: the frame transferred into the body's
+/// twin, which makes the closure at the same program counter
+/// (`docs/design/execution.md`, "A frame reifies only in its body's
+/// twin"). The twin's address of the instruction is read from a data word
+/// of the body; while it is 0 the twin leaf compiles the twin and fills
+/// the word (`leaves::twin`), and a zone with no room for the twin makes
+/// the instruction an exit, nothing written. Then, at the instruction's
+/// own place, which an inlined conditional's Boolean path jumps over, it
+/// writes the words of the frame the twin reads and the lean prologue
+/// does not write: the reified word nil, since a lean frame is never
+/// reified and the word holds whatever the stack held there, and in a
+/// release build the flags word of a method's or a factory's frame a
+/// compiled call entered, a counted activation retaining no registers,
+/// which the prologue of a block or an initializer writes already and
+/// the run loop's entry frame holds from its push. The twin's
+/// `MakeClosure` stores its program counter first, so the transfer
+/// stores none but in a debug build, whose twin checks the copied
+/// registers before it stores anything and may leave there. No exit
+/// follows a store, and nothing is changed before the twin is found.
+pub(super) fn transfer_to_twin(body: &mut BodyAssembler) -> Lowering {
+    let program_counter = body.program_counter;
+    let word = body.macro_assembler.take_body_words(1);
+    body.twin_transfers.push(TwinTransfer {
+        program_counter,
+        word,
+    });
+    let divorce = Heap::machine_divorce(body.argument_count);
+    let writes_flags = matches!(body.role, BodyRole::Method | BodyRole::Factory);
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    let (target, spare) = (roles.scratch[0], roles.scratch[1]);
+    let assembler = macro_assembler.assembler();
+    let (reload, compile) = (assembler.label(), assembler.label());
+    assembler.bind(reload);
+    macro_assembler.load_body_word(target, word);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(target, 0);
+    assembler.jump_if(Condition::Equal, compile);
+    macro_assembler.call_leaf_out_of_line_or_exit(
+        compile,
+        Leaf::Twin.index(),
+        [
+            Operand::CodeAddress,
+            Operand::Immediate(u64::from(program_counter)),
+            Operand::Immediate(0),
+        ],
+        program_counter,
+        reload,
+    );
+    let frame = roles.frame;
+    let nil = Heap::machine_layout().nil_word;
+    // A debug build, whose lean prologue writes the reified word nil,
+    // holds the lean frame to being unreified, which no leaf may break
+    // (`materialize::release_leaf_frame`): the store below would otherwise
+    // lose the frame object a closure already keeps, and leave it married
+    // to an offset its return pops.
+    #[cfg(debug_assertions)]
+    {
+        let assembler = macro_assembler.assembler();
+        let unreified = assembler.label();
+        assembler.load(
+            Width::Word64,
+            spare,
+            frame_slot(frame, divorce.reified_register),
+        );
+        assembler.compare_immediate(spare, nil);
+        assembler.jump_if(Condition::Equal, unreified);
+        assembler.trap();
+        assembler.bind(unreified);
+    }
+    macro_assembler
+        .assembler()
+        .store_immediate32(frame_slot(frame, divorce.reified_register), nil);
+    #[cfg(not(debug_assertions))]
+    if writes_flags {
+        called_frame_flags(macro_assembler, body.argument_count, spare);
+    }
+    #[cfg(debug_assertions)]
+    {
+        let _ = (writes_flags, spare);
+        macro_assembler.assembler().store_immediate32(
+            frame_slot(frame, divorce.program_counter_register),
+            Heap::machine_program_counter_word(program_counter),
+        );
+    }
+    macro_assembler.assembler().jump_register(target);
+    Lowering::Template
+}
+
+/// A release build's flags word of a method's or a factory's frame taking
+/// `argument_count` arguments that a compiled call entered: a counted
+/// method activation stopped in machine code that retains no registers,
+/// as the push writes it and the walk reads it back for a frame whose
+/// code reifies it (`Heap::write_machine_frame`) -- unless the frame is
+/// the run loop's entry frame, whose flags its push wrote and which may
+/// say otherwise, which the exit stub's own test tells apart
+/// (`MacroAssembler::branch_on_stretch_entry`). Clobbers the flags and
+/// `spare`.
+#[cfg(not(debug_assertions))]
+fn called_frame_flags(macro_assembler: &mut MacroAssembler, argument_count: u16, spare: Register) {
+    let divorce = Heap::machine_divorce(argument_count);
+    let roles = macro_assembler.roles();
+    let assembler = macro_assembler.assembler();
+    let (called, entry) = (assembler.label(), assembler.label());
+    macro_assembler.branch_on_stretch_entry(spare, called, entry);
+    let assembler = macro_assembler.assembler();
+    assembler.bind(called);
+    assembler.move_immediate(spare, Heap::machine_flags_word(argument_count));
+    assembler.store(
+        Width::Word64,
+        frame_slot(roles.frame, divorce.flags_register),
+        spare,
+    );
+    assembler.bind(entry);
+}
+
+/// The site's check, the site the body words from `site` on: its epoch
+/// against the heap's, and the closure site leaf's call out of line, after
+/// which the check is made again, when the two differ.
+fn check_site(body: &mut BodyAssembler, site: usize, registers: &ClosureRegisters) {
+    let program_counter = body.program_counter;
+    let macro_assembler = &mut body.macro_assembler;
+    let leaf_result = macro_assembler.roles().leaf_result;
+    let (epoch, machine_words) = (registers.value, registers.spare);
+    let assembler = macro_assembler.assembler();
+    let (check, refill) = (assembler.label(), assembler.label());
+    assembler.bind(check);
+    macro_assembler.load_body_word(epoch, site + SITE_EPOCH);
+    macro_assembler.load_machine_words(machine_words);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_memory(
+        epoch,
+        MacroAssembler::machine_word(machine_words, MachineWord::CodeTableEpoch),
+    );
+    assembler.jump_if(Condition::NotEqual, refill);
+    macro_assembler.call_leaf_out_of_line(
+        refill,
+        Leaf::ClosureSite.index(),
+        [
+            Operand::BodyWord(site),
+            Operand::Immediate(u64::from(program_counter)),
+            Operand::CodeAddress,
+        ],
+        leaf_result,
+        check,
+    );
+}
+
+/// `Heap::reify` for the frame unless its reified word names a frame
+/// object already.
+fn reify_frame(body: &mut BodyAssembler, site: usize, registers: &ClosureRegisters) {
+    let layout = Heap::machine_layout();
+    let divorce = Heap::machine_divorce(body.argument_count);
+    let frame = body.macro_assembler.roles().frame;
+    let word_count = 1 + layout.frame_fixed_fields + body.frame_register_count;
+    let ClosureRegisters {
+        object,
+        header,
+        class_word,
+        ..
+    } = *registers;
+    let macro_assembler = &mut body.macro_assembler;
+    let assembler = macro_assembler.assembler();
+    let (reified, slow, placed) = (assembler.label(), assembler.label(), assembler.label());
+    assembler.load(
+        Width::Word64,
+        object,
+        frame_slot(frame, divorce.reified_register),
+    );
+    assembler.compare_immediate(object, layout.nil_word);
+    assembler.jump_if(Condition::NotEqual, reified);
+    macro_assembler.load_header_and_class(
+        (header, MachineWord::FrameHeader),
+        (class_word, MachineWord::FrameClass),
+        word_count,
+    );
+    macro_assembler.bump_allocate(
+        object,
+        ObjectSize::Constant(word_count),
+        header,
+        class_word,
+        slow,
+    );
+    macro_assembler.assembler().bind(placed);
+    fill_frame_fields(body, site, registers);
+    let frame_register_count = body.frame_register_count;
+    let macro_assembler = &mut body.macro_assembler;
+    macro_assembler.nil_fill(object, layout.frame_fixed_fields, frame_register_count);
+    macro_assembler.assembler().store(
+        Width::Word64,
+        frame_slot(frame, divorce.reified_register),
+        object,
+    );
+    macro_assembler.assembler().bind(reified);
+    macro_assembler.call_leaf_out_of_line(
+        slow,
+        Leaf::Allocate.index(),
+        [
+            Operand::Immediate(word_count as u64),
+            Operand::Register(header),
+            Operand::Register(class_word),
+        ],
+        object,
+        placed,
+    );
+}
+
+/// The fixed fields of the frame object in `registers.object`, as
+/// `Heap::frame_fixed_words` writes a running activation's: no sender; a
+/// block's frame's home, its closure's (`home_of_operand`), and none for
+/// any other; the receiver and the current class from the header; the
+/// program counter just stored; the body's code id; the kind and its
+/// operand, as the frame's machine kind says them (`MachineKind`) -- a
+/// method's, a factory's and a superclass clause's constants, an
+/// initializer's from its flags word, a factory's and an initializer's
+/// operand the current class, a block's and a clause's the header's
+/// operand; continuable; married to the frame's own offset.
+fn fill_frame_fields(body: &mut BodyAssembler, site: usize, registers: &ClosureRegisters) {
+    let layout = Heap::machine_layout();
+    let kinds = Heap::machine_frame_kinds();
+    let argument_count = body.argument_count;
+    let program_counter = body.program_counter;
+    let role = body.role;
+    let ClosureRegisters {
+        object,
+        address,
+        value,
+        spare,
+        ..
+    } = *registers;
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    let frame = roles.frame;
+    let field = |displacement: i32| Memory {
+        base: address,
+        displacement,
+    };
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(address, object);
+    assembler.add(address, roles.object_space);
+    assembler.store_immediate32(field(layout.frame_sender_displacement), layout.nil_word);
+    let block_frame = role == BodyRole::Block;
+    if block_frame {
+        home_of_operand(macro_assembler, argument_count, value, spare);
+        macro_assembler.assembler().store(
+            Width::Word64,
+            field(layout.frame_home_displacement),
+            value,
+        );
+    } else {
+        macro_assembler
+            .assembler()
+            .store_immediate32(field(layout.frame_home_displacement), layout.nil_word);
+    }
+    let receiver = frame_slot(frame, Heap::receiver_register(argument_count));
+    let current_class = frame_slot(frame, Heap::current_class_register(argument_count));
+    let operand = frame_slot(frame, Heap::operand_register(argument_count));
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, value, receiver);
+    assembler.store(
+        Width::Word64,
+        field(layout.frame_receiver_displacement),
+        value,
+    );
+    assembler.load(Width::Word64, value, current_class);
+    assembler.store(
+        Width::Word64,
+        field(layout.frame_current_class_displacement),
+        value,
+    );
+    assembler.store_immediate32(
+        field(layout.frame_program_counter_displacement),
+        Heap::machine_program_counter_word(program_counter),
+    );
+    macro_assembler.load_body_word(spare, site + SITE_FRAME_CODE);
+    macro_assembler.assembler().store(
+        Width::Word64,
+        field(layout.frame_code_id_displacement),
+        spare,
+    );
+    // The kind word into `value`, then where the operand is read from.
+    let operand_source = match role {
+        BodyRole::Method => None,
+        BodyRole::Factory => {
+            macro_assembler
+                .assembler()
+                .move_immediate(value, kinds.factory);
+            Some(current_class)
+        }
+        BodyRole::Initializer => {
+            initializer_kind(macro_assembler, argument_count, value, spare);
+            Some(current_class)
+        }
+        BodyRole::Block => {
+            macro_assembler
+                .assembler()
+                .move_immediate(value, kinds.closure);
+            Some(operand)
+        }
+        BodyRole::EnteredOnly => {
+            macro_assembler
+                .assembler()
+                .move_immediate(value, kinds.superclass_clause);
+            Some(operand)
+        }
+    };
+    let assembler = macro_assembler.assembler();
+    let kind = field(layout.frame_kind_displacement);
+    let kind_operand = field(layout.frame_kind_operand_displacement);
+    match operand_source {
+        None => {
+            assembler.store_immediate32(kind, small(kinds.method));
+            assembler.store_immediate32(kind_operand, layout.nil_word);
+        }
+        Some(source) => {
+            assembler.store(Width::Word64, kind, value);
+            assembler.load(Width::Word64, value, source);
+            assembler.store(Width::Word64, kind_operand, value);
+        }
+    }
+    assembler.store_immediate32(
+        field(layout.frame_uncontinuable_displacement),
+        kinds.false_word,
+    );
+    // Married: the `SmallInteger` of the header's word offset from the
+    // activation stack's base, the frame's register 0's plus its
+    // arguments.
+    let stack_base = macro_assembler.block_word(BlockWord::StackBase);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(value, frame);
+    assembler.load(Width::Word64, spare, stack_base);
+    assembler.subtract(value, spare);
+    assembler.shift_right_logical(value, WORD_SHIFT);
+    assembler.add_immediate(value, i32::from(argument_count));
+    assembler.shift_left(value, layout.tag_bits);
+    assembler.or_immediate(value, layout.small_integer_tag);
+    assembler.store(
+        Width::Word64,
+        field(layout.frame_married_displacement),
+        value,
+    );
+}
+
+/// How far a byte count is shifted to be a word count.
+const WORD_SHIFT: u8 = 3;
+
+/// `home :=` the home of the closure a block's frame holds as its operand,
+/// as `Heap::closure_home` finds it: the frame the closure captured, or
+/// that frame's own home when it is a block's and has one; nil for a
+/// closure that captured none. Clobbers the flags and `spare`.
+fn home_of_operand(
+    macro_assembler: &mut MacroAssembler,
+    argument_count: u16,
+    home: Register,
+    spare: Register,
+) {
+    let layout = Heap::machine_layout();
+    let kinds = Heap::machine_frame_kinds();
+    let roles = macro_assembler.roles();
+    let memory = |base: Register, displacement: i32| Memory { base, displacement };
+    let assembler = macro_assembler.assembler();
+    let found = assembler.label();
+    assembler.load(
+        Width::Word64,
+        home,
+        frame_slot(roles.frame, Heap::operand_register(argument_count)),
+    );
+    assembler.add(home, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        home,
+        memory(home, layout.closure_captured_frame_displacement),
+    );
+    assembler.compare_immediate(home, layout.nil_word);
+    assembler.jump_if(Condition::Equal, found);
+    assembler.move_register(spare, home);
+    assembler.add(spare, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        memory(spare, layout.frame_kind_displacement),
+    );
+    assembler.compare_immediate(spare, small(kinds.closure));
+    assembler.jump_if(Condition::NotEqual, found);
+    assembler.move_register(spare, home);
+    assembler.add(spare, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        memory(spare, layout.frame_home_displacement),
+    );
+    assembler.compare_immediate(spare, layout.nil_word);
+    assembler.jump_if(Condition::Equal, found);
+    assembler.move_register(home, spare);
+    assembler.bind(found);
+}
+
+/// `kind :=` the kind word of an initializer's frame, from the tag its
+/// flags word holds for the body it runs (`MachineKind::initializer`).
+/// Clobbers the flags and `tag`.
+fn initializer_kind(
+    macro_assembler: &mut MacroAssembler,
+    argument_count: u16,
+    kind: Register,
+    tag: Register,
+) {
+    let kinds = Heap::machine_frame_kinds();
+    let flags = Heap::machine_divorce(argument_count).flags_register;
+    let frame = macro_assembler.roles().frame;
+    let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, tag, frame_slot(frame, flags));
+    assembler.shift_right_logical(tag, kinds.kind_tag_shift);
+    assembler.and_immediate(tag, kinds.kind_tag_mask);
+    let [(_, full), others @ ..] = kinds.initializers;
+    assembler.move_immediate(kind, full);
+    for (body_tag, word) in others {
+        let other = assembler.label();
+        assembler.compare_immediate(tag, i32::from(body_tag));
+        assembler.jump_if(Condition::NotEqual, other);
+        assembler.move_immediate(kind, word);
+        assembler.bind(other);
+    }
+}
+
+/// `Heap::retain_registers`: the frame's flags word with
+/// `retains_registers` set, for a block that reads its creator's registers
+/// by reference, which makes them outlive the frame.
+fn retain_registers(body: &mut BodyAssembler, registers: &ClosureRegisters) {
+    let divorce = Heap::machine_divorce(body.argument_count);
+    let frame = body.macro_assembler.roles().frame;
+    let flags = frame_slot(frame, divorce.flags_register);
+    let assembler = body.macro_assembler.assembler();
+    assembler.load(Width::Word64, registers.value, flags);
+    assembler.or_immediate(registers.value, divorce.retains_registers_bit);
+    assembler.store(Width::Word64, flags, registers.value);
+}
+
+/// The closure, as `Heap::allocate_closure_from_registers` makes it, its
+/// word into the frame's `destination`.
+fn allocate_closure(
+    body: &mut BodyAssembler,
+    site: usize,
+    destination: u16,
+    copied: &[u16],
+    registers: &ClosureRegisters,
+) {
+    let layout = Heap::machine_layout();
+    let divorce = Heap::machine_divorce(body.argument_count);
+    let word_count = 1 + layout.closure_fixed_fields + copied.len();
+    let feedback_base = Heap::machine_count_word(body.feedback_base.raw() as usize);
+    let ClosureRegisters {
+        object,
+        header,
+        class_word,
+        address,
+        value,
+        spare,
+    } = *registers;
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    let frame = roles.frame;
+    let field = |displacement: i32| Memory {
+        base: address,
+        displacement,
+    };
+    let (slow, placed) = (
+        macro_assembler.assembler().label(),
+        macro_assembler.assembler().label(),
+    );
+    macro_assembler.load_header_and_class(
+        (header, MachineWord::ClosureHeader),
+        (class_word, MachineWord::ClosureClass),
+        word_count,
+    );
+    macro_assembler.bump_allocate(
+        object,
+        ObjectSize::Constant(word_count),
+        header,
+        class_word,
+        slow,
+    );
+    macro_assembler.assembler().bind(placed);
+    macro_assembler.load_body_word(spare, site + SITE_BLOCK_CODE);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(address, object);
+    assembler.add(address, roles.object_space);
+    assembler.store(
+        Width::Word64,
+        field(layout.closure_code_id_displacement),
+        spare,
+    );
+    assembler.load(
+        Width::Word64,
+        value,
+        frame_slot(frame, divorce.reified_register),
+    );
+    assembler.store(
+        Width::Word64,
+        field(layout.closure_captured_frame_displacement),
+        value,
+    );
+    assembler.move_immediate(value, feedback_base);
+    assembler.store(
+        Width::Word64,
+        field(layout.closure_feedback_base_displacement),
+        value,
+    );
+    let first_copied = i32::try_from(layout.closure_fixed_fields * 8)
+        .expect("internal: a closure's fixed fields are few")
+        + layout.fields_displacement;
+    for (position, register) in copied.iter().enumerate() {
+        let displacement = i32::try_from(position)
+            .ok()
+            .and_then(|position| position.checked_mul(8))
+            .and_then(|bytes| bytes.checked_add(first_copied))
+            .expect("internal: a closure's copied values lie within 2 GiB of its start");
+        // Read as `allocate_closure_from_registers` reads them, the words
+        // themselves: a debug build checked each before anything was
+        // written (`make_closure`).
+        assembler.load(Width::Word64, value, frame_slot(frame, *register));
+        assembler.store(Width::Word64, field(displacement), value);
+    }
+    macro_assembler.store_frame_register(destination, object);
+    macro_assembler.call_leaf_out_of_line(
+        slow,
+        Leaf::Allocate.index(),
+        [
+            Operand::Immediate(word_count as u64),
+            Operand::Register(header),
+            Operand::Register(class_word),
+        ],
+        object,
+        placed,
+    );
+}
+
+/// The displacement of a future's field `field` from its offset
+/// (`interpreter::future`'s `COMPUTATION_FIELD` and `STATE_FIELD`).
+fn future_field(field: usize) -> i32 {
+    let layout = Heap::machine_layout();
+    i32::try_from(field * 8).expect("internal: a future has two fields")
+        + layout.fields_displacement
+}
+
+/// `MakeFuture`: `vm::make_future_into`'s work, with no exit -- the
+/// destination `:=` a new future of the closure in `closure`, as
+/// `Mutator::new_future` makes it: bump-allocated under the
+/// `FutureImplementation` header and class word
+/// (`MachineWord::FutureHeader`, `FutureClass`), its computation the
+/// closure and its state unresolved, stores into an object the template
+/// has just allocated, which take no barrier. The heap's first future --
+/// while the header word is 0, which says no future was made yet, a flag
+/// only Rust sets -- one past eden's limit and an operand that is no
+/// closure are the generic leaf's, which runs the interpreter's own
+/// effect and, for the error, exits with nothing written, so that the
+/// interpreter raises it. A closure is told by its format alone, as the
+/// closure stubs tell it: every object of that format carries a
+/// closure's fixed fields, which is all `Heap::is_closure` adds.
+pub(super) fn make_future(body: &mut BodyAssembler, destination: u16, closure: u16) -> Lowering {
+    let layout = Heap::machine_layout();
+    let word_count = 1 + crate::interpreter::future::FIELD_COUNT;
+    let unresolved = Heap::machine_count_word(
+        usize::try_from(crate::interpreter::future::UNRESOLVED)
+            .expect("internal: a state is a small count"),
+    );
+    let ClosureRegisters {
+        object,
+        header,
+        class_word,
+        address,
+        value,
+        spare,
+    } = ClosureRegisters::of(&body.macro_assembler);
+    let program_counter = body.program_counter;
+    let macro_assembler = &mut body.macro_assembler;
+    let frame = macro_assembler.roles().frame;
+    let object_space = macro_assembler.roles().object_space;
+    let (slow, done) = (
+        macro_assembler.assembler().label(),
+        macro_assembler.assembler().label(),
+    );
+    macro_assembler.load_frame_register(value, closure);
+    macro_assembler.jump_unless_object_of_format(value, layout.closure_format, spare, slow);
+    macro_assembler.load_machine_words(spare);
+    let assembler = macro_assembler.assembler();
+    assembler.load(
+        Width::Word64,
+        header,
+        MacroAssembler::machine_word(spare, MachineWord::FutureHeader),
+    );
+    assembler.compare_immediate(header, 0);
+    assembler.jump_if(Condition::Equal, slow);
+    macro_assembler.load_header_and_class(
+        (header, MachineWord::FutureHeader),
+        (class_word, MachineWord::FutureClass),
+        word_count,
+    );
+    macro_assembler.bump_allocate(
+        object,
+        ObjectSize::Constant(word_count),
+        header,
+        class_word,
+        slow,
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(address, object);
+    assembler.add(address, object_space);
+    assembler.store(
+        Width::Word64,
+        Memory {
+            base: address,
+            displacement: future_field(crate::interpreter::future::COMPUTATION_FIELD),
+        },
+        value,
+    );
+    assembler.store_immediate32(
+        Memory {
+            base: address,
+            displacement: future_field(crate::interpreter::future::STATE_FIELD),
+        },
+        small(unresolved),
+    );
+    macro_assembler.store_frame_register(destination, object);
+    macro_assembler.assembler().bind(done);
+    macro_assembler.call_leaf_out_of_line_or_exit(
+        slow,
+        Leaf::Step.index(),
+        [
+            Operand::Register(frame),
+            Operand::Immediate(u64::from(program_counter)),
+            Operand::CodeAddress,
+        ],
+        program_counter,
+        done,
+    );
+    Lowering::Template
+}
+
+/// `ResolveFuture`: the destination `:=` the value in `source`, seen
+/// through a future, as `vm::resolve_future` sees it: a value that is no
+/// future -- an immediate, or an object whose class word is not
+/// `FutureImplementation`'s (`MachineWord::FutureClass`), which no program
+/// can subclass -- moved; a resolved future's value loaded, inline. Every
+/// other future -- unresolved, being computed, or with fields no forcing
+/// wrote -- is forced by a compiled call of its `resolve`, above the
+/// frame's window, which the forcing leaf decides (`Leaf::Forcing`) and
+/// whose value is stored into the destination as a send's is
+/// (`sends::call_decided`): the method computes the future, or signals
+/// its error. A future made by the runtime has its two fields -- the
+/// decoder refuses a record with any other count -- so the template reads
+/// them unchecked, and its state compares equal to the resolved
+/// `SmallInteger` word only when it is one. The field displacements are
+/// pinned to `FIELD_COUNT` by `a_futures_fields_lie_inside_its_layout`.
+/// A `Transfer`, as an initializer invocation's is: it may make a compiled
+/// call, which pays for entering the body.
+pub(super) fn resolve_future(body: &mut BodyAssembler, destination: u16, source: u16) -> Lowering {
+    let layout = Heap::machine_layout();
+    let resolved = Heap::machine_count_word(
+        usize::try_from(crate::interpreter::future::RESOLVED)
+            .expect("internal: a state is a small count"),
+    );
+    let ClosureRegisters {
+        address,
+        value,
+        spare,
+        class_word,
+        ..
+    } = ClosureRegisters::of(&body.macro_assembler);
+    let program_counter = body.program_counter;
+    let window_end = body.window_end;
+    let macro_assembler = &mut body.macro_assembler;
+    let object_space = macro_assembler.roles().object_space;
+    let (moved, forced, done) = (
+        macro_assembler.assembler().label(),
+        macro_assembler.assembler().label(),
+        macro_assembler.assembler().label(),
+    );
+    let class_word_of = |macro_assembler: &mut MacroAssembler, object: Register| {
+        let assembler = macro_assembler.assembler();
+        assembler.move_register(address, object);
+        assembler.add(address, object_space);
+        assembler.load(
+            Width::Word64,
+            class_word,
+            Memory {
+                base: address,
+                displacement: layout.class_word_displacement,
+            },
+        );
+    };
+    macro_assembler.load_frame_register(value, source);
+    macro_assembler.load_machine_words(spare);
+    macro_assembler.jump_unless_object(value, moved);
+    class_word_of(macro_assembler, value);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_memory(
+        class_word,
+        MacroAssembler::machine_word(spare, MachineWord::FutureClass),
+    );
+    assembler.jump_if(Condition::NotEqual, moved);
+    // A future: resolved, or forced by its `resolve`.
+    assembler.load(
+        Width::Word64,
+        class_word,
+        Memory {
+            base: address,
+            displacement: future_field(crate::interpreter::future::STATE_FIELD),
+        },
+    );
+    assembler.compare_immediate(class_word, small(resolved));
+    assembler.jump_if(Condition::NotEqual, forced);
+    assembler.load(
+        Width::Word64,
+        value,
+        Memory {
+            base: address,
+            displacement: future_field(crate::interpreter::future::COMPUTATION_FIELD),
+        },
+    );
+    // A resolved future's value is never a future: one that is was
+    // written by crafted code, and its `resolve` signals the error.
+    macro_assembler.jump_unless_object(value, moved);
+    class_word_of(macro_assembler, value);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_memory(
+        class_word,
+        MacroAssembler::machine_word(spare, MachineWord::FutureClass),
+    );
+    assembler.jump_if(Condition::Equal, forced);
+    assembler.bind(moved);
+    macro_assembler.store_frame_register(destination, value);
+    let frame = macro_assembler.roles().frame;
+    let assembler = macro_assembler.assembler();
+    assembler.jump(done);
+    assembler.bind(forced);
+    macro_assembler.call_leaf(
+        Leaf::Forcing.index(),
+        [
+            Operand::Register(frame),
+            Operand::Immediate(u64::from(program_counter)),
+            Operand::CodeAddress,
+        ],
+    );
+    super::sends::call_decided(body, window_end, 0, destination);
+    body.macro_assembler.assembler().bind(done);
+    Lowering::Transfer
+}
+
+/// The words of an outer-local site, in order: the epoch of the code
+/// table it was filled in, 0 for a site never filled -- no heap's epoch
+/// is 0; the code id word of the divorced frame object it was filled
+/// from; and the argument count of the body that code id names, a plain
+/// integer.
+const OUTER_SITE_EPOCH: usize = 0;
+const OUTER_SITE_CODE: usize = 1;
+const OUTER_SITE_ARGUMENTS: usize = 2;
+const OUTER_SITE_WORDS: usize = 3;
+
+/// `Leaf::OuterLocalSite`: writes the outer-local site at `site_address`
+/// among the data words of the body `code_address` lies in afresh, from
+/// the divorced frame object `frame_word` names: the code table's current
+/// epoch, the frame's code id word and the argument count of the body it
+/// names (`Heap::machine_frame_code_arguments`).
+pub(crate) fn refill_outer_site(
+    mutator: &mut Mutator<'_>,
+    site_address: u64,
+    frame_word: u64,
+    code_address: u64,
+) {
+    let (Ok(site_address), Ok(code_address)) =
+        (usize::try_from(site_address), usize::try_from(code_address))
+    else {
+        unreachable!("internal: an address fits the pointer width");
+    };
+    let (code_word, argument_count) = mutator.heap.machine_frame_code_arguments(frame_word);
+    let words = [mutator.heap.code_table_epoch(), code_word, argument_count];
+    mutator
+        .jit
+        .write_body_words(code_address, site_address, &words);
+}
+
+/// What an outer-local instruction does with the register it reaches.
+#[derive(Clone, Copy)]
+pub(super) enum OuterAccess {
+    /// `LoadOuterLocal`: the register into the frame's `destination`.
+    Load { destination: u16 },
+    /// `StoreOuterLocal`: the frame's `source` into the register.
+    Store { source: u16 },
+}
+
+/// The scratch registers the outer-local template takes, by role.
+#[derive(Clone, Copy)]
+struct OuterRegisters {
+    /// The word naming the frame object reached.
+    frame: Register,
+    /// The value read or written.
+    value: Register,
+    /// The frame object's address, then a married frame's register 0's.
+    address: Register,
+    spare: Register,
+    other: Register,
+    /// The hops still to take past the first, then the machine words.
+    hops: Register,
+}
+
+impl OuterRegisters {
+    fn of(macro_assembler: &MacroAssembler) -> OuterRegisters {
+        let scratch = macro_assembler.roles().scratch;
+        OuterRegisters {
+            frame: scratch[0],
+            value: scratch[1],
+            address: scratch[2],
+            spare: scratch[3],
+            other: scratch[4],
+            hops: scratch[5],
+        }
+    }
+}
+
+/// `LoadOuterLocal` and `StoreOuterLocal`: `interpreter::locals`'s
+/// `read_outer_local` and `write_outer_local`, register `index` of the
+/// frame `depth` closure hops out, with no exit but a debug build's
+/// refusal of a dead register.
+///
+/// The walk is `frame_at_depth`'s: a body that is no block's, or depth 0,
+/// reaches its own frame; otherwise the first hop takes the frame the
+/// running closure captured -- the own frame when it captured none -- and
+/// every further hop the frame a closure frame's closure captured,
+/// staying where it is at any other frame, as the interpreter's walk
+/// stays.
+///
+/// At the frame object reached, a married frame -- its married field a
+/// `SmallInteger`, its activation's header offset -- has the register
+/// read or written on the activation stack, below the header by the
+/// argument count its flags word holds, exactly as `Heap::register_slot`
+/// finds it, wherever the activation was laid; a store there takes no
+/// barrier, since the stack is no object. A divorced one -- returned, or
+/// suspended into its frame object -- has the register in its frame
+/// object's register field, which `Heap::frame_field_of_register` names
+/// from the frame's argument count: its body's, which the instruction's
+/// site records beside the code id it read it for and the code table's
+/// epoch (`refill_outer_site`), bounded by the frame's registers as
+/// `Heap::frame_argument_count` bounds it. A store there goes through the
+/// barrier, since the frame object may be old and the value young; a
+/// register the frame object has no field for reads `nil` and is not
+/// written, as `frame_local` and `frame_set_local` treat it.
+///
+/// A site that does not match is filled by `Leaf::OuterLocalSite` out of
+/// line, before anything is written, and the template starts over.
+pub(super) fn outer_local(
+    body: &mut BodyAssembler,
+    depth: u16,
+    index: u16,
+    access: OuterAccess,
+) -> Lowering {
+    if depth == 0 || body.role != BodyRole::Block {
+        let value = OuterRegisters::of(&body.macro_assembler).value;
+        if let OuterAccess::Store { source } = access {
+            body.macro_assembler.load_frame_register(value, source);
+        }
+        own_local(&mut body.macro_assembler, index, access, value);
+        return Lowering::Template;
+    }
+    let site = body.macro_assembler.take_body_words(OUTER_SITE_WORDS);
+    let registers = OuterRegisters::of(&body.macro_assembler);
+    let layout = Heap::machine_layout();
+    let argument_count = body.argument_count;
+    let program_counter = body.program_counter;
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    let OuterRegisters {
+        frame,
+        value,
+        address,
+        spare,
+        other,
+        ..
+    } = registers;
+    let assembler = macro_assembler.assembler();
+    let (start, own, found, divorced, done) = (
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+    );
+    assembler.bind(start);
+    if let OuterAccess::Store { source } = access {
+        macro_assembler.load_frame_register(value, source);
+    }
+    // The first hop: the frame the running closure captured.
+    let assembler = macro_assembler.assembler();
+    assembler.load(
+        Width::Word64,
+        frame,
+        frame_slot(roles.frame, Heap::operand_register(argument_count)),
+    );
+    assembler.add(frame, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        frame,
+        Memory {
+            base: frame,
+            displacement: layout.closure_captured_frame_displacement,
+        },
+    );
+    macro_assembler.jump_unless_object_of_format(frame, layout.frame_format, spare, own);
+    if depth > 1 {
+        further_hops(macro_assembler, depth - 1, registers, found);
+    }
+    // Married or divorced.
+    let assembler = macro_assembler.assembler();
+    assembler.bind(found);
+    assembler.move_register(address, frame);
+    assembler.add(address, roles.object_space);
+    assembler.load(
+        Width::Word64,
+        other,
+        Memory {
+            base: address,
+            displacement: layout.frame_married_displacement,
+        },
+    );
+    // Married only to a non-negative `SmallInteger`, as `married_offset`
+    // decides: a suspended frame's word is the negative one of its
+    // side-table row, and its registers lie in its frame object, as a
+    // divorced frame's do.
+    assembler.move_register(spare, other);
+    assembler.and_immediate(spare, layout.tag_mask);
+    assembler.compare_immediate(spare, layout.small_integer_tag);
+    assembler.jump_if(Condition::NotEqual, divorced);
+    assembler.compare_immediate(other, 0);
+    assembler.jump_if(Condition::Less, divorced);
+    married_local(macro_assembler, index, access, registers, program_counter);
+    let assembler = macro_assembler.assembler();
+    assembler.jump(done);
+    assembler.bind(divorced);
+    divorced_local(
+        macro_assembler,
+        site,
+        index,
+        access,
+        registers,
+        (start, done),
+    );
+    macro_assembler.assembler().bind(own);
+    own_local(macro_assembler, index, access, value);
+    macro_assembler.assembler().bind(done);
+    Lowering::Template
+}
+
+/// The frame's own register `index`, read into `destination` or written
+/// from `value`, which holds a store's source: the walk's answer at depth
+/// 0, for a body that is no block's, and for a closure that captured no
+/// frame.
+fn own_local(
+    macro_assembler: &mut MacroAssembler,
+    index: u16,
+    access: OuterAccess,
+    value: Register,
+) {
+    match access {
+        OuterAccess::Load { destination } => {
+            macro_assembler.load_frame_register(value, index);
+            macro_assembler.store_frame_register(destination, value);
+        }
+        OuterAccess::Store { .. } => macro_assembler.store_frame_register(index, value),
+    }
+}
+
+/// The walk's hops past the first, `hops` of them, from the frame object
+/// `registers.frame` names: each takes the frame a closure frame's
+/// closure captured, and jumps to `found` -- the frame where it is -- at
+/// a frame that is no closure's, or whose operand names no closure, or
+/// whose closure names no frame, as `Heap::frame_captured` answers `None`
+/// for each. Clobbers the flags and every register but `value`.
+fn further_hops(
+    macro_assembler: &mut MacroAssembler,
+    hops: u16,
+    registers: OuterRegisters,
+    found: Label,
+) {
+    let layout = Heap::machine_layout();
+    let kinds = Heap::machine_frame_kinds();
+    let object_space = macro_assembler.roles().object_space;
+    let OuterRegisters {
+        frame,
+        address,
+        spare,
+        other,
+        hops: remaining,
+        ..
+    } = registers;
+    let field = |base: Register, displacement: i32| Memory { base, displacement };
+    let assembler = macro_assembler.assembler();
+    let hop = assembler.label();
+    assembler.move_immediate(remaining, u64::from(hops));
+    assembler.bind(hop);
+    assembler.move_register(address, frame);
+    assembler.add(address, object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        field(address, layout.frame_kind_displacement),
+    );
+    assembler.compare_immediate(spare, small(kinds.closure));
+    assembler.jump_if(Condition::NotEqual, found);
+    assembler.load(
+        Width::Word64,
+        spare,
+        field(address, layout.frame_kind_operand_displacement),
+    );
+    macro_assembler.jump_unless_object_of_format(spare, layout.closure_format, other, found);
+    let assembler = macro_assembler.assembler();
+    assembler.add(spare, object_space);
+    assembler.load(
+        Width::Word64,
+        spare,
+        field(spare, layout.closure_captured_frame_displacement),
+    );
+    macro_assembler.jump_unless_object_of_format(spare, layout.frame_format, other, found);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(frame, spare);
+    assembler.add_immediate(remaining, -1);
+    assembler.compare_immediate(remaining, 0);
+    assembler.jump_if(Condition::NotEqual, hop);
+}
+
+/// Register `index` of the married frame whose married field's word
+/// `registers.other` holds, on the activation stack: the header at the field's
+/// offset from the stack's base, register 0 the argument count its flags
+/// word holds below it (`Heap::register_slot`). A debug build refuses a
+/// dead register's read by an exit before anything is written, so that
+/// the interpreter refuses it as its own read is refused.
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        unused_variables,
+        reason = "only a debug build's dead-register check reads the program counter"
+    )
+)]
+fn married_local(
+    macro_assembler: &mut MacroAssembler,
+    index: u16,
+    access: OuterAccess,
+    registers: OuterRegisters,
+    program_counter: u32,
+) {
+    let layout = Heap::machine_layout();
+    let (argument_count_shift, argument_count_mask) = Heap::machine_argument_count_field();
+    let OuterRegisters {
+        value,
+        address,
+        spare,
+        other: married,
+        ..
+    } = registers;
+    let stack_base = macro_assembler.block_word(BlockWord::StackBase);
+    let assembler = macro_assembler.assembler();
+    assembler.move_register(address, married);
+    assembler.shift_right_logical(address, layout.tag_bits);
+    assembler.shift_left(address, WORD_SHIFT);
+    assembler.load(Width::Word64, spare, stack_base);
+    assembler.add(address, spare);
+    assembler.load(
+        Width::Word64,
+        spare,
+        frame_slot(address, Heap::flags_register()),
+    );
+    assembler.shift_right_logical(spare, argument_count_shift);
+    assembler.and_immediate(spare, argument_count_mask);
+    #[cfg(debug_assertions)]
+    check_married_window(macro_assembler, index, registers, program_counter);
+    let assembler = macro_assembler.assembler();
+    assembler.shift_left(spare, WORD_SHIFT);
+    assembler.subtract(address, spare);
+    let slot = frame_slot(address, index);
+    match access {
+        OuterAccess::Load { destination } => {
+            assembler.load(Width::Word64, value, slot);
+            #[cfg(debug_assertions)]
+            {
+                let dead = assembler.label();
+                assembler.move_immediate(spare, crate::heap::Word::DEAD_REGISTER_BITS);
+                assembler.compare(value, spare);
+                assembler.jump_if(Condition::Equal, dead);
+                macro_assembler.exit_at(dead, ExitKind::Reexecute, program_counter);
+            }
+            macro_assembler.store_frame_register(destination, value);
+        }
+        OuterAccess::Store { .. } => assembler.store(Width::Word64, slot, value),
+    }
+}
+
+/// A debug build's check that register `index` lies in the married
+/// frame's window, as `Heap::register_slot`'s assertion checks it: an
+/// argument, or a register above the header below the window's end. Any
+/// other exits before anything is written, so that the interpreter's
+/// re-execution of the instruction makes its own assertion fail.
+/// `registers.address` holds the header's address and `registers.spare`
+/// the argument count, both kept; clobbers the flags, `registers.frame`
+/// and `registers.hops`, which the married access no longer reads.
+#[cfg(debug_assertions)]
+fn check_married_window(
+    macro_assembler: &mut MacroAssembler,
+    index: u16,
+    registers: OuterRegisters,
+    program_counter: u32,
+) {
+    let layout = Heap::machine_layout();
+    let header_registers = i32::from(crate::bytecode::HEADER_REGISTERS);
+    let OuterRegisters {
+        frame: above,
+        address,
+        spare: argument_count,
+        hops: window,
+        ..
+    } = registers;
+    let assembler = macro_assembler.assembler();
+    let (inside, outside) = (assembler.label(), assembler.label());
+    assembler.compare_immediate(argument_count, i32::from(index));
+    assembler.jump_if(Condition::Above, inside);
+    // How far above register 0's number past the arguments `index` lies.
+    assembler.move_immediate(above, u64::from(index));
+    assembler.subtract(above, argument_count);
+    assembler.compare_immediate(above, header_registers);
+    assembler.jump_if(Condition::Below, outside);
+    assembler.load(
+        Width::Word64,
+        window,
+        frame_slot(address, Heap::register_count_register()),
+    );
+    assembler.shift_right_logical(window, layout.tag_bits);
+    assembler.add_immediate(window, header_registers);
+    assembler.compare(above, window);
+    assembler.jump_if(Condition::AboveOrEqual, outside);
+    assembler.bind(inside);
+    macro_assembler.exit_at(outside, ExitKind::Reexecute, program_counter);
+}
+
+/// Register `index` of the divorced frame object `registers.frame`
+/// names, its address in `registers.address`: the field
+/// `Heap::frame_field_of_register` names from the argument count the
+/// site records for the frame's code id, bounded by the frame's
+/// registers -- or none, which reads `nil` and writes nothing. A site
+/// that does not match calls its leaf out of line and starts over at
+/// `start`; the access ends with a jump to `done`.
+fn divorced_local(
+    macro_assembler: &mut MacroAssembler,
+    site: usize,
+    index: u16,
+    access: OuterAccess,
+    registers: OuterRegisters,
+    (start, done): (Label, Label),
+) {
+    let layout = Heap::machine_layout();
+    let leaf_result = macro_assembler.roles().leaf_result;
+    let OuterRegisters {
+        frame,
+        address,
+        spare,
+        other,
+        hops: machine_words,
+        ..
+    } = registers;
+    let assembler = macro_assembler.assembler();
+    let (refill, argument, none, bounded) = (
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+        assembler.label(),
+    );
+    // The site's check: the frame's code id, then the epoch.
+    assembler.load(
+        Width::Word64,
+        spare,
+        Memory {
+            base: address,
+            displacement: layout.frame_code_id_displacement,
+        },
+    );
+    macro_assembler.load_body_word(other, site + OUTER_SITE_CODE);
+    let assembler = macro_assembler.assembler();
+    assembler.compare(spare, other);
+    assembler.jump_if(Condition::NotEqual, refill);
+    macro_assembler.load_body_word(other, site + OUTER_SITE_EPOCH);
+    macro_assembler.load_machine_words(machine_words);
+    macro_assembler.assembler().compare_memory(
+        other,
+        MacroAssembler::machine_word(machine_words, MachineWord::CodeTableEpoch),
+    );
+    macro_assembler
+        .assembler()
+        .jump_if(Condition::NotEqual, refill);
+    // The argument count, bounded by the registers: `spare`, beside the
+    // registers' count in `other`.
+    macro_assembler.load_body_word(spare, site + OUTER_SITE_ARGUMENTS);
+    macro_assembler.load_word_count(frame, other);
+    let fixed_words = i32::try_from(1 + layout.frame_fixed_fields)
+        .expect("internal: a frame object's fixed fields are few");
+    let assembler = macro_assembler.assembler();
+    assembler.add_immediate(other, -fixed_words);
+    assembler.compare(spare, other);
+    assembler.jump_if(Condition::BelowOrEqual, bounded);
+    assembler.move_register(spare, other);
+    assembler.bind(bounded);
+    // An argument's field is its own number; a register above the header
+    // is `HEADER_REGISTERS` fields lower; a header's number has none.
+    assembler.compare_immediate(spare, i32::from(index));
+    assembler.jump_if(Condition::Above, argument);
+    match index.checked_sub(crate::bytecode::HEADER_REGISTERS) {
+        Some(above) => {
+            assembler.compare_immediate(spare, i32::from(above));
+            assembler.jump_if(Condition::Above, none);
+            assembler.compare_immediate(other, i32::from(above));
+            assembler.jump_if(Condition::BelowOrEqual, none);
+            divorced_field(macro_assembler, above, access, registers);
+            macro_assembler.assembler().jump(done);
+        }
+        None => assembler.jump(none),
+    }
+    macro_assembler.assembler().bind(argument);
+    divorced_field(macro_assembler, index, access, registers);
+    let assembler = macro_assembler.assembler();
+    assembler.jump(done);
+    assembler.bind(none);
+    if let OuterAccess::Load { destination } = access {
+        let frame_register = macro_assembler.roles().frame;
+        macro_assembler
+            .assembler()
+            .store_immediate32(frame_slot(frame_register, destination), layout.nil_word);
+    }
+    macro_assembler.assembler().jump(done);
+    macro_assembler.call_leaf_out_of_line(
+        refill,
+        Leaf::OuterLocalSite.index(),
+        [
+            Operand::BodyWord(site),
+            Operand::Register(frame),
+            Operand::CodeAddress,
+        ],
+        leaf_result,
+        start,
+    );
+}
+
+/// The divorced frame's register field `field`, read into a load's
+/// destination, or written from a store's value through the barrier.
+fn divorced_field(
+    macro_assembler: &mut MacroAssembler,
+    field: u16,
+    access: OuterAccess,
+    registers: OuterRegisters,
+) {
+    let layout = Heap::machine_layout();
+    let displacement = i32::try_from(layout.frame_fixed_fields + usize::from(field))
+        .ok()
+        .and_then(|fields| fields.checked_mul(8))
+        .and_then(|bytes| bytes.checked_add(layout.fields_displacement))
+        .expect("internal: a frame object's register fields lie within 2 GiB of its start");
+    let OuterRegisters {
+        frame,
+        value,
+        address,
+        spare,
+        ..
+    } = registers;
+    match access {
+        OuterAccess::Load { destination } => {
+            macro_assembler.assembler().load(
+                Width::Word64,
+                value,
+                Memory {
+                    base: address,
+                    displacement,
+                },
+            );
+            macro_assembler.store_frame_register(destination, value);
+        }
+        OuterAccess::Store { .. } => {
+            macro_assembler.store_with_barrier(frame, displacement, value, spare);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::future_field;
+    use crate::heap::Heap;
+    use crate::interpreter::future::{COMPUTATION_FIELD, FIELD_COUNT, STATE_FIELD};
+
+    /// `make_future` writes, and `resolve_future` reads, a future's two
+    /// fields at displacements fixed when the body is compiled, unchecked,
+    /// on the word that a future made by the runtime, or decoded, has
+    /// exactly `FIELD_COUNT` fields: both displacements must lie apart and
+    /// inside those fields, or the template reads past the object.
+    #[test]
+    fn a_futures_fields_lie_inside_its_layout() {
+        let layout = Heap::machine_layout();
+        let fields = i32::try_from(FIELD_COUNT * 8).expect("a future has two fields");
+        let end = layout.fields_displacement + fields;
+        for field in [COMPUTATION_FIELD, STATE_FIELD] {
+            let displacement = future_field(field);
+            assert!(
+                displacement >= layout.fields_displacement && displacement + 8 <= end,
+                "field {field} at {displacement} lies outside the future's fields"
+            );
+        }
+        assert_ne!(future_field(COMPUTATION_FIELD), future_field(STATE_FIELD));
+    }
+}

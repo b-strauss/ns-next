@@ -1,0 +1,158 @@
+/// Instantiation in machine code (`docs/design/execution.md`, "Stage 4:
+/// closures, non-local return, allocation and the barrier"): a factory
+/// send from a compiled method, its class answered by the stub of the
+/// nested class's accessor once the class is cached, is a compiled call
+/// of the factory's body, whose `AllocateInstance` bumps an ordinary
+/// instance inline or leaves a builtin's to the interpreter's
+/// allocation, and whose `InitializeInstance` calls the class's
+/// initializer; a superclass's initializer and the level a `<:` clause
+/// adds run as compiled calls too (newspeak-spec.pdf 6.2, 6.3), a level
+/// that runs no code is passed;
+/// a builtin makes its own instances, a user subclass of one an ordinary
+/// instance, unless its value class's enclosing object is no value
+/// (3.1.1); `Symbol new` is refused (5.1.6); and `outer` loads the
+/// enclosing object at depth 1 and 2 (5.9).
+///
+/// Every method and initializer runs at least three times, so that it is
+/// compiled at its second entry and run in machine code after it.
+class Instantiation = Object new (
+  |
+    public label = 'outermost'.
+  |
+) (
+  class Plain = Object new (
+    |
+      public count ::= 1.
+    |
+  ) ()
+
+  class Empty = Object new () ()
+
+  class Hollow = Plain new () ()
+
+  class Base x: ax = Object new (
+    |
+      public x = ax.
+      public trace ::= 'base'.
+    |
+  ) ()
+
+  class Derived x: ax y: ay = Base x: ax + 1 (
+    |
+      public y = ay.
+    |
+  ) (
+    public sum = (
+      ^x + y.
+    )
+  )
+
+  class Tagged tag: aTag = Object new (
+    |
+      public tag = aTag.
+    |
+  ) ()
+
+  class Mixed x: ax = Base x: ax <: Tagged tag: 'tagged ' , ax printString (
+    |
+      public own = 'own'.
+    |
+  ) ()
+
+  class MyArray = Array new () ()
+
+  class MyString = String new () ()
+
+  class Middle = Object new () (
+    class Inner = Object new () (
+      public depthOne = (
+        ^outer Middle tag.
+      )
+
+      public depthTwo = (
+        ^outer Instantiation label.
+      )
+    )
+
+    public tag = (
+      ^'middle'.
+    )
+
+    public inner = (
+      ^Inner new.
+    )
+  )
+
+  /// One instance of each class, made in a loop the JIT compiles; answers
+  /// the line describing them.
+  describe: round = (
+    |
+      plain = Plain new.
+      hollow = Hollow new.
+      derived = Derived x: round y: 10.
+      mixed = Mixed x: round.
+      inner = Middle new inner.
+    |
+    plain count: plain count + round.
+    ^plain count printString
+        , ' '
+        , hollow count printString
+        , ' '
+        , derived sum printString
+        , ' '
+        , derived trace
+        , ' '
+        , mixed x printString
+        , ' '
+        , mixed tag
+        , ' '
+        , mixed own
+        , ' '
+        , inner depthOne
+        , ' '
+        , inner depthTwo
+        , ' '
+        , (Empty new == Empty new) printString.
+  )
+
+  /// The builtins and their user subclasses, made in a compiled method:
+  /// `MyString` is a value class, as `String` is, whose enclosing object
+  /// is no value, so its instantiation is refused (3.1.1).
+  builtins = (
+    ^Array new size printString
+        , ' '
+        , String new size printString
+        , ' '
+        , MyArray new printString
+        , ' '
+        , ([
+          MyString new.
+          'accepted'.
+        ] on: Error do: [:error | error messageText]).
+  )
+
+  /// `Symbol new`, refused, made in a compiled method.
+  symbol = (
+    ^[
+      Symbol new.
+      'accepted'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    1 to: 4 do: [:round |
+      transcript
+          show: (describe: round);
+          newLine.
+      transcript
+          show: builtins;
+          newLine.
+      transcript
+          show: symbol;
+          newLine.
+    ].
+  )
+)

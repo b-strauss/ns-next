@@ -20,17 +20,19 @@ use crate::heap::machine_words::MachineWord;
 /// before it -- `RegisterBase`, `MachineEntry` and, while counting, the
 /// counters' zero at every entry, and `ObjectSpaceBase`, `StackBase`,
 /// `MachineWords`, `ExitStub`, `Cells`, `PolymorphicStub`,
-/// `PolymorphicBlocks` … `GlobalMask`, which name what lasts from one
+/// `PolymorphicBlocks` … `EdenCursor`, `MachineEntries` and `CutStub`, which name what lasts from one
 /// entry to the next, only when the block is stale
 /// (`JitState::mark_block_stale`) -- the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
-/// dead register's exit), a leaf call `LeafStackPointer`, and code that
-/// counts its back edges `BackEdges`; the entry and the call stub each
-/// write `EnteredByCall`.
+/// dead register's exit), a leaf call `LeafStackPointer`, the cut its
+/// answer (`CutStackPointer`, `CutFrameRegister`, `CutValue`), and code
+/// that counts its back edges `BackEdges`; the entry and the call stub
+/// each write `EnteredByCall`.
 ///
-/// Words 22 to 28 are free, kept for what the later stages enter
-/// machine code with, so the three words only a debug build or a test
-/// uses sit at the top.
+/// Word 23 is free, kept for what the later stages enter machine code
+/// with, so the three words only a debug build or a test uses sit at the
+/// top. It named the closure sites until they moved into the code zone
+/// beside their bodies (`jit::closures`); nothing reads or writes it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BlockWord {
     /// The leaf shim's address, which `call_leaf` calls. Words 0, 2 and 3,
@@ -77,7 +79,9 @@ pub(crate) enum BlockWord {
     /// cell names as its entry too.
     PolymorphicStub = 16,
     /// The exit's walk over the return addresses on the native stack: the
-    /// address of the next one to materialize the frame of.
+    /// address of the next one to materialize the frame of; and the cut's
+    /// (`assemble_cut_stub`), the address of the next one to hand the cut,
+    /// which ends before any exit's walk begins.
     WalkCursor = 17,
     /// An address inside the code an exit left, which names the body of
     /// the innermost frame (`Roles::exit_code_address`).
@@ -96,6 +100,27 @@ pub(crate) enum BlockWord {
     /// between two entries, which marks the block stale
     /// (`JitState::mark_block_stale`).
     GlobalMask = 21,
+    /// The address of eden's bump cursor, its top word then its limit
+    /// word (`Heap::eden_cursor_address`), which an allocation in machine
+    /// code bumps in place (`MacroAssembler::bump_allocate`).
+    EdenCursor = 22,
+    /// The address of the machine entry table's row 0
+    /// (`Heap::machine_entries_address`), where a closure stub finds the
+    /// machine entry of the block a closure's code id names
+    /// (`targets::assemble_accessor_stubs`).
+    MachineEntries = 24,
+    /// The cut stub's address (`assemble_cut_stub`), which a
+    /// `NonLocalReturn`'s template calls.
+    CutStub = 25,
+    /// The native stack pointer the cut resumes machine code with: the
+    /// one the home's own return leaves (`jit::cut::CutAnswer`).
+    CutStackPointer = 26,
+    /// The frame register the cut resumes machine code with: the home's
+    /// register 0, as the home's caller left it for its callee.
+    CutFrameRegister = 27,
+    /// The value the cut's `^` returns, which machine code resumes with in
+    /// the leaf result's register, as a return leaves it.
+    CutValue = 28,
     /// The sends code compiled to count them called compiled code through
     /// (`JitStatistics::compiled_calls`).
     CompiledCalls = 29,
@@ -207,7 +232,7 @@ pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
 pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
     let roles = macro_assembler.roles();
-    emit_entry(&mut macro_assembler, abi, false);
+    emit_entry(&mut macro_assembler, abi, Entered::AtPush);
     macro_assembler.load_machine_words(roles.idiom_scratch);
     let depth = MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::DepthCount);
     let assembler = macro_assembler.assembler();
@@ -235,18 +260,46 @@ pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
 /// (`BlockWord::EnteredByCall`).
 pub(crate) fn assemble_call_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
-    emit_entry(&mut macro_assembler, abi, true);
+    emit_entry(&mut macro_assembler, abi, Entered::ByCall);
     emit_returned(&mut macro_assembler, abi);
     finish_stub(macro_assembler)
 }
 
-/// The entry and the call stub up to the body's return: the registers the
+/// The closure call stub, through which an interpreter's send calls a
+/// block's compiled body (`jit::called_closure`): the call stub, which
+/// also hands the block's prologue the closure and whether its activation
+/// counts, from the machine words the interpreter left them in
+/// (`MachineWord::CalleeClosure`, `MachineWord::CalleeCounted`), and no
+/// argument of its own, since the send's lie in its slots
+/// (`Roles::callee_argument`).
+pub(crate) fn assemble_closure_call_stub(abi: Abi) -> Assembled {
+    let mut macro_assembler = MacroAssembler::new(abi);
+    emit_entry(&mut macro_assembler, abi, Entered::ByClosureCall);
+    emit_returned(&mut macro_assembler, abi);
+    finish_stub(macro_assembler)
+}
+
+/// How the entry and the call stubs enter a body.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Entered {
+    /// The run loop's push, past the body's prologue.
+    AtPush,
+    /// An interpreter's send of a method, a factory or an initializer, at
+    /// its prologue.
+    ByCall,
+    /// An interpreter's send of a block, at its prologue.
+    ByClosureCall,
+}
+
+/// The entry and the call stubs up to the body's return: the registers the
 /// convention has its callee preserve saved, the roles pinned from the
-/// block, for a call (`by_call`) the callee's receiver, current class and
-/// `send_cells` handed over, `EnteredByCall` written, the stack pointer
-/// saved for the exit stub, the body called, and its value stored into
-/// `ExitProgramCounter`.
-fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, by_call: bool) {
+/// block, for a call the callee's receiver, current class and
+/// `send_cells` handed over -- and for a block's the closure, whether it
+/// counts and no argument of the call's own -- `EnteredByCall` written,
+/// the stack pointer saved for the exit stub, the body called, and its
+/// value stored into `ExitProgramCounter`.
+fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, entered: Entered) {
+    let by_call = entered != Entered::AtPush;
     let roles = macro_assembler.roles();
     let stack_base = macro_assembler.block_word(BlockWord::StackBase);
     let register_base = macro_assembler.block_word(BlockWord::RegisterBase);
@@ -276,6 +329,13 @@ fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, by_call: bool) {
         assembler.load(Width::Word64, roles.callee_receiver(), receiver);
         assembler.load(Width::Word64, roles.callee_class(), class);
         assembler.move_immediate(roles.send_cells, 0);
+        if entered == Entered::ByClosureCall {
+            let closure = MacroAssembler::machine_word(machine_words, MachineWord::CalleeClosure);
+            let counted = MacroAssembler::machine_word(machine_words, MachineWord::CalleeCounted);
+            assembler.load(Width::Word64, roles.callee_closure(), closure);
+            assembler.load(Width::Word64, roles.callee_counted(), counted);
+            assembler.move_immediate(roles.callee_argument(), crate::heap::Word::NO_VALUE_BITS);
+        }
     }
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, roles.idiom_scratch, machine_entry);
@@ -341,27 +401,17 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
         roles.exit_program_counter(),
     );
     assembler.store(Width::Word64, exit_code_address, roles.exit_code_address());
-    // The body was called with the stack pointer one word below the saved
-    // one, the entry stub's return address; a compiled frame above it
-    // pushed one more each.
     let (walk, next, innermost, done) = (
         assembler.label(),
         assembler.label(),
         assembler.label(),
         assembler.label(),
     );
-    assembler.move_register(scratch, roles.stack_pointer);
-    assembler.add_immediate(scratch, RETURN_ADDRESS_BYTES);
-    assembler.compare_memory(scratch, saved_stack_pointer);
-    assembler.jump_if(Condition::NotEqual, walk);
     // Nothing above the body the stub called: the entry stub's is the
     // frame the run loop entered, interpreted already, while the call
     // stub's is a callee no frame stands for yet, which is the innermost.
-    let entered_by_call = macro_assembler.block_word(BlockWord::EnteredByCall);
+    macro_assembler.branch_on_stretch_entry(scratch, walk, done);
     let assembler = macro_assembler.assembler();
-    assembler.load(Width::Word64, scratch, entered_by_call);
-    assembler.compare_immediate(scratch, 0);
-    assembler.jump_if(Condition::Equal, done);
     assembler.jump(innermost);
     assembler.bind(walk);
     // The outermost compiled return address, the entry's body's call, lies
@@ -415,7 +465,88 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
 }
 
 /// The bytes a return address takes on the native stack.
-const RETURN_ADDRESS_BYTES: i32 = 8;
+pub(super) const RETURN_ADDRESS_BYTES: i32 = 8;
+
+/// The cut stub, which a `NonLocalReturn`'s template calls with the
+/// program counter in the leaf result's register, the block's register 0
+/// in the frame register, and its own return address on top of the native
+/// stack, which names the block's body (`jit::cut`). It hands the cut the
+/// three (`Leaf::Cut`), then each return address down the native stack in
+/// turn, from the block's own -- the word above the stub's -- with the
+/// word it lies in and the word above that, the next one down
+/// (`Leaf::CutFrame`), until the cut answers. On `cut::EXIT` it returns,
+/// nothing changed, and the template exits at the `NonLocalReturn`; on an
+/// address -- the home's own return address, the frames above the home
+/// and the home popped -- it never returns, but resets the native stack
+/// pointer to the one that return leaves, loads the frame register and
+/// the value the cut wrote into the block, and jumps there, as the home's
+/// `ret` would have: into the code after the call of the home's caller's
+/// send, which stores the value, or into the entry or the call stub.
+pub(crate) fn assemble_cut_stub(abi: Abi) -> Assembled {
+    let mut macro_assembler = MacroAssembler::new(abi);
+    let roles = macro_assembler.roles();
+    let cursor = macro_assembler.block_word(BlockWord::WalkCursor);
+    let stack_pointer = macro_assembler.block_word(BlockWord::CutStackPointer);
+    let frame_register = macro_assembler.block_word(BlockWord::CutFrameRegister);
+    let value = macro_assembler.block_word(BlockWord::CutValue);
+    let answer = roles.leaf_result;
+    // Two scratch registers, neither the idiom scratch register a leaf
+    // call's sequence uses: the word the walk stands at, and the next
+    // return address down.
+    let (slot, next) = (roles.send_cells, roles.send_entry);
+    let word_at = |base, displacement| Memory { base, displacement };
+    let assembler = macro_assembler.assembler();
+    let (walk, decided, refused) = (assembler.label(), assembler.label(), assembler.label());
+    assembler.load(
+        Width::Word64,
+        roles.return_address,
+        word_at(roles.stack_pointer, 0),
+    );
+    macro_assembler.call_leaf(
+        Leaf::Cut.index(),
+        [
+            Operand::Register(roles.frame),
+            Operand::Register(answer),
+            Operand::Register(roles.return_address),
+        ],
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(answer, i32::from(super::cut::EXIT));
+    assembler.jump_if(Condition::Equal, refused);
+    assembler.move_register(slot, roles.stack_pointer);
+    assembler.add_immediate(slot, RETURN_ADDRESS_BYTES);
+    assembler.store(Width::Word64, cursor, slot);
+    assembler.bind(walk);
+    assembler.load(Width::Word64, slot, cursor);
+    assembler.load(Width::Word64, roles.return_address, word_at(slot, 0));
+    assembler.load(Width::Word64, next, word_at(slot, RETURN_ADDRESS_BYTES));
+    macro_assembler.call_leaf(
+        Leaf::CutFrame.index(),
+        [
+            Operand::Register(roles.return_address),
+            Operand::Register(slot),
+            Operand::Register(next),
+        ],
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(answer, i32::from(super::cut::CONTINUE));
+    assembler.jump_if(Condition::NotEqual, decided);
+    assembler.load(Width::Word64, slot, cursor);
+    assembler.add_immediate(slot, RETURN_ADDRESS_BYTES);
+    assembler.store(Width::Word64, cursor, slot);
+    assembler.jump(walk);
+    assembler.bind(decided);
+    assembler.compare_immediate(answer, i32::from(super::cut::EXIT));
+    assembler.jump_if(Condition::Equal, refused);
+    assembler.move_register(next, answer);
+    assembler.load(Width::Word64, roles.frame, frame_register);
+    assembler.load(Width::Word64, answer, value);
+    assembler.load(Width::Word64, roles.stack_pointer, stack_pointer);
+    assembler.jump_register(next);
+    assembler.bind(refused);
+    assembler.return_();
+    finish_stub(macro_assembler)
+}
 
 /// The miss stub, which a send's cell names for a method whose body has no
 /// machine code yet, and which the polymorphic and megamorphic stubs end
@@ -504,6 +635,10 @@ pub(super) mod testing {
         call: CodeOffset,
         exit: CodeOffset,
         next: u32,
+        /// Block words every run sets besides the frame's and the stubs'.
+        block_words: Vec<(BlockWord, u64)>,
+        /// Machine words every run sets besides the safepoint request.
+        machine_words: Vec<(MachineWord, u64)>,
     }
 
     impl Machine {
@@ -515,6 +650,8 @@ pub(super) mod testing {
                 call: CodeOffset(0),
                 exit: CodeOffset(0),
                 next: 0,
+                block_words: Vec::new(),
+                machine_words: Vec::new(),
             };
             machine.entry = machine.install(&assemble_entry_stub(Abi::host()));
             machine.call = machine.install(&assemble_call_stub(Abi::host()));
@@ -528,6 +665,19 @@ pub(super) mod testing {
             let length = u32::try_from(assembled.bytes.len()).expect("small");
             self.next = (self.next + length).next_multiple_of(ALIGNMENT);
             offset
+        }
+
+        /// Makes every later run set the block's `word` to `value`, as
+        /// the JIT sets a lasting word: an address a body under test
+        /// reaches through the block.
+        pub(crate) fn set_block_word(&mut self, word: BlockWord, value: u64) {
+            self.block_words.push((word, value));
+        }
+
+        /// Makes every later run set the machine word `word` to `value`:
+        /// what a body under test reads of the heap there.
+        pub(crate) fn set_machine_word(&mut self, word: MachineWord, value: u64) {
+            self.machine_words.push((word, value));
         }
 
         /// Installs the body `build` writes and finishes.
@@ -549,7 +699,7 @@ pub(super) mod testing {
             context: &mut C,
             leaves: &[Leaf<C>],
         ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
-            run_in(
+            run_with(
                 self.zone.zone(),
                 [self.entry, self.exit],
                 body,
@@ -558,6 +708,8 @@ pub(super) mod testing {
                 safepoint_requested,
                 context,
                 leaves,
+                &self.block_words,
+                &self.machine_words,
             )
         }
 
@@ -570,7 +722,7 @@ pub(super) mod testing {
             context: &mut C,
             leaves: &[Leaf<C>],
         ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
-            run_in(
+            run_with(
                 self.zone.zone(),
                 [self.call, self.exit],
                 body,
@@ -579,13 +731,15 @@ pub(super) mod testing {
                 false,
                 context,
                 leaves,
+                &self.block_words,
+                &self.machine_words,
             )
         }
     }
 
     /// Runs `body` of `zone`, whose entry and exit stubs are `stubs`, on
     /// `frame`, its registers starting `register_base` words into it, and
-    /// answers the exit and the block.
+    /// answers the exit and the block, its words `block_words` set too.
     #[expect(
         clippy::too_many_arguments,
         reason = "a test's one way to run code; each argument is a part of the fake frame"
@@ -599,6 +753,38 @@ pub(super) mod testing {
         safepoint_requested: bool,
         context: &mut C,
         leaves: &[Leaf<C>],
+        block_words: &[(BlockWord, u64)],
+    ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
+        run_with(
+            zone,
+            stubs,
+            body,
+            frame,
+            register_base,
+            safepoint_requested,
+            context,
+            leaves,
+            block_words,
+            &[],
+        )
+    }
+
+    /// `run_in`, the machine words `machine_word_values` set as well.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a test's one way to run code; each argument is a part of the fake frame"
+    )]
+    fn run_with<C>(
+        zone: &CodeZone,
+        stubs: [CodeOffset; 2],
+        body: CodeOffset,
+        frame: &mut [u64],
+        register_base: u64,
+        safepoint_requested: bool,
+        context: &mut C,
+        leaves: &[Leaf<C>],
+        block_words: &[(BlockWord, u64)],
+        machine_word_values: &[(MachineWord, u64)],
     ) -> (MachineExit, [u64; ENTRY_BLOCK_WORDS]) {
         let [entry, exit] = stubs;
         let block = EntryBlock::new();
@@ -618,7 +804,13 @@ pub(super) mod testing {
             MachineWord::SafepointRequested,
             u64::from(safepoint_requested),
         );
+        for (word, value) in machine_word_values {
+            machine_words.set(*word, *value);
+        }
         set(BlockWord::MachineWords, machine_words.address() as u64);
+        for (word, value) in block_words {
+            set(*word, *value);
+        }
         let kind = zone.enter(entry, &block, context, leaves);
         assert_eq!(kind, block.get(BlockWord::ExitKind.index()));
         let words = std::array::from_fn(|index| block.get(index));

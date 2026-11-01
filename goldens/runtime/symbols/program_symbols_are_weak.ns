@@ -1,0 +1,63 @@
+/// A Symbol a program makes from a String whose text nothing has interned
+/// dies with its object: held only by a WeakArray's slot, it is gone after
+/// `platform kernel garbageCollect`, as any other object nothing reaches
+/// is (Newspeak's `testSymbolTableWeakness1`). Each symbol is made by a
+/// method of its own that stores it and returns, so that no register of
+/// `main:` holds it, and its text by concatenation, so that no literal
+/// names it. A symbol a slot still holds survives the same collection,
+/// and is still the one object of its text.
+///
+/// `testSymbolTableWeakness2` keys an Ephemeron by such a symbol, which
+/// an Ephemeron here refuses: a Symbol is a value (§3.1.1), and an equal
+/// one can always be made again, so its key would vanish or not by when
+/// the collector ran. The refusal is what that test answers here.
+class ProgramSymbolsAreWeak = Object new (
+  |
+    held ::= nil.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      weakCell = kernel WeakArray new: 2.
+      ephemeron = kernel Ephemeron new.
+      show
+    |
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    storeASymbolIn: weakCell.
+    holdASymbolIn: weakCell.
+    show value: (refusalOfASymbolKeyIn: ephemeron kernel: kernel).
+    kernel garbageCollect.
+    show value: (weakCell at: 1).
+    show value: (weakCell at: 2).
+    show value: (weakCell at: 2) == held.
+    show value: held == ('Hopefully unique string' , 2 printString) asSymbol.
+    show value: ephemeron key.
+  )
+
+  /// Stores in the first slot of `weakCell` a symbol nothing else
+  /// reaches.
+  storeASymbolIn: weakCell = (
+    weakCell at: 1 put: ('Hopefully unique string' , 1 printString) asSymbol.
+  )
+
+  /// Stores in the second slot of `weakCell` a symbol `held` holds too.
+  holdASymbolIn: weakCell = (
+    held:: ('Hopefully unique string' , 2 printString) asSymbol.
+    weakCell at: 2 put: held.
+  )
+
+  /// Answers the text of the error keying `ephemeron` by a symbol
+  /// signals.
+  refusalOfASymbolKeyIn: ephemeron kernel: kernel = (
+    ^[
+      ephemeron key: ('Hopefully unique string' , 3 printString) asSymbol.
+      'accepted'.
+    ] on: kernel ArgumentError do: [:error | error messageText].
+  )
+)

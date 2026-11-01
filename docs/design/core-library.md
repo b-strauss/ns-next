@@ -335,13 +335,19 @@ text `printString` does (`fixed` in `numeric/float_text.rs`;
 `goldens/library/number/float/as_float_and_as_string_fixed.ns`). The Are We
 Fast Yet harness prints its scores with it.
 
-**A `Symbol`'s hash is its interner number** (`text::symbol_hash`): §5.1.6
-makes equal symbols one object, so it agrees with `Symbol>>=` by
-construction and is a dense small integer. It is stable only within one
-process — the interner numbers symbols in the order they are first seen —
-so it does **not** survive a snapshot: the same symbol in a reloaded image
-can hash to another number, and a hash a program recorded in an artifact
-cannot be compared against one computed after the load.
+**A `Symbol`'s hash is its text's** (`text::symbol_hash`): the content
+hash a String of the same text answers, told apart from it by a constant,
+since a Symbol never equals a String. §5.1.6 makes equal symbols one
+object, so it agrees with `Symbol>>=` by construction. It is never the
+interner's number: a symbol a program makes has none until its text is
+interned, and its hash must not change when the canonical table adopts it
+([memory.md](memory.md), "Weak references"). The interner computes it
+once per text it interns and stores it beside the text, so an interned
+symbol's `hash` is one probe of the canonical table and one read, as the
+symbol-keyed lookups of DeltaBlue need it ([execution.md](execution.md));
+only a program-made symbol whose text nothing has interned hashes its
+text, in place. Being the text's, it is the same in every process and
+survives a snapshot.
 
 **Strings are code points in two widths.** A `String` is an object of the
 byte-indexed format while every code point fits Latin-1, one byte per code
@@ -4854,11 +4860,16 @@ public member of `Object` as protected, so a message from outside reaches
 `doesNotUnderstand:`: a program's subclass that implements only
 `doesNotUnderstand:` forwards every message, `Object`'s included, and a
 bare `Proxy` understands none of them. The private `FutureImplementation`
-is such a subclass: its `doesNotUnderstand:` forces the future through the
-mirror row `futureValue:ifFail:` (`builtins/future.rs`) and sends the
-message on to its value with `Message>>sendTo:`; its state is the two slots
-`computation` and `state`, and forcing is `interpreter/future.rs`'s, a
-trampoline step under `Continuation::Future`. Like `Activation`, it is
+is such a subclass: its `doesNotUnderstand:` forces the future by its own
+private `resolve` and sends the message on to its value with
+`Message>>sendTo:`; its state is the two slots `computation` and `state`,
+which only a `resolve` writes, and the runtime forces a future by pushing
+that method (`interpreter/future.rs`). `resolve` asks whether a value is a
+future through the mirror row `objectIsFuture:ifFail:`, and takes over the
+futures of a chain its computation answered through the rows
+`futureState:ifFail:`, `futureComputation:ifFail:`,
+`futureTakeOver:ifFail:`, `future:resolveTo:ifFail:` and
+`futureAbandon:ifFail:` (`builtins/future.rs`). Like `Activation`, it is
 private, `Object` declares no accessor for it, and an image names it,
 `Kernel FutureImplementation`, only where it must (an unresolved future's
 record). The

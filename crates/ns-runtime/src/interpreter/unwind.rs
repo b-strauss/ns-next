@@ -71,6 +71,11 @@ impl<'gc> WalkedActivation<'gc> {
     /// The activation this one returns to: the suspended sender of a live
     /// frame that has one, else the frame below; a suspended one's sender
     /// frame. `None` for the run's base and the bottom of the stack.
+    /// Inline into every walk: out of line, it answered the next step
+    /// through memory, written as a tag and a word and read back as one
+    /// wide load, a store-forwarding stall on every step of a handler's
+    /// search (`builtins::activation`'s `next_active_handler`).
+    #[inline(always)]
     pub(crate) fn sender(self, heap: &Heap<'gc>) -> Option<WalkedActivation<'gc>> {
         match self {
             WalkedActivation::Live(activation) => {
@@ -540,6 +545,9 @@ impl<'gc> Mutator<'gc> {
         &self,
         header: &ActivationHeader<'gc>,
     ) -> NewspeakError<'gc> {
+        // Only the outermost is reported, so a `doesNotUnderstand:`
+        // activation is only checked on the way and its error built once,
+        // after the walk.
         let mut reported = None;
         let mut above = None;
         let mut current = self.heap.top_activation().map(WalkedActivation::Live);
@@ -548,20 +556,25 @@ impl<'gc> Mutator<'gc> {
                 if !self.is_finding_its_handler(activation.receiver(&self.heap)) {
                     break;
                 }
-                reported = Some(error);
+                reported = Some(Reported::Error(error));
             } else if self.is_kernel_does_not_understand(activation) {
-                if !self.does_not_understand_is_finding_its_handler(above) {
+                if !self.does_not_understand_is_finding_its_handler(above)
+                    || self.does_not_understand_selector(activation).is_none()
+                {
                     break;
                 }
-                match self.does_not_understand_error(activation) {
-                    Some(error) => reported = Some(error),
-                    None => break,
-                }
+                reported = Some(Reported::DoesNotUnderstand(activation));
             }
             above = Some(activation);
             current = activation.sender(&self.heap);
         }
-        reported.unwrap_or_else(|| super::recursion_too_deep_error(header))
+        match reported {
+            Some(Reported::Error(error)) => error,
+            Some(Reported::DoesNotUnderstand(activation)) => self
+                .does_not_understand_error(activation)
+                .unwrap_or_else(|| super::recursion_too_deep_error(header)),
+            None => super::recursion_too_deep_error(header),
+        }
     }
 
     /// Whether a kernel `doesNotUnderstand:` activation is still in the
@@ -586,25 +599,44 @@ impl<'gc> Mutator<'gc> {
         !is_signal || self.is_finding_its_handler(signal.receiver(&self.heap))
     }
 
+    /// The selector of the `Message` a kernel `doesNotUnderstand:`
+    /// activation holds, when it is a Symbol (a method's registers start
+    /// with its arguments).
+    fn does_not_understand_selector(
+        &self,
+        activation: WalkedActivation<'gc>,
+    ) -> Option<ObjectReference<'gc>> {
+        let message = activation.local(&self.heap, 0).as_object()?;
+        self.kernel_slot(message, BuiltinClass::Message, "selector")?
+            .as_object()
+            .filter(|selector| self.heap.is_symbol(*selector))
+    }
+
     /// The error an unhandled `MessageNotUnderstood` would have ended the
     /// run with, for the kernel's `doesNotUnderstand:` activation: the
     /// selector and receiver of the send nothing understood, and the text
     /// `Object>>doesNotUnderstand:` gives it. Read from the activation's
     /// argument, the `Message` (a method's registers start with its
     /// arguments).
+    ///
+    /// A program-made selector whose text nothing has interned is reported
+    /// as `doesNotUnderstand:`'s `Symbol`, the text naming it: a run never
+    /// interns a text a program chose, or a host that keeps one interpreter
+    /// would grow the interner by one text per failed run.
     fn does_not_understand_error(
         &self,
         activation: WalkedActivation<'gc>,
     ) -> Option<NewspeakError<'gc>> {
-        let message = activation.local(&self.heap, 0).as_object()?;
+        let selector = self.does_not_understand_selector(activation)?;
+        let text = self.heap.symbol_text(selector)?;
         let selector = self
-            .kernel_slot(message, BuiltinClass::Message, "selector")?
-            .as_object()?;
-        let selector = self.heap.symbol_value(selector)?;
+            .heap
+            .symbol_value(selector)
+            .unwrap_or(Symbol::DOES_NOT_UNDERSTAND);
         Some(NewspeakError::error(
             selector,
             activation.receiver(&self.heap),
-            format!("an object does not understand #{}", selector.as_str()),
+            format!("an object does not understand #{text}"),
         ))
     }
 
@@ -688,6 +720,14 @@ impl<'gc> Mutator<'gc> {
             .activation_set_continuation(activation, Continuation::Unwind(then));
         Ok(activation)
     }
+}
+
+/// What the walk past the depth limit reports: a VM error signalled on
+/// the way, or the kernel `doesNotUnderstand:` activation whose error is
+/// built once the walk has found the outermost.
+enum Reported<'gc> {
+    Error(NewspeakError<'gc>),
+    DoesNotUnderstand(WalkedActivation<'gc>),
 }
 
 #[cfg(test)]

@@ -35,8 +35,15 @@ use super::POLYMORPHIC_WIDTH;
 /// code compares a word of the class object it found. `entry` is the
 /// address a hit calls (`jit::cell_entry`). `level` and `chain_start` say
 /// where the callee's `current_class` is found: `level` superclass steps
-/// from the class `chain_start` names. A polymorphic site's cell holds its
-/// block's number in `level` instead.
+/// from the class `chain_start`'s low `CHAIN_START_BITS` name (`ChainStart`).
+/// A polymorphic site's cell holds its block's number in `level` instead.
+/// Above those bits `chain_start` holds, for a private or `super` slot
+/// accessor's entry, the guard the entry recorded for its receiver
+/// (`Target::Slot::recorded_guard`, `DispatchId::NONE`'s 0 where it
+/// recorded none), which the accessor's stub compares a receiver's guard
+/// with, as `Mutator::slot_level_holds` compares it first; 0 for every
+/// other entry. Every reader of the chain start masks it
+/// (`Cell::start`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Cell {
@@ -45,6 +52,32 @@ pub(crate) struct Cell {
     pub(crate) level: u64,
     pub(crate) chain_start: u64,
 }
+
+impl Cell {
+    /// The chain start the cell's `chain_start` word names, the recorded
+    /// guard above it masked off.
+    pub(crate) fn start(self) -> u64 {
+        start_of(self.chain_start)
+    }
+}
+
+/// The chain start a cell's or a row's `chain_start` word names
+/// (`Cell::start`).
+pub(crate) fn start_of(chain_start: u64) -> u64 {
+    chain_start & CHAIN_START_MASK
+}
+
+/// The low bits of a cell's `chain_start` word, which hold its
+/// `ChainStart`; a private or `super` slot accessor's recorded guard lies
+/// above them.
+pub(crate) const CHAIN_START_BITS: u32 = 2;
+/// The bits `CHAIN_START_BITS` covers.
+pub(crate) const CHAIN_START_MASK: u64 = (1 << CHAIN_START_BITS) - 1;
+
+const _: () = assert!(
+    (ChainStart::Superclass as u64) <= CHAIN_START_MASK,
+    "every chain start fits the bits below the recorded guard"
+);
 
 /// The class a cell's `level` is counted from (`Cell::chain_start`), as
 /// `inline_cache::chain_start` finds it for a hit: the receiver's class
@@ -179,6 +212,10 @@ struct Region {
     start: usize,
     size: usize,
     committed: usize,
+    /// Whether it committed more since the last shrink: demand, which
+    /// keeps the next collection from shrinking the cells. Written in the
+    /// cold growth path only (`ensure_committed`).
+    grew: bool,
 }
 
 impl Region {
@@ -187,6 +224,7 @@ impl Region {
             start,
             size,
             committed: 0,
+            grew: false,
         }
     }
 }
@@ -198,6 +236,9 @@ pub(crate) struct Cells {
     global: Region,
     sites: Region,
     blocks: Region,
+    /// How far the next shrink of the site and block regions goes
+    /// (`shrink`).
+    damping: crate::heap::limits::ShrinkDamping,
 }
 
 impl Cells {
@@ -211,7 +252,50 @@ impl Cells {
             global: Region::new(0, GLOBAL_REGION_BYTES),
             sites: Region::new(GLOBAL_REGION_BYTES, SITE_REGION_BYTES),
             blocks: Region::new(GLOBAL_REGION_BYTES + SITE_REGION_BYTES, BLOCK_REGION_BYTES),
+            damping: crate::heap::limits::ShrinkDamping::default(),
         }
+    }
+
+    /// How many bytes of the reservation are committed, every region's.
+    pub(crate) fn committed_bytes(&self) -> usize {
+        self.global.committed + self.sites.committed + self.blocks.committed
+    }
+
+    /// Gives back the committed pages of the site cells above the first
+    /// `sites` cells and of the blocks' cells above the first `blocks`
+    /// blocks, each past `shrink`'s headroom once more than its threshold
+    /// lies unused (`limits::Shrink`), and answers how many bytes that
+    /// was. The global mirror never shrinks: its rows are a fixed number.
+    /// Machine code reads a site's cell only for a site of a live range,
+    /// below the table's end, and a block's only for a block a site names,
+    /// in the pool; a cell past either reads as vacant to Rust, and the
+    /// next write past it commits it again.
+    pub(crate) fn shrink(
+        &mut self,
+        sites: usize,
+        blocks: usize,
+        shrink: crate::heap::limits::Shrink,
+        damped: bool,
+    ) -> usize {
+        // Every region's flag taken, none left set for the next
+        // collection.
+        let grew = [
+            std::mem::take(&mut self.global.grew),
+            std::mem::take(&mut self.sites.grew),
+            std::mem::take(&mut self.blocks.grew),
+        ]
+        .contains(&true);
+        let [sites_end, blocks_end] = shrink.keep_each(
+            &mut self.damping,
+            damped,
+            grew,
+            [
+                (sites * CELL_BYTES, self.sites.committed),
+                (blocks * BLOCK_BYTES, self.blocks.committed),
+            ],
+        );
+        shrink_region(&mut self.reservation, &mut self.sites, sites_end)
+            + shrink_region(&mut self.reservation, &mut self.blocks, blocks_end)
     }
 
     /// The address of site `index`'s cell: the site cells' base plus
@@ -436,6 +520,7 @@ fn ensure_committed(reservation: &mut Reservation, region: &mut Region, end: usi
         .min(region.size);
     let target = needed.max(generous);
     let from = region.start + region.committed;
+    region.grew = true;
     region.committed = if reservation.commit(from..region.start + target).is_ok() {
         target
     } else if reservation.commit(from..region.start + needed).is_ok() {
@@ -444,6 +529,23 @@ fn ensure_committed(reservation: &mut Reservation, region: &mut Region, end: usi
         crate::heap::out_of_memory(needed - region.committed)
     };
     true
+}
+
+/// Decommits `region` above `end` bytes from its start, the end its
+/// shrink keeps, if there is one, and answers how many bytes that was
+/// (`Cells::shrink`).
+fn shrink_region(reservation: &mut Reservation, region: &mut Region, end: Option<usize>) -> usize {
+    let Some(end) = end else {
+        return 0;
+    };
+    let from = region.committed;
+    region.committed = end;
+    // The region's start is a whole number of pages into the reservation.
+    match reservation.decommit(region.start + end..region.start + from) {
+        Ok(()) => from - end,
+        // Counted uncommitted, the next write commits them again.
+        Err(_) => 0,
+    }
 }
 
 #[cfg(test)]

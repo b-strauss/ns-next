@@ -30,6 +30,26 @@ pub(crate) fn reservation_granularity() -> usize {
     page_size()
 }
 
+/// A code zone's size is a multiple of this: a page.
+pub(crate) fn code_reservation_granularity() -> usize {
+    reservation_granularity()
+}
+
+/// What the code zone commits and gives back at a time: a page.
+pub(crate) fn code_commit_granularity() -> usize {
+    page_size()
+}
+
+/// Each view of a code zone is one mapping.
+pub(crate) fn code_mapping_granularity() -> Option<usize> {
+    None
+}
+
+/// Every POSIX system this crate builds for can make a code zone.
+pub(crate) fn code_zone_support() -> Result<(), &'static str> {
+    Ok(())
+}
+
 /// # Safety
 /// None beyond the call itself; the answer is a fresh mapping no one else holds.
 pub(crate) unsafe fn reserve(bytes: usize) -> Result<NonNull<u8>, i32> {
@@ -432,6 +452,93 @@ pub(crate) unsafe fn commit_code(
     _bytes: usize,
 ) -> Result<(), i32> {
     Ok(())
+}
+
+/// Gives back the memory behind `offset..offset + bytes` of the memory
+/// object, whose contents are gone and read as zeros through both views
+/// until written again: a hole punched into it, its size kept. Answers
+/// whether the system took the memory back: a file system without holes
+/// gives nothing back, and answers false.
+///
+/// # Safety
+/// `offset..offset + bytes` lies inside the mapping's zone and is
+/// page-aligned, and no reference into it is alive.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) unsafe fn decommit_code(
+    mapping: &CodeMapping,
+    offset: usize,
+    bytes: usize,
+) -> Result<bool, i32> {
+    let start = libc::off_t::try_from(offset).map_err(|_| libc::EINVAL)?;
+    let length = libc::off_t::try_from(bytes).map_err(|_| libc::EINVAL)?;
+    loop {
+        // SAFETY: a hole punched inside our own object's size keeps its
+        // size and frees only the range, which nothing refers into.
+        let answer = unsafe {
+            libc::fallocate(
+                mapping.descriptor,
+                libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+                start,
+                length,
+            )
+        };
+        if answer == 0 {
+            return Ok(true);
+        }
+        match errno() {
+            libc::EINTR => {}
+            libc::EOPNOTSUPP => return Ok(false),
+            code => return Err(code),
+        }
+    }
+}
+
+/// Lets the system take back the memory behind `offset..offset + bytes`
+/// of the one `MAP_JIT` mapping, whose contents are undefined until
+/// written again. Answers true: the pages are the system's to take.
+///
+/// # Safety
+/// `offset..offset + bytes` lies inside the mapping's zone and is
+/// page-aligned, and no reference into it is alive.
+#[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
+pub(crate) unsafe fn decommit_code(
+    mapping: &CodeMapping,
+    offset: usize,
+    bytes: usize,
+) -> Result<bool, i32> {
+    // SAFETY: the caller guarantees the range is ours and unborrowed;
+    // `MADV_FREE` changes no mapping and only lets its pages go.
+    let answer = unsafe {
+        libc::madvise(
+            mapping.executable.as_ptr().wrapping_add(offset).cast(),
+            bytes,
+            libc::MADV_FREE,
+        )
+    };
+    if answer == 0 {
+        Ok(true)
+    } else {
+        Err(errno())
+    }
+}
+
+/// Nothing: a POSIX shared memory object has no portable way to give back
+/// pages inside its size, so they stay until the zone is unmapped, and
+/// the answer is false.
+///
+/// # Safety
+/// None.
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    all(target_vendor = "apple", target_arch = "aarch64")
+)))]
+pub(crate) unsafe fn decommit_code(
+    _mapping: &CodeMapping,
+    _offset: usize,
+    _bytes: usize,
+) -> Result<bool, i32> {
+    Ok(false)
 }
 
 /// # Safety

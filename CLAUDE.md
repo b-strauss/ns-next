@@ -24,20 +24,34 @@ Rust 1.98.0, edition 2021, seven crates:
   instruction a template, a leaf of `jit/leaves.rs` or an exit that hands
   the frame to the interpreter, and every compiled body entered wherever
   it runs -- an interpreter's send calls it through the call stub
-  (`Mutator::enter_sent` in `interpreter/mod.rs`, `jit::called`), a push
+  (`Mutator::enter_sent` in `interpreter/mod.rs`, `jit::called`, and a
+  block's through the closure call stub, `jit::called_closure`), a push
   and a frame returned to cross a bridge whose entry block lasts between
   entries -- unless its code exits at once; a cached send calls through its site's
   machine-readable cell (`interpreter/inline_cache/cells.rs`) into the
   callee's machine code or a stub the cell names (`jit/sends.rs`,
   `jit/targets.rs`: polymorphic, megamorphic, accessor, mirror method,
-  leaf, refusing), the callee returns by `ret`, the miss leaf decides
-  what the cell did not and may compile the callee, and an exit at any
-  depth of compiled frames materializes them (`jit/materialize.rs`); the
+  leaf, refusing, and the closure stubs, which enter a block's machine
+  code through the machine entry table, `heap/machine_entries.rs`), the
+  callee returns by `ret`, the miss leaf decides
+  what the cell did not and may compile the callee, every body compiles
+  lean and its `MakeClosure` transfers the frame into a reifying twin
+  the twin leaf compiles on demand (`jit/closures.rs`, with the outer
+  locals and the futures), a non-local return is cut by
+  `jit/cut.rs`, and an exit at any
+  depth of compiled frames materializes them (`jit/materialize.rs`); a
+  body that keeps exiting is abandoned, its code freed, and revived when
+  the decay of its exit count at every collection, or its interpreted
+  entries counted inline, say so; the code zone is compacted, Cog's way,
+  when a compile finds no room, and a full collection frees the code of
+  dead bodies (`jit/zone.rs`); the
   VM's idioms and the register roles in `jit/macro_assembler.rs`, the
-  entry, call, exit and miss stubs in `jit/stubs.rs`, the trigger, the
-  entry and which bodies are entered in `jit/mod.rs`; `execution.md`,
-  "The baseline JIT's foundation", "Sends, returns and the exit that
-  materializes", "The entry at a send") and the send machinery it calls
+  entry, call, exit, miss and cut stubs in `jit/stubs.rs`, the trigger,
+  the entry, which bodies are entered and abandonment in `jit/mod.rs`;
+  `execution.md`, "The baseline JIT's foundation", "Sends, returns and
+  the exit that materializes", "The entry at a send", "Stage 4: closures,
+  non-local return, allocation and the barrier", "The code zone") and the
+  send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
@@ -70,8 +84,16 @@ Rust 1.98.0, edition 2021, seven crates:
   between entries, and both trace only an object's strong words
   (`heap/object.rs`'s `strong_pointer_ranges`), clearing a `WeakArray`'s
   slots (format `WeakPointers`) and mourning an `Ephemeron` (format
-  `Ephemeron`) whose key nothing else reaches; the write barrier and the
-  remembered set in `heap.rs`'s store accessors; `heap/value.rs`, a value
+  `Ephemeron`) whose key nothing else reaches; the symbols a program
+  makes, numberless, in a weak table of their own (`heap/symbols.rs`);
+  every table beside the space held to a growth limit that requests a
+  full collection, and the reservations beside it -- the stack, the
+  cells, the two id tables of machine code, the code zone -- giving back
+  what a peak committed after a full collection, by a band and a damping
+  (`heap/limits.rs`; `memory.md`, "The trigger and the growth policy",
+  "Giving committed memory back"); the write barrier and the
+  remembered set in `heap.rs`'s store accessors, and machine code's
+  inline barrier beside them; `heap/value.rs`, a value
   as one tagged word, Spur's, and `Word`, the bare word a heap object
   stores; the step state `Mutator` in `interpreter/mod.rs`, held at rest
   by `World` in `heap/world.rs` and reached only through
@@ -254,11 +276,15 @@ world has the loader build what it names by the binary's own code and look
 its names up, running nothing of the image's before the application starts.
 
 **Every store into an existing object goes through `heap.rs`'s store
-accessors and their write barrier.** A scavenge reads only the young
+accessors and their write barrier, or, in machine code, through the
+inline barrier (`MacroAssembler::store_with_barrier`), which makes the
+same decision and calls `Heap::remember` through a leaf.** A scavenge
+reads only the young
 objects and the remembered old ones, so a store that writes a word into an
 old object any other way leaves the young object it names unreachable to
 the next scavenge -- moved or reclaimed, silently, at exit status 0. Only an
-initializing store into an object just allocated skips the barrier, which
+initializing store into an object just allocated skips the barrier, the
+interpreter's and machine code's alike, which
 is why every old allocation outside the image decoder is born remembered;
 besides those, only the collector's own rewrites (a scavenge, a
 compaction, a move) and the bulk forward behind `become:`
@@ -428,37 +454,76 @@ second interpreter.** Four rules keep the baseline JIT
 into the frame only after its last decline or exit, so an exit, which
 hands the instruction to the interpreter, never re-applies it. A leaf
 (`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
-activation and never pushes; only the miss leaf compiles and installs a
-callee; and a leaf answers "re-execute" only before it changed anything
-but a send's argument slots, which the mirror leaf places as the
-interpreter does and which nothing reads after the send but the send
-re-executed. A new instruction is one arm of
-`jit::baseline::lower` plus the macro-assembler idioms it lacks, never a
-second dispatch; the run loop enters machine code through
-`jit::entered` and `jit::resumed`, a send it delivers through
-`jit::called` (`mod.rs`); the entry block's lasting words -- what does
-not move between entries -- are written only when what they name
-changes, which must mark the block stale (`JitState::mark_block_stale`;
-only a debug build's check at every entry catches a missed mark), the
-frame's and the code's words at each entry, and it holds no handle. A cache cell is
-written only from its entry -- beside it, or afresh when the JIT's state
-under it changes -- its entry address a function of the entry's target
-and the JIT's state, and a stub does what
-`Mutator::act_with_base` does for its target and nothing more. No word
-machine code reads or writes between two leaf calls lives inline in
-`Mutator`: frame registers and object fields lie in the activation
-stack's and the object space's reservations, the cells and the
-application id table in reservations of their own, all outside it, and
+activation and never pushes; only the miss leaf, the initializer leaf
+and the forcing leaf compile and install a callee, and the twin leaf
+the running body's twin; and a leaf answers "re-execute" only
+before it changed anything but a send's argument slots, which the mirror
+leaf places as the interpreter does and which nothing reads after the
+send but the send re-executed. Every body compiles lean, and its
+`MakeClosure` transfers the frame into the body's reifying twin, so a
+lean body's frame is never reified: whether a frame reifies is decided
+by the copy it runs (`MachineFrame::reifies`), the run loop goes on in
+the twin with a frame the interpreter reified, and no leaf reifies a
+frame running lean code, whose return divorces nothing and whose frame
+object would stay married to a popped offset; a debug build asserts it
+as the leaf's view is released. A twin is freed, abandoned and replaced
+with its lean body, never alone, and the lean body's transfer words are
+written afresh wherever the twin moves (`execution.md`, "A frame reifies
+only in its body's twin").
+The cut (`cut.rs`), which carries out a non-local return in machine
+code, is the one routine that reads and pops activations other than
+its own: it runs no Newspeak code, never collects, never pushes, reads
+only the compiled frames of the current stretch and pops only those
+above the home and a home machine code pushed -- each as its return pops
+it, a reified one divorced and its count taken off -- while a home that
+is the stretch's entry frame it divorces and uncounts as that frame's
+return does, and returns through the entry stub, whose run loop pops
+it. It changes nothing before it has found the home among them, and
+answers the exit -- so that the interpreter's one unwinder carries the
+return -- for a body that is no block's, a block that is the entry
+frame, a home not running, suspended or below the entry frame, an
+unwind marker's activation between, a return address into a stub
+before the home, and a home that catches no return.
+A new instruction is one arm of `jit::baseline::lower` plus the
+macro-assembler idioms it lacks, never a second dispatch; the run loop
+enters machine code through `jit::entered` and `jit::resumed`, a send it
+delivers through `jit::called` and `jit::called_closure` (`mod.rs`);
+the entry block's lasting words -- what does not move between entries --
+are written only when what they name changes, which must mark the block
+stale (`JitState::mark_block_stale`; only a debug build's check at every
+entry catches a missed mark), the frame's and the code's words at each
+entry, and it holds no handle. A cache cell is written only from its
+entry -- beside it, or afresh when the JIT's state under it changes --
+its entry address a function of the entry's target and the JIT's state,
+and a stub does what `Mutator::act_with_base` does for its target and
+nothing more. A row of the machine entry table, which the closure stubs
+jump through (`heap/machine_entries.rs`), is written only from the
+body its code id names, and cleared wherever that stops naming its
+machine code: the id freed, the body abandoned or freed by a
+compaction or a slide of its feedback base, the zone replaced, the
+JIT switched on or off -- a stale row is a jump into another body's
+code.
+The code zone is compacted only at the run loop's safepoint, when no
+return address into it exists. A compaction remaps every cell, machine
+entry row and record that names an address in it, and a body holds no
+address of its own but those relative to `rip`.
+No word machine code reads or writes between two leaf calls lives inline
+in `Mutator`: frame registers and object fields lie in the activation
+stack's and the object space's reservations, the cells, the
+application id table and the machine entry table in reservations of
+their own, a body's closure and outer-local sites among its data words
+in the code zone, moved and freed with it and written only through the
+zone's writer (`JitState::write_body_words`), all outside it, and
 every other such word lives in the heap's machine words
 (`heap/machine_words.rs`) or the entry block (`ns_memory::EntryBlock`),
-`Cell`s behind an `Rc` each. `CodeZone::enter`
-holds the mutator as a protected `&mut`, so machine code's access to a
-word inside it is undefined behaviour once a leaf has written that word,
-which no test and no tool detects (`execution.md`, "The baseline JIT's
-foundation", "The machine words"). No file under `jit/` but
-`macro_assembler.rs` names an architecture's registers outside a test
-module: a template, a send or a stub uses the macro assembler's idioms
-and its `Roles`, and a new register need is a new named role, held by
+`Cell`s behind an `Rc` each. `CodeZone::enter` holds the mutator as a
+protected `&mut`, so machine code's access to a word inside it is
+undefined behaviour once a leaf has written that word, which no test and
+no tool detects (`execution.md`, "The baseline JIT's foundation", "The
+machine words"). No file under `jit/` but `macro_assembler.rs` names an
+architecture's registers outside a test module: a template, a send or a
+stub uses the macro assembler's idioms and its `Roles`, and a new
+register need is a new named role, held by
 `crates/ns-runtime/tests/jit_architecture_split.rs`.
 
 **A chain of messages is walked link by link.** `a b + c …` is a left-nested
@@ -497,8 +562,8 @@ every one runs on 18 threads.
 | `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
-| `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
-| `stress` | the suite under the eight stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy for `aarch64-apple-darwin`, a target without an encoder, warning-free | when a change touches a type a size test pins; the end of a batch that changed the runtime |
+| `stress` | the suite under the nine stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew --no-daemon verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 

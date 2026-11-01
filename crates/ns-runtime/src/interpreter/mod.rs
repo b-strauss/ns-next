@@ -191,10 +191,10 @@ pub(crate) enum Step<'gc> {
     /// built, cached and answered (`nested::after_clause`).
     SuperclassClause(Box<NestedClassCreation<'gc>>),
     /// Activate `method`, as `Step::Method` with owned arguments does, and
-    /// do `then` with its value: how a future's forcing sends `value` to a
-    /// computation that is no block and carries on afterwards
-    /// (`Mutator::send_value_then`). Boxed, so that `Step` keeps the size
-    /// the hot path was measured at.
+    /// do `then` with its value: how a future is forced for an instruction
+    /// that runs again once it is resolved
+    /// (`Mutator::forcing_then_reexecute`). Boxed, so that `Step` keeps the
+    /// size the hot path was measured at.
     MethodThen(Box<MethodThen<'gc>>),
 }
 
@@ -634,6 +634,15 @@ pub struct Interpreter {
     /// Debug builds only.
     #[cfg(debug_assertions)]
     stress_suspend: Option<safepoint::StressSchedule>,
+    /// The zone stress mode's schedule, when it is on
+    /// (`NS_NEXT_STRESS_ZONE`, or `set_stress_zone`): the code zone
+    /// compacted at the safepoints its schedule picks, every body no
+    /// activation runs freed, so that every program runs with its bodies
+    /// freed, compiled again and moved (`jit::zone`). Paced like the
+    /// collect stress mode, since a compaction walks the stack and every
+    /// cell. Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_zone: Option<safepoint::StressSchedule>,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
@@ -692,11 +701,19 @@ impl Interpreter {
             #[cfg(debug_assertions)]
             stress_suspend: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SUSPEND"),
             #[cfg(debug_assertions)]
+            stress_zone: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_ZONE"),
+            #[cfg(debug_assertions)]
             cache_invalidations: 0,
         };
         #[cfg(debug_assertions)]
         {
             interpreter.hold_safepoints_for_stress();
+            // The collect stress mode slides the site ranges at every
+            // collection that finds one free, so that its collections
+            // exercise every slide (`InlineCaches::plan_slide`).
+            let eager_slides = interpreter.stress_collect.is_some();
+            interpreter.world.set_eager_slides(eager_slides);
+            interpreter.shrink_pairs_for_stress();
             // A fixture run small enough that every insert contends for the
             // same group (`run_goldens.rs`); anything not twice a decimal
             // power of two is ignored rather than refused, since this reads
@@ -938,6 +955,18 @@ impl Interpreter {
         })
     }
 
+    /// The feedback base the closure `closure` holds, raw, or `None` when
+    /// it is no closure: what a slide of the site ranges rewrites
+    /// (`InlineCaches::plan_slide`). A test hook.
+    #[doc(hidden)]
+    pub fn closure_feedback_base(&mut self, closure: &Root) -> Option<u32> {
+        self.enter(|mutator| {
+            let object = mutator.fetch(closure).as_object()?;
+            let (_, _, base) = mutator.heap.closure_activation(object)?;
+            Some(base.raw())
+        })
+    }
+
     /// The cells of `method`'s sends of `sent` (`call_site_states`'s
     /// sites): the words machine code reads beside each entry. A test hook.
     #[doc(hidden)]
@@ -1008,16 +1037,37 @@ impl Interpreter {
         self.world.jit_statistics()
     }
 
+    /// Why the JIT is off though it was wanted, `None` while it runs or
+    /// when nothing asked for it (`NS_NEXT_NO_JIT=1`, or a build without an
+    /// encoder): its code zone could not be reserved -- on a Windows before
+    /// 10 version 1803 among others, which the reason names. A host reports
+    /// it, since the program then runs interpreted, several times slower,
+    /// and a measurement must refuse it rather than time the interpreter.
+    pub fn jit_unavailable(&self) -> Option<String> {
+        self.world.jit_unavailable()
+    }
+
     /// Turns the JIT on or off for the bodies entered from now on, as
     /// `NS_NEXT_NO_JIT=1` turns it off for a new interpreter. A test hook,
     /// set before the code it is meant for runs: a body entered while the
     /// JIT is off is refused and stays interpreted for good, so turning
-    /// the JIT on later does not revive it.
+    /// the JIT on later does not revive it. A switch vacates the caches
+    /// and clears every machine entry row, so that no cell and no closure
+    /// stub enters a body refused meanwhile.
     #[doc(hidden)]
     pub fn set_jit_enabled(&mut self, enabled: bool) {
         self.enter(|mutator| {
-            if mutator.jit.set_enabled(enabled) {
+            let was_enabled = mutator.jit.is_enabled();
+            let reserved = mutator.jit.set_enabled(enabled);
+            // What a cell or a machine entry row names is decided by the
+            // JIT's state, which a switch changes: a body pushed while the
+            // JIT is off is refused for good, and a cell or row written
+            // before would still enter its machine code once the JIT is
+            // on again. Rows are written afresh at a block's next push,
+            // cells at their sites' next miss.
+            if reserved || was_enabled != mutator.jit.is_enabled() {
                 mutator.caches.invalidate();
+                mutator.heap.forget_machine_entries();
             }
         });
     }
@@ -1031,7 +1081,131 @@ impl Interpreter {
         self.enter(|mutator| {
             mutator.jit.replace_zone(bytes);
             mutator.caches.invalidate();
+            // Every machine entry the table records lies in the old zone.
+            mutator.heap.forget_machine_entries();
         });
+    }
+
+    /// Compacts the code zone now, between runs, as the run loop's
+    /// safepoint compacts it once a compile found the zone full: every body
+    /// dead, abandoned or no longer named freed, and then the least used
+    /// until a quarter of the zone is free (`jit::zone`). A test hook.
+    #[doc(hidden)]
+    pub fn compact_jit_zone(&mut self) {
+        assert!(!self.running, "compact_jit_zone is for between runs");
+        self.enter(|mutator| mutator.compact_code_zone());
+    }
+
+    /// The zone offset at which `method`'s body has machine code in this
+    /// interpreter's zone, if it has some. A test hook.
+    #[doc(hidden)]
+    pub fn jit_body_offset(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<u32> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.body_offset(&code)
+        })
+    }
+
+    /// The data words of `method`'s body's machine code -- its transfer
+    /// words, which name its twin's code -- as the zone holds them. A test
+    /// hook.
+    #[doc(hidden)]
+    pub fn jit_body_words(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<Vec<u64>> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.body_words(&code)
+        })
+    }
+
+    /// Whether the machine code of `method`'s body in this interpreter's
+    /// zone reifies its frame, if it has some: it never does, since every
+    /// body compiles lean and only its twin reifies. A test hook.
+    #[doc(hidden)]
+    pub fn jit_body_reifies(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<bool> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.body_reifies(&code)
+        })
+    }
+
+    /// The zone offset of the twin of `method`'s body -- its reifying
+    /// compile, made when a transfer first needed it -- if it has one. A
+    /// test hook.
+    #[doc(hidden)]
+    pub fn jit_twin_offset(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<u32> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.twin_offset(&code)
+        })
+    }
+
+    /// The data words of the twin of `method`'s body -- its closure sites
+    /// -- as the zone holds them, if it has a twin. A test hook.
+    #[doc(hidden)]
+    pub fn jit_twin_words(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<Vec<u64>> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.twin_words(&code)
+        })
+    }
+
+    /// For each block `method` makes, in order: the machine entry its row
+    /// of the machine entry table names (0 for none), and the address of
+    /// its machine code in this interpreter's zone, if it has some. A test
+    /// hook.
+    #[doc(hidden)]
+    pub fn jit_block_rows(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Vec<(u64, Option<u64>)> {
+        self.enter(|mutator| {
+            let Some(code) = method_code(mutator, class, side, method) else {
+                return Vec::new();
+            };
+            let mut rows = Vec::new();
+            for instruction in code.instructions() {
+                let crate::bytecode::Instruction::MakeClosure { code: block, .. } = instruction
+                else {
+                    continue;
+                };
+                #[cfg(ns_jit)]
+                let entry = {
+                    let id = mutator.heap.code_id(&block);
+                    mutator.heap.machine_entry_of(id)
+                };
+                #[cfg(not(ns_jit))]
+                let entry = 0;
+                rows.push((entry, mutator.jit.body_entry_address(&block)));
+            }
+            rows
+        })
     }
 
     /// Turns the JIT stress mode (`NS_NEXT_STRESS_JIT`) on or off for this
@@ -1044,12 +1218,31 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.set_stress(stress));
     }
 
+    /// Makes the JIT lower `MakeFuture` to an exit in the bodies it
+    /// compiles from now on, so that a body that makes a future at once
+    /// exits at once and is never compiled, while it still returns as
+    /// any body does. A test hook, set before the code it is meant for is
+    /// compiled.
+    #[doc(hidden)]
+    pub fn set_jit_futures_exit(&mut self, futures_exit: bool) {
+        self.enter(|mutator| mutator.jit.set_futures_exit(futures_exit));
+    }
+
     /// Makes machine code count its backward jumps
     /// (`JitStatistics::machine_back_edges`), which it otherwise leaves
     /// uncounted so that a loop pays nothing for the count. A test hook.
     #[doc(hidden)]
     pub fn set_jit_counting(&mut self, counting: bool) {
         self.enter(|mutator| mutator.jit.set_counting(counting));
+    }
+
+    /// Sets the interpreted entries after which a body abandoned for the
+    /// first time is revived (`jit::REVIVAL_ENTRIES`, 4,096, otherwise), so
+    /// that a test reaches a revival by entries cheaply. A test hook, set
+    /// before the abandonment it is meant for.
+    #[doc(hidden)]
+    pub fn set_jit_revival_entries(&mut self, entries: u32) {
+        self.enter(|mutator| mutator.jit.set_revival_entries(entries));
     }
 
     /// The object space's occupancy. Available in every build: it is what a
@@ -1063,6 +1256,31 @@ impl Interpreter {
     /// every build, like `heap_statistics`.
     pub fn collector_statistics(&self) -> crate::CollectorStatistics {
         self.world.collector_statistics()
+    }
+
+    /// The sizes of the tables beside the object space and of what the
+    /// reservations beside it have committed: what a long-run test holds
+    /// to a bound. Available in every build, like `collector_statistics`.
+    #[doc(hidden)]
+    pub fn table_sizes(&self) -> crate::TableSizes {
+        self.world.table_sizes()
+    }
+
+    /// Sets every table's growth floor and next limit (`heap::limits`), so
+    /// that a test reaches a table's limit without minting up to the
+    /// default floor first. A test hook.
+    #[doc(hidden)]
+    pub fn set_table_floors(&mut self, floors: crate::TableFloors) {
+        self.world.set_table_floors(floors);
+    }
+
+    /// Sets the threshold and the headroom by which each reservation beside
+    /// the object space gives committed memory back after a full collection
+    /// (`heap::limits::Shrink`), so that a test crosses a threshold without
+    /// committing up to the default first. A test hook.
+    #[doc(hidden)]
+    pub fn set_shrink_pairs(&mut self, pairs: crate::ShrinkPairs) {
+        self.world.set_shrink_pairs(pairs);
     }
 
     /// Replaces the global cache with a fresh one sized for `entries`,
@@ -1164,7 +1382,7 @@ impl<'gc> Mutator<'gc> {
             instances(self, BuiltinClass::Float),
         ];
         self.heap.set_immediate_dispatch_ids(ids);
-        self.rewrite_immediate_classes();
+        self.rewrite_machine_classes();
         let guards = crate::heap::BuiltinGuards {
             closure: instances(self, BuiltinClass::Closure),
             frame: instances(self, BuiltinClass::Activation),
@@ -1172,12 +1390,14 @@ impl<'gc> Mutator<'gc> {
         self.heap.set_builtin_guards(guards);
     }
 
-    /// Writes the immediates' class objects into their machine words, from
+    /// Writes the immediates' class objects, and the `Array`, `Closure`,
+    /// `Activation` and `FutureImplementation` classes an allocation in
+    /// machine code writes, into their machine words, from
     /// the builtin classes: at the bootstrap and again after every mover
     /// (`World::scavenge`, `collect`, `move_everything`, `forward_identity`),
     /// since a word a heap object stores is a handle the collector does not
     /// trace.
-    pub(crate) fn rewrite_immediate_classes(&mut self) {
+    pub(crate) fn rewrite_machine_classes(&mut self) {
         let classes = [
             self.builtin_class(BuiltinClass::UndefinedObject),
             self.builtin_class(BuiltinClass::False),
@@ -1186,6 +1406,25 @@ impl<'gc> Mutator<'gc> {
             self.builtin_class(BuiltinClass::Float),
         ];
         self.heap.set_immediate_classes(classes);
+        self.heap
+            .set_array_class(self.builtin_class(BuiltinClass::Array));
+        self.heap
+            .set_reification_classes(self.builtin_class(BuiltinClass::Closure));
+        self.heap.set_future_class(
+            self.builtin_class(BuiltinClass::FutureImplementation),
+            self.futures_made,
+        );
+    }
+
+    /// Records that this heap has made a future (`futures_made`), here and
+    /// in the `FutureHeader` word, which lets machine code's `MakeFuture`
+    /// make the next ones (`Heap::set_future_class`).
+    pub(crate) fn note_futures_made(&mut self) {
+        if !self.futures_made {
+            self.futures_made = true;
+            self.heap
+                .set_future_class(self.builtin_class(BuiltinClass::FutureImplementation), true);
+        }
     }
 
     /// The smallest freed dispatch id, else the next never minted, or
@@ -1453,11 +1692,9 @@ impl<'gc> Mutator<'gc> {
         temporaries: usize,
     ) -> Result<ActivationReference, Signal<'gc>> {
         match refusal {
-            Refusal::PastTheRegisterCeiling => Err(self.refuse_past_the_register_ceiling(
-                header.kind,
-                header.receiver,
-                header.then,
-            )),
+            Refusal::PastTheRegisterCeiling => {
+                Err(self.refuse_past_the_register_ceiling(header.kind, header.receiver))
+            }
             Refusal::AtTheLimit(arguments) => {
                 self.push_past_the_limit(Box::new(header), arguments, temporaries)
             }
@@ -1483,16 +1720,8 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         kind: ActivationKind<'gc>,
         receiver: Value<'gc>,
-        then: Continuation<'gc>,
     ) -> Signal<'gc> {
-        let refusal =
-            literals::body_too_large_error(kind, receiver, crate::bytecode::BodyLimit::Registers);
-        // As `refuse_exhausted_push` undoes it: a refused activation never
-        // runs, so a future it was to compute is unresolved again.
-        if let Continuation::Future(forcing) = then {
-            self.future_abandoned(*forcing);
-        }
-        refusal
+        literals::body_too_large_error(kind, receiver, crate::bytecode::BodyLimit::Registers)
     }
 
     /// A push the ordinary room of the activation stack's reservation could
@@ -1531,17 +1760,11 @@ impl<'gc> Mutator<'gc> {
     #[cold]
     #[inline(never)]
     fn refuse_exhausted_push(&mut self, header: Box<ActivationHeader<'gc>>) -> Signal<'gc> {
-        let refusal = if self.depth_reserve_held() {
+        if self.depth_reserve_held() {
             Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
         } else {
             recursion_too_deep(&header)
-        };
-        // As `push_past_the_limit` undoes it: a refused activation never
-        // runs, so a future it was to compute is unresolved again.
-        if let Continuation::Future(forcing) = header.then {
-            self.future_abandoned(*forcing);
         }
-        refusal
     }
 
     /// A counted push at or past L. While a VM error's `signal` holds the
@@ -1575,14 +1798,9 @@ impl<'gc> Mutator<'gc> {
         } else {
             Signal::Terminate(Box::new(self.overrun_of_the_reserve(&header)))
         };
-        // A refused activation never runs, so a future it was to compute is
-        // unresolved again, as `abandon` leaves one whose activation an
-        // unwind pops. Only a forcing is undone here: every other
-        // continuation that has begun something -- a nested class's
-        // creation -- begins it once its push has succeeded.
-        if let Continuation::Future(forcing) = header.then {
-            self.future_abandoned(*forcing);
-        }
+        // A refused activation never runs, and no continuation begins
+        // anything before its push has succeeded -- a nested class's
+        // creation is marked only then -- so nothing is undone here.
         Err(refusal)
     }
 
@@ -1734,6 +1952,45 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// `code`'s feedback base (`InlineCaches::base_for`), requesting a full
+    /// collection when the range it minted grew the sites to their growth
+    /// limit. Every caller of `base_for` goes through it, machine code's
+    /// leaves included: the request only sets flags. A family that already
+    /// has its range -- every push but its first -- pays the lookup alone.
+    #[inline]
+    pub(crate) fn feedback_base_for(
+        &mut self,
+        code: &Rc<crate::bytecode::CompiledCode>,
+    ) -> FeedbackBase {
+        match self.caches.known_base(code) {
+            Some(base) => base,
+            None => self.mint_feedback_base(code),
+        }
+    }
+
+    /// `feedback_base_for` for a family without its range yet.
+    #[cold]
+    #[inline(never)]
+    fn mint_feedback_base(&mut self, code: &Rc<crate::bytecode::CompiledCode>) -> FeedbackBase {
+        let base = self.caches.base_for(code);
+        if self.caches.wants_collection() {
+            self.heap.request_table_collection();
+        }
+        base
+    }
+
+    /// A range of `size` sites for a closure an image decoded, which
+    /// carries none (`InlineCaches::fresh_loose_range`), requesting a full
+    /// collection as `feedback_base_for` does.
+    #[cold]
+    fn fresh_feedback_range(&mut self, size: u32) -> FeedbackBase {
+        let base = self.caches.fresh_loose_range(size);
+        if self.caches.wants_collection() {
+            self.heap.request_table_collection();
+        }
+        base
+    }
+
     /// Resumes the suspended activation of `frame`
     /// (`Heap::resume_activation`) and answers it. Its feedback base is
     /// derived again by `push_step`'s rule for its kind -- a closure's
@@ -1749,7 +2006,7 @@ impl<'gc> Mutator<'gc> {
                     .closure_activation(closure)
                     .expect("internal: a closure frame names a closure object");
                 if closure_feedback_base == FeedbackBase::NOT_ASSIGNED {
-                    let fresh = self.caches.fresh_range(code.family_size);
+                    let fresh = self.fresh_feedback_range(code.family_size);
                     self.heap.closure_set_feedback_base(closure, fresh);
                     fresh
                 } else {
@@ -1760,7 +2017,7 @@ impl<'gc> Mutator<'gc> {
                 let code = self.heap.frame_code(frame).expect(
                     "internal: the frame of an activation the runtime pushed names its code",
                 );
-                self.caches.base_for(&code)
+                self.feedback_base_for(&code)
             }
         };
         self.heap.resume_activation(frame, feedback_base)
@@ -1818,7 +2075,7 @@ impl<'gc> Mutator<'gc> {
                 // so every decider hands `NOT_ASSIGNED` and this is where it
                 // is found, once, per family (`inline_cache::InlineCaches::base_for`).
                 let feedback_base = if feedback_base == FeedbackBase::NOT_ASSIGNED {
-                    self.caches.base_for(&code)
+                    self.feedback_base_for(&code)
                 } else {
                     feedback_base
                 };
@@ -1881,7 +2138,7 @@ impl<'gc> Mutator<'gc> {
                 // `NOT_ASSIGNED` here means a closure an image decoded,
                 // which never ran `MakeClosure` at all.
                 let feedback_base = if closure_feedback_base == FeedbackBase::NOT_ASSIGNED {
-                    let fresh = self.caches.fresh_range(code.family_size);
+                    let fresh = self.fresh_feedback_range(code.family_size);
                     self.heap.closure_set_feedback_base(closure, fresh);
                     fresh
                 } else {
@@ -1950,7 +2207,7 @@ impl<'gc> Mutator<'gc> {
                         arguments.len(),
                     ));
                 }
-                let feedback_base = self.caches.base_for(&code);
+                let feedback_base = self.feedback_base_for(&code);
                 let temporaries = code.registers_above_header();
                 self.push_placed(
                     ActivationHeader {
@@ -1988,7 +2245,7 @@ impl<'gc> Mutator<'gc> {
             }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
-                let feedback_base = self.caches.base_for(&code);
+                let feedback_base = self.feedback_base_for(&code);
                 let temporaries = code.registers_above_header();
                 let (enclosing, index, serial) =
                     (creation.enclosing, creation.index, creation.serial);
@@ -2123,28 +2380,50 @@ impl<'gc> Mutator<'gc> {
         slots: Option<u16>,
     ) -> Result<Sent<'gc>, Signal<'gc>> {
         let mut arguments = send_arguments;
-        if let Step::Method {
-            receiver,
-            method,
-            defining_class,
-            arguments: StepArguments::Send,
-            feedback_base,
-        } = &step
-        {
-            if slots.is_some() && method.code.jit.is_compiled() {
-                match self.call_sent(
-                    *receiver,
-                    method,
-                    *defining_class,
-                    *feedback_base,
-                    send_arguments,
-                    sender,
-                    slots,
-                )? {
+        match &step {
+            Step::Method {
+                receiver,
+                method,
+                defining_class,
+                arguments: StepArguments::Send,
+                feedback_base,
+            } => {
+                if slots.is_some() && method.code.jit.is_compiled() {
+                    match self.call_sent(
+                        *receiver,
+                        method,
+                        *defining_class,
+                        *feedback_base,
+                        send_arguments,
+                        sender,
+                        slots,
+                    )? {
+                        Call::Ran(sent) => return Ok(sent),
+                        Call::Push(placed) => arguments = placed,
+                    }
+                }
+            }
+            // A block that takes the send's own arguments, the
+            // activation a `value` send decides, delivering its value,
+            // whose body has a machine entry row: told apart by its
+            // closure's code id alone (`Heap::closure_has_machine_entry`),
+            // out of line and cheap, so that a block that stays
+            // interpreted -- one the JIT abandoned among them -- reads its
+            // closure once, at its push, and pays no call's frame for it.
+            Step::Block {
+                closure,
+                arguments: StepArguments::Send,
+                then: Continuation::Deliver,
+            } if slots.is_some()
+                && self.jit.is_enabled()
+                && self.heap.closure_has_machine_entry(*closure) =>
+            {
+                match self.call_sent_closure(*closure, send_arguments, sender, inlinable, slots) {
                     Call::Ran(sent) => return Ok(sent),
                     Call::Push(placed) => arguments = placed,
                 }
             }
+            _ => {}
         }
         self.push_sent(step, arguments, sender, inlinable, slots)
             .map(|(activation, program_counter)| Sent::Pushed(activation, program_counter))
@@ -2191,7 +2470,7 @@ impl<'gc> Mutator<'gc> {
         }
         check_method_arity(method, receiver, usize::from(window.count()))?;
         let feedback_base = if feedback_base == FeedbackBase::NOT_ASSIGNED {
-            self.caches.base_for(&method.code)
+            self.feedback_base_for(&method.code)
         } else {
             feedback_base
         };
@@ -2222,6 +2501,76 @@ impl<'gc> Mutator<'gc> {
                 ))),
             },
         )
+    }
+
+    /// `enter_sent`'s call of a block's machine code, the block's
+    /// activation on the send's own slots, `call_sent`'s for a method: the
+    /// arity, the feedback base and the depth count's exemption decided as
+    /// `push_step`'s `Step::Block` arm decides them, the arguments placed
+    /// into the slots, and the body called (`jit::called_closure`). A body
+    /// without machine code, a wrong arity, which the push raises, a
+    /// closure without a feedback base of its own, which the push gives
+    /// one, and every call the JIT refuses are the push's: `Call::Push`
+    /// names where it takes the arguments from. Called only for a closure
+    /// whose body has a machine entry row (`enter_sent`).
+    #[cold]
+    #[inline(never)]
+    fn call_sent_closure<'values>(
+        &mut self,
+        closure: ObjectReference<'gc>,
+        send_arguments: Arguments<'values, 'gc>,
+        sender: Option<ActivationReference>,
+        inlinable: bool,
+        slots: Option<u16>,
+    ) -> Call<'values, 'gc> {
+        let (Arguments::Slots(window), Some(sender_activation), Some(argument_base)) =
+            (send_arguments, sender, slots)
+        else {
+            return Call::Push(send_arguments);
+        };
+        let Some((code, captured_frame, feedback_base)) = self.heap.closure_activation(closure)
+        else {
+            return Call::Push(send_arguments);
+        };
+        if !code.jit.is_compiled()
+            || usize::from(code.argument_count) != usize::from(window.count())
+            || feedback_base == FeedbackBase::NOT_ASSIGNED
+        {
+            return Call::Push(send_arguments);
+        }
+        // `push_step`'s exemption: a block a `SendInlinable` sends `value`
+        // with the send's own arguments is control flow, and exempt when
+        // the sending activation created it.
+        let counted = !(inlinable
+            && self
+                .heap
+                .activation_reified(sender_activation)
+                .is_some_and(|frame| frame.same(captured_frame)));
+        let register_base = window.register_base();
+        if window.start() != argument_base {
+            self.heap.place_in_slots(window, argument_base);
+        }
+        match crate::jit::called_closure(
+            self,
+            sender_activation,
+            register_base,
+            argument_base,
+            closure,
+            &code,
+            feedback_base,
+            counted,
+        ) {
+            crate::jit::Called::Returned { value } => {
+                Call::Ran(Sent::Value(self.heap.machine_value(value)))
+            }
+            crate::jit::Called::Stopped(resumption) => Call::Ran(Sent::Stopped(resumption)),
+            // From the slots, where the arguments now are.
+            crate::jit::Called::Refused => Call::Push(Arguments::Slots(ArgumentSlots::new(
+                register_base,
+                argument_base,
+                window.count(),
+            ))),
+        }
     }
 
     /// Pushes the initializer body `body` of `level`'s mixin on `receiver`,
@@ -2256,7 +2605,7 @@ impl<'gc> Mutator<'gc> {
                 || code.stands_for_too_many_arguments(arguments.len()),
             "internal: an initializer is pushed with its own number of arguments"
         );
-        let feedback_base = self.caches.base_for(&code);
+        let feedback_base = self.feedback_base_for(&code);
         let temporaries = code.registers_above_header();
         self.push_placed(
             ActivationHeader {
@@ -2298,8 +2647,8 @@ impl<'gc> Mutator<'gc> {
             // stopped at -- now the top of the stack again.
             Continuation::Unwind(pending) => Err(unwind::signal_of(*pending)),
             Continuation::VmErrorSignalled(error) => Err(Signal::Terminate(error)),
-            Continuation::Future(_) => {
-                unreachable!("internal: vm::finish handles a future's continuation itself")
+            Continuation::Reexecute => {
+                unreachable!("internal: vm::finish runs the instruction again itself")
             }
             Continuation::ReturnToSuspended(_) => unreachable!(
                 "internal: the run loop resumes a suspended sender before it applies the continuation"
@@ -2310,17 +2659,17 @@ impl<'gc> Mutator<'gc> {
     /// What a continuation undoes when its activation is thrown away rather
     /// than returned from: the counterpart of `resume`, which `unwind::unwind`
     /// calls for every activation it pops, and `push_step` for a block
-    /// activation it refuses. Only a nested class's creation and a future's
-    /// forcing have begun anything -- the creation's cache slot is marked as
-    /// in progress, the future as resolving -- so only they have anything to
-    /// undo, and a return to a suspended sender undoes what the
-    /// continuation it wraps began; every other continuation is simply dropped, a
-    /// `Continuation::Unwind` included: a newer unwind, or an error, has
-    /// replaced the one it would have carried on.
+    /// activation it refuses. Only a nested class's creation has begun
+    /// anything -- its cache slot is marked as in progress -- so only it has
+    /// anything to undo, and a return to a suspended sender undoes what the
+    /// continuation it wraps began; every other continuation is simply
+    /// dropped, a `Continuation::Unwind` included: a newer unwind, or an
+    /// error, has replaced the one it would have carried on, and a
+    /// `Continuation::Reexecute`: a future's `resolve` undoes its own
+    /// forcing, by its `ifCurtailed:`.
     pub(crate) fn abandon(&mut self, then: Continuation<'gc>) {
         match then {
             Continuation::NestedClass(creation) => nested::end_creation(self, &creation),
-            Continuation::Future(forcing) => self.future_abandoned(*forcing),
             // The sender stays suspended: whoever throws this activation
             // away decides whether it resumes it.
             Continuation::ReturnToSuspended(suspended) => self.abandon(suspended.then),
@@ -2368,37 +2717,10 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<ActivationReference, Signal<'gc>> {
         let sender = self.heap.top_activation();
         // A continuation's step never refers to a send's arguments
-        // (`StepArguments::Send` is only answered by a decision about a send,
-        // and a continuation decides none: the one send it makes, a body's
-        // `value`, is a `Step::MethodThen`, which owns its arguments), so
-        // `Arguments::NONE` is always right here.
+        // (`StepArguments::Send` is only answered by a decision about a
+        // send, and a continuation decides none), so `Arguments::NONE` is
+        // always right here.
         self.push_step(step, Arguments::NONE, sender, !replaced_counted)
-    }
-
-    /// The step that sends `value` to `action`, through `Closure`'s
-    /// private `valueOf:` activated on `receiver`, and does `then` with the
-    /// answer. A send's decision may be a method, a block, a value or an
-    /// instantiation of several activations; the helper's own return is
-    /// the one place to hang `then` on for all of them.
-    pub(crate) fn send_value_then(
-        &mut self,
-        receiver: Value<'gc>,
-        action: Value<'gc>,
-        then: Continuation<'gc>,
-    ) -> Step<'gc> {
-        let closure_class = self.builtin_class(BuiltinClass::Closure);
-        let method = self
-            .heap
-            .class_application(closure_class)
-            .and_then(|application| application.mixin.compiled_method(Symbol::VALUE_OF).cloned())
-            .expect("internal: Kernel.ns's Closure declares valueOf:");
-        Step::MethodThen(Box::new(MethodThen {
-            receiver,
-            method,
-            defining_class: closure_class,
-            arguments: vec![action],
-            then,
-        }))
     }
 
     /// Whether a `^` aimed at `activation` ends at `activation`: a method's
@@ -2557,14 +2879,42 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The one object `symbol` is in this heap, allocated the first time
-    /// anything asks for it.
+    /// anything asks for it -- unless a program made a symbol of its text
+    /// before the text was interned, which is then adopted as the
+    /// symbol's object, so that the text keeps one object (§5.1.6).
     pub fn new_symbol(&mut self, symbol: Symbol) -> Value<'gc> {
         if let Some(object) = self.heap.canonical_symbol(symbol) {
+            return Value::object(object);
+        }
+        if let Some(object) = self.heap.adopt_program_symbol(symbol) {
             return Value::object(object);
         }
         let class = self.builtin_class(BuiltinClass::Symbol);
         let object = self.heap.allocate_symbol(class, symbol);
         self.heap.record_canonical_symbol(symbol, object);
+        Value::object(object)
+    }
+
+    /// The Symbol of `text`, which a program chose (`asSymbol`): the
+    /// interned symbol's object when something interned the text, and
+    /// otherwise a program-made symbol, which takes no number -- the
+    /// object the weak table holds for the text, or a new one recorded
+    /// there -- so that a run making symbols of fresh texts leaves the
+    /// interner as it was and its symbols die with their objects
+    /// (`docs/design/memory.md`, "Weak references"). Either way the text
+    /// has one object while anything reaches it (§5.1.6).
+    pub fn program_symbol(&mut self, text: &str) -> Value<'gc> {
+        if let Some(symbol) = Symbol::lookup(text) {
+            return self.new_symbol(symbol);
+        }
+        if let Some(object) = self.heap.program_symbol_named(text) {
+            return Value::object(object);
+        }
+        let class = self.builtin_class(BuiltinClass::Symbol);
+        let object = self
+            .heap
+            .allocate_string(class, crate::CodePoints::from(text));
+        self.heap.record_program_symbol(object);
         Value::object(object)
     }
 

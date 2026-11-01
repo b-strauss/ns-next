@@ -278,7 +278,18 @@ impl Primitive {
                 | ModulePrimitive::ClassNamed
                 | ModulePrimitive::Record,
             ) => false,
-            Primitive::Future(FuturePrimitive::Value | FuturePrimitive::Made) => false,
+            // Each asks about, or writes, the future itself, never its
+            // value: `IsFuture` answers `false` exactly when its operand
+            // is no future.
+            Primitive::Future(
+                FuturePrimitive::Made
+                | FuturePrimitive::IsFuture
+                | FuturePrimitive::State
+                | FuturePrimitive::Computation
+                | FuturePrimitive::TakeOver
+                | FuturePrimitive::ResolveTo
+                | FuturePrimitive::Abandon,
+            ) => false,
             Primitive::Weak(
                 WeakPrimitive::Allocate
                 | WeakPrimitive::Size
@@ -807,15 +818,28 @@ pub enum ModulePrimitive {
     Record,
 }
 
-/// The two leaves of the futures (`docs/design/object-model.md`,
-/// "Simultaneous slots"): `FutureImplementation`'s and `Future`'s.
+/// The leaves of the futures (`docs/design/object-model.md`,
+/// "Simultaneous slots"), all `FutureImplementation`'s (`builtins::future`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FuturePrimitive {
-    /// The future's value, forcing it first when it is unresolved.
-    Value,
     /// Notes that `FutureImplementation`'s factory made a future, which
     /// turns on the runtime's looking for one (`Mutator::futures_made`).
     Made,
+    /// Whether the operand is a future, answered without forcing it.
+    IsFuture,
+    /// A future's state, normalized: 0 unresolved, 1 resolving, 2
+    /// resolved, 3 for fields no forcing wrote.
+    State,
+    /// A future's computation field: its computation, or its value once
+    /// it is resolved.
+    Computation,
+    /// Marks an unresolved future resolving and answers its computation,
+    /// which a forcing of another future then runs in its stead.
+    TakeOver,
+    /// Records a value in a future and marks it resolved.
+    ResolveTo,
+    /// Marks a future still resolving unresolved again.
+    Abandon,
 }
 
 /// The leaves the shipped mirrors module reads structure and state
@@ -962,11 +986,59 @@ pub enum MachineCall {
     /// never tried it. Allocating is allowed: nothing collects outside a
     /// safepoint.
     Leaf,
+    /// Through the leaf shim, as `Leaf`, and, for a method whose fast
+    /// path the row is, through a stub of its own (`RowStub`), which does
+    /// what the row's leaf does for the case it answers most -- an index
+    /// in range -- in machine code and calls the row's leaf for every
+    /// other, so that the row's failures stay the leaf's.
+    Stub(RowStub),
     /// Through an exit: the interpreter runs the send. Every row's
     /// default, and the only call for a row whose leaf answers a step
     /// other than a value, reads or changes an activation, or depends on
     /// a safepoint the send's return reaches.
     Exit,
+}
+
+impl MachineCall {
+    /// Whether machine code runs the row through the leaf shim: a row
+    /// whose leaf was read and found leaf-safe, with a stub of its own
+    /// or without.
+    pub fn is_leaf_safe(self) -> bool {
+        matches!(self, MachineCall::Leaf | MachineCall::Stub(_))
+    }
+}
+
+/// The stub machine code runs a method whose fast path is a leaf-safe
+/// row through (`MachineCall::Stub`): the row's leaf for a receiver of
+/// its format and a `SmallInteger` index in range -- and for `at:put:`
+/// on a ByteArray a byte to store -- in machine code
+/// (`jit::targets::assemble_accessor_stubs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowStub {
+    /// An Array's `at:` (`collections::element_at`).
+    ArrayAt,
+    /// An Array's `at:put:`, through the write barrier
+    /// (`collections::element_at_put`).
+    ArrayAtPut,
+    /// A ByteArray's `at:` (`bytes::element_at`).
+    ByteArrayAt,
+    /// A ByteArray's `at:put:` (`bytes::element_at_put`).
+    ByteArrayAtPut,
+}
+
+impl RowStub {
+    /// Every stub, in the order `RowStub::index` numbers them.
+    pub const ALL: [RowStub; 4] = [
+        RowStub::ArrayAt,
+        RowStub::ArrayAtPut,
+        RowStub::ByteArrayAt,
+        RowStub::ByteArrayAtPut,
+    ];
+
+    /// The stub's position in `ALL`.
+    pub fn index(self) -> usize {
+        self as usize
+    }
 }
 
 impl MirrorEntry {
@@ -1016,6 +1088,15 @@ const fn mirror(
 const fn leaf(entry: MirrorEntry) -> MirrorEntry {
     MirrorEntry {
         machine_call: MachineCall::Leaf,
+        ..entry
+    }
+}
+
+/// `entry`, leaf-safe as `leaf` makes it, and run through `stub` where it
+/// is a method's fast path (`MachineCall::Stub`).
+const fn stubbed(entry: MirrorEntry, stub: RowStub) -> MirrorEntry {
+    MirrorEntry {
+        machine_call: MachineCall::Stub(stub),
         ..entry
     }
 }
@@ -1477,19 +1558,25 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: reads or allocates an Array, and stores into one, through the
     // write barrier, only once the index or the range is checked, so that a
     // decline and every error write nothing (`builtins::collections`).
-    leaf(mirror(
-        "collection:at:ifFail:",
-        "at:",
-        Primitive::Collection(CollectionPrimitive::ElementAt),
-    )),
+    stubbed(
+        mirror(
+            "collection:at:ifFail:",
+            "at:",
+            Primitive::Collection(CollectionPrimitive::ElementAt),
+        ),
+        RowStub::ArrayAt,
+    ),
     // Leaf: reads or allocates an Array, and stores into one, through the
     // write barrier, only once the index or the range is checked, so that a
     // decline and every error write nothing (`builtins::collections`).
-    leaf(mirror(
-        "collection:at:put:ifFail:",
-        "at:put:",
-        Primitive::Collection(CollectionPrimitive::ElementAtPut),
-    )),
+    stubbed(
+        mirror(
+            "collection:at:put:ifFail:",
+            "at:put:",
+            Primitive::Collection(CollectionPrimitive::ElementAtPut),
+        ),
+        RowStub::ArrayAtPut,
+    ),
     // Leaf: reads or allocates an Array, and stores into one, through the
     // write barrier, only once the index or the range is checked, so that a
     // decline and every error write nothing (`builtins::collections`).
@@ -1669,12 +1756,44 @@ pub const MIRROR: &[MirrorEntry] = &[
         "recordShippedModule",
         Primitive::Module(ModulePrimitive::Record),
     ),
-    mirror(
-        "futureValue:ifFail:",
+    // Leaf: each of the five reads or writes only its future's two fields,
+    // through the write barrier, allocates nothing and pushes nothing, and
+    // declines -- for a non-future, or `TakeOver` for a future that is not
+    // unresolved -- having written nothing (`builtins::future`).
+    leaf(mirror(
+        "futureState:ifFail:",
         // Unary: the future is the row's subject.
-        "value",
-        Primitive::Future(FuturePrimitive::Value),
-    ),
+        "state",
+        Primitive::Future(FuturePrimitive::State),
+    )),
+    leaf(mirror(
+        "futureComputation:ifFail:",
+        "computation",
+        Primitive::Future(FuturePrimitive::Computation),
+    )),
+    leaf(mirror(
+        "futureTakeOver:ifFail:",
+        "takeOver",
+        Primitive::Future(FuturePrimitive::TakeOver),
+    )),
+    leaf(mirror(
+        "future:resolveTo:ifFail:",
+        "resolveTo:",
+        Primitive::Future(FuturePrimitive::ResolveTo),
+    )),
+    leaf(mirror(
+        "futureAbandon:ifFail:",
+        "abandon",
+        Primitive::Future(FuturePrimitive::Abandon),
+    )),
+    // Leaf: reads its operand's class word and answers a Boolean; it never
+    // declines and writes nothing (`builtins::future`).
+    leaf(mirror(
+        "objectIsFuture:ifFail:",
+        // Unary: the object is the row's subject.
+        "isFuture",
+        Primitive::Future(FuturePrimitive::IsFuture),
+    )),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
@@ -2251,7 +2370,7 @@ pub const MIRROR: &[MirrorEntry] = &[
     mirror(
         "futureMade:ifFail:",
         // Unary: the new future is the row's subject, as the future is
-        // `futureValue:ifFail:`'s. It never fails, so the selector names
+        // `futureState:ifFail:`'s. It never fails, so the selector names
         // what the program sent.
         "computing",
         Primitive::Future(FuturePrimitive::Made),
@@ -2285,19 +2404,25 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: reads or allocates a ByteArray, and writes its bytes only once
     // every index, range and value is checked, so that a decline and every
     // error write nothing (`builtins::bytes`).
-    leaf(mirror(
-        "byteArray:at:ifFail:",
-        "at:",
-        Primitive::Bytes(BytePrimitive::ElementAt),
-    )),
+    stubbed(
+        mirror(
+            "byteArray:at:ifFail:",
+            "at:",
+            Primitive::Bytes(BytePrimitive::ElementAt),
+        ),
+        RowStub::ByteArrayAt,
+    ),
     // Leaf: reads or allocates a ByteArray, and writes its bytes only once
     // every index, range and value is checked, so that a decline and every
     // error write nothing (`builtins::bytes`).
-    leaf(mirror(
-        "byteArray:at:put:ifFail:",
-        "at:put:",
-        Primitive::Bytes(BytePrimitive::ElementAtPut),
-    )),
+    stubbed(
+        mirror(
+            "byteArray:at:put:ifFail:",
+            "at:put:",
+            Primitive::Bytes(BytePrimitive::ElementAtPut),
+        ),
+        RowStub::ByteArrayAtPut,
+    ),
     // Leaf: reads or allocates a ByteArray, and writes its bytes only once
     // every index, range and value is checked, so that a decline and every
     // error write nothing (`builtins::bytes`).

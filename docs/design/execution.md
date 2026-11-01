@@ -16,11 +16,19 @@
 > which are the callee's first registers (road step 7a′, "Overlapping
 > register windows"). The contract compiled frames will keep with
 > interpreted ones is written (road step 7c, "Planned: the
-> deoptimization contract"), and the baseline JIT's foundation is built
-> on x64: a body that can loop before its first instruction without a
-> template runs as machine code from its second entry up to that
-> instruction, then the interpreter goes on (road step 8's first two
-> stages, "The baseline JIT's foundation").
+> deoptimization contract"), and the baseline JIT's first four stages
+> are built on x64 (road step 8, "The baseline JIT's foundation"): a body
+> is compiled at its second entry and entered wherever it runs; its sends
+> call through the inline caches' cells, it allocates, stores through the
+> write barrier, makes closures, calls blocks, forces futures and cuts a
+> non-local return in machine code, and it exits to the interpreter
+> mainly at an error, a poll that found a request and an unwind it
+> cannot cut ([OPEN-WORK.md](../OPEN-WORK.md) lists the other exits left);
+> a body that keeps exiting is abandoned and revived by the
+> decay of its exits or by its interpreted entries, and the code zone is
+> compacted and frees the code of dead bodies, so a run that keeps
+> compiling does so in a zone of fixed size ("Stage 4: closures, non-local
+> return, allocation and the barrier", "The code zone").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -42,10 +50,16 @@
 > `compiler/capture.rs` (the capture analysis) and
 > `compiler/lower.rs` (the converted register layout),
 > `builtins/block.rs` (`value`'s leaf, which answers a block's activation as
-> a step), `jit/` (the baseline JIT: the trigger and the entry in
-> `jit/mod.rs`, the compiler in `jit/baseline.rs`, the idioms in
-> `jit/macro_assembler.rs`, the stubs in `jit/stubs.rs`, the generic leaf
-> in `jit/leaves.rs`), `crates/ns-assembler` (the operations and the x64
+> a step), `jit/` (the baseline JIT: the trigger, the entry, abandonment
+> and revival in `jit/mod.rs`, the compiler in `jit/baseline.rs`, the
+> idioms in `jit/macro_assembler.rs`, the entry, call, exit and cut stubs
+> in `jit/stubs.rs`, the sends in `jit/sends.rs` and the stubs a cell
+> names in `jit/targets.rs`, the closures, outer locals and futures in
+> `jit/closures.rs`, the cut of a non-local return in `jit/cut.rs`, the
+> exit's walk in `jit/materialize.rs`, the leaves in `jit/leaves.rs`, and
+> the code zone's compaction and freeing in `jit/zone.rs`),
+> `heap/machine_entries.rs` (the machine entry table the closure stubs
+> read), `crates/ns-assembler` (the operations and the x64
 > encoder), `crates/ns-memory/src/code_zone.rs` (the code zone and the
 > entry into machine code), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack), `crates/ns-cli/src/commands/bench.rs` and
@@ -193,8 +207,11 @@ pub struct ActivationReference {
   down to no less than 1 GiB (`reserve_falling_back`, `heap/space.rs`).
   It is committed from its base as the stack deepens -- doubling what is
   committed, by at least 64 KiB and at most 16 MiB at a time unless a push
-  needs more (`FrameStack::grow`) -- and never decommitted while the heap
-  lives. A frame is its arguments, the header -- `frame_header::COUNT`
+  needs more (`FrameStack::grow`) -- and given back above its top and a
+  headroom of 2 MiB by full collections that find more than 4 MiB, and
+  more than twice what they would keep, committed above the top, damped
+  over successive collections ([memory.md](memory.md), "Giving committed
+  memory back"). A frame is its arguments, the header -- `frame_header::COUNT`
   words, 13 in every build, a debug build's generation riding in the flags
   word -- then the rest of its registers, innermost highest; a send's own
   callee lies on its sender's argument slots, which are its arguments,
@@ -752,11 +769,11 @@ activations from its callers'.
   activation — the next step of a nested class's creation — which
   `Mutator::push_continuation` pushes in the popped activation's place, or
   a signal, an unwind carried on ("The trampoline" below). A future's
-  forcing, `Continuation::Future`, is the one `finish` does not hand to
-  `resume`: `Mutator::future_computed` records the value, and the loop
-  delivers it, forces the next future of a chain, or runs the caller's
-  stopped instruction again ("Running an instruction again after forcing a
-  future" below). An activation whose sender is suspended carries
+  `resolve` pushed for an instruction that could not take its value,
+  `Continuation::Reexecute`, is the one `finish` does not hand to
+  `resume`: the loop drops the value and runs the caller's stopped
+  instruction again ("Running an instruction again after forcing a future"
+  below). An activation whose sender is suspended carries
   `Continuation::ReturnToSuspended`, `finish`'s second arm, cold and out of
   line: it resumes the sender and then applies the continuation it wraps
   ("Suspending and resuming" above).
@@ -832,10 +849,13 @@ it to, since the stretch's entry has ended before it: `FrameRegisters` — the
 running `ActivationReference`, the word offset of its frame on the stack, and
 no stack frame moves (a rebuilt stack is read again, above); its
 `Rc<CompiledCode>`, which holds no handle; its `program_counter`; its
-`FeedbackBase`, a number; and its `RegisterBase`, the word offset of its first
-register, which a move does not touch — and the run's floor, a word offset on
-the stack. Every value the loop works on is read from
-a register or an operand when an instruction needs it and written back before
+`FeedbackBase`, a number, which `run` reads again from the frame after the
+safepoint, since a full collection that slides the inline caches' ranges
+rewrites it in the header ([dispatch.md](dispatch.md), "Code families"); and
+its `RegisterBase`, the word offset of its first register, which a move does
+not touch — and the run's floor, a word offset on the stack. Every value
+the loop works on is read from a register or an operand when an
+instruction needs it and written back before
 the next, so at a safepoint every handle is in a word of a stack frame,
 in the heap's side table of continuations or of suspended
 activations, in a heap object or in a root, where
@@ -878,8 +898,9 @@ An activation's `program_counter` is written **only by the instructions that can
 activation to an observer**: every send, since a nested activation runs above it;
 `MakeClosure`, since the activation escapes into the object graph — the store
 comes just before `reify`, which copies it into the frame it creates; and
-`NonLocalReturn`, since control leaves with a signal; an instruction that
-meets an unresolved future (`vm::force_and_reexecute`), since the forcing
+`NonLocalReturn`, since control leaves with a signal; `ResolveFuture`
+when it calls a future's `resolve`, as a send; an `InitializeSlot` that
+meets a future not resolved (`vm::force_and_reexecute`), since the forcing
 runs above it and the loop runs that instruction again; and every
 instruction that raises an error (`vm::raise`), since the raising
 activation stays on the stack below the error's `signal` while the
@@ -1020,6 +1041,17 @@ clause it is (§6.3 evaluates the message "in the context of *i*"), so the
 its value is never handed to the superclass as the clause's argument
 (`tests/vm_initializer.rs`'s
 `a_return_inside_a_block_in_a_clause_argument_escapes_instantiate`).
+
+**Machine code cuts the `^` that needs no unwinder.** A `^` from a
+block whose home lies among the compiled frames of the current stretch
+of machine code, with no activation carrying an unwind marker between
+and a home that catches a return, is carried out by machine code itself
+("Stage 4: closures, non-local return, allocation and the barrier"
+below, the cut): there is no block to run and no continuation to abandon
+on its way, so it pops what the unwinder would pop, divorcing as each
+pop divorces, and returns from the home as the unwinder's arrival does.
+Every other `^` in machine code exits at its `NonLocalReturn`, and the
+interpreter raises it here.
 
 A method body's own `^` is an ordinary `Return` and raises no signal. The
 observable discipline — a block invoked after its home has returned gets
@@ -2660,7 +2692,19 @@ $buildC = "$pinned -C metadata=buildc -C llvm-args=-align-all-nofallthru-blocks=
 ```
 
 the same three on both sides, each set as `RUSTFLAGS` for its own build
-in its own `--target-dir`. Before timing, check in a disassembly of a
+in its own `--target-dir`. The three also lay the JIT's code zone out at
+a padding of their own, two environment variables read at build time
+(`NS_NEXT_ZONE_STUB_PADDING`, the bytes before the first stub, and
+`NS_NEXT_ZONE_BODY_PADDING`, the bytes between the last stub and the first
+body, each a multiple of 16 up to 4,096): build a sets neither, build b
+`208` and `32`, build c `96` and `176`: the stubs' offsets (0, 208, 96) and
+the bodies' (the sum of the two paddings: 0, 240, 272) are pairwise
+distinct modulo 64, so the stubs and the bodies fall on other cache-line
+phases in each build (pinned by a test of `jit`) (`jit::ZONE_STUB_PADDING`; the first body starts at the
+stubs' end plus the body padding after a compaction and in a replaced zone
+as well). Machine code identical byte for byte measured 2% to 17% apart by
+its place in the zone alone. A tree from before the paddings takes none,
+and a report says so. Before timing, check in a disassembly of a
 build with debug information (`CARGO_PROFILE_RELEASE_DEBUG=limited`, the
 build's flags) that the three give `vm::run` three different layouts; if
 two coincide, take another alignment and say so. The runtime's data layout (which symbol ids,
@@ -6057,7 +6101,7 @@ run-to-run spread (min to max 1.70–1.98 against 1.19–1.34 ms for the hello).
 Simultaneous slots ([object-model.md](object-model.md), "Simultaneous
 slots") put three things on or beside the paths every program runs: four
 instructions in `vm::run`'s dispatch and a refusal branch in
-`InitializeSlot`'s arm; a `Continuation::Future` arm in `vm::finish`; and
+`InitializeSlot`'s arm; a `Continuation::Reexecute` arm in `vm::finish`; and
 the search for a future among a leaf's operands. None of the four fixtures
 makes a future, so none runs any of it past a flag test. What they can pay
 is the shape of the code around it.
@@ -7398,7 +7442,7 @@ leaf stub's slot path running (`ec531abe`, below), Havlak measures
 3,070 ms against `master`'s 3,176, 3.3% faster, and Richards 61.54 ms
 against 61.43, level -- three builds a side, five rounds. The others'
 hot code makes blocks, allocates or returns
-non-locally, which stage 4 is to bring into machine code; at `cbe7908f`
+non-locally, which stage 4 brought into machine code since; at `cbe7908f`
 their bodies were called only or abandoned and ran interpreted, so they ran
 at the interpreter's speed -- and that is what is slower than `master`'s
 (below): with the JIT on against the same binaries with it off, no
@@ -7488,9 +7532,11 @@ measurement above:
   interpreter's few, two thirds of it spent finding the send again -- a
   binary search over the installed bodies and their returns, two
   decodings of the send's instruction, each allocating its argument
-  list, and the cache's decision of it. The setter stub's store leaf takes
-  the receiver, the field and the value, and stores through the heap's
-  store accessor: `bench_loop` from 5.15 ms to 0.81. The leaf stub's leaf
+  list, and the cache's decision of it. A setter stub of its own,
+  calling a store leaf that took the receiver, the field and the value,
+  brought `bench_loop` from 5.15 ms to 0.81; the setter stub now stores
+  inline through the write barrier, with no leaf ("Stage 4: closures,
+  non-local return, allocation and the barrier"). The leaf stub's leaf
   finds its send by a table of every call's return address and reads it
   without decoding, which is what the gains of this item and of the
   abandonment below owe to the leaf stub's leaf: its path for a slot
@@ -7550,9 +7596,10 @@ method is a stub, so `bench_send` was four times as fast and
 `bench_block`, whose blocks machine code did not run, the interpreter's.
 
 **What it does not cover.** No benchmark spends its time in machine code
-that makes a block, allocates or returns non-locally, which stage 4 is
-for; the programs above that do run at the interpreter's speed because
-their machine code is abandoned, not because it is fast. The exit
+that makes a block, allocates or returns non-locally, which stage 4
+brought into machine code since; the programs above that do run at the
+interpreter's speed because their machine code is abandoned, not
+because it is fast. The exit
 budget's 64 is a guess that the measurement only shows does no harm on
 these programs.
 
@@ -7634,7 +7681,7 @@ above); Sieve is level since, +1.2% and not separated, and an interim
 measurement put Sieve under `NS_NEXT_NO_JIT=1` at +0.5% against
 `master`, where it had been +4.6%.
 
-**`bench_block` is slower, accepted until stage 4** (decided with the
+**`bench_block` was slower, accepted until stage 4** (decided with the
 user on 2026-10-29). A block is now entered at an interpreter's push,
 since no rule leaves a compiled body unentered, and a short block an
 interpreted `value:` pushes pays the bridge for little: the profile behind
@@ -7642,13 +7689,451 @@ interpreted `value:` pushes pays the bridge for little: the profile behind
 interpreting a one-instruction block -- the switch
 (`vm::machine_code_switch`), `run_machine_code`, `jit::entered` and the
 entry stub saving and restoring eight registers -- and
-`bench_block`'s block `[:y | acc:: acc + y]` reaches its indirection
-vector through `Leaf::Step`, about 18 ns more an entry. So `bench_block`
+`bench_block`'s block `[:y | acc:: acc + y]` reached its indirection
+vector through `Leaf::Step` then, about 18 ns more an entry, which the
+inline `LoadVector` and `StoreVector` have removed since. So `bench_block`
 is 10.3% slower with its builds separated, and an interpreted `do:` over
 a million elements with `[:each | each]` measured about 12% slower in an
-interim measurement. Stage 4 removes the cost: it makes a closure's
-activation a compiled call, as a method's is ([OPEN-WORK.md](../OPEN-WORK.md),
-"A block an interpreted `value:` pushes pays the bridge").
+interim measurement. Stage 4 removed the cost: a closure's activation
+is a compiled call, as a method's is, and `bench_block` measured 87.9%
+faster than the tree before it ("What closures in machine code
+moved"); a block the interpreter pushes itself still pays it
+([OPEN-WORK.md](../OPEN-WORK.md), "A block the interpreter pushes above
+its sender's window pays the bridge").
+
+### What allocation and the barrier in machine code moved
+
+**Measured 2026-10-30, `76b6fc85` against `master` (`b96b55ab`)**, by
+the same protocol as "What the entry at a send moved" above: three
+pinned release builds a side with debug information, a, b and c laid
+out as there (`vm::run` spans 51,584, 55,488 and 60,224 bytes at
+`master` and 51,584, 55,488 and 60,288 at `76b6fc85`, and no build has
+a `run_stretch` or a `vm::run` closure of its own); three rounds in one
+sitting, the order of the six binaries rotated each round; `--iterations
+3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue and `--iterations 8`
+for the rest. Each cell is a side's medians per build pooled by
+geometric mean, in milliseconds.
+
+| Program | master (ms) | range | `76b6fc85` (ms) | range | Change | Builds separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.668 | 0.663–0.671 | 0.590 | 0.589–0.590 | -11.7% | faster |
+| `CD` | 3268.816 | 3249.179–3282.343 | 3155.574 | 3144.693–3165.429 | -3.5% | faster |
+| `DeltaBlue` | 544.803 | 543.046–546.897 | 518.487 | 517.102–520.886 | -4.8% | faster |
+| `DeltaBlueTon80` | 4.555 | 4.538–4.586 | 4.179 | 4.166–4.193 | -8.3% | faster |
+| `Havlak` | 2878.475 | 2871.270–2882.932 | 2248.140 | 2231.977–2263.991 | -21.9% | faster |
+| `Json` | 5.572 | 5.521–5.655 | 4.771 | 4.754–4.794 | -14.4% | faster |
+| `List` | 0.196 | 0.193–0.198 | 0.194 | 0.189–0.198 | -1.0% | no |
+| `Mandelbrot` | 1907.964 | 1892.332–1926.026 | 1847.872 | 1838.988–1857.116 | -3.1% | faster |
+| `NBody` | 1688.030 | 1679.378–1699.935 | 1598.810 | 1595.257–1602.163 | -5.3% | faster |
+| `Permute` | 2.005 | 1.995–2.018 | 1.531 | 1.527–1.540 | -23.6% | faster |
+| `Queens` | 1.559 | 1.548–1.567 | 1.211 | 1.200–1.217 | -22.3% | faster |
+| `Richards` | 44.380 | 43.938–44.729 | 40.802 | 40.739–40.913 | -8.1% | faster |
+| `RichardsTon80` | 3.321 | 3.295–3.354 | 3.211 | 3.191–3.231 | -3.3% | faster |
+| `Sieve` | 1.316 | 1.308–1.328 | 1.106 | 1.091–1.114 | -15.9% | faster |
+| `Storage` | 1.331 | 1.329–1.333 | 1.356 | 1.341–1.381 | +1.9% | slower (see below) |
+| `Towers` | 1.947 | 1.937–1.955 | 1.545 | 1.536–1.553 | -20.7% | faster |
+| `bench_block` | 7.771 | 7.689–7.857 | 7.022 | 6.970–7.098 | -9.6% | faster |
+| `bench_loop` | 0.812 | 0.809–0.819 | 0.517 | 0.517–0.517 | -36.4% | faster |
+| `bench_megamorphic` | 4.662 | 4.606–4.726 | 4.625 | 4.592–4.677 | -0.8% | no |
+| `bench_send` | 0.773 | 0.773–0.774 | 0.509 | 0.507–0.510 | -34.2% | faster |
+| `bench_signal` | 21.998 | 21.660–22.300 | 21.821 | 21.738–21.870 | -0.8% | no |
+| `bench_while` | 46.901 | 46.733–47.227 | 44.455 | 44.124–44.788 | -5.2% | faster |
+| `bench_recursion` | 0.666 | 0.664–0.667 | 0.665 | 0.662–0.668 | -0.1% | no |
+
+The geometric mean over the twenty-three sources is -11.7%, and
+eighteen are faster with their builds separated. The largest gains are
+where an instruction or a send left machine code or called a leaf at
+`master` and now runs inline: `bench_loop` and `bench_send` (-36.4%,
+-34.2%) read and write their own slots `n` and `sum`, which no longer
+exit; Permute, Queens, Towers and Sieve (-15.9% to -23.6%) index arrays,
+whose `at:` and `at:put:` are row stubs now, the store through the
+inline barrier; Havlak (-21.9%) the same and the setters and private
+accessors its leaf stub's leaf ran; `bench_block` (-9.6%) makes its
+indirection vector inline. Its block's activation still crossed the
+bridge then, which part 4b removed ("What closures in machine code
+moved").
+
+**Storage's +1.9% did not reproduce.** Its three branch builds spread
+wider in this run (1.341–1.381) than `master`'s (1.329–1.333), two
+rounds of b and c high. A second sitting of Storage alone, the same six
+builds in three rotated rounds, measured -0.3% at `--iterations 8`
+(1.345 against 1.341 ms) and -0.7% at `--iterations 30`, neither
+separated, and an `xperf`-profiled run of 1,500 iterations a side
+measured 1.174 ms at `master` and 1.165 at `76b6fc85`. Storage's first
+iterations after the warm-up are still about 15% slower than its steady
+state on both sides, which is what `--iterations 8` samples.
+
+### What closures in machine code moved
+
+**Measured 2026-10-31, `f476f86c` against `master` (`b96b55ab`) and
+against `451f72d8`**, the branch before closures ran in machine code
+(after "What allocation and the barrier in machine code moved"), by the
+same protocol: three pinned release builds a side with debug
+information, a, b and c laid out as there (`vm::run` spans about 52.5,
+56.4 and 61.2 KB at `f476f86c`, and no build has a `run_stretch` or a
+`vm::run` closure of its own); three rounds in one sitting, the order of
+the nine binaries rotated each round; `--iterations 3` for CD, Havlak,
+Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest. Each
+cell is a side's medians per build pooled by geometric mean, in
+milliseconds.
+
+| Program | master (ms) | `451f72d8` (ms) | `f476f86c` (ms) | range | vs master | separated | vs `451f72d8` | separated |
+|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 0.669 | 0.587 | 0.212 | 0.211–0.213 | -68.3% | faster | -63.9% | faster |
+| `CD` | 3281.194 | 3164.176 | 3164.719 | 3154.863–3176.111 | -3.5% | faster | +0.0% | no |
+| `DeltaBlue` | 545.794 | 518.432 | 283.311 | 281.472–285.286 | -48.1% | faster | -45.4% | faster |
+| `DeltaBlueTon80` | 4.522 | 4.215 | 1.937 | 1.929–1.945 | -57.2% | faster | -54.0% | faster |
+| `Havlak` | 2889.657 | 2257.520 | 2207.470 | 2181.989–2232.266 | -23.6% | faster | -2.2% | faster |
+| `Json` | 5.543 | 4.767 | 3.603 | 3.567–3.675 | -35.0% | faster | -24.4% | faster |
+| `List` | 0.193 | 0.193 | 0.193 | 0.191–0.196 | +0.1% | no | +0.3% | no |
+| `Mandelbrot` | 1907.865 | 1855.917 | 1807.850 | 1802.456–1812.783 | -5.2% | faster | -2.6% | faster |
+| `NBody` | 1699.122 | 1605.058 | 1512.335 | 1490.308–1535.549 | -11.0% | faster | -5.8% | faster |
+| `Permute` | 2.008 | 1.530 | 0.376 | 0.374–0.380 | -81.3% | faster | -75.4% | faster |
+| `Queens` | 1.559 | 1.208 | 1.223 | 1.221–1.225 | -21.6% | faster | +1.2% | slower (see below) |
+| `Richards` | 44.596 | 41.067 | 16.999 | 16.794–17.134 | -61.9% | faster | -58.6% | faster |
+| `RichardsTon80` | 3.302 | 3.186 | 3.184 | 3.163–3.226 | -3.6% | faster | -0.0% | no |
+| `Sieve` | 1.325 | 1.137 | 0.362 | 0.337–0.407 | -72.7% | faster | -68.2% | faster |
+| `Storage` | 1.333 | 1.329 | 0.673 | 0.664–0.684 | -49.5% | faster | -49.4% | faster |
+| `Towers` | 1.996 | 1.543 | 0.488 | 0.486–0.491 | -75.6% | faster | -68.4% | faster |
+| `bench_block` | 7.781 | 7.065 | 0.857 | 0.850–0.868 | -89.0% | faster | -87.9% | faster |
+| `bench_loop` | 0.812 | 0.517 | 0.543 | 0.542–0.544 | -33.1% | faster | +5.1% | slower (see below) |
+| `bench_megamorphic` | 4.588 | 4.687 | 4.731 | 4.711–4.745 | +3.1% | slower (see below) | +1.0% | no |
+| `bench_send` | 0.776 | 0.508 | 0.508 | 0.508–0.508 | -34.6% | faster | -0.1% | no |
+| `bench_signal` | 21.840 | 21.740 | 18.522 | 18.347–18.673 | -15.2% | faster | -14.8% | faster |
+| `bench_while` | 47.027 | 44.629 | 6.149 | 6.138–6.164 | -86.9% | faster | -86.2% | faster |
+| `bench_recursion` | 0.665 | 0.667 | 0.684 | 0.658–0.698 | +3.0% | no | +2.7% | no (see below) |
+
+The geometric mean over the twenty-three sources is -48.0% against
+`master` and -41.2% against `451f72d8`. The gains are where a block ran
+interpreted or crossed the bridge before: `bench_block` and
+`bench_while` (-88% and -86%) are a block sent `value` and a
+`whileTrue:` loop over blocks, every activation now a call into the
+block's machine code; Permute, Towers, Sieve and Bounce (-64% to
+-75%) and Richards and DeltaBlue (-59%, -45%) iterate with `do:`,
+`to:do:` and blocks passed to their collections; `bench_signal`
+(-15%) runs its handler search with each step kept in registers.
+
+**What is slower, and why.** A first measurement of the same tree
+before four fixes measured CD +2.0%, Queens +5.8% and `bench_signal`
++3.5% against `451f72d8`; the fixes removed a store-forwarding stall on
+every call from the interpreter into machine code, put the divorce back
+inline into the pop, let an interpreted `value` send ask the block's
+machine entry row before it reads the closure, and kept the handler
+search's steps in registers. What the table still shows slower:
+
+- `bench_loop` (+5.1%) runs machine code instruction for instruction
+  the same as at `451f72d8`; the larger stubs before it move its body
+  in the code zone, and padding the zone alone moves the same binary
+  by up to 7% ("A program in machine code measures where its bodies
+  land in the code zone" in [OPEN-WORK.md](../OPEN-WORK.md)).
+- Queens (+1.2%): builds a and b of both sides lie within 0.3%; the
+  gap is `451f72d8`'s build c, about 1.5% faster than its own a and b
+  in every round. What remains is the check before an interpreted
+  `value` send calls a compiled block, about 0.3–0.5%.
+- `bench_megamorphic` (+3.1% against `master`, level against
+  `451f72d8`) did not reproduce: three builds a side, two rounds of 30
+  iterations, measured it level, and a loop twenty times as long
+  91.3–92.7 ms at `master` against 90.7–91.8 at `f476f86c`. Its loop
+  runs interpreted.
+- `bench_recursion` (+2.7%) is a real cost: `fib:`'s `ifTrue: [^1]`
+  has a `MakeClosure` on the path a receiver that is no Boolean takes,
+  which makes the body reify its frame, and the reifying prologue, the
+  program counter stored before each send and the test at each return
+  are paid on the Boolean path too -- what "A frame reifies only in its
+  body's twin" took off the Boolean path.
+
+### What non-local return in machine code moved
+
+**Measured 2026-10-31, `4f991268` against `f476f86c`** (the tree of
+"What closures in machine code moved" above) **and `master`
+(`b96b55ab`)**, by the same protocol: three pinned release builds a
+side with debug information, a, b and c laid out as there (`vm::run`
+spans the same about 52.5, 56.4 and 61.2 KB on both branch trees, and
+no build has a `run_stretch` or a `vm::run` closure of its own); three
+rounds in one sitting, the order of the nine binaries rotated each
+round; `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue
+and `--iterations 8` for the rest. Each cell is a side's medians per
+build pooled by geometric mean, in milliseconds. Between the two trees
+lie the cut and the forcing of a future by `FutureImplementation`'s
+`resolve`.
+
+| Program | master (ms) | `f476f86c` (ms) | `4f991268` (ms) | range | vs master | separated | vs `f476f86c` | separated |
+|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 0.667 | 0.214 | 0.210 | 0.209–0.212 | -68.5% | faster | -1.7% | faster |
+| `CD` | 3273.588 | 3151.603 | 3155.731 | 3139.449–3170.842 | -3.6% | faster | +0.1% | no |
+| `DeltaBlue` | 544.697 | 282.324 | 283.488 | 282.317–284.742 | -48.0% | faster | +0.4% | no |
+| `DeltaBlueTon80` | 4.526 | 1.938 | 1.961 | 1.943–1.980 | -56.7% | faster | +1.2% | slower (see below) |
+| `Havlak` | 2876.427 | 2204.285 | 2202.977 | 2182.201–2219.792 | -23.4% | faster | -0.1% | no |
+| `Json` | 5.524 | 3.556 | 3.569 | 3.517–3.643 | -35.4% | faster | +0.4% | no |
+| `List` | 0.194 | 0.191 | 0.191 | 0.188–0.194 | -1.3% | no | -0.1% | no |
+| `Mandelbrot` | 1902.902 | 1805.740 | 1794.317 | 1780.055–1806.516 | -5.7% | faster | -0.6% | no |
+| `NBody` | 1689.738 | 1508.167 | 1516.940 | 1508.633–1529.460 | -10.2% | faster | +0.6% | no |
+| `Permute` | 1.990 | 0.376 | 0.373 | 0.370–0.375 | -81.3% | faster | -0.8% | no |
+| `Queens` | 1.569 | 1.220 | 0.321 | 0.319–0.324 | -79.6% | faster | -73.7% | faster |
+| `Richards` | 44.428 | 16.956 | 16.752 | 16.663–16.799 | -62.3% | faster | -1.2% | faster |
+| `RichardsTon80` | 3.325 | 3.124 | 1.846 | 1.842–1.852 | -44.5% | faster | -40.9% | faster |
+| `Sieve` | 1.309 | 0.365 | 0.341 | 0.341–0.342 | -73.9% | faster | -6.6% | faster |
+| `Storage` | 1.343 | 0.691 | 0.688 | 0.681–0.701 | -48.8% | faster | -0.4% | no |
+| `Towers` | 1.967 | 0.486 | 0.488 | 0.485–0.489 | -75.2% | faster | +0.3% | no |
+| `bench_block` | 7.744 | 0.849 | 0.860 | 0.856–0.866 | -88.9% | faster | +1.3% | no |
+| `bench_loop` | 0.810 | 0.543 | 0.517 | 0.517–0.519 | -36.1% | faster | -4.7% | faster (see below) |
+| `bench_megamorphic` | 4.685 | 4.723 | 4.731 | 4.702–4.783 | +1.0% | no | +0.2% | no |
+| `bench_send` | 0.773 | 0.508 | 0.519 | 0.517–0.520 | -32.9% | faster | +2.1% | slower (see below) |
+| `bench_signal` | 21.972 | 18.528 | 18.519 | 18.345–18.676 | -15.7% | faster | -0.1% | no |
+| `bench_while` | 46.894 | 6.179 | 6.272 | 6.236–6.335 | -86.6% | faster | +1.5% | slower (see below) |
+| `bench_recursion` | 0.665 | 0.678 | 0.692 | 0.681–0.701 | +4.1% | slower (see below) | +2.1% | no |
+
+The geometric mean over the twenty-three sources is -52.2% against
+`master` and -8.0% against `f476f86c`. The gains are where a `^` left
+a block: Queens (-73.7%) returns `^true` out of `placeQueen:`'s
+`to:do:` on every placement that succeeds, and RichardsTon80 (-40.9%)
+returns out of its tasks' blocks (`^scheduler suspendCurrent`). A
+non-local return exited machine code at `f476f86c` and spent the body's
+exit budget until it was abandoned; now the cut pops the compiled
+frames to the home itself.
+
+**What is slower is where the code lies, not what it is.** The cut stub
+(224 bytes) moves every stub after it, and the five mirror rows of
+`resolve` move the getter, setter and closure stubs after the mirror
+method table by 279 bytes more; the bodies start 288 bytes later and
+are otherwise byte for byte `f476f86c`'s. `bench_send`'s four bodies
+and `bench_while`'s eight are identical; `f476f86c` laid out as
+`4f991268` lays out its zone, with pads before the stubs and the
+bodies, runs at `4f991268`'s time, and over seventeen paddings the two
+trees are level pooled (`bench_while`'s time spreads 17% across them).
+DeltaBlueTon80 runs no cut; 124 of its 125 bodies are identical and the
+125th differs in a non-local return's arm that never runs, and the
+extra samples of its profile all lie in the zone. `bench_loop`'s -4.7%
+is the same placement going the other way: it is back at the time it
+had before "What closures in machine code moved" measured it 5.1%
+slower. Sampling the zone's placement as the builds sample `vm::run`'s
+is open ("A program in machine code measures where its bodies land in
+the code zone" in [OPEN-WORK.md](../OPEN-WORK.md)). `bench_recursion`
+against `master` is the fallback closure's cost described above.
+
+### What reclamation moved
+
+**Measured 2026-11-01, `faea01b3` against `4f991268`** (the tree of "What
+non-local return in machine code moved" above, "t15" below) **and
+`master` (`b96b55ab`)**, by the same protocol: three pinned release
+builds a side with debug information, a, b and c laid out as there (no
+build has a `run_stretch` or a `vm::run` closure of its own); three
+rounds in one sitting, the order of the nine binaries rotated each
+round; `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue
+and `--iterations 8` for the rest. Each cell is a side's medians per
+build pooled by geometric mean, in milliseconds. `faea01b3`'s three
+builds also lay their code zones out at three paddings, a none, b 208
+bytes before the stubs and 32 before the bodies, c 96 and 176
+(`NS_NEXT_ZONE_STUB_PADDING`, `NS_NEXT_ZONE_BODY_PADDING`, read at build
+time), so that its pool samples the zone's placement as it samples
+`vm::run`'s ("A program in machine code measures where its bodies land
+in the code zone" in [OPEN-WORK.md](../OPEN-WORK.md)); the two older
+trees predate the paddings, and their builds put the stubs and the
+bodies at one place each. Between `4f991268` and `faea01b3` lie part 4d
+-- the zone's compaction and the freeing of dead bodies' code, the
+decaying exit budget and the revival of abandoned bodies, the
+program-made symbols, the tables' growth limits, the site ranges' slide,
+committed memory given back -- and a frame reified only in its body's
+twin, with the two fixes below.
+
+| Program | master (ms) | t15 (ms) | `faea01b3` (ms) | range | vs master | separated | vs t15 | separated |
+|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 0.670 | 0.211 | 0.207 | 0.202–0.212 | -69.0% | faster | -1.5% | no |
+| `CD` | 3264.551 | 3155.258 | 3037.556 | 3016.793–3050.231 | -7.0% | faster | -3.7% | faster |
+| `DeltaBlue` | 543.560 | 283.751 | 248.104 | 246.104–249.252 | -54.4% | faster | -12.6% | faster |
+| `DeltaBlueTon80` | 4.530 | 1.964 | 1.887 | 1.879–1.895 | -58.3% | faster | -3.9% | faster |
+| `Havlak` | 2882.183 | 2207.748 | 1178.212 | 1176.040–1181.381 | -59.1% | faster | -46.6% | faster |
+| `Json` | 5.555 | 3.573 | 3.423 | 3.414–3.437 | -38.4% | faster | -4.2% | faster |
+| `List` | 0.192 | 0.192 | 0.192 | 0.188–0.201 | +0.4% | no | +0.1% | no |
+| `Mandelbrot` | 1906.298 | 1792.040 | 1807.895 | 1802.608–1815.727 | -5.2% | faster | +0.9% | no |
+| `NBody` | 1689.033 | 1520.070 | 1094.800 | 1092.635–1097.124 | -35.2% | faster | -28.0% | faster |
+| `Permute` | 1.997 | 0.373 | 0.375 | 0.372–0.378 | -81.2% | faster | +0.6% | no |
+| `Queens` | 1.555 | 0.319 | 0.313 | 0.310–0.317 | -79.9% | faster | -1.8% | no |
+| `Richards` | 44.304 | 16.759 | 16.883 | 16.692–17.148 | -61.9% | faster | +0.7% | no |
+| `RichardsTon80` | 3.327 | 1.839 | 1.789 | 1.765–1.820 | -46.2% | faster | -2.7% | no |
+| `Sieve` | 1.293 | 0.362 | 0.359 | 0.333–0.411 | -72.2% | faster | -0.7% | no |
+| `Storage` | 1.332 | 0.683 | 0.679 | 0.674–0.686 | -49.0% | faster | -0.6% | no |
+| `Towers` | 1.970 | 0.512 | 0.478 | 0.468–0.487 | -75.7% | faster | -6.6% | faster |
+| `bench_block` | 7.774 | 0.857 | 0.854 | 0.847–0.858 | -89.0% | faster | -0.4% | no |
+| `bench_loop` | 0.812 | 0.517 | 0.523 | 0.517–0.536 | -35.6% | faster | +1.2% | no |
+| `bench_megamorphic` | 4.613 | 4.737 | 4.744 | 4.724–4.755 | +2.8% | slower (see below) | +0.1% | no |
+| `bench_send` | 0.773 | 0.519 | 0.516 | 0.512–0.519 | -33.2% | faster | -0.5% | no |
+| `bench_signal` | 21.814 | 18.582 | 18.756 | 18.704–18.793 | -14.0% | faster | +0.9% | slower (see below) |
+| `bench_while` | 46.842 | 6.298 | 6.259 | 6.159–6.336 | -86.6% | faster | -0.6% | no |
+| `bench_recursion` | 0.665 | 0.688 | 0.670 | 0.668–0.672 | +0.7% | slower (see below) | -2.7% | faster |
+
+The geometric mean over the twenty-three sources is -54.6% against
+`master` and -5.7% against t15. The gains over t15 are of three kinds:
+
+- **The exit budget decays.** At t15 a body's exits counted over the
+  run's lifetime, so a body whose exits are rare but steady spent its
+  budget sooner or later and stayed interpreted for good; now every
+  scavenge halves the count, and no body of Havlak or NBody, which
+  scavenge 432 and 172 times in a run of four sends, is abandoned at
+  all. Havlak runs 46.6% faster, NBody 28.0% -- the decay's gains, as
+  far as the counts show, since the commits between were not bisected
+  for them -- and at t15 the longer a run, the slower: DeltaBlue at
+  fifteen iterations took 489 ms there against 247 at `25f2f20b`, one
+  build a side, where three iterations took 283 and 248.
+- **A lookup by a code address remembers the body it found**
+  (`25f2f20b`; "The code zone", the lookup by an address inside the
+  code). The step, initializer and own-slot leaves find their calling
+  body by the code's own address, which the return-address table does
+  not hold, so each searched the installed bodies; DeltaBlue made about
+  2.7 million such lookups a run and spent about a sixth of its time in
+  the search, which the twins lengthened. DeltaBlue is 12.6% faster than
+  t15, and CD, Json and DeltaBlueTon80 3.7% to 4.2%, by the same table.
+- **A frame reifies only in its body's twin.** `bench_recursion`'s
+  `fib:` runs lean on its Boolean path, 2.7% faster than t15, which paid
+  the reifying prologue and the stored program counters there.
+
+Towers' -6.6% was not examined.
+
+**Two regressions were found and fixed before this measurement.** A
+first final measurement of `85aa1351` put `bench_signal` 29.5% and
+DeltaBlue 1.9% slower than t15 with their builds separated. The first
+was an abandoned body armed so that its interpreted entries counted
+towards its revival: every push of one called `jit::entered` out of
+line, about 20 ns, and `bench_signal` pushes its abandoned `descend:`
+about 255,000 times a send; the count is the slot's state since, one
+increment and one store inline (`c775d4e9`; the abandonment in "The
+baseline JIT's foundation"). The second was the twins: `0edf3f79` took
+the search over the installed bodies out of line and lengthened it with
+the twins, a cost per lookup, which the remembered answers more than
+recovered (`25f2f20b`). Json's +2.7% in that measurement is -4.2% now,
+by the same table.
+
+**What is slower, and why:**
+
+- `bench_signal` (+0.9% against t15) is the inline count: every
+  interpreted push of an abandoned body adds one to its state, where
+  t15 compared once and never revived the body. Revival by interpreted
+  entries is kept (decided on 2026-11-01): without it a run that
+  allocates nothing would end with every body that once spent its
+  budget interpreted for good.
+- `bench_recursion` (+0.7% against `master`, 0.670 against 0.665 ms) is
+  what the twin leaves of the fallback closure's cost, which "What
+  closures in machine code moved" measured at +2.7% and "What non-local
+  return in machine code moved" at +4.1%. The lean `fib:` runs none of
+  the reifying code on its Boolean path, and where in it the last 0.7%
+  lies was not isolated.
+- `bench_megamorphic` (+2.8% against `master`) is level with t15 (+0.1%),
+  which this sitting measured 2.7% slower than `master` already; its
+  loop runs interpreted ("What closures in machine code moved"), and the
+  item "`bench_megamorphic.ns` since road step 5b1" in
+  [OPEN-WORK.md](../OPEN-WORK.md) keeps it.
+
+**What the JIT and the collector did.** A binary of `85aa1351` built as
+build a, with a temporary print of `Interpreter::jit_statistics` and
+`collector_statistics` after `bench`'s runs (the CLI prints neither the
+JIT's statistics nor `decommits`), counted over one `bench` invocation
+per program -- a warm-up and three or eight timed sends, four or nine in
+all. These were taken before `c775d4e9` and `25f2f20b`; neither changes
+which body is abandoned, revived or freed -- the first moves the count
+of an abandoned body's entries into its state, its review checked the
+revival at the same entry, and the second only finds a body faster --
+but the counts were not taken again.
+
+| Program | sends | `abandoned_bodies` | `revived_bodies` | `zone_compactions` | `freed_bodies` | `table_collections` | `decommits` | `compiled_bodies` | `compiled_twins` |
+|---|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 25 | 2 |
+| `CD` | 4 | 13,331 | 13,313 | 6 | 13,331 | 0 | 2 (2 MiB) | 13,399 | 3,420 |
+| `DeltaBlue` | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 147 | 16 |
+| `DeltaBlueTon80` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 125 | 15 |
+| `Havlak` | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 146 | 23 |
+| `Json` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 83 | 2 |
+| `List` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 22 | 1 |
+| `Mandelbrot` | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 22 | 3 |
+| `NBody` | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 39 | 5 |
+| `Permute` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 21 | 2 |
+| `Queens` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 26 | 4 |
+| `Richards` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 80 | 7 |
+| `RichardsTon80` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 61 | 4 |
+| `Sieve` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 21 | 3 |
+| `Storage` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 22 | 2 |
+| `Towers` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 28 | 3 |
+| `bench_block` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 5 | 1 |
+| `bench_loop` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 3 | 0 |
+| `bench_megamorphic` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 13 | 0 |
+| `bench_send` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 4 | 0 |
+| `bench_signal` | 9 | 171 | 152 | 0 | 171 | 0 | 0 | 176 | 8 |
+| `bench_while` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 8 | 1 |
+| `bench_recursion` | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 3 | 0 |
+
+No program collects for a table (`table_collections` 0 everywhere, which
+`run_benchmarks.rs` holds every benchmark program to), and only CD gives
+committed memory back, twice, 2 MiB in all. Only two programs abandon a
+body. `bench_signal` signals from 50 frames deep, and its bodies spend
+their budgets at the exits the unwinding makes. CD churns: its methods
+name sibling classes by implicit-receiver sends (`Vector2D x:y:` in
+`plus:` and `minus:`, `Node`, `RedBlackTree`, `InsertResult`), a nested
+class's accessor on the private chain, which machine code refuses, so
+the bodies making them spend their 64 exits at once and their callers'
+refused calls abandon those in turn; every second scavenge the decay
+revives them all, and they are compiled again only to be abandoned
+again -- about 29 bodies at each, 13,399 compiles, 3,420 twins and six
+compactions of the zone in four sends. A build that never revives an
+abandoned body ran CD 3.0% faster (2,980 against 3,073 ms, one build a
+side, three rounds); the guarded nested-class accessor stub removes the
+cause ([OPEN-WORK.md](../OPEN-WORK.md), "A nested class's accessor on a
+private or `super` chain exits machine code"), where suppressing the
+revival would end a rarely exiting body's run interpreted again.
+
+**The long run, simulated.** The long-run tests of the reclamation, run
+together in one invocation with a temporary print of
+`Interpreter::table_sizes` at each one's start and end (`85aa1351`;
+`cargo nextest run --workspace --cargo-profile release-checks
+--no-capture -E 'test(/churn|thousands|million|sawtooth|rare_exit/) |
+test(/_peak_|decay|damped|backed_off|gives_its_stack/)'`, and the same
+in the default profile, since most of them compile only with debug
+assertions), optimized lowering, the debug profile unless marked. The
+floors are code ids 16,384, mixin rows 4,096, application rows 4,096,
+sites 262,144 and program-made symbols 65,536 (`heap/limits.rs`); the
+churns of method edits lower every floor to 256.
+
+| Test (iterations) | code ids | mixin rows | application rows | sites | program symbols | interned symbols | zone bytes used | zone bodies | zone returns | stack committed | cells committed | machine entry rows | application id rows |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| method edits, 1,000 (floors 256) | 14 → 0 | 136 → 163 | 136 → 158 | 27 → 284 | 0 → 0 | 671 → 802 | 10,992 → 774,208 | 0 → 148 | 0 → 106 | 64 KiB → 64 KiB | 128 KiB → 128 KiB | 0 → 2,048 | 2,048 → 2,048 |
+| method edits, 8,000 (floors 256) | 14 → 0 | 136 → 163 | 136 → 158 | 27 → 280 | 0 → 0 | 802 → 802 | 10,992 → 1,364,480 | 0 → 267 | 0 → 15 | 64 KiB → 64 KiB | 128 KiB → 128 KiB | 0 → 2,048 | 2,048 → 2,048 |
+| families at the site limit, 1,000 | 14 → 777 | 136 → 156 | 136 → 612 | 27 → 406 | 0 → 0 | 802 → 802 | 10,992 → 316,288 | 0 → 67 | 0 → 11 | 64 KiB → 64 KiB | 128 KiB → 128 KiB | 0 → 2,048 | 2,048 → 2,048 |
+| family churn, 2,000 (site table) | 14 → 0 | 136 → 163 | 136 → 4,158 | 27 → 250 | 0 → 0 | 802 → 802 | 10,992 → 121,760 | 0 → 28 | 0 → 7 | 64 KiB → 64 KiB | 128 KiB → 1,088 KiB | 0 → 2,048 | 2,048 → 8,192 |
+| million symbols (200,000 in debug) | 0 → 0 | 135 → 135 | 136 → 136 | 42 → 42 | 0 → 0 (3,392 before the last collection) | 657 → 657 | 12,720 → 17,856 | 1 → 4 | 3 → 8 | 64 KiB → 64 KiB | 128 KiB → 128 KiB | 2,048 → 2,048 | 2,048 → 2,048 |
+| thousands of edits, 3,000, zone 64 KiB (release-checks) | 29 → 2,101 | 157 → 163 | 146 → 4,096 | 55 → 3,327 | 0 → 0 | 803 → 803 | 10,992 → 63,952 | 0 → 20 (most 28) | 0 → 100 (most 105) | 64 KiB → 64 KiB | 128 KiB → 320 KiB | 0 → 2,048 | 2,048 → 4,096 |
+| sawtooth, 102 cycles | 14 → 20 | 135 → 135 | 136 → 136 | 27 → 49 | 0 → 0 | 663 → 663 | 10,992 → 22,512 | 0 → 4 | 0 → 16 | 64 KiB → 4,104 KiB | 128 KiB → 128 KiB | 0 → 0 | 2,048 → 2,048 |
+| recurring peak, 30 + 6 cycles | 14 → 20 | 135 → 135 | 136 → 136 | 27 → 49 | 0 → 0 | 663 → 663 | 10,992 → 22,512 | 0 → 4 | 0 → 16 | 64 KiB → 2,052 KiB (8 MiB at the peaks) | 128 KiB → 128 KiB | 0 → 0 | 2,048 → 2,048 |
+| returning peak, after a 75,000-deep recursion | 19 → 0 | 135 → 135 | 136 → 136 | 35 → 47 | 0 → 0 | 663 → 663 | 14,720 → 19,264 | 1 → 2 | 5 → 12 | 16 MiB → 14.6 MiB | 128 KiB → 128 KiB | 0 → 0 | 2,048 → 2,048 |
+| damping, after a 75,000-deep recursion | 19 → 0 | 135 → 133 | 136 → 134 | 35 → 30 | 0 → 0 | 663 → 663 | 14,720 → 14,720 | 1 → 1 | 5 → 0 | 16 MiB → 2 MiB | 128 KiB → 128 KiB | 0 → 0 | 2,048 → 2,048 |
+| rare exit, 200 rounds of 1,000 with scavenges | 15 → 18 | 135 → 135 | 136 → 136 | 27 → 40 | 0 → 0 | 661 → 661 | 10,992 → 20,288 | 0 → 3 | 0 → 11 | 64 KiB → 64 KiB | 128 KiB → 128 KiB | 0 → 0 | 2,048 → 2,048 |
+| rare exit without allocation, 151,000 calls (release-checks) | 15 → 18 | 135 → 135 | 136 → 136 | 27 → 47 | 0 → 0 | 660 → 705 | 10,992 → 24,064 | 0 → 4 | 0 → 14 | 64 KiB → 64 KiB | 128 KiB → 128 KiB | 0 → 0 | 2,048 → 2,048 |
+| backed-off rate, 300,000 calls (release-checks) | 15 → 18 | 135 → 135 | 136 → 136 | 27 → 47 | 0 → 0 | 660 → 705 | 10,992 → 49,344 | 0 → 16 | 0 → 0 | 64 KiB → 64 KiB | 128 KiB → 128 KiB | 0 → 0 | 2,048 → 2,048 |
+| decay revival | 15 → 17 | 135 → 135 | 136 → 136 | 27 → 35 | 0 → 0 | 661 → 661 | 10,992 → 21,056 | 0 → 3 | 0 → 6 | 64 KiB → 64 KiB | 128 KiB → 128 KiB | 0 → 0 | 2,048 → 2,048 |
+
+The reference lowering's rows are the same or smaller, with no sites;
+the zone commits 1 MiB at every start and end but the 8,000-edit
+churn's 2 MiB, and the stack's top is 0 at every end. Every field is
+bounded by its floor or its limit, not by the iteration count:
+
+- **The tables.** After its final collection the method-edit churn
+  leaves code ids 0, mixin rows 163, application rows 158 and sites 280
+  to 284 whether 1,000 or 8,000 edits ran (118 table collections for
+  8,000). The thousands of edits, which take no collection at their end,
+  stop at the application rows' floor, 4,096, exactly, with code ids and
+  sites below theirs; the family churn's 4,158 application rows are its
+  own raised floors at work, and its 250 sites within twice the 236 one
+  edit leaves. The program-made symbols are 0 after the collection, and
+  the interner is as it was.
+- **The zone.** Within its capacity by construction: 63,952 bytes of 64
+  KiB, at most 28 bodies and 105 returns. The method-edit churn's bodies
+  (148 at 1,000 edits, 267 at 8,000) looked as if they grew, so the same
+  churn ran at 2,000, 4,000, 16,000 and 32,000 edits: 279, 544, 519 and
+  208 bodies, 1.1 to 2.9 MB used, 2 to 3 MiB committed -- a sawtooth
+  between compactions, not a growth with the edits.
+- **The reservations.** The stack keeps what the band and the damping
+  say: the sawtooth 4 MiB, one decommit and none over the next hundred
+  cycles; the recurring peak 2 MiB and a page once the peaks stop, three
+  decommits in all; the damping gives all of the excess back down to 2
+  MiB. The cells grow only in the churns that grow the sites, and the
+  machine entry and application id tables by one doubling at most.
 
 ## The trampoline
 
@@ -8623,38 +9108,43 @@ it did and how far that reasoning is evidence.
 
 ## Running an instruction again after forcing a future
 
-An instruction that meets an unresolved future where it needs the value -- `ResolveFuture`, `InitializeSlot` into a value's
-slot, and a send whose leaf declined, raised or answered "no" because an
-operand is a future -- cannot force it in Rust, since nothing re-enters the
-loop. It answers a step instead: the future's computation -- its block
-activated, or `value` sent to anything else -- under
-`Continuation::Future`, whose `FutureForcing` carries
-`AfterForcing::Reexecute`. For `ResolveFuture` and `InitializeSlot`,
-`vm::force_and_reexecute` stores the instruction's `program_counter` -- `run`'s
-doc comment lists the instructions that must -- and pushes that step; a send
-has stored its `program_counter` already, and pushes a leaf's step as it
-pushes any. When the computation returns, `vm::finish` hands its value
-to `Mutator::future_computed`, which records it and answers a
-`FutureOutcome`: `Reexecute`, and `vm::reexecute` switches back to the
-caller at the stored `program_counter`, so the same instruction runs again
-and finds the future resolved; `Deliver`, for a forcing a message to the
-future started (`futureValue:ifFail:`, `AfterForcing::Deliver`), and the
-value goes to that send as any return's does; or `Force`, when the block
-answered another unresolved future, whose forcing is pushed in the popped
-activation's place with this one chained behind it. Every other
-continuation still goes through `Mutator::resume`.
+Forcing a future is its own `resolve`, a Newspeak method of the kernel's
+`FutureImplementation` ([object-model.md](object-model.md), "Simultaneous
+slots"), so the runtime forces one by pushing that method
+(`Mutator::forcing`), never by running its computation itself. Where the
+instruction that met the future takes its value, the push is a send's:
+`ResolveFuture` calls `resolve` above its frame's window and takes the
+answer into its destination as a send takes its callee's
+(`vm::resolve_future`; `vm::send_destination` names its destination).
+Machine code makes the call as a compiled send ("Stage 4: closures,
+non-local return, allocation and the barrier"). A future a computation
+answered is no forcing of the runtime's: `resolve` takes it over itself.
+
+An instruction that meets a future where it cannot take its value --
+`InitializeSlot` into a value's slot, and a send whose leaf declined,
+raised or answered "no" because an operand is a future -- answers a step
+instead: `resolve` pushed under `Continuation::Reexecute`
+(`Mutator::forcing_then_reexecute`). For `InitializeSlot`,
+`vm::force_and_reexecute` stores the instruction's `program_counter` --
+`run`'s doc comment lists the instructions that must -- and pushes that
+step; a send has stored its `program_counter` already, and pushes a leaf's
+step as it pushes any. When `resolve` returns, `vm::finish` drops its
+value and `vm::reexecute` switches back to the caller at the stored
+`program_counter`, so the same instruction runs again and finds the future
+resolved. Only the interpreter forces a future this way: machine code
+hands such an instruction to the interpreter before it forces anything.
+Every other continuation still goes through `Mutator::resume`.
 
 Running an instruction twice is safe because the first run wrote nothing:
-`ResolveFuture` and `InitializeSlot` force before they write, and **a leaf
-that declines or raises has changed nothing** ([dispatch.md](dispatch.md),
-"Primitives"), so running again the send that ran it is running it once.
-A forcing whose activation an unwind pops, or which `push_step` refuses --
-the depth limit, or a block's arity -- is thrown away through
-`Mutator::abandon`, which leaves its future, and every future chained behind
-it, unresolved again. A host's send has no instruction to run again: a
-forcing that was to run one and finds the run's floor below it ends the run
-with an error (`interpreter::future::host_passed_a_future`). The design is
-[object-model.md](object-model.md), "Simultaneous slots".
+`InitializeSlot` forces before it writes, and **a leaf that declines or
+raises has changed nothing** ([dispatch.md](dispatch.md), "Primitives"),
+so running again the send that ran it is running it once. A forcing an
+unwind abandons, or one of whose pushes the run loop refuses -- the depth
+limit, or a computation's arity -- leaves its future unresolved again by
+`resolve`'s own `ifCurtailed:`; the continuation has nothing to undo. A
+host's send has no instruction to run again: a forcing that was to run one
+and finds the run's floor below it ends the run with an error
+(`interpreter::future::host_passed_a_future`).
 
 ## The loop over locals
 
@@ -9573,11 +10063,15 @@ reads or writes another activation. Before it leaves, the exit walks the
 return addresses on the native stack down to the run loop's entry and writes
 each compiled frame's header but the two words its call wrote: its code, its program counter, its
 caller word, its flags with the compiled bit, its continuation (`Deliver`),
-its feedback base, its guard (none, so the first own-slot access takes
-the cold check, as a resume does today: "Suspending and resuming" above)
-and entered level (the current class's application for code that
-addresses its own slots, as the push records it, since the cold check
-verifies the receiver against that level), and its reified word, nil unless the frame reified
+its feedback base, for code that addresses no own slot its guard
+(none) and entered level (`UNREGISTERED`), as the push records them --
+code that does had its prologue write both, the current class's
+application and the receiver's guard when the receiver's own class is
+that level (the push's first compare) and none otherwise, which the
+cold check then records, and its own-slot
+instructions may have recorded a guard since, so the walk leaves them
+("Own slots in machine code", under "The baseline JIT's foundation"
+below) -- and its reified word, nil unless the frame reified
 itself, whose reification wrote it then ("Returns" below). Everything it writes is derived: a return
 address names a call site, the call site its code and program counter,
 and a callee's frame lies at a fixed offset of its caller's, the call
@@ -9770,30 +10264,35 @@ activation" above); one it inlines creates neither.
 
 ## The baseline JIT's foundation
 
-Road step 8's first three stages are built ("Planned: the baseline JIT",
+Road step 8's first four stages are built ("Planned: the baseline JIT",
 "Stages" below): the code zone and the x64 encoder; the entry, the exit
-and the instructions without a send; and sends and the inline caches in
+and the instructions without a send; sends and the inline caches in
 machine code -- with the entry at an interpreter's send, which calls a
-compiled callee as a compiled send does ("The entry at a send" below).
+compiled callee as a compiled send does ("The entry at a send" below);
+and closures, non-local return, allocation and the write barrier, with
+the reclamation of everything the JIT and the tables beside the object
+space grow ("Stage 4: closures, non-local return, allocation and the
+barrier", "The code zone" below).
 On x64 a body is compiled at its second entry, and every compiled body
 is entered wherever it runs: at a send, a push and a frame returned to.
 Its machine
-code runs until the first instruction that has no template -- a closure,
-an allocation, a non-local return, a send whose call is refused -- where
-it exits and the interpreter runs that instruction and the rest of the
-body; a cached send calls through its site's cell into the callee's
+code runs until an instruction it cannot carry out -- one with no
+template, a send whose call is refused, a non-local return it cannot
+cut -- where it exits and the interpreter runs that instruction and the
+rest of the body; a cached send calls through its site's cell into the callee's
 machine code or a stub, the callee returns by `ret`, and an exit at any
 depth of compiled frames materializes all of them before the interpreter
 runs. Only x64 has an encoder: the JIT is compiled where
 `crates/ns-runtime/build.rs` sets `cfg(ns_jit)`, on x64 alone, the one
 line the AArch64 port changes; elsewhere `jit::available` answers `false`
-and every body stays interpreted. What the design names beyond this --
-closures, non-local return, allocation and the write barrier, on-stack
-replacement, the register cache, compacting the zone, the AArch64
-encoder -- is stages 4 to 7, still planned. "What the entry at a send
-moved" has the measurement of the entry, "What sends in machine code
-moved" that of stage 3, "What the baseline JIT's foundation moved" that
-of the first two.
+and every body stays interpreted. What the design names beyond the four
+stages -- on-stack replacement, the register cache, the AArch64 encoder
+-- is still planned. "What allocation and the barrier in machine code
+moved", "What closures in machine code moved", "What non-local return
+in machine code moved" and "What reclamation moved" have the
+measurements of stage 4's parts, "What the entry at a send moved" that
+of the entry, "What sends in machine code moved" that of stage 3, "What
+the baseline JIT's foundation moved" that of the first two.
 
 - **The code zone** (`crates/ns-memory/src/code_zone.rs`): one
   reservation of at most 128 MiB (`CodeZone::MAXIMUM_BYTES`, AArch64's
@@ -9817,12 +10316,17 @@ of the first two.
   `CodeZone::enter` calls the entry or the call stub with the platform's
   C convention, handing it a block of thirty-two words, an `EntryBlock`
   kept from one entry to the next -- 0 to 3 its own, written at every
-  entry, 4 to 31 the caller's (`jit::stubs::BlockWord`), 22 to 28 of
-  those free for the later stages' words ("The entry at a send" below) --
+  entry, 4 to 31 the caller's (`jit::stubs::BlockWord`), 23 of those
+  free for a later stage's word ("The entry at a send" below) --
   and the leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64`
   back, from a leaf table that is one constant for the process.
   Every zone has an identity of its own, never 0, so that a body records
-  which zone its code lies in.
+  which zone its code lies in. A zone that cannot be reserved -- on a
+  Windows before version 1803, whose placeholders the zone's chunks need
+  ([memory.md](memory.md), "Giving committed memory back") -- leaves the
+  JIT off with its reason (`Interpreter::jit_unavailable`): `ns-next run`
+  and `load` say so in one line on stderr, and `bench` refuses, since a
+  measurement must never time the interpreter in the JIT's place.
 - **The native stack's room** (`crates/ns-memory/src/native_stack.rs`):
   `remaining_bytes` answers what is left of the running thread's stack
   below the caller, from the bounds the system reports --
@@ -9918,7 +10422,13 @@ of the first two.
   is a word (`nil`, a Boolean, a `SmallInteger`, an immediate float),
   `LoadSelf`, `Move`, `StoreLocal`, `Jump`, `JumpIfNotBoolean`,
   `BranchIfFalse`, `BranchIfTrue`, the cached sends, `Return` and
-  `ImplicitReturn`, a leaf-safe `SendMirror`, and `IntegerBinary`'s `SmallInteger`
+  `ImplicitReturn`, a leaf-safe `SendMirror`, `MakeVector`, `MakeArray`,
+  `AllocateInstance`, the initializer invocations and
+  `LoadEnclosingObject` ("The miss leaf" below), `LoadVector`,
+  `StoreVector`, the own-slot instructions
+  (`InitializeSlot`, `InitializeSlotProvisionally`, `LoadOwnSlot`,
+  `ReturnSlotIfFilled`; "Own slots in machine code" below), and
+  `IntegerBinary`'s `SmallInteger`
   fast path -- add, subtract, multiply, floor divide and the five
   compares, with their tag checks, declining to the send at the
   instruction's target, before anything is written, on an operand that
@@ -9926,12 +10436,79 @@ of the first two.
   polls the heap's safepoint request (in the machine words, block word
   `MachineWords`, 11; "The machine words" below) first and
   exits as a safepoint there, so a loop that makes no send still reaches
-  one. The generic leaf, `Leaf::Step` (`jit/leaves.rs`), runs a
-  straight-line instruction through the interpreter's own function for
-  it -- a `LoadLiteral` that allocates, `MakeArray`, `MakeVector`,
-  `LoadVector`, `StoreVector` -- and answers "re-execute" only before it
-  has changed anything, so the interpreter raises the error itself. Every
-  other instruction exits and the interpreter runs it.
+  one. `MakeVector` bumps eden's cursor inline (block word `EdenCursor`,
+  22; `MacroAssembler::bump_allocate`) against the limit the
+  interpreter's fast path bumps against, writes the header and the class
+  word from the machine words `ArrayHeader` and `ArrayClass`, counts the
+  object in `MachineAllocations` and fills its fields with nil
+  (`nil_fill`); past the limit, or for a block at or past the
+  large-object threshold, it calls `Leaf::Allocate`, which places the
+  object as the interpreter's cold path does (`Heap::allocate_block`'s
+  `place_block`: young up to eden's end, asking for the scavenge, else
+  old and remembered) and never collects, and rejoins the fill; a
+  scavenge it asks for runs at the next poll's exit. `MakeArray`
+  allocates as `MakeVector` does and stores its element registers into
+  the new object with no barrier, as `allocate_array_from_registers`
+  does: the object is young, or old and born remembered. `LoadVector`
+  and `StoreVector` check what `interpreter::locals::load_vector` and
+  `store_vector` check -- an object of an `Array`'s format with the
+  element, its count the header's or the overflow word's
+  (`MacroAssembler::check_array_index`) -- and exit to re-execute before
+  anything is written otherwise, so the interpreter raises the error.
+  `StoreVector` stores through the write barrier
+  (`MacroAssembler::store_with_barrier`, or `store_with_barrier_at` an
+  address a stub computed): the word stored, then Cog's
+  four early outs in Cog's order -- a value that names no object (the
+  tag test, then the word 0), a young holder, an old value (each one
+  compare against `NURSERY_END`, `MachineLayout::nursery_end`), a holder
+  whose header's remembered bit, bit 31, is set -- and only past them,
+  out of line, `Leaf::Remember`, which is `Heap::remember`, the request
+  of a scavenge past the set's limit included, and answers the holder
+  again, so that a setter finds its receiver after the call. The
+  generic leaf, `Leaf::Step` (`jit/leaves.rs`), runs a `LoadLiteral`
+  that allocates, an `InitializeSlot` whose value §3.1.1's check of a
+  value's slot must look at, an `AllocateInstance` the inline bump does
+  not make, a `CheckAppliedClause` and a body-less declaration's own
+  `LoadEnclosingObject`, through the interpreter's own function for
+  it, and answers "re-execute" only before it has changed anything,
+  so the interpreter raises the error, or forces a future, itself.
+  - **Own slots in machine code.** An own-slot template first makes
+    `check_own_slots`' hot path inline
+    (`MacroAssembler::check_own_slot_guard`): the receiver an object
+    whose header's guard is the one its frame recorded, and not `NONE`.
+    On anything else it calls `Leaf::OwnSlots` out of line, which runs
+    the cold check (`receiver_keeps_entered_level`), records the
+    receiver's guard in the frame and answers 0, after which the
+    compare is made again and holds; for a receiver without the level,
+    an immediate and an object whose guard is `NONE` it changes nothing
+    and the template exits to re-execute, so the interpreter raises the
+    error or answers as it does. The field's address comes from the
+    slot base in the entered level's row of the application id table
+    (memory.md, "The application id table";
+    `MacroAssembler::load_own_slot_address`), as
+    `Heap::activation_slot_base` reads it, and the field must be one of
+    the receiver's, an instance's, counted by its header or its
+    overflow word -- a crafted image's index past them exits. A
+    compiled call's prologue writes the frame's entered level, the
+    current class's application, and the receiver's guard when the
+    receiver's own class is that level -- the push's first compare --
+    and `NONE` otherwise, which the cold check then records (`jit::sends`'
+    `own_slot_words`), so that a lazy getter called on an instance of
+    its own class calls no leaf. The
+    exit's walk and a leaf's view of a frame leave both words alone for
+    such code, which would otherwise throw a recorded guard away at
+    every leaf call (`Heap::write_machine_frame`). `InitializeSlot` and
+    `InitializeSlotProvisionally` store through the write barrier;
+    `InitializeSlot` with an object value first reads the flags of its
+    receiver's class's application -- not the entered level's, since a
+    `<:` clause can apply `Value` below the level -- and, for one whose
+    slots take §3.1.1's check, or a class with no row, runs the store
+    through `Leaf::Step`, which keeps the interpreter's error and future
+    paths (`vm::initialize_slot_refused`). `ReturnSlotIfFilled` returns
+    a field that is not `nil` as `Return` returns, and goes on
+    otherwise. Every other instruction exits
+  and the interpreter runs it. `JitStatistics::leaf_calls` counts every
+  leaf call machine code makes, once, in the leaf table's wrapper.
 - **The trigger and the entry** (`jit/mod.rs`): every `CompiledCode`
   carries a `JitSlot`, never encoded, which a clone answers fresh,
   counting its entries; at the second, `note_entry` compiles the body
@@ -9947,8 +10524,9 @@ of the first two.
   and a body that died answers nothing. No return address into the zone
   outlives an exit, and a collection runs only at an exit or between
   entries, so a body with a compiled frame is always one that runs. A
-  push in `vm::run_stretch` pays one load
-  and one compare (`JitSlot::is_armed`); everything else is
+  push in `vm::run_stretch` of a counting or compiled body pays one load
+  and one compare (`JitSlot::push_is_armed`; the abandonment below says
+  what the others pay); everything else is
   `jit::entered`, out of line and `#[cold]`. A send of a method in the
   run loop pays three loads, from the method to its code to the slot,
   and one compare (`JitSlot::is_compiled`, inline in
@@ -9969,44 +10547,140 @@ of the first two.
   - every other body is installed and entered wherever it runs: an
     interpreter's send and a compiled send call it, and a push that is
     no send and a frame returned to enter it through the bridge ("The
-    entry at a send" below). No rule leaves a compiled body unentered:
-    a recursion rooted in an interpreted frame runs in machine code, and
-    only a short block an interpreted `value:` pushes is slower for it,
-    until stage 4 makes a closure's activation a compiled call ("What
-    the entry at a send moved"; [OPEN-WORK.md](../OPEN-WORK.md), "A
-    block an interpreted `value:` pushes pays the bridge");
+    entry at a send" below); a block's body is called by a compiled
+    send's closure stub and by an interpreter's `value` send through the
+    closure call stub ("Stage 4" below). No rule leaves a compiled body
+    unentered: a recursion rooted in an interpreted frame runs in machine
+    code, and only a short block the interpreter pushes itself -- for an
+    `ifTrue:` sent a block that is no literal, an `ifNotNil:`, a mirror
+    row's failure block, a future's computation -- is slower for it
+    ("What the entry at a send moved"; [OPEN-WORK.md](../OPEN-WORK.md),
+    "A block the interpreter pushes above its sender's window pays the
+    bridge");
   - a body whose machine code has handed its frame to the interpreter
     `EXIT_BUDGET` (64) times -- an exit at an instruction or a refused
     call, not a poll -- is **abandoned** (`jit::abandon`,
-    `JitStatistics::abandoned_bodies`): it is refused, so that neither
-    an interpreter's send nor a push nor a frame returned to enters it,
-    and every cell that names its machine entry is written afresh from
-    its entry
+    `JitStatistics::abandoned_bodies`): it is settled abandoned
+    (`FIRST_ABANDONED` to `LAST_ABANDONED`), so
+    that neither an interpreter's send nor a push nor a frame returned to
+    enters it, its machine code is freed at once ("Planned: the baseline
+    JIT", "The code zone"), and every cell that names its machine entry
+    is written afresh from its entry
     (`InlineCaches::refresh_cells_entering`), which names the refusing
-    stub since, so that its callers' calls are refused and spend their own
-    budgets. A loop whose callee makes a block, which machine code does
-    not do yet, otherwise paid an exit and an entry on every turn; a
+    stub since, so that its callers' calls are refused and spend their
+    own budgets. A loop whose callee exits at every call otherwise pays
+    an exit and an entry on every turn; a
     region of bodies that keep leaving ends up interpreted, and one that
-    does not stays in machine code. The code stays in the zone, which only
-    appends, so a frame stopped in it is still materialized.
+    does not stays in machine code. An abandoned body's state lies
+    between `COMPILED` and the states of a body that exits at once or is
+    refused, and counts its interpreted entries itself: its abandonment
+    settles it its wait short of `EXITS_AT_ONCE`, and the push's test
+    (`JitSlot::push_is_armed`) adds one inline while it stays below
+    `LAST_ABANDONED`, so that only the push that revives it calls
+    `jit::entered`. A push of a counting or compiled body still pays one
+    compare, of a refused one or one that exits at once two. Armed
+    instead, so that every push of an abandoned body called `jit::entered`
+    out of line, `bench_signal`, which keeps `descend:` abandoned and
+    pushes it about 255,000 times a send, ran 29.5% slower, about 20 ns a
+    push; counted inline it is 0.9% slower than the tree before revival
+    by entries, whose abandoned bodies paid one compare a push and were
+    never revived ("What reclamation moved").
+
+    Abandonment is not for good: an abandoned body is **revived**
+    (`JitStatistics::revived_bodies`) on either of two paths, and then
+    goes back to counting its entries (`JitSlot::forget`) and is compiled
+    anew at its second, its old code long freed.
+    - **The decay.** Every scavenge and every full collection halves the
+      exit count of every body compiled into the zone and of every
+      abandoned one (`JitState::decay_exits`, from `World::scavenge` and
+      `World::collect`), as Strongtalk divides each nmethod's
+      uncommon-trap counter by its decay factor at every sweeper step
+      (`prior-art/strongtalk/vm/code/nmethod.cpp:953-966`, which the zone
+      sweeper runs for each nmethod, `vm/runtime/sweeper.cpp:218`); Cog
+      halves its methods' usage counts at each compaction instead. So in
+      a run that allocates, the budget bounds the exits between two
+      collector events rather than over the run's lifetime, and an
+      abandoned body whose count falls below 32 (`REVIVAL_EXITS`, half
+      the budget) is revived: two halvings from 64, so a body that always
+      exits is compiled at most once per two scavenges. The pace is the
+      allocation's, not time's: a run that allocates nothing never
+      decays.
+    - **The entries.** So a run that allocates nothing does not keep a
+      lifetime budget either: an abandoned body is revived once it has
+      been entered interpreted 4,096 times since its abandonment
+      (`REVIVAL_ENTRIES`, 64 times the budget;
+      `JitState::note_abandoned_entry`), a count that doubles at each
+      further abandonment of the same body, at most four times, to 65,536
+      (`revival_entries`, `MAXIMUM_REVIVAL_DOUBLINGS`). Every scavenge and
+      full collection halves a body's abandonments with its exits, so
+      that in a run that allocates the wait shrinks again. An exit and its
+      resumption cost about a hundred interpreted instructions, so a body
+      that always exits wastes about 6,400 instructions' worth and one
+      compile per revival, against at least 4,096 interpreted entries:
+      under two instructions' worth an entry at the first revival, under
+      a tenth of one once the wait is capped. Deterministic, since it
+      counts entries, never time; and machine code pays nothing for it,
+      since only the interpreted pushes of an abandoned body
+      (`JitSlot::push_is_armed`, inline) and a factory's miss
+      (`decide_at`) count; a
+      method's miss, the initializer leaf and the forcing leaf count no
+      entry of an abandoned body (`note_entry_by_call`), and every one
+      of them still passes through `jit::after_compile_trigger`, which
+      takes a revival up wherever it happened. A body revived this way whose exits stay rare spends 64 of
+      them in machine code before it is abandoned again: in a run that
+      allocates nothing, a body that exits once in N calls runs about
+      64·N calls in machine code between waits of at most 65,536
+      interpreted calls, so its interpreted share stays below
+      65,536 / (65,536 + 64·N) -- about half for an exit in a thousand
+      calls, a tenth for one in ten thousand.
+
+    Whenever a body is revived, every cell that names the refusing stub
+    is written afresh from its entry (`InlineCaches::refresh_all_cells`),
+    since a revival changes only those: after the collector's decay
+    (`World::decay_exits`), and after every compile trigger that counted
+    the entry that revived it -- a push, a miss, an initializer
+    invocation, a future forced -- in the one hook every trigger passes
+    through (`jit::after_compile_trigger`). The cells of its callers
+    name the miss stub again, the miss compiles it, and the cascade
+    reverses: its callers call it and stop spending their budgets. A body compiled
+    again into a replaced zone (`Interpreter::set_jit_zone_bytes`) counts
+    its exits from none, as every compile does (`JitSlot::compiled`): the
+    budget is that of its machine code, and the old code's count, which
+    the decay no longer reaches, is not carried over. A compaction that
+    slides a body's machine code keeps its count (`JitSlot::relocated`):
+    the code is the same, only where it lies changed, so how often the
+    zone fills never resets the budget. The JIT stress mode
+    never abandons a body (`resumption_after_exit`), so it never revives
+    one either.
 
   A body the compiler refuses -- more instructions
-  than a `u16` counts, code the assembler cannot lay out, no room left in
-  the zone -- stays interpreted for good, and so does one entered while
-  the JIT is off (`NS_NEXT_NO_JIT=1` for a process,
-  `Interpreter::set_jit_enabled` for a test): enabling the JIT later does
-  not revive it, so that a disabled JIT costs every later push only the
-  compare. A body compiled by another interpreter, whose slot names
+  than a `u16` counts, code the assembler cannot lay out, more bytes than
+  the zone holds past its stubs -- stays interpreted for good, and so
+  does one entered while the JIT is off (`NS_NEXT_NO_JIT=1` for a
+  process, `Interpreter::set_jit_enabled` for a test): enabling the JIT
+  later does not revive it, so that a disabled JIT costs every later push
+  only the compare. Switching the JIT off also refuses every body
+  abandoned at the time (`JitState::refuse_abandoned`), whose push
+  counts inline and would reach `jit::entered` only at its revival, and
+  so does a replaced zone that could not be reserved, which leaves the
+  JIT off (`JitState::replace_zone`); one reserved keeps them abandoned,
+  since none has machine code in either zone and a revival compiles into
+  the new one. A
+  body that found no room left in the zone counts its
+  entries again instead, and the zone is compacted ("Planned: the
+  baseline JIT", "The code zone"). A body compiled by another interpreter, whose slot names
   another zone's identity, is compiled again into this one rather than
   entered at an offset that means nothing here. A panic inside a leaf
   never unwinds through machine code: it aborts the process at the shim,
   so a debug build's dead-register read inside a leaf ends the process
   rather than failing one test.
-- **Two stress modes** run every golden through machine code: under
+- **Three stress modes** run every golden through machine code: under
   `NS_NEXT_STRESS_JIT` every body is compiled at its first entry and
-  entered even when its machine code exits at once, and under
+  entered even when its machine code exits at once, under
   `NS_NEXT_STRESS_EXIT` every poll takes its exit as if a safepoint were
-  requested ([README.md](README.md), "Gates").
+  requested, and under `NS_NEXT_STRESS_ZONE` the zone is compacted at the
+  safepoints a schedule picks, every body no activation runs freed
+  ([README.md](README.md), "Gates").
   `crates/ns-runtime/tests/jit.rs` pins the trigger, the zone's identity,
   a full zone, a body exiting mid-way, the sends at every lexical depth
   and both `super` levels against the interpreter, the stubs, the
@@ -10017,9 +10691,19 @@ of the first two.
   twice, polymorphic and megamorphic sites, the accessor stubs and leaf
   rows, a recursion that overflows through compiled calls, an
   interpreter's sends that call compiled methods with their arguments
-  from other registers than the send's slots, and a recursion rooted in
+  from other registers than the send's slots, a recursion rooted in
   an interpreted frame that overflows through the interpreter's calls,
-  each `.toml` recorded with `NS_NEXT_NO_JIT=1`.
+  and stage 4's: vectors and arrays, setters and indexing through the
+  barrier, own slots, instantiation, closure calls, a recursion of
+  closures that overflows, a culled setter that keeps its value, frames
+  a closure reified, outer locals, simultaneous slots and their futures,
+  and non-local returns -- to a home that runs, through an `ensure:`, and
+  to a home that has returned -- each `.toml` recorded with
+  `NS_NEXT_NO_JIT=1`. `tests/jit.rs`, `tests/collector.rs` and the unit
+  tests of `jit/mod.rs` and `jit/zone.rs` pin the reclamation: the
+  zone's compaction and exhaustion, the decay and the revivals, the
+  abandoned body's inline count, the lookup by a code address, the
+  growth limits and the committed memory given back.
 
 ### Sends, returns and the exit that materializes
 
@@ -10064,13 +10748,20 @@ sends and the inline caches in machine code.
   into the callee's frame; the callee's prologue checks the depth count
   against `DepthLimit`, the safepoint request and the frame's end against
   `OrdinaryStackEnd`, refusing the call with `ExitKind::PushRefused`
-  before anything is written when one fails, then counts the activation,
+  before anything is written when one fails -- but a frame past the
+  ordinary end calls the growth leaf first (`jit::leaves::grow_stack`,
+  `MacroAssembler::grow_stack_if`), which makes the room the
+  interpreter's push would, committing pages or raising an ordinary end a
+  collection's band lowered ([memory.md](memory.md), "Giving committed
+  memory back"), the call's handover (`Roles::call_handover`) kept on the
+  native stack across it, so that only a frame the ordinary room cannot
+  hold refuses the call -- then counts the activation,
   stores header places 0 and 1, nils its named locals and, in a debug
   build, poisons its scratch registers and writes its flags word's
   generation (`MachineWord::NextGeneration`). So a template stores into a
   frame only after its last decline or exit, and no margin of committed
   words past a frame is needed. A refused call re-executes the send in
-  the interpreter, which raises the overflow or grows the stack. The
+  the interpreter, which raises the overflow or takes the safepoint. The
   depth limit word is a bound: at or past it the interpreter decides, as
   while a `doesNotUnderstand:` handler holds the reserve the word does
   not count.
@@ -10097,16 +10788,39 @@ sends and the inline caches in machine code.
   stubs, each doing what `Mutator::act_with_base` does for its target
   and nothing more: a getter of a public or protected chain, which checks
   the receiver as `Heap::instance_field` does and loads the field; a
-  setter of one, whose leaf (`Leaf::StoreField`) stores the argument
-  through the heap's store accessor and its write barrier and answers the
-  receiver; a quick method's constant, receiver or parameter; a method
-  whose fast path is a leaf-safe mirror row, whose leaf
+  setter of one, which checks the receiver as the getter does, stores
+  the argument through the inline write barrier and answers the
+  receiver; a quick method's constant, receiver or parameter; a
+  method whose fast path is a leaf-safe mirror row, whose leaf
   (`Leaf::MirrorMethod`) runs the row's leaf on the receiver and a few
-  arguments read off the send's slots; the leaf stub (`Leaf::Act`) for
-  every other target machine code runs this way -- a private or `super`
-  slot accessor, whose guard check runs as `act` runs it, straight from
-  the site's entry when the send hit its site's own cell directly, a primitive
-  that is a leaf-safe mirror send, a builtin class's accessor; and the
+  arguments read off the send's slots; a method whose fast path is a row
+  with a stub of its own (`MachineCall::Stub`) -- an Array's or a
+  ByteArray's `at:` and `at:put:` -- which reads or writes the element a
+  `SmallInteger` index in range names, its bounds the header's count or
+  the overflow word's, a ByteArray's data at the first 32-byte offset at
+  or after its field 0, as `heap/object.rs` computes it, an Array's store
+  through the inline barrier, and goes on to the row's mirror method
+  stub for every other case, so that the row's failures stay its leaf's;
+  a nested class's accessor on a public or protected chain, whose cell
+  compares the receiver's own guard, so that the hidden slot the entry
+  recorded is the receiver's: the getter's checks and load of that
+  slot, answering the class it caches (`nested::nested_class`'s hit), and
+  declining for a slot that holds none yet -- nil, or a creation's
+  `SmallInteger` -- so that the interpreter makes the class (decided on
+  2026-10-30); a getter or setter of a private or `super` chain, whose field the
+  lookup decided from N's or S's chain: `slot_level_holds`'s first
+  compare made inline -- the receiver's guard against the one the entry
+  recorded, which the cell carries above the chain start in its
+  `chain_start` word (`cells::Cell`, `CHAIN_START_BITS`; a lexical
+  send tests the one bit of the start it needs), a megamorphic hit
+  moving `send_cells` so that a global row's word lies where a cell's
+  does -- then the public stubs' access; the leaf stub (`Leaf::Act`)
+  for every other target machine code runs this way -- a private or
+  `super` slot accessor whose guard differs from the recorded one, or
+  that came from the miss leaf, whose guard check runs as `act` runs
+  it, straight from the site's entry when the send hit its site's own
+  cell directly, a primitive that is a leaf-safe mirror send, a builtin
+  class's accessor; and the
   refusing stub, which exits so that the interpreter runs the send. Every
   decline refuses the call before anything is written. A stub stores
   into no frame. A send enters its callee with its own site's cell's
@@ -10122,13 +10836,58 @@ sends and the inline caches in machine code.
   (`public_key`, `lexical_site`, `lexical_receiver`, `lexical_key`,
   `super_site`, `super_key`), filling the site's entry and cell and the
   global cache as the interpreter's miss fills them, but acts on nothing:
-  for a method machine code runs as an activation it counts the callee's
-  entry, compiling and installing it at its second -- the one leaf that
-  may compile, from inside machine code, which holds no address an
-  install moves -- and answers its machine entry, the receiver and class
-  handed over in the machine words (`CalleeReceiver`, `CalleeClass`); for
-  a target that is no method with code it answers the stub its cell
-  names; for everything else it refuses the call. **A site filled while
+  for a method machine code runs as an activation, and for a factory's
+  body, it counts the callee's entry, compiling and installing it at its
+  second -- one of the three leaves that may compile a callee, with the
+  initializer leaf and the forcing leaf, which decide a compiled call at
+  the same moment and share its tail (`sends::call_decided`), beside the
+  twin leaf, which compiles the running body's twin ("A frame reifies
+  only in its body's twin"), from inside
+  machine code, which holds no address an install moves -- and answers
+  its machine entry, the receiver and class handed
+  over in the machine words (`CalleeReceiver`, `CalleeClass`); for a
+  target that is no method with code it answers the stub its cell names;
+  for everything else it refuses the call. **A factory send is a compiled
+  call** (decided with the user on 2026-10-30): its cell names the
+  factory body's machine entry, or the miss stub while it may still be
+  compiled (`jit::cell_entry`), and the body's prologue makes the class
+  object it runs on, its receiver, its current class as well
+  (`baseline::BodyRole::Factory`), whatever class a hit walked to. Its
+  `AllocateInstance` bumps an ordinary instance inline: the receiver a
+  class object, by its format, whose builtin field and value class
+  refusal are nil, read afresh at every instantiation, as
+  `allocate_for_factory` reads them, and whose application's row records
+  an instance header word (`MacroAssembler::load_instance_header`; memory.md,
+  "The application id table"), the count of the header's words the size
+  (`ObjectSize::Register`, `nil_fill_block`); everything else -- a
+  builtin's own instances, the VM mirror's class among them, a refusal,
+  an overflowing count, eden at its limit -- runs through `Leaf::Step`,
+  which runs `allocate_instance` and, for a refusal, exits so that the
+  interpreter raises. **An initializer invocation is a compiled call**
+  (`jit::sends::initialize`): `InitializeSuperclass` and
+  `InitializeAppliedLevel` place their arguments on their slots, and
+  `InitializeInstance` copies the factory's own above its window, where
+  `Mutator::push_above` pushes the initializer, once the stack has room
+  for them; then the initializer leaf (`Leaf::Initializer`) decides the
+  invocation through the interpreter's own decision, counts and compiles
+  the callee as the miss leaf does, and answers its machine entry with
+  the receiver, the level and the body's kind in the machine words
+  (`Heap::hand_machine_initializer`, `CalleeKind`), the stub answering
+  its receiver for a decision that runs no code, or 0, at which the
+  invocation exits so that the interpreter raises the error or pushes
+  the body. A passed level's initializer takes no arguments and lies on
+  the slots all the same. `CheckAppliedClause` runs through
+  `Leaf::Step`, and `LoadEnclosingObject` is a template over the lexical
+  walk `load_enclosing_object` makes, or `Leaf::Step` for a body-less
+  declaration's own code.
+  **A frame machine code pushes has a kind and an operand**
+  (`MachineKind`): a method's tag and selector, a factory's tag and its
+  current class, and an initializer's tag, which its code does not say,
+  since one code can be two of its mixin's bodies, written by its
+  prologue into its flags word from `CalleeKind`
+  (`MacroAssembler::record_frame_kind`), and its current class; the
+  walk keeps the recorded tag (`Heap::write_machine_frame`). A callee's
+  header lies past as many arguments as its own code takes. **A site filled while
   its callee had no code heals at its next miss** (decided on 2026-10-28): the
   leaf writes afresh every cell the decision went through -- the site's,
   its block's slot, the global row (`InlineCaches::refresh_cells`) -- once
@@ -10283,11 +11042,12 @@ send.
   was a safepoint's). `JitStatistics::called_entries` counts the calls.
 - **A refusal is the push's.** A call the callee's own prologue refused
   before it wrote anything -- at the depth limit's bound, past the
-  stack's room, with a safepoint requested -- exits with
+  ordinary room the growth leaf could not make, with a safepoint
+  requested -- exits with
   `ExitKind::PushRefused` and the sender as the innermost frame, which
   `called` answers as `Called::Refused`: the interpreter pushes the
   callee from the slots, as it pushes a body without machine code, and
-  so raises the overflow, grows the stack or takes the safepoint, rather
+  so raises the overflow or takes the safepoint, rather
   than run the send again, which would only call the body again. Such a
   refusal is counted nowhere ([OPEN-WORK.md](../OPEN-WORK.md), "A call
   refused at the depth bound is counted nowhere").
@@ -10357,7 +11117,7 @@ push at L to the interpreter), the end of the activation stack's
 ordinary room (`OrdinaryStackEnd`, written beside `FrameStack::ordinary_end`
 in `grow_to`) and, for each of the five immediates, its class object as a
 stored word (`ImmediateClass(index)`, rewritten by
-`Mutator::rewrite_immediate_classes` after every scavenge, compaction,
+`Mutator::rewrite_machine_classes` after every scavenge, compaction,
 move and bulk forward, since a stored word is a handle the collector does
 not trace) and its dispatch id (`ImmediateGuard(index)`); in a debug
 build the generation the last pushed frame took (`NextGeneration`),
@@ -10370,9 +11130,33 @@ the send's receiver for their leaves, each read only right after it was
 written); and the application id table's
 address and the number of its rows recorded (`ApplicationIds`,
 `ApplicationIdRows`; [memory.md](memory.md), "The application id
-table"). Eden's top and limit, which stage 4's bump allocation reads and
-writes in place, are to join them in the room the area keeps (32 words,
-19 of them taken).
+table"); the objects machine code's inline bump placed since the heap
+last counted them (`MachineAllocations`: one add per allocation, which
+the heap folds into its own counts before a scavenge or a compaction
+recounts them and adds when it reports them, so that its counts stay the
+interpreter's); and the kernel's `Array` class as a stored word and the
+header of an `Array` of no words (`ArrayClass`, `ArrayHeader`, rewritten
+with the immediates' classes), what `MakeVector`'s allocation writes;
+and the kind tag of the initializer the initializer leaf decided
+(`CalleeKind`), which the callee's prologue adds to its flags word,
+read only right after it was written; the class words and the headers
+of an empty closure, frame object and future (`ClosureClass`,
+`ClosureHeader`, `FrameClass`, `FrameHeader`, `FutureClass`,
+`FutureHeader`), what `MakeClosure`, its reification of the frame and
+`MakeFuture` write, the future's header 0 until the heap has made a
+future, which only Rust records; the code table's epoch
+(`CodeTableEpoch`), which a closure site and an outer-local site compare
+theirs with; the rows of the machine entry table committed
+(`MachineEntryRows`), which a closure stub compares a code id with; and
+the closure and its depth count an interpreter's `value` send hands the
+closure call stub (`CalleeClosure`, `CalleeCounted`), read only right
+after they were written. The area keeps room for the later stages'
+words (40 words, 33 of them taken). Eden's top and limit, which machine code bumps in place, are not
+among them: they are the object space reservation's own cursor, which
+lies in an allocation of `ns-memory`'s for the same reason
+(`ns_memory::SharedCursor`; [memory.md](memory.md), "The memory
+layer"), and which machine code reaches through block word
+`EdenCursor` (22), a lasting word, fixed for the heap's life.
 The object space and the activation stack, whose words are the object
 fields and frame registers machine code reads and writes, are `ns-memory`
 reservations outside the mutator likewise, and their addresses come from
@@ -10430,7 +11214,7 @@ lowering of one instruction:
   unconditional jumps to labels, calls, returns -- and one encoder each for
   x64 and AArch64, with labels, branches sized in one pass (forward
   branches at their longest, backward ones exactly, as Cog's
-  `generateInstructionsAt` does, `:38529-38605`), and one contract on the
+  `generateInstructionsAt` does, `:38529-38596`), and one contract on the
   condition flags that every encoder honours: each operation sets, keeps
   or clobbers them, and says which conditions it defines. AArch64
   materializes a constant in place with a `movz`/`movk` sequence of at
@@ -10496,18 +11280,25 @@ per-architecture idioms; nothing above changes.
   `src/common/code-memory-access-inl.h:323-332`;
   `os_cpu/bsd_aarch64/os_bsd_aarch64.cpp:515-527`). Since the caches are
   data ("Inline caches" below), code is written only when a body is
-  installed and when the zone is compacted, so strict W^X costs nothing
-  on the hot path. On Windows and Linux the zone is **mapped twice**, one
+  installed and when the zone is compacted -- and a body's data words,
+  its closure sites, when a leaf refills one, each on a cache line no
+  instruction shares ("Stage 4" below) -- so strict W^X costs nothing on
+  the hot path. On Windows and Linux the zone is **mapped twice**, one
   view executable, one writable, as Cog's dual-mapped zone is
   (`prior-art/opensmalltalk-vm/platforms/unix/vm/sqUnixMemory.c:335-373`), which also lets road step
   9 compile on a thread of its own while machine code runs -- V8 turns
   concurrent Sparkplug off where it can only toggle
   (`src/flags/flag-definitions.h:1269-1274`); on Apple AArch64 it is
-  `MAP_JIT` with the per-thread switch.
+  `MAP_JIT` with the per-thread switch. On Windows each view is a range
+  of placeholders, one per chunk of 1 MiB, and each chunk a section of
+  its own mapped into both, so that a chunk given back returns its
+  commit charge ([memory.md](memory.md), "Giving committed memory back").
 - **One reservation of at most 128 MiB**, AArch64's `bl` reach, so every
   call within the zone is direct on both architectures; the stubs sit at
-  its base and never move, as Cog's trampolines do (`:10724-10737`) and
-  as V8's short builtin calls rely on (`src/execution/isolate.cc:5872-5918`).
+  its base and never move, as Cog's trampolines do
+  (`initializeCodeZoneFromupTo`, `:36320-36409`, generates them and then
+  aligns `methodZoneBase` above them) and as V8's short builtin calls
+  rely on (`src/execution/isolate.cc:5872-5918`).
 - **AArch64's instruction cache is flushed once per install**, over the
   installed range, as HotSpot batches it
   (`AArch64ICacheInvalidationContext`, `share/runtime/icache.hpp:132-157`).
@@ -10522,7 +11313,7 @@ runtime on the same stack their compiled code runs on, with no switch
 (`cpu/x86/c1_Runtime1_x86.cpp:78`; `src/builtins/x64/builtins-x64.cc:4524`,
 switching only for WebAssembly), while Cog switches to the C stack on
 every call into the runtime and back (`genSmalltalkToCStackSwitch`,
-`:8580-8592`). With the return addresses on the thread's own stack, a
+`:8580-8590`). With the return addresses on the thread's own stack, a
 leaf call is a plain call, and Windows' stack probes and unwinder find
 the stack they expect -- Cog abandoned `longjmp` because MSVC's unwinder
 "gets hopelessly confused" by a stack switch (`:8264-8275`).
@@ -10570,7 +11361,7 @@ Ignition and Sparkplug share (`src/maglev/maglev-graph-builder.cc:6503-6564`;
 caches out of the code into data (`CompiledICData`,
 `share/code/compiledIC.hpp:57-97`); Cog keeps them in code and so scans
 the whole zone to unlink every send to a method on every install
-(`unlinkSendsToandFreeIf`, `:12523-12610`), which live editing would
+(`unlinkSendsToandFreeIf`, `:12523-12604`), which live editing would
 make frequent. "A cache records what the lookup decided; it never
 decides" holds unchanged.
 
@@ -10596,7 +11387,7 @@ decides" holds unchanged.
   holds four, `code/compiledPIC.hpp:36`; Cog's six, SOMns's chain six),
   and past that the megamorphic stub probes the global cache from
   machine code, as Cog's open PIC probes the interpreter's method cache
-  (`:29031-29170`). A miss calls the lookup as a leaf, which fills the
+  (`:29031-29168`). A miss calls the lookup as a leaf, which fills the
   entry and the cell.
 - **A lexical, `self`, `outer` or private send checks no receiver
   guard** where the resolution does not depend on the receiver's class,
@@ -10644,14 +11435,19 @@ Strongtalk, V8 and HotSpot again for it.
   loads the field; a constant, the receiver or a parameter answers it --
   Cog's quick methods (`genQuickReturnConst`, `genQuickReturnInstVar`,
   `genQuickReturnSelf`, `cogitX64SysV.c:30418-30463`); a slot setter
-  stores through a leaf of its own, the heap's store accessor and its
-  write barrier, until stage 4 emits the barrier; a method whose fast path
+  stores through the inline write barrier; a method whose fast path
   is a leaf-safe mirror row runs the row's leaf through a leaf of its own;
-  a private or `super` slot accessor and a primitive whose mirror row is
-  leaf-safe run their interpreter step through the leaf shim; every other
-  target -- a block-activating fast path, a nested
-  class, a factory, a `doesNotUnderstand:` handler, an unsafe row --
-  takes an exit, and the interpreter runs the send. The stub is chosen
+  a private or `super` slot accessor compares the guard its entry
+  recorded inline and then loads or stores as the public ones do, and a
+  primitive whose mirror row is leaf-safe runs its interpreter step
+  through the leaf shim; since stage 4, a block-activating fast path
+  calls the block's machine code through a closure stub, a factory is a
+  compiled call and a nested class's accessor on a public or protected
+  chain loads its hidden slot ("Stage 4" below, "Sends, returns and the
+  exit that materializes" above); every other target -- a nested class's
+  accessor on a private or `super` chain, a `doesNotUnderstand:`
+  handler, an unsafe row -- takes an exit, and the interpreter runs the
+  send. The stub is chosen
   from the target because the target is immutable: a `MixinMethod` is
   never changed in place, so the fast path it carries is the one a fresh
   read would find.
@@ -10662,14 +11458,16 @@ Strongtalk, V8 and HotSpot again for it.
   default is the exit.
 - **The depth count and the activation stack's committed end are machine
   words** (decided with the user on 2026-10-28): a compiled push compares
-  the count with the limit and the frame's end with the committed end,
-  one compare each, and exits when either fails, so the interpreter
-  raises the overflow or grows the stack. The innermost frame and the
+  the count with the limit and the frame's end with the ordinary end,
+  one compare each; past the ordinary end the growth leaf makes the room,
+  and only a count at the limit or a frame the ordinary room cannot hold
+  exits, so that the interpreter raises the overflow. The innermost
+  frame and the
   number of live frames are derived by the exit's walk. Whether the
   count lives in a machine register is stage 5's measurement.
 - **The megamorphic stub probes a machine-readable mirror of the global
   cache** beside the cells, written wherever the global cache is, as
-  Cog's open PIC probes the method cache (`cogitX64SysV.c:29031-29150`),
+  Cog's open PIC probes the method cache (`cogitX64SysV.c:29031-29168`),
   Strongtalk's megamorphic stub its lookup cache
   (`prior-art/strongtalk/vm/code/stubRoutines.cpp:315-435`), V8's
   megamorphic load its stub cache and HotSpot's vtable stub the vtable;
@@ -10705,20 +11503,269 @@ templates that read and write the slots, then the cache.
 
 ### The code zone
 
+Cog's citations in this subsection are to
+`prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
+`cointerp.c` where named), as in "Stage 4" below: the plain Cogit's
+compaction is the one this zone follows, and the Sista build's frees
+by a different rule.
+
 Machine code holds no handle, so nothing of it is patched or relocated by
 a collection -- V8 relocates embedded objects and pins pages with running
 code (`src/heap/mark-compact.cc:6339-6364`), HotSpot rewrites immediate
 oops (`share/code/nmethod.cpp:2073-2084`), Cog keeps a list of methods
-referring to young objects (`:9664`). Literals are loaded through the
-heap's tables. The zone is compacted only at an exit, when no return
-address into it exists, so moving a body updates only the cache cells
-that name it. Cog's policy decides what is freed: code with a frame on
-the activation stack stays, the rest by usage, until a quarter of the
-zone is free (`freeOlderMethodsForCompaction`, `:13099-13132`). Code
-dies with its mixin's row when a full collection reclaims it
-(`compiler.md`, "Readers of compiled code take the mixin"). Cog's default
-zone is 2.7 MiB (`:31554-31559`); the default here is chosen by
-measurement within the 128 MiB bound.
+referring to young objects (`addToYoungReferrers`, `:12662-12674`).
+Literals are loaded through the heap's tables. A body's data words -- its
+`MakeClosure`s' closure sites ("Stage 4" below) -- lie in the zone right
+after its code, reached relative to the instructions that read them, so
+a move would take them with the body and a free would free them with it.
+
+The zone installs by appending (`Zone.next_offset`, `jit/mod.rs`), and
+is compacted, as Cog compacts its method zone, when a compile finds no
+room (`jit/zone.rs`); a full collection frees the code of the bodies
+that died without waiting for that. So a program that keeps compiling
+keeps doing so in a zone of fixed size, and after each compaction and
+each full collection the zone gives its committed pages back above its
+next offset and 1 MiB, by the band and the damping every reservation
+beside the object space shrinks by
+([memory.md](memory.md), "Giving committed memory back"). The default zone is 16 MiB
+(`jit::DEFAULT_ZONE_BYTES`), a first guess within the 128 MiB bound;
+Cog's default is 1,433,600 bytes (`defaultCogCodeSize`, `:6851-6856`).
+Decided with the user on 2026-10-30, as the first of the six decisions
+that make everything that grows reclaimable (plan
+`docs/superpowers/plans/2026-10-30-0103-jit-closures.md`, "Part 4d").
+
+- **The request.** A compile that finds no room sets
+  `JitState.compaction_requested` and the heap's safepoint request
+  (`jit::after_compile_trigger`, called after every compile trigger that
+  holds the mutator), and the body goes back to counting its entries
+  (`JitSlot::forget`) rather than being refused; the run loop's safepoint
+  (`Interpreter::safepoint`, `interpreter/safepoint.rs`) serves the
+  request (`Mutator::compact_code_zone`) before it serves a collection.
+  Machine code runs only inside `CodeZone::enter`, and a leaf never
+  reaches a safepoint, so no return address into the zone exists there:
+  moving a body needs no walk of the native stack, and a debug build
+  asserts that no entry is in progress (`JitState.entries_in_progress`).
+  A compile from inside a leaf -- the miss leaf, the initializer leaf, a
+  future's `resolve` -- only sets the flags. Cog likewise only sets a flag
+  when a compile finds no room (`callForCogCompiledCodeCompaction`,
+  `cointerp.c:12068-12074`, from a failed compile such as
+  `cogitX64SysV.c:4147-4149`) and compacts at its next event check
+  (`cointerp.c:65051-65054`). The refused compile also sets
+  `JitState.zone_exhausted`, and records the bytes it needed
+  (`JitState.wanted_bytes`), as the refused body's slot records its own
+  (`JitSlot.needed`). While the exhaustion holds, a body that came due
+  compiles if no compile found it without room, or if the room past the
+  last body holds what it needed (`JitState::may_compile_now`); else it
+  keeps counting -- held at the entry that compiles -- and compiles
+  nothing. So an exhausted zone compiles every body that fits the room
+  it has, as Cog goes on compiling whatever fits, and a body that does
+  not fit is assembled in vain at most once while the room stays as it
+  is, which only a compaction changes: a compile that finds no room in
+  an exhausted zone asks for no compaction but counts as a held one, so
+  a zone full of active code neither assembles a hot body again at
+  every second entry nor compacts at every safepoint. A compaction that
+  leaves a quarter of the bodies' room free, and at least what the
+  refused compile needed, clears the exhaustion; one that does not keeps
+  both, so that a retry ends the exhaustion only once the refused body
+  would fit.
+- **The exhaustion ends by entries, not by allocation.** Every entry a
+  zone exhausted holds (`JitState::hold_compile`) counts, and at 64 of
+  them (`zone::COMPILES_HELD_BEFORE_RETRY`) a compaction is asked for
+  again; each compaction in a row that leaves the zone exhausted doubles
+  the count the next waits for (`zone::compiles_held_before_retry`, as
+  far as a `u32` holds), and whatever ends the exhaustion resets the
+  count and the held compiles (`JitState::end_exhaustion`). A full
+  collection also ends it (`JitState::note_full_collection`), but a
+  program that allocates little may never run one, and meanwhile every
+  cell a compaction pointed at the miss stub costs the miss leaf on every
+  hit -- those hits are held entries too, and pay towards the retry. Cog
+  compacts at every compile that finds no room
+  (`callForCogCompiledCodeCompaction`, `cointerp.c:12068-12074`); a
+  compaction here walks every cell, so a retry at every held entry would
+  cost that walk per entry while active code fills the zone. The
+  doubling bounds the fruitless compactions by the logarithm of the
+  entries held, and the wait after the active code has returned by twice
+  the entries held since the zone filled; every compaction halves the
+  usage counts, so a body active at one retry and idle since is freed at
+  the next. Pinned by `an_exhausted_zone_compiles_again_without_a_collection`
+  and `a_zone_full_of_active_code_does_not_compact_at_every_safepoint`
+  (`tests/jit.rs`).
+- **A body too large.** A body larger than the zone's whole room past
+  its stubs is refused for good (`Refusal::TooLarge`), since no
+  compaction could make room for it.
+- **The usage counts** (`InstalledBody.usage`), Cog's `cmUsageCount`:
+  - a body is born at 2 (`zone::INITIAL_USAGE`), what Cog's
+    `initialMethodUsageCount` answers for a method whose primitive has no
+    machine-code generator (`:8837-8850`);
+  - a cache cell or a machine entry row written to name it raises it,
+    while it is below 3 (`zone::LINKED_USAGE_CEILING`) -- only when a
+    cell is written from its entry (`jit::cell_entry`) or a push writes a
+    row (`jit::note_block_entry`), never on a call or an entry, so the hot
+    path is unchanged -- as Cog raises a linked send's target while it is
+    below `CMMaxUsageCount / 2` (`incrementUsageOfTargetIfLinkedSend`,
+    `:8697-8698`); the check of the cells (`jit::expected_cell_entry`)
+    raises nothing, so that a debug build frees as a release one does;
+  - a body with an activation on the activation stack or in a
+    suspension row (`Heap::active_codes`) is set to 7
+    (`zone::MAXIMUM_USAGE`, `CMMaxUsageCount`, `:85`), as Cog's
+    `markMethodAndReferents` sets an active method (`:10073-10074`);
+  - every compaction halves every survivor's count (`compactCompiledCode`,
+    `:12756-12757`, `:12806-12807`).
+- **The freeing.**
+  - These are always freed: a dead body (its `CompiledCode` no longer
+    upgrades: its mixin's row was freed or superseded) and a body its
+    slot no longer names (abandoned, compiled again, or compiled into
+    another zone).
+  - A full collection frees them at once, after it reclaimed the ids
+    (`JitState::free_dead_bodies`, from `World::collect`), as Cog's full
+    collection frees the machine code of every unmarked method
+    (`freeUnmarkedMachineCode`, `:7473-7505`, from `cointerp.c:54977`).
+    No holder needs writing: a cache entry holds its method, and so its
+    code, so no cell names a dead body; its code id was freed with it,
+    which cleared its machine entry row; and no activation runs it. The
+    bytes freed since the last compaction -- by a collection or an
+    abandonment -- are counted (`JitState.bytes_freed_since_compaction`,
+    Cog's `methodBytesFreedSinceLastCompaction`, `:12887`), and once they
+    reach a quarter of the bodies' room, the quarter Cog's compaction
+    aims at (`freeOlderMethodsForCompaction`, `:12907-12911`), the
+    collection asks for a compaction, which the run loop's next safepoint
+    serves. Cog compacts only when a compile finds no room; asking at the
+    collection as well keeps a zone full of dead code from refusing the
+    next compile first.
+  - Then bodies are freed by usage, every body whose count is at most 0,
+    then at most 1, and so on below 7, until the free bytes -- the gap at
+    the zone's end and the bodies marked free -- reach a quarter of the
+    bodies' room past the stubs, as Cog's zone size is its method zone's
+    past the trampolines, and what the refused compile needed
+    (`freeOlderMethodsForCompaction`, `:12897-12927`). A body freed this
+    way goes back to counting its entries. The freed bodies lie apart,
+    and the survivors, re-aligned, can leave less than their sum, so the
+    plan is made and, short of the aim, freeing goes on for the
+    shortfall until the plan reaches it or nothing more is freed
+    (`JitState::plan_freeing`): a compaction that reached its aim by its
+    own count reaches it in the zone too.
+  - An abandoned body is marked free at once (`JitState::free_body`, which
+    removes its return sites): abandonment runs only between entries,
+    where no return address into the zone exists, and a frame an exit
+    left stopped in its code resumes interpreted, as every frame stopped
+    in freed code does (below).
+  - A freed body is skipped by every lookup (`installed`,
+    `installed_body_at`, `body_of`, `return_site`) until the next
+    compaction reclaims its bytes.
+  - A lookup by an address inside the code -- which the step,
+    initializer and own-slot leaves make, handed the code's own address
+    rather than a call's return address, which `returns` records --
+    goes through a direct-mapped table of 256 remembered answers
+    (`jit::BodyLookup`) before it searches the installed bodies. An
+    answer is only a hint: it is taken when the body it names still
+    holds the address and is not freed, which only the body holding it
+    can be, since installed bodies never overlap, so no compaction, free
+    or zone replacement has to clear the table. DeltaBlue made about 2.7
+    million such lookups a run and spent about a sixth of its time in
+    the binary search over the installed bodies, a search the twins
+    lengthened ("A frame reifies only in its body's twin"): 1.9% slower
+    at the twins (three layouts), 15% faster with the table (interim,
+    one build a side, 290.5 ms to 246.9).
+- **The slide and the fix-ups**, in Cog's order (`compactCogCompiledCode`,
+  `:5723-5743`):
+  1. mark the active bodies (Cog's `markActiveMethodsAndReferents`,
+     `cointerp.c:17709-17727`);
+  2. free what is always freed;
+  3. free by usage;
+  4. plan (`zone::CompactionPlan`): each survivor, in ascending order, at
+     the next address its own alignment (`InstalledBody.alignment`)
+     allows from the end of the stubs (`Zone.bodies_start`), which
+     yields an old-start to new-start table (`planCompaction`,
+     `:13098-13115`) -- a body keeps its alignment so that its data words
+     stay on cache lines of their own;
+  5. remap every address outside the bodies through the plan: every
+     cache cell (the sites', the polymorphic blocks' and the global
+     rows', `InlineCaches::remap_cell_entries`) and every machine entry
+     row (`Heap::remap_machine_entries`, its bit beside it following). An
+     address inside a survivor moves by its delta; a freed body's entry
+     becomes the miss stub's -- what `cell_entry` answers for a body
+     counting its entries -- and a freed body's row becomes empty; a
+     stub's address stays. This comes before the bytes move, as Cog
+     updates the stack zone and relocates its methods' references before
+     it copies (`updateStackZoneReferencesToCompiledCodePreCompaction`,
+     `cointerp.c:21546-21601`; `relocateMethodsPreCompaction`,
+     `:13400-13418`);
+  6. slide each survivor's bytes, code and data words, down in ascending
+     order, through a buffer the writer reads back (`compactCompiledCode`,
+     `:12740-12824`), and fill every byte the survivors no longer cover --
+     the gaps their alignment leaves and the room freed past the last --
+     with stops (`macro_assembler::stop_bytes`, `int3` on x64), as Cog
+     fills the freed end of its zone (`stopsFromto`, `:5738`), so that an
+     address a holder failed to remap traps rather than running stale
+     code;
+  7. rewrite the JIT's own records: the installed bodies, each
+     survivor's slot (its offset, first instruction and map index), the
+     return sites keyed by zone offset (a freed body's go), and the
+     zone's next offset;
+  8. halve every survivor's usage;
+  9. clear the request, and the exhaustion once enough is free; a debug
+     build then checks every cell against its entry
+     (`InlineCaches::verify_cells`) and every machine entry row against
+     the bodies' starts, so that the zone stress mode checks the
+     remapping at every compaction it makes.
+
+  A body is position-independent: stubs and leaves are reached through
+  the entry block's words, callees through cells, and its data words
+  relative to `rip` (`zone`'s test
+  `a_body_assembled_at_two_offsets_is_the_same_bytes`). The entry block's
+  lasting words name only stubs, which sit at the zone's base and never
+  move, so a compaction leaves the block current, which the debug check
+  at every entry confirms. A compiled frame names its body by code and
+  program counter, never by address, so a frame stopped in a body the
+  compaction freed resumes interpreted (`jit::resumed`); keeping an
+  active body, as its count does, is only a matter of speed. A closure
+  site moves with its body and keeps what it holds: its code ids and
+  their epoch name no address.
+- **A refusal is not permanent.** `ZoneFull` refuses no body for good:
+  after a compaction bodies compile again, as Cog forgets which methods
+  it found uncoggable after every compaction (`nilUncoggableMethods`,
+  `cointerp.c:14432-14433`) and as HotSpot, which stops compiling when
+  its code cache is full (`share/compiler/compileBroker.cpp:2371-2377`),
+  starts again once a collection's code unloading freed memory
+  (`CodeCache::maybe_restart_compiler`, `share/code/codeCache.cpp:1083-1093`,
+  from `share/gc/shared/classUnloadingContext.cpp:121`). Only a body
+  past the `u16` instruction count, one the assembler cannot lay out and
+  one larger than the zone's room stay refused.
+- **The statistics** count the compactions, the bodies freed -- when
+  they are freed, at a collection, an abandonment or a compaction -- and
+  the bytes the compactions moved (`JitStatistics::zone_compactions`,
+  `freed_bodies`, `moved_bytes`), and `Interpreter::table_sizes` the
+  bytes, bodies and return sites the zone holds.
+- **A stress mode** (`NS_NEXT_STRESS_ZONE`, debug builds) compacts at
+  the safepoints its schedule picks (`StressSchedule`, beside the collect
+  stress mode's), freeing every body that is not active
+  (`zone::Freeing::EveryInactiveBody`), so every golden runs with its
+  bodies freed, compiled again and moved; like the exit stress mode, it
+  forces the JIT on.
+
+#### The code of a moved range is freed
+
+A full collection that slides the site ranges
+([dispatch.md](dispatch.md), "Code families", "The ranges slide at a
+full collection") frees the machine code of every body compiled against
+a feedback base that moved, or against one no live range holds
+(`JitState::free_bodies_with_moved_bases`): a body's compiled sends
+address their cells from the base it was compiled against
+(`InstalledBody.feedback_base`), and its closure templates write that
+base into every closure they make, so its code is stale once the base
+moves. It runs after `free_dead_bodies` and after the caches and the
+heap took the new bases (`Mutator::free_code_of_moved_bases`): each body
+is marked free as a dead one is, its returns dropped, and its slot, when
+it still names it, put back to counting, so that the body is compiled
+again against its family's new base at its second entry after the
+collection. Its machine entry row is cleared (`Heap::forget_machine_entry`)
+and every cell whose entry address named it is written afresh from its
+entry (`InlineCaches::refresh_cells_entering_any`), which names the miss
+stub; a frame stopped in it resumes interpreted (`jit::resumed`). The
+freed bytes count towards the quarter at which the collection asks for a
+compaction. Nothing else in the zone holds a base: a closure site and an
+outer-local site name code ids and epochs, and neither the entry block's
+words nor the machine words name one.
 
 ### Polls and the depth check
 
@@ -10741,11 +11788,396 @@ next safepoint (`genCreateFullClosure…`, `:19554-19620`), and the write
 barrier with its early outs -- an immediate value, a young destination, an
 old value, an already remembered object (`:21739-21780`).
 
+### Stage 4: closures, non-local return, allocation and the barrier
+
+Decided with the user on 2026-10-30. Cog's citations in this section are
+to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
+`cointerp.c` where named).
+
+- **Its scope is every instruction that still exits but an error.** Besides
+  closures, non-local return, allocation and the barrier, the rest of
+  stage 3 -- the initializers' invocations (`InitializeInstance`,
+  `InitializeSuperclass`, `InitializeAppliedLevel`, `CheckAppliedClause`)
+  and `LoadEnclosingObject` -- and the futures (`MakeFuture`,
+  `ResolveFuture`, `InitializeSlotProvisionally`) run in machine code, so
+  that afterwards a body exits only at an error, a poll that found a
+  request, a continuation other than `Deliver` and an unwind it cannot
+  cut. `new` is a factory send whose body is `AllocateInstance` and
+  `InitializeInstance`; with either left an exit, every instantiation
+  would exit.
+- **Four parts, each measured against the tree before it**: 4a,
+  allocation and the barrier, with the slots, the instantiation and the
+  initializers behind them; 4b, closures -- `MakeClosure`, a closure's
+  activation as a compiled call, the outer locals, the futures; 4c,
+  non-local return; and 4d, the reclamation of everything that grows
+  (decided with the user on 2026-10-30, so that a program can run for
+  days, a server among them, in bounded memory): the code zone compacted and the code of dead
+  bodies freed ("The code zone"), an exit budget that decays and an
+  abandoned body compiled again (the abandonment in "The baseline JIT's
+  foundation"), the symbols a program makes weak and numberless
+  ([memory.md](memory.md), "Weak references"), a growth limit on every
+  table beside the object space that requests a full collection rather
+  than a clock ([memory.md](memory.md), "The trigger and the growth
+  policy"), the site ranges slid at a full collection
+  ([dispatch.md](dispatch.md), "Code families"), and committed memory
+  given back by a band and a damping ([memory.md](memory.md), "Giving
+  committed memory back"); and, measured in 4c, a frame reified only in
+  its body's twin (below). 4b allocates through 4a's bump, 4c cuts
+  through frames 4b's closures run in, and 4d frees what the three
+  compile.
+- **Eden's bump cursor lies where machine code reaches it.** Its top and
+  limit leave the reservation's inline fields for an allocation of their
+  own in `ns-memory`, which the reservation and machine code both read
+  and write, as the machine words are; the entry block names its address.
+  An allocation in machine code bumps inline against the limit, as the
+  interpreter's fast path does, and past the limit calls a leaf that does
+  what the interpreter's cold path does -- request a scavenge, carry on
+  up to the ceiling, allocate old and born remembered once eden is spent
+  -- and never collects. Cog carries on into the slack past its threshold
+  inline and calls a trampoline that only schedules the scavenge
+  (`:19053-19077`, `cointerp.c:39866-39873`); here the limit already
+  stands below the threshold, so the leaf is the interpreter's own
+  decision.
+- **The write barrier is inline with Cog's four early outs** -- an
+  immediate or nil value, a young holder, an old value, an already
+  remembered holder (`genStoreCheckReceiverReg:valueReg:scratchReg:inFrame:`,
+  `:21032-21082`) -- and only remembering an object calls a leaf, as
+  only Cog's `ceStoreCheckTrampoline` calls `remember:` (`:21075`). A
+  store into an object machine code has just allocated takes no barrier,
+  as Cog's `genStoreSourceReg:slotIndex:intoNewObjectInDestReg:` takes
+  none (`:21120-21125`).
+- **`MakeClosure` reifies its frame inline, as Cog marries a frame in
+  machine code** (`genGetActiveContextLarge:inBlock:`,
+  `:19271-19560`): the frame's reified word is tested inline, and a frame
+  not yet reified has its frame object bump-allocated and filled by
+  machine code -- its receiver and current class from the frame, its
+  home from the closure of a block's frame, its program counter as a
+  constant of the body, every register field nil -- and the header's
+  reified word written. Every closure keeps the frame that created it
+  ("The closure keeps its defining activation"), so a frame is reified
+  once per closure-creating activation, as often as closures are made;
+  a leaf there would cost a call on that path. It does so only in the
+  body's twin, into which the lean body's `MakeClosure` transfers the
+  frame ("A frame reifies only in its body's twin", below). The twin's
+  return divorces a reified frame inline, and calls a leaf only for a
+  frame that retains its registers.
+- **A `MakeClosure`'s code ids are read from a site of its own, never
+  compiled in.** A full collection frees the code id of a body nothing
+  names -- no closure, frame or activation -- and mints it again for
+  another, while the body's machine code lives on with its mixin, so an
+  id compiled into the code would name another body after the next full
+  collection. Each `MakeClosure` has a closure site: the code ids of its
+  body and of its block with the code table's epoch they were asked in,
+  which a full collection that frees an id renews
+  (`MachineWord::CodeTableEpoch`). The template compares the site's
+  epoch with the heap's and, where they differ -- at the site's first
+  run, and after such a collection -- calls a leaf that asks the heap for
+  both ids afresh, registering each body that has none.
+  - A site lives with its body's code, as Cog keeps a method's data in
+    the method's own code: three of the body's data words
+    (`MacroAssembler::take_body_words`), which the assembler places right
+    after the body's last instruction, zeroed -- no heap's epoch is 0, so
+    each is filled at its first run -- on 64-byte lines of their own, the
+    body placed so that they are lines of the zone too: a refill is a
+    store into the code zone, and a store into a line the processor is
+    executing from costs it a self-modifying-code clear on x64. The
+    template reads the site relative to its own instruction (`mov`/`lea`
+    from `rip`, `ns_assembler`'s label references), so the code holds no
+    address and the entry block no word for it, and the leaf, handed the
+    site's address, writes it through the zone's one writer
+    (`JitState::write_body_words`), which checks that it writes only a
+    body's data words. Sites take their room from the zone's: a zone too
+    full for a body's code and its sites refuses the body, and there is no
+    limit of their own. They go wherever their body's code goes -- a
+    compaction ("The code zone") moves and frees them with it.
+- **A closure's activation is a compiled call, as a method's is.** A send
+  of `value` and its kin to a closure calls through a stub that does what
+  the interpreter's push of the closure does -- the arity, the code, the
+  receiver and current class from the captured frame -- and enters the
+  block's machine code, as Cog's `genPrimitiveFullClosureValue` jumps into
+  the block (`:32704-32750`); the block's prologue fills its copied
+  values where a method's nils its locals, and stores the closure as its
+  frame's operand, which no return address derives. An interpreter's
+  send of a closure whose body's machine entry row names machine code
+  (below) calls it through a call stub of its own, as its send of a
+  method does (`jit::called_closure`). Any other block is pushed: the
+  push of one with machine code -- compiled at this push, or before its
+  id was minted again -- writes the row and enters the same machine
+  code at its first instruction, so the next send calls it, and one
+  without -- still counting, or abandoned -- stays interpreted. The
+  send tells the two apart by the row's bit alone
+  (`Heap::closure_has_machine_entry`), before it reads anything else of
+  the closure.
+  - The closure stubs (`jit/targets.rs`'s `ClosureStub`) serve every
+    method whose fast path activates a block: `Closure`'s `value` to
+    `value:value:value:`, whose rows activate the receiver, and the quick
+    methods `^<parameter> value` -- `ifTrue:`, `and:` and their
+    relatives -- and `^<parameter> cull: self` -- `ifNotNil:` and its
+    relatives -- of up to three arguments. No send writes its slots: a
+    setter send's one slot is the assignment's value, read after the send
+    (`compiler::lower`'s `lower_setter_assign`), and the interpreter lays
+    a block that takes anything but the send's own arguments -- `cull:`'s,
+    the receiver -- above its sender's window. So a closure stub lays the
+    block past the send's slots: it shifts the frame register up by the
+    slots before it jumps into the block, the prologue records the shift
+    in two bits of the flags word past every field the interpreter reads
+    (`frames::CALL_SHIFT_BITS`), a leaf's view of the frame keeps them,
+    and the block's return shifts the frame register back before its
+    `ret`. The block's arguments lie right past the slots: `cull:`'s one,
+    the receiver, which the prologue places once its checks have passed;
+    a block row's, the send's own, copied there from the slots by the
+    stub, before the prologue's check of the frame's room. So the stub
+    copies them only where they end at or below the ordinary end
+    (`MachineWord::OrdinaryStackEnd`, never past the committed end), and
+    declines otherwise, before anything is written, so that the
+    interpreter's push grows the stack. A call the prologue then refuses
+    has written nothing the sender reads: only those copies, past the
+    slots, in registers whose words the callee's window covers and the
+    leftover analysis counts dead after any send (`compiler.md`, "What a
+    callee leaves"), and which the interpreter's push of the block,
+    re-executing the send, overwrites. A block frame a stub lays reaches
+    up to three words higher than the interpreter's push of the same
+    block on the slots -- the arguments it takes, copied or placed past
+    them -- so no argument about the stack's room may assume the
+    interpreter's layout for a frame machine code called; the block's
+    prologue checks the room of the frame where it lies. The walk places a block a compiled
+    send called past the slots and its arguments, and one an interpreter's
+    send called (`jit::called_closure`), whose arguments are the slots, on
+    them (`materialize`'s `Callee`). No second return address lies on the
+    native stack, so the native stack a recursion takes is a method's.
+  - A stub finds the block's machine entry by the closure's code id in a
+    table of the heap's (`heap/machine_entries.rs`, the entry block's
+    `MachineEntries`): each row the machine entry, the feedback base the
+    body was compiled against, which the closure's must equal, and its
+    parameter count. Since a code id is freed and minted again by a full
+    collection while machine code lives on with its mixin, as a closure
+    site's are (above), a row is a copy the JIT writes from the body
+    whenever the interpreter pushes a block whose body has machine code
+    (`jit::note_block_entry`, from `jit::entered`) -- only the push, since
+    the interpreter's call is made only once the row is written -- and
+    every way it could name another body's code clears it: the free of
+    the id, the abandonment of the body, the replacement of the zone, and
+    a switch of the JIT on or off, since a body pushed while it is off is
+    refused without being abandoned.
+  - Beside the rows, Rust keeps one bit per row, set while the row names
+    a machine entry (`MachineEntries::names_entry`); the table's own
+    writes -- a row recorded, one cleared, all of them cleared -- set and
+    clear it with the row, and machine code never reads it. It answers
+    the two questions the interpreter asks of a block at every `value`
+    send and every push without reading the row through the
+    reservation's commit check, a loop: whether to call the block --
+    asked by the closure's code id alone, so a block that stays
+    interpreted reads its closure once, at its push, where asking the
+    JIT for its body's machine code read it a second time, which Queens'
+    interpreted `to:do:` loops measured -- and whether its push need note the row: a row once
+    written is current until it is cleared, so a release build's push of
+    a block whose bit is set skips the body's lookup and the row's
+    comparison, which cost CD's run of closures a percent and more, and
+    a debug build compares the row all the same and asserts it current
+    (`Heap::record_machine_entry`).
+  - A compiled send pushes a counted activation, as every send but a
+    `SendInlinable` does. The interpreter's call of a block a
+    `SendInlinable` exempts -- the reference lowering's loop -- takes the
+    activation off the depth count before the prologue counts it, and
+    gives it back once nothing stands in its place, and the prologue writes
+    the exemption into the frame's flags word, which a frame an exit
+    materializes keeps (`Heap::write_machine_frame`), so that its pop
+    takes nothing off.
+- **An outer local is read and written where its frame keeps it**, as
+  `interpreter::locals`'s `frame_at_depth` finds it (`jit::closures`'s
+  `outer_local`). The template hops from the running closure's captured
+  frame along each closure frame's closure's, staying, as the
+  interpreter's walk stays, at a frame that is no closure's. A married
+  frame object names its activation's header offset, and the register
+  lies on the activation stack, below the header by the argument count
+  its flags word holds, as `Heap::register_slot` finds it, wherever the
+  frame was laid, a stub's shifted block frame included; a store there
+  takes no barrier. A divorced one keeps the register in a field
+  `Heap::frame_field_of_register` names from its body's argument count,
+  which no word of the frame object holds: the instruction has a site
+  of three data words, as a `MakeClosure` has, recording that count
+  beside the code id it was read for and the code table's epoch, which
+  the template compares with the frame's code id and the heap's epoch,
+  calling a leaf that fills it afresh where either differs. A store
+  there goes through the inline barrier. Cog needs neither: its closures
+  reach their method's variables only through copied values and
+  indirection vectors, which the optimized lowering adopted, so only
+  its fallback blocks of an inlined conditional and the reference
+  lowering read a frame's registers by reference.
+- **A future is made inline and seen through inline; its forcing is a
+  compiled send of its `resolve`** (`jit::closures`'s `make_future`,
+  `resolve_future`).
+  `MakeFuture` bump-allocates the future as `Mutator::new_future` makes
+  it, under the `FutureImplementation` header and class word the machine
+  words hold (`MachineWord::FutureHeader`, `FutureClass`). The header
+  word stays 0 until the heap has made a future, which only Rust records
+  (`Mutator::futures_made`, the flag every check for a future reads), so
+  the heap's first future, one past eden's limit and an operand that is
+  no closure are the generic leaf's. `ResolveFuture` moves a value that
+  is no future and loads a resolved future's value inline. Any other
+  future -- unresolved, being computed, or with fields no forcing wrote
+  -- it forces by a compiled call of the future's `resolve`, which the
+  forcing leaf decides as the interpreter's `vm::resolve_future` does
+  (`Leaf::Forcing`, `Mutator::forcing`), counting and compiling the
+  method at its second entry as the miss leaf does, and whose value the
+  template stores into its destination as a send's: the tail an
+  initializer invocation's call shares (`sends::call_decided`). The
+  callee lies above the frame's window, where the interpreter's push of
+  it lies, so that an exit inside it materializes the frame stopped at
+  the call (`sends::call_slots`) and its return delivers the value there
+  (`vm::send_destination`). Before `resolve` is compiled the leaf answers
+  0 and the instruction exits, and the interpreter pushes the method.
+  Forcing is a Newspeak method rather than the interpreter's own because
+  a forcing in Rust needs a continuation of its own, which no compiled
+  call carries, and would cost an exit per future a clause's end forces.
+- **Non-local return is cut by a routine of its own, as Cog's
+  `ceNonLocalReturn` cuts it** (`cointerp.c:12761-13100`; `jit/cut.rs`):
+  a `NonLocalReturn`'s template calls the cut stub
+  (`stubs::assemble_cut_stub`, `BlockWord::CutStub`) with its program
+  counter. The cut takes the block's home as `raise_return` takes it,
+  from the closure its frame holds, and declines at once a body that is
+  no block's, a block that is the stretch's entry frame, and a home not
+  running, suspended or below the stretch's entry frame. Then it walks
+  the compiled frames of the current stretch by their return addresses,
+  innermost first: Rust reads no native stack, so the stub hands it each
+  return address with the word it lies in and the word above it, one
+  leaf call per frame (`Leaf::CutFrame`), and the return address names
+  the caller and the send it stopped at, whose argument slots the callee
+  lies on -- a block past them, as the exit's walk places it. A caller
+  whose code carries an unwind marker -- `ensure:`, `ifCurtailed:`,
+  `on:do:`, the `ifCurtailed:` a future's `resolve` evaluates its
+  computation inside -- a return address into a stub, and the stretch's
+  entry frame reached first end the walk with nothing changed, and so
+  does a home that catches no return, an initializer's. The home found,
+  every frame above it and the home itself are popped as their returns
+  pop them: a reified frame is divorced with the program counter it
+  stopped at -- the `NonLocalReturn`'s for the block, its send's for
+  each other -- and each frame's count, which its prologue added, is
+  taken off the depth count. Machine code resumes where the home's own
+  `ret` would have gone: at the home's return address, the stack pointer
+  above it, the frame register at the home's register 0 and the value in
+  the leaf result's register (`BlockWord::CutStackPointer`,
+  `CutFrameRegister`, `CutValue`) -- in its caller's code after the
+  call, which stores the value as the send's, or in the entry or the
+  call stub, which hand it to the run loop or the interpreter's send as
+  the home's return would. Where the cut declines, the stub returns and
+  the template exits at the `NonLocalReturn`, and the interpreter's one
+  unwinder carries the return ("Unwinding" above), so that a `^` through
+  an `ensure:` runs its block exactly once, in the interpreter's order,
+  and one whose home has returned raises `cannotReturn`
+  (`goldens/runtime/jit/non_local_return*.ns`). The cut runs no Newspeak
+  code, never collects and never pushes; it is the one routine that
+  reads and pops other activations, which no leaf may.
+
+### A frame reifies only in its body's twin
+
+Decided with the user on 2026-10-31, after the measurement of "What
+closures in machine code moved": every inlined conditional with a block
+arm has a `MakeClosure` on the path a receiver that is no Boolean takes
+(`compiler/lower.rs`, `emit_guarded_branch`), so when the whole body
+reified its frame, nearly every body with an `ifTrue:` paid -- on the
+Boolean path too -- the reifying prologue's words, a program counter
+stored before each send and the reified word's test at each return,
+`bench_recursion.ns` about 4% of it. Every body now compiles twice,
+the second time only on demand (`jit::baseline::BodyCopy`):
+
+- **The lean body** is what cells, machine entry rows and every entry
+  name: its frame is never reified while it runs, so its prologue writes
+  no reified word, no program counter and no flags word of a method's or
+  a factory's frame, its sends store no program counter and its returns
+  test nothing. Each `MakeClosure` lowers to a **transfer**
+  (`jit::closures::transfer_to_twin`): at the instruction's place, which an
+  inlined conditional's Boolean path jumps over, it reads the
+  twin's address of the same instruction from a data word of its own,
+  writes the words of the frame the twin reads -- the reified word nil,
+  and in a release build the flags word of a method's or a factory's
+  frame a compiled call entered, leaving the run loop's entry frame's,
+  which its push wrote, as the exit stub tells the two apart -- and
+  jumps there. The twin's `MakeClosure` stores its program counter first,
+  so the transfer stores none (but in a debug build, whose twin checks
+  the copied registers first and may exit there).
+- **The twin** is the same instructions compiled to reify the frame, the
+  same `baseline::lower` with one flag: its `MakeClosure`s reify the
+  frame inline, its sends store their program counters where the
+  interpreter stores them, and its returns divorce a reified frame. Only
+  a transfer and the resumption of a reified frame enter it, so it has
+  no prologue. The first transfer that finds its word 0 calls the twin
+  leaf (`Leaf::Twin`), which compiles and installs the twin and writes
+  every transfer word of the lean body through the zone's one writer --
+  the fourth leaf that compiles, beside the miss, initializer and
+  forcing leaves, before the transfer has written anything. A zone too
+  full for the twin makes the transfer an exit, and asks for a
+  compaction as any compile that finds no room does; while the zone
+  stays exhausted, a twin known not to fit the room left is not
+  assembled again. A twin the compiler refuses for a reason no compaction
+  removes -- too large for the zone, or unassembled -- is recorded on the
+  body's slot and never assembled again: the next exit or resumption that
+  needed it refuses the body for good, its code freed and its cells
+  written afresh, as a reifying body so refused was before
+  (`jit::refuse_for_its_twin`). The twin is compiled under the settings
+  its lean body was (`CompileSettings`: the back-edge counting and the
+  futures' exit a test may change between the two).
+- **A frame whose reified word is set runs only twin code.** Machine code
+  reifies a frame only at a `MakeClosure`, which a lean body transfers,
+  and no leaf reifies one, so a lean frame is never reified while it
+  runs; the run loop enters a frame the interpreter reified -- by a
+  sender walk, or by the `MakeClosure` an exit handed it -- in the twin,
+  compiling one for a body without a `MakeClosure` too
+  (`jit::entry_of_frame`). So every reified frame's divorce records the
+  program counter the interpreter's would: before, a body without a
+  `MakeClosure` whose frame the interpreter reified and machine code then
+  resumed stored no program counter at its later sends, and the loop's
+  pop recorded the one it was resumed at.
+- **Whether a frame reifies is decided by the code it runs.** The twin is
+  an installed body of its own, with its own program-counter map and call
+  returns, so the maps the exit's walk, the cut and the leaves read
+  (`JitState::return_site`, `body_of`, `returns`) answer the copy's
+  `reifies` (`MachineFrame::reifies`). No cell and no machine entry row
+  names a twin. The pair is one body to the zone (`jit::zone`): a twin is
+  freed whenever its lean body is -- by death, abandonment, a moved
+  feedback base or usage -- and never alone, takes its lean body's usage,
+  and both are marked active when an activation runs the body; each copy
+  moves on its own in a compaction, after which the lean body's transfer
+  words are written afresh, and a debug build checks every pair and
+  every transfer word after each compaction and slide, and that no cell
+  and no machine entry row names a twin. A freed twin is counted in
+  `JitStatistics::freed_twins`, apart from the bodies.
+
+Prior art: Cog compiles a method twice when only one path needs a frame
+(`compileTwoPathFrameBuild`, `cogitX64SysV.c:30937-30990`, whose comment
+measures the frame build at 20% on the path that never needed it); V8
+exchanges interpreter and baseline frames mid-function over one frame
+layout (`builtins/x64/builtins-x64.cc:5657-5660`); Strongtalk puts a
+block's cost on the path that uses it (`vm/compiler/node.hpp:1179-1227`).
+Exiting at the fallback's `MakeClosure` was rejected: it carves out a valid
+construct, and its exits would abandon the whole method. Cog's lazy
+widowing was rejected: the fallback blocks here read their creator's
+registers by reference, so the divorce at the return stays.
+
+An interim measurement (one pinned release build a side, three rounds,
+`--iterations 15`, Queens and Richards `--iterations 8`) put
+`bench_recursion` at `master`'s time (0.674 ms against 0.667 pooled, and
+0.704 before), `bench_block` 2% faster, `bench_while` level, Queens
+level within its noise and Richards 3% faster. The twins add little
+code: the lean `fib:` body is 0xd40 bytes with its transfer word, and
+across the Are We Fast Yet programs a few twins are compiled each --
+DeltaBlue 15, Havlak 23 -- and the zone's use at the end of a run is
+mostly below the tree before's, since a lean body is smaller than the
+whole reifying one was: from 15% below (Json) to 6% above (Havlak), and
+11% above on `bench_while`, whose one twin is as large as its body. The
+final measurement, three builds a side, is "What reclamation moved":
+`bench_recursion` 0.7% slower than `master`, and DeltaBlue's 1.9% the
+twins cost through the lookup by a code address recovered by the
+lookup's remembered answers ("The code zone").
+
 ### Tests
 
 - **A seventh stress mode compiles every body at its first entry**, so
   every golden runs through the JIT; an eighth takes the exit at every
-  poll, so every golden runs through materialization and resumption.
+  poll, so every golden runs through materialization and resumption; a
+  ninth compacts the code zone at safepoints, freeing every body no
+  activation runs, so every golden runs through the compaction's remap
+  ("The code zone").
 - **The encoders are tested against disassemblers**, dev-dependencies of
   `ns-assembler` only: `iced-x86` for x64 and one for AArch64.
 - **AArch64 runs under QEMU**: the suite cross-compiled for
@@ -10760,15 +12192,23 @@ encoder; entry, exit and the instructions without a send, every body
 compilable since an instruction without a template exits; sends and the
 caches; closures, non-local return, allocation and the barrier;
 on-stack replacement, the polls and the depth count's measurement; the
-register cache; the AArch64 encoder under QEMU. The first three are
-built, and the entry into machine code at its cost after them -- an
-interpreter's send calling a compiled callee, every compiled body
-entered ("The baseline JIT's foundation" above, "What sends in machine
-code moved", "What the entry at a send moved"); the fourth, closures,
-non-local return, allocation and the write barrier in machine code, is
-next ([OPEN-WORK.md](../OPEN-WORK.md), "Next"), and it also removes the
-cost a short block an interpreted `value:` pushes pays at the bridge, by
-making a closure's activation a compiled call.
+register cache; the AArch64 encoder under QEMU. The first four are
+built: the first three, and the entry into machine code at its cost
+after them -- an interpreter's send calling a compiled callee, every
+compiled body entered ("The baseline JIT's foundation" above, "What
+sends in machine code moved", "What the entry at a send moved"); and the
+fourth, closures, non-local return, allocation and the write barrier in
+machine code, with the reclamation of everything that grows ("Stage 4:
+closures, non-local return, allocation and the barrier", "The code zone"
+above; "What allocation and the barrier in machine code moved", "What
+closures in machine code moved", "What non-local return in machine code
+moved", "What reclamation moved"), which made a closure's activation a
+compiled call and so removed the bridge's cost from every block a
+compiled send or an interpreted `value` send activates. The fifth -- on-stack replacement at a back edge, the polls,
+and whether the depth count lives in a machine register -- is next
+([OPEN-WORK.md](../OPEN-WORK.md), "Next"; "When a body is compiled",
+"Polls and the depth check" above, "Between the tiers" and "Safepoints
+and the depth limit" in "Planned: the deoptimization contract").
 
 ## Decisions
 

@@ -18,7 +18,7 @@ const FORMAT_SHIFT: u32 = 22;
 const FORMAT_MASK: u64 = 0b1_1111;
 const AGE_SHIFT: u32 = 27;
 const AGE_MASK: u64 = 0b1111;
-const REMEMBERED_BIT: u64 = 1 << 31;
+pub(super) const REMEMBERED_BIT: u64 = 1 << 31;
 /// The widest age the header's four bits hold: an object this old is
 /// tenured at its next scavenge whatever the threshold says.
 pub(super) const MAX_AGE: u8 = 15;
@@ -30,6 +30,33 @@ pub(super) const WORD_COUNT_SHIFT: u32 = 56;
 /// The header bits that hold the format, all clear exactly for an
 /// instance's (`Format::FixedPointers`), for machine code's test of one.
 pub(super) const FORMAT_BITS: u64 = FORMAT_MASK << FORMAT_SHIFT;
+/// The header bits of an `Array`'s format (`Format::IndexablePointers`)
+/// under `FORMAT_BITS`, for machine code's test of an indirection vector.
+pub(super) const INDEXABLE_POINTERS_BITS: u64 = (Format::IndexablePointers as u64) << FORMAT_SHIFT;
+
+/// The format bits of a class object's header: what `AllocateInstance`'s
+/// template compares its receiver's with, under `FORMAT_BITS`.
+pub(super) const CLASS_BITS: u64 = (Format::Class as u64) << FORMAT_SHIFT;
+/// The format bits of a closure's header: what the closure stubs compare
+/// a block's receiver's with, under `FORMAT_BITS`.
+pub(super) const CLOSURE_BITS: u64 = (Format::Closure as u64) << FORMAT_SHIFT;
+/// The format bits of a frame object's header: what the outer-local
+/// templates compare a captured frame's with, under `FORMAT_BITS`.
+pub(super) const FRAME_BITS: u64 = (Format::Frame as u64) << FORMAT_SHIFT;
+/// The header bits every code of a `ByteArray`'s format
+/// (`Format::AlignedBytes`, 24 to 31) sets and no other format's code
+/// sets all of, for machine code's test of a ByteArray.
+pub(super) const ALIGNED_BYTES_BITS: u64 = (Format::AlignedBytes as u64) << FORMAT_SHIFT;
+/// How far the format's low bits, a ByteArray's unused bytes in its last
+/// data word (`Header::unused`), are shifted up.
+pub(super) const UNUSED_SHIFT: u32 = FORMAT_SHIFT;
+/// A ByteArray's unused bytes, once shifted down.
+pub(super) const UNUSED_BYTES_MASK: u64 = 0b111;
+
+const _: () = assert!(
+    Format::AlignedBytes as u64 == 0b1_1000 && FORMAT_MASK == 0b1_1111,
+    "the two high bits of the format code are set exactly for AlignedBytes's codes"
+);
 /// The word count that says the count is in an overflow word.
 pub(super) const WORD_COUNT_OVERFLOW: usize = 255;
 

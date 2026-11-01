@@ -1184,8 +1184,12 @@ send compares -- the receiver's dispatch id, but for a `super` and a
 private lexical site S's or N's *application word*, the word the class
 object holds, which machine code reads without a table -- the entry
 address machine code calls, the `level` the hit walks up and the chain's
-start (`ChainStart`: the receiver's class, N or S, from the rule). A
-vacant, polymorphic or megamorphic site's cell guards nothing:
+start (`ChainStart`: the receiver's class, N or S, from the rule) in
+the low two bits of its word, above them, for a private or `super`
+slot accessor's entry, the guard the entry recorded for its receiver,
+which the accessor's stub compares a receiver's guard with -- a copy of
+the entry, as every word of the cell is; every reader masks the start
+(`Cell::start`). A vacant, polymorphic or megamorphic site's cell guards nothing:
 `VACANT_GUARD` is all ones, which no compared word is (a header's guard
 has 22 bits, an application field a `SmallInteger` or `nil`), not
 `DispatchId::VACANT`'s 1, which a class of application 0 holds; a
@@ -1200,9 +1204,20 @@ state alone ([execution.md](execution.md), "Sends, returns and the exit
 that materializes"), so a cell copies what the lookup decided and decides
 nothing; when the JIT's state changes under an entry -- its callee
 compiled since the cell was written, found never to be compiled, or a
-body abandoned -- the cells it
+body abandoned or revived -- the cells it
 reached are written afresh from their entries (`refresh_cells`,
-`refresh_cells_entering`). In a debug build every
+`refresh_cells_entering`, `refresh_all_cells`), and when its machine code
+is freed or moved, the cells that named it: a compaction of the code zone
+remaps every cell's entry address through its plan before any byte moves,
+a freed body's to the miss stub (`InlineCaches::remap_cell_entries`), and
+a body freed because its family's range slid has every cell that named it
+written afresh (`refresh_cells_entering_any`; [execution.md](execution.md),
+"The code zone"). A block's activation is no entry's target: a `value`
+send's entry names `Closure`'s method, whose cell names a closure stub,
+and the stub finds the block's machine code by the closure's code id in
+the machine entry table ([execution.md](execution.md), "Stage 4:
+closures, non-local return, allocation and the barrier"), never through
+a cell. In a debug build every
 `NS_NEXT_STRESS_SCAVENGE` scavenge first checks every cell against its
 entry (`InlineCaches::verify_cells`) -- a vacant entry's cell whole, its
 entry word 0 as well as its guard, since the polymorphic stub jumps to
@@ -1242,8 +1257,11 @@ way:
   sources 4.3–7.8% faster than 3a's head).
 - A closure decoded from an image carries `NOT_ASSIGNED`, since a base is
   never serialized, and is given a fresh range of its own `family_size`
-  (`InlineCaches::fresh_range`) when it is first activated, written back into
-  its feedback-base field. Any range of that size is a correct one.
+  (`InlineCaches::fresh_loose_range`) when it is first activated, written
+  back into its feedback-base field. Any range of that size is a correct
+  one. The range is no family's, so it is recorded on its own
+  (`InlineCaches.loose_ranges`), start to size; a block without sends
+  takes base 0 and no room, as a body without sends does.
 
 **A family's range is reclaimed.** The map holds each family's root body
 (`Family`), so that the body's address, its key, is never another body's
@@ -1252,19 +1270,65 @@ only the map holds and whose base no marked closure and no activation
 names (`InlineCaches::forget_families`, from `Mutator::reclaim_ids`): such
 a body can never be activated again, and a range freed under a live
 closure or activation of the family would be filled by another family's
-sends, whose hits would act on them. The dropped family's sites and
-polymorphic blocks are vacated, so a family given the range again starts
-with empty sites, and the range joins the free ranges, kept by start and
-merged with their neighbours; `fresh_range` takes the first free range that
-fits, its remainder staying free, else appends to the table, and a free
-range at the table's end truncates it. A family's root body can be held by
-a cache entry -- its own sites', for a recursive method, or another
-family's -- and the family lives until the entry is vacated: by the scrub
-of the application the entry names ("Invalidation" below), by an
-invalidation, or, for an entry of a family the same collection dropped, by
-the next collection. A range a decoded closure is given on its first
-activation is no family's, and is not reclaimed
-([OPEN-WORK.md](../OPEN-WORK.md)).
+sends, whose hits would act on them. A decoded closure's range is freed by
+the same rule, once no marked closure and no activation names its base.
+The dropped family's sites and polymorphic blocks are vacated, so a family
+given the range again starts with empty sites, and the range joins the
+free ranges, kept by start and merged with their neighbours; `fresh_range`
+takes the first free range that fits, its remainder staying free, else
+appends to the table, and a free range at the table's end truncates it. A
+family's root body can be held by a cache entry -- its own sites', for a
+recursive method, or another family's -- and the family lives until the
+entry is vacated: by the scrub of the application the entry names
+("Invalidation" below), by an invalidation, or, for an entry of a family
+the same collection dropped, by the next collection.
+
+**The ranges slide at a full collection**, so that the site table's size
+follows the live families, not the most it ever held.
+
+- **When.** After `forget_families`, a full collection slides the live
+  ranges down when the free ranges cover at least a quarter of the
+  table, the code zone's fraction ([execution.md](execution.md), "The
+  code zone"), so neither table compacts for a hole of a few entries. A
+  debug build's collect stress mode (`NS_NEXT_STRESS_COLLECT`) slides
+  whenever any range is free, so that the stress gate runs every slide.
+  The slide (`InlineCaches::plan_slide`, a `SiteSlide`) packs the live
+  ranges -- every family's and every decoded closure's -- from 0 in
+  ascending order; a base is moved by a binary search over them
+  (`SiteSlide::remap`), and `NOT_ASSIGNED` and 0, a body without sends,
+  keep their base.
+- **Every holder of a base is rewritten**, within the same full
+  collection (`World::collect`), between `reclaim_ids` and the end of the
+  compaction: the moved ranges' entries and cells move down in ascending
+  order (a polymorphic block is named by its number and stays), the
+  table is truncated to the packed end, and no range is free any more;
+  then every `Family.base`, every decoded closure's range and every
+  method target's `feedback_base` in a site, a polymorphic block or the
+  global cache (`InlineCaches::apply_slide`); then the heap's holders,
+  in the compaction's own walk (`Heap::compact_with`) -- each closure's
+  feedback-base field, and each frame header's on the activation stack.
+  A suspended activation keeps no base, deriving it again when it
+  resumes (`Mutator::resume_frame`), and a continuation holds none, so
+  neither side table is written. The run loop carries the running
+  frame's base across the safepoint in `FrameRegisters`, and reads it
+  again from the frame after the safepoint (`vm::run`).
+- **A moved family loses its machine code.** A compiled send addresses
+  its cell from the base the body was compiled against, and a closure
+  template carries the base as an immediate, so every installed body
+  whose base moved, or lies in no live range, is freed after the heap's
+  holders took the new bases (`Mutator::free_code_of_moved_bases`), its
+  slot put back to counting, and compiled again on demand: its machine
+  entry row, whose `FeedbackBase` word names the old base, is cleared,
+  and every cell that named the body is written afresh from its entry,
+  which names the miss stub, so none names freed code; a frame stopped
+  in such a body resumes interpreted. Addressing cells from a base
+  register instead would change the hot path; the quarter threshold
+  keeps the recompiles rare. Machine code never runs here: the
+  collection runs at the safepoint or between runs.
+
+`CacheStatistics` counts the slides (`site_slides`), the sites they moved
+(`sites_moved`) and the decoded closures' ranges still recorded
+(`loose_ranges`).
 
 #### `site_index`'s rule
 

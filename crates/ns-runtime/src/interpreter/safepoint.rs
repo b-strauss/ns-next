@@ -10,7 +10,10 @@
 //! missed the write barrier -- and the suspension of every activation of
 //! the run into its frame at the safepoints a fourth schedule picks, the
 //! mode that runs every program on from frames as a deoptimized one will
-//! (`docs/design/execution.md`, "Activations"). The step state's side of a
+//! (`docs/design/execution.md`, "Activations") -- and a compaction of the
+//! code zone at the safepoints a sixth schedule picks, every body no
+//! activation runs freed (`docs/design/execution.md`, "The code zone").
+//! The step state's side of a
 //! move -- its own roots, forwarded after the heap's -- is
 //! `World::move_everything`, in `heap/world.rs`; a collection's is
 //! `World::collect`, in the same file.
@@ -27,8 +30,15 @@ impl Interpreter {
     /// needs"), the scavenge stress mode verifies the remembered set and
     /// scavenges when its schedule says one is due, and the suspend stress
     /// mode suspends every activation of the run into its frame and
-    /// resumes the top one when its own schedule says so; any one of the
-    /// five keeps the request set, so that every safepoint comes here.
+    /// resumes the top one when its own schedule says so, and the zone
+    /// stress mode compacts the code zone, freeing every body no activation
+    /// runs, when its own schedule says so; any one of the six keeps the
+    /// request set, so that every safepoint comes here.
+    ///
+    /// A compaction of the code zone a compile that found it full asked
+    /// for (`jit::after_compile_trigger`) is served next, before a pending
+    /// collection: here, between two stretches, no return address into the
+    /// zone exists (`jit::zone`).
     ///
     /// A pending collection is served after the stress modes have had their
     /// turn: `World::collect` is sound only where nothing outside the heap
@@ -95,7 +105,21 @@ impl Interpreter {
                 }
                 stressed = true;
             }
-            // After the other four, which leave the stack as they find it:
+            // The zone stress mode's compaction, which frees every body no
+            // activation runs: it reads the stack, which it leaves as it
+            // finds it.
+            let traced_size = self.world.traced_size();
+            if let Some(due) = self
+                .stress_zone
+                .as_mut()
+                .map(|stress| stress.due(traced_size))
+            {
+                if due {
+                    self.enter(|mutator| mutator.compact_code_zone_for_stress());
+                }
+                stressed = true;
+            }
+            // After the other five, which leave the stack as they find it:
             // whatever this rebuilds is what the loop reads back, so the
             // floor it suspends from is the run's and nothing below it.
             let traced_size = self.world.traced_size();
@@ -115,6 +139,15 @@ impl Interpreter {
                 }
                 stressed = true;
             }
+        }
+        // A compile found the code zone full: compacted before a
+        // collection is served, as Cog compacts its method zone at its next
+        // event check (`cointerp.c:65051-65054`). Here, between two
+        // stretches, machine code is not running and no return address
+        // into the zone exists, so a body moves without a walk of the
+        // native stack (`jit::zone`).
+        if self.world.code_zone_compaction_requested() {
+            self.enter(|mutator| mutator.compact_code_zone());
         }
         if self.world.collection_requested() {
             self.world.collect();
@@ -339,7 +372,8 @@ impl Interpreter {
             || self.stress_caches
             || self.stress_collect.is_some()
             || self.stress_scavenge.is_some()
-            || self.stress_suspend.is_some();
+            || self.stress_suspend.is_some()
+            || self.stress_zone.is_some();
         self.world.set_safepoint_requested(enabled);
     }
 
@@ -357,7 +391,38 @@ impl Interpreter {
     /// (`hold_safepoints_for_stress`).
     pub fn set_stress_collect(&mut self, enabled: bool) {
         self.stress_collect = enabled.then(StressSchedule::default);
+        self.world.set_eager_slides(enabled);
+        self.shrink_pairs_for_stress();
         self.hold_safepoints_for_stress();
+    }
+
+    /// Under the collect or the zone stress mode, every reservation's shrink
+    /// pair is one page of threshold and one of headroom, undamped, so that
+    /// each of the modes' collections and compactions in the band gives
+    /// back nearly everything above a high mark at once, and every later push, row
+    /// and install takes the growth again: the stress runs then check that
+    /// every bound machine code reads is lowered before its pages go
+    /// (`heap::limits::Shrink`). Otherwise the default pairs. Turning
+    /// either mode on or off sets the pairs afresh, over any a test set.
+    pub(super) fn shrink_pairs_for_stress(&mut self) {
+        let pairs = if self.stress_collect.is_some() || self.stress_zone.is_some() {
+            let page = ns_memory::Reservation::page_size();
+            let one_page = crate::Shrink {
+                threshold: page,
+                headroom: page,
+            };
+            crate::ShrinkPairs {
+                stack: one_page,
+                cells: one_page,
+                machine_entries: one_page,
+                application_ids: one_page,
+                code_zone: one_page,
+                damped: false,
+            }
+        } else {
+            crate::ShrinkPairs::default()
+        };
+        self.world.set_shrink_pairs(pairs);
     }
 
     /// Turns the scavenge stress mode on or off for this interpreter,
@@ -376,6 +441,24 @@ impl Interpreter {
     pub fn set_stress_suspend(&mut self, enabled: bool) {
         self.stress_suspend = enabled.then(StressSchedule::default);
         self.hold_safepoints_for_stress();
+    }
+
+    /// Turns the zone stress mode on or off for this interpreter,
+    /// whatever `NS_NEXT_STRESS_ZONE` says: the code zone compacted at the
+    /// safepoints its schedule picks, every body no activation runs freed.
+    /// For tests. Keeps the safepoint request set while any other stress
+    /// mode is on (`hold_safepoints_for_stress`).
+    pub fn set_stress_zone(&mut self, enabled: bool) {
+        self.stress_zone = enabled.then(StressSchedule::default);
+        self.shrink_pairs_for_stress();
+        self.hold_safepoints_for_stress();
+    }
+
+    /// How many compactions the zone stress mode has made since it was
+    /// turned on; 0 while it is off. A compaction a full zone asked for
+    /// never advances this.
+    pub fn stress_zone_compactions(&self) -> usize {
+        self.stress_zone.as_ref().map_or(0, |stress| stress.fired)
     }
 
     /// How many times this interpreter's heap has moved everything -- a

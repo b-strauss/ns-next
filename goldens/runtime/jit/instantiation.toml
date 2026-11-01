@@ -1,0 +1,14 @@
+stdout = '''
+2 1 12 base 1 tagged 1 own middle outermost false
+0 0 an Object cannot instantiate MyString: a value class's enclosing objects must be values, and its enclosing object, an instance of Instantiation, is not one
+cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol
+3 1 13 base 2 tagged 2 own middle outermost false
+0 0 an Object cannot instantiate MyString: a value class's enclosing objects must be values, and its enclosing object, an instance of Instantiation, is not one
+cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol
+4 1 14 base 3 tagged 3 own middle outermost false
+0 0 an Object cannot instantiate MyString: a value class's enclosing objects must be values, and its enclosing object, an instance of Instantiation, is not one
+cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol
+5 1 15 base 4 tagged 4 own middle outermost false
+0 0 an Object cannot instantiate MyString: a value class's enclosing objects must be values, and its enclosing object, an instance of Instantiation, is not one
+cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol
+'''

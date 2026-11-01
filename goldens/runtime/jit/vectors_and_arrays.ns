@@ -1,0 +1,95 @@
+/// Captured variables written in loops, which live in an indirection
+/// vector, and array literals of registers, in machine code: the vector's
+/// loads and stores, and the arrays bumped in eden or, past its limit,
+/// placed by the allocation leaf. `chain:` links more arrays than eden
+/// holds, so its vector and the older links are tenured while the loop
+/// still stores young arrays into it, through the write barrier.
+class VectorsAndArrays = Object new () (
+  /// Links `limit` arrays and one more, each naming the one before and,
+  /// in the loop, an array of 64 nils that makes a link large enough for
+  /// a few thousand to fill eden, while a block that writes `total` and
+  /// `chain` makes them captured variables; answers the total, the last
+  /// link's first element and the chain's length.
+  chain: limit = (
+    |
+      total ::= 0.
+      chain ::= nil.
+      index ::= 0.
+    |
+    [index < limit] whileTrue: [
+      chain:: {index. total. chain. Array new: 64}.
+      total:: total + index.
+      index:: index + 1.
+    ].
+    [:extra |
+      total:: total + extra.
+      chain:: {extra. total. chain}.
+    ] value: 1.
+    ^{total. chain at: 1. self length: chain}.
+  )
+
+  /// How many links `chain` has, each naming the next at its third
+  /// element.
+  length: chain = (
+    |
+      count ::= 0.
+      link ::= chain.
+    |
+    [link isNil] whileFalse: [
+      count:: count + 1.
+      link:: link at: 3.
+    ].
+    ^count.
+  )
+
+  /// Runs a block three times that writes `first`, `second` and `count`,
+  /// captured from here, in a loop of `limit` turns; answers what the
+  /// last turn left in them.
+  fill: limit = (
+    |
+      first ::= nil.
+      second ::= nil.
+      count ::= 0.
+      writer = [:bound |
+        |
+          index ::= 0.
+        |
+        [index < bound] whileTrue: [
+          first:: {index. bound}.
+          second:: {first. count. {}}.
+          count:: count + 1.
+          index:: index + 1.
+        ].
+      ].
+    |
+    writer value: limit.
+    writer value: limit.
+    writer value: limit.
+    ^(first at: 1) + (first at: 2) + ((second at: 1) at: 1) + count + (second at: 3) size.
+  )
+
+  /// The elements of `array`, each printed, a space between two.
+  describe: array = (
+    ^(array at: 1) printString , ' ' , (array at: 2) printString , ' ' , (array at: 3) printString.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    1 to: 3 do: [:round |
+      transcript
+          show: (describe: (chain: 10));
+          newLine.
+      transcript
+          show: (fill: 50) printString;
+          newLine.
+    ].
+    transcript
+        show: (describe: (chain: 20000));
+        newLine.
+    transcript
+        show: (fill: 2000) printString;
+        newLine.
+  )
+)

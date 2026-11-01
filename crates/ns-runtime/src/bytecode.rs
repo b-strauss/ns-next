@@ -332,9 +332,10 @@ pub enum Instruction {
         closure: u16,
     },
     /// The value `source` holds, seen through a future: itself when it is
-    /// none, a resolved future's value, and an unresolved one forced first --
-    /// the instruction then runs again (`interpreter::future`,
-    /// `AfterForcing::Reexecute`). A simultaneous clause's end.
+    /// none, a resolved future's value, and for any other future what its
+    /// `resolve` answers, which the instruction calls above its frame's
+    /// window and takes into `destination` as a send takes its callee's
+    /// value (`vm::resolve_future`). A simultaneous clause's end.
     ResolveFuture {
         destination: u16,
         source: u16,

@@ -271,7 +271,7 @@ impl Heap<'_> {
         self.tables
             .free_applications
             .free(u32::try_from(index.index()).expect("an application index is 32 bits"));
-        self.record_application_id(index.index(), DispatchId::NONE);
+        self.record_application_row(index.index(), Self::vacant_application_row());
         application
     }
 
@@ -562,13 +562,22 @@ impl Heap<'_> {
                     .code_ids
                     .remove(&(Rc::as_ptr(&entry.code) as usize));
                 self.tables.free_codes.free(number);
+                // The id may name another body next: no machine code is
+                // entered through it until the JIT records that body's.
+                #[cfg(ns_jit)]
+                self.machine_entries.clear(row);
                 freed = true;
             }
         }
         super::ids::truncate_trailing(&mut self.tables.codes, &mut self.tables.free_codes);
         if freed {
-            // Every body's cached id may name a freed row now.
+            // Every body's cached id may name a freed row now, and so may
+            // every closure site's in machine code (`jit::closures`).
             self.code_table_epoch = super::next_code_table_epoch();
+            self.machine_words.set(
+                super::machine_words::MachineWord::CodeTableEpoch,
+                self.code_table_epoch,
+            );
         }
     }
 }

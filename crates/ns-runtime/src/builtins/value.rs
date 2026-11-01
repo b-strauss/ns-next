@@ -370,8 +370,8 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
                     ))
                 });
             }
-            if let Some(symbol) = mutator.heap().symbol_value(object) {
-                return Some(Node::Leaf(text::symbol_hash(symbol)));
+            if let Some(hash) = text::symbol_hash(mutator.heap(), object) {
+                return Some(Node::Leaf(hash));
             }
             if let Some(hash) = mutator.heap().string_hash(object) {
                 return Some(Node::Leaf(hash));

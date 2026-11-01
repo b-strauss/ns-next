@@ -17,9 +17,7 @@ use std::rc::Rc;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterBase};
-use crate::interpreter::future::{
-    not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
-};
+use crate::interpreter::future::{not_a_closure, value_for_a_value_slot, Resolution};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{body_too_large_error, unresolved_identifier_error};
@@ -158,20 +156,25 @@ impl Handoff {
 /// safepoint is outside every one: what the loop carries from one stretch to
 /// the next is `FrameRegisters` -- the running `ActivationReference`, its
 /// code, its `program_counter`, its `FeedbackBase` and its `RegisterBase`,
-/// none of which a move changes -- so a collection may run there and nowhere
-/// else (`docs/design/memory.md`, "Where a collection can happen"), and a run
-/// ends inside its last entry, its answer rooted (`docs/design/memory.md`,
-/// "The brand"). Each safepoint is one compare of a flag the heap owns; what
-/// happens when it is set is `interpreter/`'s (`Interpreter::safepoint`).
+/// none of which a move changes, and only the `FeedbackBase` a full
+/// collection's slide of the inline caches' ranges does, which the loop
+/// reads again from the frame after the safepoint -- so a collection may
+/// run there and nowhere else (`docs/design/memory.md`, "Where a collection
+/// can happen"), and a run ends inside its last entry, its answer rooted
+/// (`docs/design/memory.md`, "The brand"). Each safepoint is one compare of
+/// a flag the heap owns; what happens when it is set is `interpreter/`'s
+/// (`Interpreter::safepoint`).
 ///
 /// An activation's `program_counter` is stored only by the instructions that
 /// can hand it to an observer: every send (a callee runs above it, and the loop
 /// resumes it from that `program_counter`), `MakeClosure` (it reifies the
 /// activation, so the frame starts from the `program_counter` stored just
 /// before), `NonLocalReturn` (control leaves with a signal), and
-/// `ResolveFuture` and `InitializeSlot` when either meets an unresolved
-/// future (`force_and_reexecute` pushes the forcing above it, and the loop
-/// must come back to this same instruction once the future resolves),
+/// `ResolveFuture` when it meets a future that is not resolved (it pushes
+/// the future's `resolve` above it, whose value it takes as a send takes
+/// its callee's), `InitializeSlot` when it meets one in a value's slot
+/// (`force_and_reexecute` pushes the forcing above it, and the loop must
+/// come back to this same instruction once the future resolves),
 /// and every instruction that raises an error -- `SignalNonBoolean`,
 /// `LoadLiteral`'s error path, a refused slot or vector access (`raise`).
 /// Nothing resumes a raising activation, since an `Error` is not resumable
@@ -229,6 +232,13 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
                             mutator.heap.activation_program_counter(top),
                         )
                     });
+                } else {
+                    // A full collection may have slid the inline caches'
+                    // ranges, rewriting the frame's base in its header
+                    // (`InlineCaches::plan_slide`): every other word the
+                    // loop carries stays as it was.
+                    frame.feedback_base = interpreter
+                        .enter(|mutator| mutator.heap.activation_feedback_base(frame.activation));
                 }
             }
             Leave::Exit(result) => return result,
@@ -272,7 +282,7 @@ fn run_stretch<'gc>(
         resume_in_machine_code: false,
     };
     // The run's base activation, entered as a push is (`run`).
-    if std::mem::take(entering) && code.jit.is_armed() {
+    if std::mem::take(entering) && code.jit.push_is_armed() {
         let switched = machine_code_switch(
             mutator,
             &mut handoff,
@@ -1343,7 +1353,7 @@ fn run_stretch<'gc>(
                 // the test of whether it stopped in machine code, whose
                 // machine code it resumes (`jit::resumed`).
                 let resume = std::mem::take(&mut handoff.resume_in_machine_code);
-                if resume || (program_counter == 0 && code.jit.is_armed()) {
+                if resume || (program_counter == 0 && code.jit.push_is_armed()) {
                     // A switch is a safepoint: a real request made meanwhile
                     // -- the collection `garbageCollect` asks for before its
                     // method returns -- is taken before machine code runs
@@ -1923,7 +1933,7 @@ fn load_self_into(
 }
 
 #[inline(always)]
-fn load_enclosing_object_into(
+pub(crate) fn load_enclosing_object_into(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
     register_base: RegisterBase,
@@ -2114,9 +2124,11 @@ pub(crate) fn load_vector_into<'gc>(
 /// `own_index` is relative to the executing mixin's own slots; the
 /// activation's slot base, that of the application it was entered at
 /// (`Heap::activation_slot_base`), turns it into this instance's absolute
-/// field index.
+/// field index. Machine code's generic leaf runs it for an `InitializeSlot`
+/// whose value §3.1.1's check must look at (`jit::leaves`), so the two
+/// cannot drift.
 #[inline(always)]
-fn initialize_slot<'gc>(
+pub(crate) fn initialize_slot<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     register_base: RegisterBase,
@@ -2422,15 +2434,15 @@ fn stopped(mutator: &Mutator<'_>, resumption: Resumption, handoff: &mut Handoff)
 /// `activation` has returned `value`: pop it and do what its continuation says.
 /// A value -- the usual case -- goes to the send in the caller, which resumes,
 /// or out of `run` when there is no caller in this run; a continuation may
-/// instead decide another activation -- the `valueOf:` that sends a future's
-/// computation `value`, or a nested class's next step -- which runs in the
-/// popped activation's place. `Mutator::resume` applies the
-/// continuation and
-/// `Mutator::push_continuation` pushes what it decided, depth count included;
-/// the loop only forwards the popped frame's flag. A future's forcing
-/// (`Mutator::future_computed`) may also run the caller's stopped
-/// instruction again (`reexecute`) rather than resume after it. A caller
-/// suspended into its frame is resumed first (`return_to_suspended`).
+/// instead decide another activation -- a nested class's next step --
+/// which runs in the popped activation's place. `Mutator::resume` applies
+/// the continuation and `Mutator::push_continuation` pushes what it
+/// decided, depth count included; the loop only forwards the popped
+/// frame's flag. A future's `resolve` pushed for an instruction that could
+/// not take its value (`Continuation::Reexecute`) runs the caller's
+/// stopped instruction again (`reexecute`) rather than resume after it. A
+/// caller suspended into its frame is resumed first
+/// (`return_to_suspended`).
 fn finish<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -2471,19 +2483,9 @@ fn apply_continuation<'gc>(
         Continuation::ReturnToSuspended(suspended) => {
             return return_to_suspended(mutator, *suspended, counted, value, floor, handoff);
         }
-        // A future's computation returned: what happens next is
-        // `interpreter::future`'s to decide, and the loop carries it out.
-        Continuation::Future(forcing) => match mutator.future_computed(*forcing, value) {
-            Ok(FutureOutcome::Deliver(value)) => value,
-            Ok(FutureOutcome::Reexecute) => return reexecute(mutator, floor, handoff),
-            Ok(FutureOutcome::Force(step)) => {
-                return match mutator.push_continuation(step, counted) {
-                    Ok(next) => handoff.switch_to(mutator, next, 0),
-                    Err(signal) => unwind(mutator, signal, floor, handoff),
-                };
-            }
-            Err(signal) => return unwind(mutator, signal, floor, handoff),
-        },
+        // A future's `resolve` returned to an instruction that could not
+        // take its value: the instruction runs again and finds it resolved.
+        Continuation::Reexecute => return reexecute(mutator, floor, handoff),
         then => match mutator.resume(then, value) {
             // Forgotten rather than dropped, as `deliver` forgets a value's
             // step.
@@ -2628,7 +2630,7 @@ fn machine_code_switch<'gc>(
                         // A switch is a safepoint: one requested meanwhile
                         // is taken before machine code runs again.
                         if mutator.heap.safepoint_requested()
-                            || !(resume || (program_counter == 0 && code.jit.is_armed()))
+                            || !(resume || (program_counter == 0 && code.jit.push_is_armed()))
                         {
                             // Interpreted from here, even the frame that
                             // stopped in machine code: its bit goes.
@@ -2655,11 +2657,13 @@ fn machine_code_switch<'gc>(
 }
 
 /// The instruction the popped activation's caller is stopped at, run again
-/// rather than resumed after: it met an unresolved future, which is now
-/// resolved (`interpreter::future`, `AfterForcing::Reexecute`). It wrote
-/// nothing before it forced the future, so running it again is running it
-/// once. A host's send has no instruction to run again; a future it passes
-/// in straight to a leaf ends the run.
+/// rather than resumed after: it met a future that was not resolved, and
+/// the future's `resolve` has now resolved it (`Continuation::Reexecute`).
+/// It wrote nothing before it forced the future, so running it again is
+/// running it once. A host's send has no instruction to run again; a
+/// future it passes in straight to a leaf ends the run. Only the
+/// interpreter forces a future this way, so the caller runs the
+/// instruction again interpreted, as it met the future.
 fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handoff) -> Transfer {
     if mutator.heap.activation_stack_top() == floor {
         let error = crate::interpreter::future::host_passed_a_future();
@@ -2682,7 +2686,7 @@ fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handof
 
 /// `AllocateInstance`: a fresh instance of the factory's receiver.
 #[inline(never)]
-fn allocate_instance_into<'gc>(
+pub(crate) fn allocate_instance_into<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     register_base: RegisterBase,
@@ -2813,8 +2817,9 @@ fn initialize_applied_level(
 // slots cost").
 
 /// `InitializeSlot` refused a value's slot: if the value is a future, what
-/// it stands for belongs there, stored and checked again, or forced first
-/// and the instruction run again (`future::value_for_a_value_slot`).
+/// it stands for belongs there, stored and checked again when the future
+/// is resolved, or forced first and the instruction run again
+/// (`future::value_for_a_value_slot`).
 #[inline(never)]
 #[expect(
     clippy::too_many_arguments,
@@ -2840,7 +2845,7 @@ fn initialize_slot_refused<'gc>(
     let value = read_local(&mutator.heap, activation, source);
     match value_for_a_value_slot(mutator, value) {
         None => raise(mutator, program_counter, signal, floor, handoff),
-        Some(Ok(Resolution::Value(resolved))) => {
+        Some(Resolution::Value(resolved)) => {
             let receiver = mutator.heap.activation_receiver(activation);
             let base = mutator.heap.activation_slot_base(activation);
             match check_value_slot(mutator, activation, receiver, own_index as usize, resolved) {
@@ -2856,10 +2861,9 @@ fn initialize_slot_refused<'gc>(
                 Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
             }
         }
-        Some(Ok(Resolution::Force(step))) => {
+        Some(Resolution::Force(step)) => {
             force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
         }
-        Some(Err(signal)) => raise(mutator, program_counter, signal, floor, handoff),
     }
 }
 
@@ -2943,18 +2947,26 @@ fn make_future<'gc>(
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
+    match make_future_into(mutator, activation, destination, closure) {
+        Ok(()) => Transfer::Next,
+        Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
+    }
+}
+
+/// `MakeFuture`'s effect, shared with machine code's generic leaf
+/// (`jit::leaves`), which makes a future the inline bump does not: the
+/// future of the closure in `closure` into `destination`, or the error of
+/// an operand that is no closure, before anything is written.
+pub(crate) fn make_future_into<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    destination: u16,
+    closure: u16,
+) -> Result<(), Signal<'gc>> {
     let operand = read_local(&mutator.heap, activation, closure);
     let closure = match operand.as_object() {
         Some(object) if mutator.heap.is_closure(object) => object,
-        _ => {
-            return raise(
-                mutator,
-                program_counter,
-                not_a_closure(operand),
-                floor,
-                handoff,
-            )
-        }
+        _ => return Err(not_a_closure(operand)),
     };
     let future = mutator.new_future(closure);
     write_local(
@@ -2963,11 +2975,15 @@ fn make_future<'gc>(
         destination,
         Value::object(future),
     );
-    Transfer::Next
+    Ok(())
 }
 
-/// `ResolveFuture`: the value `source` holds, seen through a future --
-/// forced first, and the instruction run again, when it is unresolved.
+/// `ResolveFuture`: the value `source` holds, seen through a future:
+/// itself when it is none, a resolved future's value, and for any other
+/// future what its `resolve` answers -- the push of that method, above the
+/// frame's window, delivers its value to `destination` as a send's callee
+/// does (`Mutator::forcing`, `send_destination`), or signals the error of
+/// a future being computed or malformed.
 fn resolve_future<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
@@ -2978,16 +2994,26 @@ fn resolve_future<'gc>(
     handoff: &mut Handoff,
 ) -> Transfer {
     let value = read_local(&mutator.heap, activation, source);
-    match resolve_for_instruction(mutator, value) {
-        Ok(Resolution::Value(value)) => {
-            write_local(&mut mutator.heap, activation, destination, value);
-            Transfer::Next
-        }
-        Ok(Resolution::Force(step)) => {
-            force_and_reexecute(mutator, activation, program_counter, step, floor, handoff)
-        }
-        Err(signal) => raise(mutator, program_counter, signal, floor, handoff),
-    }
+    let Some(future) = mutator.as_future(value) else {
+        write_local(&mut mutator.heap, activation, destination, value);
+        return Transfer::Next;
+    };
+    let register_base = mutator.heap.activation_register_base(activation);
+    send(
+        mutator,
+        Sender {
+            activation,
+            register_base,
+            destination,
+            inlinable: false,
+        },
+        program_counter,
+        ArgumentSlots::new(register_base, 0, 0),
+        None,
+        floor,
+        handoff,
+        |mutator, _| Ok(mutator.forcing(future)),
+    )
 }
 
 /// `LoadOwnSlot`: `self`'s field at the slot base plus `own_index`.
@@ -3034,11 +3060,12 @@ fn initialize_slot_provisionally<'gc>(
     Transfer::Next
 }
 
-/// An instruction met an unresolved future: store where it stands, push the
-/// forcing, and switch to it; `Reexecute` brings the loop back to this same
-/// instruction once the future is resolved (`reexecute`). One of the
-/// instructions whose `program_counter` must be stored before it hands
-/// control elsewhere (`run`'s doc comment).
+/// `InitializeSlot` met a future that is not resolved: store where it
+/// stands, push the future's `resolve`, and switch to it;
+/// `Continuation::Reexecute` brings the loop back to this same instruction
+/// once the future is resolved (`reexecute`). One of the instructions
+/// whose `program_counter` must be stored before it hands control
+/// elsewhere (`run`'s doc comment).
 #[inline(never)]
 fn force_and_reexecute<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -3154,7 +3181,9 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
         // A leaf that activates a block (`value:`, `do:`) resumes its
         // caller here.
         | CompactInstruction::SendMirror { destination, .. }
-        // A factory's or an initializer's initializer returns here.
+        // A factory's or an initializer's initializer returns here, and
+        // the `resolve` of a future `ResolveFuture` met.
+        | CompactInstruction::ResolveFuture { destination, .. }
         | CompactInstruction::InitializeInstance { destination, .. }
         | CompactInstruction::InitializeSuperclass { destination, .. }
         | CompactInstruction::InitializeAppliedLevel { destination, .. } => u16::from(destination),
@@ -3170,6 +3199,7 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
         }
         CompactInstruction::Wide { index } => match code.body().wide(index as usize) {
             Instruction::SendMirror { destination, .. }
+            | Instruction::ResolveFuture { destination, .. }
             | Instruction::InitializeInstance { destination, .. }
             | Instruction::InitializeSuperclass { destination, .. }
             | Instruction::InitializeAppliedLevel { destination, .. } => *destination,

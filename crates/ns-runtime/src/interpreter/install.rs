@@ -627,7 +627,7 @@ mod tests {
         install(
             &mut interpreter,
             inner_id,
-            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("a"))]),
+            &instance_edit(vec![MemberEdit::RemoveMethod("a".to_string())]),
         );
         let bytes = image_of(&mut interpreter, &outer, &[inner_class]);
         assert!(!contains(&bytes, "public a = ( ^1 )"));
@@ -715,7 +715,7 @@ mod tests {
         install(
             &mut interpreter,
             inner_id,
-            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("block"))]),
+            &instance_edit(vec![MemberEdit::RemoveMethod("block".to_string())]),
         );
         let bytes = image_of(&mut interpreter, &outer, &[block]);
         let mut image = loaded(&bytes);
@@ -736,7 +736,7 @@ mod tests {
         install(
             &mut interpreter,
             inner_id,
-            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("block"))]),
+            &instance_edit(vec![MemberEdit::RemoveMethod("block".to_string())]),
         );
         interpreter.collect_now();
         let bytes = image_of(&mut interpreter, &outer, &[block]);
@@ -797,7 +797,7 @@ mod tests {
         install(
             &mut interpreter,
             inner_id,
-            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("a"))]),
+            &instance_edit(vec![MemberEdit::RemoveMethod("a".to_string())]),
         );
         match interpreter.send(&inner, Symbol::intern("a"), &[]) {
             Err(HostSignal::Error(error)) => assert!(
@@ -1594,7 +1594,7 @@ mod tests {
         install(
             &mut interpreter,
             inner_id,
-            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("a"))]),
+            &instance_edit(vec![MemberEdit::RemoveMethod("a".to_string())]),
         );
         interpreter.enter(|mutator| {
             let outer_mixin = mixin_of(mutator, &outer);

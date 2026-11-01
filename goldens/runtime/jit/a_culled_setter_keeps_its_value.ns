@@ -1,0 +1,63 @@
+/// A block a compiled send's closure stub calls lies past the send's
+/// slots, so that no slot changes under the send (`docs/design/execution.md`,
+/// "Stage 4: closures, non-local return, allocation and the barrier"):
+/// `assign:` sends `ifNotNil:`, whose method is `^<parameter> cull:
+/// self`, as a setter, whose value is its argument slot, the block,
+/// though `cull:` hands the block the receiver; and blocks the stubs
+/// call, with the send's arguments or `cull:`'s receiver, signal an
+/// Error inside, which leaves machine code with their frames past the
+/// slots. `round:` runs once a round, so that the later rounds run in
+/// machine code.
+class CulledSetter = Object new () (
+  /// Answers `action`'s value, or the message text of the Error it
+  /// signals.
+  guarded: action = (
+    ^action on: Error do: [:error | error messageText].
+  )
+
+  /// Answers the block the setter send `ifNotNil::` was sent, which
+  /// answers `index` for the receiver and -1 for anything else.
+  assign: index = (
+    ^ifNotNil:: [:value | value == self ifTrue: [index] ifFalse: [-1]].
+  )
+
+  /// Answers one line of what round `index` answers.
+  round: index = (
+    |
+      assigned = self assign: index.
+      one = [:first | first + index].
+      two = [:first :second | first + second + index].
+    |
+    ^{
+      assigned == self.
+      assigned value: self.
+      assigned value: 0.
+      one value: 1.
+      two value: 1 value: 2.
+      index ifNotNil: one.
+      index ifNil: one ifNotNil: one.
+      index ifNotNil: one ifNil: one.
+      self guarded: [one value: nil].
+      self guarded: [two value: 1 value: nil].
+      self guarded: [nil ifNotNil: one].
+      self guarded: [self ifNotNil: one].
+    }.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      index ::= 0.
+    |
+    [index < 4] whileTrue: [
+      transcript show: 'round ' , index printString , ':'.
+      (self round: index) do: [:each |
+        transcript
+            show: ' ';
+            show: each printString.
+      ].
+      transcript newLine.
+      index:: index + 1.
+    ].
+  )
+)

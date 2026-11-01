@@ -161,8 +161,9 @@ pub(crate) fn execute(
         }
         (Some(selector), false) => {
             // A slot accessor runs no code, so there is none to disassemble.
-            let method = mixin
-                .compiled_method(ns_runtime::Symbol::intern(selector))
+            // A text nothing interned names no method.
+            let method = ns_runtime::Symbol::lookup(selector)
+                .and_then(|selector| mixin.compiled_method(selector))
                 .cloned();
             let Some(method) = method else {
                 eprintln!("error: no method `{selector}` found on `{}`", mixin.name);

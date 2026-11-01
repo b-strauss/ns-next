@@ -576,14 +576,14 @@ impl<'gc> Mutator<'gc> {
         selector: Symbol,
         arguments: Arguments<'_, 'gc>,
     ) -> Option<Value<'gc>> {
-        use crate::builtins::primitive::{mirror_entry, MachineCall};
+        use crate::builtins::primitive::mirror_entry;
         let handler = |chain: Chain| {
             matches!(
                 chain,
                 Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand
             )
         };
-        let leaf_safe = |row| mirror_entry(row).machine_call == MachineCall::Leaf;
+        let leaf_safe = |row| mirror_entry(row).machine_call.is_leaf_safe();
         match &resolved {
             Resolved::Method { method, chain, .. } if !handler(*chain) => match method.fast_path {
                 Some(MethodFastPath::Mirror(row)) if leaf_safe(row) => {
@@ -676,6 +676,57 @@ impl<'gc> Mutator<'gc> {
         )
     }
 
+    /// Decides a public send of `selector`, a program-made Symbol whose
+    /// text nothing has interned: nothing has that name, since every
+    /// selector, slot name and class name is interned, so §5.5's lookup
+    /// finds nothing and the send goes to `doesNotUnderstand:` as any send
+    /// nothing understands does -- its `Message` holding the very symbol
+    /// object (`Message>>sendTo:`; `docs/design/memory.md`, "Weak
+    /// references").
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn decide_unnamed_send(
+        &mut self,
+        receiver: Value<'gc>,
+        selector: ObjectReference<'gc>,
+        arguments: Arguments<'_, 'gc>,
+    ) -> Result<Step<'gc>, Signal<'gc>> {
+        match self.resolve_does_not_understand(receiver, Chain::DoesNotUnderstand) {
+            Resolved::Method {
+                method,
+                defining_class,
+                ..
+            } => {
+                let message = self.message_of(Value::object(selector), arguments);
+                self.take_depth_reserve_for_does_not_understand(defining_class);
+                Ok(handler_method_step(
+                    receiver,
+                    method,
+                    defining_class,
+                    message,
+                ))
+            }
+            Resolved::Slot { kind, field, .. } => {
+                let message = self.message_of(Value::object(selector), arguments);
+                self.decide_slot_accessor(
+                    receiver,
+                    kind,
+                    Symbol::DOES_NOT_UNDERSTAND,
+                    field,
+                    Arguments::Values(&[message].as_slice()),
+                )
+            }
+            // The error names the selector by its text; its `Symbol` is
+            // `doesNotUnderstand:`'s, since the text has none and a run
+            // interns no text a program chose.
+            _ => Err(unhandled_error_named(
+                receiver,
+                Symbol::DOES_NOT_UNDERSTAND,
+                &self.heap.str_value(selector).unwrap_or_default(),
+            )),
+        }
+    }
+
     /// The message every `doesNotUnderstand:` handler takes.
     ///
     /// Nothing is checked ahead of it any more: §5.10's failure path used to
@@ -693,6 +744,15 @@ impl<'gc> Mutator<'gc> {
     /// hashes being drawn lazily.
     fn handler_message(&mut self, selector: Symbol, arguments: Arguments<'_, 'gc>) -> Value<'gc> {
         let selector_value = self.new_symbol(selector);
+        self.message_of(selector_value, arguments)
+    }
+
+    /// A kernel `Message` of `selector_value`, a Symbol, and `arguments`.
+    fn message_of(
+        &mut self,
+        selector_value: Value<'gc>,
+        arguments: Arguments<'_, 'gc>,
+    ) -> Value<'gc> {
         let arguments_value = Value::object(self.new_array(arguments.to_vec(&self.heap)));
         Value::object(
             self.new_kernel_instance(BuiltinClass::Message, |name| match name {
@@ -724,11 +784,17 @@ fn handler_method_step<'gc>(
 
 /// A send nothing handles, not even `doesNotUnderstand:`.
 fn unhandled_error<'gc>(receiver: Value<'gc>, selector: Symbol) -> Signal<'gc> {
+    unhandled_error_named(receiver, selector, selector.as_str())
+}
+
+/// `unhandled_error`, its selector reported as `selector` and named in
+/// the text as `text`.
+fn unhandled_error_named<'gc>(receiver: Value<'gc>, selector: Symbol, text: &str) -> Signal<'gc> {
     Signal::Error(NewspeakError::error(
         selector,
         receiver,
         format!(
-            "doesNotUnderstand: {selector} (and no doesNotUnderstand: found anywhere in the \
+            "doesNotUnderstand: {text} (and no doesNotUnderstand: found anywhere in the \
              class chain)"
         ),
     ))

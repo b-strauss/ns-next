@@ -21,6 +21,7 @@
 use crate::builtins::primitive::ElementKind;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
+use crate::interpreter::inline_cache::SiteSlide;
 use crate::interpreter::instantiate::InitializerBody;
 use crate::interpreter::{Arguments, FeedbackBase};
 use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod};
@@ -37,6 +38,9 @@ mod frames;
 pub(crate) use frames::with_stack_reservation;
 mod header;
 mod ids;
+pub(crate) mod limits;
+#[cfg(ns_jit)]
+mod machine_entries;
 pub(crate) mod machine_words;
 pub(crate) mod mark;
 mod object;
@@ -45,6 +49,7 @@ pub(crate) mod reclaim;
 mod records;
 mod scavenge;
 mod space;
+mod symbols;
 mod tables;
 mod value;
 mod world;
@@ -690,7 +695,8 @@ impl HostRoots {
 /// its header. A send's own callee lies on the sender's argument slots,
 /// which are its arguments, its header where they end; every other frame
 /// starts at or past the window end of the one below. The reservation is
-/// committed as the stack deepens and never decommitted, so once it has
+/// committed as the stack deepens and given back only above the top and a
+/// headroom after a full collection (`FrameStack::shrink`), so once it has
 /// grown to the program's depth a push commits nothing.
 struct ActivationStack {
     frames: FrameStack,
@@ -730,6 +736,19 @@ const GENERATION_MASK: u32 = 0x7FFF_FFFF;
 // The compiler leaves the header's words out of the register numbering by
 // this many numbers, so the two must agree.
 const _: () = assert!(crate::bytecode::HEADER_REGISTERS as usize == frame_header::COUNT);
+
+// `jit::closures` fills every fixed field of the frame objects and the
+// closures it makes, one store each, and nothing else: a field added to
+// either must be filled there too, where these fail first.
+const _: () = assert!(frame_field::COUNT == 10 && frame_field::MARRIED == frame_field::COUNT - 1);
+const _: () =
+    assert!(closure_field::COUNT == 3 && closure_field::FEEDBACK_BASE == closure_field::COUNT - 1);
+
+/// The most slots a compiled call may shift a block's frame up by, which
+/// its flags word records (`frames::CALL_SHIFT_BITS`).
+#[cfg(ns_jit)]
+pub(crate) const MAXIMUM_CALL_SHIFT: u64 =
+    frames::CALL_SHIFT_BITS >> frames::CALL_SHIFT_BITS.trailing_zeros();
 
 /// A shift count machine code takes, which is below 64.
 #[cfg(ns_jit)]
@@ -782,6 +801,129 @@ pub(crate) struct MachineLayout {
     pub(crate) word_count_shift: u8,
     /// An object's field 0's displacement from its offset.
     pub(crate) fields_displacement: i32,
+    /// The header word's format bits of an `Array`, under
+    /// `instance_format_bits`, whose elements `Heap::array_element` reads.
+    pub(crate) indexable_pointers_format: i32,
+    /// The word count in the header that says the count is in the overflow
+    /// word before it.
+    pub(crate) word_count_overflow: i32,
+    /// Where the old space begins: an object whose offset lies below it
+    /// is young (`space::is_young`).
+    pub(crate) nursery_end: i32,
+    /// The header word's remembered bit, set while the object is in the
+    /// remembered set, as the 32-bit pattern a test of the header's low
+    /// half takes.
+    pub(crate) remembered_bit: i32,
+    /// `nil`'s word.
+    pub(crate) nil_word: i32,
+    /// The header word's format bits all of which a ByteArray's format
+    /// sets (`Format::AlignedBytes`), whose bytes `Heap::byte_array_at`
+    /// reads, and no other format sets all of.
+    pub(crate) aligned_bytes_format: i32,
+    /// How far a ByteArray's count of unused bytes in its last data word
+    /// is shifted up in the header word.
+    pub(crate) unused_bytes_shift: u8,
+    /// A ByteArray's count of unused bytes, once shifted down.
+    pub(crate) unused_bytes_mask: i32,
+    /// The alignment in bytes of a ByteArray's data, whose offset is the
+    /// first multiple of it at or after its field 0's
+    /// (`object::aligned_data_start`).
+    pub(crate) byte_data_alignment: i32,
+    /// The bytes of the words after a ByteArray's header that hold no
+    /// data: its class word and the reserve its alignment takes.
+    pub(crate) byte_data_reserve_bytes: i32,
+    /// How far an application index is shifted up to be its row's byte
+    /// offset in the application id table (`heap/application_ids.rs`).
+    pub(crate) application_row_shift: u8,
+    /// A row's instances dispatch id's displacement from the row.
+    pub(crate) application_dispatch_id_displacement: i32,
+    /// A row's own slot base's displacement from the row.
+    pub(crate) application_slot_base_displacement: i32,
+    /// A row's flags' displacement from the row.
+    pub(crate) application_flags_displacement: i32,
+    /// The flag of a row whose instances' slots take the check of what a
+    /// value's slot may hold.
+    pub(crate) application_value_slots_flag: i32,
+    /// A row's instance header word's displacement from the row.
+    pub(crate) application_instance_header_displacement: i32,
+    /// The header word's format bits of a class object, under
+    /// `instance_format_bits`.
+    pub(crate) class_format: i32,
+    /// The header word's format bits of a closure, under
+    /// `instance_format_bits`.
+    pub(crate) closure_format: i32,
+    /// The header word's format bits of a frame object, under
+    /// `instance_format_bits`.
+    pub(crate) frame_format: i32,
+    /// A class object's builtin field's displacement from its offset
+    /// (`Heap::class_builtin`): nil for a class whose instances are
+    /// ordinary ones.
+    pub(crate) builtin_displacement: i32,
+    /// A class object's value class refusal's displacement from its
+    /// offset (`Heap::class_has_value_refusal`): nil for a class whose
+    /// instantiation nothing refuses there.
+    pub(crate) value_class_refusal_displacement: i32,
+    /// A frame object's fixed fields' displacements from its offset
+    /// (`object.rs`'s `frame_field`), which `MakeClosure` fills in machine
+    /// code as `Heap::reify` fills them (`jit::closures`).
+    pub(crate) frame_sender_displacement: i32,
+    pub(crate) frame_home_displacement: i32,
+    pub(crate) frame_receiver_displacement: i32,
+    pub(crate) frame_current_class_displacement: i32,
+    pub(crate) frame_program_counter_displacement: i32,
+    pub(crate) frame_code_id_displacement: i32,
+    pub(crate) frame_kind_displacement: i32,
+    pub(crate) frame_kind_operand_displacement: i32,
+    pub(crate) frame_uncontinuable_displacement: i32,
+    pub(crate) frame_married_displacement: i32,
+    /// How many fixed fields a frame object has: its registers follow.
+    pub(crate) frame_fixed_fields: usize,
+    /// A closure's fixed fields' displacements from its offset
+    /// (`object.rs`'s `closure_field`), as `allocate_closure_from_registers`
+    /// writes them.
+    pub(crate) closure_code_id_displacement: i32,
+    pub(crate) closure_captured_frame_displacement: i32,
+    pub(crate) closure_feedback_base_displacement: i32,
+    /// How many fixed fields a closure has: its copied values follow.
+    pub(crate) closure_fixed_fields: usize,
+}
+
+/// The kind words of the frame objects `MakeClosure` reifies in machine
+/// code (`Heap::machine_frame_kinds`): each kind's wire tag as the
+/// `SmallInteger` word `frame_fixed_words` writes, and, for an
+/// initializer's frame, whose kind its code does not say, the tag its
+/// flags word holds for each of its bodies beside the word that tag
+/// stands for.
+#[cfg(ns_jit)]
+pub(crate) struct MachineFrameKinds {
+    pub(crate) method: u64,
+    pub(crate) closure: u64,
+    pub(crate) factory: u64,
+    pub(crate) superclass_clause: u64,
+    /// Each initializer body's kind tag in a flags word, and its kind word.
+    pub(crate) initializers: [(u8, u64); 3],
+    /// How far a flags word is shifted to bring its payload, the kind tag
+    /// lowest, down.
+    pub(crate) kind_tag_shift: u8,
+    /// The kind tag's bits in a flags word's payload.
+    pub(crate) kind_tag_mask: i32,
+    /// `false`'s word, which a running frame's `uncontinuable` holds.
+    pub(crate) false_word: i32,
+}
+
+/// The block of an object machine code allocates (`Heap::machine_block`).
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct MachineBlock {
+    /// The block's bytes: the overflow word, the header and the words
+    /// after it.
+    pub(crate) bytes: i32,
+    /// The word before the header of an object whose count the header
+    /// cannot hold.
+    pub(crate) overflow_word: Option<u64>,
+    /// Whether the inline bump may place the block in eden: below the
+    /// large-object threshold.
+    pub(crate) inline: bool,
 }
 
 // `instance_format_bits` is a test for all-clear bits.
@@ -799,6 +941,41 @@ pub(crate) struct MachineGeneration {
     pub(crate) flags_register: u16,
 }
 
+/// Where machine code reads a block body's row of the machine entry table
+/// (`Heap::machine_entry_layout`).
+#[cfg(ns_jit)]
+pub(crate) struct MachineEntryLayout {
+    /// How far a code id is shifted to be its row's offset.
+    pub(crate) row_shift: u8,
+    /// The body's machine entry, 0 for none.
+    pub(crate) entry_displacement: i32,
+    /// The feedback base its machine code was compiled against, as a
+    /// closure's word holds it.
+    pub(crate) feedback_base_displacement: i32,
+    /// Its parameter count.
+    pub(crate) parameters_displacement: i32,
+}
+
+/// Where machine code finds what the divorce of a reified frame at its
+/// return reads and writes (`Heap::machine_divorce`): the header words by
+/// their register number past the frame's arguments, and the frame
+/// object's fields by their displacement from its offset.
+#[cfg(ns_jit)]
+pub(crate) struct MachineDivorce {
+    /// The reified word: nil, or the frame object's word.
+    pub(crate) reified_register: u16,
+    pub(crate) flags_register: u16,
+    pub(crate) program_counter_register: u16,
+    /// `retains_registers`' bit in the flags word.
+    pub(crate) retains_registers_bit: i32,
+    pub(crate) program_counter_displacement: i32,
+    pub(crate) sender_displacement: i32,
+    pub(crate) uncontinuable_displacement: i32,
+    pub(crate) married_displacement: i32,
+    /// `true`'s word.
+    pub(crate) true_word: i32,
+}
+
 /// A frame machine code pushed, described for its header
 /// (`Heap::write_machine_frame`): where it lies, what it runs and where it
 /// stands, and its caller.
@@ -808,7 +985,8 @@ pub(crate) struct MachineFrame {
     pub(crate) offset: u32,
     pub(crate) argument_count: u16,
     pub(crate) code: CodeId,
-    pub(crate) selector: Symbol,
+    /// Its kind and operand.
+    pub(crate) kind: MachineKind,
     pub(crate) program_counter: u32,
     pub(crate) feedback_base: FeedbackBase,
     /// The registers above its header.
@@ -817,9 +995,113 @@ pub(crate) struct MachineFrame {
     /// (`CompiledCode::addresses_own_slots`), so that it records its
     /// entered level.
     pub(crate) addresses_own_slots: bool,
+    /// Whether its code is its body's twin (`jit::baseline::BodyCopy`):
+    /// the transfer into the twin, or the push of the frame the run loop
+    /// resumed there, wrote the reified word and the flags word, and its
+    /// `MakeClosure` the program counter, as the push and the interpreter
+    /// write them, and the twin keeps all three since -- the reified word
+    /// and the flags' `retains_registers` as its frame is reified and
+    /// marked, the program counter at each point the interpreter stores it
+    /// -- so that its return divorces a reified frame as the pop does. A
+    /// frame running lean code is never reified.
+    pub(crate) reifies: bool,
     /// The caller's offset and the top the frame was pushed at; `None`
     /// for a leaf's view of its own frame, whose caller nothing reads.
     pub(crate) caller: Option<(u32, usize)>,
+}
+
+/// The kind of a frame machine code pushed and its operand, as its header
+/// records them (`Heap::write_machine_frame`): each either a constant of
+/// its body -- a method's tag and selector, a factory's, a closure's and a
+/// superclass clause's tag -- or what the frame itself holds, written by
+/// its prologue -- an initializer's tag, which its code does not say,
+/// since one code can be two of its mixin's bodies, and a closure's
+/// operand, the closure the call handed over -- or the current class the
+/// call handed over, a factory's and an initializer's operand.
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct MachineKind {
+    tag: MachineKindTag,
+    operand: MachineOperand,
+}
+
+/// Where a machine frame's kind tag comes from (`MachineKind`).
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MachineKindTag {
+    /// The tag itself.
+    Constant(u8),
+    /// The tag the frame's prologue wrote into its flags word.
+    Recorded,
+}
+
+/// Where a machine frame's operand comes from (`MachineKind`).
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MachineOperand {
+    /// A method's selector.
+    Selector(Symbol),
+    /// The frame's current class.
+    CurrentClass,
+    /// The operand word the frame's prologue wrote.
+    Recorded,
+}
+
+#[cfg(ns_jit)]
+impl MachineKind {
+    /// A method's activation of the method `selector` names.
+    pub(crate) fn method(selector: Symbol) -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::METHOD),
+            operand: MachineOperand::Selector(selector),
+        }
+    }
+
+    /// A factory's activation, on the class object the call handed over
+    /// as its current class.
+    pub(crate) fn factory() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::FACTORY),
+            operand: MachineOperand::CurrentClass,
+        }
+    }
+
+    /// An initializer's activation, entered at the level the call handed
+    /// over as its current class, running the body whose tag its prologue
+    /// recorded from what the initializer leaf decided
+    /// (`Heap::hand_machine_initializer`).
+    pub(crate) fn initializer() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Recorded,
+            operand: MachineOperand::CurrentClass,
+        }
+    }
+
+    /// A closure's activation, on the closure its prologue recorded as
+    /// the frame's operand: no return address says which closure a
+    /// block's code runs for, since one block's code runs for every
+    /// closure made of it.
+    pub(crate) fn closure() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::CLOSURE),
+            operand: MachineOperand::Recorded,
+        }
+    }
+
+    /// A superclass clause's activation, on the class its operand names,
+    /// which the frame holds as a closure's holds its closure.
+    pub(crate) fn superclass_clause() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::SUPERCLASS_CLAUSE),
+            operand: MachineOperand::Recorded,
+        }
+    }
+
+    /// Whether it is a closure's activation, whose prologue writes the
+    /// flags word's `counted` bit the call handed it.
+    pub(crate) fn is_closure(self) -> bool {
+        self.tag == MachineKindTag::Constant(kind_tag::CLOSURE)
+    }
 }
 
 #[cfg(ns_jit)]
@@ -1127,15 +1409,18 @@ impl<'code> LastSet<'code> {
         });
     }
 
-    /// Checks that a callee lies on the frame's slots, where
-    /// `callee_header` says one does, only while the frame stands at the
-    /// send whose slots end at that header -- decoding the instruction
-    /// once per body and program counter, never once per frame. Inline,
-    /// so that a frame whose answer is decoded costs a comparison.
+    /// Checks that a callee lies on the frame's slots, where `callee`, its
+    /// first word, its header and whether it runs a block, says one does, only while the frame
+    /// stands at the send whose slots end at that header -- or, for a
+    /// block a compiled send's closure stub placed past the slots, whose
+    /// first word is where they end (`jit::targets::ClosureStub`) --
+    /// decoding the instruction once per body and program counter, never
+    /// once per frame. Inline, so that a frame whose answer is decoded
+    /// costs a comparison.
     #[cfg(debug_assertions)]
     #[inline(always)]
-    fn check_callee(&mut self, start: usize, callee_header: Option<usize>) {
-        let Some(callee_header) = callee_header else {
+    fn check_callee(&mut self, start: usize, callee: Option<(usize, usize, bool)>) {
+        let Some((callee_start, callee_header, block)) = callee else {
             return;
         };
         let slot_end = match self.slot_end {
@@ -1143,7 +1428,8 @@ impl<'code> LastSet<'code> {
             None => self.decode_slot_end(),
         };
         debug_assert!(
-            slot_end.is_some_and(|slot_end| start + slot_end == callee_header),
+            slot_end.is_some_and(|slot_end| start + slot_end == callee_header
+                || (block && start + slot_end == callee_start)),
             "internal: a callee lies on its sender's slots only while the sender stands at \
              the send"
         );
@@ -1421,6 +1707,27 @@ impl ActivationStack {
     fn offsets(&self) -> impl Iterator<Item = u32> + '_ {
         let innermost = (self.innermost != NO_FRAME).then_some(self.innermost);
         std::iter::successors(innermost, |offset| self.caller(*offset))
+    }
+
+    /// Rewrites every live frame's feedback base through `slide`: a full
+    /// collection slid the inline caches' ranges (`Heap::compact_with`).
+    fn slide_feedback_bases(&mut self, slide: &SiteSlide) {
+        let offsets: Vec<u32> = self.offsets().collect();
+        for offset in offsets {
+            let base = frames::number_as_u32(self.header_word(offset, frame_header::FEEDBACK_BASE));
+            debug_assert!(
+                slide.holds(base),
+                "internal: a running frame's base {base} lies in no live range"
+            );
+            let moved = slide.remap(base);
+            if moved != base {
+                self.set_header_word(
+                    offset,
+                    frame_header::FEEDBACK_BASE,
+                    frames::number_word(u64::from(moved)),
+                );
+            }
+        }
     }
 }
 
@@ -1810,10 +2117,11 @@ pub struct Heap<'gc> {
     /// table strongly, since a scavenge reclaims no id, and every move
     /// forwards it.
     mixin_objects: Vec<Option<ObjectReference<'gc>>>,
-    /// The one object each symbol is, indexed by `Symbol::index` (§5.1.6:
-    /// equal symbols are one object; `docs/design/object-model.md`,
-    /// "Values and objects"). Filled lazily by `Mutator::new_symbol`, the one
-    /// way to make a symbol, and by the image decoder. Per heap, because a
+    /// The one object each interned symbol is, indexed by `Symbol::index`
+    /// (§5.1.6: equal symbols are one object; `docs/design/object-model.md`,
+    /// "Values and objects"). Filled lazily by `Mutator::new_symbol` and by
+    /// the image decoder, and by the adoption of a program-made symbol
+    /// whose text has since been interned (`program_symbols`). Per heap, because a
     /// handle means nothing against another heap. Weak, as
     /// `mixin_objects` is: not a root for marking, pruned by
     /// `prune_canonical_symbols` between marking and compaction, and
@@ -1821,14 +2129,24 @@ pub struct Heap<'gc> {
     /// (`docs/design/memory.md`, "Weak references").
     canonical_symbols: Vec<Option<ObjectReference<'gc>>>,
     /// The inverse of `canonical_symbols`: each canonical symbol object's
-    /// offset, and the symbol it is. Every Symbol object is canonical
-    /// (`Mutator::new_symbol` and the image decoder are the only makers, and
-    /// both record what they make), so `symbol_value` is one probe here
-    /// rather than a search of the interner by the object's text. Keyed by
-    /// offset, so it holds no handle: `record_canonical_symbol` inserts,
-    /// `prune_canonical_symbols` removes, and `forward_everything` rebuilds
-    /// it from the forwarded table after every move and every compaction.
+    /// offset, and the symbol it is. Every Symbol object is canonical or
+    /// program-made (`Mutator::new_symbol`, `Mutator::program_symbol` and
+    /// the image decoder are the only makers, and each records what it
+    /// makes), so `symbol_value` is one probe here rather than a search of
+    /// the interner by the object's text. Keyed by offset, so it holds no
+    /// handle: `record_canonical_symbol` inserts, `prune_canonical_symbols`
+    /// removes, and `forward_everything` rebuilds it from the forwarded
+    /// table after every move and every compaction.
     symbol_of: IdentityMap<u64, Symbol>,
+    /// The symbols a program made whose text nothing has interned: no
+    /// number, only the object, the one of its text while anything reaches
+    /// it (`Mutator::program_symbol`; `docs/design/memory.md`, "Weak
+    /// references"). Weak as `canonical_symbols` is: pruned by
+    /// `prune_canonical_symbols`, which also hands the canonical table
+    /// every survivor whose text has since been interned, forwarded by a
+    /// scavenge's weak pass and by every move and compaction, and never a
+    /// root. Measured against `table_limits.program_symbols` at each mint.
+    program_symbols: symbols::ProgramSymbols<'gc>,
     /// Every `Root` a host holds. A `RefCell` so that `stash` and `fetch`
     /// take `&self`, which lets a host stash an argument inside the call that
     /// sends it.
@@ -1857,6 +2175,23 @@ pub struct Heap<'gc> {
     /// stays under it never collects: `bench_loop.ns` and `bench_send.ns`
     /// should not pay for a collector they do not need.
     collection_floor: usize,
+    /// The growth limits of the tables beside the space (`limits.rs`):
+    /// each mint of a new row compares its table with its limit, and a
+    /// reached one requests a full collection as the space's limit does.
+    table_limits: limits::TableLimits,
+    /// Whether a table's limit has requested the next collection, which
+    /// `collect` counts in `table_collections` when the space's limit did
+    /// not request it too.
+    table_collection_requested: bool,
+    /// How many collections a table's limit requested and the space's
+    /// did not.
+    table_collections: u64,
+    /// The pair of threshold and headroom by which each reservation beside
+    /// the space gives committed memory back (`limits::Shrink`), and how
+    /// many times one did and how many bytes in all (`count_decommit`).
+    shrink_pairs: limits::ShrinkPairs,
+    decommits: u64,
+    decommitted_bytes: u64,
     /// How many collections have run, and how long they have taken in total
     /// and at the longest (`Interpreter::collector_statistics`,
     /// `--collector-statistics`). `World::collect` is the only writer,
@@ -1879,6 +2214,11 @@ pub struct Heap<'gc> {
     /// code (`application_ids.rs`), written wherever `tables` writes an
     /// application's row.
     application_ids: application_ids::ApplicationIds,
+    /// Each block body's machine entry by code id, for machine code
+    /// (`machine_entries.rs`), which the JIT writes and the free of a code
+    /// id clears. Only where machine code runs.
+    #[cfg(ns_jit)]
+    machine_entries: machine_entries::MachineEntries,
     /// What a body's `CodeIdCache` must carry for its id to name a row of
     /// `tables` (`next_code_table_epoch`).
     code_table_epoch: u64,
@@ -1917,9 +2257,10 @@ impl std::fmt::Debug for Heap<'_> {
         f.debug_struct("Heap")
             .field("next_identity_hash", &self.next_identity_hash)
             .field("activations", &self.stack.live)
-            .field("objects", &self.object_count)
+            .field("objects", &(self.object_count + self.machine_allocations()))
             .field("occupied bytes", &self.space.occupied_bytes())
             .field("canonical_symbols.len()", &self.canonical_symbols.len())
+            .field("program_symbols.len()", &self.program_symbols.len())
             .field("host roots", host_roots)
             .finish()
     }
@@ -2016,6 +2357,16 @@ fn collection_limit(floor: usize, live: usize) -> usize {
     floor.max(live.saturating_mul(2))
 }
 
+/// The rows of a table of `rows` rows that `free` does not hold: what a
+/// table's growth limit measures. Its length would stay at its high mark
+/// under a churn whose live row is its last, which no truncation removes,
+/// so a limit measured by it would let the table double at every cycle;
+/// a freed row is minted again before the table grows, so its length
+/// follows the rows in use.
+fn rows_in_use(rows: usize, free: &FreeIndices) -> usize {
+    rows.saturating_sub(free.len())
+}
+
 /// The tracer a move or a collection forwards every handle with. In a debug
 /// build it also checks each handle it forwards: one from another heap, or
 /// one already stale, was stored in this heap by a mistake the rewrite would
@@ -2105,6 +2456,17 @@ pub struct CollectorStatistics {
     pub total_pause: std::time::Duration,
     pub longest_pause: std::time::Duration,
     pub live_objects: usize,
+    /// Collections a table's growth limit requested and the space's limit
+    /// did not (`heap::limits`).
+    pub table_collections: u64,
+    /// How many times a reservation beside the space gave committed pages
+    /// back after a full collection or a compaction of the code zone
+    /// (`heap::limits::Shrink`), and how many bytes in all: only what the
+    /// system took back, so the code zone's pages in a POSIX shared memory
+    /// object outside Linux, which it keeps, count nothing
+    /// (`CodeWriter::decommit_above`).
+    pub decommits: u64,
+    pub decommitted_bytes: u64,
 }
 
 /// A frame object's fixed fields as values and handles, before
@@ -2142,6 +2504,32 @@ pub(crate) fn out_of_memory(bytes: usize) -> ! {
 /// them from panicking.
 fn count_word(count: usize) -> Word {
     count_value(count).word()
+}
+
+/// Rewrites the feedback base of the closure whose words are `block`, its
+/// header first, through `slide`; any other object is left as it is. A
+/// closure's base is a `SmallInteger` the runtime wrote, never a word an
+/// image supplied, so a word that is none is left alone rather than
+/// refused.
+fn slide_closure_feedback_base(block: &mut [u64], slide: &SiteSlide) {
+    if Header(block[0]).format() != Format::Closure {
+        return;
+    }
+    let Some(bits) = block.get_mut(FIELDS + closure_field::FEEDBACK_BASE) else {
+        return;
+    };
+    let word = Word::from_bits(*bits);
+    if !word.is_non_negative_small_integer() {
+        return;
+    }
+    let Ok(base) = u32::try_from(frames::number_of(word)) else {
+        return;
+    };
+    debug_assert!(
+        slide.holds(base),
+        "internal: a live closure's base {base} lies in no live range"
+    );
+    *bits = count_word(slide.remap(base) as usize).bits();
 }
 
 /// Writes `words` into `slots`, in order, as their bits: a new object's
@@ -2233,6 +2621,7 @@ impl<'gc> Heap<'gc> {
             mixin_objects: Vec::new(),
             canonical_symbols: Vec::new(),
             symbol_of: IdentityMap::default(),
+            program_symbols: symbols::ProgramSymbols::default(),
             host_roots: std::cell::RefCell::new(HostRoots {
                 slots: Vec::new(),
                 sweep_at: MIN_ROOT_SWEEP,
@@ -2241,6 +2630,12 @@ impl<'gc> Heap<'gc> {
             next_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
+            table_limits: limits::TableLimits::default(),
+            table_collection_requested: false,
+            table_collections: 0,
+            shrink_pairs: limits::ShrinkPairs::default(),
+            decommits: 0,
+            decommitted_bytes: 0,
             collections: 0,
             total_pause: std::time::Duration::ZERO,
             longest_pause: std::time::Duration::ZERO,
@@ -2248,6 +2643,8 @@ impl<'gc> Heap<'gc> {
             builtin_guards: BuiltinGuards::NONE,
             tables: Tables::default(),
             application_ids,
+            #[cfg(ns_jit)]
+            machine_entries: machine_entries::MachineEntries::new(),
             code_table_epoch: next_code_table_epoch(),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
@@ -2256,6 +2653,8 @@ impl<'gc> Heap<'gc> {
         };
         heap.space
             .set_young_threshold(Some(heap.scavenge_threshold));
+        heap.machine_words
+            .set(MachineWord::CodeTableEpoch, heap.code_table_epoch);
         heap
     }
 
@@ -2536,7 +2935,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// A Symbol object of `class` for `symbol`. `Mutator::new_symbol` is the
-    /// one caller, since a heap holds one object per symbol (§5.1.6).
+    /// one caller, since a heap holds one object per symbol (§5.1.6); a
+    /// program-made symbol is the same representation, a String of the
+    /// `Symbol` class (`Mutator::program_symbol`).
     pub(crate) fn allocate_symbol(
         &mut self,
         class: ClassReference<'gc>,
@@ -3179,6 +3580,28 @@ impl<'gc> Heap<'gc> {
         field_count: usize,
     ) -> (ObjectReference<'gc>, Range<usize>) {
         let word_count = field_count.saturating_add(1);
+        let header = Header::new(guard, format, unused, word_count).with_negative(negative);
+        let offset = self.place_block(header, class, word_count);
+        let first = usize::try_from(offset.get()).expect(
+            "internal: an offset lies inside the object space's reservation, DEFAULT_RESERVATION",
+        ) / 8
+            + FIELDS;
+        let fields = first..first + field_count;
+        self.space.words_mut()[fields.clone()].fill(Word::NIL.bits());
+        (self.object_handle(offset), fields)
+    }
+
+    /// `allocate_block`'s decision and its words but the fields: places
+    /// the block of an object of `word_count` words after its header --
+    /// young below the large-object threshold while eden has room, asking
+    /// for the scavenge once eden passes its threshold, old once eden is
+    /// spent -- writes its overflow word when the header cannot hold the
+    /// count, `header` and the class word `class`, counts the object, and
+    /// remembers an old one, whose fields its caller fills with no
+    /// barrier. Answers the object's offset; its fields hold whatever the
+    /// space held, which the caller writes before anything reads them.
+    /// Never collects.
+    fn place_block(&mut self, header: Header, class: Word, word_count: usize) -> NonZeroU64 {
         let allocation = allocation_words(word_count);
         let bytes = allocation.saturating_mul(8);
         let young = !self.allocating_old && bytes < LARGE_OBJECT_BYTES;
@@ -3212,19 +3635,16 @@ impl<'gc> Heap<'gc> {
             }
         };
         let words = self.space.words_mut();
-        let mut header = start / 8;
+        let mut first = start / 8;
         if word_count >= WORD_COUNT_OVERFLOW {
-            words[header] = overflow_word(word_count);
-            header += 1;
+            words[first] = overflow_word(word_count);
+            first += 1;
         }
-        words[header + HEADER] = Header::new(guard, format, unused, word_count)
-            .with_negative(negative)
-            .0;
-        words[header + CLASS] = class.bits();
-        let fields = header + FIELDS..header + FIELDS + field_count;
-        words[fields.clone()].fill(Word::NIL.bits());
+        debug_assert_eq!(header.word_count(), word_count.min(WORD_COUNT_OVERFLOW));
+        words[first + HEADER] = header.0;
+        words[first + CLASS] = class.bits();
         self.object_count += 1;
-        let Some(offset) = NonZeroU64::new(8 * header as u64) else {
+        let Some(offset) = NonZeroU64::new(8 * first as u64) else {
             unreachable!("internal: an object lies past the first object")
         };
         // Its initializing stores took no barrier, so an old object that may
@@ -3233,7 +3653,48 @@ impl<'gc> Heap<'gc> {
         if !space::is_young(offset) && !self.allocating_old {
             self.remember(offset);
         }
-        (self.object_handle(offset), fields)
+        offset
+    }
+
+    /// `Leaf::Allocate`'s allocation, past the limit of machine code's
+    /// inline bump: the block of an object of `word_count` words after its
+    /// header, its header word `header` and its class word `class_word`,
+    /// placed as `allocate_block` places it (`place_block`), which never
+    /// collects. Answers the object's word, its offset; the caller fills
+    /// its fields.
+    #[cfg(ns_jit)]
+    pub(crate) fn allocate_for_machine_code(
+        &mut self,
+        word_count: u64,
+        header: u64,
+        class_word: u64,
+    ) -> u64 {
+        let Ok(word_count) = usize::try_from(word_count) else {
+            unreachable!("internal: machine code allocates an object it could address");
+        };
+        self.place_block(Header(header), Word::from_bits(class_word), word_count)
+            .get()
+    }
+
+    /// Counts the objects machine code's inline bump placed
+    /// (`MachineWord::MachineAllocations`) into the heap's own counts, as
+    /// `count_young_allocation` counts the interpreter's: before anything
+    /// recounts them -- a scavenge, a compaction.
+    fn settle_machine_allocations(&mut self) {
+        let count = self.machine_allocations();
+        self.object_count += count;
+        self.young_objects += count;
+        self.machine_words.set(MachineWord::MachineAllocations, 0);
+    }
+
+    /// The objects machine code's inline bump placed since the heap last
+    /// counted them (`settle_machine_allocations`).
+    fn machine_allocations(&self) -> usize {
+        let Ok(count) = usize::try_from(self.machine_words.get(MachineWord::MachineAllocations))
+        else {
+            unreachable!("internal: an allocation count fits the address space");
+        };
+        count
     }
 
     /// Counts a fast bump's object, as `allocate_block` counts its own.
@@ -3849,9 +4310,7 @@ impl<'gc> Heap<'gc> {
             Format::Closure => ObjectShape::Closure,
             Format::Class => ObjectShape::Class,
             Format::AlignedBytes => ObjectShape::ByteArray,
-            Format::Bytes | Format::ThirtyTwoBit if self.symbol_value(object).is_some() => {
-                ObjectShape::Symbol
-            }
+            Format::Bytes | Format::ThirtyTwoBit if self.is_symbol(object) => ObjectShape::Symbol,
             Format::Bytes | Format::ThirtyTwoBit => ObjectShape::String,
             _ if self.is_boxed_float(object) => ObjectShape::Float,
             _ => ObjectShape::LargeInteger,
@@ -4436,20 +4895,104 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The interned symbol a Symbol object stands for; `None` for any other
-    /// object, a String of the same text included. Agrees with `is_symbol`,
-    /// because every Symbol object is canonical and so recorded in
-    /// `symbol_of`; it reads neither the object's text nor its class.
+    /// object, a String of the same text included, and for a program-made
+    /// symbol whose text nothing has interned -- which, since every
+    /// selector, slot name and class name is interned, names nothing
+    /// (`docs/design/memory.md`, "Weak references"). A canonical symbol is
+    /// one probe of `symbol_of`, reading neither the object's text nor its
+    /// class; only a program-made one reads its text, to probe the
+    /// interner (`Symbol::lookup`), which inserts nothing. A caller that
+    /// asks only whether an object is a Symbol asks `is_symbol`, and one
+    /// that reads the text reads `symbol_text`.
     #[inline]
     pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
         self.check_object_origin(object);
-        let answer = self.symbol_of.get(&object.offset.get()).copied();
+        let offset = object.offset.get();
+        let canonical = self.symbol_of.get(&offset).copied();
+        let program_made = canonical.is_none() && self.program_symbols.contains(offset);
         debug_assert_eq!(
-            answer.is_some(),
+            canonical.is_some() || program_made,
             self.is_symbol(object),
-            "`symbol_of` must record exactly the Symbol objects, or a symbol \
-             answers its text as a String's and a String answers a symbol"
+            "`symbol_of` and `program_symbols` must record exactly the Symbol \
+             objects, or a symbol answers its text as a String's and a String \
+             answers a symbol"
         );
-        answer
+        if program_made {
+            return self.program_symbol_number(object);
+        }
+        canonical
+    }
+
+    /// The number of a program-made symbol's text, once something interned
+    /// it; out of line, since a canonical symbol never asks.
+    #[cold]
+    #[inline(never)]
+    fn program_symbol_number(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
+        Symbol::lookup(&self.str_value(object)?)
+    }
+
+    /// A Symbol's text, canonical or program-made; `None` for any other
+    /// object, a String included.
+    pub fn symbol_text(&self, object: ObjectReference<'gc>) -> Option<String> {
+        if !self.is_symbol(object) {
+            return None;
+        }
+        self.str_value(object)
+    }
+
+    /// The program-made symbol whose text is `text`, if one lives: the
+    /// candidates filed under the text's hash, compared by the text each
+    /// holds.
+    pub(crate) fn program_symbol_named(&self, text: &str) -> Option<ObjectReference<'gc>> {
+        if self.program_symbols.is_empty() {
+            return None;
+        }
+        let hash = self.program_symbols.bucket(text.chars());
+        self.program_symbols
+            .candidates(hash)
+            .iter()
+            .copied()
+            .find(|object| {
+                self.packed_string(*object)
+                    .is_some_and(|string| string.code_points().eq(text.chars().map(u32::from)))
+            })
+    }
+
+    /// Records `object`, a Symbol of a text nothing has interned and no
+    /// program-made symbol spells, as that text's one object while anything
+    /// reaches it, and asks for a full collection once the table reaches its
+    /// growth limit (`limits::TableLimits`).
+    pub(crate) fn record_program_symbol(&mut self, object: ObjectReference<'gc>) {
+        self.check_object_origin(object);
+        let Some(string) = self.packed_string(object) else {
+            unreachable!("internal: a program-made symbol is a String")
+        };
+        // Every unit is a scalar value by construction; the replacement
+        // character stands in for a panic, as in `string_hash`.
+        let hash =
+            self.program_symbols
+                .bucket(string.code_points().map(|code_point| {
+                    char::from_u32(code_point).unwrap_or(char::REPLACEMENT_CHARACTER)
+                }));
+        self.program_symbols.insert(hash, object);
+        if self
+            .table_limits
+            .program_symbols
+            .reached(self.program_symbols.len())
+        {
+            self.request_table_collection();
+        }
+    }
+
+    /// The program-made symbol of `symbol`'s text, if one lives, made the
+    /// canonical object of `symbol` -- which its text being interned
+    /// after the program made it calls for -- so that the text keeps one
+    /// object (§5.1.6). `Mutator::new_symbol` asks before it allocates.
+    pub(crate) fn adopt_program_symbol(&mut self, symbol: Symbol) -> Option<ObjectReference<'gc>> {
+        let object = self.program_symbol_named(symbol.as_str())?;
+        self.program_symbols.remove(object);
+        self.record_canonical_symbol(symbol, object);
+        Some(object)
     }
 
     /// The one object `symbol` already is in this heap, if anything has
@@ -4459,6 +5002,19 @@ impl<'gc> Heap<'gc> {
             .get(symbol.index())
             .copied()
             .flatten()
+    }
+
+    /// Whether an object of `symbol`'s text already lives in this heap:
+    /// its canonical object, or a program-made symbol of the text, which
+    /// a program made before the text was interned. The image decoder
+    /// refuses a record of such a text, since the record would be a second
+    /// object of it (§5.1.6); an object the decoder already built cannot
+    /// be replaced by the one adoption would answer, and `load` decodes
+    /// into an interpreter that has run nothing of a program's, so no
+    /// program-made symbol lives there.
+    pub(crate) fn has_symbol_object(&self, symbol: Symbol) -> bool {
+        self.canonical_symbol(symbol).is_some()
+            || self.program_symbol_named(symbol.as_str()).is_some()
     }
 
     /// Records `object` as the one object `symbol` is in this heap, from
@@ -4694,13 +5250,14 @@ impl<'gc> Heap<'gc> {
                     return format!("the mixin {}", mixin.reflected_name());
                 }
                 match self.header(object).format() {
-                    _ if self.is_string(object) => match self.symbol_value(object) {
-                        Some(symbol) => format!("the Symbol #{symbol}"),
-                        None => format!(
-                            "the String {:?}",
-                            self.str_value(object).unwrap_or_default()
-                        ),
-                    },
+                    _ if self.is_string(object) => {
+                        let text = self.str_value(object).unwrap_or_default();
+                        if self.is_symbol(object) {
+                            format!("the Symbol #{text}")
+                        } else {
+                            format!("the String {text:?}")
+                        }
+                    }
                     Format::IndexablePointers => {
                         format!("an Array of {}", self.fields(object).len())
                     }
@@ -4879,6 +5436,12 @@ impl<'gc> Heap<'gc> {
                 self.tables.mixins.len() - 1
             }
         };
+        if self.table_limits.mixin_rows.reached(rows_in_use(
+            self.tables.mixins.len(),
+            &self.tables.free_mixins,
+        )) {
+            self.request_table_collection();
+        }
         let id = MixinId::from_index(row).expect("more than u32::MAX mixins in one heap");
         self.tables.mixins[row] = Some(MixinRow {
             current: Rc::clone(mixin),
@@ -5088,6 +5651,12 @@ impl<'gc> Heap<'gc> {
                 self.tables.applications.len() - 1
             }
         };
+        if self.table_limits.application_rows.reached(rows_in_use(
+            self.tables.applications.len(),
+            &self.tables.free_applications,
+        )) {
+            self.request_table_collection();
+        }
         let index =
             ApplicationIndex::from_index(row).expect("more than u32::MAX applications in one heap");
         application.index = index;
@@ -5104,20 +5673,51 @@ impl<'gc> Heap<'gc> {
         );
         let application = Rc::new(application);
         self.tables.applications[row] = Some(application.clone());
-        self.record_application_id(row, application.dispatch_ids.instances);
+        self.record_application_row(row, Self::application_row(Some(&application)));
         application
     }
 
-    /// Writes `id` as row `row`'s in the application id table machine code
-    /// reads (`heap/application_ids.rs`), and its bound, the application
-    /// table's length.
-    pub(crate) fn record_application_id(&mut self, row: usize, id: DispatchId) {
+    /// What the application id table records of `application`, or of a row
+    /// that holds none (`heap/application_ids.rs`).
+    fn application_row(application: Option<&MixinApplication>) -> application_ids::Row {
+        application.map_or(
+            application_ids::Row {
+                dispatch_id: DispatchId::NONE,
+                instance_header: 0,
+                slot_base: 0,
+                value_slots: false,
+            },
+            |application| application_ids::Row {
+                dispatch_id: application.dispatch_ids.instances,
+                instance_header: match (
+                    &application.instantiation_refusal,
+                    application.instance_header,
+                ) {
+                    (None, Some(header)) => header.0,
+                    _ => 0,
+                },
+                slot_base: application.own_slot_base,
+                value_slots: application.inherits_value,
+            },
+        )
+    }
+
+    /// Writes `recorded` as row `row` of the application id table machine
+    /// code reads (`heap/application_ids.rs`), and its bound, the
+    /// application table's length.
+    pub(crate) fn record_application_row(&mut self, row: usize, recorded: application_ids::Row) {
         self.application_ids
-            .record(row, id, self.tables.applications.len());
+            .record(row, recorded, self.tables.applications.len());
         self.machine_words.set(
             MachineWord::ApplicationIdRows,
             self.application_ids.rows() as u64,
         );
+    }
+
+    /// The zeros of a row that holds no application, which
+    /// `Heap::free_application` records.
+    pub(crate) fn vacant_application_row() -> application_ids::Row {
+        Self::application_row(None)
     }
 
     /// The application id table's bound taken to the application table's
@@ -5132,9 +5732,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Whether the application id table records, for every row of the
-    /// application table and nothing past it, that row's instances id --
-    /// `NONE`'s 0 for a free row -- and the machine words its address and
-    /// bound.
+    /// application table and nothing past it, that row's instances id, own
+    /// slot base and flags -- zeros for a free row -- and the machine words
+    /// its address and bound.
     #[cfg(all(test, debug_assertions))]
     pub(crate) fn verify_application_ids(&self) -> Result<(), String> {
         let rows = self.tables.applications.len();
@@ -5146,17 +5746,17 @@ impl<'gc> Heap<'gc> {
             return Err(format!("the table's bound is not the {rows} rows"));
         }
         for (row, application) in self.tables.applications.iter().enumerate() {
-            let expected = application
-                .as_ref()
-                .map_or(0, |application| application.dispatch_ids.instances.bits());
-            if self.application_ids.id(row) != Some(u64::from(expected)) {
+            let expected = application_ids::ApplicationIds::expected_words(Self::application_row(
+                application.as_deref(),
+            ));
+            if self.application_ids.row_words(row) != Some(expected) {
                 return Err(format!(
-                    "row {row} records {:?}, its application's id is {expected}",
-                    self.application_ids.id(row)
+                    "row {row} records {:?}, its application's row is {expected:?}",
+                    self.application_ids.row_words(row)
                 ));
             }
         }
-        if self.application_ids.id(rows).is_some() {
+        if self.application_ids.row_words(rows).is_some() {
             return Err("the table records a row past its bound".to_owned());
         }
         Ok(())
@@ -5261,6 +5861,12 @@ impl<'gc> Heap<'gc> {
                 self.tables.codes.len() - 1
             }
         };
+        if self.table_limits.code_ids.reached(rows_in_use(
+            self.tables.codes.len(),
+            &self.tables.free_codes,
+        )) {
+            self.request_table_collection();
+        }
         let id = CodeId::from_index(row).expect("more than u32::MAX compiled bodies in one heap");
         self.tables.codes[row] = Some(CodeEntry {
             code: code.clone(),
@@ -5970,13 +6576,258 @@ impl<'gc> Heap<'gc> {
     /// `immediate_dispatch_ids` is, as the `ImmediateClass` words machine
     /// code hands a send's miss path. A stored word is a handle, so the
     /// step state calls this again after every scavenge, compaction and
-    /// move (`Mutator::rewrite_immediate_classes`).
+    /// move (`Mutator::rewrite_machine_classes`).
     pub(crate) fn set_immediate_classes(&self, classes: [ClassReference<'gc>; 5]) {
         for (index, class) in classes.into_iter().enumerate() {
             let word = self.store(Value::object(class));
             self.machine_words
                 .set(MachineWord::ImmediateClass(index), word.bits());
         }
+    }
+
+    /// Records the kernel's `Array` class as the `ArrayClass` word, and
+    /// the header of an `Array` of no words, guarding on its application,
+    /// as the `ArrayHeader` word: what an allocation of an indirection
+    /// vector in machine code writes. A stored word is a handle, so the
+    /// step state calls this again whenever it rewrites the immediates'
+    /// classes (`Mutator::rewrite_machine_classes`).
+    pub(crate) fn set_array_class(&self, class: ClassReference<'gc>) {
+        let word = self.store(Value::object(class));
+        self.machine_words.set(MachineWord::ArrayClass, word.bits());
+        let header = Header::new(
+            self.header_dispatch_id(class),
+            Format::IndexablePointers,
+            0,
+            0,
+        );
+        self.machine_words.set(MachineWord::ArrayHeader, header.0);
+    }
+
+    /// Records the kernel's `Closure` class and the `Activation` class
+    /// every frame object is an instance of (`set_activation_class`) as
+    /// the `ClosureClass` and `FrameClass` words, and the header of an
+    /// object of no words of each, guarding on its application, as the
+    /// `ClosureHeader` and `FrameHeader` words: what `MakeClosure` writes
+    /// in machine code, as `allocate_closure` and `allocate_frame` write
+    /// them. Called with `set_array_class`, for the same reason; nothing
+    /// is recorded for a class the bootstrap has not built yet.
+    pub(crate) fn set_reification_classes(&self, closure: ClassReference<'gc>) {
+        let classes = [
+            (
+                Some(closure),
+                Format::Closure,
+                MachineWord::ClosureClass,
+                MachineWord::ClosureHeader,
+            ),
+            (
+                self.activation_class,
+                Format::Frame,
+                MachineWord::FrameClass,
+                MachineWord::FrameHeader,
+            ),
+        ];
+        for (class, format, class_word, header_word) in classes {
+            let Some(class) = class else {
+                continue;
+            };
+            let word = self.store(Value::object(class));
+            self.machine_words.set(class_word, word.bits());
+            let header = Header::new(self.header_dispatch_id(class), format, 0, 0);
+            self.machine_words.set(header_word, header.0);
+        }
+    }
+
+    /// Records the kernel-private `FutureImplementation` class as the
+    /// `FutureClass` word, and the header of a future of no words,
+    /// guarding on its application, as the `FutureHeader` word once
+    /// `made` -- the heap has made a future (`Mutator::futures_made`) --
+    /// and 0 before: what `ResolveFuture` compares a value's class word
+    /// with and `MakeFuture` writes in machine code, as
+    /// `Mutator::new_future` writes them. The header stays 0 until then
+    /// so that machine code never makes the first future, which must set
+    /// the flag every check for a future reads. Called with
+    /// `set_array_class`, for the same reason, and once the first future
+    /// is made (`Mutator::note_futures_made`).
+    pub(crate) fn set_future_class(&self, class: ClassReference<'gc>, made: bool) {
+        let word = self.store(Value::object(class));
+        self.machine_words
+            .set(MachineWord::FutureClass, word.bits());
+        let header = if made {
+            Header::new(self.header_dispatch_id(class), Format::FixedPointers, 0, 0).0
+        } else {
+            0
+        };
+        self.machine_words.set(MachineWord::FutureHeader, header);
+    }
+
+    /// The epoch of the code table, renewed whenever a full collection
+    /// frees a code id (`free_unnamed_codes`): a code id recorded in an
+    /// epoch names its body while the epoch lasts.
+    #[cfg(ns_jit)]
+    pub(crate) fn code_table_epoch(&self) -> u64 {
+        self.code_table_epoch
+    }
+
+    /// The address of the machine entry table's row 0
+    /// (`machine_entries.rs`), fixed for the heap's life: what the entry
+    /// block's `BlockWord::MachineEntries` names.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_entries_address(&self) -> usize {
+        self.machine_entries.address()
+    }
+
+    /// Where machine code reads a block body's row of the machine entry
+    /// table (`machine_entries.rs`): how far an id is shifted to its row's
+    /// offset, and each word's displacement from the row.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_entry_layout() -> MachineEntryLayout {
+        use machine_entries::RowWord;
+        MachineEntryLayout {
+            row_shift: machine_entries::ROW_SHIFT,
+            entry_displacement: RowWord::Entry.displacement(),
+            feedback_base_displacement: RowWord::FeedbackBase.displacement(),
+            parameters_displacement: RowWord::Parameters.displacement(),
+        }
+    }
+
+    /// Records that the block body `id` names enters machine code at
+    /// `entry`, compiled against `feedback_base`, and takes `parameters`
+    /// parameters (`jit::note_block_entry`): the row is written only when
+    /// it says something else, and the bound grows with it.
+    #[cfg(ns_jit)]
+    pub(crate) fn record_machine_entry(
+        &mut self,
+        id: CodeId,
+        entry: u64,
+        feedback_base: FeedbackBase,
+        parameters: u16,
+    ) {
+        let words = [
+            entry,
+            count_word(feedback_base.raw() as usize).bits(),
+            u64::from(parameters),
+            0,
+        ];
+        let row = self.machine_entries.row(id.index());
+        debug_assert!(
+            !self.machine_entries.names_entry(id.index()) || row == words,
+            "internal: a recorded machine entry row is current until it is cleared"
+        );
+        if row == words {
+            return;
+        }
+        if self.machine_entries.record(id.index(), words) {
+            self.machine_words.set(
+                MachineWord::MachineEntryRows,
+                self.machine_entries.rows() as u64,
+            );
+        }
+    }
+
+    /// Whether the machine entry table's row of code id `id` names a
+    /// machine entry: written, and not cleared since (`jit::note_block_entry`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_entry_recorded(&self, id: CodeId) -> bool {
+        self.machine_entries.names_entry(id.index())
+    }
+
+    /// The machine entry the row of code id `id` names, 0 for none. For
+    /// tests.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_entry_of(&self, id: CodeId) -> u64 {
+        self.machine_entries.row(id.index())[machine_entries::RowWord::Entry as usize]
+    }
+
+    /// Clears the machine entry `code`'s id names, if it has one: its
+    /// machine code has been abandoned (`jit::abandon`).
+    #[cfg(ns_jit)]
+    pub(crate) fn forget_machine_entry(&mut self, code: &Rc<CompiledCode>) {
+        let key = Rc::as_ptr(code) as usize;
+        if let Some(id) = self.tables.code_ids.get(&key).copied() {
+            self.machine_entries.clear(id.index());
+        }
+    }
+
+    /// Rewrites every machine entry row through `plan`: a compaction of
+    /// the code zone moved the bodies the rows name, and cleared those of
+    /// the bodies it freed (`jit::zone`).
+    #[cfg(ns_jit)]
+    pub(crate) fn remap_machine_entries(&mut self, plan: &crate::jit::zone::CompactionPlan) {
+        self.machine_entries
+            .remap_entries(|entry| plan.remap_row(entry));
+    }
+
+    /// The machine entry of every row of the machine entry table that
+    /// names one: what a debug build checks after a compaction of the code
+    /// zone (`jit::zone`).
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn recorded_machine_entries(&self) -> Vec<u64> {
+        self.machine_entries.recorded_entries()
+    }
+
+    /// Every body an activation runs, on the activation stack or suspended
+    /// into its frame, a body as often as activations run it: what a
+    /// compaction of the code zone keeps (`jit::zone`).
+    pub(crate) fn active_codes(&self) -> Vec<Rc<CompiledCode>> {
+        let mut codes = Vec::new();
+        let mut activation = self.top_activation();
+        while let Some(running) = activation {
+            codes.push(self.activation_code(running));
+            activation = self.activation_sender(running);
+        }
+        for suspension in self.suspensions.rows.iter().flatten() {
+            codes.extend(self.frame_code(suspension.frame));
+        }
+        codes
+    }
+
+    /// Clears every machine entry: the code zone they lie in was replaced
+    /// (`Interpreter::set_jit_zone_bytes`).
+    pub(crate) fn forget_machine_entries(&mut self) {
+        #[cfg(ns_jit)]
+        self.machine_entries.clear_all();
+    }
+
+    /// Whether closure `object`'s body has a row of the machine entry
+    /// table that names machine code (`machine_entries.rs`); `false` for a
+    /// non-closure. What an interpreter's `value` send asks before it
+    /// calls a block's machine code (`Mutator::enter_sent`): a block
+    /// without machine code -- not compiled yet, abandoned, or compiled
+    /// against no feedback base -- then costs this read and no more before
+    /// its push, which keeps the row current for the next send
+    /// (`jit::entered`). Out of line, so that the run loop it is asked in
+    /// grows by a call.
+    #[cfg(ns_jit)]
+    #[inline(never)]
+    pub(crate) fn closure_has_machine_entry(&self, object: ObjectReference<'gc>) -> bool {
+        self.closure_words(object)
+            .and_then(|words| self.closure_count_field(words, closure_field::CODE_ID))
+            .is_some_and(|row| self.machine_entries.names_entry(row))
+    }
+
+    /// No body has machine code without an encoder.
+    #[cfg(not(ns_jit))]
+    pub(crate) fn closure_has_machine_entry(&self, _object: ObjectReference<'gc>) -> bool {
+        false
+    }
+
+    /// The `SmallInteger` word of `count`, as an object's count fields --
+    /// a closure's or a frame object's code id, a closure's feedback base
+    /// -- hold it (`closure_fixed_words`, `frame_fixed_words`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_count_word(count: usize) -> u64 {
+        count_word(count).bits()
+    }
+
+    /// Moves the depth count by `delta`: what `jit::called_closure` takes
+    /// off before it calls an exempt block's body, whose prologue counts
+    /// it as every compiled push is counted, and gives back once nothing
+    /// stands in its place.
+    #[cfg(ns_jit)]
+    pub(crate) fn adjust_counted_depth(&self, delta: i64) {
+        let count = self.machine_words.get(MachineWord::DepthCount);
+        self.machine_words
+            .set(MachineWord::DepthCount, count.wrapping_add_signed(delta));
     }
 
     /// Sets the depth limit's word: the limit with the reserve free, or
@@ -5996,6 +6847,22 @@ impl<'gc> Heap<'gc> {
     #[cfg(test)]
     pub(crate) fn ordinary_stack_end(&self) -> usize {
         self.stack.frames.ordinary_end()
+    }
+
+    /// Makes every push of the run loop's seat the ordinary end at the
+    /// stack's new top, the pushed frame's window end, for a test of what
+    /// machine code does at that edge (`frames::FrameStack`).
+    #[cfg(test)]
+    pub(crate) fn set_seat_ordinary_end_at_top(&mut self, seat: bool) {
+        self.stack.frames.set_seat_ordinary_end_at_top(seat);
+    }
+
+    /// How many times a word right above a seated ordinary end was found
+    /// written before Rust next pushed or popped: a store machine code made
+    /// past the end (`set_seat_ordinary_end_at_top`).
+    #[cfg(test)]
+    pub(crate) fn seat_disturbances(&mut self) -> u64 {
+        self.stack.frames.seat_disturbances()
     }
 
     /// The guards a closure's and a frame's headers carry, read off the
@@ -6430,10 +7297,38 @@ impl<'gc> Heap<'gc> {
     /// code out.
     fn frame_argument_count(&self, frame: FrameReference<'gc>) -> usize {
         let registers = self.frame_words(frame).len() - frame_field::COUNT;
+        self.frame_code_argument_count(frame).min(registers)
+    }
+
+    /// The argument count of the body `frame`'s code id names, 0 when it
+    /// names none: `frame_argument_count` before it is bounded by the
+    /// frame's registers.
+    fn frame_code_argument_count(&self, frame: FrameReference<'gc>) -> usize {
         self.frame_code_id_field(frame)
             .and_then(|id| self.tables.codes.get(id.index())?.as_ref())
             .map_or(0, |entry| usize::from(entry.code.argument_count))
-            .min(registers)
+    }
+
+    /// What an outer-local site records of the frame object the word
+    /// `frame_bits` names (`jit::closures::refill_outer_site`): its code
+    /// id field's word, and the argument count of the body that word
+    /// names (`frame_code_argument_count`), which machine code bounds by
+    /// the frame's registers itself, as `frame_argument_count` does. A
+    /// code id names one body until a full collection frees it, which
+    /// moves the code table's epoch the site records beside the two.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_frame_code_arguments(&self, frame_bits: u64) -> (u64, u64) {
+        let Some(frame) = self
+            .machine_value(frame_bits)
+            .as_object()
+            .and_then(|object| self.object_frame(object))
+        else {
+            unreachable!("internal: an outer-local template hands the site leaf a frame object");
+        };
+        (
+            self.frame_words(frame)[frame_field::CODE_ID],
+            self.frame_code_argument_count(frame) as u64,
+        )
     }
 
     /// A reified frame's receiver. Fixed when the frame is created, so it
@@ -7219,7 +8114,11 @@ impl<'gc> Heap<'gc> {
     /// its registers keeps those below its body's `local_count` only --
     /// the arguments, the copied values and the named temporaries, all a
     /// block reaching them by reference can name -- and nil for every
-    /// scratch register, which may hold a word a callee left.
+    /// scratch register, which may hold a word a callee left. Inline into
+    /// both of its callers, the pop above all: outlined once machine
+    /// code's return became its second caller, it cost every pop of a
+    /// reified frame a call and its spills.
+    #[inline(always)]
     fn divorce(
         &mut self,
         frame: NonZeroU64,
@@ -8050,7 +8949,7 @@ impl<'gc> Heap<'gc> {
     /// The code table's row of the body `activation` runs: its frame's
     /// code word.
     #[inline(always)]
-    fn activation_code_id(&self, activation: ActivationReference) -> CodeId {
+    pub(crate) fn activation_code_id(&self, activation: ActivationReference) -> CodeId {
         CodeId::from_raw(frames::number_as_u32(
             self.stack
                 .header_word(activation.offset, frame_header::CODE),
@@ -8434,6 +9333,17 @@ impl<'gc> Heap<'gc> {
             .map(|offset| self.activation_handle(offset))
     }
 
+    /// The header offset of the stack frame `frame` is married to, as
+    /// `frame_activation` finds it, without minting a handle: the frame
+    /// may be one machine code pushed, whose header its call has not
+    /// written whole, which no handle may name before an exit or a leaf
+    /// writes it (`write_machine_frame`). The cut compares it with the
+    /// offsets of the compiled frames it walks (`jit::cut`).
+    #[cfg(ns_jit)]
+    pub(crate) fn married_offset_of(&self, frame: FrameReference<'gc>) -> Option<u32> {
+        self.married_offset(self.frame_words(frame))
+    }
+
     // ---------- The safepoint ----------
 
     #[inline]
@@ -8466,8 +9376,10 @@ impl<'gc> Heap<'gc> {
             .set(MachineWord::SafepointRequested, word);
     }
 
-    /// Asks the run loop's next safepoint to take its slow path.
-    fn request_safepoint(&mut self) {
+    /// Asks the run loop's next safepoint to take its slow path: an
+    /// allocation's limits, and a compile that found the code zone full
+    /// (`jit::after_compile_trigger`).
+    pub(crate) fn request_safepoint(&mut self) {
         self.machine_words.set(MachineWord::SafepointRequested, 1);
     }
 
@@ -8480,6 +9392,39 @@ impl<'gc> Heap<'gc> {
     #[cfg(ns_jit)]
     pub(crate) fn machine_words_address(&self) -> usize {
         self.machine_words.address()
+    }
+
+    /// The address of eden's bump cursor, its top word then its limit
+    /// word (`jit::stubs::BlockWord::EdenCursor`), which machine code
+    /// bumps in place: fixed for the heap's life, since the object space
+    /// keeps its reservation.
+    #[cfg(ns_jit)]
+    pub(crate) fn eden_cursor_address(&self) -> usize {
+        self.space.eden_cursor_address()
+    }
+
+    /// The block machine code allocates an object of `word_count` words
+    /// after its header in (`jit::macro_assembler`'s `bump_allocate`):
+    /// its bytes, its overflow word when the header cannot hold the count,
+    /// and whether the inline bump may place it at all -- only below the
+    /// large-object threshold, past which `allocate_block` places every
+    /// object old.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_block(word_count: usize) -> MachineBlock {
+        let bytes = allocation_words(word_count).saturating_mul(8);
+        MachineBlock {
+            bytes: i32::try_from(bytes).unwrap_or(i32::MAX),
+            overflow_word: (word_count >= WORD_COUNT_OVERFLOW).then(|| overflow_word(word_count)),
+            inline: bytes < LARGE_OBJECT_BYTES,
+        }
+    }
+
+    /// The bits of a header word that say it is followed by `word_count`
+    /// words, 255 for a count in an overflow word: what an allocation in
+    /// machine code adds to a header of no words (`MachineWord::ArrayHeader`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_word_count_bits(word_count: usize) -> u64 {
+        Header::new(DispatchId::NONE, Format::FixedPointers, 0, word_count).0
     }
 
     /// The object space's base address, every handle's origin
@@ -8512,6 +9457,48 @@ impl<'gc> Heap<'gc> {
             unreachable!("internal: the header's words are numbered from 0 to 12");
         };
         argument_count + current_class
+    }
+
+    /// The register number machine code reads a frame's operand at: the
+    /// header word `OPERAND` -- a block's frame's closure, a superclass
+    /// clause's class -- placed as `receiver_register` places the
+    /// receiver.
+    #[cfg(ns_jit)]
+    pub(crate) fn operand_register(argument_count: u16) -> u16 {
+        let Ok(operand) = u16::try_from(frame_header::OPERAND) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        argument_count + operand
+    }
+
+    /// The register numbers of a frame's recorded guard and entered level
+    /// (`frame_header::GUARD`, `frame_header::ENTERED_LEVEL`), placed as
+    /// `receiver_register` places the receiver: what a compiled prologue
+    /// writes for code that addresses its own slots, and what its own-slot
+    /// instructions read (`jit::baseline`).
+    #[cfg(ns_jit)]
+    pub(crate) fn own_slot_registers(argument_count: u16) -> (u16, u16) {
+        let (Ok(guard), Ok(entered_level)) = (
+            u16::try_from(frame_header::GUARD),
+            u16::try_from(frame_header::ENTERED_LEVEL),
+        ) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        (argument_count + guard, argument_count + entered_level)
+    }
+
+    /// The words a compiled prologue writes as the recorded guard of a
+    /// frame whose code addresses its own slots -- `DispatchId::NONE`, so
+    /// that the first own-slot access takes the cold check -- and as its
+    /// entered level when its current class names no application,
+    /// `ApplicationIndex::UNREGISTERED`; a class object's application word
+    /// is already the entered level's word otherwise.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_own_slot_words() -> (u64, u64) {
+        (
+            frames::number_word(u64::from(DispatchId::NONE.bits())).bits(),
+            frames::number_word(ApplicationIndex::UNREGISTERED.index() as u64).bits(),
+        )
     }
 
     /// The register number machine code reads a frame's receiver at: the
@@ -8562,6 +9549,88 @@ impl<'gc> Heap<'gc> {
             instance_format_bits: small(header::FORMAT_BITS),
             word_count_shift: small_count(header::WORD_COUNT_SHIFT),
             fields_displacement: displacement(FIELDS),
+            indexable_pointers_format: small(header::INDEXABLE_POINTERS_BITS),
+            word_count_overflow: small(WORD_COUNT_OVERFLOW as u64),
+            nursery_end: small(NURSERY_END as u64),
+            remembered_bit: u32::try_from(header::REMEMBERED_BIT)
+                .map(u32::cast_signed)
+                .unwrap_or_else(|_| {
+                    unreachable!("internal: the remembered bit lies in the header's low half")
+                }),
+            nil_word: small(Word::NIL.bits()),
+            aligned_bytes_format: small(header::ALIGNED_BYTES_BITS),
+            unused_bytes_shift: small_count(header::UNUSED_SHIFT),
+            unused_bytes_mask: small(header::UNUSED_BYTES_MASK),
+            byte_data_alignment: displacement(object::ALIGNMENT_WORDS),
+            // The words after the header `byte_array_extent` does not count
+            // as data: the block's but the header's own.
+            byte_data_reserve_bytes: displacement(FIELDS - 1 + object::ALIGNMENT_RESERVE),
+            application_row_shift: application_ids::ROW_SHIFT,
+            application_dispatch_id_displacement: application_ids::RowWord::DispatchId
+                .displacement(),
+            application_slot_base_displacement: application_ids::RowWord::SlotBase.displacement(),
+            application_flags_displacement: application_ids::RowWord::Flags.displacement(),
+            application_value_slots_flag: small(application_ids::ROW_FLAG_VALUE_SLOTS),
+            application_instance_header_displacement: application_ids::RowWord::InstanceHeader
+                .displacement(),
+            class_format: small(header::CLASS_BITS),
+            closure_format: small(header::CLOSURE_BITS),
+            frame_format: small(header::FRAME_BITS),
+            builtin_displacement: displacement(FIELDS + class_field::BUILTIN),
+            value_class_refusal_displacement: displacement(
+                FIELDS + class_field::VALUE_CLASS_REFUSAL,
+            ),
+            frame_sender_displacement: displacement(FIELDS + frame_field::SENDER),
+            frame_home_displacement: displacement(FIELDS + frame_field::HOME),
+            frame_receiver_displacement: displacement(FIELDS + frame_field::RECEIVER),
+            frame_current_class_displacement: displacement(FIELDS + frame_field::CURRENT_CLASS),
+            frame_program_counter_displacement: displacement(FIELDS + frame_field::PROGRAM_COUNTER),
+            frame_code_id_displacement: displacement(FIELDS + frame_field::CODE_ID),
+            frame_kind_displacement: displacement(FIELDS + frame_field::KIND),
+            frame_kind_operand_displacement: displacement(FIELDS + frame_field::KIND_OPERAND),
+            frame_uncontinuable_displacement: displacement(FIELDS + frame_field::UNCONTINUABLE),
+            frame_married_displacement: displacement(FIELDS + frame_field::MARRIED),
+            frame_fixed_fields: frame_field::COUNT,
+            closure_code_id_displacement: displacement(FIELDS + closure_field::CODE_ID),
+            closure_captured_frame_displacement: displacement(
+                FIELDS + closure_field::CAPTURED_FRAME,
+            ),
+            closure_feedback_base_displacement: displacement(FIELDS + closure_field::FEEDBACK_BASE),
+            closure_fixed_fields: closure_field::COUNT,
+        }
+    }
+
+    /// The kind words `MakeClosure` writes into the frame objects it
+    /// reifies in machine code, as `frame_fixed_words` writes them
+    /// (`MachineFrameKinds`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_frame_kinds() -> MachineFrameKinds {
+        use crate::image::opcodes::{
+            FRAME_CLOSURE, FRAME_FACTORY, FRAME_METHOD, FRAME_SUPERCLASS_CLAUSE,
+        };
+        let word = |tag: u8| count_word(usize::from(tag)).bits();
+        let initializer = |tag: u8, body: InitializerBody| (tag, word(body.frame_tag()));
+        let Ok(false_word) = i32::try_from(Value::boolean(false).word().bits()) else {
+            unreachable!("internal: false's word is a small constant");
+        };
+        MachineFrameKinds {
+            method: word(FRAME_METHOD),
+            closure: word(FRAME_CLOSURE),
+            factory: word(FRAME_FACTORY),
+            superclass_clause: word(FRAME_SUPERCLASS_CLAUSE),
+            initializers: [
+                initializer(kind_tag::INITIALIZER_FULL, InitializerBody::Full),
+                initializer(kind_tag::INITIALIZER_OWN_PART, InitializerBody::OwnPart),
+                initializer(
+                    kind_tag::INITIALIZER_STANDALONE,
+                    InitializerBody::Standalone,
+                ),
+            ],
+            kind_tag_shift: small_count(frames::SMALL_INTEGER_TAG_BITS),
+            kind_tag_mask: i32::try_from(frames::KIND_TAG_MASK).unwrap_or_else(|_| {
+                unreachable!("internal: the kind tag takes the payload's lowest byte")
+            }),
+            false_word,
         }
     }
 
@@ -8582,6 +9651,77 @@ impl<'gc> Heap<'gc> {
     #[cfg(ns_jit)]
     pub(crate) fn register_base_index(base: RegisterBase) -> u32 {
         base.index
+    }
+
+    /// The flags word of a counted method activation of a body taking
+    /// `argument_count` arguments stopped in machine code, generation 0:
+    /// what a release build's prologue adds an initializer's kind to
+    /// (`MacroAssembler::record_frame_kind`).
+    #[cfg(all(ns_jit, not(debug_assertions)))]
+    pub(crate) fn machine_flags_word(argument_count: u16) -> u64 {
+        FrameFlags {
+            compiled: true,
+            ..FrameFlags::new(kind_tag::METHOD, argument_count, true, false)
+        }
+        .word()
+        .bits()
+    }
+
+    /// How far a frame's flags word is shifted to bring the shift its call
+    /// made down to bit 0 (`frames::CALL_SHIFT_BITS`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_call_shift_shift() -> u8 {
+        small_count(frames::CALL_SHIFT_BITS.trailing_zeros() + frames::SMALL_INTEGER_TAG_BITS)
+    }
+
+    /// How far a frame's flags word is shifted to bring its argument count
+    /// down to bit 0, and the mask that leaves it alone there, as
+    /// `FrameFlags::of` reads it: what an outer-local template reads of a
+    /// married frame to find its register 0 below its header, as
+    /// `register_slot` does.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_argument_count_field() -> (u8, i32) {
+        let Ok(mask) = i32::try_from(frames::ARGUMENT_COUNT_MASK) else {
+            unreachable!("internal: an argument count fits 16 bits");
+        };
+        (
+            small_count(frames::ARGUMENT_COUNT_SHIFT + frames::SMALL_INTEGER_TAG_BITS),
+            mask,
+        )
+    }
+
+    /// The bits of a flags word that hold the shift its call made.
+    #[cfg(ns_jit)]
+    fn machine_call_shift_mask() -> u64 {
+        frames::CALL_SHIFT_BITS << frames::SMALL_INTEGER_TAG_BITS
+    }
+
+    /// The amount a frame's flags word grows by when its `counted` bit is
+    /// set: what an interpreter's call hands a counted block's prologue
+    /// (`MachineWord::CalleeCounted`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_counted_word() -> u64 {
+        frames::number_word(frames::COUNTED_BIT).bits() - frames::number_word(0).bits()
+    }
+
+    /// The register count's number among a frame's header words, which a
+    /// debug build's outer-local template reads to check a married
+    /// frame's window as `register_slot` checks it.
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn register_count_register() -> u16 {
+        let Ok(register) = u16::try_from(frame_header::REGISTER_COUNT) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        register
+    }
+
+    /// The flags word's register number past a frame's arguments.
+    #[cfg(ns_jit)]
+    pub(crate) fn flags_register() -> u16 {
+        let Ok(register) = u16::try_from(frame_header::FLAGS) else {
+            unreachable!("internal: the header's words are numbered from 0 to 12");
+        };
+        register
     }
 
     /// What a debug build's compiled prologue writes as a method frame's
@@ -8634,76 +9774,101 @@ impl<'gc> Heap<'gc> {
     /// The header machine code's frame `frame` describes, written but for
     /// its receiver and current class, which the compiled call wrote: the
     /// frame an exit materializes (`jit::materialize`) or a leaf runs in.
-    /// Its flags say a counted method activation stopped in machine code,
-    /// with a debug build's generation from the flags word the frame's
-    /// prologue wrote. Its guard is none, and its entered level the one
-    /// the push records. Answers the frame's handle.
+    /// Its flags say a counted activation of the frame's kind stopped in
+    /// machine code, with a debug build's generation and, for a kind its
+    /// code does not say, the tag from the flags word the frame's prologue
+    /// wrote (`MachineKind`); its operand is the selector or the current
+    /// class. Code that addresses its own slots keeps the guard and the
+    /// entered level its prologue wrote and its own-slot instructions
+    /// recorded since; any other records none, as the push does. A body's
+    /// twin, which reifies its frame (`MachineFrame::reifies`), keeps the reified
+    /// word, the counted bit and `retains_registers` it wrote, and in a
+    /// leaf's view the program counter too; any other is written unreified,
+    /// counted and without retained registers, as the push writes a method's
+    /// frame. Answers the frame's handle.
     #[cfg(ns_jit)]
     pub(crate) fn write_machine_frame(&mut self, frame: &MachineFrame) -> ActivationReference {
         let offset = frame.offset as usize;
+        let header_word = |heap: &Self, field: usize| {
+            Word::from_bits(heap.stack.frames.committed_word(offset + field))
+        };
+        let written = FrameFlags::of(header_word(self, frame_header::FLAGS));
+        let tag = match frame.kind.tag {
+            MachineKindTag::Constant(tag) => tag,
+            MachineKindTag::Recorded => written.kind_tag,
+        };
+        // Only code that reifies its frame wrote these words: in any other
+        // frame they hold whatever the stack held there before. A block's
+        // prologue writes the flags word too, counted or exempt as the
+        // call said (`jit::sends::prologue`).
+        let (reified, retains_registers) = if frame.reifies {
+            (
+                header_word(self, frame_header::REIFIED),
+                written.retains_registers,
+            )
+        } else {
+            (Word::NIL, false)
+        };
+        let counted = if frame.reifies || frame.kind.is_closure() {
+            written.counted
+        } else {
+            true
+        };
         let flags = FrameFlags {
             compiled: true,
-            ..FrameFlags::new(kind_tag::METHOD, frame.argument_count, true, false)
+            ..FrameFlags::new(tag, frame.argument_count, counted, retains_registers)
         };
         #[cfg(debug_assertions)]
-        let flags = {
-            let written = Word::from_bits(
-                self.stack
-                    .frames
-                    .committed_word(offset + frame_header::FLAGS),
-            );
-            flags.with_generation(FrameFlags::of(written).generation)
+        let flags = flags.with_generation(written.generation);
+        // A leaf's view keeps how far the frame's call shifted it, which
+        // its machine code's return reads (`frames::CALL_SHIFT_BITS`); a
+        // frame the walk materializes returns through the interpreter.
+        let flags_word = match frame.caller {
+            Some(_) => flags.word(),
+            None => Word::from_bits(
+                flags.word().bits()
+                    | (header_word(self, frame_header::FLAGS).bits()
+                        & Self::machine_call_shift_mask()),
+            ),
         };
         let caller = match frame.caller {
             Some((caller, top)) => frames::caller_link_word(caller, frame.start(), top),
             None => Word::NIL,
         };
-        // As the push records it for code that addresses its own slots:
-        // the current class's application, which the call wrote. The
-        // guard is none, so that the first own-slot access takes the cold
-        // check against it, as after a resume.
-        let entered_level = if frame.addresses_own_slots {
-            let current_class = self.load(Word::from_bits(
-                self.stack
-                    .frames
-                    .committed_word(offset + frame_header::CURRENT_CLASS),
-            ));
-            current_class
-                .as_object()
-                .and_then(|class| self.class_application_index(class))
-                .unwrap_or(ApplicationIndex::UNREGISTERED)
+        let operand = match frame.kind.operand {
+            MachineOperand::Selector(selector) => frames::number_word(selector.index() as u64),
+            MachineOperand::CurrentClass => header_word(self, frame_header::CURRENT_CLASS),
+            MachineOperand::Recorded => header_word(self, frame_header::OPERAND),
+        };
+        // The program counter a frame that reifies holds is the one the
+        // interpreter would hold there -- its push's 0, or the last one it
+        // stored, at a send, which its templates store too -- and its
+        // divorce records it in the frame object, so it is left be: a
+        // leaf is handed its own, the exit's walk stops each frame below
+        // the innermost at a send whose program counter the frame holds
+        // already, and the run loop goes on at the innermost frame's from
+        // the exit itself, as the interpreter goes on at an instruction
+        // without storing it.
+        let program_counter = if frame.reifies {
+            header_word(self, frame_header::PROGRAM_COUNTER)
         } else {
-            ApplicationIndex::UNREGISTERED
+            frames::number_word(u64::from(frame.program_counter))
         };
         let words = [
-            (
-                frame_header::OPERAND,
-                frames::number_word(frame.selector.index() as u64),
-            ),
-            (frame_header::REIFIED, Word::NIL),
-            (frame_header::FLAGS, flags.word()),
+            (frame_header::OPERAND, operand),
+            (frame_header::REIFIED, reified),
+            (frame_header::FLAGS, flags_word),
             (
                 frame_header::CODE,
                 frames::number_word(frame.code.index() as u64),
             ),
-            (
-                frame_header::PROGRAM_COUNTER,
-                frames::number_word(u64::from(frame.program_counter)),
-            ),
+            (frame_header::PROGRAM_COUNTER, program_counter),
             (
                 frame_header::FEEDBACK_BASE,
                 frames::number_word(u64::from(frame.feedback_base.raw())),
             ),
             (frame_header::CALLER, caller),
             (frame_header::CONTINUATION, Word::NIL),
-            (
-                frame_header::GUARD,
-                frames::number_word(u64::from(DispatchId::NONE.bits())),
-            ),
-            (
-                frame_header::ENTERED_LEVEL,
-                frames::number_word(entered_level.index() as u64),
-            ),
             (
                 frame_header::REGISTER_COUNT,
                 frames::number_word(frame.register_count as u64),
@@ -8713,6 +9878,27 @@ impl<'gc> Heap<'gc> {
             self.stack
                 .frames
                 .set_committed_word(offset + field, word.bits());
+        }
+        // Code that addresses its own slots had its prologue write its
+        // guard and entered level (`jit::sends::prologue`), and its own-slot
+        // instructions record the guard their cold check verified there
+        // since, which a rewrite here would throw away at every leaf call.
+        // Every other frame records none, as the push does.
+        if !frame.addresses_own_slots {
+            for (field, word) in [
+                (
+                    frame_header::GUARD,
+                    frames::number_word(u64::from(DispatchId::NONE.bits())),
+                ),
+                (
+                    frame_header::ENTERED_LEVEL,
+                    frames::number_word(ApplicationIndex::UNREGISTERED.index() as u64),
+                ),
+            ] {
+                self.stack
+                    .frames
+                    .set_committed_word(offset + field, word.bits());
+            }
         }
         self.activation_handle_at(frame.offset)
     }
@@ -8736,8 +9922,10 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Marks `activation`, a frame the run loop pushed or resumed, as
-    /// stopped in machine code at the send at `program_counter`: the
-    /// bottom frame of a stretch an exit above it materializes.
+    /// stopped in machine code at the call at `program_counter` -- a
+    /// cached send, an initializer invocation, or a `ResolveFuture` that
+    /// called a future's `resolve` (`jit::sends::call_slots`): the bottom
+    /// frame of a stretch an exit above it materializes.
     #[cfg(ns_jit)]
     pub(crate) fn mark_stopped_in_machine_code(
         &mut self,
@@ -8756,6 +9944,80 @@ impl<'gc> Heap<'gc> {
             frame_header::PROGRAM_COUNTER,
             frames::number_word(u64::from(program_counter)),
         );
+    }
+
+    /// `Leaf::Divorce`: the divorce of `activation`'s frame object as its
+    /// pop divorces it (`pop_activation`), at the return of machine code
+    /// whose frame was reified and retains its registers, which the
+    /// return's inline divorce leaves to the copy here; then the frame
+    /// reads as unreified, so that the pop of a frame the run loop entered
+    /// machine code at divorces nothing again.
+    #[cfg(ns_jit)]
+    pub(crate) fn divorce_at_machine_return(&mut self, activation: ActivationReference) {
+        self.check_activation(activation);
+        let offset = activation.offset as usize;
+        let header = self.stack.frames.header(offset);
+        let reified = Word::from_bits(header[frame_header::REIFIED]).object_offset();
+        let flags = FrameFlags::of(Word::from_bits(header[frame_header::FLAGS]));
+        let program_counter = header[frame_header::PROGRAM_COUNTER];
+        let Some(frame) = reified else {
+            unreachable!("internal: machine code divorces only a reified frame");
+        };
+        self.divorce(frame, offset, flags, program_counter);
+        self.stack
+            .set_header_word(activation.offset, frame_header::REIFIED, Word::NIL);
+    }
+
+    /// What machine code reads and writes to divorce a reified frame of a
+    /// body taking `argument_count` arguments at its return, as
+    /// `pop_activation` divorces it (`jit::sends::return_from`), and what a
+    /// lean body's transfer into its twin writes as the push does
+    /// (`jit::closures::transfer_to_twin`).
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_divorce(argument_count: u16) -> MachineDivorce {
+        let register = |field: usize| {
+            let Ok(field) = u16::try_from(field) else {
+                unreachable!("internal: the header's words are numbered from 0 to 12");
+            };
+            argument_count + field
+        };
+        let displacement = |field: usize| {
+            let Ok(displacement) = i32::try_from((FIELDS + field) * 8) else {
+                unreachable!("internal: a frame object's fixed fields lie near its start");
+            };
+            displacement
+        };
+        let small = |bits: u64| {
+            let Ok(bits) = i32::try_from(bits) else {
+                unreachable!("internal: the word is a small constant");
+            };
+            bits
+        };
+        MachineDivorce {
+            reified_register: register(frame_header::REIFIED),
+            flags_register: register(frame_header::FLAGS),
+            program_counter_register: register(frame_header::PROGRAM_COUNTER),
+            retains_registers_bit: small(
+                frames::number_word(frames::RETAINS_REGISTERS_BIT).bits()
+                    - frames::number_word(0).bits(),
+            ),
+            program_counter_displacement: displacement(frame_field::PROGRAM_COUNTER),
+            sender_displacement: displacement(frame_field::SENDER),
+            uncontinuable_displacement: displacement(frame_field::UNCONTINUABLE),
+            married_displacement: displacement(frame_field::MARRIED),
+            true_word: small(Value::boolean(true).word().bits()),
+        }
+    }
+
+    /// The word a frame's header holds as the program counter
+    /// `program_counter`, which a body's instruction count bounds to 16
+    /// bits (`jit::baseline::compile`), as machine code stores it.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_program_counter_word(program_counter: u32) -> i32 {
+        let Ok(word) = i32::try_from(frames::number_word(u64::from(program_counter)).bits()) else {
+            unreachable!("internal: a compiled body's program counter is numbered in 16 bits");
+        };
+        word
     }
 
     /// Whether `activation` stopped in machine code
@@ -8819,7 +10081,6 @@ impl<'gc> Heap<'gc> {
     /// to a target that is no method with code, for the stub that runs it
     /// (`jit::stub_entry`), which reads no current class: `nil` stands in
     /// for one.
-    #[cfg(ns_jit)]
     pub(crate) fn hand_machine_receiver(&self, receiver: Value<'gc>) {
         let receiver = self.store(receiver);
         self.machine_words
@@ -8833,7 +10094,6 @@ impl<'gc> Heap<'gc> {
     /// `MachineWord::CalleeClass`), which the miss stub passes to the
     /// callee's machine entry as a compiled call passes them: nothing is
     /// written into the callee's frame before its checks pass.
-    #[cfg(ns_jit)]
     pub(crate) fn hand_machine_callee(&self, receiver: Value<'gc>, class: ClassReference<'gc>) {
         let receiver = self.store(receiver);
         let class = self.store(Value::object(class));
@@ -8841,6 +10101,63 @@ impl<'gc> Heap<'gc> {
             .set(MachineWord::CalleeReceiver, receiver.bits());
         self.machine_words
             .set(MachineWord::CalleeClass, class.bits());
+    }
+
+    /// Hands machine code what an interpreter's send calls a block's body
+    /// with (`jit::called_closure`): the receiver and the current class of
+    /// the frame `closure` captured, `closure` itself, and whether its
+    /// activation counts against the depth limit, which the closure call
+    /// stub passes to the block's prologue as a closure stub does
+    /// (`MachineWord::CalleeClosure`, `MachineWord::CalleeCounted`).
+    #[cfg(ns_jit)]
+    pub(crate) fn hand_machine_closure(
+        &self,
+        receiver: Value<'gc>,
+        current_class: Option<ClassReference<'gc>>,
+        closure: ObjectReference<'gc>,
+        counted: bool,
+    ) {
+        let receiver = self.store(receiver);
+        let class = current_class.map_or(Word::NIL, |class| self.store(Value::object(class)));
+        let closure = self.store(Value::object(closure));
+        self.machine_words
+            .set(MachineWord::CalleeReceiver, receiver.bits());
+        self.machine_words
+            .set(MachineWord::CalleeClass, class.bits());
+        self.machine_words
+            .set(MachineWord::CalleeClosure, closure.bits());
+        self.machine_words.set(
+            MachineWord::CalleeCounted,
+            if counted {
+                Self::machine_counted_word()
+            } else {
+                0
+            },
+        );
+    }
+
+    /// Hands machine code the receiver, the level and the body of the
+    /// initializer the initializer leaf decided, as `hand_machine_callee`
+    /// hands a method's receiver and class, and the body's kind tag in
+    /// `MachineWord::CalleeKind`, as the amount its flags word, written
+    /// with a method's tag of 0, grows by: the callee's prologue adds it
+    /// (`jit::sends::prologue`), so that the frame records which of its
+    /// mixin's bodies it runs, which its code does not say.
+    #[cfg(ns_jit)]
+    pub(crate) fn hand_machine_initializer(
+        &self,
+        receiver: Value<'gc>,
+        level: ClassReference<'gc>,
+        body: InitializerBody,
+    ) {
+        self.hand_machine_callee(receiver, level);
+        let tag = match body {
+            InitializerBody::Full => kind_tag::INITIALIZER_FULL,
+            InitializerBody::OwnPart => kind_tag::INITIALIZER_OWN_PART,
+            InitializerBody::Standalone => kind_tag::INITIALIZER_STANDALONE,
+        };
+        let added = frames::number_word(u64::from(tag)).bits() - frames::number_word(0).bits();
+        self.machine_words.set(MachineWord::CalleeKind, added);
     }
 
     /// The receiver machine code handed a leaf in the machine words
@@ -8872,7 +10189,6 @@ impl<'gc> Heap<'gc> {
 
     /// The value machine code answered as the word `bits`
     /// (`jit::Resumption::Returned`): a word a frame register held.
-    #[cfg(ns_jit)]
     pub(crate) fn machine_value(&self, bits: u64) -> Value<'gc> {
         self.load(Word::from_bits(bits))
     }
@@ -8897,9 +10213,11 @@ impl<'gc> Heap<'gc> {
     /// scavenge finds the reference without walking the old space -- per
     /// object, as Spur's `storePointer:ofObject:withValue:` and Soup's
     /// `HeapObject::Store` remember, rather than Strongtalk's cards. Every
-    /// store into an existing object comes through here, so the interpreter,
-    /// the reference lowering and a JIT share one rule
-    /// (`docs/design/memory.md`, "The write barrier").
+    /// store the interpreter and the reference lowering make into an
+    /// existing object comes through here, so the two share one rule;
+    /// machine code makes the same comparisons inline and calls only
+    /// `remember` (`remember_for_machine_code`) (`docs/design/memory.md`,
+    /// "The write barrier").
     #[inline(always)]
     fn write_barrier(&mut self, holder: NonZeroU64, word: Word) {
         if !space::is_young(holder) && word.object_offset().is_some_and(space::is_young) {
@@ -8914,6 +10232,31 @@ impl<'gc> Heap<'gc> {
             !self.allocating_old || !word.object_offset().is_some_and(space::is_young),
             "the load tenures everything the graph names before the graph pass"
         );
+    }
+
+    /// Whether the activation stack makes room for a frame machine code
+    /// pushes, ending `end_bytes` from the stack's base, past the ordinary
+    /// end (`FrameStack::grow_for_machine_push`): the growth leaf's work.
+    #[cfg(ns_jit)]
+    pub(crate) fn grow_stack_for_machine_push(&mut self, end_bytes: u64) -> bool {
+        usize::try_from(end_bytes / 8).is_ok_and(|end| self.stack.frames.grow_for_machine_push(end))
+    }
+
+    /// `remember` for machine code's write barrier
+    /// (`MacroAssembler::store_with_barrier`), which calls it only for an
+    /// old holder `holder_word`, its word, that came to name a young
+    /// object and whose remembered bit it found clear: the interpreter's
+    /// own decision, its limit's request of a scavenge included.
+    #[cfg(ns_jit)]
+    pub(crate) fn remember_for_machine_code(&mut self, holder_word: u64) {
+        let Some(holder) = Word::from_bits(holder_word).object_offset() else {
+            unreachable!("internal: the write barrier remembers an object");
+        };
+        debug_assert!(
+            !space::is_young(holder),
+            "internal: the write barrier remembers an old object"
+        );
+        self.remember(holder);
     }
 
     /// Adds `holder`, an old object, to the remembered set unless its bit
@@ -9123,6 +10466,10 @@ impl<'gc> Heap<'gc> {
         // The start and the header of the frame walked just before: the
         // callee of the frame walked now.
         let mut callee: Option<(usize, usize)> = None;
+        // Whether that callee runs a block, which a closure stub may lay
+        // past its sender's slots.
+        #[cfg(debug_assertions)]
+        let mut callee_is_block = false;
         let mut last: Option<LastSet<'_>> = None;
         let mut offset = stack.innermost;
         loop {
@@ -9145,7 +10492,12 @@ impl<'gc> Heap<'gc> {
             };
             let set = LastSet::of(&mut last, tables, code_index, program_counter);
             #[cfg(debug_assertions)]
-            set.check_callee(start, window.callee_header);
+            set.check_callee(
+                start,
+                callee.filter(|(callee_start, _)| *callee_start < end).map(
+                    |(callee_start, callee_header)| (callee_start, callee_header, callee_is_block),
+                ),
+            );
             match &set.tainted {
                 Some(tainted) => {
                     let words = stack.frames.words_mut();
@@ -9170,6 +10522,10 @@ impl<'gc> Heap<'gc> {
             }
             claim(&mut claimed, start..end);
             callee = Some((start, header));
+            #[cfg(debug_assertions)]
+            {
+                callee_is_block = stack.flags(offset).kind_tag == frames::kind_tag::CLOSURE;
+            }
             match caller {
                 Some(caller) => offset = caller,
                 None => break,
@@ -9239,6 +10595,7 @@ impl<'gc> Heap<'gc> {
         step_roots: impl FnOnce(&mut Scavenger<'_>),
     ) {
         use crate::trace::{Trace, Tracer};
+        self.settle_machine_allocations();
         // Committed for the worst case first, so that a promotion never meets a
         // refused commit halfway through (`docs/design/memory.md`).
         let [past, eden, _] = self.space.occupied();
@@ -9265,6 +10622,7 @@ impl<'gc> Heap<'gc> {
             host_roots,
             canonical_symbols,
             symbol_of,
+            program_symbols,
             tables,
             ..
         } = self;
@@ -9314,6 +10672,7 @@ impl<'gc> Heap<'gc> {
         scavenger.drain();
         scavenger.finish();
         Self::forward_weak_symbols(canonical_symbols, symbol_of, &scavenger);
+        Self::forward_weak_program_symbols(program_symbols, &scavenger);
         let remembered = std::mem::take(&mut scavenger.remembered);
         let (survived, promoted, ages) = (scavenger.survived, scavenger.promoted, scavenger.ages);
         // Poisons every word the nursery's objects held before the scavenge
@@ -9373,6 +10732,130 @@ impl<'gc> Heap<'gc> {
         self.collection_requested
     }
 
+    /// A table beside the space reached its growth limit
+    /// (`limits::TableLimits`, `InlineCaches::wants_collection`). Only
+    /// sets flags, as `request_collection` does, so a mint inside a leaf
+    /// or while an object is half-wired may call it.
+    #[cold]
+    pub(crate) fn request_table_collection(&mut self) {
+        self.table_collection_requested = true;
+        self.request_collection();
+    }
+
+    /// Whether the collection about to run was requested by a table's
+    /// limit and not by the space's (`World::collect`, before it marks).
+    pub(crate) fn collecting_for_a_table(&self) -> bool {
+        self.table_collection_requested && self.old_occupied() < self.next_collection
+    }
+
+    /// Counts a collection `collecting_for_a_table` answered true for.
+    pub(crate) fn count_table_collection(&mut self) {
+        self.table_collections += 1;
+    }
+
+    /// After a collection: every table's next limit, from the rows the
+    /// collection left in use (`limits::GrowthLimit::reset`).
+    pub(crate) fn reset_table_limits(&mut self) {
+        self.table_collection_requested = false;
+        let tables = &self.tables;
+        let codes = rows_in_use(tables.codes.len(), &tables.free_codes);
+        let mixins = rows_in_use(tables.mixins.len(), &tables.free_mixins);
+        let applications = rows_in_use(tables.applications.len(), &tables.free_applications);
+        self.table_limits.code_ids.reset(codes);
+        self.table_limits.mixin_rows.reset(mixins);
+        self.table_limits.application_rows.reset(applications);
+        self.table_limits
+            .program_symbols
+            .reset(self.program_symbols.len());
+    }
+
+    /// The sizes of the heap's own tables and of the reservations beside
+    /// the space it holds (`Interpreter::table_sizes`); the caches, the
+    /// zone and the interner fill the rest.
+    pub(crate) fn table_sizes(&self) -> limits::TableSizes {
+        #[cfg(ns_jit)]
+        let machine_entry_rows_committed = self.machine_entries.rows();
+        #[cfg(not(ns_jit))]
+        let machine_entry_rows_committed = 0;
+        limits::TableSizes {
+            code_ids: self.tables.codes.len(),
+            mixin_rows: self.tables.mixins.len(),
+            application_rows: self.tables.applications.len(),
+            program_symbols: self.program_symbols.len(),
+            stack_committed_bytes: self.stack.frames.committed_words() * 8,
+            stack_used_bytes: self.stack.frames.top() * 8,
+            machine_entry_rows_committed,
+            application_id_rows_committed: self.application_ids.committed_rows(),
+            ..limits::TableSizes::default()
+        }
+    }
+
+    /// Gives back the committed memory of the reservations the heap holds
+    /// beside the space -- the activation stack, the machine entry table
+    /// and the application id table -- above each one's high mark and
+    /// headroom, where more than its threshold lies unused
+    /// (`limits::Shrink`). Run at the end of a full collection, between
+    /// entries, after `reclaim_ids` truncated the code and application
+    /// tables: each bound machine code reads is at or below what is kept
+    /// before a page goes (`docs/design/memory.md`, "Giving committed
+    /// memory back").
+    pub(crate) fn shrink_reservations(&mut self) {
+        let pairs = self.shrink_pairs;
+        let bytes = self.stack.frames.shrink(pairs.stack, pairs.damped);
+        self.count_decommit(bytes);
+        #[cfg(ns_jit)]
+        {
+            let machine_words = &self.machine_words;
+            let bytes = self.machine_entries.shrink(
+                self.tables.codes.len(),
+                pairs.machine_entries,
+                pairs.damped,
+                |rows| machine_words.set(MachineWord::MachineEntryRows, rows as u64),
+            );
+            self.count_decommit(bytes);
+        }
+        debug_assert!(
+            self.machine_words.get(MachineWord::ApplicationIdRows)
+                <= self.application_ids.rows() as u64,
+            "internal: the application id rows' bound lies at the rows recorded"
+        );
+        let bytes = self
+            .application_ids
+            .shrink(pairs.application_ids, pairs.damped);
+        self.count_decommit(bytes);
+    }
+
+    /// Counts one decommit of `bytes`, nothing for none.
+    pub(crate) fn count_decommit(&mut self, bytes: usize) {
+        if bytes > 0 {
+            self.decommits += 1;
+            self.decommitted_bytes += bytes as u64;
+        }
+    }
+
+    /// Each reservation's shrink pair (`limits::ShrinkPairs`).
+    pub(crate) fn shrink_pairs(&self) -> limits::ShrinkPairs {
+        self.shrink_pairs
+    }
+
+    /// Sets each reservation's shrink pair (`Interpreter::set_shrink_pairs`).
+    pub(crate) fn set_shrink_pairs(&mut self, pairs: limits::ShrinkPairs) {
+        self.shrink_pairs = pairs;
+    }
+
+    /// Sets every table's floor and next limit but the sites', which lie
+    /// with the caches (`Interpreter::set_table_floors`).
+    pub(crate) fn set_table_floors(&mut self, floors: limits::TableFloors) {
+        self.table_limits.code_ids.set_floor(floors.code_ids);
+        self.table_limits.mixin_rows.set_floor(floors.mixin_rows);
+        self.table_limits
+            .application_rows
+            .set_floor(floors.application_rows);
+        self.table_limits
+            .program_symbols
+            .set_floor(floors.program_symbols);
+    }
+
     /// After a collection: the space's next limit, in bytes
     /// (`collection_limit`).
     pub(crate) fn reset_collection_limits(&mut self) {
@@ -9388,17 +10871,19 @@ impl<'gc> Heap<'gc> {
     }
 
     /// How much a move has to rewrite: the objects, the activation stack's
-    /// words, the suspended activations, the continuations, the reified-mixin
-    /// and canonical symbol tables, and the host roots. The stress mode paces
+    /// words, the suspended activations, the continuations, the reified-mixin,
+    /// canonical symbol and program-made symbol tables, and the host roots. The stress mode paces
     /// its moves by it.
     #[cfg(debug_assertions)]
     pub(crate) fn traced_size(&self) -> usize {
         self.object_count
+            + self.machine_allocations()
             + self.stack.frames.top()
             + self.suspensions.rows.len()
             + self.continuations.rows.len()
             + self.mixin_objects.len()
             + self.canonical_symbols.len()
+            + self.program_symbols.len()
             + self.host_roots.borrow().slots.len()
     }
 
@@ -9494,8 +10979,14 @@ impl<'gc> Heap<'gc> {
         for holder in &mut self.remembered {
             *holder = forwarder.objects.apply(*holder);
         }
-        self.forward_everything(&mut forwarder);
+        self.forward_everything(&mut forwarder, None);
         forwarder
+    }
+
+    /// `compact_with`, sliding no site range: a test's collection.
+    #[cfg(test)]
+    fn compact(&mut self) -> Forwarder<ForwardingTable> {
+        self.compact_with(None)
     }
 
     /// Compacts every object the finished marking reached, in both
@@ -9507,11 +10998,16 @@ impl<'gc> Heap<'gc> {
     /// past twice the next limit; and rewrites every handle the heap itself
     /// holds into the next epoch. What the heap does not hold, the caller
     /// forwards with the answer, exactly as for a move (`World::collect`).
+    /// With `slide`, the walk that rewrites the handles also rewrites every
+    /// feedback base the heap holds through it -- each closure's and each
+    /// frame header's on the activation stack -- since the inline caches'
+    /// ranges slid in the same collection (`InlineCaches::apply_slide`).
     ///
     /// Sound only where nothing outside the heap and the interpreter holds a
     /// handle: at a safepoint of the run loop, or between runs.
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
-    pub(crate) fn compact(&mut self) -> Forwarder<ForwardingTable> {
+    pub(crate) fn compact_with(&mut self, slide: Option<&SiteSlide>) -> Forwarder<ForwardingTable> {
+        self.settle_machine_allocations();
         #[cfg(debug_assertions)]
         let from_epoch = self.epoch;
         #[cfg(debug_assertions)]
@@ -9605,7 +11101,7 @@ impl<'gc> Heap<'gc> {
             to_epoch,
             objects: table,
         };
-        self.forward_everything(&mut forwarder);
+        self.forward_everything(&mut forwarder, slide);
         forwarder
     }
 
@@ -9694,7 +11190,7 @@ impl<'gc> Heap<'gc> {
                 names_young: std::cell::Cell::new(false),
             },
         };
-        self.forward_everything(&mut forwarder);
+        self.forward_everything(&mut forwarder, None);
         Ok(forwarder)
     }
 
@@ -9708,7 +11204,17 @@ impl<'gc> Heap<'gc> {
     /// reach is named here once, rather than in copies a later change can
     /// update in one and miss in another (`trace.rs`'s reason for existing,
     /// one level up).
-    fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
+    ///
+    /// With `slide`, a full collection's, every closure's feedback base is
+    /// rewritten in the same walk, and every stack frame header's after it
+    /// (`compact_with`). A suspended activation keeps no base -- it derives
+    /// it again when it resumes (`Mutator::resume_frame`) -- and a
+    /// continuation holds none, so neither side table is written.
+    fn forward_everything<M: Relocation>(
+        &mut self,
+        forwarder: &mut Forwarder<M>,
+        slide: Option<&SiteSlide>,
+    ) {
         use crate::trace::{Trace, Tracer};
         // A married frame's registers are its stack frame's, traced below
         // with the stack; its married field is a stack offset, and no stack
@@ -9722,6 +11228,9 @@ impl<'gc> Heap<'gc> {
             while position < range.end / 8 {
                 let (header, next) = object_at(words, position);
                 let block = block_range(words, header);
+                if let Some(slide) = slide {
+                    slide_closure_feedback_base(&mut words[block.clone()], slide);
+                }
                 trace_block(&mut words[block], forwarder);
                 let offset = offset_of_header(header);
                 if forwarder.objects.holder_done() && !space::is_young(offset) {
@@ -9748,6 +11257,9 @@ impl<'gc> Heap<'gc> {
         // nothing runs between the two and a second pass writes only the
         // words the first wrote.
         Self::trace_stack(&mut self.stack, &self.tables, forwarder);
+        if let Some(slide) = slide {
+            self.stack.slide_feedback_bases(slide);
+        }
         self.suspensions.trace(forwarder);
         self.continuations.trace(forwarder);
         // The table is weak -- `begin_marking` deliberately does not walk it
@@ -9771,6 +11283,13 @@ impl<'gc> Heap<'gc> {
                 self.symbol_of.insert(object.offset.get(), symbol);
             }
         }
+        // Weak as the canonical table is, and pruned with it before a
+        // compaction: every entry left names a live object, and the
+        // inverse follows it.
+        self.program_symbols.retain(|object| {
+            forwarder.object(object);
+            true
+        });
         let roots = self.host_roots.get_mut();
         roots.sweep();
         for slot in &roots.slots {
@@ -9783,8 +11302,8 @@ impl<'gc> Heap<'gc> {
     /// The space's occupancy (`Interpreter::heap_statistics`).
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
         crate::HeapStatistics {
-            live_objects: self.object_count,
-            young_objects: self.young_objects,
+            live_objects: self.object_count + self.machine_allocations(),
+            young_objects: self.young_objects + self.machine_allocations(),
             occupied_bytes: self.space.occupied_bytes(),
             committed_bytes: self.space.committed(),
         }
@@ -9820,7 +11339,10 @@ impl<'gc> Heap<'gc> {
             collections: self.collections,
             total_pause: self.total_pause,
             longest_pause: self.longest_pause,
-            live_objects: self.object_count,
+            live_objects: self.object_count + self.machine_allocations(),
+            table_collections: self.table_collections,
+            decommits: self.decommits,
+            decommitted_bytes: self.decommitted_bytes,
         }
     }
 
@@ -9837,8 +11359,8 @@ impl<'gc> Heap<'gc> {
     ///
     /// Which objects are resolved futures, and their values, is `futures`'
     /// test, the one the scavenger's weak pass applies too. A future's
-    /// value is never itself a future -- `Mutator::future_computed` follows
-    /// a future of a future before it records one, and one whose fields
+    /// value is never itself a future -- its `resolve` forces a future its
+    /// computation answered before it records the value, and one whose fields
     /// crafted code made so is malformed and not replaced -- so one pass of
     /// replacement leaves no resolved future behind in any field it
     /// rewrites.
@@ -9966,8 +11488,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Clears every canonical symbol the marking did not reach. The table is
-    /// weak, and sound so: `Mutator::new_symbol` is the only
-    /// way to make a symbol object (§5.1.6: equal symbols are one object), so
+    /// weak, and sound so: `Mutator::new_symbol` and
+    /// `Mutator::program_symbol` are the only ways to make a symbol object
+    /// (§5.1.6: equal symbols are one object), so
     /// one that is collected was held by nothing -- anything that held it
     /// would have been a root and kept it live -- and the next mint is again
     /// the only one. No live comparison can tell a collected-and-reminted
@@ -9978,6 +11501,11 @@ impl<'gc> Heap<'gc> {
     /// compaction clears the mark bits, and before marking has finished
     /// draining, an entry cleared here reads bits that are not yet complete
     /// and could wrongly prune a symbol the traversal has not reached yet.
+    ///
+    /// Prunes the program-made symbols the same way, and hands the
+    /// canonical table every survivor whose text has been interned since
+    /// the program made it, so that `symbol_value` of it is one probe
+    /// again and the text keeps one object.
     pub(crate) fn prune_canonical_symbols(&mut self) {
         for index in 0..self.canonical_symbols.len() {
             if let Some(object) = self.canonical_symbols[index] {
@@ -9986,6 +11514,24 @@ impl<'gc> Heap<'gc> {
                     self.canonical_symbols[index] = None;
                 }
             }
+        }
+        let mut program_symbols = std::mem::take(&mut self.program_symbols);
+        program_symbols.retain(|object| self.header(*object).marked());
+        let interned: Vec<(Symbol, ObjectReference<'gc>)> = program_symbols
+            .objects()
+            .filter_map(|object| Some((self.program_symbol_number(object)?, object)))
+            .collect();
+        self.program_symbols = program_symbols;
+        for (symbol, object) in interned {
+            // `new_symbol` adopts a living program-made symbol before it
+            // allocates, and the decoder refuses a text one spells, so
+            // nothing else can be the number's object.
+            debug_assert!(
+                self.canonical_symbol(symbol).is_none(),
+                "internal: a text has a program-made and a canonical object"
+            );
+            self.program_symbols.remove(object);
+            self.record_canonical_symbol(symbol, object);
         }
     }
 
@@ -10024,6 +11570,40 @@ impl<'gc> Heap<'gc> {
                 object.offset = moved;
             }
         }
+    }
+
+    /// The scavenge's pass over the program-made symbols, as
+    /// `forward_weak_symbols` is over the canonical ones: a young symbol the
+    /// scavenge copied is its copy, one it did not is gone, an old one
+    /// stays. Every entry is checked as the scavenger checks a handle it
+    /// traces, and every entry left is rebranded into the scavenge's epoch.
+    fn forward_weak_program_symbols(
+        program_symbols: &mut symbols::ProgramSymbols<'gc>,
+        scavenger: &Scavenger<'_>,
+    ) {
+        if program_symbols.is_empty() {
+            return;
+        }
+        program_symbols.retain(|object| {
+            // A stale entry panics here rather than being made fresh.
+            #[cfg(debug_assertions)]
+            {
+                object.epoch = scavenger.check_and_rebrand(object.origin, object.epoch);
+            }
+            if !space::is_young(object.offset) {
+                return true;
+            }
+            let words = scavenger.space.words();
+            let header = header_index(object.offset);
+            if Header(words[header]).format() != Format::Forwarded {
+                return false;
+            }
+            let Some(moved) = Word::from_bits(words[header + CLASS]).object_offset() else {
+                unreachable!("internal: a forwarder names an object")
+            };
+            object.offset = moved;
+            true
+        });
     }
 
     /// Runs the marker's work list empty: each object popped unmarked is
@@ -10909,6 +12489,40 @@ mod tests {
         let short = heap.allocate_string(class, crate::CodePoints::from("abc"));
         let longer = heap.allocate_string(class, crate::CodePoints::from("abcd"));
         assert_eq!(heap.strings_equal(short, longer), Some(false));
+    }
+
+    /// The image decoder refuses a symbol record whose text a living
+    /// program-made symbol spells, as it refuses a second record of one
+    /// text (`Heap::has_symbol_object`): once the text is interned, the
+    /// program-made object counts as the text's object though the
+    /// canonical table holds none, until the prune or `new_symbol` adopts
+    /// it.
+    #[test]
+    fn a_living_program_made_symbol_makes_its_interned_text_a_duplicate() {
+        let mut heap = Heap::new();
+        let symbol_class = builtin_named_class(&mut heap, "Symbol", Some(BuiltinClass::Symbol));
+        let text = "a text a heap test made, interned only afterwards";
+        assert_eq!(Symbol::lookup(text), None);
+        let object = heap.allocate_string(symbol_class, crate::CodePoints::from(text));
+        heap.record_program_symbol(object);
+        assert_eq!(heap.symbol_value(object), None);
+        assert_eq!(heap.symbol_text(object).as_deref(), Some(text));
+        assert!(heap
+            .program_symbol_named(text)
+            .is_some_and(|found| found.same(object)));
+
+        let symbol = Symbol::intern(text);
+        assert!(heap.canonical_symbol(symbol).is_none());
+        assert!(
+            heap.has_symbol_object(symbol),
+            "the decoder must refuse a record of the text"
+        );
+        assert_eq!(heap.symbol_value(object), Some(symbol));
+        assert!(heap
+            .adopt_program_symbol(symbol)
+            .is_some_and(|adopted| adopted.same(object)));
+        assert!(heap.has_symbol_object(symbol));
+        assert_eq!(heap.table_sizes().program_symbols, 0);
     }
 
     #[test]
@@ -12577,6 +14191,247 @@ mod tests {
             .frame_activation(frame)
             .is_some_and(|live| live.same(activation)));
         heap.pop_activation(activation);
+    }
+
+    /// The header of `activation` described as the exit's walk describes a
+    /// frame machine code pushed for a body taking one argument, entered
+    /// at the class its current class names, stopped at program counter 9.
+    #[cfg(ns_jit)]
+    fn machine_frame_of<'gc>(
+        heap: &mut Heap<'gc>,
+        activation: ActivationReference,
+        reifies: bool,
+        caller: Option<(u32, usize)>,
+    ) -> MachineFrame {
+        MachineFrame {
+            offset: activation.offset,
+            argument_count: 1,
+            code: heap.activation_code_id(activation),
+            kind: MachineKind::initializer(),
+            program_counter: 9,
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
+            register_count: heap.stack.register_count(activation.offset),
+            addresses_own_slots: false,
+            reifies,
+            caller,
+        }
+    }
+
+    /// A frame whose code reifies it keeps, when its header is written
+    /// for an exit or a leaf, the reified word, the counted bit,
+    /// `retains_registers` and the program counter its own code wrote,
+    /// so that its divorce at its return finds them; a frame whose code
+    /// reifies nothing, which wrote none of them, is written unreified,
+    /// counted, retaining no registers, at the walk's program counter.
+    #[cfg(ns_jit)]
+    #[test]
+    fn a_materialized_frame_keeps_its_reified_word() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Materialized");
+        let activation = heap
+            .push_activation(
+                ActivationHeader {
+                    counted: false,
+                    ..suspendable_header(class, 1, first_above_header(1) + 1)
+                },
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                1,
+            )
+            .expect("the stack holds the frame");
+        heap.activation_set_program_counter(activation, 4);
+        let frame = heap.reify(activation);
+        heap.retain_registers(activation);
+        let reified_word = |heap: &Heap<'_>| {
+            heap.stack
+                .header_word(activation.offset, frame_header::REIFIED)
+                .object_offset()
+        };
+        let flags = |heap: &Heap<'_>| heap.stack.flags(activation.offset);
+        let (kept_flags, kept_reified) = (
+            heap.stack
+                .header_word(activation.offset, frame_header::FLAGS),
+            heap.stack
+                .header_word(activation.offset, frame_header::REIFIED),
+        );
+
+        for caller in [None, Some((0, 0))] {
+            let reifying = machine_frame_of(&mut heap, activation, true, caller);
+            let written = heap.write_machine_frame(&reifying);
+            assert!(written.same(activation));
+            assert_eq!(reified_word(&heap), Some(frame.offset), "the reified word");
+            assert!(flags(&heap).retains_registers);
+            assert!(
+                !flags(&heap).counted,
+                "the counted bit the frame was pushed with"
+            );
+            assert!(flags(&heap).compiled);
+            assert_eq!(
+                flags(&heap).kind_tag,
+                kind_tag::INITIALIZER_OWN_PART,
+                "the kind the frame recorded"
+            );
+            assert_eq!(heap.activation_program_counter(activation), 4);
+        }
+
+        let plain = machine_frame_of(&mut heap, activation, false, None);
+        let _ = heap.write_machine_frame(&plain);
+        assert_eq!(reified_word(&heap), None);
+        assert!(!flags(&heap).retains_registers);
+        assert!(flags(&heap).counted);
+        assert_eq!(heap.activation_program_counter(activation), 9);
+
+        // As the push left them, for the pop, which divorces the frame.
+        heap.stack
+            .set_header_word(activation.offset, frame_header::FLAGS, kept_flags);
+        heap.stack
+            .set_header_word(activation.offset, frame_header::REIFIED, kept_reified);
+        heap.pop_activation(activation);
+        assert!(heap.frame_activation(frame).is_none());
+    }
+
+    /// A leaf's view of a frame (no caller) keeps the call shift its
+    /// prologue recorded, which its machine code's return reads after the
+    /// leaf; a frame the exit's walk materializes (a caller) returns
+    /// through the interpreter, whose pop knows no shift, and drops it
+    /// (`frames::CALL_SHIFT_BITS`).
+    #[cfg(ns_jit)]
+    #[test]
+    fn a_leaf_s_view_keeps_the_call_shift_and_a_materialized_frame_drops_it() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Shifted");
+        let activation = heap
+            .push_activation(
+                suspendable_header(class, 1, first_above_header(1) + 1),
+                Arguments::Values(&[Value::small_integer(1)].as_slice()),
+                1,
+            )
+            .expect("the stack holds the frame");
+        let (kept_flags, kept_caller) = (
+            heap.stack
+                .header_word(activation.offset, frame_header::FLAGS),
+            heap.stack
+                .header_word(activation.offset, frame_header::CALLER),
+        );
+        let shift_bits = Heap::machine_call_shift_mask();
+        let call_shift = |heap: &Heap<'_>| {
+            heap.stack
+                .header_word(activation.offset, frame_header::FLAGS)
+                .bits()
+                & shift_bits
+        };
+        for (caller, kept) in [(None, true), (Some((0, 0)), false)] {
+            // The prologue's flags word, its call shift the most two bits
+            // hold.
+            heap.stack.set_header_word(
+                activation.offset,
+                frame_header::FLAGS,
+                Word::from_bits(kept_flags.bits() | shift_bits),
+            );
+            let frame = machine_frame_of(&mut heap, activation, false, caller);
+            let _ = heap.write_machine_frame(&frame);
+            assert_eq!(
+                call_shift(&heap),
+                if kept { shift_bits } else { 0 },
+                "the call shift of a frame written with the caller {caller:?}"
+            );
+        }
+        // As the push left them, for the pop.
+        heap.stack
+            .set_header_word(activation.offset, frame_header::FLAGS, kept_flags);
+        heap.stack
+            .set_header_word(activation.offset, frame_header::CALLER, kept_caller);
+        heap.pop_activation(activation);
+    }
+
+    /// A frame of a block's code machine code pushed is written as a
+    /// closure's activation of the closure its prologue recorded as its
+    /// operand, whatever kind its flags word said before: the walk names
+    /// every kind of frame.
+    #[cfg(ns_jit)]
+    #[test]
+    fn materialize_writes_a_closure_frame() {
+        let mut heap = frame_heap();
+        let class = heap.allocate_self_referential(0);
+        let method_activation = heap
+            .push_activation(header(), Arguments::NONE, 0)
+            .expect("the stack holds the frame");
+        let home = heap.reify(method_activation);
+        let block = std::rc::Rc::new(crate::bytecode::CompiledCode::new(
+            crate::bytecode::CodeKind::Block,
+            vec![crate::bytecode::Instruction::ImplicitReturn { register: 13 }],
+            0,
+            14,
+            0,
+            vec![],
+            ns_syntax::Span::new(0, 0),
+        ));
+        let closure = heap.allocate_closure(
+            class,
+            NewClosure {
+                code: std::rc::Rc::clone(&block),
+                captured_frame: home,
+                copied: vec![],
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
+            },
+        );
+        let activation = heap
+            .push_activation(
+                ActivationHeader {
+                    receiver: Value::nil(),
+                    current_class: None,
+                    kind: ActivationKind::Closure(closure),
+                    method: None,
+                    feedback_base: FeedbackBase::NOT_ASSIGNED,
+                    code: std::rc::Rc::clone(&block),
+                    then: Continuation::Deliver,
+                    counted: true,
+                },
+                Arguments::NONE,
+                block.registers_above_header(),
+            )
+            .expect("the stack holds the frame");
+        // A method's flags, as a prologue that records no kind leaves them:
+        // only the operand says which closure the frame runs.
+        let method_flags = FrameFlags {
+            kind_tag: kind_tag::METHOD,
+            ..heap.stack.flags(activation.offset)
+        };
+        heap.stack
+            .set_header_word(activation.offset, frame_header::FLAGS, method_flags.word());
+        let caller = heap
+            .stack
+            .header_word(activation.offset, frame_header::CALLER);
+
+        let installed = crate::jit::Installed {
+            code: std::rc::Rc::clone(&block),
+            method: None,
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
+            reifies: false,
+        };
+        let frame = crate::jit::materialize::machine_frame(
+            &mut heap,
+            activation.offset,
+            &installed,
+            0,
+            None,
+        );
+        let written = heap.write_machine_frame(&frame);
+        assert!(written.same(activation));
+        match heap.activation_kind(activation) {
+            ActivationKind::Closure(running) => {
+                assert!(running.same(closure), "the closure the frame recorded");
+            }
+            _ => panic!("a closure's activation"),
+        }
+        assert!(heap.stack.flags(activation.offset).compiled);
+        assert!(heap
+            .activation_home(activation)
+            .is_some_and(|found| found.same(home)));
+        // A leaf's view leaves out the caller, which the pop reads.
+        heap.stack
+            .set_header_word(activation.offset, frame_header::CALLER, caller);
+        heap.pop_activation(activation);
+        heap.pop_activation(method_activation);
     }
 
     /// Popping a *marked* reified activation hands its registers to the

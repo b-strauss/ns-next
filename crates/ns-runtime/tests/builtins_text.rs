@@ -499,3 +499,102 @@ fn an_invalid_sequence_is_named_by_its_index_in_the_byte_array() {
         }
     }
 }
+
+/// A program that makes a million symbols of fresh texts and keeps none
+/// leaves the interner as it was: a symbol whose text nothing has interned
+/// takes no number, and lives only as its object in the heap's weak table
+/// of program-made symbols, which a collection empties once nothing holds
+/// them, giving their memory back (`docs/design/memory.md`, "Weak
+/// references"). Fewer in a debug build, whose interpreter is slower.
+#[cfg(debug_assertions)]
+#[test]
+fn a_million_program_made_symbols_leave_the_interner_as_it_was() {
+    let count: i64 = if cfg!(debug_assertions) {
+        200_000
+    } else {
+        1_000_000
+    };
+    let source = indoc! {"
+        class Maker usingPlatform: p = Object new () (
+            public make: count = (
+                1 to: count do: [:index | ('s' , index printString) asSymbol].
+            )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    let make = Symbol::intern("make:");
+    // Once first, so that whatever the first run of `make:` interns or
+    // keeps -- nothing the symbols it makes account for -- is there
+    // before the measurement starts.
+    let few = interpreter.stash(Value::small_integer(10));
+    expect_ok(interpreter.send(&instance, make, &[few]), "make: 10");
+    interpreter.collect_now();
+    let interned_before = interpreter.table_sizes().interned_symbols;
+    let occupied_before = interpreter.heap_statistics().occupied_bytes;
+
+    let many = interpreter.stash(Value::small_integer(count));
+    expect_ok(interpreter.send(&instance, make, &[many]), "make:");
+    assert_eq!(
+        interpreter.table_sizes().interned_symbols,
+        interned_before,
+        "a program-made symbol interns nothing"
+    );
+    interpreter.collect_now();
+    assert_eq!(interpreter.table_sizes().program_symbols, 0);
+    let occupied_after = interpreter.heap_statistics().occupied_bytes;
+    assert!(
+        occupied_after <= occupied_before + (1 << 20),
+        "the old space holds {occupied_after} bytes, up from {occupied_before}"
+    );
+}
+
+/// A `Message` of a program-made symbol whose text nothing has interned
+/// reaches `doesNotUnderstand:`, since nothing has its name, and the
+/// message the handler receives holds the very symbol object.
+#[test]
+fn perform_of_an_unnamed_program_symbol_does_not_understand() {
+    let source = indoc! {"
+        class Sender usingPlatform: p = Object new (
+            | kernel = p kernel. held ::= nil. |
+        ) (
+            public doesNotUnderstand: message = ( ^message selector )
+            public hold = ( held:: ('fro' , 'bnicated') asSymbol )
+            public send = (
+                ^(kernel Message new selector: held; arguments: {}) sendTo: self
+            )
+            public sentIsHeld = ( ^self send == held )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    );
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("hold"), &[]),
+        "hold",
+    );
+    assert_eq!(Symbol::lookup("frobnicated"), None);
+    assert_eq!(interpreter.table_sizes().program_symbols, 1);
+    let answer = expect_ok(
+        interpreter.send(&instance, Symbol::intern("sentIsHeld"), &[]),
+        "sentIsHeld",
+    );
+    interpreter.enter(|mutator| {
+        assert!(
+            as_boolean(mutator.heap(), mutator.fetch(&answer)),
+            "the message's selector is the held symbol"
+        );
+    });
+    assert_eq!(
+        Symbol::lookup("frobnicated"),
+        None,
+        "a send of a program-made symbol interns nothing"
+    );
+}

@@ -702,10 +702,10 @@ impl<'a> Lowerer<'a> {
     /// A simultaneous slot's second write, at its clause's end (§6.3.2):
     /// the slot read back without a getter send, which a subclass could
     /// override, resolved, and stored with an ordinary `InitializeSlot`.
-    /// `ResolveFuture` runs user code -- the future's block -- exactly as a
-    /// send does, so it counts as one for the value-register invariant; the
-    /// only register live across it is this statement's own scratch
-    /// register, which no send can write. One statement.
+    /// `ResolveFuture` runs user code -- the future's `resolve` and its
+    /// block -- as a send does, so it counts as one for the value-register
+    /// invariant; the only register live across it is this statement's own
+    /// scratch register, which no send can write. One statement.
     pub(crate) fn lower_simultaneous_slot_end(&mut self, own_index: u32) {
         if self.too_large.is_some() {
             return;
@@ -823,12 +823,13 @@ impl<'a> Lowerer<'a> {
             let access =
                 self.resolve_variable(0, super::temporary_index(self.argument_count, position));
             let read = self.emit_read(access, None);
-            // `ResolveFuture` runs user code -- the future's block -- exactly
-            // as a send does, and runs again once that block has answered
-            // (`AfterForcing::Reexecute`), reading its source afresh. So its
-            // source is protected as an operand across a send is: copied out
-            // of a named local's register that a send can write.
-            let source = self.materialize(read, self.a_send_can_write(read));
+            // `ResolveFuture` runs user code -- the future's `resolve` and
+            // its block -- as a send does, but reads its source once, before
+            // any of it runs, and takes the answer into a scratch register
+            // of its own, as a send takes its callee's: so its source is no
+            // operand read after user code, and needs no protective copy,
+            // even of a named local a send can write.
+            let source = read;
             let resolved = self.allocate_scratch();
             self.emit(Instruction::ResolveFuture {
                 destination: resolved,

@@ -15,41 +15,51 @@ when they were written.
 
 ## Next
 
-**Road step 8's fourth stage: closures, non-local return, allocation and
-the write barrier in machine code** ([execution.md](design/execution.md),
-"Planned: the baseline JIT", "What the templates emit inline", "Stages"):
-`MakeClosure` and a closure's activation as a compiled call, a non-local
-return and the unwinder from compiled frames, bump allocation in eden and
-the write barrier with its early outs inline, so that a setter, `at:put:`
-and the other stores run without a leaf call. A closure's activation as
-a compiled call also removes the cost a short block an interpreted
-`value:` pushes pays at the bridge ("A block an interpreted `value:`
-pushes pays the bridge" below). Its first three stages are
-built ("The baseline JIT's foundation", "Sends, returns and the exit that
-materializes"): `ns-memory`'s doubly mapped code zone and the entry into
+**Road step 8's fifth stage: on-stack replacement, the polls and the
+depth count's measurement** ([execution.md](design/execution.md),
+"Planned: the baseline JIT", "When a body is compiled", "Polls and the
+depth check", "Stages"; "Between the tiers" and "Safepoints and the
+depth limit" in "Planned: the deoptimization contract"): an interpreted
+frame becomes a baseline one in place at a backward jump whose per-frame
+counter trips, as Cog switches at its 40 back jumps, so that a hot loop
+in a method entered once -- a benchmark's main loop -- runs compiled; a compiled push's checks of the depth and of a
+safepoint request become one compare, a request lowering the limit as
+Cog's `stackLimit` does; and whether the depth count lives in a machine
+register while machine code runs, written back at the exit, or stays in
+the machine words, is measured.
+
+Its first four stages are built ("The baseline JIT's foundation",
+"Sends, returns and the exit that materializes", "The entry at a send",
+"Stage 4: closures, non-local return, allocation and the barrier", "The
+code zone"): `ns-memory`'s doubly mapped code zone and the entry into
 machine code, `ns-assembler` with the x64 encoder, and in `jit/` the
 macro assembler of the VM's idioms and its register roles, the stubs and
 the baseline compiler's one exhaustive `match`; a cached send calls
 through a machine-readable cell beside its cache entry into the callee's
 machine code or a stub, the callee returns by `ret`, the miss leaf
-compiles a callee from inside machine code and heals the cells it went
-through, and an exit at any depth materializes every compiled frame. So
-is the entry at its cost ("The entry at a send"): an interpreter's send
-calls a compiled callee's machine code through a call stub, every other
-entry crosses a bridge whose block lasts between entries, and every
-compiled body is entered wherever it runs, which measured the geometric
-mean 24.2% faster than `master` and a recursion rooted in an interpreted
-frame fourteen times as fast ("What the entry at a send moved").
-What stage 3 measured is "What sends in machine code moved": where
-machine code runs whole -- loops of sends, accessors and arithmetic --
-it is several times the interpreter's speed; where it meets a block, an
-allocation or a non-local return it exits, and a body that keeps exiting
-is abandoned to the interpreter, so that those programs run at about the
-interpreter's speed until stage 4 removes the exits. The stages after it,
-each measured against the tree before it: on-stack replacement, the polls
-and the depth count's measurement; the register cache; the AArch64
-encoder under QEMU. Road step 8 as a whole, Cog's class, for x64 and
-arm64, is "The road to a high-performance VM" below.
+compiles a callee from inside machine code, and an exit at any depth
+materializes every compiled frame; an interpreter's send calls a
+compiled callee's machine code through a call stub, and every compiled
+body is entered wherever it runs. Stage 4 put the rest in machine code:
+eden's bump and the write barrier inline, the own slots, instantiation
+and the initializers as compiled calls, `MakeClosure` and a closure's
+activation as a compiled call through the closure stubs, the outer
+locals, the futures and their forcing by `resolve`, and the cut of a
+non-local return; every body compiles lean, its frame reified only in a
+twin compiled on demand. And it made everything that grows reclaimable:
+the code zone is compacted and frees the code of dead bodies, the exit
+budget decays and an abandoned body is revived, a program-made symbol
+takes no number and dies with its object, every table beside the object
+space has a growth limit, the site ranges slide at a full collection,
+and committed memory is given back by a band and a damping. Measured
+with three builds a side, the geometric mean over twenty-three sources
+is 54.6% faster than `master` and 5.7% faster than stage 4's tree before
+the reclamation ("What reclamation moved"); `bench_megamorphic` (+2.8%),
+`bench_recursion` (+0.7%) and, against that tree, `bench_signal` (+0.9%)
+are slower, each item below. The stages after the fifth, each measured
+against the tree before it: the register cache; the AArch64 encoder
+under QEMU. Road step 8 as a whole, Cog's class, for x64 and arm64, is
+"The road to a high-performance VM" below.
 Road step 7 is complete: 7c wrote the contract the JIT tiers build
 to ([execution.md](design/execution.md), "Planned: the deoptimization
 contract"). The step between 7 and 8 is built: `Closure>>whileTrue:` and
@@ -108,7 +118,9 @@ each step has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is bel
 removing the re-entries moved"; every compared binary, the current tree
 included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
 "Working in this repository"), and the three builds a side vary the block
-layout inside `vm::run` as that section says. Six of the ten measurement sources are
+layout inside `vm::run` as that section says, and the current tree's
+three lay the code zone out at three paddings as "What reclamation moved"
+says. Seven of the eleven measurement sources are
 under `benchmarks/micro/`, `bench_signal.ns` the one an exception's
 handler search moves and `bench_while.ns` the one that runs `whileTrue:`
 and `whileFalse:` over blocks held in slots, which the compiler does not
@@ -384,40 +396,58 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   returns and the exit that materializes"), the entry into machine code
   at its cost built (2026-10-29,
   [its plan](superpowers/plans/2026-10-29-2030-jit-entry-cost.md); "The
-  entry at a send"), stage 4 next ("Next" above).
+  entry at a send"), its fourth, closures, non-local return, allocation
+  and the write barrier in machine code with the reclamation of
+  everything that grows, built (2026-11-01,
+  [its plan](superpowers/plans/2026-10-30-0103-jit-closures.md); "Stage
+  4: closures, non-local return, allocation and the barrier", "The code
+  zone"), stage 5 next ("Next" above).
   Left to it, and measured: whether the depth count lives in a machine
   register while machine code runs, written back at the exit, or stays in
   memory ("Planned: the deoptimization contract", "Safepoints and the
   depth limit"); whether a send calls through its cache cell or through a
   patched direct call, which stage 3's measurement could not isolate
   ("What sends in machine code moved"); and the code zone's default size,
-  16 MiB today (`jit::DEFAULT_ZONE_BYTES`), a first guess. What the
-  stages so far leave to the ones after them (noted in their reviews,
-  2026-10-27 to 2026-10-29):
-  - **The exit budget is a lifetime count** (`jit::EXIT_BUDGET`, 64),
-    chosen, not measured, and it never decays: a hot body that exits once
-    in ten thousand entries is abandoned for good after its sixty-fourth
-    exit, however rare, and abandonment cascades -- every compiled caller's
-    call of it is refused from then on, an exit of the caller's, so the
-    callers spend their budgets and are abandoned in turn, up the region,
-    until a long-running program whose one rare slow path exits ends
-    interpreted. Once stage 4 runs closures in machine code most exits go;
-    whether a budget per entries (a rate), a decaying count, or nothing is
-    right is to be measured then.
-  - **A block an interpreted `value:` pushes pays the bridge**
-    (accepted with the user on 2026-10-29 until stage 4): no rule leaves a
-    compiled body unentered, so a block is entered at an interpreter's
-    push, and the entry costs about 8.5 ns more than interpreting a
-    one-instruction block -- the switch, `jit::run_machine_code`,
-    `jit::entered`, the entry stub saving and restoring eight registers --
-    and a block that reaches its indirection vector, as `bench_block`'s
-    `[:y | acc:: acc + y]` does, runs those loads and stores through
-    `Leaf::Step`, about 18 ns more an entry. `bench_block` is 10.3%
-    slower than `master` with its builds separated, an interpreted `do:`
-    over `[:each | each]` about 12% ([execution.md](design/execution.md),
-    "What the entry at a send moved"). Stage 4 closes it by making a
-    closure's activation a compiled call, as a method's is. Of the
-    bridge itself, `run_machine_code` still clones two `Rc`s at every
+  16 MiB today (`jit::DEFAULT_ZONE_BYTES`), a first guess, which no
+  measured program fills: only CD compacts it, six times in a run, all of
+  it churn ("A nested class's accessor on a private or `super` chain
+  exits machine code" below). What the stages so far leave to the ones
+  after them (noted in their reviews and measurements, 2026-10-27 to
+  2026-11-01):
+  - **Without allocation, a rarely exiting body still spends a bounded
+    share interpreted.** In a run that allocates nothing the exit counts
+    never decay, and an abandoned body is revived only by its interpreted
+    entries: 4,096 of them, doubling at each further abandonment up to
+    65,536 (`jit::REVIVAL_ENTRIES`, `jit::MAXIMUM_REVIVAL_DOUBLINGS`;
+    [execution.md](design/execution.md), "The baseline JIT's
+    foundation"). A body that exits once in N calls so runs 64·N calls in
+    machine code between waits of at most 65,536 interpreted calls: an
+    interpreted share below 65,536 / (65,536 + 64·N), about half for an
+    exit in a thousand calls and a tenth for one in ten thousand, where
+    an always-exiting body should be interpreted. Telling the two apart
+    needs the count of the body's calls in machine code, which the hot
+    path does not keep; whether to count them, or to pace the decay by
+    something other than allocation (polls, entries), is open. Stage 4's
+    measurement found no program that needs it: of the twenty-three
+    sources only CD and `bench_signal` abandon a body at all, and both
+    allocate ([execution.md](design/execution.md), "What reclamation
+    moved").
+  - **A block the interpreter pushes above its sender's window pays the
+    bridge** (accepted with the user on 2026-10-29 until stage 4, which
+    left these pushes to it): an
+    interpreted `value` send and its kin call a block's machine code
+    through the closure call stub, as a method's (`jit::called_closure`),
+    once a push of the block has written its machine entry row,
+    and every compiled send that activates a block calls it through a
+    closure stub, but the interpreter's own pushes of a block -- for
+    `ifTrue:` and its relatives sent a block that is no literal,
+    `ifNotNil:` and its relatives, a mirror row's failure block, a
+    future's computation -- are entered at the push, an entry that costs
+    about 8.5 ns more than interpreting a one-instruction block -- the
+    switch, `jit::run_machine_code`, `jit::entered`, the entry stub saving
+    and restoring eight registers ([execution.md](design/execution.md),
+    "What the entry at a send moved"). Of the bridge
+    itself, `run_machine_code` still clones two `Rc`s at every
     entry, the zone's and the entry block's; and `vm::run_stretch`'s
     `Transfer::Stopped` arm repeats the five reloads of its `Switched`
     arm, left as it is since a change there costs a codegen round for
@@ -436,27 +466,88 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   - **A leaf call costs more than the interpreter's step for the same
     target**: the leaf stub's leaf decides the send again
     (`inline_cache::act_at`) for every target but a slot accessor its send
-    hit on its site's own cell directly -- a private or `super` accessor reached through a
-    block's cell or a global row, a builtin class's accessor, a leaf-safe
-    mirror send -- writing a frame for a sender machine code pushed, and
+    hit on its site's own cell directly -- a builtin class's accessor, a
+    slot accessor whose field lies past the stubs `jit::stub_entry`
+    assembles -- writing a frame for a sender machine code pushed, and
     the mirror method leaf finds its send's selector and argument count by
-    a hash lookup of the call's return address (`JitState::call_site`),
-    which with the leaf's own work is about 6% of Havlak's time. A private
-    accessor's own stub, its guard check in machine code, the selector and
-    argument count where the leaf can read them without a lookup, and the
-    store, `at:` and `at:put:` in machine code with stage 4's write
-    barrier would remove most of it.
+    a hash lookup of the call's return address (`JitState::call_site`).
+    Reading the selector and argument count where the leaf can reach them
+    without a lookup would remove most of what remains. `Float`'s
+    comparisons and arithmetic are such leaf calls: once closures ran in
+    machine code, 83 million of CD's 85 million leaf calls a run were
+    `Float`'s `=`, `-`, `<`, `<=`, `/`, `>` and `+` through the mirror
+    method leaf, at about 3.4 ns a call -- what the interpreter's inline
+    primitives cost, so a shift, not a loss (measured 2026-10-31). The
+    lasting fix is templates for `Float` comparisons and arithmetic, as
+    `SmallInteger`'s have ("What the templates emit inline" in
+    [execution.md](design/execution.md)).
+  - **A nested class's accessor on a private or `super` chain exits
+    machine code**, as does one whose hidden slot lies past the
+    `NESTED_CLASS_STUBS` slots or holds no class yet: only a public or
+    protected chain's cell compares the receiver's own guard, which the
+    stub's hidden slot needs (`jit::stub_entry`). A private one would
+    take the guarded accessors' recorded-guard compare. It costs CD 3%:
+    a class's methods name its sibling classes by implicit-receiver
+    sends (`Vector2D x:y:` in `plus:` and `minus:`, `Node`,
+    `RedBlackTree`, `InsertResult`, `Vector3D`), each a refused call
+    and an exit, so the bodies that make them spend their budgets in 64
+    calls, their callers' refused calls abandon those in turn, and every
+    revival -- by the decay, at every second scavenge -- compiles them
+    again only for them to be abandoned again: 13,331 abandonments and
+    as many revivals in a run of four sends, the exits nearly all such
+    refused calls. A build that never revives an abandoned body ran CD
+    3.0% faster (2,980 ms against 3,073, one build a side, three
+    rounds, measured 2026-11-01); the guarded nested-class stub removes
+    the cause, where suppressing revival would end a rarely exiting
+    body's run interpreted again.
+  - **Every initializer invocation calls a leaf.** `Leaf::Initializer`
+    decides the invocation afresh each time (`jit::sends::initialize`),
+    so an instantiation calls it once per level that runs code, and once
+    more for the instance, where a send's cell hits without one; a class
+    whose levels run code pays a leaf call per level. Whether the
+    decision should be cached per invocation -- the superclass level and
+    its body depend on the frame's class only -- is to be measured.
   - **`jit::entered` is `#[cold]`**, though every push of a compiled
-    body that is no send -- a block an interpreted `value:` pushes among
-    them -- now enters through it; its placement is to be measured again
-    once stage 4 has made a closure's activation a compiled call, which
-    leaves the bridge to fewer pushes.
+    body that is no send -- a block the interpreter pushes itself among
+    them -- enters through it, and so does the push that revives an
+    abandoned body; since stage 4 made a closure's activation a compiled
+    call, fewer pushes reach it, and its placement is to be measured
+    again.
+  - **The cut exits at every unwind marker, `on:do:`'s too, and calls a
+    leaf per frame it passes** (`jit/cut.rs`; [execution.md](design/execution.md),
+    "Stage 4: closures, non-local return, allocation and the barrier").
+    An `on:do:` activation runs nothing when an unwind pops it -- the
+    unwinder answers a block only for `ensure:` and `ifCurtailed:` -- so
+    the cut could pop it as it pops any frame, and an `ensure:` or
+    `ifCurtailed:` whose block has run (`complete` set) likewise; a `^`
+    out of a protected block now exits instead. And Rust reads no native
+    stack, so the walk to the home costs a leaf call per frame above it:
+    whether a `^` from a block several calls deep below its home is worth
+    a walk in machine code that hands the frames over at once is to be
+    measured with the stage.
+  - **A cell of a body an exhausted zone holds calls the miss leaf on
+    every hit.** A compaction points the cells of every body it frees at
+    the miss stub (`jit/zone.rs`), which is right while the body may
+    compile at its next due entry. While the zone is exhausted and the
+    body does not fit the room left (`JitState::may_compile_now`), the
+    miss leaf decides the send, compiles nothing, refuses the call and
+    writes the miss stub back, so every hit costs a leaf call and an
+    exit until a retry ends the exhaustion -- a wait the doubling of the
+    retries lets grow with the run ([execution.md](design/execution.md),
+    "The code zone"). A stub of its own for such a cell, which refuses
+    the call at once without the leaf and which the end of the exhaustion
+    rewrites to the miss stub, would save the leaf call per hit; it is
+    not built, because those hits are held compiles that pay towards the
+    retry, a stub would need its own way to count them, and an exhausted
+    zone needs a body that does not fit in a zone smaller than any
+    measured program's (the default zone holds 16 MiB). Worth building
+    if a measurement shows a run that stays exhausted.
   - **A body shared by two interpreters would ping-pong between their
     zones.** A body's `JitSlot` names one zone, and `jit::note_entry`
     compiles a body whose slot names another into the running
     interpreter's, so two interpreters running one `CompiledCode` in turn
     would compile it again at every switch, each compile leaving its old
-    code in a zone that nothing reclaims before the zone is compacted. No
+    code in the other's zone until that zone is compacted. No
     body is run by two interpreters today; if code comes to be shared,
     the slot holds code per zone or the stale copy is reclaimed.
   - **`load_frame_register` has no unchecked variant.** Every frame
@@ -482,6 +573,61 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     its safety section asks nothing of its caller; the leaf shim could be
     `unsafe extern "C"`; `crates/ns-assembler/tests/encoding_sources.rs`
     reads a raw string as an ordinary one.
+  - **What stage 4's reviews and measurement left** (2026-10-30 to
+    2026-11-01), none of them a wrong outcome:
+    - *A rarely taken path costs an exit*: an object whose header's guard
+      is `DispatchId::NONE` -- its application past `DispatchId::LIMIT` --
+      exits at every own-slot access; a closure stub declines to copy a
+      block's arguments past the ordinary end, so the interpreter's push
+      grows the stack, where the growth leaf could make the room; a block
+      whose code id lies past the machine entry table's 2^20 rows is
+      always called by the interpreter; a future's clause end, which
+      exits for a future among a leaf's operands ("A future as a leaf's
+      operand leaves machine code" below), is unmeasured.
+    - *The decay and the revival walk whole tables*: every scavenge
+      halves the exit count of every installed body
+      (`JitState::decay_exits`), and every revival writes every cell
+      that names the refusing stub afresh by a walk of every site, block
+      and global row (`InlineCaches::refresh_all_cells`), at most once
+      per scavenge or compile trigger. Neither is measured on its own;
+      the final measurement shows no program slower for them.
+    - *Statistics*: `JitStatistics::send_exits` does not count a call
+      refused at an interpreter's send, which only `exits` counts; and
+      `ns-next bench --collector-statistics` prints neither the JIT's
+      statistics nor `CollectorStatistics.decommits`, so the final
+      measurement read them from a binary with a temporary print.
+    - *Tests*: the private and `super` accessor stubs reached through a
+      polymorphic block's cell or a global row -- the row's
+      `ROW_CHAIN_START` word, the shift by sixteen -- are reached by no
+      test, a defect there costing speed only; the barrier's tests and
+      most long-run tests of the reclamation (`tests/collector.rs` whole,
+      the million program-made symbols, the churn of families, the rare
+      exit with allocation) compile only with debug assertions, so the
+      `release-checks` build runs few of them; the remembered set's limit
+      request that machine code's barrier makes through `Heap::remember`
+      is reached by no test of its own; the instantiation test of the
+      refusals the inline bump does not make
+      (`instantiations_the_inline_bump_does_not_make_answer_as_interpreted`
+      in `tests/jit.rs`) holds their outcomes to the interpreter's but
+      not that the refusing send ran in machine code; and the class-format
+      check of `MacroAssembler::load_instance_header` is reached by no
+      program, since a factory body's receiver is always a class object.
+    - *Code that says less than it could*: `Heap::machine_word_count_bits`
+      builds a header of guard `DispatchId::NONE` and format
+      `FixedPointers` and relies on both encoding as 0, where an accessor
+      of `heap/header.rs` for a word count's bits would state it.
+    - *Wasted writes*: a compaction fills the room it frees with stops
+      and a site slide writes vacant cells over ranges that the shrink
+      after the collection then gives back (`jit/zone.rs`,
+      `InlineCaches::vacate_sites`), dirtying pages just before they go;
+      a cost only, worth changing if a measurement shows it.
+    - *The stress gate's slowest test*: `runtime/jit/counting_loop` under
+      the reference lowering takes 563 to 576 s alone under
+      `NS_NEXT_STRESS_COLLECT`, nearly ten minutes (noted with the
+      user on 2026-10-31); why it takes so
+      long, and whether the collect stress mode should collect at every
+      safepoint of such a loop or at a pace of its own, is to be
+      investigated.
   - **What stage 3's reviews left** (2026-10-28 and 2026-10-29), none of
     them a wrong outcome:
     - *The architecture scan's blind spots*: `tests/jit_architecture_split.rs`
@@ -656,9 +802,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   noise. It is at the edge of build noise and not diagnosed: the check runs
   only on a private or super slot accessor's send, and the benchmark's
   megamorphic sends are method sends, so a code-layout effect is as likely
-  as a cost of the check itself. Measure it again with the next change to the
-  send path, and diagnose it if it stays.
-  [object-model.md](design/object-model.md), "What a slot access checks".
+  as a cost of the check itself. It stayed: "What closures in machine
+  code moved" measured +3.1% against `master` (not reproduced in a second
+  sitting), and "What reclamation moved" +2.8% (4.744 against 4.613 ms,
+  2026-11-01), with stage 4's tree before the reclamation already +2.7%
+  in the same sitting and level with the head (+0.1%); its loop runs
+  interpreted, so the cost lies in the interpreter's send or its layout.
+  To be diagnosed. [object-model.md](design/object-model.md), "What a
+  slot access checks"; [execution.md](design/execution.md), "What
+  reclamation moved".
 - **A mirror walks again what it walked a moment ago** (2026-10-18): a
   navigated class mirror holds the way to its class, so every use walks
   it afresh, and `superclass` and `gathered:` -- behind a class mirror's
@@ -790,6 +942,18 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   the object, or keeping one per literal, would save the allocation.
   Unmeasured; noted 2026-10-02. [object-model.md](design/object-model.md),
   "Values and objects" ("Literals").
+- **A symbol literal costs machine code a leaf call.** `LoadLiteral` of
+  a `Symbol` (and of a `String`, a `LargeInteger` and a boxed `Float`)
+  lowers to the step leaf (`jit::baseline`, `allocated_literal`), which
+  views the frame (`materialize::leaf_frame`) and runs the instruction
+  interpreted: about 17 ns where a template would take one or two. Nearly
+  every step leaf call DeltaBlue makes is `#forward` (about 4,200 of every
+  4,300 sampled), about 2.2 million a run of 247 ms, so a template that
+  loads an interned symbol's handle -- kept current across moves, as a
+  closure site's words are -- would save about a seventh of the run.
+  Measured 2026-11-01 (a profile and a sampled count of the step leaf's
+  instructions). [execution.md](design/execution.md), "The code zone"
+  (the lookup by a code address).
 - **Cascades through the integer fast path.** `lower_cascade` emits every
   message with `emit_ordinary_send_with_receiver`, so a cascade's binary
   integer sends never get `IntegerBinary` (`compiler/lower.rs:1514`).
@@ -831,18 +995,23 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   arrays part, to be measured again by itself with the next change to
   allocation. [execution.md](design/execution.md), "What inline
   allocation moved", "What `new` as compiled code moved".
-- **The futures of simultaneous slots stay in Rust** (noted with the user
-  on 2026-10-22). Forcing a future is Rust machinery -- a
-  `Continuation::Future` on the forcing block's activation, and the
-  stopped instruction run again once it is resolved
-  (`interpreter/future.rs`; [execution.md](design/execution.md),
-  "Running an instruction again after forcing a future") -- the last
-  piece of a slot clause's semantics that is no code the compiler emits,
-  as instantiation was before `new` became compiled code. A JIT sees it
-  as an opaque call, and every instruction that can meet a future keeps
-  its forcing path. How a future's forcing becomes code the compiler
-  emits is open.
-  [object-model.md](design/object-model.md), "Simultaneous slots".
+- **A future as a leaf's operand leaves machine code** (noted
+  2026-10-31). `ResolveFuture` forces a future by a compiled call of its
+  `resolve`, and `resolve` runs a whole chain of futures in machine code,
+  but a future met as an operand where no value is taken still exits:
+  `InitializeSlot` handed a future for a value's slot, and a leaf that
+  declined for a future among its operands -- a mirror row, or a
+  primitive method's leaf -- once the program has made a future
+  (`interpreter::mirror::send_inlined_for_machine_code` answers `Exit`
+  for any decline then). The interpreter sees a resolved one through
+  and forces any other under `Continuation::Reexecute`, running the
+  instruction again interpreted ([execution.md](design/execution.md),
+  "Running an instruction again after forcing a future"). A sibling's
+  future handed to a leaf inside a slot clause -- `sum = 1 + base` -- can
+  take that path, and each exit spends the exiting body's exit budget,
+  so a clause doing it often enough has its initializer abandoned. How
+  machine code should see through a future among a leaf's operands, and
+  what it costs, is open.
 - **A private nested class sent from a subclass instance never takes the
   cached field** (noted 2026-10-22). A private site's entry is guarded by
   N's application, and its hidden-slot index is that application's, so a
@@ -1422,6 +1591,51 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **A program in machine code measures where its bodies land in the code
+  zone** (2026-10-30). `bench_loop.ns` measured 5% slower after the
+  closures in machine code on machine code identical to the tree before,
+  instruction for instruction, its stubs too: the stubs grew, so the body
+  moved from zone offset 0x2de0 to 0x30a0. Padding the zone before the first
+  body moves the same binary between 48.9 and 52.2 ms on a 5,000,000-step
+  loop by its 16-byte position, and aligning every body to 64 bytes made
+  `bench_loop.ns` level but `bench_while.ns` 9.6% and Richards 1.9% slower.
+  The stubs' placement counts as much as the bodies': the cut stub and five
+  mirror rows of part 4c moved the stubs after the cut stub by 224 bytes,
+  those after the mirror-method entries by 279 and the bodies by 288, and on
+  that alone `bench_send.ns` measured +2.1%, `bench_while.ns`
+  +1.5% and DeltaBlueTon80 +1.2%, builds separated, every body executed
+  instruction for instruction the same. The tree before, its stubs and
+  bodies padded to the same offsets, runs `bench_while.ns` at the same time
+  as the tree after at every body padding (5.93-6.95 ms over thirteen),
+  while body padding alone leaves the two 2.4% apart pooled, since it never
+  moves the closure stubs the loop calls. DeltaBlueTon80's extra samples lie
+  in the zone (stubs +201, bodies +150 of 6,153), its Rust functions taking
+  fewer, and two builds with other Rust code are level on it: the zone's
+  offsets and the binary's layout roll together.
+  The measurement protocol now lays each of its three builds' zones out at
+  a padding of its own, so the pool samples the zone's placement as it
+  samples `vm::run`'s ([execution.md](design/execution.md), "Measurements").
+  Open: whether a placement policy (aligned loop heads, hot stubs on their
+  own lines) measures better than the lottery.
+- **`bench_signal.ns` 0.9% slower for the inline count of an abandoned
+  body's entries** (2026-11-01), against stage 4's tree before the
+  reclamation, builds separated (18.756 against 18.582 ms): every
+  interpreted push of an abandoned body adds one to its slot's state, an
+  increment and a store where that tree compared once and never revived
+  the body, and `bench_signal` pushes its abandoned `descend:` about
+  255,000 times a send. The count is what revival by interpreted entries
+  needs, kept so that a run that allocates nothing does not end with
+  every body that once spent its budget interpreted for good; a cheaper
+  count, or none on a path the decay serves, is open.
+  [execution.md](design/execution.md), "The baseline JIT's foundation"
+  (the abandonment), "What reclamation moved".
+- **`bench_recursion.ns` 0.7% slower than `master`** (2026-11-01, 0.670
+  against 0.665 ms, builds separated): what the reifying twin leaves of
+  the cost a conditional's fallback closure put on `fib:`'s Boolean path,
+  which was 4.1% before the twin. The lean body runs none of the reifying
+  code there; where the rest lies was not isolated.
+  [execution.md](design/execution.md), "A frame reifies only in its
+  body's twin", "What reclamation moved".
 - **The interpreter is 1.35% slower than before stage 3** (2026-10-29),
   with the JIT off, on the geometric mean over twenty-two sources, twelve
   of them slower with their builds separated, `bench_megamorphic.ns` the
@@ -2082,15 +2296,14 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   oxc) are hand-written recursive descent too, and the cost is building
   the tree, which any algorithm building this AST pays; how much the
   parser's speculative parses re-read on a clean source is not measured.
-- **The feedback range a decoded closure is given is never reclaimed**
-  (2026-10-20). A closure an image decoded carries no base and is given a
-  range of its own on its first activation (`InlineCaches::fresh_range`,
-  from `Mutator`'s closure push), which belongs to no family in the
-  family map, so the full collection that frees the ranges of families
-  nothing runs (`InlineCaches::forget_families`) never frees it, even once
-  the closure is dead. The table grows by one range per decoded closure
-  ever run, bounded by the image, not by how often anything runs.
-  [dispatch.md](design/dispatch.md), "Code families".
+- **A program-made symbol an image carries becomes permanent at load**
+  (2026-10-31). The decoder interns every text of an image's symbol
+  table, so a symbol a program made, which takes no number and dies with
+  its object, takes a number for good once an image carrying it is
+  loaded, bounded by the images loaded ([memory.md](design/memory.md),
+  "Weak references", "A program-made symbol takes no number and dies
+  with its object"). Making it weak there would need the decoder's first
+  pass to tell a symbol record's text from a text the code names.
 - **A superseded class side held after its instance side was dropped
   names itself `class side`** (2026-10-20). A full collection drops a
   superseded instance side that only the table holds while a Rust holder

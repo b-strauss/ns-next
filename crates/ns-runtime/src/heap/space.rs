@@ -194,6 +194,14 @@ impl Space {
         self.reservation.base_address()
     }
 
+    /// The address of eden's bump cursor, the reservation's own
+    /// (`Reservation::bump_cursor_address`), which machine code bumps in
+    /// place as `bump_object` does.
+    #[cfg(ns_jit)]
+    pub(in crate::heap) fn eden_cursor_address(&self) -> usize {
+        self.reservation.bump_cursor_address()
+    }
+
     pub(in crate::heap) fn region(&self, name: RegionName) -> Region {
         match name {
             RegionName::PastSurvivor => self.survivors[self.past],

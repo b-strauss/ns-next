@@ -1,0 +1,6 @@
+stdout = '''
+round 0: ensured 2 ensured 0 curtailed 2 0 inner outer 2 below 2
+round 1: ensured 3 ensured 0 curtailed 3 0 inner outer 3 below 3
+round 2: ensured 4 ensured 0 curtailed 4 0 inner outer 4 below 4
+round 3: ensured 5 ensured 0 curtailed 5 0 inner outer 5 below 5
+'''

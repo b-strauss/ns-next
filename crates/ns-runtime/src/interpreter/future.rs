@@ -1,31 +1,38 @@
 //! §6.3.2's pull future (`docs/design/object-model.md`, "Simultaneous
 //! slots"): an instance of the kernel-private `FutureImplementation`, which
-//! a simultaneous slot clause or `Future computing:` makes, and whose two
-//! slots this module alone reads and writes once it is made. Forcing one
-//! runs its block, or sends `value` to a computation that is no block, as a
-//! trampoline step under `Continuation::Future`, never by calling back into
-//! Newspeak; what happens once that returns -- deliver the value to the
-//! send that forced it, or run the instruction that met the future again --
-//! is `AfterForcing`.
+//! a simultaneous slot clause or `Future computing:` makes. Forcing one is
+//! its own `resolve`, an ordinary Newspeak method: only a `resolve` writes
+//! a future's two slots once it is made -- its own through its slots, and
+//! those of a chain's futures it takes over through the VM mirror's
+//! leaves (`builtins::future`). The runtime reads them to see through a
+//! resolved future, and wherever it meets one that is not, it pushes that
+//! method (`Mutator::forcing`): answering the value to the instruction
+//! that met the future -- `ResolveFuture` -- or,
+//! for an instruction that has no destination for it, discarding it and
+//! running the instruction again (`Continuation::Reexecute`).
+
+use std::rc::Rc;
 
 use super::Arguments;
 use crate::builtins::primitive::Primitive;
 use crate::heap::Heap;
-use crate::interpreter::{Signal, Step, StepArguments};
+use crate::interpreter::{FeedbackBase, MethodThen, Signal, Step, StepArguments};
+use crate::mixin::MixinMethod;
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
-/// The `state` slot's three values, as `Kernel.ns` documents them.
-const UNRESOLVED: i64 = 0;
-const RESOLVING: i64 = 1;
-const RESOLVED: i64 = 2;
+/// The `state` slot's three values, as `Kernel.ns` documents them and its
+/// `resolve` writes them.
+pub(crate) const UNRESOLVED: i64 = 0;
+pub(crate) const RESOLVING: i64 = 1;
+pub(crate) const RESOLVED: i64 = 2;
 
 /// The position of each of `FutureImplementation`'s two slots in its field
 /// vector: the declaration order in `Kernel.ns`, behind `Proxy` and
 /// `Object`, which declare none.
 /// `a_futures_slots_are_where_this_module_reads_them` pins both.
-const COMPUTATION_FIELD: usize = 0;
-const STATE_FIELD: usize = 1;
+pub(crate) const COMPUTATION_FIELD: usize = 0;
+pub(crate) const STATE_FIELD: usize = 1;
 /// How many fields a future has, and so how many a decoded record under the
 /// `FutureImplementation` header must carry: the image decoder refuses any
 /// other count before it allocates the record (`decode::decode_graph_section`).
@@ -40,120 +47,19 @@ pub enum FutureState<'gc> {
     /// Its computation is running; forcing it again is §6.3.2's
     /// ill-founded recursion.
     Resolving,
-    /// Its value, which is never itself a future: `future_computed` follows
-    /// a future of a future before it records one.
+    /// Its value, which is never itself a future: `resolve` forces a
+    /// future its computation answered before it records the value.
     Resolved(Value<'gc>),
     /// Fields no forcing wrote: a state that is none of the three, or a
-    /// resolved future whose value is a future. Nothing the runtime does makes one, and
-    /// the decoder refuses one in an image, but crafted code can store into
-    /// a future's slots once it holds one -- a decoded frame may carry any
-    /// receiver, and `InitializeSlot` stores into `self` unchecked -- so a
-    /// future's fields are read as untrusted: forcing this one is an
-    /// ordinary error (`malformed`), never a panic, and never a walk from
-    /// one resolved future to the next that need not end.
+    /// resolved future whose value is a future. Nothing the runtime does
+    /// makes one, and the decoder refuses one in an image, but crafted
+    /// code can store into a future's slots once it holds one -- a decoded
+    /// frame may carry any receiver, and `InitializeSlot` stores into
+    /// `self` unchecked -- so a future's fields are read as untrusted:
+    /// forcing this one is `resolve`'s ordinary error, never a panic, and
+    /// never a walk from one resolved future to the next that need not
+    /// end.
     Malformed,
-}
-
-/// What the activation that forced a future does once its block returns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AfterForcing {
-    /// Answer the value to the send that forced it: `doesNotUnderstand:`'s
-    /// `futureValue:ifFail:`.
-    Deliver,
-    /// Discard it and run the instruction that met the future again, which
-    /// now finds it resolved (`docs/design/object-model.md`, "Where Rust sees
-    /// a future").
-    Reexecute,
-}
-
-/// A forcing in progress, boxed in the `Continuation::Future` of the
-/// activation computing its future -- its block, or the send of `value` to
-/// a computation that is none -- and owned by exactly one activation.
-///
-/// The chain behind `then` is as long as a program makes it -- each future's
-/// block answering the next -- and nothing bounds it: the run loop pops each
-/// block's activation before it pushes the next, so the depth limit never
-/// sees it. So everything that walks the chain loops rather than recursing
-/// once per link: `future_computed`, `future_abandoned`, the trace, and
-/// `Drop`, `Clone` and `Debug` below, which is why none of the three is
-/// derived.
-pub struct FutureForcing<'gc> {
-    /// The future being computed, `Resolving` while this forcing lasts.
-    pub(crate) future: ObjectReference<'gc>,
-    pub(crate) after: AfterForcing,
-    /// The forcing waiting on this one: a future whose block answered this
-    /// one's future, unresolved, and which this one's value resolves too.
-    /// Its own activation has returned already, so nothing but this link
-    /// keeps it -- which is why `future_abandoned` walks it.
-    pub(crate) then: Option<Box<FutureForcing<'gc>>>,
-}
-
-impl<'gc> FutureForcing<'gc> {
-    /// Every link of the chain from this one on, as (future, after) pairs.
-    fn links(&self) -> Vec<(ObjectReference<'gc>, AfterForcing)> {
-        let mut links = Vec::new();
-        let mut forcing = Some(self);
-        while let Some(current) = forcing {
-            links.push((current.future, current.after));
-            forcing = current.then.as_deref();
-        }
-        links
-    }
-}
-
-/// Unlinks the chain one box at a time, so that dropping it does not
-/// recurse once per link.
-impl Drop for FutureForcing<'_> {
-    fn drop(&mut self) {
-        let mut next = self.then.take();
-        while let Some(mut forcing) = next {
-            next = forcing.then.take();
-        }
-    }
-}
-
-/// Rebuilds the chain from its last link back, without recursing.
-impl Clone for FutureForcing<'_> {
-    fn clone(&self) -> Self {
-        let mut links = self.links().into_iter().rev();
-        let (future, after) = links
-            .next()
-            .expect("internal: a forcing is at least its own link");
-        let mut chain = FutureForcing {
-            future,
-            after,
-            then: None,
-        };
-        for (future, after) in links {
-            chain = FutureForcing {
-                future,
-                after,
-                then: Some(Box::new(chain)),
-            };
-        }
-        chain
-    }
-}
-
-/// The chain as a flat list of its links.
-impl std::fmt::Debug for FutureForcing<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("FutureForcing")
-            .field("links", &self.links())
-            .finish()
-    }
-}
-
-/// What `vm::finish` does once a forcing's activation has returned.
-pub(crate) enum FutureOutcome<'gc> {
-    /// Hand the value to the send that forced the future.
-    Deliver(Value<'gc>),
-    /// Run the caller's stopped instruction again.
-    Reexecute,
-    /// The block answered another future, still unresolved: force it next,
-    /// in the popped activation's place.
-    Force(Step<'gc>),
 }
 
 impl<'gc> Mutator<'gc> {
@@ -180,7 +86,7 @@ impl<'gc> Mutator<'gc> {
             self.heap.is_closure(closure),
             "internal: a future computes a closure"
         );
-        self.futures_made = true;
+        self.note_futures_made();
         let class = self.builtin_class(BuiltinClass::FutureImplementation);
         let future = self.heap.allocate_instance(class, FIELD_COUNT);
         if !self
@@ -195,122 +101,53 @@ impl<'gc> Mutator<'gc> {
         future
     }
 
-    fn set_future_fields(
-        &mut self,
-        future: ObjectReference<'gc>,
-        computation: Value<'gc>,
-        state: i64,
-    ) {
-        self.heap
-            .instance_set_field(future, COMPUTATION_FIELD, computation);
-        self.heap
-            .instance_set_field(future, STATE_FIELD, Value::small_integer(state));
-    }
-
-    /// Marks `future` resolving, its computation kept for an abandonment
-    /// to restore.
-    fn set_future_resolving(&mut self, future: ObjectReference<'gc>) {
-        self.heap
-            .instance_set_field(future, STATE_FIELD, Value::small_integer(RESOLVING));
-    }
-
-    /// The step that computes `forcing`'s future: its block's activation
-    /// when the computation is a closure, and otherwise a send of `value`
-    /// to it, which forces a future only now -- either under
-    /// `Continuation::Future`, so its answer reaches `future_computed`.
-    fn computing_step(
-        &mut self,
-        computation: Value<'gc>,
-        forcing: FutureForcing<'gc>,
-    ) -> Step<'gc> {
-        let then = Continuation::Future(Box::new(forcing));
-        match computation.as_object() {
-            Some(closure) if self.heap.is_closure(closure) => Step::Block {
-                closure,
-                arguments: StepArguments::Owned(Vec::new()),
-                then,
-            },
-            _ => self.send_value_then(computation, computation, then),
+    /// The step that forces `future` for a send that takes its value: a
+    /// resolved future's value at once, and for any other a push of its
+    /// `resolve`, whose value is delivered to the send as any callee's --
+    /// computed then, or the divergent or malformed future's error
+    /// signalled by `resolve` itself.
+    pub(crate) fn forcing(&self, future: ObjectReference<'gc>) -> Step<'gc> {
+        if let FutureState::Resolved(value) = self.future_state(future) {
+            return Step::Value(value);
+        }
+        let (method, defining_class) = self.resolve_method();
+        Step::Method {
+            receiver: Value::object(future),
+            method,
+            defining_class,
+            arguments: StepArguments::Owned(Vec::new()),
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
         }
     }
 
-    /// `forcing`'s activation returned `value`: record it, unless it is
-    /// itself a future, which is followed first -- §6.3.2's pipelined
-    /// promise, as Primordial Soup's `resolve` loops. A forcing chained
-    /// behind this one (`FutureForcing::then`) is resolved to the same value.
-    /// An error leaves every future of the chain unresolved again, since no
-    /// activation is left to abandon them.
-    pub(crate) fn future_computed(
-        &mut self,
-        forcing: FutureForcing<'gc>,
-        value: Value<'gc>,
-    ) -> Result<FutureOutcome<'gc>, Signal<'gc>> {
-        // A resolved future's value is never a future
-        // (`FutureState::Resolved`), so one look through `value` is all it
-        // takes: nothing here loops or recurses, whatever a future's fields
-        // hold.
-        let value = match self.as_future(value) {
-            None => value,
-            Some(inner) => match self.future_state(inner) {
-                FutureState::Resolved(resolved) => resolved,
-                FutureState::Resolving => {
-                    self.future_abandoned(forcing);
-                    return Err(divergent(Value::object(inner)));
-                }
-                FutureState::Malformed => {
-                    self.future_abandoned(forcing);
-                    return Err(malformed(Value::object(inner)));
-                }
-                FutureState::Unresolved(computation) => {
-                    // Force the inner one, then come back to this one, which
-                    // stays resolving meanwhile.
-                    self.set_future_resolving(inner);
-                    return Ok(FutureOutcome::Force(self.computing_step(
-                        computation,
-                        FutureForcing {
-                            future: inner,
-                            after: forcing.after,
-                            then: Some(Box::new(forcing)),
-                        },
-                    )));
-                }
-            },
-        };
-        // Record the value on every link, the waiting ones included; the
-        // last link waits on nothing and says what happens next.
-        let mut forcing = forcing;
-        self.set_future_fields(forcing.future, value, RESOLVED);
-        while let Some(mut waiting) = forcing.then.take() {
-            self.set_future_fields(waiting.future, value, RESOLVED);
-            forcing.after = waiting.after;
-            forcing.then = waiting.then.take();
-        }
-        Ok(match forcing.after {
-            AfterForcing::Deliver => FutureOutcome::Deliver(value),
-            AfterForcing::Reexecute => FutureOutcome::Reexecute,
-        })
+    /// The step that forces `future`, which is not resolved, for an
+    /// instruction that cannot take its value -- `InitializeSlot` into a
+    /// value's slot, a leaf that saw the future among its operands: a push
+    /// of its `resolve` whose value is discarded and whose return runs the
+    /// instruction that met the future again (`Continuation::Reexecute`),
+    /// which then finds it resolved. The instruction wrote nothing before
+    /// it met the future, so running it again is running it once.
+    fn forcing_then_reexecute(&self, future: ObjectReference<'gc>) -> Step<'gc> {
+        let (method, defining_class) = self.resolve_method();
+        Step::MethodThen(Box::new(MethodThen {
+            receiver: Value::object(future),
+            method,
+            defining_class,
+            arguments: Vec::new(),
+            then: Continuation::Reexecute,
+        }))
     }
 
-    /// The forcing activation was popped without returning -- its block
-    /// raised and an unwind passed it, or the run loop refused to push it:
-    /// the future is unresolved again, and so is every future chained
-    /// behind it, so the next touch computes it again rather than meeting a
-    /// stale "resolving" (`docs/design/object-model.md`, "A clause abandoned
-    /// by an exception").
-    pub(crate) fn future_abandoned(&mut self, forcing: FutureForcing<'gc>) {
-        let mut next = Some(Box::new(forcing));
-        while let Some(mut forcing) = next {
-            if let FutureState::Resolving = self.future_state(forcing.future) {
-                // Its computation, kept there while it resolved -- or
-                // whatever crafted code stored since.
-                let computation = self
-                    .heap
-                    .instance_field(forcing.future, COMPUTATION_FIELD)
-                    .unwrap_or(Value::nil());
-                self.set_future_fields(forcing.future, computation, UNRESOLVED);
-            }
-            next = forcing.then.take();
-        }
+    /// `FutureImplementation>>resolve` and the class it is activated in,
+    /// looked up afresh at each forcing, which runs once per future.
+    fn resolve_method(&self) -> (Rc<MixinMethod>, ClassReference<'gc>) {
+        let class = self.builtin_class(BuiltinClass::FutureImplementation);
+        let method = self
+            .heap
+            .class_application(class)
+            .and_then(|application| application.mixin.compiled_method(Symbol::RESOLVE).cloned())
+            .expect("internal: Kernel.ns's FutureImplementation declares resolve");
+        (method, class)
     }
 }
 
@@ -375,10 +212,10 @@ pub(crate) fn seen_through<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Value<'g
 /// computation and the state 0. A future is resolving only while its
 /// computation runs, and `image::snapshot` refuses a world with a running
 /// activation, so no snapshot meets one today; the case is defensive.
-/// Should one be met, it is written as what `future_abandoned` would make
-/// of it -- its computation is still in `computation`, kept there for
-/// exactly that -- since a load starts no computation, so nothing could
-/// finish resolving it.
+/// Should one be met, it is written as what `resolve`'s `ifCurtailed:`
+/// would make of it -- its computation is still in `computation`, kept
+/// there for exactly that -- since a load starts no computation, so
+/// nothing could finish resolving it.
 ///
 /// `None` for a future whose fields are no future's
 /// (`FutureState::Malformed`), a malformed "resolved" one among them --
@@ -408,56 +245,6 @@ pub(crate) fn is_a_decoded_future_record(fields: &[Value<'_>]) -> bool {
             .get(STATE_FIELD)
             .and_then(|state| state.as_small_integer())
             == Some(UNRESOLVED)
-}
-
-/// Forces `future`: its value when it is resolved, its computation's step
-/// under `Continuation::Future` when it is not, and §6.3.2's error when it
-/// is already being computed.
-pub(crate) fn force<'gc>(
-    mutator: &mut Mutator<'gc>,
-    future: ObjectReference<'gc>,
-    after: AfterForcing,
-) -> Result<Step<'gc>, Signal<'gc>> {
-    match mutator.future_state(future) {
-        FutureState::Resolved(value) => Ok(Step::Value(value)),
-        FutureState::Resolving => Err(divergent(Value::object(future))),
-        FutureState::Malformed => Err(malformed(Value::object(future))),
-        FutureState::Unresolved(computation) => {
-            mutator.set_future_resolving(future);
-            Ok(mutator.computing_step(
-                computation,
-                FutureForcing {
-                    future,
-                    after,
-                    then: None,
-                },
-            ))
-        }
-    }
-}
-
-/// §6.3.2 resolves only "well founded" recursion: a future forced while its
-/// own block runs is not, and says so as an ordinary, catchable error. The
-/// text names the future rather than a slot, since a program's own
-/// `Future computing:` diverges the same way.
-fn divergent<'gc>(future: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError::error(
-        Symbol::intern("value"),
-        future,
-        "divergent evaluation: a future was forced while it was being computed",
-    ))
-}
-
-/// A future whose fields no forcing wrote (`FutureState::Malformed`): an
-/// ordinary, catchable error, since only crafted code makes one and crafted
-/// code must never make the runtime panic (`CLAUDE.md`, "An image is
-/// untrusted input").
-fn malformed<'gc>(future: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError::error(
-        Symbol::intern("value"),
-        future,
-        "a malformed future: its fields are no future's",
-    ))
 }
 
 /// A forcing that was to run its caller's instruction again found no
@@ -516,8 +303,10 @@ fn see_through_a_failed_leaf<'gc>(
     // itself: forcing one here would run the program's computation from
     // inside a mirror read, which sends its reflectee nothing
     // (`docs/design/liveness-and-reflection.md`, "A mirror sends its
-    // reflectee nothing").
-    if matches!(primitive, Primitive::Reflection(_)) {
+    // reflectee nothing"). A future's own leaves read and write the future
+    // itself, for the `resolve` that is forcing it: seeing through it
+    // would force it again from inside its own forcing.
+    if matches!(primitive, Primitive::Reflection(_) | Primitive::Future(_)) {
         return answer;
     }
     match see_through(mutator, primitive, receiver, selector, arguments) {
@@ -573,16 +362,18 @@ pub(crate) enum SeeThrough<'gc> {
     NoFuture,
     /// What stands in its place: the leaf run again on the resolved
     /// operands -- declining again (`None`) or raising again is then the
-    /// leaf's own verdict on the values -- or a forcing under `Reexecute`.
+    /// leaf's own verdict on the values -- or the forcing of the first
+    /// future that is not resolved, after which the instruction runs
+    /// again (`Mutator::forcing_then_reexecute`).
     Answer(Option<Result<Step<'gc>, Signal<'gc>>>),
 }
 
 /// A leaf could not answer, and a future among its operands may be why
-/// (`after_a_failed_leaf`). Resolved ones are replaced by their values and the
-/// leaf runs again; the first unresolved one is forced under `Reexecute`,
-/// after which the instruction that sent the leaf runs again -- which the
-/// leaf's having changed nothing makes safe; one being computed is §6.3.2's
-/// ill-founded recursion.
+/// (`after_a_failed_leaf`). Resolved ones are replaced by their values and
+/// the leaf runs again; the first one that is not resolved is forced by
+/// its `resolve` -- which computes it, or signals that it is being
+/// computed or malformed -- after which the instruction that sent the
+/// leaf runs again, which the leaf's having changed nothing makes safe.
 ///
 /// A resolved future's value is never a future (`FutureState::Resolved`),
 /// so running the leaf once more on the resolved operands cannot come back
@@ -614,10 +405,8 @@ pub(crate) fn see_through<'gc>(
         };
         match mutator.future_state(future) {
             FutureState::Resolved(value) => resolved.push(value),
-            FutureState::Resolving => return SeeThrough::Answer(Some(Err(divergent(operand)))),
-            FutureState::Malformed => return SeeThrough::Answer(Some(Err(malformed(operand)))),
-            FutureState::Unresolved(_) => {
-                return SeeThrough::Answer(Some(force(mutator, future, AfterForcing::Reexecute)));
+            FutureState::Unresolved(_) | FutureState::Resolving | FutureState::Malformed => {
+                return SeeThrough::Answer(Some(Ok(mutator.forcing_then_reexecute(future))));
             }
         }
     }
@@ -633,42 +422,30 @@ pub(crate) fn see_through<'gc>(
     ))
 }
 
-/// What an instruction that must not hold a future -- `ResolveFuture`, and
-/// `InitializeSlot` into a value -- makes of a value it read.
+/// What `InitializeSlot` into a value's slot makes of a value it refused.
 pub(crate) enum Resolution<'gc> {
+    /// What belongs in the slot: a resolved future's value.
     Value(Value<'gc>),
-    /// Push this step; once it returns the instruction that asked runs
-    /// again (`vm::force_and_reexecute`).
+    /// Push this step, the future's forcing; once it returns the
+    /// instruction runs again (`vm::force_and_reexecute`).
     Force(Step<'gc>),
-}
-
-/// What an instruction that must not hold a future -- `ResolveFuture`, and
-/// `InitializeSlot` into a value -- makes of `value`: itself when
-/// it is not a future, a resolved future's value, and an unresolved one
-/// forced first (`AfterForcing::Reexecute`).
-pub(crate) fn resolve_for_instruction<'gc>(
-    mutator: &mut Mutator<'gc>,
-    value: Value<'gc>,
-) -> Result<Resolution<'gc>, Signal<'gc>> {
-    let Some(future) = mutator.as_future(value) else {
-        return Ok(Resolution::Value(value));
-    };
-    match force(mutator, future, AfterForcing::Reexecute)? {
-        Step::Value(value) => Ok(Resolution::Value(value)),
-        step => Ok(Resolution::Force(step)),
-    }
 }
 
 /// `InitializeSlot` refused `value` for a value's slot: if it is a future,
 /// the value it stands for is what belongs there -- stored and checked
-/// again, or forced first. `None` when it is no future, and the refusal
-/// stands.
+/// again when the future is resolved, or forced first. `None` when it is
+/// no future, and the refusal stands.
 pub(crate) fn value_for_a_value_slot<'gc>(
-    mutator: &mut Mutator<'gc>,
+    mutator: &Mutator<'gc>,
     value: Value<'gc>,
-) -> Option<Result<Resolution<'gc>, Signal<'gc>>> {
-    mutator.as_future(value)?;
-    Some(resolve_for_instruction(mutator, value))
+) -> Option<Resolution<'gc>> {
+    let future = mutator.as_future(value)?;
+    Some(match mutator.future_state(future) {
+        FutureState::Resolved(value) => Resolution::Value(value),
+        FutureState::Unresolved(_) | FutureState::Resolving | FutureState::Malformed => {
+            Resolution::Force(mutator.forcing_then_reexecute(future))
+        }
+    })
 }
 
 /// `MakeFuture`'s operand held something other than a closure: a crafted

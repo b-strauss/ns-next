@@ -1667,9 +1667,9 @@ sibling's block that reads it shares it through the indirection vector
 rather than copying the **nil** its register held
 (`goldens/language/slot/simultaneous/spec_6_3_2_a_captured_sibling_is_read_after_the_clause`); the
 optimized lowering's writable table agrees. `ResolveFuture` runs user code
--- the future's block -- as a send does, and runs again once the block has
-answered, reading its source afresh, so its source is protected across it
-as an operand is across a send. The design is
+-- the future's `resolve` and its block -- as a send does, but reads its
+source once, before any of it runs, and takes the answer into a scratch
+register of its own, so its source needs no protective copy. The design is
 [object-model.md](object-model.md), "Simultaneous slots".
 
 ## Readers of compiled code take the mixin

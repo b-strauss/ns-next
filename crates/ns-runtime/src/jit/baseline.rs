@@ -10,12 +10,13 @@
 use ns_assembler::{Condition, Label, Register};
 
 use crate::builtins::primitive::{mirror_entry, MachineCall};
-use crate::bytecode::{successors, CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::bytecode::{successors, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{value_bits, Immediate};
 use crate::interpreter::FeedbackBase;
 
+use super::closures;
 use super::leaves::Leaf;
-use super::macro_assembler::{LeafIndex, MacroAssembler, Operand};
+use super::macro_assembler::{LeafIndex, MacroAssembler, ObjectSize, Operand};
 use super::sends;
 use super::stubs::ExitKind;
 use super::{CallReturn, ProgramCounterMap, Refusal};
@@ -32,6 +33,85 @@ pub(crate) struct BaselineBody {
     /// and the exit cost; such a body is neither installed nor entered
     /// (`jit::note_entry`).
     pub(crate) exits_at_once: bool,
+    /// Whether the code is a body's twin, which reifies its frame
+    /// (`BodyCopy::Twin`).
+    pub(crate) reifies: bool,
+    /// The offsets in the code of its first data word, past its last
+    /// instruction, and of the byte past its last, if it has any
+    /// (`MacroAssembler::take_body_words`): the alignment padding after
+    /// them is no word's.
+    pub(crate) words: Option<std::ops::Range<u32>>,
+    /// A lean body's transfers into its twin, one per `MakeClosure`: the instruction's
+    /// program counter and the index of the data word that holds the
+    /// address of its code in the twin (`closures::transfer_to_twin`). None in a
+    /// twin.
+    pub(crate) twin_transfers: Vec<TwinTransfer>,
+}
+
+/// A lean body's `MakeClosure`, which goes on in the twin at the same
+/// program counter: the instruction's program counter, and the index of
+/// the body's data word that holds the twin's address of it, 0 until the
+/// twin is compiled (`closures::transfer_to_twin`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct TwinTransfer {
+    pub(crate) program_counter: u32,
+    pub(crate) word: usize,
+}
+
+/// Which of a body's two compiles is being made (`docs/design/execution.md`,
+/// "A frame reifies only in its body's twin").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BodyCopy {
+    /// The body as cells, machine entry rows and every entry name it: its
+    /// frame is never reified while it runs, so its prologue writes no
+    /// reified word, its sends store no program counter and its returns
+    /// test nothing; each `MakeClosure` transfers the frame into the twin
+    /// at the same program counter.
+    Lean,
+    /// The same instructions compiled to reify the frame: its
+    /// `MakeClosure`s reify it, its sends store their program counter
+    /// where the interpreter stores it, and its returns divorce a reified
+    /// frame (`MachineFrame::reifies`). It has no prologue, since only a
+    /// transfer and the resumption of a reified frame enter it.
+    Twin,
+}
+
+/// What a body runs as when a compiled call enters it, which its
+/// prologue writes into its frame (`sends::prologue`): decided by whom it
+/// was compiled for (`jit::compile`), since a body is one method's body,
+/// one class's factory or one mixin's initializer for its life.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BodyRole {
+    /// A method's body: its frame's kind and selector are its method's.
+    Method,
+    /// A factory's body (`compiler::factory_body`): its current class is
+    /// the class object it runs on, its receiver.
+    Factory,
+    /// An initializer's body: its frame's kind is the body the initializer
+    /// leaf decided, which the call hands over (`MachineWord::CalleeKind`).
+    Initializer,
+    /// A block's body: its receiver and its current class are those of the
+    /// frame its closure captured, which the call hands over as a method's
+    /// are, and the call hands the closure and whether the activation
+    /// counts besides (`Roles::callee_closure`, `Roles::callee_counted`).
+    Block,
+    /// A superclass clause's body, which only the run loop's push enters,
+    /// past its prologue.
+    EnteredOnly,
+}
+
+impl BodyRole {
+    /// The role of `code`, compiled as the body of `method` when it is
+    /// one's.
+    pub(crate) fn of(code: &CompiledCode, is_method: bool) -> BodyRole {
+        match (is_method, code.kind) {
+            (true, _) => BodyRole::Method,
+            (false, CodeKind::Method) => BodyRole::Factory,
+            (false, CodeKind::Initializer) => BodyRole::Initializer,
+            (false, CodeKind::Block) => BodyRole::Block,
+            (false, CodeKind::SuperclassClause) => BodyRole::EnteredOnly,
+        }
+    }
 }
 
 /// What `lower` did with one instruction, and what `compile` still emits
@@ -57,6 +137,9 @@ pub(super) enum Lowering {
     /// instruction.
     Exit,
 }
+
+/// How far a word count is shifted to be a byte count.
+const WORD_SHIFT: u8 = 3;
 
 /// The sign of a 64-bit word spread over all of it by an arithmetic
 /// shift: 0 for a word of zero or more, -1 for a negative one.
@@ -92,12 +175,21 @@ pub(super) struct BodyAssembler {
     pub(super) feedback_base: FeedbackBase,
     /// The body's family's size, past which a site is uncached.
     pub(super) family_size: u32,
-    /// One past the frame's last register: its window's end.
-    #[cfg_attr(
-        not(debug_assertions),
-        expect(dead_code, reason = "only a debug build's poison reads it")
-    )]
+    /// One past the frame's last register: its window's end, above which
+    /// `InitializeInstance`'s callee lies.
     pub(super) window_end: u16,
+    /// What the body runs as when a compiled call enters it.
+    pub(super) role: BodyRole,
+    /// Whether the body is a twin, which reifies its frame (`BodyCopy::Twin`).
+    pub(super) reifies: bool,
+    /// The lean body's transfers into its twin, as `closures::transfer_to_twin` takes them.
+    pub(super) twin_transfers: Vec<TwinTransfer>,
+    /// How many registers a frame object of the body holds
+    /// (`CompiledCode::frame_register_count`).
+    pub(super) frame_register_count: usize,
+    /// Whether `MakeFuture` lowers to an exit, as it does only for a test
+    /// that needs a body exiting at once (`JitState::set_futures_exit`).
+    futures_exit: bool,
 }
 
 /// The scratch registers a template uses, by role.
@@ -366,6 +458,445 @@ impl BodyAssembler {
             .store_frame_register(destination, value);
     }
 
+    /// `MakeVector`: `make_vector_into`'s `Array` of `size` nils, bumped
+    /// inline in eden or, past the bump's limit, placed by the allocation
+    /// leaf as the interpreter's cold path places it, then filled, its
+    /// word into the frame's `destination`. Nothing declines or exits, so
+    /// the store comes last only by the order of the work.
+    fn make_vector(&mut self, destination: u16, size: u16) {
+        let registers = self.registers();
+        let (object, header, class_word) = (registers.first, registers.second, registers.third);
+        let word_count = usize::from(size) + 1;
+        let macro_assembler = &mut self.macro_assembler;
+        let (slow, filled) = (
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+        );
+        macro_assembler.load_array_header_and_class(header, class_word, word_count);
+        macro_assembler.bump_allocate(
+            object,
+            ObjectSize::Constant(word_count),
+            header,
+            class_word,
+            slow,
+        );
+        macro_assembler.assembler().bind(filled);
+        macro_assembler.nil_fill(object, 0, usize::from(size));
+        macro_assembler.store_frame_register(destination, object);
+        macro_assembler.call_leaf_out_of_line(
+            slow,
+            Leaf::Allocate.index(),
+            [
+                Operand::Immediate(word_count as u64),
+                Operand::Register(header),
+                Operand::Register(class_word),
+            ],
+            object,
+            filled,
+        );
+    }
+
+    /// `MakeArray`: `make_array_into`'s `Array` of the frame's
+    /// `element_registers`, in order, allocated as `make_vector`'s, its
+    /// word into the frame's `destination`. The elements are stored with
+    /// no barrier, as `Heap::allocate_array_from_registers` stores them:
+    /// the object is new, young, or old and born remembered. Nothing
+    /// declines or exits.
+    fn make_array(&mut self, destination: u16, element_registers: &[u16]) {
+        let registers = self.registers();
+        let (object, header, class_word) = (registers.first, registers.second, registers.third);
+        let (address, element) = (registers.dividend, registers.remainder);
+        let word_count = element_registers.len() + 1;
+        let fields = crate::heap::Heap::machine_layout().fields_displacement;
+        let macro_assembler = &mut self.macro_assembler;
+        let (slow, placed) = (
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+        );
+        macro_assembler.load_array_header_and_class(header, class_word, word_count);
+        macro_assembler.bump_allocate(
+            object,
+            ObjectSize::Constant(word_count),
+            header,
+            class_word,
+            slow,
+        );
+        macro_assembler.assembler().bind(placed);
+        if !element_registers.is_empty() {
+            let object_space = macro_assembler.roles().object_space;
+            macro_assembler.assembler().move_register(address, object);
+            macro_assembler.assembler().add(address, object_space);
+        }
+        for (position, register) in element_registers.iter().enumerate() {
+            let displacement = i32::try_from(position)
+                .ok()
+                .and_then(|position| position.checked_mul(8))
+                .and_then(|bytes| bytes.checked_add(fields))
+                .expect("internal: an array literal's elements lie within 2 GiB of its start");
+            macro_assembler.load_frame_register(element, *register);
+            macro_assembler.assembler().store(
+                ns_assembler::Width::Word64,
+                ns_assembler::Memory {
+                    base: address,
+                    displacement,
+                },
+                element,
+            );
+        }
+        macro_assembler.store_frame_register(destination, object);
+        macro_assembler.call_leaf_out_of_line(
+            slow,
+            Leaf::Allocate.index(),
+            [
+                Operand::Immediate(word_count as u64),
+                Operand::Register(header),
+                Operand::Register(class_word),
+            ],
+            object,
+            placed,
+        );
+    }
+
+    /// `AllocateInstance`: `allocate_instance_into`'s fresh instance of the
+    /// class object the factory runs on, its receiver, bumped inline in
+    /// eden and every field nil, its word into the frame's `destination`,
+    /// where `allocate_for_factory` would make it with
+    /// `Heap::allocate_instance_with`: the receiver a class object whose
+    /// builtin field and value class refusal are nil, read afresh at every
+    /// instantiation, and whose application's row records a header word
+    /// (`MacroAssembler::load_instance_header`). Everything else -- a
+    /// builtin's own instances, a refusal, an overflowing count, a bump
+    /// past eden's limit -- is the generic leaf's, which runs the
+    /// interpreter's `allocate_instance` and, for a refusal, exits with
+    /// nothing written, so that the interpreter raises the error. The
+    /// VM mirror's class is a builtin, so it never takes the inline path.
+    fn allocate_instance(&mut self, destination: u16) -> Lowering {
+        let layout = crate::heap::Heap::machine_layout();
+        // The header's count is below the overflow mark, so the block lies
+        // below the large-object threshold, which the inline bump of a
+        // size in a register requires.
+        let largest = usize::try_from(layout.word_count_overflow - 1)
+            .expect("internal: the overflow mark is a small count");
+        assert!(
+            crate::heap::Heap::machine_block(largest).inline,
+            "internal: an instance whose header holds its count is bumped inline"
+        );
+        let registers = self.registers();
+        let (object, header, class_word) = (registers.first, registers.second, registers.third);
+        let (bytes, end) = (registers.dividend, registers.remainder);
+        let program_counter = self.program_counter;
+        let argument_count = self.argument_count;
+        let frame = self.macro_assembler.roles().frame;
+        let macro_assembler = &mut self.macro_assembler;
+        let (slow, done) = (
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+        );
+        macro_assembler.load_receiver(class_word, argument_count);
+        macro_assembler.jump_unless_object(class_word, slow);
+        macro_assembler.load_instance_header(class_word, header, slow);
+        // The block's bytes: the header's count of the words after it, and
+        // the header itself.
+        let assembler = macro_assembler.assembler();
+        assembler.move_register(bytes, header);
+        assembler.shift_right_logical(bytes, layout.word_count_shift);
+        assembler.add_immediate(bytes, 1);
+        assembler.shift_left(bytes, WORD_SHIFT);
+        macro_assembler.bump_allocate(
+            object,
+            ObjectSize::Register(bytes),
+            header,
+            class_word,
+            slow,
+        );
+        macro_assembler.nil_fill_block(object, bytes, end);
+        macro_assembler.store_frame_register(destination, object);
+        macro_assembler.assembler().bind(done);
+        macro_assembler.call_leaf_out_of_line_or_exit(
+            slow,
+            Leaf::Step.index(),
+            [
+                Operand::Register(frame),
+                Operand::Immediate(u64::from(program_counter)),
+                Operand::CodeAddress,
+            ],
+            program_counter,
+            done,
+        );
+        Lowering::Template
+    }
+
+    /// `LoadEnclosingObject`: the frame's `destination :=` §3.3's
+    /// enclosing object at lexical `depth`
+    /// (`MacroAssembler::load_enclosing_object`), as
+    /// `load_enclosing_object_into` finds it. A body-less declaration's own
+    /// code walks out from its declaration's scope, which the generic leaf
+    /// runs (`interpreter::sends::enclosing_object`).
+    fn load_enclosing_object(&mut self, destination: u16, depth: u16) -> Lowering {
+        if self.declaration_code {
+            return self.step();
+        }
+        let value = self.registers().first;
+        let argument_count = self.argument_count;
+        self.macro_assembler
+            .load_enclosing_object(value, argument_count, depth);
+        self.macro_assembler
+            .store_frame_register(destination, value);
+        Lowering::Template
+    }
+
+    /// `LoadVector`: `load_vector_into`, the frame's `destination :=`
+    /// element `index` of the indirection vector in its `vector`. A
+    /// register that holds no `Array` with that element exits before
+    /// anything is written, and the interpreter raises the error
+    /// (`interpreter::locals::load_vector`).
+    fn load_vector(&mut self, destination: u16, vector: u16, index: u16) {
+        let registers = self.registers();
+        let (object, element) = (registers.first, registers.second);
+        let displacement = element_displacement(index);
+        let program_counter = self.program_counter;
+        let macro_assembler = &mut self.macro_assembler;
+        let failed = macro_assembler.assembler().label();
+        macro_assembler.load_frame_register(object, vector);
+        macro_assembler.check_array_index(object, index, element, failed);
+        let object_space = macro_assembler.roles().object_space;
+        let assembler = macro_assembler.assembler();
+        assembler.add(object, object_space);
+        assembler.load(
+            ns_assembler::Width::Word64,
+            element,
+            ns_assembler::Memory {
+                base: object,
+                displacement,
+            },
+        );
+        macro_assembler.store_frame_register(destination, element);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+    }
+
+    /// `StoreVector`: `store_vector`, element `index` of the indirection
+    /// vector in the frame's `vector` `:=` its `source`, through the write
+    /// barrier, since the vector may be old and the value young. A
+    /// register that holds no `Array` with that element exits before
+    /// anything is written -- the source is read only after the check, as
+    /// the interpreter reads it -- and the interpreter raises the error.
+    fn store_vector(&mut self, vector: u16, index: u16, source: u16) {
+        let registers = self.registers();
+        let (object, value, scratch) = (registers.first, registers.second, registers.third);
+        let displacement = element_displacement(index);
+        let program_counter = self.program_counter;
+        let macro_assembler = &mut self.macro_assembler;
+        let failed = macro_assembler.assembler().label();
+        macro_assembler.load_frame_register(object, vector);
+        macro_assembler.check_array_index(object, index, scratch, failed);
+        macro_assembler.load_frame_register(value, source);
+        macro_assembler.store_with_barrier(object, displacement, value, scratch);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+    }
+
+    /// The start of every own-slot instruction's template -- `InitializeSlot`,
+    /// `InitializeSlotProvisionally`, `LoadOwnSlot` and
+    /// `ReturnSlotIfFilled` -- which address `own_index`, mixin-relative,
+    /// in the receiver with no send: `interpreter::locals::check_own_slots`,
+    /// then the field's address (`MacroAssembler::load_own_slot_address`).
+    /// The hot path compares the receiver's guard with the frame's
+    /// (`MacroAssembler::check_own_slot_guard`); any other receiver calls
+    /// `Leaf::OwnSlots` out of line, which runs the cold check and records
+    /// the receiver's guard, after which the compare is made again and
+    /// holds, or, having changed nothing, exits so that the interpreter
+    /// raises the error. Answers the receiver's and the address's
+    /// registers and the label a field the receiver lacks jumps to, which
+    /// the caller binds to an exit that re-executes the instruction, and
+    /// `registers.second` is free again; `None`, nothing emitted, for an
+    /// index no displacement holds, which only a crafted image's code has.
+    fn own_slot(
+        &mut self,
+        own_index: u32,
+        registers: TemplateRegisters,
+    ) -> Option<(Register, Register, Label)> {
+        let own_index = i32::try_from(own_index).ok()?;
+        let (receiver, spare, address) = (registers.first, registers.second, registers.third);
+        let program_counter = self.program_counter;
+        let argument_count = self.argument_count;
+        let frame = self.macro_assembler.roles().frame;
+        let macro_assembler = &mut self.macro_assembler;
+        let assembler = macro_assembler.assembler();
+        let (start, cold, failed) = (assembler.label(), assembler.label(), assembler.label());
+        assembler.bind(start);
+        macro_assembler.check_own_slot_guard(argument_count, receiver, spare, cold);
+        macro_assembler.load_own_slot_address(
+            argument_count,
+            own_index,
+            receiver,
+            address,
+            spare,
+            failed,
+        );
+        macro_assembler.call_leaf_out_of_line_or_exit(
+            cold,
+            Leaf::OwnSlots.index(),
+            [
+                Operand::Register(frame),
+                Operand::Immediate(u64::from(program_counter)),
+                Operand::CodeAddress,
+            ],
+            program_counter,
+            start,
+        );
+        Some((receiver, address, failed))
+    }
+
+    /// `InitializeSlot` and `InitializeSlotProvisionally`: the frame's
+    /// `source` stored into the receiver's own slot `own_index`
+    /// (`vm::initialize_slot`, `vm::initialize_slot_provisionally`),
+    /// through the write barrier, since the receiver may be old and the
+    /// value young. `InitializeSlot` first asks §3.1.1's check of a
+    /// value's slot (`value_check`), which only an object stored into a
+    /// slot of a value class's instance can fail (`check_value_slot`):
+    /// such a store is the generic leaf's, which runs the interpreter's own
+    /// `initialize_slot` and, where that refuses -- a value that is no
+    /// value, or a future, which the interpreter forces first -- exits,
+    /// nothing written, so that the interpreter takes its error or future
+    /// path (`vm::initialize_slot_refused`). A future stored into any
+    /// other slot is stored as it is, as the interpreter stores it.
+    fn initialize_slot(&mut self, source: u16, own_index: u32, value_check: bool) -> Lowering {
+        let registers = self.registers();
+        let Some((receiver, address, failed)) = self.own_slot(own_index, registers) else {
+            return Lowering::Exit;
+        };
+        let (value, scratch) = (registers.dividend, registers.second);
+        let program_counter = self.program_counter;
+        let frame = self.macro_assembler.roles().frame;
+        let layout = crate::heap::Heap::machine_layout();
+        let macro_assembler = &mut self.macro_assembler;
+        let (store, done, checked) = (
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+            macro_assembler.assembler().label(),
+        );
+        macro_assembler.load_frame_register(value, source);
+        if value_check {
+            let assembler = macro_assembler.assembler();
+            assembler.test_immediate(value, layout.tag_mask);
+            assembler.jump_if(Condition::NotEqual, store);
+            macro_assembler.jump_if_value_slots(receiver, scratch, checked);
+        }
+        macro_assembler.assembler().bind(store);
+        macro_assembler.store_with_barrier_at(
+            receiver,
+            ns_assembler::Memory {
+                base: address,
+                displacement: layout.fields_displacement,
+            },
+            value,
+            scratch,
+        );
+        macro_assembler.assembler().bind(done);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+        if value_check {
+            macro_assembler.call_leaf_out_of_line_or_exit(
+                checked,
+                Leaf::Step.index(),
+                [
+                    Operand::Register(frame),
+                    Operand::Immediate(u64::from(program_counter)),
+                    Operand::CodeAddress,
+                ],
+                program_counter,
+                done,
+            );
+        }
+        Lowering::Template
+    }
+
+    /// `LoadOwnSlot`: the frame's `destination :=` the receiver's own slot
+    /// `own_index` (`interpreter::locals::load_own_slot`).
+    fn load_own_slot(&mut self, destination: u16, own_index: u32) -> Lowering {
+        let registers = self.registers();
+        let Some((_, address, failed)) = self.own_slot(own_index, registers) else {
+            return Lowering::Exit;
+        };
+        let value = registers.second;
+        let program_counter = self.program_counter;
+        let fields = crate::heap::Heap::machine_layout().fields_displacement;
+        let macro_assembler = &mut self.macro_assembler;
+        macro_assembler.assembler().load(
+            ns_assembler::Width::Word64,
+            value,
+            ns_assembler::Memory {
+                base: address,
+                displacement: fields,
+            },
+        );
+        macro_assembler.store_frame_register(destination, value);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+        Lowering::Template
+    }
+
+    /// `ReturnSlotIfFilled`: a lazy slot's getter returns the receiver's
+    /// own slot `own_index` as `Return` returns a value once the slot is
+    /// filled, anything but `nil` (`interpreter::locals::filled_own_slot`),
+    /// and goes on to compute it otherwise. Its return tests no reified
+    /// word, as the twin's `Return` does (`sends::return_from`), since it
+    /// is the getter's first instruction: a frame that runs it in machine
+    /// code was either pushed just before -- by machine code, a call stub
+    /// or the run loop -- and is not reified, or was reified while it
+    /// stood suspended at program counter 0 and is resumed in the twin
+    /// (`jit::resumed`) as the run loop's entry frame, whose pop by the
+    /// run loop divorces it (`vm::finish`).
+    fn return_slot_if_filled(&mut self, own_index: u32) -> Lowering {
+        let registers = self.registers();
+        let Some((_, address, failed)) = self.own_slot(own_index, registers) else {
+            return Lowering::Exit;
+        };
+        let program_counter = self.program_counter;
+        let layout = crate::heap::Heap::machine_layout();
+        let macro_assembler = &mut self.macro_assembler;
+        let value = macro_assembler.roles().leaf_result;
+        let assembler = macro_assembler.assembler();
+        let unfilled = assembler.label();
+        assembler.load(
+            ns_assembler::Width::Word64,
+            value,
+            ns_assembler::Memory {
+                base: address,
+                displacement: layout.fields_displacement,
+            },
+        );
+        assembler.compare_immediate(value, layout.nil_word);
+        assembler.jump_if(Condition::Equal, unfilled);
+        sends::return_value(macro_assembler);
+        macro_assembler.assembler().bind(unfilled);
+        macro_assembler.exit_at(failed, ExitKind::Reexecute, program_counter);
+        Lowering::Transfer
+    }
+
+    /// `NonLocalReturn`: the call of the cut stub
+    /// (`stubs::assemble_cut_stub`), handed the program counter, which
+    /// returns only when the cut cannot carry the return out, having
+    /// changed nothing, and then an exit that re-executes the instruction,
+    /// so that the interpreter's unwinder carries it. A debug build reads
+    /// the value's register first, which refuses a dead one as the
+    /// interpreter's read does; the cut reads the value itself. Nothing is
+    /// stored into the frame: the cut records the program counter of a
+    /// frame it divorces.
+    fn non_local_return(&mut self, register: u16) -> Lowering {
+        let program_counter = self.program_counter;
+        let macro_assembler = &mut self.macro_assembler;
+        let roles = macro_assembler.roles();
+        #[cfg(debug_assertions)]
+        macro_assembler.load_frame_register(roles.leaf_result, register);
+        #[cfg(not(debug_assertions))]
+        let _ = register;
+        let stub = macro_assembler.block_word(super::stubs::BlockWord::CutStub);
+        let assembler = macro_assembler.assembler();
+        assembler.move_immediate(roles.leaf_result, u64::from(program_counter));
+        assembler.load(ns_assembler::Width::Word64, roles.idiom_scratch, stub);
+        assembler.call_register(roles.idiom_scratch);
+        macro_assembler.exit(ExitKind::Reexecute, program_counter);
+        Lowering::Transfer
+    }
+
     /// A send's call of the code at the address in `target`, recorded so
     /// that its return address -- the address right after the `call`,
     /// which the processor pushes and the exit's walk over the native
@@ -395,15 +926,36 @@ impl BodyAssembler {
             ],
         );
         let answer = self.macro_assembler.roles().leaf_result;
+        // The program counter, which the interpreter stores before the
+        // row's leaf decides, is stored on both paths that go on, after the
+        // exit: no leaf-safe row reads it.
         self.macro_assembler
             .assembler()
             .compare_immediate(answer, MIRROR_FAILED);
-        self.jump_to_if(Condition::Equal, failure);
+        let declined = if self.reifies {
+            let declined = self.macro_assembler.assembler().label();
+            self.macro_assembler
+                .assembler()
+                .jump_if(Condition::Equal, declined);
+            Some(declined)
+        } else {
+            self.jump_to_if(Condition::Equal, failure);
+            None
+        };
         self.macro_assembler
             .assembler()
             .compare_immediate(answer, 0);
         self.macro_assembler
             .exit_if(Condition::NotEqual, ExitKind::Reexecute, program_counter);
+        if let Some(declined) = declined {
+            sends::store_program_counter(self);
+            let ran = self.macro_assembler.assembler().label();
+            self.macro_assembler.assembler().jump(ran);
+            self.macro_assembler.assembler().bind(declined);
+            sends::store_program_counter(self);
+            self.jump_to(failure);
+            self.macro_assembler.assembler().bind(ran);
+        }
     }
 
     /// The call of the generic leaf, which runs the instruction being
@@ -429,6 +981,11 @@ impl BodyAssembler {
     reason = "the answer is a small constant"
 )]
 const MIRROR_FAILED: i32 = super::leaves::FAILED as i32;
+
+/// The displacement of an `Array`'s element `index` from its offset.
+fn element_displacement(index: u16) -> i32 {
+    crate::heap::Heap::machine_layout().fields_displacement + i32::from(index) * 8
+}
 
 /// The `SmallInteger` tag, as an immediate operand.
 fn small_integer_tag() -> i32 {
@@ -483,13 +1040,18 @@ fn allocated_literal(literal: &Literal) -> bool {
 }
 
 /// Compiles `code` with `macro_assembler`, its sends' cells found from
-/// `feedback_base`: the prologue a compiled call enters at, then each
-/// instruction in turn, at a label whose offset the program-counter map
-/// records.
+/// `feedback_base`, as the `copy` of the body it is: for the lean body,
+/// the prologue a compiled call enters at; then each instruction in turn,
+/// at a label whose offset the program-counter map records, and after the
+/// code the body's data words -- the lean body's transfers, the twin's
+/// closure sites (`MacroAssembler::take_body_words`).
 pub(crate) fn compile(
     code: &CompiledCode,
     mut macro_assembler: MacroAssembler,
     feedback_base: FeedbackBase,
+    role: BodyRole,
+    futures_exit: bool,
+    copy: BodyCopy,
 ) -> Result<BaselineBody, Refusal> {
     // A program counter of the map, and an exit's, is a `u32`; the bound
     // is the zone's layout's, which a later stage's tables index by
@@ -509,12 +1071,16 @@ pub(crate) fn compile(
         call_returns: Vec::new(),
         feedback_base,
         family_size: code.family_size,
-        window_end: code.register_count.max(
-            code.argument_count
-                .saturating_add(crate::bytecode::HEADER_REGISTERS),
-        ),
+        window_end: sends::window_end(code),
+        role,
+        reifies: copy == BodyCopy::Twin,
+        twin_transfers: Vec::new(),
+        frame_register_count: code.frame_register_count(),
+        futures_exit,
     };
-    sends::prologue(&mut body, code);
+    if copy == BodyCopy::Lean {
+        sends::prologue(&mut body, code);
+    }
     let mut exits = Vec::with_capacity(usize::from(count));
     let mut transfers = Vec::with_capacity(usize::from(count));
     for program_counter in 0..u32::from(count) {
@@ -545,15 +1111,24 @@ pub(crate) fn compile(
     }
     let exits_at_once = !reaches_before_an_exit(code, &exits, &transfers);
     body.emit_backward_branches();
+    let words = body.macro_assembler.body_words_label();
+    let word_bytes =
+        u32::try_from(body.macro_assembler.body_word_count() * 8).map_err(|_| Refusal::ZoneFull)?;
     let assembled = body
         .macro_assembler
         .finish()
         .map_err(|_| Refusal::Unassembled)?;
+    let words = words
+        .and_then(|label| assembled.label_offsets[label.index()])
+        .map(|start| start..start + word_bytes);
     let map = program_counter_map(&assembled, &body.starts, &body.call_returns);
     Ok(BaselineBody {
         code: assembled,
         map,
         exits_at_once,
+        reifies: body.reifies,
+        words,
+        twin_transfers: body.twin_transfers,
     })
 }
 
@@ -674,10 +1249,33 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             body.copy(*destination, *source);
             Lowering::Template
         }
-        Instruction::MakeArray { .. }
-        | Instruction::MakeVector { .. }
-        | Instruction::LoadVector { .. }
-        | Instruction::StoreVector { .. } => body.step(),
+        Instruction::MakeVector { destination, size } => {
+            body.make_vector(*destination, *size);
+            Lowering::Template
+        }
+        Instruction::MakeArray {
+            destination,
+            element_registers,
+        } => {
+            body.make_array(*destination, element_registers);
+            Lowering::Template
+        }
+        Instruction::LoadVector {
+            destination,
+            vector,
+            index,
+        } => {
+            body.load_vector(*destination, *vector, *index);
+            Lowering::Template
+        }
+        Instruction::StoreVector {
+            vector,
+            index,
+            source,
+        } => {
+            body.store_vector(*vector, *index, *source);
+            Lowering::Template
+        }
         Instruction::Jump { target } => {
             body.jump_to(*target);
             Lowering::Template
@@ -758,39 +1356,107 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             *destination,
             *call_site,
         ),
-        // A leaf-safe row's leaf through the shim; every other row's send
-        // the interpreter's.
+        // A leaf-safe row's leaf through the shim -- a row's own stub
+        // serves only a method whose fast path it is; every other row's
+        // send the interpreter's.
         Instruction::SendMirror {
             primitive, failure, ..
         } => match mirror_entry(*primitive).machine_call {
-            MachineCall::Leaf => {
+            MachineCall::Leaf | MachineCall::Stub(_) => {
                 body.send_mirror(*failure);
                 Lowering::Transfer
             }
             MachineCall::Exit => Lowering::Exit,
         },
-        // The initializers' invocations and the lexical walk an implicit
-        // receiver makes: the rest of stage 3.
-        Instruction::InitializeInstance { .. } => Lowering::Exit,
-        Instruction::CheckAppliedClause { .. } => Lowering::Exit,
-        Instruction::InitializeSuperclass { .. } => Lowering::Exit,
-        Instruction::InitializeAppliedLevel { .. } => Lowering::Exit,
-        Instruction::LoadEnclosingObject { .. } => Lowering::Exit,
-        // Closures, what reads another activation, and non-local return:
-        // stage 4.
-        Instruction::MakeClosure { .. } => Lowering::Exit,
-        Instruction::LoadOuterLocal { .. } => Lowering::Exit,
-        Instruction::StoreOuterLocal { .. } => Lowering::Exit,
-        Instruction::NonLocalReturn { .. } => Lowering::Exit,
-        // Allocation, and the slots and futures behind the write barrier:
-        // stage 4.
-        Instruction::AllocateInstance { .. } => Lowering::Exit,
-        Instruction::InitializeSlot { .. } => Lowering::Exit,
-        Instruction::ReturnSlotIfFilled { .. } => Lowering::Exit,
-        Instruction::MakeFuture { .. } => Lowering::Exit,
-        Instruction::ResolveFuture { .. } => Lowering::Exit,
-        Instruction::LoadOwnSlot { .. } => Lowering::Exit,
-        Instruction::InitializeSlotProvisionally { .. } => Lowering::Exit,
+        // The initializers' invocations, each a compiled call of the body
+        // the initializer leaf decides (`sends::initialize`), the check of
+        // a `<:` clause, and the lexical walk an implicit receiver makes.
+        Instruction::InitializeInstance { destination, .. } => {
+            sends::initialize(body, None, *destination)
+        }
+        Instruction::InitializeSuperclass {
+            argument_base,
+            argument_sources,
+            destination,
+            ..
+        }
+        | Instruction::InitializeAppliedLevel {
+            argument_base,
+            argument_sources,
+            destination,
+            ..
+        } => sends::initialize(body, Some((*argument_base, argument_sources)), *destination),
+        Instruction::CheckAppliedClause { .. } => body.step(),
+        Instruction::LoadEnclosingObject { destination, depth } => {
+            body.load_enclosing_object(*destination, *depth)
+        }
+        // A closure, its frame reified inline (`closures::make_closure`),
+        // in the twin; the lean body transfers the frame there
+        // (`closures::transfer_to_twin`).
+        Instruction::MakeClosure {
+            destination,
+            code,
+            copied,
+            ..
+        } => {
+            if body.reifies {
+                closures::make_closure(body, *destination, code, copied)
+            } else {
+                closures::transfer_to_twin(body)
+            }
+        }
+        // A register of the frame `depth` closure hops out, on the
+        // activation stack or in its divorced frame object
+        // (`closures::outer_local`).
+        Instruction::LoadOuterLocal {
+            destination,
+            depth,
+            index,
+        } => closures::outer_local(
+            body,
+            *depth,
+            *index,
+            closures::OuterAccess::Load {
+                destination: *destination,
+            },
+        ),
+        Instruction::StoreOuterLocal {
+            source,
+            depth,
+            index,
+        } => closures::outer_local(
+            body,
+            *depth,
+            *index,
+            closures::OuterAccess::Store { source: *source },
+        ),
+        // Non-local return, cut by machine code where it can be
+        // (`jit::cut`).
+        Instruction::NonLocalReturn { register } => body.non_local_return(*register),
+        // The own-slot instructions, each through the recorded guard
+        // (`BodyAssembler::own_slot`).
+        Instruction::InitializeSlot { source, own_index } => {
+            body.initialize_slot(*source, *own_index, true)
+        }
+        Instruction::InitializeSlotProvisionally { source, own_index } => {
+            body.initialize_slot(*source, *own_index, false)
+        }
+        Instruction::LoadOwnSlot {
+            destination,
+            own_index,
+        } => body.load_own_slot(*destination, *own_index),
+        Instruction::ReturnSlotIfFilled { own_index } => body.return_slot_if_filled(*own_index),
+        Instruction::AllocateInstance { destination } => body.allocate_instance(*destination),
+        // The futures (`closures::make_future`, `closures::resolve_future`).
+        Instruction::MakeFuture { .. } if body.futures_exit => Lowering::Exit,
+        Instruction::MakeFuture {
+            destination,
+            closure,
+        } => closures::make_future(body, *destination, *closure),
+        Instruction::ResolveFuture {
+            destination,
+            source,
+        } => closures::resolve_future(body, *destination, *source),
         // An error, which the interpreter raises: an exit in every stage.
         Instruction::SignalNonBoolean { .. } => Lowering::Exit,
     }
@@ -851,7 +1517,15 @@ mod tests {
 
     /// `code` compiled with `macro_assembler`, its sends uncached.
     fn compiled(code: &CompiledCode, macro_assembler: MacroAssembler) -> super::BaselineBody {
-        super::compile(code, macro_assembler, FeedbackBase::NOT_ASSIGNED).expect("compiled")
+        super::compile(
+            code,
+            macro_assembler,
+            FeedbackBase::NOT_ASSIGNED,
+            super::BodyRole::Method,
+            false,
+            super::BodyCopy::Lean,
+        )
+        .expect("compiled")
     }
 
     /// Where the run loop enters `body`, installed at `start`: its first
@@ -902,6 +1576,11 @@ mod tests {
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             family_size: 0,
             window_end: 0,
+            role: super::BodyRole::Method,
+            reifies: false,
+            twin_transfers: Vec::new(),
+            frame_register_count: 0,
+            futures_exit: false,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.

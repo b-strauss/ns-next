@@ -1,0 +1,18 @@
+stdout = '''
+true
+true
+true
+true
+#zork
+#abc
+4
+3
+true
+false
+false
+true
+true
+#<
+#<
+true
+'''

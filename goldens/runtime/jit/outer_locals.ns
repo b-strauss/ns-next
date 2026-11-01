@@ -1,0 +1,151 @@
+/// Locals a block reads and writes in the frame of the body that made it
+/// -- under the reference lowering every captured local, under the
+/// optimized one the locals a fallback block of an inlined `ifTrue:`
+/// reaches, which `Yes` and `Later` are sent since they are no Boolean --
+/// once machine code runs the reading block (`docs/design/execution.md`,
+/// "Stage 4: closures, non-local return, allocation and the barrier"):
+/// a block made in a block, which reaches two frames out; a creator still
+/// running, whose register lies on the activation stack; and a creator
+/// that has returned, whose register lies in its divorced frame object.
+/// `round:` runs once a round, so that its body and its blocks are
+/// compiled at their second entry and the later rounds run them in
+/// machine code.
+class OuterLocals = Object new (
+  |
+    yes = Yes new.
+    later = Later new.
+  |
+) (
+  /// Runs a block it is sent `ifTrue:` with, as `true` does, while being
+  /// no Boolean, so that the optimized lowering's inlined `ifTrue:` sends
+  /// it the fallback block.
+  class Yes = Object new () (
+    /// Answers `block`'s value.
+    public ifTrue: block = (
+      ^block value.
+    )
+  )
+
+  /// Keeps the block it is sent `ifTrue:` with, to run it later, once the
+  /// method that made it has returned.
+  class Later = Object new (
+    |
+      kept ::= nil.
+    |
+  ) (
+    /// Keeps `block`; answers nil.
+    public ifTrue: block = (
+      kept:: block.
+      ^nil.
+    )
+
+    /// Answers the kept block's value.
+    public run = (
+      ^kept value.
+    )
+  )
+
+  /// Answers the sum of `numbers`, kept in a local of this method that a
+  /// block made in a block writes while the method runs.
+  sum: numbers = (
+    |
+      total ::= 0.
+    |
+    numbers do: [:each | [:inner | total:: total + inner] value: each].
+    ^total.
+  )
+
+  /// Answers the sum of the indices below `limit`, kept in a local of this
+  /// method that the fallback block of `ifTrue:` writes, one frame out,
+  /// and that of an `ifTrue:` inside it, two frames out.
+  countUpTo: limit = (
+    |
+      count ::= 0.
+      index ::= 0.
+    |
+    [index < limit] whileTrue: [
+      yes ifTrue: [count:: count + index].
+      yes ifTrue: [yes ifTrue: [count:: count + 1]].
+      index:: index + 1.
+    ].
+    ^count.
+  )
+
+  /// Has `later` keep a block that counts in this method's local `count`
+  /// from `start` in steps of `start` plus one, and answers `start`; the
+  /// block runs after this method returned.
+  keepFrom: start = (
+    |
+      count ::= start.
+    |
+    later ifTrue: [
+      count:: count + start + 1.
+      count.
+    ].
+    ^start.
+  )
+
+  /// Answers the sum of one more than twice each of `numbers`, each kept
+  /// in a local of the block `do:` runs, which a closure stub lays past
+  /// its send's slots, and which the fallback block of `ifTrue:` writes,
+  /// reading the block's argument too.
+  sumShifted: numbers = (
+    |
+      total ::= 0.
+    |
+    numbers do: [:each |
+      |
+        local ::= each.
+      |
+      yes ifTrue: [local:: local + each + 1].
+      total:: total + local.
+    ].
+    ^total.
+  )
+
+  /// Answers a block that counts in this method's local `count` from
+  /// `start`, after this method returned.
+  counterFrom: start = (
+    |
+      count ::= start.
+    |
+    ^[
+      count:: count + 1.
+      count.
+    ].
+  )
+
+  /// Answers one line of what round `index` computes.
+  round: index = (
+    |
+      counter = self counterFrom: index * 100.
+      kept = self keepFrom: index * 1000.
+    |
+    ^{
+      self sum: {index. 2. 3}.
+      self sumShifted: {index. 2. 3}.
+      self countUpTo: index + 3.
+      counter value.
+      counter value.
+      kept.
+      later run.
+      later run.
+    }.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      index ::= 0.
+    |
+    [index < 4] whileTrue: [
+      (self round: index) do: [:each |
+        transcript show: each printString.
+      ] separatedBy: [
+        transcript show: ' '.
+      ].
+      transcript newLine.
+      index:: index + 1.
+    ].
+  )
+)

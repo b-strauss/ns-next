@@ -2,6 +2,17 @@
 // The brand needs no unsafe code: `World::enter` (`heap/world.rs`) hands the
 // step state to a closure the compiler checks for every `'gc`.
 #![forbid(unsafe_code)]
+// Without an encoder no body is compiled (`jit::available`), so what only
+// machine code reaches -- the leaves' decisions, the words and cells it
+// reads -- goes unused there; the JIT's build, which every gate's suite
+// runs, holds the crate to its dead code.
+#![cfg_attr(
+    not(ns_jit),
+    allow(
+        dead_code,
+        reason = "what only machine code reaches is unused where no body is compiled"
+    )
+)]
 
 //! Name resolution, object model, bytecode compiler and VM for the
 //! Newspeak3 language, including nested classes, mixin
@@ -72,6 +83,7 @@ macro_rules! for_each_lowering {
     };
 }
 pub use code_points::CodePoints;
+pub use heap::limits::{Shrink, ShrinkPairs, TableFloors, TableSizes};
 pub use heap::{
     ActivationHeader, ActivationReference, ApplicationIndex, ClassReference, CodeId,
     CollectorStatistics, FrameRecord, FrameReference, Heap, HeapStatistics, MixinId, NewClass,

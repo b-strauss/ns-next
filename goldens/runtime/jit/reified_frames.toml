@@ -1,0 +1,7 @@
+stdout = '''
+3 3 0 cannotReturn: the enclosing method activation has already returned
+8 8 1 cannotReturn: the enclosing method activation has already returned
+12 12 2 cannotReturn: the enclosing method activation has already returned
+20 20 3 cannotReturn: the enclosing method activation has already returned
+20 20 4 cannotReturn: the enclosing method activation has already returned
+'''

@@ -11,7 +11,7 @@
 pub(crate) mod cells;
 
 use super::Arguments;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
 use std::rc::Rc;
 
@@ -20,6 +20,7 @@ use crate::bytecode::{CachedSend, CachedSendKind};
 use crate::bytecode::{CallSite, CompiledCode, Instruction};
 use crate::dispatch::{self, LexicalOrigin};
 use crate::hash::IdentityMap;
+use crate::heap::limits::{GrowthLimit, SITE_FLOOR};
 use crate::heap::reclaim::FreedIds;
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::jit::{self, JitState};
@@ -30,7 +31,7 @@ use crate::Symbol;
 use super::resolve::{Chain, Resolved};
 use super::sends::{decide_lexical_send, decide_super_send};
 use super::{Mutator, Signal, Step};
-use cells::{Cell, Cells, ChainStart, GlobalRow, VACANT_GUARD};
+use cells::{Cell, Cells, ChainStart, GlobalRow, CHAIN_START_BITS, VACANT_GUARD};
 
 /// Where an activation's code family starts in its heap's cache table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,7 +181,10 @@ pub(crate) const GLOBAL_CACHE_ENTRIES: usize = 1024;
 #[derive(Default)]
 struct FreeRanges {
     /// Start -> size.
-    ranges: std::collections::BTreeMap<u32, u32>,
+    ranges: BTreeMap<u32, u32>,
+    /// The sites the ranges hold together, kept by every change to them:
+    /// what the sites' growth limit subtracts from the table's length.
+    free_sites: usize,
 }
 
 impl FreeRanges {
@@ -196,6 +200,7 @@ impl FreeRanges {
         if range_size > size {
             self.ranges.insert(start + size, range_size - size);
         }
+        self.free_sites -= size as usize;
         Some(start)
     }
 
@@ -205,6 +210,7 @@ impl FreeRanges {
         // An empty range would sit at another one's start or end and break
         // the rule that no two are adjacent.
         debug_assert!(size > 0, "internal: an empty range is never freed");
+        self.free_sites += size as usize;
         let mut start = start;
         let mut size = size;
         if let Some((&before_start, &before_size)) = self.ranges.range(..start).next_back() {
@@ -228,6 +234,7 @@ impl FreeRanges {
             return None;
         }
         self.ranges.remove(&start);
+        self.free_sites -= size as usize;
         Some((start, size))
     }
 }
@@ -268,6 +275,28 @@ pub(crate) struct InlineCaches {
     /// Root body identity -> its family. A collection drops a family nothing
     /// runs any more (`forget_families`).
     families: IdentityMap<usize, Family>,
+    /// The sites' growth limit (`heap::limits`): held here, beside the
+    /// sites, since the caches have no heap to compare against.
+    site_limit: GrowthLimit,
+    /// Whether a new range grew `sites` to `site_limit` since the last
+    /// collection (`wants_collection`).
+    collection_wanted: bool,
+    /// The range each closure an image decoded was given at its first
+    /// activation (`fresh_loose_range`), start to size: no family's, so
+    /// recorded here, that a full collection frees it as it frees a
+    /// family's (`forget_families`) and the slide moves it while a closure
+    /// or an activation still names it (`plan_slide`).
+    loose_ranges: BTreeMap<u32, u32>,
+    /// How many slides ran, and how many sites they moved
+    /// (`CacheStatistics`).
+    site_slides: u64,
+    sites_moved: u64,
+    /// Whether a full collection slides whenever any range is free, not
+    /// only once a quarter of the table is: the collect stress mode's
+    /// (`Interpreter::set_stress_collect`), so that its collections
+    /// exercise every slide.
+    #[cfg(debug_assertions)]
+    eager_slides: bool,
 }
 
 /// A family that has run: its range and its root body, held so that the
@@ -291,6 +320,13 @@ impl InlineCaches {
             cells,
             verified_slot_level: None,
             families: IdentityMap::default(),
+            site_limit: GrowthLimit::at_floor(SITE_FLOOR),
+            collection_wanted: false,
+            loose_ranges: BTreeMap::new(),
+            site_slides: 0,
+            sites_moved: 0,
+            #[cfg(debug_assertions)]
+            eager_slides: false,
         }
     }
 
@@ -298,14 +334,14 @@ impl InlineCaches {
     /// activated, so that a family that never runs takes no room -- as V8
     /// allocates a feedback vector lazily. A body with no sends is given
     /// base 0 and no room: no site of it is ever indexed.
+    ///
+    /// A new range may grow the table past its limit; the caller asks
+    /// `wants_collection` after it (`Mutator::feedback_base_for`).
     pub(crate) fn base_for(&mut self, code: &Rc<CompiledCode>) -> FeedbackBase {
-        if code.family_size == 0 {
-            return FeedbackBase(0);
+        if let Some(base) = self.known_base(code) {
+            return base;
         }
         let key = Rc::as_ptr(code) as usize;
-        if let Some(family) = self.families.get(&key) {
-            return family.base;
-        }
         let base = self.fresh_range(code.family_size);
         self.families.insert(
             key,
@@ -317,15 +353,83 @@ impl InlineCaches {
         base
     }
 
+    /// `code`'s range when its family already has one, or needs none:
+    /// `base_for` without minting.
+    #[inline]
+    pub(crate) fn known_base(&self, code: &Rc<CompiledCode>) -> Option<FeedbackBase> {
+        if code.family_size == 0 {
+            return Some(FeedbackBase(0));
+        }
+        self.families
+            .get(&(Rc::as_ptr(code) as usize))
+            .map(|family| family.base)
+    }
+
+    /// Whether a new range has grown the sites to their growth limit since
+    /// the last collection: the caches have no heap, so the mutator that
+    /// minted the range requests the collection (`Mutator::feedback_base_for`,
+    /// `Mutator::fresh_feedback_range`).
+    #[inline]
+    pub(crate) fn wants_collection(&self) -> bool {
+        self.collection_wanted
+    }
+
+    /// After a collection: the sites' next limit, from what the collection
+    /// left of them (`heap::limits::GrowthLimit::reset`).
+    pub(crate) fn reset_site_limit(&mut self) {
+        self.collection_wanted = false;
+        self.site_limit.reset(self.sites_in_use());
+    }
+
+    /// The sites no free range holds: what the sites' growth limit
+    /// measures, since a freed range is minted again before the table
+    /// grows, so the table's length follows the sites in use.
+    fn sites_in_use(&self) -> usize {
+        self.sites.len().saturating_sub(self.free_ranges.free_sites)
+    }
+
+    /// Records that a new range may have brought the sites in use to their
+    /// growth limit (`wants_collection`).
+    fn check_site_limit(&mut self) {
+        if self.site_limit.reached(self.sites_in_use()) {
+            self.collection_wanted = true;
+        }
+    }
+
+    /// Sets the sites' floor and next limit (`Interpreter::set_table_floors`).
+    pub(crate) fn set_site_floor(&mut self, floor: usize) {
+        self.site_limit.set_floor(floor);
+    }
+
+    /// How many bytes the cells' reservation has committed
+    /// (`Interpreter::table_sizes`).
+    pub(crate) fn cells_committed_bytes(&self) -> usize {
+        self.cells.committed_bytes()
+    }
+
+    /// Gives back the cells' committed pages above the site table's end
+    /// and the pool's, by `shrink` (`Cells::shrink`), and answers how many
+    /// bytes that was: run at the end of a full collection, after a slide
+    /// moved the live ranges down and truncated the table.
+    pub(crate) fn shrink_cells(
+        &mut self,
+        shrink: crate::heap::limits::Shrink,
+        damped: bool,
+    ) -> usize {
+        self.cells
+            .shrink(self.sites.len(), self.pool.len(), shrink, damped)
+    }
+
     /// Drops every family whose root body only the family holds and whose
-    /// range no live closure or activation names (`live_bases`), vacates
-    /// its sites and frees its range for the next family, then gives back
-    /// the table's free tail. A body nothing else holds can never be
-    /// activated again, so no new activation asks for the range; a closure
-    /// or activation of the family still names it by base, which is what
-    /// `live_bases` keeps -- a range freed under one would be filled by
-    /// another family's sends, and its hits would act on them. Run by a
-    /// full collection (`Mutator::reclaim_ids`).
+    /// range no live closure or activation names (`live_bases`), and every
+    /// decoded closure's range none names, vacates its sites and frees its
+    /// range for the next family, then gives back the table's free tail. A
+    /// body nothing else holds can never be activated again, so no new
+    /// activation asks for the range; a closure or activation of the family
+    /// still names it by base, which is what `live_bases` keeps -- a range
+    /// freed under one would be filled by another family's sends, and its
+    /// hits would act on them. Run by a full collection
+    /// (`Mutator::reclaim_ids`).
     pub(crate) fn forget_families(&mut self, live_bases: &BTreeSet<u32>) {
         let mut freed = Vec::new();
         self.families.retain(|_, family| {
@@ -334,6 +438,15 @@ impl InlineCaches {
                 return true;
             }
             freed.push((family.base, family.code.family_size));
+            false
+        });
+        // A decoded closure's range has no body to hold it: only the
+        // closures and activations that name its base do.
+        self.loose_ranges.retain(|start, size| {
+            if live_bases.contains(start) {
+                return true;
+            }
+            freed.push((FeedbackBase(*start), *size));
             false
         });
         let InlineCaches {
@@ -378,6 +491,7 @@ impl InlineCaches {
     /// for -- which leaves every site of the family uncached.
     pub(crate) fn fresh_range(&mut self, size: u32) -> FeedbackBase {
         if let Some(start) = self.free_ranges.take_first_fit(size) {
+            self.check_site_limit();
             return FeedbackBase(start);
         }
         let start = self.sites.len();
@@ -389,10 +503,146 @@ impl InlineCaches {
             Some(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
                 self.sites.resize(end as usize, CacheEntry::vacant());
                 self.cells.vacate_sites(start..end as usize);
+                self.check_site_limit();
                 // `end` fits 32 bits, and `start` lies `size` below it.
                 FeedbackBase(end - size)
             }
             _ => FeedbackBase::NOT_ASSIGNED,
+        }
+    }
+
+    /// A range of `size` sites for a closure an image decoded, which carries
+    /// none since a base is never serialized: `fresh_range`'s, recorded in
+    /// `loose_ranges` so that a full collection frees it once nothing names
+    /// it and a slide moves it while something does. A block without sends
+    /// takes base 0 and no room, as `known_base` gives a body without sends.
+    pub(crate) fn fresh_loose_range(&mut self, size: u32) -> FeedbackBase {
+        if size == 0 {
+            return FeedbackBase(0);
+        }
+        let base = self.fresh_range(size);
+        if base != FeedbackBase::NOT_ASSIGNED {
+            self.loose_ranges.insert(base.raw(), size);
+        }
+        base
+    }
+
+    /// Turns on or off the collect stress mode's slide at every collection
+    /// that finds a range free (`eager_slides`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_eager_slides(&mut self, eager: bool) {
+        self.eager_slides = eager;
+    }
+
+    /// The slide a full collection makes after `forget_families`, or `None`
+    /// while the free ranges cover less than a quarter of the table -- the
+    /// code zone's fraction (`jit::zone`), so that neither table compacts
+    /// for a hole of a few entries -- or none is free at all: every live
+    /// range, a family's or a decoded closure's, packed from 0 in
+    /// ascending order (`docs/design/dispatch.md`, "Code families").
+    pub(crate) fn plan_slide(&self) -> Option<SiteSlide> {
+        let free = self.free_ranges.free_sites;
+        if free == 0 {
+            return None;
+        }
+        #[cfg(debug_assertions)]
+        let eager = self.eager_slides;
+        #[cfg(not(debug_assertions))]
+        let eager = false;
+        if !eager && free.saturating_mul(4) < self.sites.len() {
+            return None;
+        }
+        let mut live: Vec<(u32, u32)> = self
+            .families
+            .values()
+            .filter(|family| {
+                family.base != FeedbackBase::NOT_ASSIGNED && family.code.family_size > 0
+            })
+            .map(|family| (family.base.raw(), family.code.family_size))
+            .chain(
+                self.loose_ranges
+                    .iter()
+                    .map(|(start, size)| (*start, *size)),
+            )
+            .collect();
+        live.sort_unstable();
+        let mut ranges: Vec<MovedRange> = Vec::with_capacity(live.len());
+        let mut end = 0u32;
+        for (start, size) in live {
+            debug_assert!(
+                ranges
+                    .last()
+                    .is_none_or(|last| last.old + last.size <= start),
+                "internal: two live ranges overlap"
+            );
+            ranges.push(MovedRange {
+                old: start,
+                size,
+                new: end,
+            });
+            end += size;
+        }
+        debug_assert_eq!(
+            end as usize + free,
+            self.sites.len(),
+            "internal: every site lies in a live range or a free one"
+        );
+        Some(SiteSlide { ranges, end })
+    }
+
+    /// Steps 1 and 2 of a slide (`docs/design/dispatch.md`, "Code
+    /// families"): every live range's entries and their cells move down,
+    /// in ascending order, onto sites already moved or vacant; the table is
+    /// truncated to the packed end and no range is free any more; then
+    /// every base the caches hold -- each family's, each decoded closure's
+    /// range, and each method target's in a site, a polymorphic block or
+    /// the global cache -- is rewritten through `slide`. A polymorphic
+    /// block is named by its number, so it stays where it is. The heap's
+    /// holders are the compaction's (`Heap::compact_with`), and machine
+    /// code compiled against a moved base is freed after both
+    /// (`Mutator::free_code_of_moved_bases`).
+    pub(crate) fn apply_slide(&mut self, slide: &SiteSlide) {
+        let old_end = self.sites.len();
+        for range in &slide.ranges {
+            if range.new == range.old {
+                continue;
+            }
+            for offset in 0..range.size as usize {
+                let source = range.old as usize + offset;
+                let destination = range.new as usize + offset;
+                self.sites[destination] =
+                    std::mem::replace(&mut self.sites[source], CacheEntry::vacant());
+                let cell = self.cells.site(source);
+                self.cells.write_site(destination, cell);
+            }
+            self.sites_moved += u64::from(range.size);
+        }
+        self.sites.truncate(slide.end as usize);
+        self.cells.vacate_sites(slide.end as usize..old_end);
+        self.free_ranges = FreeRanges::default();
+        self.site_slides += 1;
+        for family in self.families.values_mut() {
+            family.base = slide.remap_base(family.base);
+        }
+        self.loose_ranges = std::mem::take(&mut self.loose_ranges)
+            .into_iter()
+            .map(|(start, size)| (slide.remap(start), size))
+            .collect();
+        let remap_target = |target: &mut Target| {
+            if let Target::Method { feedback_base, .. } = target {
+                *feedback_base = slide.remap_base(*feedback_base);
+            }
+        };
+        for entry in &mut self.sites {
+            remap_target(&mut entry.target);
+        }
+        for slots in &mut self.pool {
+            for slot in slots {
+                remap_target(&mut slot.target);
+            }
+        }
+        for entry in &mut self.global.entries {
+            remap_target(&mut entry.target);
         }
     }
 
@@ -527,11 +777,27 @@ impl InlineCaches {
     /// polymorphic block's, a global row. The JIT abandoned the body whose
     /// machine entry `address` is (`jit::abandon`), so that a cell of an
     /// entry for its method now names the stub that refuses the call
-    /// instead.
+    /// instead; or `address` is the refusing stub's, and the JIT revived a
+    /// body (`refresh_all_cells`).
     pub(crate) fn refresh_cells_entering(&mut self, address: u64, jit: &JitState) {
+        self.refresh_cells_entering_any(&[address], jit);
+    }
+
+    /// `refresh_cells_entering` for every address of `addresses`, sorted:
+    /// a slide freed the machine code of every body compiled against a
+    /// base it moved (`Mutator::free_code_of_moved_bases`), whose entries
+    /// `addresses` are, so that no cell names freed code. Only a cell that
+    /// names one is written, from its entry, so that the walk raises no
+    /// other body's usage.
+    pub(crate) fn refresh_cells_entering_any(&mut self, addresses: &[u64], jit: &JitState) {
+        debug_assert!(addresses.is_sorted(), "internal: the addresses are sorted");
+        if addresses.is_empty() {
+            return;
+        }
+        let named = |address: u64| addresses.binary_search(&address).is_ok();
         for (index, entry) in self.sites.iter().enumerate() {
             let cell = self.cells.site(index);
-            if cell.entry == address {
+            if named(cell.entry) {
                 let entry = jit::cell_entry(jit, &entry.target);
                 self.cells.write_site(index, Cell { entry, ..cell });
             }
@@ -539,14 +805,74 @@ impl InlineCaches {
         for (block, slots) in (0..).zip(&self.pool) {
             for (position, slot) in slots.iter().enumerate() {
                 let cell = self.cells.block_cell(block, position);
-                if cell.entry == address {
+                if named(cell.entry) {
                     let entry = jit::cell_entry(jit, &slot.target);
                     self.cells
                         .write_block_cell(block, position, Cell { entry, ..cell });
                 }
             }
         }
-        self.global.refresh_entering(&mut self.cells, address, jit);
+        self.global.refresh_entering(&mut self.cells, &named, jit);
+    }
+
+    /// Writes afresh from its entry every cell -- a site's own, a
+    /// polymorphic block's, a global row -- that names the refusing stub:
+    /// the JIT revived an abandoned body (`JitState::decay_exits`,
+    /// `JitState::note_abandoned_entry`), and a revival changes only such
+    /// cells, a cell that refused the calls of the revived body's method
+    /// naming the miss stub again. Every other cell is compared and left
+    /// alone, so that the walk raises no body's usage.
+    pub(crate) fn refresh_all_cells(&mut self, jit: &JitState) {
+        let refusing = jit.refusing_stub_address();
+        if refusing != 0 {
+            self.refresh_cells_entering(refusing, jit);
+        }
+    }
+
+    /// The entry address of every cell -- a site's own, a polymorphic
+    /// block's, a global row -- as the cells hold them: what a debug
+    /// build's check after a compaction or a slide holds to naming no twin
+    /// (`Mutator::verify_code_zone_holders`).
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn cell_entries(&self) -> Vec<u64> {
+        let mut entries: Vec<u64> = (0..self.sites.len())
+            .map(|index| self.cells.site(index).entry)
+            .collect();
+        for (block, slots) in (0..).zip(&self.pool) {
+            for position in 0..slots.len() {
+                entries.push(self.cells.block_cell(block, position).entry);
+            }
+        }
+        entries.extend((0..self.global.entries.len()).map(|row| self.cells.global_row(row).entry));
+        entries
+    }
+
+    /// Rewrites the entry address of every cell -- a site's own, a
+    /// polymorphic block's, a global row -- through `plan`: a compaction of
+    /// the code zone moved the bodies the cells name, and freed some, whose
+    /// cells now name the miss stub (`jit::zone`). Not written from the
+    /// entry, as every other write of a cell is: what the entry decided is
+    /// unchanged, only the address of the code it decided moved, and a
+    /// freed body's target is one `cell_entry` answers the miss stub for.
+    pub(crate) fn remap_cell_entries(&mut self, plan: &crate::jit::zone::CompactionPlan) {
+        for index in 0..self.sites.len() {
+            let cell = self.cells.site(index);
+            let entry = plan.remap(cell.entry);
+            if entry != cell.entry {
+                self.cells.write_site(index, Cell { entry, ..cell });
+            }
+        }
+        for (block, slots) in (0..).zip(&self.pool) {
+            for position in 0..slots.len() {
+                let cell = self.cells.block_cell(block, position);
+                let entry = plan.remap(cell.entry);
+                if entry != cell.entry {
+                    self.cells
+                        .write_block_cell(block, position, Cell { entry, ..cell });
+                }
+            }
+        }
+        self.global.remap_entries(&mut self.cells, plan);
     }
 
     /// Moves site `index` on after a miss found `target` for `guard`
@@ -605,7 +931,7 @@ impl InlineCaches {
                 self.free_blocks.push(block);
                 let megamorphic = Target::Megamorphic { private };
                 self.cells
-                    .write_site(index, site_state_cell(jit, &megamorphic, cell.chain_start));
+                    .write_site(index, site_state_cell(jit, &megamorphic, cell.start()));
                 *entry = CacheEntry {
                     guard: DispatchId::VACANT,
                     target: megamorphic,
@@ -628,7 +954,7 @@ impl InlineCaches {
                     },
                 };
                 let polymorphic = Target::Polymorphic { block, private };
-                let site_cell = site_state_cell(jit, &polymorphic, cell.chain_start);
+                let site_cell = site_state_cell(jit, &polymorphic, cell.start());
                 let first = std::mem::replace(
                     entry,
                     CacheEntry {
@@ -765,6 +1091,9 @@ impl InlineCaches {
             filled_global_entries,
             entry_bytes: std::mem::size_of::<CacheEntry>(),
             global_entry_bytes: std::mem::size_of::<GlobalEntry>(),
+            loose_ranges: self.loose_ranges.len(),
+            site_slides: self.site_slides,
+            sites_moved: self.sites_moved,
         }
     }
 
@@ -833,6 +1162,78 @@ pub struct CacheStatistics {
     pub filled_global_entries: usize,
     pub entry_bytes: usize,
     pub global_entry_bytes: usize,
+    /// The ranges given to closures an image decoded that are still
+    /// recorded (`InlineCaches::fresh_loose_range`).
+    pub loose_ranges: usize,
+    /// How many full collections slid the site ranges down, and how many
+    /// sites they moved in all (`InlineCaches::plan_slide`).
+    pub site_slides: u64,
+    pub sites_moved: u64,
+}
+
+/// One live range of a slide: where it starts, how many sites it has, and
+/// where it starts once packed.
+struct MovedRange {
+    old: u32,
+    size: u32,
+    new: u32,
+}
+
+/// Where a full collection slides the site table's live ranges
+/// (`InlineCaches::plan_slide`): each family's and each decoded closure's,
+/// ascending, packed from 0. Read by every holder of a base the collection
+/// rewrites -- the caches (`InlineCaches::apply_slide`), the heap's
+/// closures and frames (`Heap::compact_with`) -- and by the JIT, which frees
+/// the machine code compiled against a base that moved
+/// (`JitState::free_bodies_with_moved_bases`).
+pub(crate) struct SiteSlide {
+    ranges: Vec<MovedRange>,
+    /// The packed table's length.
+    end: u32,
+}
+
+impl SiteSlide {
+    /// The live range `base` lies in, if any: a binary search.
+    fn range_of(&self, base: u32) -> Option<&MovedRange> {
+        let following = self.ranges.partition_point(|range| range.old <= base);
+        let range = &self.ranges[following.checked_sub(1)?];
+        (base - range.old < range.size).then_some(range)
+    }
+
+    /// Where `base` lies once the ranges are packed: a base inside a live
+    /// range moves with it. Any other base stays as it is --
+    /// `NOT_ASSIGNED`, and 0, which a body without sends takes and which
+    /// indexes no site -- since nothing that names one indexes the table.
+    pub(crate) fn remap(&self, base: u32) -> u32 {
+        self.range_of(base)
+            .map_or(base, |range| range.new + (base - range.old))
+    }
+
+    /// `remap` for a `FeedbackBase`.
+    pub(crate) fn remap_base(&self, base: FeedbackBase) -> FeedbackBase {
+        FeedbackBase(self.remap(base.0))
+    }
+
+    /// Whether machine code compiled against `base` must be freed: the base
+    /// moved, or it lies in no live range at all and so names sites the
+    /// slide may give to another family. `NOT_ASSIGNED` and 0 never do.
+    pub(crate) fn moves(&self, base: FeedbackBase) -> bool {
+        if base == FeedbackBase::NOT_ASSIGNED || base.0 == 0 {
+            return false;
+        }
+        self.range_of(base.0)
+            .is_none_or(|range| range.new != range.old)
+    }
+
+    /// Whether `base` is one a live holder may name: 0, `NOT_ASSIGNED`, or
+    /// inside a live range. A full collection frees no range a marked
+    /// closure or an activation names (`InlineCaches::forget_families`),
+    /// so a heap holder of any other base would name, once the ranges are
+    /// packed, another family's sites: the heap's rewriters assert it in a
+    /// debug build (`Heap::compact_with`).
+    pub(crate) fn holds(&self, base: u32) -> bool {
+        base == 0 || base == FeedbackBase::NOT_ASSIGNED.0 || self.range_of(base).is_some()
+    }
 }
 
 /// Whether `target` names a freed application or guard: a slot target's
@@ -1024,12 +1425,12 @@ impl GlobalCache {
         }
     }
 
-    /// Writes afresh every mirror row whose entry address is `address`:
-    /// `InlineCaches::refresh_cells_entering`'s global part.
-    fn refresh_entering(&self, cells: &mut Cells, address: u64, jit: &JitState) {
+    /// Writes afresh every mirror row whose entry address `named` accepts:
+    /// `InlineCaches::refresh_cells_entering_any`'s global part.
+    fn refresh_entering(&self, cells: &mut Cells, named: &impl Fn(u64) -> bool, jit: &JitState) {
         for (row, entry) in self.entries.iter().enumerate() {
             let found = cells.global_row(row);
-            if found.entry == address {
+            if named(found.entry) {
                 cells.write_global_row(
                     row,
                     GlobalRow {
@@ -1037,6 +1438,18 @@ impl GlobalCache {
                         ..found
                     },
                 );
+            }
+        }
+    }
+
+    /// Rewrites every mirror row's entry address through `plan`:
+    /// `InlineCaches::remap_cell_entries`'s global part.
+    fn remap_entries(&self, cells: &mut Cells, plan: &crate::jit::zone::CompactionPlan) {
+        for row in 0..self.entries.len() {
+            let found = cells.global_row(row);
+            let entry = plan.remap(found.entry);
+            if entry != found.entry {
+                cells.write_global_row(row, GlobalRow { entry, ..found });
             }
         }
     }
@@ -1191,7 +1604,7 @@ fn record<'gc>(
             ..
         } => Target::Method {
             method: method.clone(),
-            feedback_base: mutator.caches.base_for(&method.code),
+            feedback_base: mutator.feedback_base_for(&method.code),
             level: levels_between(&mutator.heap, start?, *defining_class)?,
             chain,
         },
@@ -2169,11 +2582,38 @@ pub(crate) fn decide_at<'gc>(
         guard,
         index,
         global_key,
+        argument_count,
         ..
     }) = decision_at(mutator, activation, program_counter)
     else {
         return MissAnswer::Refuse;
     };
+    // A factory's body runs on the class object the send instantiates, as
+    // its receiver and its current class: compiled and entered as a
+    // method's body is, below. One that stands for too many arguments
+    // takes another count than the send places; only the push lays its
+    // frame out. Every miss counts the entry: the interpreter's push of a
+    // factory runs its first two instructions itself
+    // (`Mutator::enter_factory_body`) and never enters its body at its
+    // start, where a push counts, so a count left to it would never
+    // compile the body.
+    if let Resolved::Factory { level, code, .. } = &resolved {
+        if code.argument_count != argument_count {
+            return MissAnswer::Refuse;
+        }
+        let base = mutator.feedback_base_for(code);
+        jit::note_entry(&mut mutator.jit, code, base, None);
+        jit::after_compile_trigger(mutator);
+        let address = jit::machine_entry_address(&mutator.jit, code, base);
+        mutator
+            .caches
+            .refresh_cells(index, guard, global_key, &mutator.jit);
+        let Some(address) = address else {
+            return MissAnswer::Refuse;
+        };
+        mutator.heap.hand_machine_callee(receiver, *level);
+        return MissAnswer::Enter(address);
+    }
     let stubbed = match &resolved {
         Resolved::Method { method, chain, .. } if !jit::runs_in_machine_code(method, *chain) => {
             Some(jit::Stubbed::Method {
@@ -2195,7 +2635,14 @@ pub(crate) fn decide_at<'gc>(
             primitive: *primitive,
             chain: *chain,
         }),
-        Resolved::NestedClass { .. } | Resolved::Factory { .. } | Resolved::Unhandled => {
+        Resolved::Factory { .. } => {
+            unreachable!("internal: a factory was answered above")
+        }
+        Resolved::NestedClass { chain, field, .. } => Some(jit::Stubbed::NestedClass {
+            chain: *chain,
+            field: *field,
+        }),
+        Resolved::Unhandled => {
             return MissAnswer::Refuse;
         }
     };
@@ -2217,11 +2664,12 @@ pub(crate) fn decide_at<'gc>(
         unreachable!("internal: every other resolution was answered above");
     };
     let base = if base == FeedbackBase::NOT_ASSIGNED {
-        mutator.caches.base_for(&method.code)
+        mutator.feedback_base_for(&method.code)
     } else {
         base
     };
     jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
+    jit::after_compile_trigger(mutator);
     let address = jit::machine_entry_address(&mutator.jit, &method.code, base);
     // The cells the decision went through follow the JIT's state either
     // way: the callee's machine entry once it has one, the refusing stub
@@ -2343,8 +2791,25 @@ fn cell_for<'gc>(mutator: &Mutator<'gc>, key: SendKey<'_, 'gc>, target: &Target)
         guard,
         entry: jit::cell_entry(&mutator.jit, target),
         level: cell_level(target),
-        chain_start: chain_start as u64,
+        chain_start: chain_start_word(chain_start, target),
     }
+}
+
+/// A cell's `chain_start` word for `target`, counted from `chain_start`:
+/// the chain start, and above it a private or `super` slot accessor's
+/// recorded guard, which its stub compares a receiver's with
+/// (`Cell::chain_start`) -- a copy of what the entry records, so that the
+/// cell stays a function of its entry's target.
+fn chain_start_word(chain_start: ChainStart, target: &Target) -> u64 {
+    let recorded = match target {
+        Target::Slot {
+            chain: Chain::Private | Chain::Super,
+            recorded_guard,
+            ..
+        } => u64::from(recorded_guard.bits()),
+        _ => 0,
+    };
+    chain_start as u64 | (recorded << CHAIN_START_BITS)
 }
 
 /// The cell of a site that holds no entry of its own -- polymorphic or
@@ -2660,7 +3125,7 @@ impl InlineCaches {
             let cell = expected_cell(entry.guard, &entry.target, found_cell, &any_guard, jit)
                 .map_err(|problem| format!("global entry {index}: {problem}"))?
                 .ok_or_else(|| format!("global entry {index} holds a site state"))?;
-            if cell.chain_start != rule_chain_start(entry.rule) as u64 {
+            if cell.start() != rule_chain_start(entry.rule) as u64 {
                 return Err(format!("global entry {index}'s rule is not its target's"));
             }
             let expected = GlobalRow {
@@ -2745,9 +3210,9 @@ fn expected_cell(
     };
     Ok(Some(Cell {
         guard,
-        entry: jit::cell_entry(jit, target),
+        entry: jit::expected_cell_entry(jit, target),
         level: cell_level(target),
-        chain_start: chain_start as u64,
+        chain_start: chain_start_word(chain_start, target),
     }))
 }
 
@@ -2932,6 +3397,48 @@ mod tests {
         assert_eq!(free.take_ending_at(40), Some((30, 10)));
         assert_eq!(free.take_ending_at(40), None);
         assert_eq!(free.take_ending_at(6), Some((4, 2)));
+    }
+
+    /// A slide packs the live ranges from 0: a base inside one moves with
+    /// it, by its offset in the range, and every other base stays; machine
+    /// code compiled against a base that moved, or that lies in no live
+    /// range, is freed, and against `NOT_ASSIGNED` or 0 never.
+    #[test]
+    fn a_slide_packs_the_live_ranges_and_remaps_each_base_inside_one() {
+        let slide = SiteSlide {
+            ranges: vec![
+                MovedRange {
+                    old: 0,
+                    size: 3,
+                    new: 0,
+                },
+                MovedRange {
+                    old: 10,
+                    size: 4,
+                    new: 3,
+                },
+                MovedRange {
+                    old: 20,
+                    size: 2,
+                    new: 7,
+                },
+            ],
+            end: 9,
+        };
+        assert_eq!(slide.remap(0), 0);
+        assert_eq!(slide.remap(2), 2);
+        assert_eq!(slide.remap(10), 3);
+        assert_eq!(slide.remap(12), 5);
+        assert_eq!(slide.remap(21), 8);
+        assert_eq!(slide.remap(5), 5, "a free site's base stays");
+        assert_eq!(slide.remap(30), 30, "a base past the table stays");
+        let not_assigned = FeedbackBase::NOT_ASSIGNED;
+        assert_eq!(slide.remap_base(not_assigned), not_assigned);
+        assert!(!slide.moves(FeedbackBase(0)));
+        assert!(!slide.moves(FeedbackBase(1)), "a range at 0 never moves");
+        assert!(slide.moves(FeedbackBase(10)));
+        assert!(slide.moves(FeedbackBase(5)), "a base in no live range");
+        assert!(!slide.moves(not_assigned));
     }
 
     fn body(family_size: u32) -> Rc<CompiledCode> {

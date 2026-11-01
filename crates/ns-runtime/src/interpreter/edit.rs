@@ -27,12 +27,15 @@ pub(crate) struct Edit {
 }
 
 /// One member operation: a member added from its source text, replacing
-/// one of the same kind and name, or one removed by name.
+/// one of the same kind and name, or one removed by name. A removed name is
+/// the text of the Symbol the program handed over, never an interned
+/// symbol: a program chooses it, and a name no member has -- a
+/// program-made symbol's among them -- removes nothing.
 pub(crate) enum MemberEdit {
     AddMethod(String),
-    RemoveMethod(Symbol),
+    RemoveMethod(String),
     AddLazySlot(String),
-    RemoveLazySlot(Symbol),
+    RemoveLazySlot(String),
 }
 
 /// What an edit the VM accepts answers the MirrorBuilder: the edited
@@ -100,14 +103,15 @@ impl Edit {
 /// A String's text; `None` for anything else, a Symbol included.
 fn string_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<String> {
     let object = value.as_object()?;
-    if heap.symbol_value(object).is_some() {
+    if heap.is_symbol(object) {
         return None;
     }
     Some(heap.string_code_points(object)?.to_string())
 }
 
-fn symbol_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<Symbol> {
-    heap.symbol_value(value.as_object()?)
+/// A Symbol's text; `None` for anything else, a String included.
+fn symbol_text_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<String> {
+    heap.symbol_text(value.as_object()?)
 }
 
 /// One side's operations, each a two-element `Array` of its kind and its
@@ -124,12 +128,12 @@ fn operations_of<'gc>(
             let [kind, argument] = pair.as_slice() else {
                 return None;
             };
-            Some(match symbol_of(heap, *kind)?.as_str() {
+            Some(match symbol_text_of(heap, *kind)?.as_str() {
                 "addMethod" => MemberEdit::AddMethod(string_of(heap, *argument)?),
-                "removeMethod" => MemberEdit::RemoveMethod(symbol_of(heap, *argument)?),
+                "removeMethod" => MemberEdit::RemoveMethod(symbol_text_of(heap, *argument)?),
                 "addLazySlot" if lazy_slots => MemberEdit::AddLazySlot(string_of(heap, *argument)?),
                 "removeLazySlot" if lazy_slots => {
-                    MemberEdit::RemoveLazySlot(symbol_of(heap, *argument)?)
+                    MemberEdit::RemoveLazySlot(symbol_text_of(heap, *argument)?)
                 }
                 _ => return None,
             })
@@ -504,8 +508,8 @@ fn apply_member_edit(
     let (kind, member_text, removed) = match operation {
         MemberEdit::AddMethod(member_text) => (MemberKind::Method, Some(member_text), None),
         MemberEdit::AddLazySlot(member_text) => (MemberKind::LazySlot, Some(member_text), None),
-        MemberEdit::RemoveMethod(selector) => (MemberKind::Method, None, Some(*selector)),
-        MemberEdit::RemoveLazySlot(slot) => (MemberKind::LazySlot, None, Some(*slot)),
+        MemberEdit::RemoveMethod(selector) => (MemberKind::Method, None, Some(selector)),
+        MemberEdit::RemoveLazySlot(slot) => (MemberKind::LazySlot, None, Some(slot)),
     };
     let body = match side {
         Side::Instance => Some(&declaration.instance_side),
@@ -521,7 +525,7 @@ fn apply_member_edit(
         })
     };
     if let Some(removed) = removed {
-        return Ok(match existing(removed.as_str()) {
+        return Ok(match existing(removed) {
             Some(member) => {
                 let (start, end) = member_range(member);
                 splice(text, start, end, "")
@@ -871,7 +875,7 @@ mod tests {
         let removed = prepare(
             &mut interpreter,
             inner_id,
-            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("a"))]),
+            &instance_edit(vec![MemberEdit::RemoveMethod("a".to_string())]),
         );
         assert_eq!(
             &*removed.module_text,
@@ -883,7 +887,7 @@ mod tests {
         let unchanged = prepare(
             &mut interpreter,
             inner_id,
-            &instance_edit(vec![MemberEdit::RemoveMethod(Symbol::intern("missing"))]),
+            &instance_edit(vec![MemberEdit::RemoveMethod("missing".to_string())]),
         );
         assert_eq!(&*unchanged.module_text, source);
     }
@@ -1270,11 +1274,11 @@ mod tests {
                     MemberEdit::AddMethod(method),
                     MemberEdit::AddLazySlot(slot),
                     MemberEdit::RemoveLazySlot(removed),
-                ] if method == "m = (^1)" && slot == "lazy s = 1." && removed.as_str() == "gone"
+                ] if method == "m = (^1)" && slot == "lazy s = 1." && removed == "gone"
             ));
             assert!(matches!(
                 decoded.class_side.as_slice(),
-                [MemberEdit::RemoveMethod(removed)] if removed.as_str() == "gone"
+                [MemberEdit::RemoveMethod(removed)] if removed == "gone"
             ));
 
             let unchanged_header = Value::object(mutator.new_array(vec![

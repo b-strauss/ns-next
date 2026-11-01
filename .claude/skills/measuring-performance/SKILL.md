@@ -43,6 +43,21 @@ the re-entries moved", has the full measurement protocol and its history.
    three on both sides: build a with the pinned `RUSTFLAGS` alone, build b
    adding `-C metadata=buildb -C llvm-args=-align-all-nofallthru-blocks=4`,
    build c adding `-C metadata=buildc -C llvm-args=-align-all-nofallthru-blocks=5`.
+   **They also lay the JIT's code zone out differently**, through two
+   environment variables read when the binary is built
+   (`option_env!`; a value is a multiple of 16 up to 4,096, or the build
+   fails): build a sets neither, build b sets `NS_NEXT_ZONE_STUB_PADDING=208`
+   (bytes before the first stub) and `NS_NEXT_ZONE_BODY_PADDING=32` (bytes
+   between the last stub and the first body), build c sets `96` and `176`.
+   The same machine code at another place in the zone ran 17% apart on
+   `bench_while.ns` over seventeen paddings, and a stub's growth moves
+   every later stub and body; the stubs' offsets (0, 208, 96) and the bodies'
+   (the sum of the two paddings: 0, 240, 272) are pairwise distinct modulo
+   64, so each build puts the stubs and the bodies on other cache-line
+   phases. Both sides take the same three; a tree from before the
+   paddings existed takes none, and the report says so. A regression the
+   three builds still separate is investigated as before, a sweep of
+   paddings for the one program allowed there.
    `-C metadata` alone reorders functions but leaves `vm::run` identical at
    every offset, so three such builds sample one layout of the run loop:
    road step 7a measured `bench_loop.ns` +1.7%, builds separated, on code

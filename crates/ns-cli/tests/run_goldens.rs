@@ -63,22 +63,32 @@ fn main() {
 /// A golden's exit status, stdout and stderr match its recorded
 /// `Expectation` exactly -- every byte, the final newline included -- under
 /// `lowering`.
+///
+/// The run also reports its collector's statistics, which this takes out
+/// of stderr before the comparison and holds to
+/// `common::no_program_reaches_a_table_limit`: no golden reaches a table's
+/// growth limit, checked without a run of its own.
 fn matches_under_one_lowering(source: &Path, lowering: &str) -> Result<(), Failed> {
     let expectation = common::expectation_of(source);
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let mut output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
         .arg("run")
         .arg(source)
         .arg("--lowering")
         .arg(lowering)
+        .arg("--collector-statistics")
         .args(common::program_arguments(source))
         .output()
         .map_err(|error| format!("run ns-next: {error}"))?;
+    let statistics = common::take_collector_statistics(&mut output);
     common::compare(
         &output,
         &expectation,
         &format!("under the {lowering} lowering"),
-    )
-    .map_err(Failed::from)
+    )?;
+    if let Some(statistics) = common::require_collector_statistics(statistics, &expectation)? {
+        common::no_program_reaches_a_table_limit(&statistics, &expectation)?;
+    }
+    Ok(())
 }
 
 /// A golden answers alike when the global cache is one two-slot group, so

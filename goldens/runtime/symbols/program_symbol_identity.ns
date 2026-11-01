@@ -1,0 +1,75 @@
+/// A Symbol made from a String is the one object of its text (§5.1.6),
+/// whether a literal of the text was evaluated first or the String was
+/// made into a symbol first, and whether or not anything has interned the
+/// text: `'zork'` names no member, selector or literal of this program, so
+/// its symbol is one the program made, which takes no number. Such a
+/// symbol answers what a literal answers -- `printString`, `size`, `=`,
+/// `hash`, and the `doesNotUnderstand:` a String's `<` reaches -- and a
+/// `Message` of it reaches the receiver's `doesNotUnderstand:` with the
+/// very symbol, since nothing has its name.
+class ProgramSymbolIdentity = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      show
+      made
+    |
+    show:: [:object |
+      transcript
+          show: object printString;
+          newLine.
+    ].
+    show value: literalFirst.
+    show value: madeFirst.
+    made:: ('zo' , 'rk') asSymbol.
+    show value: made == ('zo' , 'rk') asSymbol.
+    show value: made == 'zork' asSymbol.
+    show value: made.
+    show value: #abc.
+    show value: made size.
+    show value: #abc size.
+    show value: made = ('zor' , 'k') asSymbol.
+    show value: made = 'zork'.
+    show value: #abc = 'abc'.
+    show value: made hash = ('z' , 'ork') asSymbol hash.
+    show value: #abc hash = ('a' , 'bc') asSymbol hash.
+    show value: (lessThan: made in: kernel).
+    show value: (lessThan: #abc in: kernel).
+    show value: (selectorNotUnderstood: made in: kernel) == made.
+  )
+
+  /// Answers whether a literal of a text, evaluated before the String
+  /// is made into a symbol, is that symbol.
+  literalFirst = (
+    |
+      literal = #abc.
+    |
+    ^literal == ('ab' , 'c') asSymbol.
+  )
+
+  /// Answers whether a String made into a symbol before a literal of its
+  /// text is evaluated is the literal's symbol.
+  madeFirst = (
+    |
+      made = ('xy' , 'z') asSymbol.
+    |
+    ^made == #xyz.
+  )
+
+  /// Answers the selector of the message `symbol < symbol` does not
+  /// understand.
+  lessThan: symbol in: kernel = (
+    ^[symbol < symbol] on: kernel MessageNotUnderstood do: [:error | error message selector].
+  )
+
+  /// Answers the selector of the message `symbol` names, sent to 3 by
+  /// `Message>>sendTo:`, which 3 does not understand.
+  selectorNotUnderstood: symbol in: kernel = (
+    ^[
+      (kernel Message new
+          selector: symbol;
+          arguments: {}) sendTo: 3.
+    ] on: kernel MessageNotUnderstood do: [:error | error message selector].
+  )
+)

@@ -21,8 +21,8 @@
 
 use std::rc::Rc;
 
-use crate::bytecode::CompiledCode;
-use crate::heap::{ActivationReference, CodeId, Heap, MachineFrame};
+use crate::bytecode::{CodeKind, CompiledCode};
+use crate::heap::{ActivationReference, CodeId, Heap, MachineFrame, MachineKind};
 use crate::interpreter::Mutator;
 use crate::mixin::MixinMethod;
 
@@ -49,8 +49,8 @@ impl Walk {
     /// the sender, whose header lies at `sender` and register 0 at
     /// `sender_registers`, both word offsets from the stack's base, stands
     /// as the last frame materialized, its send's callee placed on its
-    /// slots from register `argument_base` with `argument_count`
-    /// arguments, the stack's top at `top`. So the callee is the walk's
+    /// slots from register `argument_base` -- `slots` of them -- the stack's
+    /// top at `top`. So the callee is the walk's
     /// first frame, materialized as any compiled callee is, and the
     /// sender, interpreted and stopped at its send already, its caller; a
     /// refused call leaves the sender the innermost frame, with nothing
@@ -61,7 +61,7 @@ impl Walk {
         sender: u32,
         sender_registers: u32,
         argument_base: u16,
-        argument_count: u16,
+        slots: u16,
         top: usize,
     ) {
         let start = sender_registers + u32::from(argument_base);
@@ -69,31 +69,74 @@ impl Walk {
             last: Some((sender, sender_registers)),
             callee: Some(Callee {
                 start,
-                offset: start + u32::from(argument_count),
+                slots: u32::from(slots),
                 caller: sender,
                 top,
+                by_machine_code: false,
             }),
             top,
             added: 0,
         };
     }
+
+    /// Forgets a seed no exit took, which a call that returned leaves
+    /// behind (`jit::called`), field by field: assigning `Walk::default()`
+    /// copied a partly written temporary, its `Option<Callee>`'s payload
+    /// undefined, and read it back wider than it was written -- a
+    /// store-forwarding stall on every call an interpreter's send made of
+    /// machine code. The destructure names every field, so that a field
+    /// added to the walk cannot be left out of the reset and carry one
+    /// call's state into the next exit's walk.
+    pub(crate) fn clear(&mut self) {
+        let Walk {
+            last,
+            callee,
+            top,
+            added,
+        } = self;
+        *last = None;
+        *callee = None;
+        *top = 0;
+        *added = 0;
+    }
 }
 
-/// The callee a send places on its argument slots: its first argument's
-/// and its header's word offsets, its caller's header offset, and the top
-/// its push stood at.
+/// The callee a send places on its argument slots: its first slot's word
+/// offset, how many slots the send placed, its caller's header offset,
+/// the top its push stood at, and whether a compiled send called it
+/// rather than an interpreter's (`Walk::seed_call`). Its header lies past
+/// as many arguments as its own code takes (`Callee::offset`) -- an
+/// initializer a passed level decided takes none, whatever its invocation
+/// placed -- but for a block's: a block an interpreter's send called lies
+/// on the slots, its arguments the send's, and one a compiled send called
+/// lies past them, where its closure stub placed it
+/// (`targets::ClosureStub`), its arguments after the slots.
 #[derive(Clone, Copy)]
 struct Callee {
     start: u32,
-    offset: u32,
+    slots: u32,
     caller: u32,
     top: usize,
+    by_machine_code: bool,
+}
+
+impl Callee {
+    /// Its header's word offset, for a callee running `code`.
+    fn offset(self, code: &CompiledCode) -> u32 {
+        match code.kind {
+            CodeKind::Block if self.by_machine_code => {
+                self.start + self.slots + u32::from(code.argument_count)
+            }
+            CodeKind::Block => self.start + self.slots,
+            _ => self.start + u32::from(code.argument_count),
+        }
+    }
 }
 
 /// The id of `code` in `heap`, registered with `method` when it is one's
 /// body: a method's frame finds its method through its code's row
 /// (`Heap::reify`).
-fn code_id(
+pub(super) fn code_id(
     heap: &mut Heap<'_>,
     code: &Rc<CompiledCode>,
     method: Option<&Rc<MixinMethod>>,
@@ -104,10 +147,15 @@ fn code_id(
     }
 }
 
-/// The header of the method frame at `offset`, running the installed
-/// body `installed`, stopped at `program_counter`, whose caller is
-/// `caller`.
-fn machine_frame(
+/// The header of the frame at `offset`, running the installed body
+/// `installed`, stopped at `program_counter`, whose caller is `caller`:
+/// a method's frame for a method's body, and for a body that is no
+/// method's the kind its code's kind says -- a factory's, an
+/// initializer's or a closure's, which machine code calls
+/// (`baseline::BodyRole`), and a superclass clause's, which only the run
+/// loop pushes, so that its frame is never one machine code pushed, and is
+/// named here so that every frame's kind is.
+pub(crate) fn machine_frame(
     heap: &mut Heap<'_>,
     offset: u32,
     installed: &Installed,
@@ -118,35 +166,41 @@ fn machine_frame(
         code,
         method,
         feedback_base,
+        reifies,
     } = installed;
-    let Some(selector) = method.as_ref().map(|method| method.selector) else {
-        unreachable!("internal: machine code pushes only a method's activation");
+    let kind = match (method, code.kind) {
+        (Some(method), _) => MachineKind::method(method.selector),
+        (None, CodeKind::Method) => MachineKind::factory(),
+        (None, CodeKind::Initializer) => MachineKind::initializer(),
+        (None, CodeKind::Block) => MachineKind::closure(),
+        (None, CodeKind::SuperclassClause) => MachineKind::superclass_clause(),
     };
     MachineFrame {
         offset,
         argument_count: code.argument_count,
         code: code_id(heap, code, method.as_ref()),
-        selector,
+        kind,
         program_counter,
         feedback_base: *feedback_base,
         register_count: code.registers_above_header(),
         addresses_own_slots: code.addresses_own_slots,
+        reifies: *reifies,
         caller,
     }
 }
 
-/// Where the send at `program_counter` of `code` places its callee, the
-/// sending frame's register 0 at `register_base`: on its argument slots.
-fn callee_of_send(code: &CompiledCode, program_counter: u32, register_base: u32) -> (u32, u32) {
-    let instruction = code.instruction(program_counter as usize);
-    let Some((argument_base, sources)) = instruction.argument_slots() else {
-        unreachable!("internal: a compiled call's return address names a send");
+/// Where the call at `program_counter` of `code` places its callee's
+/// first argument, the calling frame's register 0 at `register_base` --
+/// on its argument slots, or above the window (`sends::call_slots`) --
+/// and how many it places.
+fn callee_of_call(code: &CompiledCode, program_counter: u32, register_base: u32) -> (u32, u32) {
+    let Some(slots) = super::sends::call_slots(code, program_counter) else {
+        unreachable!("internal: a compiled call's return address names a send or an initializer's");
     };
-    let start = register_base + u32::from(argument_base);
-    let Ok(count) = u32::try_from(sources.len()) else {
-        unreachable!("internal: a send's arguments are numbered in 16 bits");
-    };
-    (start, start + count)
+    (
+        register_base + u32::from(slots.argument_base),
+        u32::from(slots.argument_count),
+    )
 }
 
 /// `Leaf::MaterializeFrame`: the frame the return address
@@ -177,9 +231,10 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
             (Heap::activation_offset(entry), register_base)
         }
         Some(callee) => {
+            let offset = callee.offset(code);
             let frame = machine_frame(
                 &mut mutator.heap,
-                callee.offset,
+                offset,
                 &installed,
                 program_counter,
                 Some((callee.caller, callee.top)),
@@ -187,16 +242,17 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
             let _ = mutator.heap.write_machine_frame(&frame);
             walk.top = walk.top.max(frame.window_end());
             walk.added += 1;
-            (callee.offset, callee.start)
+            (offset, offset - u32::from(code.argument_count))
         }
     };
-    let (start, callee_offset) = callee_of_send(code, program_counter, register_base);
+    let (start, slots) = callee_of_call(code, program_counter, register_base);
     walk.last = Some((offset, register_base));
     walk.callee = Some(Callee {
         start,
-        offset: callee_offset,
+        slots,
         caller: offset,
         top: walk.top,
+        by_machine_code: true,
     });
     mutator.jit.walk = walk;
 }
@@ -227,9 +283,10 @@ pub(crate) fn materialize_innermost(
         let Ok(program_counter) = u32::try_from(program_counter) else {
             unreachable!("internal: an exit's program counter fits 32 bits");
         };
+        let offset = callee.offset(&installed.code);
         let frame = machine_frame(
             &mut mutator.heap,
-            callee.offset,
+            offset,
             &installed,
             program_counter,
             Some((callee.caller, callee.top)),
@@ -237,7 +294,7 @@ pub(crate) fn materialize_innermost(
         let _ = mutator.heap.write_machine_frame(&frame);
         walk.top = walk.top.max(frame.window_end());
         walk.added += 1;
-        callee.offset
+        offset
     };
     mutator
         .heap
@@ -264,6 +321,10 @@ pub(crate) struct LeafFrame {
     /// frame is one machine code pushed, which reads as the innermost only
     /// for the leaf's length.
     restore: Option<(usize, u32)>,
+    /// Whether the frame is one machine code pushed that runs its body's
+    /// lean code, which no leaf may reify (`release_leaf_frame`).
+    #[cfg(debug_assertions)]
+    unreified: bool,
 }
 
 /// The frame whose register 0 machine code holds at `frame_address`,
@@ -291,6 +352,8 @@ pub(crate) fn leaf_frame(
         return LeafFrame {
             activation: entry,
             restore: None,
+            #[cfg(debug_assertions)]
+            unreified: false,
         };
     }
     let Some(installed) = mutator.jit.body_of(return_address_of(code_address)) else {
@@ -309,11 +372,23 @@ pub(crate) fn leaf_frame(
     LeafFrame {
         activation,
         restore,
+        #[cfg(debug_assertions)]
+        unreified: !frame.reifies,
     }
 }
 
-/// Puts the stack back after a leaf ran in `frame`.
+/// Puts the stack back after a leaf ran in `frame`. A debug build first
+/// holds the leaf to having reified no frame machine code pushed that runs
+/// its body's lean code: a lean body's frame is never reified, since its
+/// code keeps no reified word and its return divorces nothing
+/// (`MachineFrame::reifies`), so its frame object would stay married to an
+/// offset popped under it.
 pub(crate) fn release_leaf_frame(mutator: &mut Mutator<'_>, frame: LeafFrame) {
+    #[cfg(debug_assertions)]
+    assert!(
+        !frame.unreified || mutator.heap.activation_reified(frame.activation).is_none(),
+        "internal: a leaf reified a frame running lean code"
+    );
     if let Some(extent) = frame.restore {
         mutator.heap.restore_stack_extent(extent);
     }
