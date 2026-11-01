@@ -1,7 +1,8 @@
 /// The collections module: the growable Collections a program computes
 /// with -- `List`, `Map`, `IdentityMap` and `Set` -- and the Errors they
 /// signal, `NotFound` and `ConcurrentModification`, reached through
-/// `platform collections`. Built once, on first demand, over the kernel,
+/// `platform collections`. Built on its first demand, or by the loader
+/// when an image names it, over the kernel,
 /// from which it takes `Collection`, `ArgumentError`, `WeakArray` and
 /// `WeakMap`; `Error` and `Array` it names bare, through `Object`'s
 /// accessors.
@@ -9,7 +10,8 @@
 /// The factory pattern `PlatformFactory.ns` is written in. This root keeps
 /// of the kernel only the four classes it needs, never the kernel instance,
 /// and nothing hands its instance to a program: the platform's root builds
-/// it once, through the mirror, on its first use and keeps it in a
+/// it through the mirror on its first use -- again after an unwind
+/// interrupted that use, which records nothing -- and keeps it in a
 /// private lazy slot, and each platform's `collections` getter sends it
 /// `build`, its one public member. What a program gets is the
 /// `Collections` facet `build` answers, which hands out this module's

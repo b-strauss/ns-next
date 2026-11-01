@@ -1,15 +1,17 @@
 /// The mirrors' module: `ObjectMirror` and `ClassMirror`, through which a
 /// program reads the structure of its objects and classes, reached
 /// through `platform mirrors`, and the other mirrors a program reaches
-/// only by navigating from those two. Built once, on first demand, over
+/// only by navigating from those two. Built on its first demand, or by
+/// the loader when an image names it, over
 /// the VM mirror and the kernel, from which it takes `Error` and
 /// `ArgumentError`.
 ///
 /// The factory pattern `PlatformFactory.ns` is written in: this root holds
 /// the VM mirror, which the platform's root hands it, and of the kernel only
 /// the two classes it needs, never the kernel instance; nothing hands
-/// its instance to a program. The platform's root builds it once, through
-/// the mirror, on its first use and keeps it in a private lazy slot,
+/// its instance to a program. The platform's root builds it through the
+/// mirror on its first use -- again after an unwind interrupted that use,
+/// which records nothing -- and keeps it in a private lazy slot,
 /// and each platform's `mirrors` getter sends it `build`, its one
 /// public member. What a program gets is the `Mirrors` facet `build`
 /// answers, which hands out two of this module's private classes,

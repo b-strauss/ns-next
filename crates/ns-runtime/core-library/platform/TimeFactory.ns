@@ -1,11 +1,12 @@
 /// The clock's module: answers, to `build`, the `Time` namespace
-/// `platform time` is, which hands out `Stopwatch`. Built once, on first
-/// demand.
+/// `platform time` is, which hands out `Stopwatch`. Built on its first
+/// demand, or by the loader when an image names it.
 ///
 /// The factory pattern `PlatformFactory.ns` is written in: this root holds
 /// the VM mirror, which the platform's root hands it, and nothing hands its
-/// instance to a program. The platform's root builds it once, through the
-/// mirror, on its first use and keeps it in a private lazy slot, and
+/// instance to a program. The platform's root builds it through the
+/// mirror on its first use -- again after an unwind interrupted that use,
+/// which records nothing -- and keeps it in a private lazy slot, and
 /// each platform's `time` getter sends it `build`, its one public
 /// member. Its nested classes are private and reach the mirror lexically,
 /// as members of this root, never through a slot of their own. Nothing a

@@ -34,8 +34,8 @@ class Manifest names: moduleNames definitions: moduleDefinitions = (
   /// @param message the `Message` nothing understood; its selector is
   /// compared with each name by `=`, its arguments are ignored.
   /// @answers the module definition, a class object, when a name matches;
-  /// otherwise what the superclass's `doesNotUnderstand:` answers: false
-  /// for a unary selector that begins with `isKindOf`.
+  /// otherwise what the superclass's `doesNotUnderstand:` answers, which
+  /// is false for a unary selector that begins with `isKindOf`.
   /// @signals MessageNotUnderstood through the superclass's
   /// `doesNotUnderstand:`, carrying `message` and the receiver, for a
   /// selector that names no module, unless it is a unary selector that

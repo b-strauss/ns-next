@@ -5863,6 +5863,9 @@ class Kernel vmMirror: mirror = Value (
     /// @signals ArgumentError carrying `collection`, ', cannot allocate a
     /// ByteArray of … bytes', for a result too large to allocate, when
     /// `collection` is a ByteArray or a String.
+    /// @signals ArgumentError carrying the size, 'new: cannot allocate a
+    /// ByteArray of … bytes', `ByteArray new:`'s, for a result too large
+    /// to allocate, for any other `collection`.
     /// @signals ArgumentError `at:put:` signals for an element that is no
     /// byte, for any other `collection`.
     public , collection = (
