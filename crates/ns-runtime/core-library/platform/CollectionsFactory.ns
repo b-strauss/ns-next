@@ -6,11 +6,6 @@
 /// `WeakMap`; `Error` and `Array` it names bare, through `Object`'s
 /// accessors.
 ///
-/// kernel: the kernel module instance; its `Collection` is the superclass
-///     of `List`, `Map` and `Set`, its `ArgumentError` what they signal for
-///     an index or a capacity out of range, and its `WeakArray` and
-///     `WeakMap` what the facet hands out beside them.
-///
 /// The factory pattern `PlatformFactory.ns` is written in. This root keeps
 /// of the kernel only the four classes it needs, never the kernel instance,
 /// and nothing hands its instance to a program: the platform's root builds
@@ -32,6 +27,15 @@
 /// classes -- `platform collections List` is one class however many
 /// platforms a program makes -- and so that the platform, a value, may hold
 /// the facet in a slot.
+///
+/// @factory makes the collections module over `kernel`, copying its
+/// `ArgumentError`, `Collection`, `WeakArray` and `WeakMap` into slots of
+/// its own and keeping nothing else of it; the platform's root sends it
+/// once, through the mirror.
+/// @param kernel the kernel module instance; its `Collection` is the
+/// superclass of `List`, `Map` and `Set`, its `ArgumentError` what they
+/// signal for an index or a capacity out of range, and its `WeakArray` and
+/// `WeakMap` what the facet hands out beside them.
 class CollectionsFactory usingKernel: kernel = Value (
   |
     /// The kernel's `ArgumentError`, which the classes here signal for an
@@ -41,8 +45,10 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `Set`.
     private Collection = kernel Collection.
     /// The kernel's `WeakArray`, which the `Collections` facet hands out.
+    /// It is the very class `platform kernel WeakArray` answers.
     private WeakArray = kernel WeakArray.
-    /// The kernel's `WeakMap`, which the `Collections` facet hands out.
+    /// The kernel's `WeakMap`, which the `Collections` facet hands out:
+    /// a map whose entries last only while their keys do.
     private WeakMap = kernel WeakMap.
   |
 ) (
@@ -51,94 +57,116 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// `WeakArray` and `WeakMap`; nothing else. Its own class is not among
   /// them, so a program makes no second namespace.
   private class Collections = Value () (
-    /// Answers the `List` class: `List new`, `List new: capacity` or
-    /// `List withAll: collection`.
+    /// Hands out the module's ordered, growable sequence: `List new`,
+    /// `List new: capacity` or `List withAll: collection`.
     ///
-    /// Signals what `Array new:` signals for a capacity that is no
-    /// Integer or is negative.
+    /// Signals nothing itself; `List new:` signals what `Array new:`
+    /// signals for a capacity that is no Integer or is negative.
+    ///
+    /// @answers the `List` class.
     public List = (
       ^outer CollectionsFactory List.
     )
 
-    /// Answers the `NotFound` class: an Error carrying the element or
+    /// Hands out the Error a collection signals for what it does not
+    /// hold.
+    ///
+    /// @answers the `NotFound` class: an Error carrying the element or
     /// key a collection was asked for and does not hold.
     public NotFound = (
       ^outer CollectionsFactory NotFound.
     )
 
-    /// Answers the `Map` class: `Map new`, `Map new: capacity` or
-    /// `Map withAll: aMap`.
+    /// Hands out the module's table from keys to values: `Map new`,
+    /// `Map new: capacity` or `Map withAll: aMap`.
     ///
-    /// Signals an ArgumentError, 'new: requires a capacity of at least
-    /// 0, got …', for a negative capacity; for a Float,
-    /// 'new: requires an Integer size, got …'; for an Integer whose
-    /// array size `(capacity + 1) * 2` is past the SmallInteger range
-    /// (a capacity from 2^59 - 1 on, or a LargeInteger) or too large to
-    /// allocate, 'new: cannot allocate an Array of … elements'; and a
-    /// MessageNotUnderstood for `<` for one that is no number. Both
-    /// texts show the array size, not the capacity.
+    /// Signals nothing itself; `Map new:` signals an ArgumentError,
+    /// 'new: requires a capacity of at least 0, got …', for a negative
+    /// capacity; for a Float, 'new: requires an Integer size, got …';
+    /// for an Integer whose array size `(capacity + 1) * 2` is past the
+    /// SmallInteger range (a capacity from 2^59 - 1 on, or a
+    /// LargeInteger) or too large to allocate, 'new: cannot allocate an
+    /// Array of … elements'; and a MessageNotUnderstood for `<` for one
+    /// that is no number. Both texts show the array size, not the
+    /// capacity.
+    ///
+    /// @answers the `Map` class.
     public Map = (
       ^outer CollectionsFactory Map.
     )
 
-    /// Answers the `IdentityMap` class: a Map comparing keys with `==`.
+    /// Hands out the module's Map comparing keys with `==`:
     /// `IdentityMap new`, `IdentityMap new: capacity` or
     /// `IdentityMap withAll: aMap`.
     ///
-    /// Signals what `Map new:` signals for a capacity.
+    /// Signals nothing itself; `IdentityMap new:` signals what `Map
+    /// new:` signals for a capacity.
+    ///
+    /// @answers the `IdentityMap` class.
+    /// @see `Map`.
     public IdentityMap = (
       ^outer CollectionsFactory IdentityMap.
     )
 
-    /// Answers the `Set` class: `Set new`, `Set new: capacity` or
-    /// `Set withAll: collection`.
+    /// Hands out the module's collection of distinct elements: `Set new`,
+    /// `Set new: capacity` or `Set withAll: collection`.
     ///
-    /// Signals an ArgumentError, 'new: requires a capacity of at least
-    /// 0, got …', for a negative capacity; for a Float,
-    /// 'new: requires an Integer size, got …'; for an Integer whose
-    /// `capacity + 1`, the size of the Set's `data_`, is past the
-    /// SmallInteger range (a capacity from 2^60 - 1 on, or a
-    /// LargeInteger) or too large to allocate, 'new: cannot allocate an
-    /// Array of … elements'; and a MessageNotUnderstood for `<` for one
-    /// that is no number. Both texts show `capacity + 1`, not the
-    /// capacity.
+    /// Signals nothing itself; `Set new:` signals an ArgumentError,
+    /// 'new: requires a capacity of at least 0, got …', for a negative
+    /// capacity; for a Float, 'new: requires an Integer size, got …';
+    /// for an Integer whose `capacity + 1`, the size of the Set's
+    /// `data_`, is past the SmallInteger range (a capacity from 2^60 - 1
+    /// on, or a LargeInteger) or too large to allocate, 'new: cannot
+    /// allocate an Array of … elements'; and a MessageNotUnderstood for
+    /// `<` for one that is no number. Both texts show `capacity + 1`,
+    /// not the capacity.
+    ///
+    /// @answers the `Set` class.
     public Set = (
       ^outer CollectionsFactory Set.
     )
 
-    /// Answers the kernel's `Collection` class, the abstract superclass
-    /// of `List`, `Map` and `Set`, for a program to subclass.
+    /// Hands out the abstract superclass of `List`, `Map` and `Set`, for
+    /// a program to subclass.
+    ///
+    /// @answers the kernel's `Collection` class.
     public Collection = (
       ^outer CollectionsFactory Collection.
     )
 
-    /// Answers the `ConcurrentModification` class: the Error a `List`,
-    /// `Map` or `Set` signals when it is changed while it is iterated.
-    /// It carries the collection in `collection`.
+    /// Hands out the Error a `List`, `Map` or `Set` signals when it is
+    /// changed while it is iterated. It carries the collection in
+    /// `collection`.
+    ///
+    /// @answers the `ConcurrentModification` class.
     public ConcurrentModification = (
       ^outer CollectionsFactory ConcurrentModification.
     )
 
-    /// Answers the kernel's `WeakArray` class, the one `platform kernel
-    /// WeakArray` answers: `WeakArray new: size`.
+    /// Hands out the kernel's weak array: `WeakArray new: size`.
     ///
     /// Signals nothing itself; `new:` signals an ArgumentError for a size
     /// that is negative or no Integer.
     ///
     /// Handed out here as well as by the kernel facet because a program
     /// asks for it here (`corpus/modules/Brazil.ns`).
+    ///
+    /// @answers the kernel's `WeakArray` class, the one `platform kernel
+    /// WeakArray` answers.
     public WeakArray = (
       ^outer CollectionsFactory WeakArray.
     )
 
-    /// Answers the kernel's `WeakMap` class, the one `platform kernel
-    /// WeakMap` answers: `WeakMap new`, a map whose entries last only while
-    /// their keys do.
+    /// Hands out the kernel's weak map: `WeakMap new`, a map whose
+    /// entries last only while their keys do.
     ///
     /// Signals nothing itself.
     ///
     /// Handed out here as well as by the kernel facet because a weak map
     /// is a collection a program looks for among the others.
+    ///
+    /// @answers the kernel's `WeakMap` class, the one `platform kernel
+    /// WeakMap` answers.
     public WeakMap = (
       ^outer CollectionsFactory WeakMap.
     )
@@ -163,9 +191,16 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// either end moves nothing; the representation is private, so that it
   /// can change without a subclass noticing, and `size_` alone is
   /// protected, as a subclass's view of the size.
+  ///
+  /// @factory makes an empty list with room for `capacity` elements before
+  /// it grows; `Array new:` is sent the capacity, and signals what it
+  /// signals for one that is no Integer or is negative.
+  /// @param capacity an Integer of at least 0: the number of elements the
+  /// list holds before its first growth.
   private class List new: capacity = Collection (
     |
       /// The number of elements.
+      /// Kept by every addition and removal; `size` answers it.
       protected size_ ::= 0.
       /// The index in `data` of the first element; 1 whenever the list
       /// is empty.
@@ -180,33 +215,39 @@ class CollectionsFactory usingKernel: kernel = Value (
       private modifications ::= 0.
     |
   ) (
-    /// Answers true: the receiver is a List.
+    /// Identifies the receiver as a List, without a class test.
+    ///
+    /// @answers true.
     public isKindOfList = (
       ^true.
     )
 
-    /// Answers the number of elements.
+    /// Reports the list's size, in constant time.
+    ///
+    /// @answers the number of elements, an Integer.
     public size = (
       ^size_.
     )
 
-    /// Answers whether the list holds no element.
+    /// Tests the list for elements, in constant time.
     ///
     /// The size is at hand; `Collection`'s would send `size`.
+    ///
+    /// @answers whether the list holds no element, a Boolean.
     public isEmpty = (
       ^0 = size_.
     )
 
-    /// Answers the element at `index`.
-    ///
-    /// index: an Integer from 1 to `size`.
-    ///
-    /// Signals an ArgumentError carrying `index`, 'index … out of
-    /// range: valid indices are 1..size (size …)', for any other
-    /// index, an index that is no Integer included.
+    /// Reads the element at `index`, in constant time.
     ///
     /// The check is written out, since every `at:` pays for it; an
     /// index that is no Integer is out of range too.
+    ///
+    /// @param index an Integer from 1 to `size`.
+    /// @answers the element at `index`.
+    /// @signals ArgumentError carrying `index`, 'index … out of range:
+    /// valid indices are 1..size (size …)', for any other index, an index
+    /// that is no Integer included.
     public at: index = (
       (index isKindOfInteger and: [(1 <= index) and: [index <= size_]]) ifFalse: [
         ^self indexOutOfRange: index.
@@ -214,14 +255,15 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^data at: firstIndex + index - 1.
     )
 
-    /// Replaces the element at `index` with `value` and answers `value`.
-    /// Not a change of the number of elements: an iteration running
-    /// meanwhile carries on, and sees `value` if it has not passed
-    /// `index` yet.
+    /// Replaces the element at `index` with `value`. Not a change of the
+    /// number of elements: an iteration running meanwhile carries on, and
+    /// sees `value` if it has not passed `index` yet.
     ///
-    /// index: an Integer from 1 to `size`.
-    ///
-    /// Signals the ArgumentError `at:` signals for any other index.
+    /// @param index an Integer from 1 to `size`.
+    /// @param value any object; stored as it is.
+    /// @answers `value`.
+    /// @signals ArgumentError the one `at:` signals for any other index.
+    /// @see `at:`.
     public at: index put: value = (
       (index isKindOfInteger and: [(1 <= index) and: [index <= size_]]) ifFalse: [
         ^self indexOutOfRange: index.
@@ -230,24 +272,28 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^value.
     )
 
-    /// Answers the first element.
+    /// Reads the element at index 1, in constant time.
     ///
-    /// Signals the ArgumentError of `at:`, carrying 1, for an empty
+    /// @answers the first element.
+    /// @signals ArgumentError the one of `at:`, carrying 1, for an empty
     /// list.
     public first = (
       ^self at: 1.
     )
 
-    /// Answers the last element.
+    /// Reads the element at index `size`, in constant time.
     ///
-    /// Signals the ArgumentError of `at:`, carrying 0, for an empty
+    /// @answers the last element.
+    /// @signals ArgumentError the one of `at:`, carrying 0, for an empty
     /// list.
     public last = (
       ^self at: size_.
     )
 
-    /// Appends `element` at the end, in amortized constant time, and
-    /// answers it.
+    /// Appends `element` at the end, in amortized constant time.
+    ///
+    /// @param element any object.
+    /// @answers `element`.
     public add: element = (
       |
         end ::= firstIndex + size_.
@@ -259,13 +305,19 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^element.
     )
 
-    /// Appends `element` at the end and answers it, as `add:` does.
+    /// Appends `element` at the end, as `add:` does.
+    ///
+    /// @param element any object.
+    /// @answers `element`.
+    /// @see `add:`.
     public addLast: element = (
       ^self add: element.
     )
 
-    /// Inserts `element` before the first, in amortized constant time,
-    /// and answers it.
+    /// Inserts `element` before the first, in amortized constant time.
+    ///
+    /// @param element any object.
+    /// @answers `element`.
     public addFirst: element = (
       firstIndex = 1 ifTrue: [makeRoomAtFront].
       firstIndex:: firstIndex - 1.
@@ -275,11 +327,12 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^element.
     )
 
-    /// Appends each element of `collection`, in its `do:` order, and
-    /// answers `collection`. The list itself as `collection` appends a
-    /// copy of its elements: `list addAll: list` doubles it.
+    /// Appends each element of `collection`, in its `do:` order. The list
+    /// itself as `collection` appends a copy of its elements:
+    /// `list addAll: list` doubles it.
     ///
-    /// collection: a Collection, or anything understanding `do:`.
+    /// @param collection a Collection, or anything understanding `do:`.
+    /// @answers `collection`.
     public addAll: collection = (
       (collection == self ifTrue: [self asArray] ifFalse: [collection]) do: [:element |
         self add: element.
@@ -287,15 +340,15 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^collection.
     )
 
-    /// Evaluates `action` with each element in turn, from the first, and
-    /// answers the receiver. Each element is read when the walk reaches
-    /// it, so one stored meanwhile by `at:put:` is seen.
+    /// Evaluates `action` with each element in turn, from the first. Each
+    /// element is read when the walk reaches it, so one stored meanwhile
+    /// by `at:put:` is seen.
     ///
-    /// action: a one-argument block, or anything understanding
-    ///     `value:`.
-    ///
-    /// Signals a ConcurrentModification after the evaluation of
-    /// `action` that added or removed an element.
+    /// @param action a one-argument block, or anything understanding
+    /// `value:`.
+    /// @answers the receiver.
+    /// @signals ConcurrentModification after the evaluation of `action`
+    /// that added or removed an element.
     public do: action = (
       |
         expected = modifications.
@@ -310,11 +363,12 @@ class CollectionsFactory usingKernel: kernel = Value (
     )
 
     /// Evaluates `action` with each index and the element there, from
-    /// the first, and answers the receiver.
+    /// the first.
     ///
-    /// action: a two-argument block, given the index and the element.
-    ///
-    /// Signals a ConcurrentModification as `do:` does.
+    /// @param action a two-argument block, given the index and the
+    /// element.
+    /// @answers the receiver.
+    /// @signals ConcurrentModification as `do:` does.
     public keysAndValuesDo: action = (
       |
         expected = modifications.
@@ -328,15 +382,16 @@ class CollectionsFactory usingKernel: kernel = Value (
       ].
     )
 
-    /// Answers whether `predicate` answers true for some element, tried
-    /// in turn from the first until one does; false for an empty list.
-    ///
-    /// predicate: a one-argument block answering a Boolean.
-    ///
-    /// Signals a ConcurrentModification as `do:` does.
+    /// Tries `predicate` on each element in turn, from the first, until
+    /// one answers true.
     ///
     /// Written out rather than inherited: `Collection`'s returns from a
     /// block, and the benchmarks ask it of their work lists.
+    ///
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers whether `predicate` answers true for some element, a
+    /// Boolean; false for an empty list.
+    /// @signals ConcurrentModification as `do:` does.
     public anySatisfy: predicate = (
       |
         expected = modifications.
@@ -351,9 +406,12 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^false.
     )
 
-    /// Answers the index of the first element `=` to `element`, or 0
-    /// when there is none. Each element is sent `=` with `element`,
-    /// from the first, until one answers true.
+    /// Finds `element` in the list: each element is sent `=` with
+    /// `element`, from the first, until one answers true.
+    ///
+    /// @param element any object; the argument of every `=`.
+    /// @answers the index of the first element `=` to `element`, or 0
+    /// when there is none.
     public indexOf: element = (
       |
         index ::= 0.
@@ -365,21 +423,24 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^0.
     )
 
-    /// Removes the first element `=` to `element` and answers it.
+    /// Removes the first element `=` to `element`.
     ///
-    /// Signals a NotFound carrying `element`, 'element not found: …'
-    /// and its `printString`, when there is none.
+    /// @param element any object.
+    /// @answers `element`.
+    /// @signals NotFound carrying `element`, 'element not found: …' and
+    /// its `printString`, when there is none.
     public remove: element = (
       ^self remove: element ifAbsent: [
         (NotFound element: element) signal: 'element not found: ' , element printString.
       ].
     )
 
-    /// Removes the first element `=` to `element` and answers
-    /// `element`; when there is none, answers the value of `onAbsent`
-    /// and leaves the list unchanged.
+    /// Removes the first element `=` to `element`; when there is none,
+    /// leaves the list unchanged.
     ///
-    /// onAbsent: anything understanding `value`.
+    /// @param element any object.
+    /// @param onAbsent anything understanding `value`.
+    /// @answers `element`; when there is none, the value of `onAbsent`.
     public remove: element ifAbsent: onAbsent = (
       |
         position ::= firstIndex.
@@ -395,9 +456,10 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^onAbsent value.
     )
 
-    /// Removes the first element and answers it, in constant time.
+    /// Removes the first element, in constant time.
     ///
-    /// Signals an Error, 'removeFirst: the List is empty', for an empty
+    /// @answers the element removed.
+    /// @signals Error 'removeFirst: the List is empty', for an empty
     /// list.
     public removeFirst = (
       |
@@ -412,10 +474,10 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^element.
     )
 
-    /// Removes the last element and answers it, in constant time.
+    /// Removes the last element, in constant time.
     ///
-    /// Signals an Error, 'removeLast: the List is empty', for an empty
-    /// list.
+    /// @answers the element removed.
+    /// @signals Error 'removeLast: the List is empty', for an empty list.
     public removeLast = (
       |
         last
@@ -431,12 +493,13 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^element.
     )
 
-    /// Removes every element and answers the receiver; the capacity
-    /// stays.
+    /// Removes every element; the capacity stays.
     ///
     /// A list emptied is usually filled again to about its old size:
     /// `benchmarks/are-we-fast-yet/Havlak.ns` empties and refills its
     /// lists for every loop search.
+    ///
+    /// @answers the receiver.
     public removeAll = (
       data:: Array new: data size.
       firstIndex:: 1.
@@ -445,12 +508,12 @@ class CollectionsFactory usingKernel: kernel = Value (
     )
 
     /// Removes every element for which `predicate` answers true, keeping
-    /// the order of the rest, and answers the receiver. `predicate` sees
-    /// every element once, in order, before anything is removed.
+    /// the order of the rest. `predicate` sees every element once, in
+    /// order, before anything is removed.
     ///
-    /// predicate: a one-argument block answering a Boolean.
-    ///
-    /// Signals a ConcurrentModification after the evaluation of
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers the receiver.
+    /// @signals ConcurrentModification after the evaluation of
     /// `predicate` that added or removed an element.
     public removeAllSuchThat: predicate = (
       |
@@ -487,24 +550,24 @@ class CollectionsFactory usingKernel: kernel = Value (
       modifications:: modifications + 1.
     )
 
-    /// Sorts the elements in place, stably, and answers the receiver.
-    /// Not a change of the number of elements: an iteration running
-    /// meanwhile carries on. The elements are sorted as a copy and
-    /// written back once the sort is done.
-    ///
-    /// lessOrEqual: a two-argument block answering whether its first
-    ///     argument may precede its second.
-    ///
-    /// Signals a ConcurrentModification, once the copy is sorted, when
-    /// an evaluation of `lessOrEqual` added or removed an element; the
-    /// sorted copy is then not written back, and the list stays as the
-    /// block left it. A store the block makes at an existing index
-    /// changes no count, so it is overwritten when the copy is written
-    /// back: `lessOrEqual` compares, and changes nothing.
+    /// Sorts the elements in place, stably. Not a change of the number of
+    /// elements: an iteration running meanwhile carries on. The elements
+    /// are sorted as a copy and written back once the sort is done. A
+    /// store the block makes at an existing index changes no count, so it
+    /// is overwritten when the copy is written back: `lessOrEqual`
+    /// compares, and changes nothing.
     ///
     /// The copy holds the elements the sort started with, so writing it
     /// back over a list whose block changed it would bring back a
     /// removed element or drop an added one, silently.
+    ///
+    /// @param lessOrEqual a two-argument block answering whether its
+    /// first argument may precede its second.
+    /// @answers the receiver.
+    /// @signals ConcurrentModification once the copy is sorted, when an
+    /// evaluation of `lessOrEqual` added or removed an element; the
+    /// sorted copy is then not written back, and the list stays as the
+    /// block left it.
     public sort: lessOrEqual = (
       |
         sorted
@@ -518,16 +581,20 @@ class CollectionsFactory usingKernel: kernel = Value (
       data replaceFrom: firstIndex to: firstIndex + size_ - 1 with: sorted startingAt: 1.
     )
 
-    /// Answers a new Array of the elements, in order.
+    /// Copies the elements out into an Array the list does not share.
+    ///
+    /// @answers a new Array of the elements, in order.
     public asArray = (
       ^data copyFrom: firstIndex to: firstIndex + size_ - 1.
     )
 
-    /// Answers a new List of the receiver's elements followed by those of
-    /// `collection`. The receiver is unchanged.
+    /// Concatenates the receiver and `collection` into a new list. The
+    /// receiver is unchanged.
     ///
-    /// collection: a Collection, or anything answering `size` and
-    ///     `do:`.
+    /// @param collection a Collection, or anything answering `size` and
+    /// `do:`.
+    /// @answers a new List of the receiver's elements followed by those
+    /// of `collection`.
     public , collection = (
       |
         result = List new: size_ + collection size.
@@ -538,26 +605,41 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^result.
     )
 
-    /// Answers a new List of the elements from `start` to `stop`; empty
-    /// when `stop` is `start - 1`. The receiver is unchanged.
+    /// Copies a run of the elements into a new list. The receiver is
+    /// unchanged.
     ///
-    /// Signals the ArgumentError of `Array>>copyFrom:to:` for a range
-    /// the list does not hold.
+    /// @param start an Integer, the index of the first element copied.
+    /// @param stop an Integer, the index of the last element copied;
+    /// `start - 1` for an empty copy.
+    /// @answers a new List of the elements from `start` to `stop`; empty
+    /// when `stop` is `start - 1`.
+    /// @signals ArgumentError the one of `Array>>copyFrom:to:` for a
+    /// range the list does not hold.
     public copyFrom: start to: stop = (
       ^List withAll: (self asArray copyFrom: start to: stop).
     )
 
-    /// Answers a new, empty List with room for `capacity` elements:
-    /// what `collect:`, `select:` and `reject:` fill.
+    /// Makes the empty list that `collect:`, `select:` and `reject:`
+    /// fill.
     ///
     /// `List`, not `self class`: a subclass's primary factory may take
     /// no capacity, as DeltaBlue's `Plan` takes none.
+    ///
+    /// @param capacity an Integer of at least 0, the number of elements
+    /// the answer is to have room for.
+    /// @answers a new, empty List with room for `capacity` elements.
     protected newForCollectUsingAdd: capacity = (
       ^List new: capacity.
     )
 
-    /// Signals the ArgumentError `Array>>at:` signals for `index`, with
-    /// the list's size, so a program sees one text from either.
+    /// Refuses `index` with the text `Array>>at:` signals, with the
+    /// list's size, so a program sees one text from either. It never
+    /// returns: an Error is not resumable.
+    ///
+    /// @param index the index `at:` or `at:put:` refused, any object.
+    /// @answers nothing; it never returns.
+    /// @signals ArgumentError carrying `index`, 'index … out of range:
+    /// valid indices are 1..size (size …)'.
     private indexOutOfRange: index = (
       ^(ArgumentError value: index) signal: 'index '
           , index printString
@@ -571,6 +653,10 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// Removes the element at `position` in `data`, closing the gap from
     /// the shorter side so that removing near either end moves little,
     /// and counts the change.
+    ///
+    /// @param position an index in `data` of an element: from
+    /// `firstIndex` to `firstIndex + size_ - 1`.
+    /// @answers the receiver.
     private removeAtDataIndex: position = (
       |
         last = firstIndex + size_ - 1.
@@ -588,12 +674,13 @@ class CollectionsFactory usingKernel: kernel = Value (
       modifications:: modifications + 1.
     )
 
-    /// Makes room after the last element and answers the index in
-    /// `data` where the next one goes: slides the elements to the start
-    /// when at least as many slots lie empty before them as they fill
-    /// -- the `removeFirst`s that emptied those slots pay for the move --
-    /// and otherwise copies them into an Array half as large again, plus
-    /// four, so that an Array of size 0 grows too.
+    /// Makes room after the last element: slides the elements to the
+    /// start when at least as many slots lie empty before them as they
+    /// fill -- the `removeFirst`s that emptied those slots pay for the
+    /// move -- and otherwise copies them into an Array half as large
+    /// again, plus four, so that an Array of size 0 grows too.
+    ///
+    /// @answers the index in `data` where the next element goes.
     private makeRoomAtEnd = (
       |
         grown
@@ -619,6 +706,8 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// again, plus four, leaving that room in front. Sliding whenever
     /// any slot is free would move every element for each `addFirst:`
     /// of a list rotated at its full size.
+    ///
+    /// @answers the receiver.
     private makeRoomAtFront = (
       |
         free = data size - size_.
@@ -643,16 +732,19 @@ class CollectionsFactory usingKernel: kernel = Value (
       firstIndex:: firstIndex + shift.
     )
   ) : (
-    /// Answers an empty List with room for 3 elements, `List new: 3`.
+    /// Makes an empty list of the default capacity, `List new: 3`.
+    ///
+    /// @answers an empty List with room for 3 elements.
     public new = (
       ^self new: 3.
     )
 
-    /// Answers a new List of `collection`'s elements, in its `do:`
-    /// order.
+    /// Makes a list of `collection`'s elements, sized to hold them.
     ///
-    /// collection: a Collection, or anything answering `size` and
-    ///     `do:`.
+    /// @param collection a Collection, or anything answering `size` and
+    /// `do:`.
+    /// @answers a new List of `collection`'s elements, in its `do:`
+    /// order.
     public withAll: collection = (
       ^(self new: collection size)
           addAll: collection;
@@ -677,20 +769,29 @@ class CollectionsFactory usingKernel: kernel = Value (
   private class ConcurrentModification = Error (
     |
       /// The collection that was changed while it was iterated.
+      /// Set by the class's `collection:` as the error is made; nil in one made by `new`.
       public collection ::= nil.
     |
   ) () : (
-    /// Answers a new ConcurrentModification carrying `modified`, not
-    /// yet signalled.
+    /// Makes the error for `modified`, not yet signalled.
+    ///
+    /// @param modified the collection found changed while it was
+    /// iterated.
+    /// @answers a new ConcurrentModification carrying `modified`.
     public collection: modified = (
       ^self new collection: modified.
     )
   )
 
-  /// Signals a ConcurrentModification carrying `collection`, its
+  /// Raises the error for a collection an iteration found changed. The
+  /// one place the error is raised, so every collection's text is one.
+  ///
+  /// @param collection the collection found changed.
+  /// @answers nothing: it never answers, since an Error is not
+  /// resumable.
+  /// @signals ConcurrentModification carrying `collection`, its
   /// messageText 'the collection was modified while it was being
-  /// iterated'. It never answers: an Error is not resumable. The one
-  /// place the error is raised, so every collection's text is one.
+  /// iterated'.
   private signalModificationOf: collection = (
     ^(ConcurrentModification collection: collection) signal: 'the collection was modified while it was being iterated'.
   )
@@ -700,16 +801,23 @@ class CollectionsFactory usingKernel: kernel = Value (
   private class NotFound = Error (
     |
       /// The element or key that was not found.
+      /// Set by the class's `element:` as the error is made; nil in one made by `new`.
       public element ::= nil.
     |
   ) (
-    /// Answers `messageText`, or, when it is nil, 'NotFound: ' and the
+    /// Describes the error: the text it was signalled with, else the
+    /// missing element or key.
+    ///
+    /// @answers `messageText`, or, when it is nil, 'NotFound: ' and the
     /// `printString` of the element.
     public description = (
       ^messageText isNil ifTrue: ['NotFound: ' , element printString] ifFalse: [messageText].
     )
   ) : (
-    /// Answers a new NotFound carrying `missing`, not yet signalled.
+    /// Makes the error for `missing`, not yet signalled.
+    ///
+    /// @param missing the element or key a collection does not hold.
+    /// @answers a new NotFound carrying `missing`.
     public element: missing = (
       ^self new element: missing.
     )
@@ -747,9 +855,16 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// test has the mark as the receiver of `==`, so a key's own `==` is
   /// never sent the array; and a rebuild replaces `data_`, dropping
   /// exactly the entries it marked.
+  ///
+  /// @factory makes an empty map with room for `capacity` keys before it
+  /// grows, its table built at once by `createTable:`, which signals for
+  /// a capacity that is negative or no Integer.
+  /// @param capacity an Integer of at least 0: the number of keys the map
+  /// holds before its first growth.
   private class Map new: capacity = Collection (
     |
       /// The number of keys the map holds.
+      /// A removed entry left in `data_` as a tombstone is not counted.
       private size_ ::= 0.
       /// The number of entries `data_` has been given since the table
       /// was last built, removed ones included: the next entry goes at
@@ -764,7 +879,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     |
     createTable: capacity.
   ) (
-    /// Answers true: the receiver is a Map.
+    /// Identifies the receiver as a Map, without a class test.
+    ///
+    /// @answers true.
     public isKindOfMap = (
       ^true.
     )
@@ -773,20 +890,26 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `rehash` whenever it is nil.
     private lazy hashtable_ ::= rehash.
 
-    /// Answers the number of keys.
+    /// Reports the map's size, in constant time.
+    ///
+    /// @answers the number of keys, an Integer.
     public size = (
       ^size_.
     )
 
-    /// Answers whether the map holds no key.
+    /// Tests the map for keys, in constant time.
+    ///
+    /// @answers whether the map holds no key, a Boolean.
     public isEmpty = (
       ^0 = size_.
     )
 
-    /// Answers the value stored under `key`.
+    /// Looks `key` up by its `hash`, comparing with `=`.
     ///
-    /// Signals a NotFound carrying `key`, 'key not found: …' and the
-    /// key's `printString`, when the map holds no such key.
+    /// @param key any object whose `hash` agrees with its `=`.
+    /// @answers the value stored under `key`.
+    /// @signals NotFound carrying `key`, 'key not found: …' and the key's
+    /// `printString`, when the map holds no such key.
     public at: key = (
       |
         keyIndex = scanFor: key in: hashtable_.
@@ -795,11 +918,14 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^data_ at: keyIndex + 1.
     )
 
-    /// Answers the value stored under `key`, or the value of `onAbsent`
-    /// when the map holds no such key.
+    /// Looks `key` up, falling back on `onAbsent` when the map holds no
+    /// such key.
     ///
-    /// onAbsent: anything understanding `value`; sent it only when the
-    ///     key is absent.
+    /// @param key any object whose `hash` agrees with its `=`.
+    /// @param onAbsent anything understanding `value`; sent it only when
+    /// the key is absent.
+    /// @answers the value stored under `key`, or the value of `onAbsent`
+    /// when the map holds no such key.
     public at: key ifAbsent: onAbsent = (
       |
         keyIndex = scanFor: key in: hashtable_.
@@ -808,18 +934,25 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^data_ at: keyIndex + 1.
     )
 
-    /// Answers the value stored under `key`; when the map holds no such
-    /// key, stores the value of `generator` under it and answers that.
+    /// Looks `key` up; when the map holds no such key, stores the value
+    /// of `generator` under it.
     ///
-    /// generator: anything understanding `value`; sent it only when the
-    ///     key is absent.
+    /// @param key any object whose `hash` agrees with its `=`.
+    /// @param generator anything understanding `value`; sent it only when
+    /// the key is absent.
+    /// @answers the value stored under `key`, or the value of `generator`
+    /// just stored there.
     public at: key ifAbsentPut: generator = (
       ^self at: key ifAbsent: [self at: key put: generator value].
     )
 
-    /// Stores `value` under `key` and answers `value`. A new key comes
-    /// last in the order and counts as a change for an iteration
-    /// running meanwhile; an existing key keeps its place and does not.
+    /// Stores `value` under `key`. A new key comes last in the order and
+    /// counts as a change for an iteration running meanwhile; an existing
+    /// key keeps its place and does not.
+    ///
+    /// @param key any object whose `hash` agrees with its `=`.
+    /// @param value any object.
+    /// @answers `value`.
     public at: key put: value = (
       |
         table = hashtable_.
@@ -830,26 +963,33 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^value.
     )
 
-    /// Answers whether the map holds `key`.
+    /// Looks `key` up without reading its value.
+    ///
+    /// @param key any object whose `hash` agrees with its `=`.
+    /// @answers whether the map holds `key`, a Boolean.
     public includesKey: key = (
       ^(scanFor: key in: hashtable_) > 0.
     )
 
-    /// Removes `key` and answers the value it had.
+    /// Removes `key` and its value.
     ///
-    /// Signals a NotFound carrying `key`, 'key not found: …' and the
-    /// key's `printString`, when the map holds no such key.
+    /// @param key any object whose `hash` agrees with its `=`.
+    /// @answers the value `key` had.
+    /// @signals NotFound carrying `key`, 'key not found: …' and the key's
+    /// `printString`, when the map holds no such key.
     public removeKey: key = (
       ^self removeKey: key ifAbsent: [
         (NotFound element: key) signal: 'key not found: ' , key printString.
       ].
     )
 
-    /// Removes `key` and answers the value it had; when the map holds no
-    /// such key, answers the value of `onAbsent` and leaves the map
-    /// unchanged.
+    /// Removes `key` and its value; when the map holds no such key,
+    /// leaves the map unchanged.
     ///
-    /// onAbsent: anything understanding `value`.
+    /// @param key any object whose `hash` agrees with its `=`.
+    /// @param onAbsent anything understanding `value`.
+    /// @answers the value `key` had; when the map holds no such key, the
+    /// value of `onAbsent`.
     public removeKey: key ifAbsent: onAbsent = (
       |
         keyIndex = scanFor: key in: hashtable_.
@@ -864,33 +1004,34 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^value.
     )
 
-    /// Removes every key and answers the receiver; the capacity stays.
+    /// Removes every key; the capacity stays.
     ///
     /// `benchmarks/are-we-fast-yet/Havlak.ns` empties its map for every
     /// loop search and fills it again with as many nodes.
+    ///
+    /// @answers the receiver.
     public removeAll = (
       createTable: data_ size // 2 - 1.
       modifications:: modifications + 1.
     )
 
-    /// Stores every key and value of `aMap` in the receiver, in
-    /// `aMap`'s order, and answers `aMap`. The receiver itself as
-    /// `aMap` changes nothing.
+    /// Stores every key and value of `aMap` in the receiver, in `aMap`'s
+    /// order. The receiver itself as `aMap` changes nothing.
     ///
-    /// aMap: a Map, or anything understanding `keysAndValuesDo:`.
+    /// @param aMap a Map, or anything understanding `keysAndValuesDo:`.
+    /// @answers `aMap`.
     public addAll: aMap = (
       aMap keysAndValuesDo: [:key :value | self at: key put: value].
       ^aMap.
     )
 
-    /// Evaluates `action` with each value, in the order of the keys, and
-    /// answers the receiver.
+    /// Evaluates `action` with each value, in the order of the keys.
     ///
-    /// action: a one-argument block, or anything understanding
-    ///     `value:`.
-    ///
-    /// Signals a ConcurrentModification after the evaluation of
-    /// `action` that added or removed a key.
+    /// @param action a one-argument block, or anything understanding
+    /// `value:`.
+    /// @answers the receiver.
+    /// @signals ConcurrentModification after the evaluation of `action`
+    /// that added or removed a key.
     public do: action = (
       |
         data = data_.
@@ -908,11 +1049,11 @@ class CollectionsFactory usingKernel: kernel = Value (
     )
 
     /// Evaluates `action` with each key and its value, in the order of
-    /// the keys, and answers the receiver.
+    /// the keys.
     ///
-    /// action: a two-argument block, given the key and the value.
-    ///
-    /// Signals a ConcurrentModification as `do:` does.
+    /// @param action a two-argument block, given the key and the value.
+    /// @answers the receiver.
+    /// @signals ConcurrentModification as `do:` does.
     public keysAndValuesDo: action = (
       |
         data = data_.
@@ -929,23 +1070,28 @@ class CollectionsFactory usingKernel: kernel = Value (
       ].
     )
 
-    /// Answers a new Array of the keys, in their order.
+    /// Copies the keys out into an Array the map does not share.
+    ///
+    /// @answers a new Array of the keys, in their order.
     public keys = (
       ^self entriesAt: 0.
     )
 
-    /// Answers a new Array of the values, in the order of the keys.
+    /// Copies the values out into an Array the map does not share.
+    ///
+    /// @answers a new Array of the values, in the order of the keys.
     public values = (
       ^self entriesAt: 1.
     )
 
-    /// Answers a new map, from `newForCollectUsingAdd:` -- a Map, an
-    /// IdentityMap for an IdentityMap -- holding each key with
-    /// `transform`'s answer for its value, in the same order.
+    /// Maps every value through `transform`, keeping the keys, into a new
+    /// map from `newForCollectUsingAdd:` -- a Map, an IdentityMap for an
+    /// IdentityMap.
     ///
-    /// transform: a one-argument block, given a value.
-    ///
-    /// Signals a ConcurrentModification as `keysAndValuesDo:` does.
+    /// @param transform a one-argument block, given a value.
+    /// @answers the new map, holding each key with `transform`'s answer
+    /// for its value, in the same order.
+    /// @signals ConcurrentModification as `keysAndValuesDo:` does.
     public collect: transform = (
       |
         result = self newForCollectUsingAdd: size_.
@@ -954,14 +1100,14 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^result.
     )
 
-    /// Answers a new map, from `newForCollectUsingAdd:`, holding the
-    /// keys whose values `predicate` answers true for, with their
-    /// values, in the same order.
+    /// Keeps the entries whose values `predicate` answers true for, in a
+    /// new map from `newForCollectUsingAdd:`.
     ///
-    /// predicate: a one-argument block answering a Boolean, given a
-    ///     value.
-    ///
-    /// Signals a ConcurrentModification as `keysAndValuesDo:` does.
+    /// @param predicate a one-argument block answering a Boolean, given a
+    /// value.
+    /// @answers the new map, holding the keys whose values `predicate`
+    /// answers true for, with their values, in the same order.
+    /// @signals ConcurrentModification as `keysAndValuesDo:` does.
     public select: predicate = (
       |
         result = self newForCollectUsingAdd: size_.
@@ -972,34 +1118,42 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^result.
     )
 
-    /// Answers a new map, from `newForCollectUsingAdd:`, holding the
-    /// keys whose values `predicate` answers false for, with their
-    /// values, in the same order.
+    /// Drops the entries whose values `predicate` answers true for, in a
+    /// new map from `newForCollectUsingAdd:`.
     ///
-    /// predicate: a one-argument block answering a Boolean, given a
-    ///     value.
-    ///
-    /// Signals a ConcurrentModification as `keysAndValuesDo:` does.
+    /// @param predicate a one-argument block answering a Boolean, given a
+    /// value.
+    /// @answers the new map, holding the keys whose values `predicate`
+    /// answers false for, with their values, in the same order.
+    /// @signals ConcurrentModification as `keysAndValuesDo:` does.
     public reject: predicate = (
       ^self select: [:value | (predicate value: value) not].
     )
 
-    /// Answers a new, empty Map with room for `capacity` keys: what
-    /// `collect:`, `select:` and `reject:` fill.
+    /// Makes the empty map that `collect:`, `select:` and `reject:`
+    /// fill.
+    ///
+    /// @param capacity an Integer of at least 0, the number of keys the
+    /// answer is to have room for.
+    /// @answers a new, empty Map with room for `capacity` keys.
     protected newForCollectUsingAdd: capacity = (
       ^Map new: capacity.
     )
 
-    /// Answers `data_` itself, not a copy: the keys and values side by
-    /// side, each removed entry's key the array itself. For a
-    /// subclass's own `scanFor:in:`, which reads it and must neither
-    /// store into it nor hand it on, since the array is the removed
-    /// mark and no key may be it.
+    /// Hands a subclass's own `scanFor:in:` the data array, which reads
+    /// it and must neither store into it nor hand it on, since the array
+    /// is the removed mark and no key may be it.
+    ///
+    /// @answers `data_` itself, not a copy: the keys and values side by
+    /// side, each removed entry's key the array itself.
     protected dataForScan = (
       ^data_.
     )
 
-    /// Answers a new Array of the live entries' keys (`offset` 0) or
+    /// Copies the live entries' keys or values out, in storing order.
+    ///
+    /// @param offset 0 for the keys, 1 for the values.
+    /// @answers a new Array of the live entries' keys (`offset` 0) or
     /// values (`offset` 1), in storing order.
     private entriesAt: offset = (
       |
@@ -1021,14 +1175,7 @@ class CollectionsFactory usingKernel: kernel = Value (
 
     /// Empties the map with room for `count + 1` entries -- `data_` of
     /// twice that, the table of `(count + 1) * 4 // 3` buckets, never
-    /// fewer than the entries `data_` has room for -- and answers the
-    /// new table.
-    ///
-    /// count: an Integer of at least 0.
-    ///
-    /// Signals an ArgumentError carrying `count`, 'new: requires a
-    /// capacity of at least 0, got …', for a negative `count`, and what
-    /// `Array new:` signals for a size that is no Integer or too large.
+    /// fewer than the entries `data_` has room for.
     ///
     /// The table has at least as many buckets as `data_` has entries,
     /// and `insert:` rebuilds the map the moment `data_` is full, so no
@@ -1038,6 +1185,13 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// The table is filled by `whileTrue:`, which the compiler inlines,
     /// rather than `to:do:`, which is a send: a closure and an activation
     /// per bucket, on every growth and every `removeAll`.
+    ///
+    /// @param count an Integer of at least 0.
+    /// @answers the new table.
+    /// @signals ArgumentError carrying `count`, 'new: requires a capacity
+    /// of at least 0, got …', for a negative `count`.
+    /// @signals ArgumentError the one `Array new:` signals for a size
+    /// that is no Integer or too large.
     private createTable: count = (
       |
         table
@@ -1061,8 +1215,15 @@ class CollectionsFactory usingKernel: kernel = Value (
     )
 
     /// Stores a new entry at the end of `data_`, its index in the empty
-    /// bucket `bucketIndex` of `table`, counts it as a change, grows the
-    /// map when `data_` is full, and answers `value`.
+    /// bucket `bucketIndex` of `table`, counts it as a change, and grows
+    /// the map when `data_` is full.
+    ///
+    /// @param key the new key, which the map does not hold.
+    /// @param value its value, any object.
+    /// @param bucketIndex the empty bucket of `table` where `key` belongs:
+    /// the negation of what `scanFor:in:` answered for it.
+    /// @param table the map's current table.
+    /// @answers `value`.
     private insert: key value: value at: bucketIndex in: table = (
       |
         keyIndex = used_ * 2 + 1.
@@ -1079,8 +1240,9 @@ class CollectionsFactory usingKernel: kernel = Value (
 
     /// Builds a new table, with room for twice the live entries, from
     /// the live entries of `data_` in their order, dropping the removed
-    /// ones, and answers it. Runs when `data_` is full, and when the
-    /// table slot is nil.
+    /// ones. Runs when `data_` is full, and when the table slot is nil.
+    ///
+    /// @answers the new table.
     private rehash = (
       |
         oldData = data_.
@@ -1105,25 +1267,26 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^table.
     )
 
-    /// Answers the index in `data_` of the key `=` to `key`, or the
-    /// negated index of the empty bucket of `table` where `key`
-    /// belongs. Probes from the bucket of `key`'s `hash` onwards,
-    /// passing removed entries without comparing them; `key` is the
-    /// receiver of every `=`, and its `hash` and `=` are all it is
+    /// Finds `key` in `table`: probes from the bucket of `key`'s `hash`
+    /// onwards, passing removed entries without comparing them; `key` is
+    /// the receiver of every `=`, and its `hash` and `=` are all it is
     /// sent.
-    ///
-    /// table: the table of the indices in `data_`, `hashtable_` or
-    ///     the one `rehash` is building.
-    ///
-    /// Signals what `key`'s `hash` and `=` signal. A `hash` answering
-    /// no Integer is sent `\\` with the table's size, and signals what
-    /// that signals: a MessageNotUnderstood of `\\` for an object that
-    /// does not define it, a Float among them.
     ///
     /// The probe is written out here and again, with `identityHash` and
     /// `==`, in IdentityMap, rather than sending a protected hook for
     /// the hash and the comparison: a self-send per probe step is a
     /// send and an activation on every lookup.
+    ///
+    /// @param key any object.
+    /// @param table the table of the indices in `data_`, `hashtable_` or
+    /// the one `rehash` is building.
+    /// @answers the index in `data_` of the key `=` to `key`, or the
+    /// negated index of the empty bucket of `table` where `key` belongs.
+    /// @signals Error every one `key`'s `hash` and `=` signal. A `hash`
+    /// answering no Integer is sent `\\` with the table's size, and
+    /// signals what that signals.
+    /// @signals MessageNotUnderstood of `\\`, for a `hash` answering an
+    /// object that does not define it, a Float among them.
     protected scanFor: key in: table = (
       |
         data = data_.
@@ -1141,16 +1304,18 @@ class CollectionsFactory usingKernel: kernel = Value (
       ].
     )
 
-    /// Answers the index of the first empty bucket of `table` from the
-    /// bucket of `key`'s `hash` onwards: where a key not yet in it goes.
-    /// Sends `key` only `hash`.
-    ///
-    /// table: a table of indices in `data_` with an empty bucket.
-    ///
-    /// Signals what `key`'s `hash` signals, and for a `hash` answering
-    /// no Integer what `scanFor:in:` signals for one.
+    /// Finds where a key not yet in `table` goes, probing from the bucket
+    /// of `key`'s `hash` onwards. Sends `key` only `hash`.
     ///
     /// Written out again in IdentityMap, as `scanFor:in:` is.
+    ///
+    /// @param key any object the table does not hold.
+    /// @param table a table of indices in `data_` with an empty bucket.
+    /// @answers the index of the first empty bucket of `table` from the
+    /// bucket of `key`'s `hash` onwards.
+    /// @signals Error every one `key`'s `hash` signals, and for a `hash`
+    /// answering no Integer every one `scanFor:in:` signals for one.
+    /// @see `scanFor:in:`.
     protected emptyBucketFor: key in: table = (
       |
         tableSize = table size.
@@ -1162,15 +1327,18 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^bucketIndex.
     )
   ) : (
-    /// Answers an empty map with room for 3 keys, `new: 3`.
+    /// Makes an empty map of the default capacity, `new: 3`.
+    ///
+    /// @answers an empty map with room for 3 keys.
     public new = (
       ^self new: 3.
     )
 
-    /// Answers a new map of `aMap`'s keys and values, in its order.
+    /// Makes a map of `aMap`'s keys and values, sized to hold them.
     ///
-    /// aMap: a Map, or anything answering `size` and understanding
-    ///     `keysAndValuesDo:`.
+    /// @param aMap a Map, or anything answering `size` and understanding
+    /// `keysAndValuesDo:`.
+    /// @answers a new map of `aMap`'s keys and values, in its order.
     public withAll: aMap = (
       ^(self new: aMap size)
           addAll: aMap;
@@ -1184,28 +1352,37 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// as in a Map, since a value's `==` is its `=` and its `identityHash`
   /// its `hash`. Everything else is Map's: the order, removal,
   /// ConcurrentModification.
+  ///
+  /// @factory makes an empty identity map with room for `capacity` keys
+  /// before it grows, as `Map new:` makes a map, and signals what it
+  /// signals for a capacity.
+  /// @param capacity an Integer of at least 0: the number of keys the map
+  /// holds before its first growth.
   private class IdentityMap new: capacity = Map new: capacity () (
-    /// Answers true: the receiver is an IdentityMap.
+    /// Identifies the receiver as an IdentityMap, without a class test.
+    ///
+    /// @answers true.
     public isKindOfIdentityMap = (
       ^true.
     )
 
-    /// Answers the index in the map's data array of the key `==` to
-    /// `key`, or the negated index of the empty bucket of `table` where
-    /// `key` belongs. Probes from the bucket of `key`'s `identityHash`
-    /// onwards, passing removed entries without comparing them; each
-    /// stored key on the way is compared by sending `==` to `key` with
-    /// it as the argument, so `identityHash` and `==` are all `key` is
-    /// sent.
-    ///
-    /// table: the table of the indices in the data array, as Map's
-    ///     `scanFor:in:` takes it.
-    ///
-    /// Signals what `key`'s `identityHash` and `==` signal.
+    /// Finds `key` in `table`: probes from the bucket of `key`'s
+    /// `identityHash` onwards, passing removed entries without comparing
+    /// them; each stored key on the way is compared by sending `==` to
+    /// `key` with it as the argument, so `identityHash` and `==` are all
+    /// `key` is sent.
     ///
     /// Map's probe written out with `identityHash` and `==`, for the
     /// reason Map's gives. The removed-mark test has the mark as its
     /// receiver, so `key`'s own `==` is never sent the data array.
+    ///
+    /// @param key any object.
+    /// @param table the table of the indices in the data array, as Map's
+    /// `scanFor:in:` takes it.
+    /// @answers the index in the map's data array of the key `==` to
+    /// `key`, or the negated index of the empty bucket of `table` where
+    /// `key` belongs.
+    /// @signals Error every one `key`'s `identityHash` and `==` signal.
     protected scanFor: key in: table = (
       |
         data = self dataForScan.
@@ -1223,15 +1400,18 @@ class CollectionsFactory usingKernel: kernel = Value (
       ].
     )
 
-    /// Answers the index of the first empty bucket of `table` from the
-    /// bucket of `key`'s `identityHash` onwards: where a key not yet in
-    /// it goes. Sends `key` only `identityHash`.
-    ///
-    /// table: a table of indices in the data array with an empty
-    ///     bucket.
+    /// Finds where a key not yet in `table` goes, probing from the bucket
+    /// of `key`'s `identityHash` onwards. Sends `key` only
+    /// `identityHash`.
     ///
     /// Map's written out with `identityHash`, for the reason Map's
     /// `scanFor:in:` gives.
+    ///
+    /// @param key any object the table does not hold.
+    /// @param table a table of indices in the data array with an empty
+    /// bucket.
+    /// @answers the index of the first empty bucket of `table` from the
+    /// bucket of `key`'s `identityHash` onwards.
     protected emptyBucketFor: key in: table = (
       |
         tableSize = table size.
@@ -1243,18 +1423,23 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^bucketIndex.
     )
 
-    /// Answers a new, empty IdentityMap with room for `capacity` keys:
-    /// what `collect:`, `select:` and `reject:` fill.
+    /// Makes the empty identity map that `collect:`, `select:` and
+    /// `reject:` fill.
+    ///
+    /// @param capacity an Integer of at least 0, the number of keys the
+    /// answer is to have room for.
+    /// @answers a new, empty IdentityMap with room for `capacity` keys.
     protected newForCollectUsingAdd: capacity = (
       ^IdentityMap new: capacity.
     )
 
-    /// Stores `value` under `key`, which the map must hold already, and
-    /// answers `value`.
+    /// Stores `value` under `key`, which the map must hold already.
     ///
-    /// Signals a NotFound carrying `key`, 'key not found: …' and the
-    /// key's `printString`, when the map holds no such key, and stores
-    /// nothing.
+    /// @param key any object.
+    /// @param value any object.
+    /// @answers `value`.
+    /// @signals NotFound carrying `key`, 'key not found: …' and the key's
+    /// `printString`, when the map holds no such key, and stores nothing.
     public at: key putReplace: value = (
       (self includesKey: key) ifFalse: [
         ^(NotFound element: key) signal: 'key not found: ' , key printString.
@@ -1262,33 +1447,45 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^self at: key put: value.
     )
 
-    /// Stores `value` under `key` when the map holds no such key, and
-    /// answers true; answers false, storing nothing, when it does.
+    /// Stores `value` under `key` when the map holds no such key; stores
+    /// nothing when it does.
+    ///
+    /// @param key any object.
+    /// @param value any object.
+    /// @answers true when `value` was stored, false when the map held
+    /// `key` already.
     public at: key ifAbsentPutVal: value = (
       (self includesKey: key) ifTrue: [^false].
       self at: key put: value.
       ^true.
     )
 
-    /// Answers the value stored under `key`, or `key` itself when the
+    /// Looks `key` up, falling back on `key` itself.
+    ///
+    /// @param key any object.
+    /// @answers the value stored under `key`, or `key` itself when the
     /// map holds no such key.
     public atOrItself: key = (
       ^self at: key ifAbsent: [key].
     )
   ) : (
-    /// Answers an empty identity map with room for 3 keys, `new: 3`.
+    /// Makes an empty identity map of the default capacity, `new: 3`.
     ///
     /// A class side is not inherited, so the factories `Map` declares
     /// are declared here again.
+    ///
+    /// @answers an empty identity map with room for 3 keys.
     public new = (
       ^self new: 3.
     )
 
-    /// Answers a new identity map of `aMap`'s keys and values, in its
-    /// order.
+    /// Makes an identity map of `aMap`'s keys and values, sized to hold
+    /// them.
     ///
-    /// aMap: a Map, or anything answering `size` and understanding
-    ///     `keysAndValuesDo:`.
+    /// @param aMap a Map, or anything answering `size` and understanding
+    /// `keysAndValuesDo:`.
+    /// @answers a new identity map of `aMap`'s keys and values, in its
+    /// order.
     public withAll: aMap = (
       ^(self new: aMap size)
           addAll: aMap;
@@ -1313,9 +1510,16 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// elements in `data_` in adding order, `hashtable_` of their indices,
   /// `data_` itself overwriting a removed element as the removed mark, for
   /// Map's reasons.
+  ///
+  /// @factory makes an empty set with room for `capacity` elements before
+  /// it grows, its table built at once by `createTable:`, which signals
+  /// for a capacity that is negative or no Integer.
+  /// @param capacity an Integer of at least 0: the number of elements the
+  /// set holds before its first growth.
   private class Set new: capacity = Collection (
     |
       /// The number of elements the set holds.
+      /// A removed element, overwritten in `data_` by the mark, is not counted.
       private size_ ::= 0.
       /// The number of entries `data_` has been given since the table
       /// was last built, removed ones included: the next goes at
@@ -1330,7 +1534,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     |
     createTable: capacity.
   ) (
-    /// Answers true: the receiver is a Set.
+    /// Identifies the receiver as a Set, without a class test.
+    ///
+    /// @answers true.
     public isKindOfSet = (
       ^true.
     )
@@ -1339,20 +1545,26 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// `rehash` whenever it is nil.
     private lazy hashtable_ ::= rehash.
 
-    /// Answers the number of elements.
+    /// Reports the set's size, in constant time.
+    ///
+    /// @answers the number of elements, an Integer.
     public size = (
       ^size_.
     )
 
-    /// Answers whether the set holds no element.
+    /// Tests the set for elements, in constant time.
+    ///
+    /// @answers whether the set holds no element, a Boolean.
     public isEmpty = (
       ^0 = size_.
     )
 
     /// Adds `element` last in the order, or replaces the element `=` to
-    /// it that the set holds, which keeps its place; answers `element`.
-    /// Only adding counts as a change for an iteration running
-    /// meanwhile.
+    /// it that the set holds, which keeps its place. Only adding counts
+    /// as a change for an iteration running meanwhile.
+    ///
+    /// @param element any object whose `hash` agrees with its `=`.
+    /// @answers `element`.
     public add: element = (
       |
         table = hashtable_.
@@ -1363,11 +1575,11 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^element.
     )
 
-    /// Adds each element of `collection`, in its `do:` order, and
-    /// answers `collection`. The set itself as `collection` changes
-    /// nothing.
+    /// Adds each element of `collection`, in its `do:` order. The set
+    /// itself as `collection` changes nothing.
     ///
-    /// collection: a Collection, or anything understanding `do:`.
+    /// @param collection a Collection, or anything understanding `do:`.
+    /// @answers `collection`.
     public addAll: collection = (
       (collection == self ifTrue: [self asArray] ifFalse: [collection]) do: [:element |
         self add: element.
@@ -1375,27 +1587,34 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^collection.
     )
 
-    /// Answers whether the set holds an element `=` to `element`, found
-    /// by its `hash`.
+    /// Looks `element` up by its `hash`, comparing with `=`.
+    ///
+    /// @param element any object whose `hash` agrees with its `=`.
+    /// @answers whether the set holds an element `=` to `element`, a
+    /// Boolean.
     public includes: element = (
       ^(scanFor: element in: hashtable_) > 0.
     )
 
-    /// Removes the element `=` to `element` and answers `element`.
+    /// Removes the element `=` to `element`.
     ///
-    /// Signals a NotFound carrying `element`, 'element not found: …'
-    /// and its `printString`, when the set holds none.
+    /// @param element any object whose `hash` agrees with its `=`.
+    /// @answers `element`.
+    /// @signals NotFound carrying `element`, 'element not found: …' and
+    /// its `printString`, when the set holds none.
     public remove: element = (
       ^self remove: element ifAbsent: [
         (NotFound element: element) signal: 'element not found: ' , element printString.
       ].
     )
 
-    /// Removes the element `=` to `element` and answers `element`; when
-    /// the set holds none, answers the value of `onAbsent` and leaves
-    /// the set unchanged.
+    /// Removes the element `=` to `element`; when the set holds none,
+    /// leaves the set unchanged.
     ///
-    /// onAbsent: anything understanding `value`.
+    /// @param element any object whose `hash` agrees with its `=`.
+    /// @param onAbsent anything understanding `value`.
+    /// @answers `element`; when the set holds none, the value of
+    /// `onAbsent`.
     public remove: element ifAbsent: onAbsent = (
       |
         index = scanFor: element in: hashtable_.
@@ -1407,12 +1626,15 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^element.
     )
 
-    /// Removes each element of `collection`, in its `do:` order, and
-    /// answers `collection`. The set itself as `collection` empties it.
+    /// Removes each element of `collection`, in its `do:` order. The set
+    /// itself as `collection` empties it.
     ///
-    /// Signals a NotFound carrying the first element of `collection`
-    /// the set does not hold, as `remove:` does; the elements before it
-    /// are removed.
+    /// @param collection a Collection, or anything understanding `do:`.
+    /// @answers `collection`.
+    /// @signals NotFound carrying the first element of `collection` the
+    /// set does not hold, as `remove:` does; the elements before it are
+    /// removed.
+    /// @see `remove:`.
     public removeAll: collection = (
       (collection == self ifTrue: [self asArray] ifFalse: [collection]) do: [:element |
         self remove: element.
@@ -1420,13 +1642,13 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^collection.
     )
 
-    /// Removes every element for which `predicate` answers true and
-    /// answers the receiver. `predicate` sees every element once, in
-    /// order, before anything is removed.
+    /// Removes every element for which `predicate` answers true.
+    /// `predicate` sees every element once, in order, before anything is
+    /// removed.
     ///
-    /// predicate: a one-argument block answering a Boolean.
-    ///
-    /// Signals a ConcurrentModification after the evaluation of
+    /// @param predicate a one-argument block answering a Boolean.
+    /// @answers the receiver.
+    /// @signals ConcurrentModification after the evaluation of
     /// `predicate` that added or removed an element.
     public removeAllSuchThat: predicate = (
       |
@@ -1445,21 +1667,21 @@ class CollectionsFactory usingKernel: kernel = Value (
       1 to: count do: [:index | self remove: (doomed at: index)].
     )
 
-    /// Removes every element and answers the receiver; the capacity
-    /// stays.
+    /// Removes every element; the capacity stays.
+    ///
+    /// @answers the receiver.
     public removeAll = (
       createTable: data_ size - 1.
       modifications:: modifications + 1.
     )
 
-    /// Evaluates `action` with each element, in adding order, and
-    /// answers the receiver.
+    /// Evaluates `action` with each element, in adding order.
     ///
-    /// action: a one-argument block, or anything understanding
-    ///     `value:`.
-    ///
-    /// Signals a ConcurrentModification after the evaluation of
-    /// `action` that added or removed an element.
+    /// @param action a one-argument block, or anything understanding
+    /// `value:`.
+    /// @answers the receiver.
+    /// @signals ConcurrentModification after the evaluation of `action`
+    /// that added or removed an element.
     public do: action = (
       |
         data = data_.
@@ -1478,7 +1700,9 @@ class CollectionsFactory usingKernel: kernel = Value (
       ].
     )
 
-    /// Answers a new Array of the elements, in adding order.
+    /// Copies the elements out into an Array the set does not share.
+    ///
+    /// @answers a new Array of the elements, in adding order.
     public asArray = (
       |
         result = Array new: size_.
@@ -1494,26 +1718,30 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^result.
     )
 
-    /// Answers a new, empty Set with room for `capacity` elements: what
-    /// `collect:`, `select:` and `reject:` fill.
+    /// Makes the empty set that `collect:`, `select:` and `reject:` fill.
+    ///
+    /// @param capacity an Integer of at least 0, the number of elements
+    /// the answer is to have room for.
+    /// @answers a new, empty Set with room for `capacity` elements.
     protected newForCollectUsingAdd: capacity = (
       ^Set new: capacity.
     )
 
     /// Empties the set with room for `count + 1` elements, the table of
     /// `(count + 1) * 4 // 3` buckets, never fewer than the elements
-    /// `data_` has room for, and answers the new table.
-    ///
-    /// count: an Integer of at least 0.
-    ///
-    /// Signals an ArgumentError carrying `count`, 'new: requires a
-    /// capacity of at least 0, got …', for a negative `count`, and what
-    /// `Array new:` signals for a size that is no Integer or too large.
+    /// `data_` has room for.
     ///
     /// As in Map: the table has at least as many buckets as `data_` has
     /// slots, and `insert:` rebuilds the set the moment `data_` is
     /// full, so no probe runs on a full table. Filled by `whileTrue:`
     /// rather than `to:do:`, as Map's table is.
+    ///
+    /// @param count an Integer of at least 0.
+    /// @answers the new table.
+    /// @signals ArgumentError carrying `count`, 'new: requires a capacity
+    /// of at least 0, got …', for a negative `count`.
+    /// @signals ArgumentError the one `Array new:` signals for a size
+    /// that is no Integer or too large.
     private createTable: count = (
       |
         table
@@ -1537,8 +1765,14 @@ class CollectionsFactory usingKernel: kernel = Value (
     )
 
     /// Stores `element` at the end of `data_`, its index in the empty
-    /// bucket `bucketIndex` of `table`, counts it as a change, grows the
-    /// set when `data_` is full, and answers `element`.
+    /// bucket `bucketIndex` of `table`, counts it as a change, and grows
+    /// the set when `data_` is full.
+    ///
+    /// @param element the new element, none `=` to which the set holds.
+    /// @param bucketIndex the empty bucket of `table` where `element`
+    /// belongs: the negation of what `scanFor:in:` answered for it.
+    /// @param table the set's current table.
+    /// @answers `element`.
     private insert: element at: bucketIndex in: table = (
       |
         index = used_ + 1.
@@ -1554,11 +1788,13 @@ class CollectionsFactory usingKernel: kernel = Value (
 
     /// Builds a new table, with room for twice the live elements, from
     /// the live elements of `data_` in their order, dropping the
-    /// removed ones, and answers it. Runs when `data_` is full, and when
-    /// the table slot is nil.
+    /// removed ones. Runs when `data_` is full, and when the table slot
+    /// is nil.
     ///
     /// A `whileTrue:` loop rather than `to:do:`, for the reason Map's
     /// `createTable:` gives: it runs once per element on every growth.
+    ///
+    /// @answers the new table.
     private rehash = (
       |
         oldData = data_.
@@ -1580,14 +1816,18 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^table.
     )
 
-    /// Answers the index in `data_` of the element `=` to `element`, or
-    /// the negated index of the empty bucket of `table` where it
-    /// belongs. Probes from its `hash` bucket onwards, passing removed
-    /// elements without comparing them; `element` is the receiver of
-    /// every `=`.
+    /// Finds `element` in `table`: probes from its `hash` bucket onwards,
+    /// passing removed elements without comparing them; `element` is the
+    /// receiver of every `=`.
     ///
-    /// Signals what `element`'s `hash` and `=` signal, and for a `hash`
-    /// answering no Integer what Map's `scanFor:in:` signals for one.
+    /// @param element any object.
+    /// @param table the table of the indices in `data_`, `hashtable_` or
+    /// the one `rehash` is building.
+    /// @answers the index in `data_` of the element `=` to `element`, or
+    /// the negated index of the empty bucket of `table` where it belongs.
+    /// @signals Error every one `element`'s `hash` and `=` signal, and for
+    /// a `hash` answering no Integer every one Map's `scanFor:in:` signals
+    /// for one.
     private scanFor: element in: table = (
       |
         data = data_.
@@ -1605,9 +1845,13 @@ class CollectionsFactory usingKernel: kernel = Value (
       ].
     )
 
-    /// Answers the index of the first empty bucket of `table` from
-    /// `element`'s `hash` bucket onwards: where an element not yet in it
-    /// goes.
+    /// Finds where an element not yet in `table` goes, probing from
+    /// `element`'s `hash` bucket onwards.
+    ///
+    /// @param element any object the table does not hold.
+    /// @param table a table of indices in `data_` with an empty bucket.
+    /// @answers the index of the first empty bucket of `table` from
+    /// `element`'s `hash` bucket onwards.
     private emptyBucketFor: element in: table = (
       |
         tableSize = table size.
@@ -1619,16 +1863,19 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^bucketIndex.
     )
   ) : (
-    /// Answers an empty Set with room for 3 elements, `Set new: 3`.
+    /// Makes an empty set of the default capacity, `Set new: 3`.
+    ///
+    /// @answers an empty Set with room for 3 elements.
     public new = (
       ^self new: 3.
     )
 
-    /// Answers a new Set of `collection`'s elements, in its `do:` order,
-    /// equal ones merged.
+    /// Makes a set of `collection`'s elements, sized to hold them all.
     ///
-    /// collection: a Collection, or anything answering `size` and
-    ///     `do:`.
+    /// @param collection a Collection, or anything answering `size` and
+    /// `do:`.
+    /// @answers a new Set of `collection`'s elements, in its `do:` order,
+    /// equal ones merged.
     public withAll: collection = (
       ^(self new: collection size)
           addAll: collection;
@@ -1636,9 +1883,11 @@ class CollectionsFactory usingKernel: kernel = Value (
     )
   )
 
-  /// Answers a new `Collections` namespace: the facet `platform
-  /// collections` answers, and the one public member of the module, named
-  /// `build` like every shipped factory's.
+  /// Builds the collections namespace: the one public member of the
+  /// module, named `build` like every shipped factory's.
+  ///
+  /// @answers a new `Collections` namespace: the facet `platform
+  /// collections` answers.
   public build = (
     ^Collections new.
   )
