@@ -1,7 +1,7 @@
 # Editor support — the language server and the JetBrains plugin
 
 > **Status:** **Built:** the language server (`crates/ns-analyzer/`: `analysis.rs`,
-> `semantic_tokens.rs`, `folding.rs`, `document_symbols.rs`, `hints/`,
+> `semantic_tokens.rs`, `hover.rs`, `folding.rs`, `document_symbols.rs`, `hints/`,
 > `code_actions.rs`, the formatting answer in `server.rs`; on
 > `ns_syntax::parse_for_editor` and `resolve_for_editor` in
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
@@ -10,7 +10,8 @@
 > the run markers share in `lsp/DocumentSymbolCache.kt`, the editing aids in
 > the `editor` package, every text in `messages/NewspeakBundle.properties`)
 > both exist: highlighting, a block of `///` lines in the doc-comment
-> colour and rendered in place as Markdown, errors as you type, code folding with one-line
+> colour and rendered in place as Markdown, a hover over a name showing its
+> declaration's signature and doc comment, errors as you type, code folding with one-line
 > methods shown on one line, hints with their quick fixes, a structure view
 > with breadcrumbs, Reformat Code, and typing in the formatter's
 > indentation and width, in every commercial JetBrains IDE from 2026.1.4, kept while a file has
@@ -33,7 +34,7 @@ runs a single module from its `main:args:`.
 
 ## Scope
 
-**In scope.** Six capabilities, in every commercial JetBrains IDE:
+**In scope.** Seven capabilities, in every commercial JetBrains IDE:
 
 1. **Highlighting** — keywords, strings, symbols, numbers, comments,
    selectors, and, once the server has analysed the file, what the resolver
@@ -54,6 +55,10 @@ runs a single module from its `main:args:`.
    AST ("Structure").
 6. **Formatting** — Reformat Code rewrites the file in the formatter's one
    layout ("Formatting"; [formatting.md](formatting.md)).
+7. **Documentation** — a block of `///` lines is a doc comment, coloured as
+   Java's and rendered in place as Markdown; a hover over a name the server
+   places at a declaration of the file shows that declaration's signature
+   and doc comment ("Hover").
 
 Beside them, for a project's `newspeak.json`: completion and validation from
 the project file's schema, and running and benchmarking the project from the
@@ -422,6 +427,45 @@ by its `.`; a `)` that does not end its line is therefore no method's. A
 body with a `///` (it would hide the `)` shown after it), a body that is
 only a comment, one whose brackets do not balance, and one longer folded
 than the formatter's 100 columns stay open.
+
+### Hover
+
+`textDocument/hover` over a name answers the declaration it names, in
+Markdown: the signature in a ` ```newspeak ` block, then the declaration's
+doc comment, then the class it is a member of (`*In* `Counter``, or
+`` `Counter`'s class side``). A client that reads the block as the
+definition shows it as one, highlighted as Newspeak -- the JetBrains
+platform does for a hover that starts with a fenced block
+(`createLspDocumentationData`, 2026.2.3), which is how its Quick
+Documentation shows the signature above the text as Java's does; the plugin
+needs no code for it, the platform's `LspHoverSupport` being the default.
+
+**Which name names what** is the classifier's decision, the one that colours
+it (`semantic_tokens.rs`; "Classification" above), so a hover and a colour never
+disagree: beside each name's colour it records the declaration's node the
+name names (`Reference`), and each declaration's parts (`Declared`). A
+declaration's own name names it; a parameter's or a local's use, the
+innermost declaration of that name, as the resolver bound it; a send the
+resolver binds lexically (`LexicalSend`, a slot's setter included), the
+member of the class at its depth, the factory of a class side its class;
+an inherited member, which the file does not declare, a send to an object,
+`super`'s and `outer`'s, none. The server sees one file, so a name another
+module declares has no hover.
+
+| Declaration | Signature, its whitespace runs one space |
+|---|---|
+| Class | the header up to the instance side's `(`: `class Shapes usingPlatform: platform = Object new` |
+| Method | the pattern up to the body's `(`, its `=` left out: `public grow: amount <Integer> by: step` |
+| Slot, local | the declaration, its `.` left out; past 80 characters its initializer is `...`: `private count ::= 0` |
+| Parameter | the name and its type: `amount <Integer>` |
+
+**The doc comment** is the plugin's (`NewspeakDocComments`): a block of two
+or more `///` lines, attached before the declaration (`Anchor::Before`,
+`Placement::OwnLine`) and ending on the line right above it. A single `///`
+line, a `(* *)` comment and one a blank line away are no doc comment; the
+user decided so, so that what shows green and renders in the editor is what
+a hover shows. Its text is `Comment::text`'s, read as Markdown by the
+client.
 
 ### Hints
 
@@ -937,7 +981,17 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
 `inspect`:
 
 - positions — byte offset to UTF-16 with non-ASCII text, umlauts and emoji
-  (surrogate pairs), at line ends and at the end of the file;
+  (surrogate pairs), at line ends and at the end of the file, and back: every
+  character's offset read back from its position, a position past its line
+  or inside a surrogate pair clamped, a line the text lacks refused;
+- hover (`hover.rs`) — a method over each keyword of its pattern and of a
+  send bound to it, with its doc comment and its class; a class over its
+  declaration and a use; a slot over its name, its setter and a read, and a
+  long one's initializer left out; a parameter with its type and a local; a
+  single `///` line and a comment a blank line away showing none; a
+  class-side method and the factory a send names; a send to an object and
+  an inherited member answering no hover; and over the protocol, the
+  capability and a hover's Markdown and range (`protocol.rs`);
 - diagnostics — one `indoc!` module each with a lexer, a parser and a resolver
   error, checking range and message; a lexer error's findings come first, the
   parser's after them, and a syntax error keeps the names around it

@@ -1419,13 +1419,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   enclosing object and a module can be instantiated with different
   arguments, so only running the instantiation knows, and the analyzer
   never runs a program.
-- **A hover with the comment above a declaration.** `textDocument/hover` on
-  a class, slot or method shows the `Comment::text` of the `///` block (or
-  `(* ... *)`) directly above its declaration, rendered as Markdown.
-  `ns_syntax::Comment` answers the text, and the attachment puts the
-  comment above a declaration on it (`Before`); what is missing is the
-  request in the server ([frontend.md](design/frontend.md), "Comments";
-  [editor-support.md](design/editor-support.md)).
 - **Hints for a class's header slots**, deferred (decided with the user on
   2026-10-14): the hints are given for the locals of methods and closures
   only. A header slot needs more than its class's text to prove a fix

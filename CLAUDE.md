@@ -114,7 +114,8 @@ Rust 1.98.0, edition 2021, seven crates:
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols, formatting,
-  hints and their quick fixes);
+  hints and their quick fixes, and a hover with a declaration's signature
+  and doc comment);
   `dump-tokens`, which the JetBrains plugin's lexer is checked against;
   `parse`, `parse-corpus`, `disasm` and `inspect`; and `fmt`, the one command
   that writes, which rewrites `.ns` files in the formatter's layout

@@ -53,6 +53,28 @@ impl LineIndex {
         let character = text[line_start..offset].encode_utf16().count();
         Position::new(lsp_number(line), lsp_number(character))
     }
+
+    /// The byte offset of LSP `position` in `text`, the inverse of
+    /// `position`: its character counted in UTF-16 code units, one past the
+    /// end of its line answering the line's end, one inside a surrogate pair
+    /// the character's start. `None` for a line the text does not have.
+    pub fn offset(&self, text: &str, position: Position) -> Option<u32> {
+        let line_start = *self.line_starts.get(position.line as usize)? as usize;
+        let line_end = self
+            .line_starts
+            .get(position.line as usize + 1)
+            .map_or(text.len(), |next| *next as usize);
+        let line = text.get(line_start..line_end)?;
+        let line = line.trim_end_matches(['\n', '\r']);
+        let mut units = 0;
+        for (index, character) in line.char_indices() {
+            units += character.len_utf16();
+            if units > position.character as usize {
+                return u32::try_from(line_start + index).ok();
+            }
+        }
+        u32::try_from(line_start + line.len()).ok()
+    }
 }
 
 /// The length of `span` in `text`, in UTF-16 code units.
@@ -136,6 +158,33 @@ mod tests {
         assert_eq!(lsp_number(u32::MAX as usize + 1), u32::MAX);
         assert_eq!(lsp_number(usize::MAX), u32::MAX);
         assert_eq!(lsp_number(7), 7);
+    }
+
+    /// Every offset at a character's start, on every kind of line break,
+    /// comes back from its position.
+    #[test]
+    fn an_offset_is_its_position_read_back() {
+        let text = "a'😀'ä\r\nb\rc\n";
+        let index = LineIndex::new(text);
+        for (offset, _) in text.char_indices() {
+            let offset = u32::try_from(offset).expect("a short text");
+            let position = index.position(text, offset);
+            let line_end = text[offset as usize..].starts_with(['\r', '\n']);
+            if !line_end {
+                assert_eq!(index.offset(text, position), Some(offset), "{position:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_position_past_its_line_or_inside_a_pair_is_clamped() {
+        let text = "'😀'\nb";
+        let index = LineIndex::new(text);
+        assert_eq!(index.offset(text, Position::new(0, 99)), Some(6));
+        // Inside the surrogate pair: the emoji's start.
+        assert_eq!(index.offset(text, Position::new(0, 2)), Some(1));
+        assert_eq!(index.offset(text, Position::new(1, 0)), Some(7));
+        assert_eq!(index.offset(text, Position::new(2, 0)), None);
     }
 
     #[test]
