@@ -58,6 +58,7 @@ first.
 | The handler search as a leaf: `activationNextHandler:` walks the frames and reifies only the `on:do:` activation it answers | Complete | 2026-10-27 | [handler-search-leaf](superpowers/plans/2026-10-27-0126-handler-search-leaf.md) |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `Array>>do:`, and a loop in the reference lowering | Complete | 2026-10-27 | [loop-bodies](superpowers/plans/2026-10-27-1529-loop-bodies.md) |
 | Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows | In progress | 2026-11-01 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md) |
+| A one-line method in the JetBrains plugin folded as Java's one-liners: brackets and their spaces in the folds, the server's method fold containing them | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
 
 ## Notes
@@ -6661,3 +6662,18 @@ What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
 measurement, next; a nested class's accessor on a private chain, which
 costs CD 3% in churn; a symbol literal's leaf call, about a seventh of
 DeltaBlue's run; and what stage 4's reviews and measurement left.
+
+## A one-line method folded as Java's one-liners (2026-11-01)
+
+A one-line method's two folds in the JetBrains plugin are laid out as
+Java's: the first hides the spaces before the `(`, the `(` and the line
+break after it, shown as ` ( `; the second the line break and the `)`,
+shown as ` )`; a click on either bracket opens the method. The platform
+refuses a fold that partly overlaps one already in the editor, so the
+server's fold of a method body now starts at the same spaces, collapsed to
+` (...)`, and contains both in either order (`editor-support.md`,
+"One-line methods" and the table of fold ranges). With the setting off
+there are no one-line folds, as in Java.
+
+- `478f16e2` -- the folds laid out as Java's.
+- `0f682c52` -- the server's method fold containing them.
