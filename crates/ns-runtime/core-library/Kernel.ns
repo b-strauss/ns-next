@@ -3,9 +3,6 @@
 /// the Booleans, nil's class, the classes of class objects and the
 /// exceptions. The host instantiates it once, at boot.
 ///
-/// mirror: the VM mirror, which the host alone holds; every native
-/// operation of these classes is a send to it.
-///
 /// The core library (`docs/design/core-library.md`, "The core library as
 /// Newspeak source over a VM mirror"). One nested class per builtin class;
 /// the bootstrap fills the builtin class objects from them before it
@@ -30,6 +27,13 @@
 ///
 /// The kernel declares itself a value so that every builtin value class,
 /// nested here, meets §3.1.1's enclosing-object condition.
+///
+/// @factory makes the kernel module over `mirror`, which it copies into
+/// `vmMirror` and hands to nothing; the host sends it once, at boot, after
+/// the bootstrap has filled the builtin class objects from the nested
+/// classes.
+/// @param mirror the VM mirror, which the host alone holds; every native
+/// operation of these classes is a send to it.
 class Kernel vmMirror: mirror = Value (
   |
     /// The VM mirror the factory was given: the one object through which
@@ -53,70 +57,85 @@ class Kernel vmMirror: mirror = Value (
   /// protocol, `halt` and `doesNotUnderstand:` -- and, to itself alone, its
   /// class and the class accessors.
   public class Object = Top () (
-    /// Answers the receiver's class: the class object it was
-    /// instantiated from, a value class's per enclosing object.
+    /// Reads the receiver's class, to the receiver's own sends only.
     ///
     /// Protected, so that holding an instance does not hand out its
     /// class -- its factory, its class side's state, a subclass in the
     /// instance's environment: `self class` and `super class` reach it,
     /// `other class` falls to `doesNotUnderstand:`. On the class side
     /// `self class` answers the metaclass.
+    ///
+    /// @answers the receiver's class: the class object it was
+    /// instantiated from, a value class's per enclosing object.
     protected class = (
       ^vmMirror objectClass: self ifFail: [^super class].
     )
 
-    /// Answers whether `other` is the receiver itself.
+    /// Tests the receiver's identity with `other`.
     ///
-    /// other: any object. Two Floats of the same bits are the same
+    /// @param other any object. Two Floats of the same bits are the same
     /// object; nothing else is compared by content.
+    /// @answers whether `other` is the receiver itself, a Boolean.
     public == other = (
       ^vmMirror object: self identicalTo: other ifFail: [^super == other].
     )
 
-    /// Answers whether `other` is the receiver itself: an object without
-    /// an `=` of its own equals only itself.
+    /// Compares the receiver with `other` by identity: an object without
+    /// an `=` of its own equals only itself. It never signals.
     ///
-    /// other: any object; never signals.
+    /// @param other any object.
+    /// @answers whether `other` is the receiver itself, a Boolean.
     public = other = (
       ^vmMirror object: self equals: other ifFail: [^super = other].
     )
 
-    /// Answers the receiver's identity hash, an Integer that stays the
+    /// Hashes the receiver by its identity, so that the hash agrees with
+    /// `=`, which is identity here.
+    ///
+    /// @answers the receiver's identity hash, an Integer that stays the
     /// same for the object's lifetime and agrees with `==`.
     public hash = (
       ^vmMirror objectHash: self ifFail: [^super hash].
     )
 
-    /// Answers the String 'an Object', a new String on every send.
+    /// Describes the receiver only as an Object: whatever its class, this
+    /// method's text is the same.
+    ///
+    /// @answers the String 'an Object', a new String on every send.
     public printString = (
       ^vmMirror objectPrintString: self ifFail: [^super printString].
     )
 
-    /// Answers the receiver.
+    /// Does nothing, for a cascade: `(Array new: 2) at: 1 put: x;
+    /// yourself` answers the array, not the last message's answer.
     ///
-    /// For a cascade: `(Array new: 2) at: 1 put: x; yourself` answers
-    /// the array, not the last message's answer.
+    /// @answers the receiver.
     public yourself = (
       ^self.
     )
 
-    /// Answers the receiver's identity hash, an Integer that stays the
-    /// same for its lifetime; a value overrides it with its `hash`.
+    /// Hashes the receiver by its identity, whatever its `hash` is; a
+    /// value overrides it with its `hash`.
+    ///
+    /// @answers the receiver's identity hash, an Integer that stays the
+    /// same for its lifetime.
     public identityHash = (
       ^vmMirror objectHash: self ifFail: [^super identityHash].
     )
 
     /// Signals an Error saying that the method which sent it is
-    /// abstract: 'Collection>>do: is abstract: Nothing must implement
-    /// it' -- the class declaring the sending method and its selector,
-    /// then the class of the receiver -- or 'a method is abstract: …'
-    /// when the sender is no method. What an abstract method's body
-    /// sends, `^self subclassResponsibility`. It never answers: an
-    /// Error is not resumable, so a handler can only end the `on:do:`
-    /// that caught it.
+    /// abstract. What an abstract method's body sends,
+    /// `^self subclassResponsibility`. It never answers: an Error is not
+    /// resumable, so a handler can only end the `on:do:` that caught it.
     ///
     /// The name is read off the sending activation, which only the
     /// kernel reaches: a program sees the Error, never the activation.
+    ///
+    /// @answers nothing; it never returns.
+    /// @signals Error 'Collection>>do: is abstract: Nothing must implement
+    /// it' -- the class declaring the sending method and its selector,
+    /// then the class of the receiver -- or 'a method is abstract: …'
+    /// when the sender is no method.
     protected subclassResponsibility = (
       |
         current = vmMirror currentActivation: self ifFail: [nil].
@@ -129,7 +148,8 @@ class Kernel vmMirror: mirror = Value (
           , ' must implement it'.
     )
 
-    /// Answers the kernel's class `Object`.
+    /// Names the kernel's class `Object` for a bare `Object` that nothing
+    /// nearer declares.
     ///
     /// §3.2: Object "provides ... accessors for predefined classes and
     /// objects, such as the classes of the built-in literals", so a bare
@@ -144,94 +164,146 @@ class Kernel vmMirror: mirror = Value (
     /// implicit-receiver send and reaches them from a subclass, a block
     /// and the class side alike; `other Integer` falls to
     /// `doesNotUnderstand:`.
+    ///
+    /// @answers the kernel's class `Object`, the same class on every send.
     protected Object = (
       ^outer Kernel Object.
     )
 
-    /// Answers the kernel's class `Value`.
+    /// Names the kernel's class `Value` for a bare `Value` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `Value`, the same class on every send.
     protected Value = (
       ^outer Kernel Value.
     )
 
-    /// Answers the kernel's class `Boolean`.
+    /// Names the kernel's class `Boolean` for a bare `Boolean` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `Boolean`, the same class on every send.
     protected Boolean = (
       ^outer Kernel Boolean.
     )
 
-    /// Answers the kernel's class `True`.
+    /// Names the kernel's class `True` for a bare `True` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `True`, the same class on every send.
     protected True = (
       ^outer Kernel True.
     )
 
-    /// Answers the kernel's class `False`.
+    /// Names the kernel's class `False` for a bare `False` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `False`, the same class on every send.
     protected False = (
       ^outer Kernel False.
     )
 
-    /// Answers the kernel's class `Number`.
+    /// Names the kernel's class `Number` for a bare `Number` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `Number`, the same class on every send.
     protected Number = (
       ^outer Kernel Number.
     )
 
-    /// Answers the kernel's class `Integer`.
+    /// Names the kernel's class `Integer` for a bare `Integer` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `Integer`, the same class on every send.
     protected Integer = (
       ^outer Kernel Integer.
     )
 
-    /// Answers the kernel's class `Float`.
+    /// Names the kernel's class `Float` for a bare `Float` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `Float`, the same class on every send.
     protected Float = (
       ^outer Kernel Float.
     )
 
-    /// Answers the kernel's class `Fraction`, whose class side makes an
-    /// exact quotient of two integers.
+    /// Names the kernel's class `Fraction` for a bare `Fraction` that
+    /// nothing nearer declares.
+    ///
+    /// @answers the kernel's class `Fraction`, whose class side makes an
+    /// exact quotient of two integers, the same class on every send.
     protected Fraction = (
       ^outer Kernel Fraction.
     )
 
-    /// Answers the kernel's class `String`.
+    /// Names the kernel's class `String` for a bare `String` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `String`, the same class on every send.
     protected String = (
       ^outer Kernel String.
     )
 
-    /// Answers the kernel's class `Symbol`.
+    /// Names the kernel's class `Symbol` for a bare `Symbol` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `Symbol`, the same class on every send.
     protected Symbol = (
       ^outer Kernel Symbol.
     )
 
-    /// Answers the kernel's class `UndefinedObject`, nil's class.
+    /// Names the kernel's class `UndefinedObject` for a bare
+    /// `UndefinedObject` that nothing nearer declares.
+    ///
+    /// @answers the kernel's class `UndefinedObject`, nil's class, the
+    /// same class on every send.
     protected UndefinedObject = (
       ^outer Kernel UndefinedObject.
     )
 
-    /// Answers the kernel's class `Array`.
+    /// Names the kernel's class `Array` for a bare `Array` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `Array`, the same class on every send.
     protected Array = (
       ^outer Kernel Array.
     )
 
-    /// Answers the kernel's class `ByteArray`.
+    /// Names the kernel's class `ByteArray` for a bare `ByteArray` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `ByteArray`, the same class on every send.
     protected ByteArray = (
       ^outer Kernel ByteArray.
     )
 
-    /// Answers the kernel's class `Closure`.
+    /// Names the kernel's class `Closure` for a bare `Closure` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `Closure`, the same class on every send.
     protected Closure = (
       ^outer Kernel Closure.
     )
 
-    /// Answers the kernel's class `Exception`, the root of every
-    /// exception: `Exception signal: 'text'` signals a new one.
+    /// Names the kernel's class `Exception` for a bare `Exception` that
+    /// nothing nearer declares.
     ///
     /// `Exception` and `Error` are the two roots a program signals or
     /// catches most; they reach no host, so every object may name them.
     /// The other exception classes stay with `platform kernel`.
+    ///
+    /// @answers the kernel's class `Exception`, the root of every
+    /// exception: `Exception signal: 'text'` signals a new one. The same
+    /// class on every send.
     protected Exception = (
       ^outer Kernel Exception.
     )
 
-    /// Answers the kernel's class `Error`, the exception a handler can
-    /// only end, never resume: `Error signal: 'text'` signals a new
-    /// one.
+    /// Names the kernel's class `Error` for a bare `Error` that nothing
+    /// nearer declares.
+    ///
+    /// @answers the kernel's class `Error`, the exception a handler can
+    /// only end, never resume: `Error signal: 'text'` signals a new one.
+    /// The same class on every send.
     protected Error = (
       ^outer Kernel Error.
     )
@@ -239,13 +311,8 @@ class Kernel vmMirror: mirror = Value (
     /// What a send the receiver does not understand runs instead. A
     /// unary selector of eight characters or more that begins with
     /// `isKindOf` answers false. Any other message signals a
-    /// `MessageNotUnderstood` carrying `message` and the receiver, its
-    /// `messageText` 'an object does not understand #…' naming the
-    /// selector, and answers the value a handler resumes it with; once
-    /// the exception has reached its default handler and the run
-    /// carries on, the message is sent again and its answer answered.
-    ///
-    /// message: the `Message` nothing understood.
+    /// `MessageNotUnderstood`; once the exception has reached its default
+    /// handler and the run carries on, the message is sent again.
     ///
     /// §5.5: protected, so an explicit-receiver send of it finds nothing
     /// through lookupPublic and falls to the access-blind "defined for"
@@ -256,6 +323,15 @@ class Kernel vmMirror: mirror = Value (
     /// debugger, once the missing method has been created -- the message
     /// is sent again, into the new method. A unary selector that begins
     /// with `isKindOf` answers false instead.
+    ///
+    /// @param message the `Message` nothing understood.
+    /// @answers false for a unary `isKindOf…` selector; for any other, the
+    /// value a handler resumes the `MessageNotUnderstood` with, or, once it
+    /// has reached its default handler and the run carries on, the answer
+    /// of the message sent again.
+    /// @signals MessageNotUnderstood carrying `message` and the receiver,
+    /// its `messageText` 'an object does not understand #…' naming the
+    /// selector, for every message but a unary `isKindOf…` one.
     protected doesNotUnderstand: message = (
       |
         exception
@@ -278,56 +354,72 @@ class Kernel vmMirror: mirror = Value (
       ^value.
     )
 
-    /// Answers false: the receiver is not nil.
+    /// Tells whether the receiver is nil, which it is not.
     ///
     /// Every object but nil is not nil, and `UndefinedObject` answers the
     /// other way. A block for the not-nil case is culled with the
     /// receiver, as the Newspeak corpus relies on, passing `[:x | ...]`
     /// and `[...]` alike. Every body is a quick method
     /// (`docs/design/core-library.md`, "The nil protocol").
+    ///
+    /// @answers false: the receiver is not nil.
     public isNil = (
       ^false.
     )
 
-    /// Answers true: the receiver is not nil.
+    /// Tells whether the receiver is anything but nil, which it is.
+    ///
+    /// @answers true: the receiver is not nil.
     public notNil = (
       ^true.
     )
 
-    /// Answers the receiver; `block` is not evaluated.
+    /// Leaves the receiver as it is: it is not nil, so `block` is not
+    /// evaluated.
     ///
-    /// block: any object.
+    /// @param block any object.
+    /// @answers the receiver.
     public ifNil: block = (
       ^self.
     )
 
-    /// Answers the value of `block`, given the receiver when it takes
-    /// an argument.
+    /// Evaluates `block`, since the receiver is not nil, giving it the
+    /// receiver when it takes an argument.
     ///
-    /// block: a block of no argument or one, or anything understanding
-    /// `cull:`; sent `cull:` with the receiver.
+    /// @param block a block of no argument or one, or anything
+    /// understanding `cull:`; sent `cull:` with the receiver.
+    /// @answers the value of `block`.
     public ifNotNil: block = (
       ^block cull: self.
     )
 
-    /// Answers the value of `notNilBlock`, given the receiver when it
-    /// takes an argument; `nilBlock` is not evaluated.
+    /// Evaluates `notNilBlock`, since the receiver is not nil, giving it
+    /// the receiver when it takes an argument; `nilBlock` is not
+    /// evaluated.
     ///
-    /// nilBlock: any object.
-    /// notNilBlock: as `ifNotNil:`'s block.
+    /// @param nilBlock any object.
+    /// @param notNilBlock as `ifNotNil:`'s block.
+    /// @answers the value of `notNilBlock`.
     public ifNil: nilBlock ifNotNil: notNilBlock = (
       ^notNilBlock cull: self.
     )
 
     /// As `ifNil:ifNotNil:`, its arguments in the other order.
+    ///
+    /// @param notNilBlock as `ifNotNil:`'s block.
+    /// @param nilBlock any object; not evaluated.
+    /// @answers the value of `notNilBlock`.
+    /// @see `ifNil:ifNotNil:`.
     public ifNotNil: notNilBlock ifNil: nilBlock = (
       ^notNilBlock cull: self.
     )
 
-    /// Signals a new `Halt` and answers the value a handler resumes it
-    /// with; unhandled, it ends the run.
+    /// Signals a new `Halt`; unhandled, it ends the run.
     ///
     /// Its `defaultAction` is the hook the debugger will replace.
+    ///
+    /// @answers the value a handler resumes the Halt with.
+    /// @signals Halt a new one, without a `messageText`.
     public halt = (
       ^outer Kernel Halt new signal.
     )
@@ -344,13 +436,10 @@ class Kernel vmMirror: mirror = Value (
   /// object's state lives in the runtime (heap record); these three carry
   /// behaviour only. `Object` declares no accessor for any of them.
   public class Behavior = Object () (
-    /// Answers whether `other` is the receiver or, for a class object
-    /// whose enclosing object is a value, a class object of the same
-    /// declaration whose enclosing object and superclass are equal to
-    /// the receiver's, compared with `=`.
-    ///
-    /// other: any object; never signals itself, though an enclosing
-    /// object's own `=` may.
+    /// Compares the receiver with `other`: by identity, or, for a class
+    /// object whose enclosing object is a value, by declaration,
+    /// enclosing object and superclass. It never signals itself, though
+    /// an enclosing object's own `=` may.
     ///
     /// A class object that is a value has no identity: two are equal
     /// when they apply one mixin application to equal enclosing objects
@@ -362,42 +451,64 @@ class Kernel vmMirror: mirror = Value (
     /// asks of a value's identity method, and forwards to the same leaf
     /// rather than sending `=`, so that comparing two class objects
     /// with `==` costs no activation.
+    ///
+    /// @param other any object.
+    /// @answers whether `other` is the receiver or, for a class object
+    /// whose enclosing object is a value, a class object of the same
+    /// declaration whose enclosing object and superclass are equal to the
+    /// receiver's, compared with `=`. A Boolean wherever the leaf decides;
+    /// where it declines, what `behaviorEquals:` answers.
+    /// @see `behaviorEquals:`.
     public = other = (
       ^vmMirror value: self sameAs: other ifFail: [^self behaviorEquals: other].
     )
 
-    /// Answers what `=` answers: a value class object has no identity
-    /// of its own.
+    /// Compares the receiver with `other` as `=` does: a value class
+    /// object has no identity of its own.
+    ///
+    /// @param other any object.
+    /// @answers what `=` answers.
+    /// @see `=`.
     public == other = (
       ^vmMirror value: self sameAs: other ifFail: [^self behaviorEquals: other].
     )
 
-    /// Answers an Integer that agrees with `=`: the hash of the class's
-    /// name for a class object that is a value, its identity hash for
-    /// any other.
+    /// Hashes the receiver so that the hash agrees with `=`.
+    ///
+    /// @answers an Integer: the hash of the class's name for a class
+    /// object that is a value, its identity hash for any other.
     public hash = (
       ^vmMirror valueHash: self ifFail: [^super hash].
     )
 
-    /// Answers the receiver's `hash`: a value's identity is its
+    /// Hashes the receiver as `hash` does: a value's identity is its
     /// equality.
+    ///
+    /// @answers the receiver's `hash`.
     public identityHash = (
       ^self hash.
     )
 
-    /// Answers true: the receiver is a Behavior.
+    /// Identifies the receiver as a Behavior, without a class test.
+    ///
+    /// @answers true.
     public isKindOfBehavior = (
       ^true.
     )
 
-    /// The equality the leaf of `=` leaves to Newspeak: whether `other`
-    /// is a class object of the receiver's mixin application -- and of
-    /// its declaration, for the class object of a declaration without a
-    /// body -- whose enclosing objects and superclass equal the
-    /// receiver's, sending `=` to each: the leaf's state, the enclosing
-    /// object reflection reports and the one its level's code reaches,
-    /// which differ only for the class object of a declaration without a
-    /// body. Answers false for an `other` that is no class object.
+    /// The equality the leaf of `=` leaves to Newspeak, comparing the
+    /// states with `=`: the leaf's state, the enclosing object reflection
+    /// reports and the one its level's code reaches, which differ only
+    /// for the class object of a declaration without a body.
+    ///
+    /// @param other any object.
+    /// @answers whether `other` is a class object of the receiver's mixin
+    /// application -- and of its declaration, for the class object of a
+    /// declaration without a body -- whose enclosing objects and
+    /// superclass equal the receiver's; false for an `other` that is no
+    /// class object. Its last comparison is the superclasses' `=`, so the
+    /// answer is not certainly a Boolean: a class side may declare an `=`
+    /// of its own.
     private behaviorEquals: other = (
       (vmMirror behavior: self sharesApplicationWith: other ifFail: [^false]) ifFalse: [^false].
       ((self enclosingOf: self) = (self enclosingOf: other)) ifFalse: [^false].
@@ -405,34 +516,40 @@ class Kernel vmMirror: mirror = Value (
       ^(self superclassOf: self) = (self superclassOf: other).
     )
 
-    /// Answers `subject`'s enclosing object: nil for a module's class,
-    /// and nil for a `subject` that is no class object.
-    ///
-    /// subject: the receiver or the object it is compared with.
+    /// Reads `subject`'s enclosing object, the one reflection reports,
+    /// through the VM mirror.
     ///
     /// Both name their subject, as `Value`'s slot readers do: the other
     /// side's state has to be read through the same leaf as this
     /// side's.
+    ///
+    /// @param subject the receiver or the object it is compared with.
+    /// @answers `subject`'s enclosing object: nil for a module's class,
+    /// and nil for a `subject` that is no class object.
     private enclosingOf: subject = (
       ^vmMirror behaviorEnclosing: subject ifFail: [^nil].
     )
 
-    /// Answers the enclosing object `subject`'s own level reaches: the
-    /// one the class its last clause named has, for the class object of a
-    /// declaration without a body and for its metaclass, whose
+    /// Reads the enclosing object `subject`'s own level reaches, through
+    /// the VM mirror; it differs from `enclosingOf:`'s only for a
+    /// declaration without a body.
+    ///
+    /// @param subject as `enclosingOf:`'s.
+    /// @answers the one the class its last clause named has, for the class
+    /// object of a declaration without a body and for its metaclass, whose
     /// `enclosingOf:` is the declaration's; `enclosingOf:`'s for every
     /// other class object and metaclass, and nil for a `subject` that is
     /// no class object.
-    ///
-    /// subject: as `enclosingOf:`'s.
+    /// @see `enclosingOf:`.
     private levelEnclosingOf: subject = (
       ^vmMirror behaviorLevelEnclosing: subject ifFail: [^nil].
     )
 
-    /// Answers `subject`'s superclass, a class object: nil for `Top`
-    /// and for a `subject` that is no class object.
+    /// Reads `subject`'s superclass through the VM mirror.
     ///
-    /// subject: as `enclosingOf:`'s.
+    /// @param subject as `enclosingOf:`'s.
+    /// @answers `subject`'s superclass, a class object: nil for `Top`
+    /// and for a `subject` that is no class object.
     private superclassOf: subject = (
       ^vmMirror behaviorSuperclass: subject ifFail: [^nil].
     )
@@ -441,23 +558,24 @@ class Kernel vmMirror: mirror = Value (
   /// What a class object answers, as an instance of its metaclass: its
   /// name, its printed form and `handles:`.
   public class Class = Behavior () (
-    /// Answers the class's name as its declaration writes it, a new
+    /// Reads the class's name off its declaration, through the VM
+    /// mirror.
+    ///
+    /// @answers the class's name as its declaration writes it, a new
     /// String on every send.
     public name = (
       ^vmMirror className: self ifFail: [^nil].
     )
 
-    /// Answers the class's `name`.
+    /// Prints the class as its name.
+    ///
+    /// @answers the class's `name`.
     public printString = (
       ^name.
     )
 
-    /// Answers whether `exception` is an instance of the receiver or of
-    /// a subclass of it, compared by declaration, so that an instance
-    /// made under any enclosing object counts. `on:do:` asks it of its
-    /// exception class.
-    ///
-    /// exception: any object; never signals.
+    /// Tests whether an `on:do:` for the receiver catches `exception`.
+    /// `on:do:` asks it of its exception class. It never signals.
     ///
     /// ANSI's `handles:`, by default "an instance of me or of a
     /// subclass", compared by declaration so that a nested exception
@@ -470,6 +588,11 @@ class Kernel vmMirror: mirror = Value (
     /// exception class, and a class side that declares its own
     /// `handles:` is searched first and overrides it
     /// (docs/design/core-library.md, "Exceptions").
+    ///
+    /// @param exception any object.
+    /// @answers whether `exception` is an instance of the receiver or of
+    /// a subclass of it, compared by declaration, so that an instance
+    /// made under any enclosing object counts; a Boolean.
     public handles: exception = (
       ^vmMirror object: exception inheritsMixinOf: self ifFail: [false].
     )
@@ -478,20 +601,22 @@ class Kernel vmMirror: mirror = Value (
   /// The class of every metaclass: a metaclass's name, printed form and
   /// equality.
   public class Metaclass = Behavior () (
-    /// Answers a new String: its class's name followed by ' class'.
+    /// Names the metaclass after its class.
+    ///
+    /// @answers a new String: its class's name followed by ' class'.
     public name = (
       ^thisClass name , ' class'.
     )
 
-    /// Answers the metaclass's `name`.
+    /// Prints the metaclass as its name.
+    ///
+    /// @answers the metaclass's `name`.
     public printString = (
       ^name.
     )
 
-    /// Answers whether `other` is the metaclass of a class equal to the
-    /// receiver's class.
-    ///
-    /// other: any object; never signals itself, though the class's `=`
+    /// Compares the receiver with `other` by the classes they are the
+    /// metaclasses of. It never signals itself, though the class's `=`
     /// may.
     ///
     /// A metaclass's enclosing object is its class's and its superclass
@@ -499,31 +624,46 @@ class Kernel vmMirror: mirror = Value (
     /// are equal exactly when their classes are. `==` is the same
     /// forwarder as `=`, as `Behavior`'s is, so that it answers what `=`
     /// answers (§3.1.1) and costs no activation.
+    ///
+    /// @param other any object.
+    /// @answers whether `other` is the metaclass of a class equal to the
+    /// receiver's class. A Boolean wherever the leaf decides; where it
+    /// declines, what the class's `=` answers, which a class side may
+    /// declare for itself.
     public = other = (
       ^vmMirror value: self sameAs: other ifFail: [
         ^(self thisClassOf: self) = (self thisClassOf: other).
       ].
     )
 
-    /// Answers what `=` answers.
+    /// Compares the receiver with `other` as `=` does, through the same
+    /// leaf.
+    ///
+    /// @param other any object.
+    /// @answers what `=` answers.
+    /// @see `=`.
     public == other = (
       ^vmMirror value: self sameAs: other ifFail: [
         ^(self thisClassOf: self) = (self thisClassOf: other).
       ].
     )
 
-    /// Answers the class the receiver is the metaclass of.
+    /// Reads the class the receiver is the metaclass of.
     ///
     /// The class is the runtime's state, read through a leaf, not a
     /// slot.
+    ///
+    /// @answers the class the receiver is the metaclass of.
     private thisClass = (
       ^vmMirror metaclassThisClass: self ifFail: [^nil].
     )
 
-    /// Answers the class `subject` is the metaclass of, nil for a
-    /// `subject` that is no metaclass.
+    /// Reads the class `subject` is the metaclass of, through the same
+    /// leaf as `thisClass`.
     ///
-    /// subject: the receiver or the object it is compared with.
+    /// @param subject the receiver or the object it is compared with.
+    /// @answers the class `subject` is the metaclass of, nil for a
+    /// `subject` that is no metaclass.
     private thisClassOf: subject = (
       ^vmMirror metaclassThisClass: subject ifFail: [^nil].
     )
@@ -567,6 +707,8 @@ class Kernel vmMirror: mirror = Value (
       /// for an exception a program signals itself.
       private originSelector ::= nil.
       /// The receiver of that send, set with `originSelector`.
+      /// `hostReceiver` reads it only while `originSelector` is set, since
+      /// the receiver of the send the VM raised for may itself be nil.
       private originReceiver ::= nil.
       /// The text describing the exception, nil until `signal:` or
       /// `messageText:` sets it; any object. `messageText:` sets it and
@@ -574,25 +716,34 @@ class Kernel vmMirror: mirror = Value (
       public messageText ::= nil.
     |
   ) (
-    /// Answers `messageText`, or the name of the receiver's class, a
+    /// Describes the exception by its text, or by its class when it has
+    /// none.
+    ///
+    /// @answers `messageText`, or the name of the receiver's class, a
     /// String, when `messageText` is nil.
     public description = (
       ^messageText isNil ifTrue: [self class name] ifFalse: [messageText].
     )
 
-    /// Answers the receiver's `description`.
+    /// Prints the exception as its `description`.
+    ///
+    /// @answers the receiver's `description`.
     public printString = (
       ^self description.
     )
 
-    /// Answers whether a handler may `resume:` the exception: true
+    /// Tells whether a handler may `resume:` the exception, which it may
     /// here.
+    ///
+    /// @answers true.
     public isResumable = (
       ^true.
     )
 
-    /// Answers whether a `signal` of the exception has found no handler
+    /// Tells whether a `signal` of the exception has found no handler
     /// and run `defaultAction`; once true, it stays true.
+    ///
+    /// @answers whether the default action was reached, a Boolean.
     public reachedDefaultHandler = (
       ^reachedDefault.
     )
@@ -600,13 +751,16 @@ class Kernel vmMirror: mirror = Value (
     /// Signals the exception: offers it to each enabled `on:do:` on the
     /// stack, innermost first, whose exception class `handles:` it, and
     /// runs the handler of the first that does on top of the stack,
-    /// with every `on:do:` passed disabled while it runs. Answers the
-    /// value the handler resumes it with; a handler that returns
-    /// instead makes its `on:do:` answer. With no handler,
-    /// `defaultAction` runs, which ends the run.
+    /// with every `on:do:` passed disabled while it runs. A handler
+    /// that returns instead of resuming makes its `on:do:` answer. With
+    /// no handler, `defaultAction` runs, which ends the run.
     ///
     /// ANSI's signal: the handler runs on top of the stack, above this
     /// activation, and nothing is unwound until it decides.
+    ///
+    /// @answers the value the handler resumes the exception with; nothing
+    /// to its sender when the handler returns instead. With no handler,
+    /// what `defaultAction` answers, should a subclass's return.
     public signal = (
       signalActivation:: vmMirror currentActivation: self ifFail: [nil].
       handlerActivation:: signalActivation.
@@ -617,7 +771,9 @@ class Kernel vmMirror: mirror = Value (
     /// Sets `messageText` to `text` and signals the exception, as
     /// `signal` does.
     ///
-    /// text: the description, usually a String; stored as it is.
+    /// @param text the description, usually a String; stored as it is.
+    /// @answers what `signal` answers.
+    /// @see `signal`.
     public signal: text = (
       messageText:: text.
       ^self signal.
@@ -625,10 +781,14 @@ class Kernel vmMirror: mirror = Value (
 
     /// From a handler: offers the exception to the enabled `on:do:`s
     /// outside the handler's, innermost first, or runs `defaultAction`
-    /// when none handles it, and answers the value that handler
-    /// resumes it with.
+    /// when none handles it.
     ///
-    /// Signals an Error, 'pass sent to an exception that is not being
+    /// @answers nothing to its sender when a handler outside handles the
+    /// exception: its `resume:` makes the `signal` that raised the
+    /// exception answer, and its return makes its own `on:do:` answer.
+    /// With none, what `defaultAction` answers, should a subclass's
+    /// return.
+    /// @signals Error 'pass sent to an exception that is not being
     /// handled', when no handler is running for the exception.
     public pass = (
       handlerActivation isNil ifTrue: [^self notInAHandler: #pass].
@@ -640,13 +800,14 @@ class Kernel vmMirror: mirror = Value (
     /// `value`, running the pending `ensure:` and `ifCurtailed:` blocks
     /// on the way. Never answers to its sender.
     ///
-    /// value: any object.
-    ///
-    /// Signals an Error, 'return: sent to an exception that is not
-    /// being handled', when no handler is running for the exception,
-    /// and a CannotReturn carrying `value`, 'cannotReturn: the
-    /// activation has already returned', when its `on:do:` has
-    /// returned already.
+    /// @param value any object.
+    /// @answers nothing to its sender: the handler's `on:do:` answers
+    /// `value`.
+    /// @signals Error 'return: sent to an exception that is not being
+    /// handled', when no handler is running for the exception.
+    /// @signals CannotReturn carrying `value`, 'cannotReturn: the
+    /// activation has already returned', when its `on:do:` has returned
+    /// already.
     public return: value = (
       |
         target = handlerActivation.
@@ -658,6 +819,13 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// As `return:`, with nil.
+    ///
+    /// @answers nothing to its sender: the handler's `on:do:` answers
+    /// nil.
+    /// @signals Error 'return: sent to an exception that is not being
+    /// handled', as `return:` does.
+    /// @signals CannotReturn carrying nil, as `return:` does.
+    /// @see `return:`.
     public return = (
       ^self return: nil.
     )
@@ -666,9 +834,11 @@ class Kernel vmMirror: mirror = Value (
     /// start of its protected block, after the pending `ensure:` and
     /// `ifCurtailed:` blocks have run. Never answers to its sender.
     ///
-    /// Signals an Error, 'retry sent to an exception that is not being
-    /// handled', when no handler is running for the exception, and a
-    /// CannotReturn, 'cannotReturn: the activation has already
+    /// @answers nothing to its sender: the `on:do:` answers what its
+    /// protected block, evaluated again, makes it answer.
+    /// @signals Error 'retry sent to an exception that is not being
+    /// handled', when no handler is running for the exception.
+    /// @signals CannotReturn 'cannotReturn: the activation has already
     /// returned', when its `on:do:` has returned already.
     public retry = (
       |
@@ -685,14 +855,15 @@ class Kernel vmMirror: mirror = Value (
     /// `ensure:` and `ifCurtailed:` blocks on the way. Never answers to
     /// its sender.
     ///
-    /// value: any object.
-    ///
-    /// Signals an Error, 'cannot resume a non-resumable exception',
-    /// when `isResumable` is false; an Error, 'resume: sent to an
-    /// exception that is not being handled', when no handler is
-    /// running for the exception; and a CannotReturn carrying `value`,
-    /// 'cannotReturn: the activation has already returned', when the
-    /// `signal` has returned already.
+    /// @param value any object.
+    /// @answers nothing to its sender: the `signal` answers `value`.
+    /// @signals Error 'cannot resume a non-resumable exception', when
+    /// `isResumable` is false.
+    /// @signals Error 'resume: sent to an exception that is not being
+    /// handled', when no handler is running for the exception.
+    /// @signals CannotReturn carrying `value`, 'cannotReturn: the
+    /// activation has already returned', when the `signal` has returned
+    /// already.
     public resume: value = (
       |
         target
@@ -708,6 +879,14 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// As `resume:`, with nil.
+    ///
+    /// @answers nothing to its sender: the `signal` answers nil.
+    /// @signals Error 'cannot resume a non-resumable exception', as
+    /// `resume:` does.
+    /// @signals Error 'resume: sent to an exception that is not being
+    /// handled', as `resume:` does.
+    /// @signals CannotReturn carrying nil, as `resume:` does.
+    /// @see `resume:`.
     public resume = (
       ^self resume: nil.
     )
@@ -724,6 +903,8 @@ class Kernel vmMirror: mirror = Value (
     /// and declines only for a future, which the VM sees through before
     /// any failure block could run, so the failure block never runs and
     /// an unhandled exception cannot carry on.
+    ///
+    /// @answers nothing; it never returns.
     public defaultAction = (
       |
         selector = self hostSelector.
@@ -736,19 +917,24 @@ class Kernel vmMirror: mirror = Value (
           ifFail: [nil].
     )
 
-    /// Answers the selector `defaultAction` reports: the one the VM
-    /// raised the exception for, else #signal. A subclass overrides it
-    /// to report another.
+    /// Chooses the selector `defaultAction` reports. A subclass overrides
+    /// it to report another.
     ///
     /// The VM sets the origin as a pair, and its receiver may be nil,
     /// so whether there is one is read off the selector.
+    ///
+    /// @answers the selector the VM raised the exception for, else
+    /// #signal.
     protected hostSelector = (
       ^originSelector isNil ifTrue: [#signal] ifFalse: [originSelector].
     )
 
-    /// Answers the receiver `defaultAction` reports: that of the send
-    /// the VM raised the exception for, else the exception itself. A
-    /// subclass overrides it with `hostSelector`.
+    /// Chooses the receiver `defaultAction` reports. A subclass overrides
+    /// it with `hostSelector`.
+    ///
+    /// @answers the receiver of the send the VM raised the exception for,
+    /// else the exception itself.
+    /// @see `hostSelector`.
     protected hostReceiver = (
       ^originSelector isNil ifTrue: [self] ifFalse: [originReceiver].
     )
@@ -758,7 +944,7 @@ class Kernel vmMirror: mirror = Value (
     /// first enabled `on:do:` whose exception class `handles:` the
     /// exception, disabling every enabled `on:do:` passed on the way,
     /// the handler's included; with none, marks the default reached and
-    /// answers what `defaultAction` answers.
+    /// runs `defaultAction`.
     ///
     /// Each step is one `activationNextHandler:`, which answers the next
     /// enabled `on:do:` activation outward and reifies no activation it
@@ -776,6 +962,11 @@ class Kernel vmMirror: mirror = Value (
     /// than in a method of its own, so that a search pushes no
     /// activation it did not push before: the depth limit's reserve is
     /// counted in activations.
+    ///
+    /// @answers what `defaultAction` answers when no `on:do:` handles the
+    /// exception; nothing when one does, whose handler ends through
+    /// `invokeHandlerAt:disabling:`.
+    /// @see `invokeHandlerAt:disabling:`.
     private invokeNextHandler = (
       |
         handlers
@@ -806,12 +997,10 @@ class Kernel vmMirror: mirror = Value (
       ^self defaultAction.
     )
 
-    /// Answers whether the `on:do:` activation `activation` handles the
-    /// exception: what its exception class answers to `handles:`, sent
-    /// while that `on:do:` is disabled, and enabled again however the
-    /// test is left.
-    ///
-    /// activation: an enabled `on:do:` activation on the stack.
+    /// Tests whether the `on:do:` activation `activation` handles the
+    /// exception, by sending its exception class `handles:` while that
+    /// `on:do:` is disabled, and enabling it again however the test is
+    /// left.
     ///
     /// The candidate is disabled while `handles:` runs, so that an
     /// exception `handles:` raises -- a `nil handles:`'s
@@ -822,6 +1011,10 @@ class Kernel vmMirror: mirror = Value (
     /// `invokeHandlerAt:disabling:` disables are: an `on:do:` inside the
     /// protected block may catch that exception and return, which leaves
     /// the candidate on the stack.
+    ///
+    /// @param activation an enabled `on:do:` activation on the stack.
+    /// @answers what its exception class answers to `handles:`: a Boolean
+    /// for `Class`'s `handles:`, though a class side may declare its own.
     private isHandledAt: activation = (
       |
         exceptionClass = vmMirror activationHandlerClass: activation ifFail: [nil].
@@ -838,10 +1031,6 @@ class Kernel vmMirror: mirror = Value (
     /// handler's value as `return:` does. The handlers are enabled
     /// again however the handler is left.
     ///
-    /// activation: the `on:do:` whose class handles the exception.
-    /// handlers: an Array of the `on:do:` activations the search
-    /// passed, `activation` last.
-    ///
     /// ANSI's handler environment: an exception signalled while a handler
     /// runs is looked for outside the `on:do:` that caught this one --
     /// not in it, and not in any `on:do:` between it and the signal, the
@@ -853,6 +1042,14 @@ class Kernel vmMirror: mirror = Value (
     /// `ensure:`, however the handler is left: returning, `resume:`,
     /// `retry`, `return:`, or a `^` out of it. The handler's value is an
     /// implicit `return:`.
+    ///
+    /// @param activation the `on:do:` whose class handles the exception.
+    /// @param handlers an Array of the `on:do:` activations the search
+    /// passed, `activation` last.
+    /// @answers nothing to its sender: the handler's value ends the
+    /// `on:do:` through `return:`, and a handler that resumes, retries,
+    /// returns or leaves by a `^` leaves past it.
+    /// @see `return:`.
     private invokeHandlerAt: activation disabling: handlers = (
       |
         handler
@@ -870,45 +1067,74 @@ class Kernel vmMirror: mirror = Value (
       ^self return: result.
     )
 
-    /// Signals an Error, '… sent to an exception that is not being
-    /// handled', naming `selector`, for a handler-only message sent
-    /// outside a handler.
+    /// Refuses a handler-only message sent outside a handler. It never
+    /// returns: an Error is not resumable.
     ///
-    /// selector: the Symbol of the message sent.
+    /// @param selector the Symbol of the message sent.
+    /// @answers nothing; it never returns.
+    /// @signals Error '… sent to an exception that is not being handled',
+    /// naming `selector`.
     private notInAHandler: selector = (
       ^(outer Kernel Error new) signal: selector asString
           , ' sent to an exception that is not being handled'.
     )
   ) : (
     /// Signals a new instance of the receiver, as `Exception>>signal`
-    /// does, and answers the value a handler resumes it with.
+    /// does.
     ///
     /// §3.2's metaclasses are flat, so each kernel exception class
     /// declares these on its own class side; `handles:` is `Class`'s.
+    ///
+    /// @answers what the new exception's `signal` answers: the value a
+    /// handler resumes it with.
+    /// @signals Exception a new one, without a `messageText`.
+    /// @see `Exception>>signal`.
     public signal = (
       ^self new signal.
     )
 
     /// Signals a new instance of the receiver with `messageText` set to
     /// `text`, as `Exception>>signal:` does.
+    ///
+    /// @param text the description, usually a String; stored as it is.
+    /// @answers what the new exception's `signal` answers: the value a
+    /// handler resumes it with.
+    /// @signals Exception a new one carrying `text`.
+    /// @see `Exception>>signal:`.
     public signal: text = (
       ^self new signal: text.
     )
   )
 
   /// An exception that is not resumable; the VM's own errors are Errors.
+  /// A handler ends one by returning, `return:`, `retry` or a `^`, or
+  /// passes it on; its `resume:` signals an Error of its own.
   public class Error = Exception () (
-    /// Answers false: a handler cannot `resume:` an Error.
+    /// Tells whether a handler may `resume:` the exception, which it may
+    /// not: an Error's `resume:` signals an Error of its own.
+    ///
+    /// @answers false: a handler cannot `resume:` an Error.
     public isResumable = (
       ^false.
     )
   ) : (
     /// As `Exception class>>signal`: signals a new Error.
+    ///
+    /// @answers nothing to its sender: no handler can resume an Error, so
+    /// a handler's `on:do:` answers instead, and with no handler the run
+    /// ends.
+    /// @signals Error a new one, without a `messageText`.
+    /// @see `Exception class>>signal`.
     public signal = (
       ^self new signal.
     )
 
     /// As `Exception class>>signal:`: signals a new Error with `text`.
+    ///
+    /// @param text the description, usually a String; stored as it is.
+    /// @answers nothing to its sender, as `signal`.
+    /// @signals Error a new one carrying `text`.
+    /// @see `Exception class>>signal:`.
     public signal: text = (
       ^self new signal: text.
     )
@@ -934,33 +1160,57 @@ class Kernel vmMirror: mirror = Value (
       public receiver ::= nil.
     |
   ) (
-    /// Answers true: a handler may `resume:` it.
+    /// Tells whether a handler may `resume:` the exception, which it may,
+    /// although it is an Error.
+    ///
+    /// @answers true: a handler may `resume:` it.
     public isResumable = (
       ^true.
     )
 
-    /// Answers the selector of `message`, or `Exception`'s when there is
-    /// no message.
+    /// Chooses the selector `defaultAction` reports: the one nothing
+    /// understood.
     ///
     /// One a program signals itself may carry no message: it then ends
     /// the run as any other exception does.
+    ///
+    /// @answers the selector of `message`, or `Exception`'s when there is
+    /// no message.
+    /// @see `Exception>>hostSelector`.
     protected hostSelector = (
       ^message isNil ifTrue: [super hostSelector] ifFalse: [message selector].
     )
 
-    /// Answers `receiver`, or `Exception`'s when there is no message.
+    /// Chooses the receiver `defaultAction` reports: the object the
+    /// message nothing understood was sent to.
+    ///
+    /// @answers `receiver`, or `Exception`'s when there is no message.
+    /// @see `Exception>>hostReceiver`.
     protected hostReceiver = (
       ^message isNil ifTrue: [super hostReceiver] ifFalse: [receiver].
     )
   ) : (
     /// As `Exception class>>signal`: signals a new MessageNotUnderstood,
     /// which carries no message.
+    ///
+    /// @answers what the new exception's `signal` answers: the value a
+    /// handler resumes it with.
+    /// @signals MessageNotUnderstood a new one, without a message or a
+    /// `messageText`.
+    /// @see `Exception class>>signal`.
     public signal = (
       ^self new signal.
     )
 
     /// As `Exception class>>signal:`: signals a new
     /// MessageNotUnderstood with `text`, which carries no message.
+    ///
+    /// @param text the description, usually a String; stored as it is.
+    /// @answers what the new exception's `signal` answers: the value a
+    /// handler resumes it with.
+    /// @signals MessageNotUnderstood a new one carrying `text` and no
+    /// message.
+    /// @see `Exception class>>signal:`.
     public signal: text = (
       ^self new signal: text.
     )
@@ -970,11 +1220,22 @@ class Kernel vmMirror: mirror = Value (
   /// ends the run.
   public class Halt = Exception () () : (
     /// As `Exception class>>signal`: signals a new Halt.
+    ///
+    /// @answers what the new exception's `signal` answers: the value a
+    /// handler resumes it with.
+    /// @signals Halt a new one, without a `messageText`.
+    /// @see `Exception class>>signal`.
     public signal = (
       ^self new signal.
     )
 
     /// As `Exception class>>signal:`: signals a new Halt with `text`.
+    ///
+    /// @param text the description, usually a String; stored as it is.
+    /// @answers what the new exception's `signal` answers: the value a
+    /// handler resumes it with.
+    /// @signals Halt a new one carrying `text`.
+    /// @see `Exception class>>signal:`.
     public signal: text = (
       ^self new signal: text.
     )
@@ -994,28 +1255,43 @@ class Kernel vmMirror: mirror = Value (
       public argument ::= nil.
     |
   ) (
-    /// Answers `messageText`, or a new String of 'ArgumentError: '
+    /// Describes the error by its text, or by the refused argument when
+    /// it has none.
+    ///
+    /// @answers `messageText`, or a new String of 'ArgumentError: '
     /// followed by the argument's `printString` when it is nil.
     public description = (
       ^messageText isNil ifTrue: ['ArgumentError: ' , argument printString] ifFalse: [messageText].
     )
   ) : (
-    /// Answers a new ArgumentError carrying `offending`, not yet
-    /// signalled.
+    /// Makes the error for `offending`, not yet signalled.
     ///
-    /// offending: the refused argument, any object.
+    /// @param offending the refused argument, any object.
+    /// @answers a new ArgumentError carrying `offending`.
     public value: offending = (
       ^self new argument: offending.
     )
 
     /// As `Exception class>>signal`: signals a new ArgumentError, which
     /// carries nil.
+    ///
+    /// @answers nothing to its sender: no handler can resume an Error, so
+    /// a handler's `on:do:` answers instead, and with no handler the run
+    /// ends.
+    /// @signals ArgumentError a new one, carrying nil, without a
+    /// `messageText`.
+    /// @see `Exception class>>signal`.
     public signal = (
       ^self new signal.
     )
 
     /// As `Exception class>>signal:`: signals a new ArgumentError with
     /// `text`, which carries nil.
+    ///
+    /// @param text the description, usually a String; stored as it is.
+    /// @answers nothing to its sender, as `signal`.
+    /// @signals ArgumentError a new one carrying `text` and nil.
+    /// @see `Exception class>>signal:`.
     public signal: text = (
       ^self new signal: text.
     )
@@ -1031,27 +1307,43 @@ class Kernel vmMirror: mirror = Value (
       public result ::= nil.
     |
   ) (
-    /// Answers `messageText`, or a new String of 'CannotReturn: '
+    /// Describes the error by its text, or by the value that could not
+    /// be returned when it has none.
+    ///
+    /// @answers `messageText`, or a new String of 'CannotReturn: '
     /// followed by the result's `printString` when it is nil.
     public description = (
       ^messageText isNil ifTrue: ['CannotReturn: ' , result printString] ifFalse: [messageText].
     )
   ) : (
-    /// Answers a new CannotReturn carrying `value`, not yet signalled.
+    /// Makes the error for `value`, not yet signalled.
     ///
-    /// value: the value that could not be returned, any object.
+    /// @param value the value that could not be returned, any object.
+    /// @answers a new CannotReturn carrying `value`.
     public result: value = (
       ^self new result: value.
     )
 
     /// As `Exception class>>signal`: signals a new CannotReturn, which
     /// carries nil.
+    ///
+    /// @answers nothing to its sender: no handler can resume an Error, so
+    /// a handler's `on:do:` answers instead, and with no handler the run
+    /// ends.
+    /// @signals CannotReturn a new one, carrying nil, without a
+    /// `messageText`.
+    /// @see `Exception class>>signal`.
     public signal = (
       ^self new signal.
     )
 
     /// As `Exception class>>signal:`: signals a new CannotReturn with
     /// `text`, which carries nil.
+    ///
+    /// @param text the description, usually a String; stored as it is.
+    /// @answers nothing to its sender, as `signal`.
+    /// @signals CannotReturn a new one carrying `text` and nil.
+    /// @see `Exception class>>signal:`.
     public signal: text = (
       ^self new signal: text.
     )
@@ -1069,7 +1361,10 @@ class Kernel vmMirror: mirror = Value (
       public receiver ::= nil.
     |
   ) (
-    /// Answers `messageText`, or a new String of 'NonBooleanReceiver: '
+    /// Describes the error by its text, or by the condition's answer
+    /// when it has none.
+    ///
+    /// @answers `messageText`, or a new String of 'NonBooleanReceiver: '
     /// followed by the receiver's `printString` when it is nil.
     public description = (
       ^messageText isNil ifTrue: [
@@ -1079,22 +1374,34 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
   ) : (
-    /// Answers a new NonBooleanReceiver carrying `value`, not yet
-    /// signalled.
+    /// Makes the error for `value`, not yet signalled.
     ///
-    /// value: the condition's answer, any object.
+    /// @param value the condition's answer, any object.
+    /// @answers a new NonBooleanReceiver carrying `value`.
     public receiver: value = (
       ^self new receiver: value.
     )
 
     /// As `Exception class>>signal`: signals a new NonBooleanReceiver,
     /// which carries nil.
+    ///
+    /// @answers nothing to its sender: no handler can resume an Error, so
+    /// a handler's `on:do:` answers instead, and with no handler the run
+    /// ends.
+    /// @signals NonBooleanReceiver a new one, carrying nil, without a
+    /// `messageText`.
+    /// @see `Exception class>>signal`.
     public signal = (
       ^self new signal.
     )
 
     /// As `Exception class>>signal:`: signals a new NonBooleanReceiver
     /// with `text`, which carries nil.
+    ///
+    /// @param text the description, usually a String; stored as it is.
+    /// @answers nothing to its sender, as `signal`.
+    /// @signals NonBooleanReceiver a new one carrying `text` and nil.
+    /// @see `Exception class>>signal:`.
     public signal: text = (
       ^self new signal: text.
     )
@@ -1113,9 +1420,11 @@ class Kernel vmMirror: mirror = Value (
       public behavior ::= nil.
     |
   ) (
-    /// Answers `messageText`, or a new String of 'CannotInstantiate: '
-    /// followed by the refusing class's `printString` when it is
-    /// nil.
+    /// Describes the error by its text, or by the refusing class when it
+    /// has none.
+    ///
+    /// @answers `messageText`, or a new String of 'CannotInstantiate: '
+    /// followed by the refusing class's `printString` when it is nil.
     public description = (
       ^messageText isNil ifTrue: [
         'CannotInstantiate: ' , behavior printString.
@@ -1124,22 +1433,34 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
   ) : (
-    /// Answers a new CannotInstantiate carrying `refusing`, not yet
-    /// signalled.
+    /// Makes the error for `refusing`, not yet signalled.
     ///
-    /// refusing: the class that refused, or nil.
+    /// @param refusing the class that refused, or nil.
+    /// @answers a new CannotInstantiate carrying `refusing`.
     public behavior: refusing = (
       ^self new behavior: refusing.
     )
 
     /// As `Exception class>>signal`: signals a new CannotInstantiate,
     /// which carries nil.
+    ///
+    /// @answers nothing to its sender: no handler can resume an Error, so
+    /// a handler's `on:do:` answers instead, and with no handler the run
+    /// ends.
+    /// @signals CannotInstantiate a new one, carrying nil, without a
+    /// `messageText`.
+    /// @see `Exception class>>signal`.
     public signal = (
       ^self new signal.
     )
 
     /// As `Exception class>>signal:`: signals a new CannotInstantiate
     /// with `text`, which carries nil.
+    ///
+    /// @param text the description, usually a String; stored as it is.
+    /// @answers nothing to its sender, as `signal`.
+    /// @signals CannotInstantiate a new one carrying `text` and nil.
+    /// @see `Exception class>>signal:`.
     public signal: text = (
       ^self new signal: text.
     )
@@ -1162,22 +1483,23 @@ class Kernel vmMirror: mirror = Value (
       public arguments ::= nil.
     |
   ) (
-    /// Sends the message to `receiver` as a public send and answers the
-    /// result: only public methods are found, and a selector nothing
-    /// public answers reaches the receiver's `doesNotUnderstand:`.
-    ///
-    /// receiver: any object.
-    ///
-    /// Signals an Error, 'sendTo: needs a Symbol selector and an Array
-    /// of arguments', when `selector` is no Symbol or `arguments` is
-    /// neither an Array nor nil; and an Error, 'wrong number of
-    /// arguments: `…` takes …, got …', when the method found is
-    /// written in Newspeak and takes another number of arguments than
-    /// `arguments` holds. For a slot's accessor or a method backed by
-    /// a native operation the number is not checked.
+    /// Sends the message to `receiver` as a public send: only public
+    /// methods are found, and a selector nothing public answers reaches
+    /// the receiver's `doesNotUnderstand:`. For a slot's accessor or a
+    /// method backed by a native operation the number of arguments is not
+    /// checked.
     ///
     /// A message built without `arguments:` holds nil there, and is
     /// sent with none.
+    ///
+    /// @param receiver any object.
+    /// @answers the result of the send.
+    /// @signals Error 'sendTo: needs a Symbol selector and an Array of
+    /// arguments', when `selector` is no Symbol or `arguments` is neither
+    /// an Array nor nil.
+    /// @signals Error 'wrong number of arguments: `…` takes …, got …',
+    /// when the method found is written in Newspeak and takes another
+    /// number of arguments than `arguments` holds.
     public sendTo: receiver = (
       ^vmMirror message: self sendTo: receiver ifFail: [
         ^(outer
@@ -1219,70 +1541,120 @@ class Kernel vmMirror: mirror = Value (
   /// a proxy keeps the accessor's direct answer.
   public class Proxy = Object () (
     /// As `Object>>==`, for a send from inside the proxy only.
+    ///
+    /// @param other any object. Two Floats of the same bits are the same
+    /// object; nothing else is compared by content.
+    /// @answers whether `other` is the receiver itself, a Boolean.
+    /// @see `Object>>==`.
     protected == other = (
       ^super == other.
     )
 
     /// As `Object>>=`, for a send from inside the proxy only.
+    ///
+    /// @param other any object.
+    /// @answers whether `other` is the receiver itself, a Boolean.
+    /// @see `Object>>=`.
     protected = other = (
       ^super = other.
     )
 
     /// As `Object>>hash`, for a send from inside the proxy only.
+    ///
+    /// @answers the receiver's identity hash, an Integer.
+    /// @see `Object>>hash`.
     protected hash = (
       ^super hash.
     )
 
     /// As `Object>>yourself`, for a send from inside the proxy only.
+    ///
+    /// @answers the receiver.
+    /// @see `Object>>yourself`.
     protected yourself = (
       ^super yourself.
     )
 
     /// As `Object>>identityHash`, for a send from inside the proxy
     /// only.
+    ///
+    /// @answers the receiver's identity hash, an Integer.
+    /// @see `Object>>identityHash`.
     protected identityHash = (
       ^super identityHash.
     )
 
     /// As `Object>>printString`, for a send from inside the proxy
     /// only.
+    ///
+    /// @answers the String 'an Object', a new String on every send.
+    /// @see `Object>>printString`.
     protected printString = (
       ^super printString.
     )
 
     /// As `Object>>isNil`, for a send from inside the proxy only.
+    ///
+    /// @answers false: the receiver is not nil.
+    /// @see `Object>>isNil`.
     protected isNil = (
       ^super isNil.
     )
 
     /// As `Object>>notNil`, for a send from inside the proxy only.
+    ///
+    /// @answers true: the receiver is not nil.
+    /// @see `Object>>notNil`.
     protected notNil = (
       ^super notNil.
     )
 
     /// As `Object>>ifNil:`, for a send from inside the proxy only.
+    ///
+    /// @param block any object; not evaluated.
+    /// @answers the receiver.
+    /// @see `Object>>ifNil:`.
     protected ifNil: block = (
       ^super ifNil: block.
     )
 
     /// As `Object>>ifNotNil:`, for a send from inside the proxy only.
+    ///
+    /// @param block as `Object>>ifNotNil:`'s, sent `cull:` with the
+    /// receiver.
+    /// @answers the value of `block`.
+    /// @see `Object>>ifNotNil:`.
     protected ifNotNil: block = (
       ^super ifNotNil: block.
     )
 
     /// As `Object>>ifNil:ifNotNil:`, for a send from inside the proxy
     /// only.
+    ///
+    /// @param nilBlock any object; not evaluated.
+    /// @param notNilBlock as `Object>>ifNotNil:`'s block.
+    /// @answers the value of `notNilBlock`.
+    /// @see `Object>>ifNil:ifNotNil:`.
     protected ifNil: nilBlock ifNotNil: notNilBlock = (
       ^super ifNil: nilBlock ifNotNil: notNilBlock.
     )
 
     /// As `Object>>ifNotNil:ifNil:`, for a send from inside the proxy
     /// only.
+    ///
+    /// @param notNilBlock as `Object>>ifNotNil:`'s block.
+    /// @param nilBlock any object; not evaluated.
+    /// @answers the value of `notNilBlock`.
+    /// @see `Object>>ifNotNil:ifNil:`.
     protected ifNotNil: notNilBlock ifNil: nilBlock = (
       ^super ifNotNil: notNilBlock ifNil: nilBlock.
     )
 
     /// As `Object>>halt`, for a send from inside the proxy only.
+    ///
+    /// @answers the value a handler resumes the Halt with.
+    /// @signals Halt a new one, without a `messageText`.
+    /// @see `Object>>halt`.
     protected halt = (
       ^super halt.
     )
@@ -1314,6 +1686,12 @@ class Kernel vmMirror: mirror = Value (
   /// is, so a future handed to it is not forced until this one is. The
   /// initializer tells the runtime a future exists, which is what turns
   /// on its seeing through futures.
+  ///
+  /// @factory makes an unresolved future of `theComputation`, which it
+  /// stores as it is, forcing nothing, and tells the runtime a future
+  /// exists; `Future computing:` sends it.
+  /// @param theComputation a block of no argument, which a forcing
+  /// evaluates, or any other object, which a forcing sends `value`.
   private class FutureImplementation computing: theComputation = Proxy (
     |
       /// The computation until the future is resolved, then its value;
@@ -1326,17 +1704,19 @@ class Kernel vmMirror: mirror = Value (
     vmMirror futureMade: self ifFail: [nil].
   ) (
     /// Forces the future and sends `message` to its value as a public
-    /// send, answering what that send answers.
+    /// send.
     ///
-    /// message: the `Message` the future was sent.
-    ///
-    /// Signals every Error `resolve` signals, before `message` is sent.
+    /// @param message the `Message` the future was sent.
+    /// @answers what that send answers.
+    /// @signals Error every one `resolve` signals, before `message` is
+    /// sent.
+    /// @see `resolve`.
     protected doesNotUnderstand: message = (
       ^message sendTo: self resolve.
     )
 
-    /// Forces the future: answers its value, computing it first when it
-    /// is unresolved. The computation runs at most once per forcing that
+    /// Forces the future, computing its value first when it is
+    /// unresolved. The computation runs at most once per forcing that
     /// completes: a block is evaluated, any other object is sent
     /// `value`. When the computation answers a future, that future's
     /// value is this one's -- §6.3.2's pipelined promise -- so that the
@@ -1348,14 +1728,6 @@ class Kernel vmMirror: mirror = Value (
     /// the chain. Every future taken over is resolved to the same value,
     /// before this one. From then on each is resolved, and answers its
     /// value without running anything.
-    ///
-    /// Signals an Error, 'divergent evaluation: a future was forced
-    /// while it was being computed', when the future, or one the chain
-    /// reaches, is forced while it is being computed -- §6.3.2 resolves
-    /// only well-founded recursion -- and an Error, 'a malformed future:
-    /// its fields are no future''s', when its slots hold what no forcing
-    /// wrote: a state none of the three, or a value that is itself a
-    /// future. Every Error a computation signals passes through.
     ///
     /// A forcing an unwind abandons -- a computation signalled, a handler
     /// returned past it, the depth limit refused one of its activations
@@ -1369,6 +1741,17 @@ class Kernel vmMirror: mirror = Value (
     /// and the `ifCurtailed:` that undoes it. The states are read through
     /// the VM mirror, which answers them as small integers, so that a
     /// state crafted code stored is compared by nothing it defines.
+    ///
+    /// @answers the future's value, never a future.
+    /// @signals Error 'divergent evaluation: a future was forced while it
+    /// was being computed', when the future, or one the chain reaches, is
+    /// forced while it is being computed -- §6.3.2 resolves only
+    /// well-founded recursion.
+    /// @signals Error 'a malformed future: its fields are no future''s',
+    /// when its slots hold what no forcing wrote: a state none of the
+    /// three, or a value that is itself a future.
+    /// @signals Error every one a computation signals, which passes
+    /// through.
     private resolve = (
       |
         own = vmMirror futureState: self ifFail: [3].
@@ -1412,14 +1795,16 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// Signals the Error of forcing a future whose state, as
-    /// `futureState:ifFail:` answers it, is `futureState`: 'divergent
-    /// evaluation: a future was forced while it was being computed' for
-    /// 1, resolving, and 'a malformed future: its fields are no
-    /// future''s' for any other. Never answers: an Error is not
-    /// resumable.
+    /// `futureState:ifFail:` answers it, is `futureState`. Never answers:
+    /// an Error is not resumable.
     ///
-    /// futureState: a state that is neither 0, unresolved, nor 2,
+    /// @param futureState a state that is neither 0, unresolved, nor 2,
     /// resolved.
+    /// @answers nothing; it never returns.
+    /// @signals Error 'divergent evaluation: a future was forced while it
+    /// was being computed' for 1, resolving.
+    /// @signals Error 'a malformed future: its fields are no future''s'
+    /// for any other.
     private signalForcingInState: futureState = (
       futureState = 1 ifTrue: [
         ^(outer Kernel Error new) signal: 'divergent evaluation: a future was forced '
@@ -1439,16 +1824,22 @@ class Kernel vmMirror: mirror = Value (
   /// keeps the rules of docs/design/object-model.md, "Simultaneous
   /// slots". Its initializer refuses, so a subclass's instances are
   /// refused too; a subclass does not inherit `computing:` (§3.2).
+  ///
+  /// @factory makes nothing: `new`, and every subclass's factory, signal
+  /// before the instance is answered.
+  /// @signals CannotInstantiate carrying the class instantiated, 'a Future
+  /// is made by Future computing:', for every instantiation.
   public class Future = Object (
     (outer Kernel CannotInstantiate behavior: self
         class) signal: 'a Future is made by Future computing:'.
   ) () : (
-    /// Answers a new future of `computation`'s value, computed when the
-    /// future is first sent a message.
+    /// Makes a future of `computation`'s value, computed when the future
+    /// is first sent a message.
     ///
-    /// computation: a block of no argument, which the future then
-    /// runs, or any other object, which it then sends `value`. A
-    /// future handed in is forced only then.
+    /// @param computation a block of no argument, which the future then
+    /// runs, or any other object, which it then sends `value`. A future
+    /// handed in is forced only then.
+    /// @answers a new future, unresolved.
     public computing: computation = (
       ^outer Kernel FutureImplementation computing: computation.
     )
@@ -1469,48 +1860,64 @@ class Kernel vmMirror: mirror = Value (
   /// hash. `Integer`'s, `True`'s and `False`'s are no forwarders to a
   /// leaf: the value they answer is already at hand.
   public class Value = Object () (
-    /// Answers whether `other` is of a class equal to the receiver's and
-    /// its slots, in declaration order, are equal to the receiver's,
-    /// each compared with `=`.
-    ///
-    /// other: any object; never signals itself, though a slot's own
-    /// `=` may.
+    /// Compares the receiver with `other` by class and slots: a value has
+    /// no identity of its own. It never signals itself, though a slot's
+    /// own `=` may.
     ///
     /// §3.1.1: a value object is globally unique, in the sense that no
     /// other object is equal to it -- so equality is derived from state,
     /// and a value has no observable identity. The leaf declines when a
     /// slot's class brings its own `=`, because a leaf may not send;
     /// `valueEquals:` then sends it.
+    ///
+    /// @param other any object.
+    /// @answers whether `other` is of a class equal to the receiver's and
+    /// its slots, in declaration order, are equal to the receiver's, each
+    /// compared with `=`; a Boolean.
+    /// @see `valueEquals:`.
     public = other = (
       ^vmMirror value: self sameAs: other ifFail: [^self valueEquals: other].
     )
 
-    /// Answers what `=` answers: a value has no identity of its own.
+    /// Compares the receiver with `other` by sending `=`: a value has no
+    /// identity of its own.
     ///
     /// §3.1.1: where `Value` declares an identity method, "that method
     /// must return the same results as `Value`'s equality method". A send
     /// of `=` makes that true by construction, for every subclass.
+    ///
+    /// @param other any object.
+    /// @answers what `=` answers; a subclass's own `=` decides it, so it
+    /// is a Boolean only where that `=` answers one.
     public == other = (
       ^self = other.
     )
 
-    /// Answers an Integer computed from the slots, alike for every two
+    /// Hashes the receiver by its slots, so that the hash agrees with
+    /// `=`.
+    ///
+    /// @answers an Integer computed from the slots, alike for every two
     /// values `=` makes equal.
     public hash = (
       ^vmMirror valueHash: self ifFail: [^self valueHashOfSlots].
     )
 
-    /// Answers the receiver's `hash`: a value's identity is its
+    /// Hashes the receiver as `hash` does: a value's identity is its
     /// equality.
+    ///
+    /// @answers the receiver's `hash`.
     public identityHash = (
       ^self hash.
     )
 
-    /// The equality `=` leaves to Newspeak: whether `other`'s class is
-    /// `==` the receiver's and each of its slots is `=` the receiver's
-    /// slot at the same position, from the first. It reads `other`'s class
-    /// through the mirror, since `class` is answered only to its
-    /// receiver's own sends.
+    /// The equality `=` leaves to Newspeak, comparing the slots in order.
+    /// It reads `other`'s class through the mirror, since `class` is
+    /// answered only to its receiver's own sends.
+    ///
+    /// @param other any object.
+    /// @answers whether `other`'s class is `==` the receiver's and each of
+    /// its slots is `=` the receiver's slot at the same position, from the
+    /// first; a Boolean.
     private valueEquals: other = (
       |
         index ::= 1.
@@ -1528,8 +1935,10 @@ class Kernel vmMirror: mirror = Value (
       ^true.
     )
 
-    /// The hash `hash` leaves to Newspeak: the slot count plus the
-    /// `hash` of every slot.
+    /// The hash `hash` leaves to Newspeak, sending `hash` to every slot,
+    /// so that it agrees with `valueEquals:`.
+    ///
+    /// @answers the slot count plus the `hash` of every slot.
     private valueHashOfSlots = (
       |
         count = self valueSlotCountOf: self.
@@ -1543,10 +1952,8 @@ class Kernel vmMirror: mirror = Value (
       ^result.
     )
 
-    /// Answers the number of slots `subject`'s classes declare, 0 for a
-    /// `subject` whose state is no slots.
-    ///
-    /// subject: the receiver or the object it is compared with.
+    /// Counts the slots `subject`'s classes declare, through the VM
+    /// mirror.
     ///
     /// Both name their subject rather than forwarding `self`: §5.9
     /// reaches a private member only through a lexical send, so
@@ -1554,20 +1961,27 @@ class Kernel vmMirror: mirror = Value (
     /// state has to be read through the same leaf as this side's. That
     /// costs each of them the primitive-method fast path, which only
     /// the declining path pays.
+    ///
+    /// @param subject the receiver or the object it is compared with.
+    /// @answers the number of slots `subject`'s classes declare, 0 for a
+    /// `subject` whose state is no slots.
     private valueSlotCountOf: subject = (
       ^vmMirror valueSlotCount: subject ifFail: [^0].
     )
 
-    /// Answers `subject`'s declared slot at `index`, counted from 1 in
+    /// Reads `subject`'s declared slot at `index`, through the same leaf
+    /// for either side.
+    ///
+    /// @param subject as `valueSlotCountOf:`'s.
+    /// @param index an Integer from 1 to that slot count.
+    /// @answers `subject`'s declared slot at `index`, counted from 1 in
     /// declaration order; nil for a `subject` whose state is no slots.
-    ///
-    /// subject: as `valueSlotCountOf:`'s.
-    /// index: an Integer from 1 to that slot count.
-    ///
-    /// Signals an ArgumentError carrying `index`: 'index … out of
-    /// range: valid indices are 1..size (size …)' for an Integer outside
-    /// that range, and 'slotAt: requires an Integer index, got …' for
-    /// one that is no Integer.
+    /// @signals ArgumentError carrying `index`, 'index … out of range:
+    /// valid indices are 1..size (size …)', for an Integer outside that
+    /// range.
+    /// @signals ArgumentError carrying `index`, 'slotAt: requires an
+    /// Integer index, got …', for one that is no Integer.
+    /// @see `valueSlotCountOf:`.
     private valueSlotOf: subject at: index = (
       ^vmMirror value: subject slotAt: index ifFail: [^nil].
     )
