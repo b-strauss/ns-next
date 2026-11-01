@@ -700,6 +700,28 @@ and the selector it had before the factory was code. A host's
 `Interpreter::instantiate` runs the same factory body
 (`decide_instantiation`), so a host and a program make the same instance.
 
+**Machine code makes the ordinary instance inline and leaves every other
+case to the same function.** A factory send in machine code is a compiled
+call of the factory body, and its `AllocateInstance` bumps eden's cursor
+inline ([execution.md](execution.md), "Sends, returns and the exit that
+materializes", "The miss leaf"), reading what `allocate_for_factory`
+reads: the class object's format, its builtin field and its value
+refusal, afresh at every instantiation, and the header of the
+application's instances. That header is the second word of the
+application's row in the application id table, the one table machine code
+reads an application by ([memory.md](memory.md), "The application id
+table"): `Heap::register_application` writes it from the application's
+`instance_header` when it records the row, and writes 0 where
+`allocate_for_factory` would make no ordinary instance of the
+application's count -- an instantiation refusal, or a count that needs an
+overflow word -- so that a 0 sends the template to the generic leaf,
+which runs `allocate_instance` itself. A row never changes after it is
+built, since an edit makes a new application, so no instantiation reads a
+header that no longer describes its class's layout; a builtin's own
+instances, the VM mirror's class among them, and a refusal are decided by
+the leaf, which raises nothing itself and exits so that the interpreter
+raises the refusal with its text and selector.
+
 **Each level's initializer is a body on its mixin, outside the method
 table, reached only by the instructions that initialize** (decision 2).
 The references name it ``initializer`sel:`` and put it in the method table,

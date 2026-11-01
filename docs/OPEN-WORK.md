@@ -15,42 +15,51 @@ when they were written.
 
 ## Next
 
-**Road step 8's fourth stage: closures, non-local return, allocation and
-the write barrier in machine code** ([execution.md](design/execution.md),
-"Planned: the baseline JIT", "What the templates emit inline", "Stages"):
-`MakeClosure` and a closure's activation as a compiled call, a non-local
-return and the unwinder from compiled frames, bump allocation in eden and
-the write barrier with its early outs inline, so that a setter, `at:put:`
-and the other stores run without a leaf call. A closure's activation as
-a compiled call also removes the cost a short block an interpreted
-`value:` pushes pays at the bridge ("A block an interpreted `value:`
-pushes pays the bridge" below). Its first three stages are
-built ("The baseline JIT's foundation", "Sends, returns and the exit that
-materializes"): `ns-memory`'s doubly mapped code zone and the entry into
+**Road step 8's fifth stage: on-stack replacement, the polls and the
+depth count's measurement** ([execution.md](design/execution.md),
+"Planned: the baseline JIT", "When a body is compiled", "Polls and the
+depth check", "Stages"; "Between the tiers" and "Safepoints and the
+depth limit" in "Planned: the deoptimization contract"): an interpreted
+frame becomes a baseline one in place at a backward jump whose per-frame
+counter trips, as Cog switches at its 40 back jumps, so that a hot loop
+in a method entered once -- a benchmark's main loop -- runs compiled; a compiled push's checks of the depth and of a
+safepoint request become one compare, a request lowering the limit as
+Cog's `stackLimit` does; and whether the depth count lives in a machine
+register while machine code runs, written back at the exit, or stays in
+the machine words, is measured.
+
+Its first four stages are built ("The baseline JIT's foundation",
+"Sends, returns and the exit that materializes", "The entry at a send",
+"Stage 4: closures, non-local return, allocation and the barrier", "The
+code zone"): `ns-memory`'s doubly mapped code zone and the entry into
 machine code, `ns-assembler` with the x64 encoder, and in `jit/` the
 macro assembler of the VM's idioms and its register roles, the stubs and
 the baseline compiler's one exhaustive `match`; a cached send calls
 through a machine-readable cell beside its cache entry into the callee's
 machine code or a stub, the callee returns by `ret`, the miss leaf
-compiles a callee from inside machine code and heals the cells it went
-through, and an exit at any depth materializes every compiled frame. So
-is the entry at its cost ("The entry at a send"): an interpreter's send
-calls a compiled callee's machine code through a call stub, every other
-entry crosses a bridge whose block lasts between entries, and every
-compiled body is entered wherever it runs, which measured the geometric
-mean 24.2% faster than `master` and a recursion rooted in an interpreted
-frame fourteen times as fast ("What the entry at a send moved").
-What stage 3 measured is "What sends in machine code moved": where
-machine code runs whole -- loops of sends, accessors and arithmetic --
-it is several times the interpreter's speed; where it meets a block, an
-allocation or a non-local return it exits, and a body that keeps exiting
-is abandoned to the interpreter until its exits decay, so that those
-programs run at about the interpreter's speed until stage 4 removes the
-exits. The stages after it,
-each measured against the tree before it: on-stack replacement, the polls
-and the depth count's measurement; the register cache; the AArch64
-encoder under QEMU. Road step 8 as a whole, Cog's class, for x64 and
-arm64, is "The road to a high-performance VM" below.
+compiles a callee from inside machine code, and an exit at any depth
+materializes every compiled frame; an interpreter's send calls a
+compiled callee's machine code through a call stub, and every compiled
+body is entered wherever it runs. Stage 4 put the rest in machine code:
+eden's bump and the write barrier inline, the own slots, instantiation
+and the initializers as compiled calls, `MakeClosure` and a closure's
+activation as a compiled call through the closure stubs, the outer
+locals, the futures and their forcing by `resolve`, and the cut of a
+non-local return; every body compiles lean, its frame reified only in a
+twin compiled on demand. And it made everything that grows reclaimable:
+the code zone is compacted and frees the code of dead bodies, the exit
+budget decays and an abandoned body is revived, a program-made symbol
+takes no number and dies with its object, every table beside the object
+space has a growth limit, the site ranges slide at a full collection,
+and committed memory is given back by a band and a damping. Measured
+with three builds a side, the geometric mean over twenty-three sources
+is 54.6% faster than `master` and 5.7% faster than stage 4's tree before
+the reclamation ("What reclamation moved"); `bench_megamorphic` (+2.8%),
+`bench_recursion` (+0.7%) and, against that tree, `bench_signal` (+0.9%)
+are slower, each item below. The stages after the fifth, each measured
+against the tree before it: the register cache; the AArch64 encoder
+under QEMU. Road step 8 as a whole, Cog's class, for x64 and arm64, is
+"The road to a high-performance VM" below.
 Road step 7 is complete: 7c wrote the contract the JIT tiers build
 to ([execution.md](design/execution.md), "Planned: the deoptimization
 contract"). The step between 7 and 8 is built: `Closure>>whileTrue:` and
@@ -109,7 +118,9 @@ each step has its entry in [PROGRESS.md](PROGRESS.md), and the whole road is bel
 removing the re-entries moved"; every compared binary, the current tree
 included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
 "Working in this repository"), and the three builds a side vary the block
-layout inside `vm::run` as that section says. Six of the ten measurement sources are
+layout inside `vm::run` as that section says, and the current tree's
+three lay the code zone out at three paddings as "What reclamation moved"
+says. Six of the ten measurement sources are
 under `benchmarks/micro/`, `bench_signal.ns` the one an exception's
 handler search moves and `bench_while.ns` the one that runs `whileTrue:`
 and `whileFalse:` over blocks held in slots, which the compiler does not
@@ -385,16 +396,24 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   returns and the exit that materializes"), the entry into machine code
   at its cost built (2026-10-29,
   [its plan](superpowers/plans/2026-10-29-2030-jit-entry-cost.md); "The
-  entry at a send"), stage 4 next ("Next" above).
+  entry at a send"), its fourth, closures, non-local return, allocation
+  and the write barrier in machine code with the reclamation of
+  everything that grows, built (2026-11-01,
+  [its plan](superpowers/plans/2026-10-30-0103-jit-closures.md); "Stage
+  4: closures, non-local return, allocation and the barrier", "The code
+  zone"), stage 5 next ("Next" above).
   Left to it, and measured: whether the depth count lives in a machine
   register while machine code runs, written back at the exit, or stays in
   memory ("Planned: the deoptimization contract", "Safepoints and the
   depth limit"); whether a send calls through its cache cell or through a
   patched direct call, which stage 3's measurement could not isolate
   ("What sends in machine code moved"); and the code zone's default size,
-  16 MiB today (`jit::DEFAULT_ZONE_BYTES`), a first guess. What the
-  stages so far leave to the ones after them (noted in their reviews,
-  2026-10-27 to 2026-10-29):
+  16 MiB today (`jit::DEFAULT_ZONE_BYTES`), a first guess, which no
+  measured program fills: only CD compacts it, six times in a run, all of
+  it churn ("A nested class's accessor on a private or `super` chain
+  exits machine code" below). What the stages so far leave to the ones
+  after them (noted in their reviews and measurements, 2026-10-27 to
+  2026-11-01):
   - **Without allocation, a rarely exiting body still spends a bounded
     share interpreted.** In a run that allocates nothing the exit counts
     never decay, and an abandoned body is revived only by its interpreted
@@ -408,10 +427,14 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     an always-exiting body should be interpreted. Telling the two apart
     needs the count of the body's calls in machine code, which the hot
     path does not keep; whether to count them, or to pace the decay by
-    something other than allocation (polls, entries), is to be measured
-    with stage 4, when most exits are gone.
+    something other than allocation (polls, entries), is open. Stage 4's
+    measurement found no program that needs it: of the twenty-three
+    sources only CD and `bench_signal` abandon a body at all, and both
+    allocate ([execution.md](design/execution.md), "What reclamation
+    moved").
   - **A block the interpreter pushes above its sender's window pays the
-    bridge** (accepted with the user on 2026-10-29 until stage 4): an
+    bridge** (accepted with the user on 2026-10-29 until stage 4, which
+    left these pushes to it): an
     interpreted `value` send and its kin call a block's machine code
     through the closure call stub, as a method's (`jit::called_closure`),
     once a push of the block has written its machine entry row,
@@ -477,10 +500,11 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     decision should be cached per invocation -- the superclass level and
     its body depend on the frame's class only -- is to be measured.
   - **`jit::entered` is `#[cold]`**, though every push of a compiled
-    body that is no send -- a block an interpreted `value:` pushes among
-    them -- now enters through it; its placement is to be measured again
-    once stage 4 has made a closure's activation a compiled call, which
-    leaves the bridge to fewer pushes.
+    body that is no send -- a block the interpreter pushes itself among
+    them -- enters through it, and so does the push that revives an
+    abandoned body; since stage 4 made a closure's activation a compiled
+    call, fewer pushes reach it, and its placement is to be measured
+    again.
   - **The cut exits at every unwind marker, `on:do:`'s too, and calls a
     leaf per frame it passes** (`jit/cut.rs`; [execution.md](design/execution.md),
     "Stage 4: closures, non-local return, allocation and the barrier").
@@ -541,6 +565,44 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     its safety section asks nothing of its caller; the leaf shim could be
     `unsafe extern "C"`; `crates/ns-assembler/tests/encoding_sources.rs`
     reads a raw string as an ordinary one.
+  - **What stage 4's reviews and measurement left** (2026-10-30 to
+    2026-11-01), none of them a wrong outcome:
+    - *A rarely taken path costs an exit*: an object whose header's guard
+      is `DispatchId::NONE` -- its application past `DispatchId::LIMIT` --
+      exits at every own-slot access; a closure stub declines to copy a
+      block's arguments past the ordinary end, so the interpreter's push
+      grows the stack, where the growth leaf could make the room; a block
+      whose code id lies past the machine entry table's 2^20 rows is
+      always called by the interpreter; a future's clause end, which
+      exits for a future among a leaf's operands ("A future as a leaf's
+      operand leaves machine code" below), is unmeasured.
+    - *The decay and the revival walk whole tables*: every scavenge
+      halves the exit count of every installed body
+      (`JitState::decay_exits`), and every revival writes every cell
+      that names the refusing stub afresh by a walk of every site, block
+      and global row (`InlineCaches::refresh_all_cells`), at most once
+      per scavenge or compile trigger. Neither is measured on its own;
+      the final measurement shows no program slower for them.
+    - *Statistics*: `JitStatistics::send_exits` does not count a call
+      refused at an interpreter's send, which only `exits` counts; and
+      `ns-next bench --collector-statistics` prints neither the JIT's
+      statistics nor `CollectorStatistics.decommits`, so the final
+      measurement read them from a binary with a temporary print.
+    - *Tests*: the private and `super` accessor stubs reached through a
+      polymorphic block's cell or a global row -- the row's
+      `ROW_CHAIN_START` word, the shift by sixteen -- are reached by no
+      test, a defect there costing speed only; the barrier's tests and
+      most long-run tests of the reclamation (`tests/collector.rs` whole,
+      the million program-made symbols, the churn of families, the rare
+      exit with allocation) compile only with debug assertions, so the
+      `release-checks` build runs few of them.
+    - *The stress gate's slowest test*: `runtime/jit/counting_loop` under
+      the reference lowering takes 563 to 576 s alone under
+      `NS_NEXT_STRESS_COLLECT`, nearly ten minutes (noted with the
+      user on 2026-10-31); why it takes so
+      long, and whether the collect stress mode should collect at every
+      safepoint of such a loop or at a pace of its own, is to be
+      investigated.
   - **What stage 3's reviews left** (2026-10-28 and 2026-10-29), none of
     them a wrong outcome:
     - *The architecture scan's blind spots*: `tests/jit_architecture_split.rs`
@@ -715,9 +777,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   noise. It is at the edge of build noise and not diagnosed: the check runs
   only on a private or super slot accessor's send, and the benchmark's
   megamorphic sends are method sends, so a code-layout effect is as likely
-  as a cost of the check itself. Measure it again with the next change to the
-  send path, and diagnose it if it stays.
-  [object-model.md](design/object-model.md), "What a slot access checks".
+  as a cost of the check itself. It stayed: "What closures in machine
+  code moved" measured +3.1% against `master` (not reproduced in a second
+  sitting), and "What reclamation moved" +2.8% (4.744 against 4.613 ms,
+  2026-11-01), with stage 4's tree before the reclamation already +2.7%
+  in the same sitting and level with the head (+0.1%); its loop runs
+  interpreted, so the cost lies in the interpreter's send or its layout.
+  To be diagnosed. [object-model.md](design/object-model.md), "What a
+  slot access checks"; [execution.md](design/execution.md), "What
+  reclamation moved".
 - **A mirror walks again what it walked a moment ago** (2026-10-18): a
   navigated class mirror holds the way to its class, so every use walks
   it afresh, and `superclass` and `gathered:` -- behind a class mirror's
@@ -1524,6 +1592,25 @@ classes and a class from source with no predecessor are not edited
   samples `vm::run`'s ([execution.md](design/execution.md), "Measurements").
   Open: whether a placement policy (aligned loop heads, hot stubs on their
   own lines) measures better than the lottery.
+- **`bench_signal.ns` 0.9% slower for the inline count of an abandoned
+  body's entries** (2026-11-01), against stage 4's tree before the
+  reclamation, builds separated (18.756 against 18.582 ms): every
+  interpreted push of an abandoned body adds one to its slot's state, an
+  increment and a store where that tree compared once and never revived
+  the body, and `bench_signal` pushes its abandoned `descend:` about
+  255,000 times a send. The count is what revival by interpreted entries
+  needs, kept so that a run that allocates nothing does not end with
+  every body that once spent its budget interpreted for good; a cheaper
+  count, or none on a path the decay serves, is open.
+  [execution.md](design/execution.md), "The baseline JIT's foundation"
+  (the abandonment), "What reclamation moved".
+- **`bench_recursion.ns` 0.7% slower than `master`** (2026-11-01, 0.670
+  against 0.665 ms, builds separated): what the reifying twin leaves of
+  the cost a conditional's fallback closure put on `fib:`'s Boolean path,
+  which was 4.1% before the twin. The lean body runs none of the reifying
+  code there; where the rest lies was not isolated.
+  [execution.md](design/execution.md), "A frame reifies only in its
+  body's twin", "What reclamation moved".
 - **The interpreter is 1.35% slower than before stage 3** (2026-10-29),
   with the JIT off, on the geometric mean over twenty-two sources, twelve
   of them slower with their builds separated, `bench_megamorphic.ns` the

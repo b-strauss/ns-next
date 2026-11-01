@@ -57,7 +57,7 @@ first.
 | Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames, written into `execution.md` for road steps 8 and 9 to build to | Complete | 2026-10-27 | — |
 | The handler search as a leaf: `activationNextHandler:` walks the frames and reifies only the `on:do:` activation it answers | Complete | 2026-10-27 | [handler-search-leaf](superpowers/plans/2026-10-27-0126-handler-search-leaf.md) |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `Array>>do:`, and a loop in the reference lowering | Complete | 2026-10-27 | [loop-bodies](superpowers/plans/2026-10-27-1529-loop-bodies.md) |
-| Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes | In progress | 2026-10-28 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md) |
+| Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows | In progress | 2026-11-01 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md) |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
 
 ## Notes
@@ -6547,3 +6547,117 @@ microbenchmark `bench_recursion`.
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
 8's fourth stage next, which also removes the block's cost at the
 bridge, and a call refused at the depth bound that nothing counts.
+
+## Closures, non-local return, allocation, the barrier and reclamation in machine code, road step 8's fourth stage (2026-11-01)
+
+Road step 8's fourth stage ([execution.md](design/execution.md), "Stage
+4: closures, non-local return, allocation and the barrier", "The code
+zone"; [its plan](superpowers/plans/2026-10-30-0103-jit-closures.md)), in
+four parts, each measured against the tree before it. **4a, allocation
+and the barrier**: eden's bump cursor moved where machine code bumps it,
+the write barrier inline with Cog's four early outs, `MakeVector`,
+`MakeArray`, `LoadVector`, `StoreVector`, setters, `at:put:` and the
+private and `super` accessors inline, the own-slot instructions with the
+recorded guard's compare inline, and a factory send and every
+initializer invocation compiled calls; the application id table's row
+widened to four words, an instance header among them. **4b, closures**:
+`MakeClosure` reifies its frame inline, a closure's activation is a
+compiled call through the closure stubs and, from the interpreter, the
+closure call stub, which find a block's machine code in a machine entry
+table by code id; a `MakeClosure`'s code ids are read from a site of
+data words beside its body's code; the outer locals and the futures run
+in machine code, and a future is forced by `FutureImplementation`'s own
+`resolve`, which takes a chain of futures over at constant depth. **4c,
+non-local return**: the cut pops the compiled frames to the home and
+resumes at the home's return address, leaving to the interpreter's one
+unwinder every return it cannot carry exactly. And a frame reifies only
+in its body's twin: every body compiles lean, and its `MakeClosure`
+transfers the frame into a reifying copy the twin leaf compiles on
+demand. **4d, everything that grows is reclaimed** (decided with the
+user on 2026-10-30): the code zone is compacted when a compile finds no
+room and a full collection frees the code of dead bodies, Cog's policy;
+the exit budget decays at every scavenge and an abandoned body is revived
+by the decay or by its interpreted entries, counted inline; a symbol a
+program makes takes no number and dies with its object; every table
+beside the object space has a growth limit that requests a full
+collection, with no time-based watchdog; the site ranges slide at a full
+collection; and the reservations beside the space give back what a peak
+committed by a band and a damping, the Windows code zone in sections of
+its own so that its commit charge goes back too. A ninth stress mode
+compacts the code zone at the safepoints a schedule picks. Each measured
+build lays the code zone out at a padding of its own, so that a
+measurement samples the zone's placement.
+
+Measured with three builds a side ([execution.md](design/execution.md),
+"What allocation and the barrier in machine code moved", "What closures
+in machine code moved", "What non-local return in machine code moved",
+"What reclamation moved"): the geometric mean over twenty-three sources
+54.6% faster than `master` -- `bench_block` -89.0%, `bench_while`
+-86.6%, Permute -81.2%, Queens -79.9%, Towers -75.7%, Sieve -72.2%,
+Bounce -69.0%, Richards -61.9%, Havlak -59.1%, DeltaBlueTon80 -58.3%,
+DeltaBlue -54.4% -- and 5.7% faster than the stage's tree before the
+reclamation; slower than `master`, `bench_megamorphic` +2.8%, which that
+tree was already, and `bench_recursion` +0.7%, what the twin left of a
+fallback closure's cost; slower than that tree, `bench_signal` +0.9%, the
+inline count of an abandoned body's entries. The first final measurement
+found `bench_signal` 29.5% and DeltaBlue 1.9% slower than that tree:
+every interpreted push of an abandoned body called `jit::entered` out of
+line, and the twins lengthened the search the leaves make for their
+calling body by a code address; the count moved into the slot's state
+and the lookup remembers its answers, which made DeltaBlue 12.6% faster
+than that tree. No benchmark collects for a table, and simulated long
+runs keep every table at its floor or limit. No golden, `run-corpus`
+output or benchmark outcome changed; thirteen goldens were added under
+`goldens/runtime/jit/` and two under `goldens/runtime/symbols/`, and one
+golden's `.toml` says why it keeps live rows past a table's floor
+(`reaches_a_table_limit`).
+
+- `a3f2912b`, `3ed10068`, `1cfc1788`, `d2959037` -- the design and the
+  plan, and part 4d's design.
+- `01c86953`, `8037b123`, `42aa8f20`, `9cb25863` -- eden's cursor, the
+  barrier, the vectors and arrays, setters, indexing stores and the
+  private and `super` accessors inline.
+- `d402165b`, `5121fd7e`, `6df947f3`, `76b6fc85` -- own slots,
+  instantiation and the initializers, the nested-class accessor's stub.
+- `451f72d8` -- what allocation and the barrier moved.
+- `58402287`, `6aaf5d72`, `1b556ace`, `607fba4c` -- compiled frames of
+  every kind materialized, `MakeClosure`, a closure's activation as a
+  compiled call, every block a quick method activates.
+- `10f35802`, `48c9ef53`, `61c535ae`, `32e2a1a1` -- closure sites beside
+  their body's code, a closure stub's block past the send's slots and
+  its room check.
+- `0365bbf4`, `9c3ed3c1` -- outer locals.
+- `f34e4bfe`, `d9919114`, `640900c0`, `3c72b64b`, `a3258371` -- futures
+  in machine code, forced by `resolve`, a chain taken over.
+- `3b6913ee`, `80fb5968`, `cf2b8bae`, `c1fba252`, `5ece7a0d`, `e3127cdb`,
+  `b5c60cf4`, `84edfafe`, `f476f86c`, `5a66fa72`, `a0ecfbed` -- the
+  closures' measurement, its fixes and what closures in machine code
+  moved.
+- `7e730205`, `2b70773d`, `2a0c1a67`, `4f991268`, `bd22147f`, `11047d98`
+  -- the cut, and what non-local return moved.
+- `90021617`, `1c13863e` -- the tables' growth limits.
+- `b662bcb3`, `7e622ff5`, `6694c67e`, `2ff9b552`, `f9a512ea`, `fec3aff5`
+  -- the zone's compaction, the freeing of dead bodies' code, the
+  exhaustion and its backoff.
+- `ed2b74fb`, `003c2c7c`, `61982cc0`, `a7104267` -- the decaying exit
+  budget and the revival.
+- `837b7d34`, `67054b82`, `6c7e1b5a` -- program-made symbols.
+- `653f9104`, `cfad93bd`, `b64cbf01` -- the site ranges' slide.
+- `c08f649b`, `c4075534`, `3e96405f`, `ba498bf2`, `cb1c6aa9`, `8b6595e4`
+  -- committed memory given back, the Windows zone's sections, the
+  growth leaf, a JIT that is off says so.
+- `b9a0b4a3`, `0edf3f79`, `f3412c6a`, `b3633472` -- a frame reified only
+  in its body's twin.
+- `a83dfaaf`, `45a28cc8`, `99798e5c` -- each measured build's zone
+  padding.
+- `18dfb0c7`, `85aa1351` -- the tests under `release-checks`.
+- `c775d4e9`, `25f2f20b`, `faea01b3` -- the final measurement's fixes:
+  the inline count, the remembered lookup, the JIT switched off refusing
+  an abandoned body.
+- The documents' commit after them.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+8's fifth stage, on-stack replacement, the polls and the depth count's
+measurement, next; a nested class's accessor on a private chain, which
+costs CD 3% in churn; a symbol literal's leaf call, about a seventh of
+DeltaBlue's run; and what stage 4's reviews and measurement left.

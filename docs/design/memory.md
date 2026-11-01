@@ -30,7 +30,9 @@
 > across runs only as `Root`s, and a debug-build stress mode moves
 > everything at the safepoints to check all of it (step 2b); and every
 > movable handle carries a lifetime brand, so that holding one across a
-> safepoint is a compile error (step 2c). The canonical symbol table, a
+> safepoint is a compile error (step 2c). The canonical symbol table, the
+> table of the symbols a program made, which take no number and die with
+> their objects, a
 > `WeakArray`'s slots and the fields of an `Ephemeron` whose key nothing
 > else reaches are weak, and the table of reified mixins is weak in a full
 > collection, which a scavenge traces strongly; everything else the
@@ -38,12 +40,21 @@
 > collection gives back the per-heap ids nothing live names any more --
 > applications, guard ids, mixin trees, compiled bodies, cache ranges --
 > gathered while marking ("Marking"; [object-model.md](object-model.md),
-> "An application has two ids").
+> "An application has two ids"). Every such table has a growth limit
+> that requests a full collection, so that a program that mints rows
+> without allocating much still collects, and after every full collection
+> the reservations beside the space -- the activation stack, the cells,
+> the two id tables of machine code and the code zone -- give back what a
+> peak committed, by a band and a damping ("The trigger and the growth
+> policy", "Giving committed memory back").
 > Allocation is inline (road step 6, "Inline allocation"): a young object
 > whose header holds its word count is one comparison against a limit
 > below eden's scavenge threshold, a bump of the cursor `ns-memory`'s
 > reservation holds, and its header and class word written; every other
-> allocation takes the cold path, `Heap::allocate_block`.
+> allocation takes the cold path, `Heap::allocate_block`. Machine code
+> bumps the same cursor inline and makes the write barrier's decision
+> inline, calling a leaf only for what the cold path and `remember` do
+> ("The fast path", "The write barrier").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the
 > handle types and their brand, every accessor and allocation, the write
 > barrier and the remembered set, the host root table, the move, the
@@ -3154,13 +3165,21 @@ of them:
 
 Machine code makes the same decision inline. A store into an object it
 did not allocate in the same template -- `StoreVector`'s, a setter
-stub's, an Array's `at:put:` stub's -- takes
+stub's, a private or `super` setter's, an Array's `at:put:` stub's,
+`InitializeSlot`'s and `InitializeSlotProvisionally`'s, and an outer
+local's in a divorced frame -- takes
 `MacroAssembler::store_with_barrier`: the word, then the same two
 comparisons against `NURSERY_END` behind an early out for a value that
 names no object, and one for a holder whose remembered bit is set
 already, which `remember` would answer at once; only past all four does
 it call `Leaf::Remember`, which is `remember` itself
-([execution.md](execution.md), "The baseline JIT's foundation").
+([execution.md](execution.md), "The baseline JIT's foundation"). Its
+initializing stores -- `MakeArray`'s elements, a closure's copied
+values, the fields of a frame object a `MakeClosure` reifies -- take
+none, for the reason `allocate_block`'s callers take none: the object is
+young, or old and born remembered, since only `Leaf::Allocate` and the
+generic leaf place one old, through `allocate_block`. An outer local in
+a married frame lies on the activation stack and takes none either.
 
 `allocate_block` remembers every old object it allocates outside the
 decoder, as above. A married frame's registers live on the activation
@@ -3370,6 +3389,30 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
   into the reserve would need a second comparison and the request inline,
   and inlining `allocate_block` itself would keep its branches and could
   not precompute the header.
+- **Machine code bumps the same cursor, against the same limit.** The
+  cursor's two words, the top then the limit, lie in an allocation of
+  their own (`ns_memory::SharedCursor`, "The memory layer"), whose
+  address the entry block names (`BlockWord::EdenCursor`), so machine
+  code reads and writes them between two calls into Rust as the
+  interpreter's fast path does (`MacroAssembler::bump_allocate`).
+  `MakeVector`, `MakeArray`, `AllocateInstance`, `MakeClosure`, the
+  frame object a twin's `MakeClosure` reifies and `MakeFuture` write
+  the header and the class word from the machine words, where the
+  interpreter's precomputed headers are copied
+  ([execution.md](execution.md), "The machine words"), and fill or store
+  every field before the next instruction, as the fast path does. Past
+  the limit, or for a block at or past the large-object threshold, they
+  call `Leaf::Allocate`, which places the object as `allocate_block`
+  does and never collects, or the generic leaf, which runs the
+  interpreter's own allocation; either requests the scavenge, which runs
+  at the next poll's exit. The objects machine code places are counted in
+  the machine word `MachineAllocations` and folded into the heap's counts
+  before a scavenge or a compaction recounts them, so the heap's
+  statistics stay the interpreter's. Cog's machine code carries on past
+  its threshold into the slack and calls a trampoline that only schedules
+  the scavenge (`cogitX64SysV.c:19053-19077`); here the limit already
+  lies below the threshold, so the leaf is the interpreter's own
+  decision, and no word of machine code holds the threshold.
 
 ### The headers precomputed
 

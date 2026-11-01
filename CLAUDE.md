@@ -36,13 +36,21 @@ Rust 1.98.0, edition 2021, seven crates:
   callee returns by `ret`, the miss leaf decides
   what the cell did not and may compile the callee, every body compiles
   lean and its `MakeClosure` transfers the frame into a reifying twin
-  the twin leaf compiles on demand, and an exit at any
-  depth of compiled frames materializes them (`jit/materialize.rs`); the
+  the twin leaf compiles on demand, a non-local return is cut by
+  `jit/cut.rs`, and an exit at any
+  depth of compiled frames materializes them (`jit/materialize.rs`); a
+  body that keeps exiting is abandoned, its code freed, and revived when
+  the decay of its exit count at every collection, or its interpreted
+  entries counted inline, say so; the code zone is compacted, Cog's way,
+  when a compile finds no room, and a full collection frees the code of
+  dead bodies (`jit/zone.rs`); the
   VM's idioms and the register roles in `jit/macro_assembler.rs`, the
-  entry, call, exit and miss stubs in `jit/stubs.rs`, the trigger, the
-  entry and which bodies are entered in `jit/mod.rs`; `execution.md`,
-  "The baseline JIT's foundation", "Sends, returns and the exit that
-  materializes", "The entry at a send") and the send machinery it calls
+  entry, call, exit, miss and cut stubs in `jit/stubs.rs`, the trigger,
+  the entry, which bodies are entered and abandonment in `jit/mod.rs`;
+  `execution.md`, "The baseline JIT's foundation", "Sends, returns and
+  the exit that materializes", "The entry at a send", "Stage 4: closures,
+  non-local return, allocation and the barrier", "The code zone") and the
+  send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
@@ -75,8 +83,16 @@ Rust 1.98.0, edition 2021, seven crates:
   between entries, and both trace only an object's strong words
   (`heap/object.rs`'s `strong_pointer_ranges`), clearing a `WeakArray`'s
   slots (format `WeakPointers`) and mourning an `Ephemeron` (format
-  `Ephemeron`) whose key nothing else reaches; the write barrier and the
-  remembered set in `heap.rs`'s store accessors; `heap/value.rs`, a value
+  `Ephemeron`) whose key nothing else reaches; the symbols a program
+  makes, numberless, in a weak table of their own (`heap/symbols.rs`);
+  every table beside the space held to a growth limit that requests a
+  full collection, and the reservations beside it -- the stack, the
+  cells, the two id tables of machine code, the code zone -- giving back
+  what a peak committed after a full collection, by a band and a damping
+  (`heap/limits.rs`; `memory.md`, "The trigger and the growth policy",
+  "Giving committed memory back"); the write barrier and the
+  remembered set in `heap.rs`'s store accessors, and machine code's
+  inline barrier beside them; `heap/value.rs`, a value
   as one tagged word, Spur's, and `Word`, the bare word a heap object
   stores; the step state `Mutator` in `interpreter/mod.rs`, held at rest
   by `World` in `heap/world.rs` and reached only through
@@ -259,11 +275,15 @@ world has the loader build what it names by the binary's own code and look
 its names up, running nothing of the image's before the application starts.
 
 **Every store into an existing object goes through `heap.rs`'s store
-accessors and their write barrier.** A scavenge reads only the young
+accessors and their write barrier, or, in machine code, through the
+inline barrier (`MacroAssembler::store_with_barrier`), which makes the
+same decision and calls `Heap::remember` through a leaf.** A scavenge
+reads only the young
 objects and the remembered old ones, so a store that writes a word into an
 old object any other way leaves the young object it names unreachable to
 the next scavenge -- moved or reclaimed, silently, at exit status 0. Only an
-initializing store into an object just allocated skips the barrier, which
+initializing store into an object just allocated skips the barrier, the
+interpreter's and machine code's alike, which
 is why every old allocation outside the image decoder is born remembered;
 besides those, only the collector's own rewrites (a scavenge, a
 compaction, a move) and the bulk forward behind `become:`

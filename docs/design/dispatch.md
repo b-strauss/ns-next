@@ -1206,7 +1206,18 @@ nothing; when the JIT's state changes under an entry -- its callee
 compiled since the cell was written, found never to be compiled, or a
 body abandoned or revived -- the cells it
 reached are written afresh from their entries (`refresh_cells`,
-`refresh_cells_entering`, `refresh_all_cells`). In a debug build every
+`refresh_cells_entering`, `refresh_all_cells`), and when its machine code
+is freed or moved, the cells that named it: a compaction of the code zone
+remaps every cell's entry address through its plan before any byte moves,
+a freed body's to the miss stub (`InlineCaches::remap_cell_entries`), and
+a body freed because its family's range slid has every cell that named it
+written afresh (`refresh_cells_entering_any`; [execution.md](execution.md),
+"The code zone"). A block's activation is no entry's target: a `value`
+send's entry names `Closure`'s method, whose cell names a closure stub,
+and the stub finds the block's machine code by the closure's code id in
+the machine entry table ([execution.md](execution.md), "Stage 4:
+closures, non-local return, allocation and the barrier"), never through
+a cell. In a debug build every
 `NS_NEXT_STRESS_SCAVENGE` scavenge first checks every cell against its
 entry (`InlineCaches::verify_cells`) -- a vacant entry's cell whole, its
 entry word 0 as well as its guard, since the polymorphic stub jumps to
