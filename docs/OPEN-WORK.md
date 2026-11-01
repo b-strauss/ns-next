@@ -1494,13 +1494,11 @@ classes and a class from source with no predecessor are not edited
   in the zone (stubs +201, bodies +150 of 6,153), its Rust functions taking
   fewer, and two builds with other Rust code are level on it: the zone's
   offsets and the binary's layout roll together.
-  The measurement protocol varies `vm::run`'s block layout across three
-  builds a side but never the zone's placement, so a growth of any stub
-  re-rolls every machine-code program's number. Open: a protocol knob that
-  shifts both the stubs after the entry stub and the first body by several
-  offsets per build, pooled as the three builds are, and then whether a
-  placement policy (aligned loop heads, hot stubs on their own lines)
-  measures better than the lottery.
+  The measurement protocol now lays each of its three builds' zones out at
+  a padding of its own, so the pool samples the zone's placement as it
+  samples `vm::run`'s ([execution.md](design/execution.md), "Measurements").
+  Open: whether a placement policy (aligned loop heads, hot stubs on their
+  own lines) measures better than the lottery.
 - **The interpreter is 1.35% slower than before stage 3** (2026-10-29),
   with the JIT off, on the geometric mean over twenty-two sources, twelve
   of them slower with their builds separated, `bench_megamorphic.ns` the

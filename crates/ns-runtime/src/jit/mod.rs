@@ -1463,6 +1463,51 @@ fn upgraded(body: &InstalledBody) -> Option<Installed> {
     })
 }
 
+/// The paddings a measured build lays its code zone out with, set when it
+/// is built (`NS_NEXT_ZONE_STUB_PADDING`, bytes before the first stub, and
+/// `NS_NEXT_ZONE_BODY_PADDING`, bytes between the last stub and the first
+/// body): the same machine code in another place in the zone runs at
+/// another speed, so each of a measurement's builds carries its own
+/// (`measuring-performance`). Unset, both are 0 and nothing is compiled in.
+#[cfg(ns_jit)]
+const ZONE_STUB_PADDING: u32 = padding_from(option_env!("NS_NEXT_ZONE_STUB_PADDING"));
+#[cfg(ns_jit)]
+const ZONE_BODY_PADDING: u32 = padding_from(option_env!("NS_NEXT_ZONE_BODY_PADDING"));
+
+/// The largest padding a build accepts.
+#[cfg(ns_jit)]
+const MAXIMUM_ZONE_PADDING: u32 = 4096;
+
+/// `text` as a padding: absent is 0; anything but a multiple of 16 up to
+/// `MAXIMUM_ZONE_PADDING` in decimal fails the build.
+#[cfg(ns_jit)]
+const fn padding_from(text: Option<&str>) -> u32 {
+    let Some(text) = text else {
+        return 0;
+    };
+    let digits = text.as_bytes();
+    assert!(!digits.is_empty(), "a zone padding is a decimal number");
+    let mut value: u32 = 0;
+    let mut index = 0;
+    while index < digits.len() {
+        assert!(
+            digits[index].is_ascii_digit(),
+            "a zone padding is a decimal number"
+        );
+        value = value * 10 + (digits[index] - b'0') as u32;
+        assert!(
+            value <= MAXIMUM_ZONE_PADDING,
+            "a zone padding is at most 4096"
+        );
+        index += 1;
+    }
+    assert!(
+        value.is_multiple_of(16),
+        "a zone padding is a multiple of 16"
+    );
+    value
+}
+
 /// A zone of `bytes` with both stubs installed at its base, or why there
 /// is none: the reservation's error -- a system without what a zone needs
 /// among them (`ns_memory::MemoryError::Unsupported`), which a host reports
@@ -1478,13 +1523,27 @@ fn reserve_zone(bytes: usize) -> Result<Zone, String> {
 /// installed at its base; `None` when they do not fit.
 #[cfg(ns_jit)]
 fn zone_with_stubs(writer: ns_memory::CodeWriter, bytes: usize) -> Option<Zone> {
+    zone_with_paddings(writer, bytes, ZONE_STUB_PADDING, ZONE_BODY_PADDING)
+}
+
+/// `zone_with_stubs`, the first stub `stub_padding` bytes into the zone and
+/// the first body `body_padding` bytes past the last stub. The first body
+/// starts there after a compaction and in a replaced zone too, since both
+/// start from `bodies_start`.
+#[cfg(ns_jit)]
+fn zone_with_paddings(
+    writer: ns_memory::CodeWriter,
+    bytes: usize,
+    stub_padding: u32,
+    body_padding: u32,
+) -> Option<Zone> {
     use macro_assembler::Abi;
 
     let limit = u32::try_from(bytes.min(writer.zone().size())).ok()?;
     let mut zone = Zone {
         writer,
         limit,
-        next_offset: 0,
+        next_offset: stub_padding,
         bodies_start: 0,
         entry_stub: CodeOffset(0),
         call_stub: CodeOffset(0),
@@ -1597,7 +1656,11 @@ fn zone_with_stubs(writer: ns_memory::CodeWriter, bytes: usize) -> Option<Zone> 
             .collect(),
         culls: entries.culls.iter().map(|offset| placed(*offset)).collect(),
     };
-    zone.bodies_start = zone.next_offset;
+    zone.bodies_start = zone
+        .next_offset
+        .checked_add(body_padding)
+        .filter(|start| *start <= zone.limit)?;
+    zone.next_offset = zone.bodies_start;
     Some(zone)
 }
 
@@ -3777,6 +3840,20 @@ mod tests {
                 }
             );
             assert_eq!(frame[13], Immediate::boolean(false).bits());
+        }
+
+        #[test]
+        fn a_zone_laid_out_with_paddings_starts_its_stubs_and_bodies_there() {
+            let writer = ns_memory::CodeZone::reserve(1 << 16).expect("a zone");
+            let zone = crate::jit::zone_with_paddings(writer, 1 << 16, 208, 48).expect("stubs fit");
+            assert_eq!(zone.entry_stub.0, 208, "the first stub");
+            let last_stub_end = zone.bodies_start - 48;
+            assert!(last_stub_end > 208, "the stubs take room");
+            assert_eq!(zone.next_offset, zone.bodies_start);
+            let plain = ns_memory::CodeZone::reserve(1 << 16).expect("a zone");
+            let plain = crate::jit::zone_with_paddings(plain, 1 << 16, 0, 0).expect("stubs fit");
+            assert_eq!(plain.entry_stub.0, 0);
+            assert_eq!(zone.bodies_start, plain.bodies_start + 208 + 48);
         }
 
         #[test]
