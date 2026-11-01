@@ -73,55 +73,72 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// understands.
     private kernelModule = kernel.
     /// The kernel's `Exception`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private Exception = kernel Exception.
     /// The kernel's `Error`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private Error = kernel Error.
     /// The kernel's `MessageNotUnderstood`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private MessageNotUnderstood = kernel MessageNotUnderstood.
     /// The kernel's `Halt`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private Halt = kernel Halt.
     /// The kernel's `Message`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private Message = kernel Message.
     /// The kernel's `ArgumentError`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private ArgumentError = kernel ArgumentError.
     /// The kernel's `CannotReturn`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private CannotReturn = kernel CannotReturn.
     /// The kernel's `CannotInstantiate`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private CannotInstantiate = kernel CannotInstantiate.
     /// The kernel's `Closure`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private Closure = kernel Closure.
     /// The kernel's `Future`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private Future = kernel Future.
     /// The kernel's `Proxy`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private Proxy = kernel Proxy.
     /// The kernel's `Collection`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private Collection = kernel Collection.
     /// The kernel's `StringBuilder`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private StringBuilder = kernel StringBuilder.
     /// The kernel's `DataView`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private DataView = kernel DataView.
     /// The kernel's `WeakArray`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private WeakArray = kernel WeakArray.
     /// The kernel's `Ephemeron`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private Ephemeron = kernel Ephemeron.
     /// The kernel's `WeakMap`, which `KernelNamespace` hands out.
-    /// Read from the kernel instance once, as the factory runs; every `kernel` facet answers it.
+    /// Read from the kernel instance once, as the factory runs; every
+    /// `platform kernel` facet answers it.
     private WeakMap = kernel WeakMap.
   |
 ) (
@@ -358,7 +375,7 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// subclass.
     ///
     /// @answers the kernel's `Collection` class, the abstract superclass of
-    /// `Array`, `List`, `Map` and `Set`.
+    /// `Array`, `List`, `Map` and `Set`, the same class on every send.
     public Collection = (
       ^outer PlatformFactory Collection.
     )
@@ -366,7 +383,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Hands out the kernel's `StringBuilder` class, which a program
     /// instantiates with `new` or `new:` to build a String from pieces.
     ///
-    /// @answers the kernel's class `StringBuilder`.
+    /// @answers the kernel's class `StringBuilder`, the same class on every
+    /// send.
     public StringBuilder = (
       ^outer PlatformFactory StringBuilder.
     )
@@ -374,7 +392,7 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Hands out the kernel's `DataView` class, which a program
     /// instantiates with `on:byteOrder:` a ByteArray or `new:byteOrder:`.
     ///
-    /// @answers the kernel's class `DataView`.
+    /// @answers the kernel's class `DataView`, the same class on every send.
     public DataView = (
       ^outer PlatformFactory DataView.
     )
@@ -383,7 +401,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// instantiates with `new:` for a sequence whose slots do not keep
     /// their objects alive.
     ///
-    /// @answers the kernel's class `WeakArray`.
+    /// @answers the kernel's class `WeakArray`, the same class on every
+    /// send.
     public WeakArray = (
       ^outer PlatformFactory WeakArray.
     )
@@ -392,7 +411,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// instantiates with `new` for a value and a finalizer kept alive
     /// only while their key is.
     ///
-    /// @answers the kernel's class `Ephemeron`.
+    /// @answers the kernel's class `Ephemeron`, the same class on every
+    /// send.
     public Ephemeron = (
       ^outer PlatformFactory Ephemeron.
     )
@@ -401,7 +421,7 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// instantiates with `new` for a map whose entries last only while
     /// their keys do.
     ///
-    /// @answers the kernel's class `WeakMap`.
+    /// @answers the kernel's class `WeakMap`, the same class on every send.
     public WeakMap = (
       ^outer PlatformFactory WeakMap.
     )
