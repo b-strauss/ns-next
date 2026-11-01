@@ -1474,7 +1474,18 @@ IEEE's NaN unequal to itself served, among other things, as the portable
 test for a NaN in languages without one: `x != x`. Here `isNaN` is that
 test, a leaf of its own, so nothing needs the self-inequality; a program that
 wants IEEE's equality writes `a isNaN not and: [a = b]`. None of the options
-costs anything on the hot path. Decided with the user on 2026-10-01 and
+costs anything on the hot path.
+
+`Float nan`, `Float infinity` and `Float negativeInfinity` answer the three
+values (`0.0 / 0.0`, `1.0 / 0.0`, `-1.0 / 0.0`), on `Float`'s class side
+alone: an integer has no infinity however large, nor has a fraction, and
+`Number` is abstract, its class side not inherited. They go beyond Primordial
+Soup's API, where a program parses the text, and were added with the user on
+2026-11-01. There is no literal for them: §5.1.1's grammar has none, and a
+literal would change both lexers, the parser and the printer for what a
+constant already says; a subclass of `Float` for the NaN was weighed and
+rejected too, since a NaN is a result any operation can make, so every float
+operation would have to choose the class of its answer. Decided with the user on 2026-10-01 and
 confirmed on 2026-11-01;
 `goldens/library/number/float/not_a_number_equals_itself` pins it, a NaN found again
 as a `Map` key included, and `every_nan_equals_every_other_and_hashes_alike`

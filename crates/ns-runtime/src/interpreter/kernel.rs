@@ -1387,6 +1387,11 @@ mod tests {
         // A forwarder in shape, but of its argument rather than of `self`:
         // the row's subject is the computation the future will force.
         ("Future", "computing:"),
+        // Float's class side: a division of two literals, whose answer the
+        // arithmetic already makes; a leaf would only repeat it.
+        ("Float", "nan"),
+        ("Float", "infinity"),
+        ("Float", "negativeInfinity"),
     ];
 
     /// What `TypedArray` declares, none a forwarder but

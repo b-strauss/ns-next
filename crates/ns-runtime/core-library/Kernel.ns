@@ -4230,6 +4230,42 @@ class Kernel vmMirror: mirror = Value (
     public parse: text = (
       ^vmMirror floatClass: self parse: text ifFail: [^super parse: text].
     )
+
+    /// Answers IEEE 754's quiet NaN, the result of `0.0 / 0.0`: the value
+    /// of an operation that has none, which `isNaN` recognizes.
+    ///
+    /// It lives on `Float` alone, as `infinity` does: no other number
+    /// class has a NaN. Every NaN equals every other and hashes alike, so
+    /// this one is equal and identical to any NaN a computation makes
+    /// (see "A NaN equals a NaN" in docs/design/core-library.md).
+    ///
+    /// @answers a NaN, a Float.
+    /// @see `isNaN`.
+    public nan = (
+      ^0.0 / 0.0.
+    )
+
+    /// Answers IEEE 754's positive infinity, the result of `1.0 / 0.0`:
+    /// greater than every other number, finite Floats and integers of any
+    /// size included, and equal only to itself.
+    ///
+    /// It lives on `Float` alone: an integer has no infinity, however
+    /// large, and neither has a fraction.
+    ///
+    /// @answers the positive infinity, a Float.
+    /// @see `isInfinite`.
+    public infinity = (
+      ^1.0 / 0.0.
+    )
+
+    /// Answers IEEE 754's negative infinity, the result of `-1.0 / 0.0`:
+    /// less than every other number, and equal only to itself.
+    ///
+    /// @answers the negative infinity, a Float.
+    /// @see `infinity`.
+    public negativeInfinity = (
+      ^-1.0 / 0.0.
+    )
   )
 
   /// The exact quotient of two integers, in normal form: its

@@ -1,0 +1,40 @@
+/// `Float nan`, `Float infinity` and `Float negativeInfinity` answer the
+/// values `0.0 / 0.0`, `1.0 / 0.0` and `-1.0 / 0.0` make: a NaN equal and
+/// identical to every other, and the two infinities, beyond every finite
+/// number and every integer however large.
+class FloatAnswersNanAndTheInfinities = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        print: Float nan isNaN;
+        show: ' ';
+        print: Float nan = (0.0 / 0.0);
+        show: ' ';
+        print: Float nan == Float nan;
+        show: ' ';
+        print: Float nan hash = (0.0 / 0.0) hash;
+        newLine.
+    transcript
+        print: Float infinity;
+        show: ' ';
+        print: Float negativeInfinity;
+        show: ' ';
+        print: Float infinity isInfinite;
+        show: ' ';
+        print: Float infinity = (1.0 / 0.0);
+        show: ' ';
+        print: Float negativeInfinity = Float infinity negated;
+        newLine.
+    transcript
+        print: Float infinity > (10 raisedTo: 400);
+        show: ' ';
+        print: Float negativeInfinity < (10 raisedTo: 400) negated;
+        show: ' ';
+        print: Float infinity = (10 raisedTo: 400);
+        show: ' ';
+        print: (Float infinity - Float infinity) isNaN;
+        newLine.
+  )
+)

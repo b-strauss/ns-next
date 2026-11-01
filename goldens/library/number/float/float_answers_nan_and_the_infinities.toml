@@ -1,0 +1,5 @@
+stdout = '''
+true true true true
+Infinity -Infinity true true true
+true true false true
+'''
