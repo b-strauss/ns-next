@@ -195,8 +195,8 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// @factory makes an empty list with room for `capacity` elements before
   /// it grows; `Array new:` is sent the capacity, and signals what it
   /// signals for one that is no Integer or is negative.
-  /// @param capacity an Integer of at least 0: the number of elements the
-  /// list holds before its first growth.
+  /// @param capacity an Integer of at least 0: the number of elements
+  /// `add:` appends to the new list before it first grows.
   private class List new: capacity = Collection (
     |
       /// The number of elements.
@@ -769,7 +769,9 @@ class CollectionsFactory usingKernel: kernel = Value (
   private class ConcurrentModification = Error (
     |
       /// The collection that was changed while it was iterated.
-      /// Set by the class's `collection:` as the error is made; nil in one made by `new`.
+      /// Public and mutable: the class's `collection:` sets it as the
+      /// error is made, and anyone may set it later; nil in one made by
+      /// `new` until set.
       public collection ::= nil.
     |
   ) () : (
@@ -801,7 +803,9 @@ class CollectionsFactory usingKernel: kernel = Value (
   private class NotFound = Error (
     |
       /// The element or key that was not found.
-      /// Set by the class's `element:` as the error is made; nil in one made by `new`.
+      /// Public and mutable: the class's `element:` sets it as the error
+      /// is made, and anyone may set it later; nil in one made by `new`
+      /// until set.
       public element ::= nil.
     |
   ) (
@@ -859,8 +863,8 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// @factory makes an empty map with room for `capacity` keys before it
   /// grows, its table built at once by `createTable:`, which signals for
   /// a capacity that is negative or no Integer.
-  /// @param capacity an Integer of at least 0: the number of keys the map
-  /// holds before its first growth.
+  /// @param capacity an Integer of at least 0: the number of keys stored,
+  /// none removed, before the map first grows.
   private class Map new: capacity = Collection (
     |
       /// The number of keys the map holds.
@@ -1140,9 +1144,9 @@ class CollectionsFactory usingKernel: kernel = Value (
       ^Map new: capacity.
     )
 
-    /// Hands a subclass's own `scanFor:in:` the data array, which reads
-    /// it and must neither store into it nor hand it on, since the array
-    /// is the removed mark and no key may be it.
+    /// Hands the data array to a subclass's own `scanFor:in:`, which
+    /// reads it and must neither store into it nor hand it on, since the
+    /// array is the removed mark and no key may be it.
     ///
     /// @answers `data_` itself, not a copy: the keys and values side by
     /// side, each removed entry's key the array itself.
@@ -1356,8 +1360,8 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// @factory makes an empty identity map with room for `capacity` keys
   /// before it grows, as `Map new:` makes a map, and signals what it
   /// signals for a capacity.
-  /// @param capacity an Integer of at least 0: the number of keys the map
-  /// holds before its first growth.
+  /// @param capacity an Integer of at least 0: the number of keys stored,
+  /// none removed, before the map first grows.
   private class IdentityMap new: capacity = Map new: capacity () (
     /// Identifies the receiver as an IdentityMap, without a class test.
     ///
@@ -1514,12 +1518,13 @@ class CollectionsFactory usingKernel: kernel = Value (
   /// @factory makes an empty set with room for `capacity` elements before
   /// it grows, its table built at once by `createTable:`, which signals
   /// for a capacity that is negative or no Integer.
-  /// @param capacity an Integer of at least 0: the number of elements the
-  /// set holds before its first growth.
+  /// @param capacity an Integer of at least 0: the number of elements
+  /// added, none removed, before the set first grows.
   private class Set new: capacity = Collection (
     |
       /// The number of elements the set holds.
-      /// A removed element, overwritten in `data_` by the mark, is not counted.
+      /// A removed element, overwritten in `data_` by the mark, is not
+      /// counted.
       private size_ ::= 0.
       /// The number of entries `data_` has been given since the table
       /// was last built, removed ones included: the next goes at
