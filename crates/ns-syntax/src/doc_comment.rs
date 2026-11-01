@@ -1,6 +1,6 @@
 //! A doc comment's structure: its description, its summary and its tags.
 //! The same grammar is read by the JetBrains plugin
-//! (`NewspeakDocComments`), so a rule changed here changes there.
+//! (`NewspeakDocTags`), so a rule changed here changes there.
 
 use crate::comment::{lines, Comment, CommentKind};
 use crate::span::Span;

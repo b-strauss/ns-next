@@ -1,9 +1,10 @@
 package io.github.bstrauss.newspeak.editor
 
-import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiWhiteSpace
+import com.intellij.psi.util.CachedValueProvider
+import com.intellij.psi.util.CachedValuesManager
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes as Types
 
 /**
@@ -50,13 +51,32 @@ object NewspeakDocComments {
      * line is `line - 1`, the one right above what starts on the 0-based
      * `line`; `null` without such a comment or without a summary.
      */
-    fun summaryAbove(file: PsiFile, line: Int): String? {
-        val document = PsiDocumentManager.getInstance(file.project).getDocument(file) ?: return null
-        val block = blocks(file).firstOrNull { lines ->
-            document.getLineNumber(lines.last().textRange.endOffset) == line - 1
-        } ?: return null
-        return NewspeakDocTags.parse(markdown(block)).summary
-    }
+    fun summaryAbove(file: PsiFile, line: Int): String? = summariesByLastLine(file)[line - 1]
+
+    /**
+     * Every summary of `file` by the 0-based line its doc comment ends on,
+     * computed once per change of the file, its comments included: the
+     * structure view asks for every row, and a walk of the file per row would
+     * make a large module's tree quadratic. Lines are counted in the PSI's own
+     * text, which its offsets index, so an edit not yet committed never
+     * misplaces a summary.
+     */
+    private fun summariesByLastLine(file: PsiFile): Map<Int, String> =
+        CachedValuesManager.getCachedValue(file) {
+            val text = file.text
+            val summaries = HashMap<Int, String>()
+            var line = 0
+            var counted = 0
+            for (block in blocks(file)) {
+                val end = block.last().textRange.endOffset
+                while (counted < end) {
+                    if (text[counted] == '\n') line++
+                    counted++
+                }
+                NewspeakDocTags.parse(markdown(block)).summary?.let { summary -> summaries[line] = summary }
+            }
+            CachedValueProvider.Result.create<Map<Int, String>>(summaries, file)
+        }
 
     /** The `///` line just before or after `comment` in its block, if there is one. */
     private fun blockNeighbour(comment: PsiElement, step: (PsiElement) -> PsiElement?): PsiElement? {

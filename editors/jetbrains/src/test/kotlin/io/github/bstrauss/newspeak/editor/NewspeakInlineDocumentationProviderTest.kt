@@ -76,7 +76,8 @@ class NewspeakInlineDocumentationProviderTest : BasePlatformTestCase() {
             class M = () (
               /// Grows.
               /// @param amount how much.
-              grow: amount = ( ^amount )
+              /// @param step how often.
+              grow: amount by: step = ( ^amount )
             )
             """.trimIndent(),
         )
@@ -85,6 +86,8 @@ class NewspeakInlineDocumentationProviderTest : BasePlatformTestCase() {
         assertTrue(html, html.contains("Params:"))
         assertTrue(html, Regex("<code>(<span[^>]*>)?amount(</span>)?</code>").containsMatchIn(html))
         assertFalse(html, html.contains("@param"))
+        // Each item is a paragraph of its own, not run together with the next.
+        assertTrue(html, Regex("how much\\.(</p>)?\\s*<p>").containsMatchIn(html))
     }
 
     fun testTheOwnerIsTheServersSymbolOnTheNextLine() {

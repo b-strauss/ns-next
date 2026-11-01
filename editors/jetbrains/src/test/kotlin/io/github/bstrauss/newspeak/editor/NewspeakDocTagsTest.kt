@@ -84,6 +84,11 @@ class NewspeakDocTagsTest {
         assertNull(parsed("@answers nil.", "@see `other`").summary)
     }
 
+    /** Whitespace is Unicode's, as Rust's `split_whitespace` reads it: a no-break space collapses too. */
+    @Test fun theSummaryCollapsesUnicodeWhitespace() {
+        assertEquals("Answers the size.", parsed("Answers\u00a0\u2003the size.").summary)
+    }
+
     @Test fun aFirstSentenceDoesNotEndInsideCode() {
         assertEquals("Sends `a.b` first.", parsed("Sends `a.b` first. Then more.", "@answers nil.").summary)
     }

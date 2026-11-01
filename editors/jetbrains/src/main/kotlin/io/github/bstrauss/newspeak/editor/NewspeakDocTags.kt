@@ -232,6 +232,10 @@ object NewspeakDocTags {
         return collapsed(paragraph)
     }
 
-    /** `text` with each run of whitespace one space, none at either end. */
-    private fun collapsed(text: String): String = text.split(Regex("\\s+")).filter(String::isNotEmpty).joinToString(" ")
+    /** `text` with each run of whitespace -- Unicode's, as Rust's `split_whitespace` reads it -- one space, none at either end. */
+    private fun collapsed(text: String): String =
+        String(CharArray(text.length) { index -> if (text[index].isWhitespace()) ' ' else text[index] })
+            .split(' ')
+            .filter(String::isNotEmpty)
+            .joinToString(" ")
 }

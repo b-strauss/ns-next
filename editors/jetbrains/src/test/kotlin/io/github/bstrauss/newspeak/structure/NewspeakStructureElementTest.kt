@@ -2,6 +2,8 @@ package io.github.bstrauss.newspeak.structure
 
 import com.intellij.icons.AllIcons
 import com.intellij.ide.projectView.PresentationData
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.NewspeakIcons
 import org.eclipse.lsp4j.DocumentSymbol
@@ -144,6 +146,20 @@ class NewspeakStructureElementSummaryTest : BasePlatformTestCase() {
 
     fun testATooltipShowsTheSummary() {
         assertEquals("<html>Public method<br>Answers two.</html>", tooltipOf(method("two", 3)))
+    }
+
+    /** The summaries are kept per file and computed afresh when only a comment changed. */
+    fun testTheSummaryFollowsAnEditOfItsComment() {
+        assertEquals("<html>Public method<br>Answers two.</html>", tooltipOf(method("two", 3)))
+        val file = myFixture.file
+        WriteCommandAction.runWriteCommandAction(project) {
+            val document = myFixture.editor.document
+            val start = document.text.indexOf("Answers two.")
+            document.replaceString(start, start + "Answers two.".length, "Answers 2.")
+            PsiDocumentManager.getInstance(project).commitDocument(document)
+        }
+        val element = NewspeakStructureElement(project, file.virtualFile, method("two", 3), psiFile = file)
+        assertEquals("<html>Public method<br>Answers 2.</html>", (element.presentation as PresentationData).tooltip)
     }
 
     fun testAMemberWithoutADocCommentKeepsItsTooltip() {
