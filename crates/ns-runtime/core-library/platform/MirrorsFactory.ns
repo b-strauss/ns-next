@@ -55,8 +55,11 @@
 ///
 /// @factory makes the mirrors module over `mirror` and `kernel`, copying
 /// the mirror into `vmMirror` and the kernel's `Error` and `ArgumentError`
-/// into slots of their own and keeping nothing else of the kernel; the
-/// platform's root sends it once, through the mirror.
+/// into slots of their own and keeping nothing else of the kernel. The
+/// platform's root sends it to the class the mirror answers on the module's
+/// first demand, and again on the next demand after an unwind interrupted
+/// one, which records nothing; the loader sends it instead when an image
+/// names the module.
 /// @param mirror the VM mirror, through which every mirror reads what it
 /// reflects; a mirror sends its reflectee nothing, and forces no future it
 /// is given.
@@ -639,6 +642,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     ///
     /// @param action a one-argument block.
     /// @answers the receiver.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for an `action` that does not
+    /// take one argument, when the group is not empty.
     public do: action = (
       mirrors do: action.
     )
@@ -649,6 +655,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @param transform a one-argument block.
     /// @answers a new Array of what `transform` answers for each mirror,
     /// in the group's order.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `transform` that does not
+    /// take one argument, when the group is not empty.
     public collect: transform = (
       ^mirrors collect: transform.
     )
@@ -659,6 +668,12 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @param predicate a one-argument block answering a Boolean.
     /// @param onNone a block of no arguments.
     /// @answers that mirror, or what `onNone` answers when there is none.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the group is not empty.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for an `onNone` that declares any
+    /// parameter, when no mirror matches.
     public detect: predicate ifNone: onNone = (
       ^mirrors detect: predicate ifNone: onNone.
     )
