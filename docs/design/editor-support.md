@@ -9,7 +9,8 @@
 > `lsp/NewspeakSymbolKinds.kt`, the document symbols the structure view and
 > the run markers share in `lsp/DocumentSymbolCache.kt`, the editing aids in
 > the `editor` package, every text in `messages/NewspeakBundle.properties`)
-> both exist: highlighting, errors as you type, code folding with one-line
+> both exist: highlighting, a block of `///` lines in the doc-comment
+> colour, errors as you type, code folding with one-line
 > methods shown on one line, hints with their quick fixes, a structure view
 > with breadcrumbs, Reformat Code, and typing in the formatter's
 > indentation and width, in every commercial JetBrains IDE from 2026.1.4, kept while a file has
@@ -1103,7 +1104,16 @@ Components:
   or a method's own selector; `<` and `>`, which also delimit type annotations
   and pattern literals, have a neutral key of their own and are coloured by the
   server where they are sends. A parameter derives from
-  `PARAMETER` and a slot from `INSTANCE_FIELD`, as in TypeScript.
+  `PARAMETER` and a slot from `INSTANCE_FIELD`, as in TypeScript. A block of
+  two or more `///` lines documents what follows it, as a Java doc comment
+  does, and takes a key of its own over `DOC_COMMENT` (Java's green in the
+  platform's schemes); a single `///` line, and a `///` after code, keep the
+  comment key. The block is the Rust lexer's (`continues_line_block`: lines
+  that each start their line, one line break and only whitespace between
+  them), but a line's colour depends on the lines around it and the
+  highlighter relexes only from an edited line on, so the lexer, one token a
+  line, cannot decide it: `NewspeakDocCommentAnnotator` does, a `DumbAware`
+  annotator over the flat PSI's comment and whitespace leaves.
 - **Editor features** — a `BraceMatcher` for `()`, `[]` and `{}`, a
   `Commenter` for `///` lines and `(* *)` blocks, a `QuoteHandler`. Not for `<>`: `<` and `>` are
   also binary selectors, and pairing a comparison with a type's closing
@@ -1539,7 +1549,10 @@ The server's own tests are described under its section, above ("Testing").
   120; `NewspeakLineCommentEnterTest`, Enter in a `///` comment (at its end,
   in its middle, after a bare `///`, with wider spacing, in a body, after
   code at its end and in its middle, before the slashes, and in a block
-  comment); `NewspeakColorSettingsPageTest` is plain JUnit,
+  comment); `NewspeakDocCommentAnnotatorTest`, which `///` lines take the
+  doc-comment colour (a block of two, at the file's start too, and not a
+  single line, a block split by a blank line or code, a trailing remark, or
+  a line beside a `(* *)` comment); `NewspeakColorSettingsPageTest` is plain JUnit,
   over the colour settings page directly, with no platform test case needed
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
   which cover the binary lookup order and the semantic-token classification;

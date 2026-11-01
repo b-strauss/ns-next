@@ -67,6 +67,8 @@
                                implementationClass="io.github.bstrauss.newspeak.parser.NewspeakParserDefinition"/>
         <lang.syntaxHighlighterFactory language="Newspeak"
                                        implementationClass="io.github.bstrauss.newspeak.highlighting.NewspeakSyntaxHighlighterFactory"/>
+        <annotator language="Newspeak"
+                   implementationClass="io.github.bstrauss.newspeak.highlighting.NewspeakDocCommentAnnotator"/>
         <colorSettingsPage implementation="io.github.bstrauss.newspeak.highlighting.NewspeakColorSettingsPage"/>
         <lang.braceMatcher language="Newspeak"
                            implementationClass="io.github.bstrauss.newspeak.editor.NewspeakBraceMatcher"/>
