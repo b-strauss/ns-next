@@ -12167,7 +12167,10 @@ lookup's remembered answers ("The code zone").
 
 - **A seventh stress mode compiles every body at its first entry**, so
   every golden runs through the JIT; an eighth takes the exit at every
-  poll, so every golden runs through materialization and resumption.
+  poll, so every golden runs through materialization and resumption; a
+  ninth compacts the code zone at safepoints, freeing every body no
+  activation runs, so every golden runs through the compaction's remap
+  ("The code zone").
 - **The encoders are tested against disassemblers**, dev-dependencies of
   `ns-assembler` only: `iced-x86` for x64 and one for AArch64.
 - **AArch64 runs under QEMU**: the suite cross-compiled for

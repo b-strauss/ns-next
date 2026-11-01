@@ -71,7 +71,12 @@
 > `heap/header.rs` (the header word),
 > `heap/records.rs` (the seam's value types), `heap/tables.rs` (the per-heap
 > tables of mixins, applications and code, and a body's `CodeIdCache`),
-> `heap/mark.rs` (the marker's work list), `heap/world.rs` (the step
+> `heap/mark.rs` (the marker's work list), `heap/limits.rs` (the growth
+> limits of the tables beside the space, and the band and damping by
+> which each reservation beside it gives memory back), `heap/symbols.rs`
+> (the weak table of the symbols a program makes), `heap/machine_entries.rs`
+> (the machine entry table, whose rows a full collection's free of a code
+> id clears and whose committed rows it gives back), `heap/world.rs` (the step
 > state at rest, the entry that lends it out, `StepRoots`, `World::collect`
 > and `World::scavenge`),
 > `interpreter/mod.rs` (`Mutator`, and `Interpreter::enter` with the
@@ -80,8 +85,9 @@
 > `interpreter/safepoint.rs`
 > (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
 > the switches of the memory-facing stress modes: moves, caches, collection,
-> scavenges, every instruction wide, and suspensions; the two JIT modes' are
-> in `jit/mod.rs`),
+> scavenges, every instruction wide, suspensions and the code zone's
+> compaction; the JIT's and the exits' are in `jit/mod.rs`, which also
+> reads the zone's to force the JIT on),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `mixin.rs` (layout, and the one remaining iterative

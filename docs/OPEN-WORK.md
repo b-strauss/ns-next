@@ -472,7 +472,15 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     the mirror method leaf finds its send's selector and argument count by
     a hash lookup of the call's return address (`JitState::call_site`).
     Reading the selector and argument count where the leaf can reach them
-    without a lookup would remove most of what remains.
+    without a lookup would remove most of what remains. `Float`'s
+    comparisons and arithmetic are such leaf calls: once closures ran in
+    machine code, 83 million of CD's 85 million leaf calls a run were
+    `Float`'s `=`, `-`, `<`, `<=`, `/`, `>` and `+` through the mirror
+    method leaf, at about 3.4 ns a call -- what the interpreter's inline
+    primitives cost, so a shift, not a loss (measured 2026-10-31). The
+    lasting fix is templates for `Float` comparisons and arithmetic, as
+    `SmallInteger`'s have ("What the templates emit inline" in
+    [execution.md](design/execution.md)).
   - **A nested class's accessor on a private or `super` chain exits
     machine code**, as does one whose hidden slot lies past the
     `NESTED_CLASS_STUBS` slots or holds no class yet: only a public or
@@ -595,7 +603,28 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       most long-run tests of the reclamation (`tests/collector.rs` whole,
       the million program-made symbols, the churn of families, the rare
       exit with allocation) compile only with debug assertions, so the
-      `release-checks` build runs few of them.
+      `release-checks` build runs few of them; the remembered set's limit
+      request that machine code's barrier makes through `Heap::remember`
+      is reached by no test of its own; the instantiation test of the
+      refusals the inline bump does not make
+      (`instantiations_the_inline_bump_does_not_make_answer_as_interpreted`
+      in `tests/jit.rs`) holds their outcomes to the interpreter's but
+      not that the refusing send ran in machine code; and the class-format
+      check of `MacroAssembler::load_instance_header` is reached by no
+      program, since a factory body's receiver is always a class object.
+    - *Code that says less than it could*: `Heap::machine_word_count_bits`
+      builds a header of guard `DispatchId::NONE` and format
+      `FixedPointers` and relies on both encoding as 0, where an accessor
+      of `heap/header.rs` for a word count's bits would state it; and the
+      module comment of `jit/closures.rs` still says that forcing an
+      unresolved future is the interpreter's, where `ResolveFuture` now
+      calls the forcing leaf and makes a compiled call of the future's
+      `resolve`.
+    - *Wasted writes*: a compaction fills the room it frees with stops
+      and a site slide writes vacant cells over ranges that the shrink
+      after the collection then gives back (`jit/zone.rs`,
+      `InlineCaches::vacate_sites`), dirtying pages just before they go;
+      a cost only, worth changing if a measurement shows it.
     - *The stress gate's slowest test*: `runtime/jit/counting_loop` under
       the reference lowering takes 563 to 576 s alone under
       `NS_NEXT_STRESS_COLLECT`, nearly ten minutes (noted with the

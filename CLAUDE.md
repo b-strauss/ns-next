@@ -36,7 +36,8 @@ Rust 1.98.0, edition 2021, seven crates:
   callee returns by `ret`, the miss leaf decides
   what the cell did not and may compile the callee, every body compiles
   lean and its `MakeClosure` transfers the frame into a reifying twin
-  the twin leaf compiles on demand, a non-local return is cut by
+  the twin leaf compiles on demand (`jit/closures.rs`, with the outer
+  locals and the futures), a non-local return is cut by
   `jit/cut.rs`, and an exit at any
   depth of compiled frames materializes them (`jit/materialize.rs`); a
   body that keeps exiting is abandoned, its code freed, and revived when
