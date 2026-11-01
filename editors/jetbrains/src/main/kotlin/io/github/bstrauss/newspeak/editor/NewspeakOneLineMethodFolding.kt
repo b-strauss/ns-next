@@ -24,19 +24,19 @@ import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes as Types
  * ```
  *
  * reads as `public size = ( ^size_. )`. Two folds, opened together, laid out
- * as Java's: the first from the space before the `(` to the statement, shown
- * as ` ( `, the second from the statement to the `)` included, shown as
- * ` )`, so that each is as wide as the text it stands for and a click on
- * either bracket or the space beside it opens the method. They start
- * collapsed, and exist only while *Settings | Editor | General | Code
- * Folding | Newspeak | One-line methods* is on. The file is never changed.
+ * as Java's: the first from the spaces before the `(`, when the `(` follows
+ * the header on its line, to the statement, shown as ` ( ` (`( ` without
+ * them), the second from the statement to the `)` included, shown as ` )`,
+ * so that each is as wide as the text it stands for and a click on either
+ * bracket or the space beside it opens the method. They start collapsed,
+ * and exist only while *Settings | Editor | General | Code Folding |
+ * Newspeak | One-line methods* is on. The file is never changed.
  *
- * The first fold overlaps the server's fold of the method body, which
- * starts at the `(`, without containing it, and the platform refuses a
- * region that partly overlaps one it already created; this builder is
- * registered first (`order="first"` in `plugin.xml`), so a one-line method
- * has these two folds and not the server's, as a Java one-liner has no
- * method fold. With the setting off the server's fold is left alone.
+ * The platform refuses a fold that partly overlaps one already in the
+ * editor, whichever came first -- one restored from the last session, or
+ * one that outlived an edit. The server's fold of the method body starts
+ * where the first fold does, at those spaces or the `(`, and ends at the
+ * `)`, so it contains both folds, and they are never refused.
  *
  * The method is found in the tokens, since the plugin has no Newspeak parser
  * (`NewspeakParserDefinition`): `= (` ending a line, one line of body, and a
@@ -100,9 +100,11 @@ class NewspeakOneLineMethodFolding : FoldingBuilderEx(), DumbAware {
         val statement = text.subSequence(first.startOffset, last.textRange.endOffset)
         val width = columns(header) + 1 + columns(statement) + 2
         if (width > MAXIMUM_WIDTH) return null
-        // The spaces before the `(` on its line, which the first fold hides with it.
+        // The spaces between the header and the `(`, which the first fold hides with it -- never the
+        // indentation of a `(` that starts its line. The server's fold of the body starts at the same offset.
         var openingStart = opening.startOffset
-        while (openingStart > lineStart && (text[openingStart - 1] == ' ' || text[openingStart - 1] == '	')) openingStart--
+        while (openingStart > lineStart && (text[openingStart - 1] == ' ' || text[openingStart - 1] == '\t')) openingStart--
+        if (openingStart == lineStart) openingStart = opening.startOffset
         return OneLineMethod(
             opening,
             closing,

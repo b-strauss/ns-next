@@ -211,8 +211,35 @@ impl Collector<'_> {
         }
     }
 
+    /// A method's body folds from the spaces before its `(`, when the `(`
+    /// follows its header on its line, and collapses to ` (...)`. An editor
+    /// that shows a one-line method on its header's line as Java's
+    /// one-liners do (the JetBrains plugin's) hides those spaces with the
+    /// `(`, and refuses a fold that partly overlaps another: starting here,
+    /// the body's fold contains that one instead.
     fn method(&mut self, method: &ast::MethodDeclaration) {
-        self.bracketed(method.body_delimiters, method.span.end, "(...)");
+        let Some(delimiters) = method.body_delimiters else {
+            return self.body(&method.body);
+        };
+        let open = delimiters.open.start as usize;
+        let before = &self.text[..open];
+        let spaces = before.len() - before.trim_end_matches([' ', '\t']).len();
+        let follows_its_header = spaces > 0
+            && !before[..open - spaces].is_empty()
+            && !before[..open - spaces].ends_with(['\n', '\r']);
+        if follows_its_header {
+            let end = delimiters.close.map_or(method.span.end, |close| close.end);
+            let start = u32::try_from(open - spaces).expect(
+                "internal: folding runs over a parsed module, whose source is at most u32::MAX bytes (source_too_long)",
+            );
+            self.push(
+                Span::new(start, end.max(delimiters.open.end)),
+                " (...)".to_string(),
+                false,
+            );
+        } else {
+            self.bracketed(Some(delimiters), method.span.end, "(...)");
+        }
         self.body(&method.body);
     }
 
@@ -407,7 +434,7 @@ mod tests {
             lines_of(text),
             [
                 fold(0, 7, "(...)"),
-                fold(1, 6, "(...)"),
+                fold(1, 6, " (...)"),
                 fold(2, 3, "|...|"),
                 fold(4, 5, "[:each | ...]"),
             ]
@@ -426,7 +453,7 @@ mod tests {
             lines_of(text),
             [
                 fold(0, 3, "(...)"),
-                fold(1, 2, "(...)"),
+                fold(1, 2, " (...)"),
                 fold(1, 2, "[...]")
             ]
         );
@@ -459,7 +486,7 @@ mod tests {
             lines_of(slots),
             [
                 fold(0, 5, "(...)"),
-                fold(1, 4, "(...)"),
+                fold(1, 4, " (...)"),
                 fold(2, 3, "|...|")
             ]
         );
@@ -475,7 +502,7 @@ mod tests {
             lines_of(closure),
             [
                 fold(0, 5, "(...)"),
-                fold(1, 4, "(...)"),
+                fold(1, 4, " (...)"),
                 fold(2, 3, "[:each | ...]")
             ]
         );
@@ -570,10 +597,10 @@ mod tests {
             lines_of(text),
             [
                 fold(0, 10, "(...)"),
-                fold(1, 2, "(...)"),
-                fold(3, 5, "(...)"),
+                fold(1, 2, " (...)"),
+                fold(3, 5, " (...)"),
                 fold(6, 10, "(...)"),
-                fold(7, 9, "(...)"),
+                fold(7, 9, " (...)"),
             ]
         );
     }
@@ -591,7 +618,7 @@ mod tests {
             &line_index,
         );
         let method = &ranges[1];
-        let open = text.find("= (\r\n        ^1").expect("the body") + 2;
+        let open = text.find("= (\r\n        ^1").expect("the body") + 1;
         let line_start = text.find("    (* Grüße").expect("line 1");
         let character = text[line_start..open].encode_utf16().count() as u32;
         assert_eq!(
@@ -600,6 +627,38 @@ mod tests {
         );
         assert_eq!((method.end_line, method.end_character), (3, Some(5)));
         assert_eq!(method.kind, None);
-        assert_eq!(method.collapsed_text.as_deref(), Some("(...)"));
+        assert_eq!(method.collapsed_text.as_deref(), Some(" (...)"));
+    }
+
+    /// A method's fold starts at the spaces before its `(` when the `(`
+    /// follows its header on its line, and at the `(` otherwise.
+    #[test]
+    fn a_method_folds_from_the_spaces_before_its_body() {
+        let text = indoc! {"
+            class Module = () (
+                run =  (
+                    ^1
+                )
+                tight =(
+                    ^2
+                )
+                apart =
+                    (
+                    ^3
+                )
+            )
+        "};
+        let parsed = ns_syntax::parse_for_editor(text);
+        let starts: Vec<(String, String)> = folds(&parsed.module, &parsed.comments, text)
+            .into_iter()
+            .skip(1)
+            .map(|fold| {
+                let start = fold.span.start as usize;
+                (text[start..start + 3].to_string(), fold.collapsed_text)
+            })
+            .collect();
+        let expected = [("  (", " (...)"), ("(\n ", "(...)"), ("(\n ", "(...)")]
+            .map(|(start, collapsed)| (start.to_string(), collapsed.to_string()));
+        assert_eq!(starts, expected);
     }
 }

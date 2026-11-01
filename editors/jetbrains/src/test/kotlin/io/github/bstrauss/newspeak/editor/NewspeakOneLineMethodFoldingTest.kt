@@ -1,8 +1,7 @@
 package io.github.bstrauss.newspeak.editor
 
-import com.intellij.lang.folding.LanguageFolding
+import com.intellij.openapi.util.TextRange
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import io.github.bstrauss.newspeak.NewspeakLanguage
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 
 class NewspeakOneLineMethodFoldingTest : BasePlatformTestCase() {
@@ -53,26 +52,31 @@ class NewspeakOneLineMethodFoldingTest : BasePlatformTestCase() {
         }
     }
 
-    fun testTheBuilderComesBeforeTheServersSoItsFoldsWin() {
-        assertInstanceOf(
-            LanguageFolding.INSTANCE.allForLanguage(NewspeakLanguage).first(),
-            NewspeakOneLineMethodFolding::class.java,
+    fun testTheIndentationOfABracketStartingItsLineStaysOutside() {
+        assertEquals(
+            listOf("(\n    " to "( ", "\n  )" to " )"),
+            folds("class M = () (\n  public size =\n  (\n    ^size_.\n  )\n)"),
         )
     }
 
-    /** What the registration's order rests on: the server's fold of the body, `(` to `)`, is refused after them. */
-    fun testThePlatformRefusesTheServersFoldOfTheBodyAfterThem() {
+    /**
+     * The platform refuses a fold that partly overlaps one already in the editor. The server's fold of
+     * the body (`folding.rs`, from the spaces before the `(` to the `)`) contains both of these, so every
+     * fold is created whichever comes first: after a restart the server's is restored before them.
+     */
+    fun testTheServersFoldOfTheBodyAndTheseAreCreatedInEitherOrder() {
         val file = myFixture.configureByText("Module.ns", oneLine)
         val descriptors = NewspeakOneLineMethodFolding().buildFoldRegions(file, myFixture.editor.document, false)
-        val opening = oneLine.indexOf("size = (") + "size = ".length
-        val closing = oneLine.indexOf("  )") + 3
-        val model = myFixture.editor.foldingModel
-        model.runBatchFoldingOperation {
-            for (descriptor in descriptors) {
-                val range = descriptor.range
-                assertNotNull(model.addFoldRegion(range.startOffset, range.endOffset, descriptor.placeholderText!!))
+        val server = TextRange(oneLine.indexOf(" (\n    ^"), oneLine.indexOf("  )") + 3)
+        val ours = descriptors.map { it.range to it.placeholderText!! }
+        for (order in listOf(listOf(server to " (...)") + ours, ours + listOf(server to " (...)"))) {
+            val model = myFixture.editor.foldingModel
+            model.runBatchFoldingOperation {
+                model.allFoldRegions.forEach(model::removeFoldRegion)
+                for ((range, placeholder) in order) {
+                    assertNotNull(model.addFoldRegion(range.startOffset, range.endOffset, placeholder))
+                }
             }
-            assertNull(model.addFoldRegion(opening, closing, "(...)"))
         }
     }
 
