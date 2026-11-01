@@ -5697,9 +5697,14 @@ ns_runtime::for_each_lowering! {
             send_unary(&mut interpreter, &subject, "run"),
             (count * 70 * 3) as i64
         );
-        // A release build's bodies are laid out differently, and the
-        // compile that follows the compaction takes one entry more.
-        for _ in 0..6 {
+        // `hot` compiles at its second entry. Whether that compile finds
+        // room depends on where the last compaction left the zone's end,
+        // which depends on the size of every `leave` body: a debug build's
+        // are larger, each frame register's load checked for the poison of
+        // a dead register, so the two builds end `run` at different places.
+        // A compile that finds no room asks for a compaction and counts its
+        // entries again, so the worst case is two entries more: four.
+        for _ in 0..4 {
             assert_eq!(send_unary(&mut interpreter, &subject, "hot"), 45);
         }
         let done = since(interpreter.jit_statistics(), before);
