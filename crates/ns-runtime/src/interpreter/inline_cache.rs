@@ -829,6 +829,24 @@ impl InlineCaches {
         }
     }
 
+    /// The entry address of every cell -- a site's own, a polymorphic
+    /// block's, a global row -- as the cells hold them: what a debug
+    /// build's check after a compaction or a slide holds to naming no twin
+    /// (`Mutator::verify_code_zone_holders`).
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn cell_entries(&self) -> Vec<u64> {
+        let mut entries: Vec<u64> = (0..self.sites.len())
+            .map(|index| self.cells.site(index).entry)
+            .collect();
+        for (block, slots) in (0..).zip(&self.pool) {
+            for position in 0..slots.len() {
+                entries.push(self.cells.block_cell(block, position).entry);
+            }
+        }
+        entries.extend((0..self.global.entries.len()).map(|row| self.cells.global_row(row).entry));
+        entries
+    }
+
     /// Rewrites the entry address of every cell -- a site's own, a
     /// polymorphic block's, a global row -- through `plan`: a compaction of
     /// the code zone moved the bodies the cells name, and freed some, whose

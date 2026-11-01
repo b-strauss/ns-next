@@ -102,6 +102,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         cuts: after.cuts - before.cuts,
         zone_compactions: after.zone_compactions - before.zone_compactions,
         freed_bodies: after.freed_bodies - before.freed_bodies,
+        freed_twins: after.freed_twins - before.freed_twins,
         moved_bytes: after.moved_bytes - before.moved_bytes,
         revived_bodies: after.revived_bodies - before.revived_bodies,
     }
@@ -4588,6 +4589,78 @@ ns_runtime::for_each_lowering! {
             assert!(runs[0].compiled_twins + runs[1].compiled_twins > 0);
             assert_eq!(runs[2].compiled_twins, 0, "each twin is compiled once");
             assert_ran_in_machine_code(&runs[2], "run");
+            assert_eq!(runs[2].abandoned_bodies, 0);
+        }
+    }
+}
+
+/// A resumable exception signalled under a compiled `on:do:`: `signal`'s
+/// mirror send exits and materializes the frames below it, the handler
+/// search reifies the `on:do:` frame that exit left stopped in machine
+/// code, and `resume:` returns through the protected block into it.
+const RESUMED_HANDLER: &str = indoc! {"
+    class Subject = Object new () (
+      warn = (
+        ^(Exception signal) + 1
+      )
+      guarded = (
+        ^[self warn + 2] on: Exception do: [:e | e resume: 5]
+      )
+      public run = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < 20] whileTrue: [
+          total:: total + self guarded.
+          index:: index + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A frame the interpreter reified -- the `on:do:` frame the handler
+    /// search reifies -- goes on in machine code only in its body's twin,
+    /// compiled for it though `on:do:` makes no closure, so that its return
+    /// divorces the frame as the interpreter's pop would: the twin is
+    /// compiled once, the frame is resumed in machine code, no body is
+    /// abandoned, and both lowerings answer what the interpreter does.
+    fn a_frame_the_handler_search_reified_resumes_in_the_twin(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(RESUMED_HANDLER, lowering);
+            interpreter.set_jit_enabled(jit);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let mut answers = Vec::new();
+            let mut runs = Vec::new();
+            for _ in 0..3 {
+                let before = interpreter.jit_statistics();
+                answers.push(send_unary(&mut interpreter, &subject, "run"));
+                runs.push(since(interpreter.jit_statistics(), before));
+            }
+            let closure_class = interpreter.enter(|mutator| {
+                let class = mutator.builtin_class(ns_runtime::BuiltinClass::Closure);
+                mutator.stash(Value::object(class))
+            });
+            let twin = interpreter.jit_twin_offset(
+                &closure_class,
+                MethodSide::Instance,
+                Symbol::intern("on:do:"),
+            );
+            (answers, runs, twin)
+        };
+        let (compiled, runs, twin) = run(true);
+        let (interpreted, _, _) = run(false);
+        assert_eq!(compiled, interpreted);
+        assert_eq!(compiled[0], 20 * 8);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                twin.is_some(),
+                "the reified `on:do:` frame, which makes no closure, went on in its twin"
+            );
+            assert_eq!(runs[2].compiled_twins, 0, "each twin is compiled once");
+            assert!(runs[2].resumed_entries > 0, "frames resumed in machine code");
             assert_eq!(runs[2].abandoned_bodies, 0);
         }
     }

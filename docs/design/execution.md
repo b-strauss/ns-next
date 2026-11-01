@@ -11745,7 +11745,7 @@ the second time only on demand (`jit::baseline::BodyCopy`):
   no reified word, no program counter and no flags word of a method's or
   a factory's frame, its sends store no program counter and its returns
   test nothing. Each `MakeClosure` lowers to a **transfer**
-  (`jit::closures::transfer`): at the instruction's place, which an
+  (`jit::closures::transfer_to_twin`): at the instruction's place, which an
   inlined conditional's Boolean path jumps over, it reads the
   twin's address of the same instruction from a data word of its own,
   writes the words of the frame the twin reads -- the reified word nil,
@@ -11768,7 +11768,14 @@ the second time only on demand (`jit::baseline::BodyCopy`):
   full for the twin makes the transfer an exit, and asks for a
   compaction as any compile that finds no room does; while the zone
   stays exhausted, a twin known not to fit the room left is not
-  assembled again.
+  assembled again. A twin the compiler refuses for a reason no compaction
+  removes -- too large for the zone, or unassembled -- is recorded on the
+  body's slot and never assembled again: the next exit or resumption that
+  needed it refuses the body for good, its code freed and its cells
+  written afresh, as a reifying body so refused was before
+  (`jit::refuse_for_its_twin`). The twin is compiled under the settings
+  its lean body was (`CompileSettings`: the back-edge counting and the
+  futures' exit a test may change between the two).
 - **A frame whose reified word is set runs only twin code.** Machine code
   reifies a frame only at a `MakeClosure`, which a lean body transfers,
   and no leaf reifies one, so a lean frame is never reified while it
@@ -11791,7 +11798,9 @@ the second time only on demand (`jit::baseline::BodyCopy`):
   and both are marked active when an activation runs the body; each copy
   moves on its own in a compaction, after which the lean body's transfer
   words are written afresh, and a debug build checks every pair and
-  every transfer word after each compaction and slide.
+  every transfer word after each compaction and slide, and that no cell
+  and no machine entry row names a twin. A freed twin is counted in
+  `JitStatistics::freed_twins`, apart from the bodies.
 
 Prior art: Cog compiles a method twice when only one path needs a frame
 (`compileTwoPathFrameBuild`, `cogitX64SysV.c:30937-30990`, whose comment

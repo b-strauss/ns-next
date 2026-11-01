@@ -4,7 +4,7 @@
 //! code, and the closure allocated and filled after it, as
 //! `vm::make_closure_into` makes both -- in a body's twin. A body's lean
 //! code transfers its frame into the twin at the same program counter
-//! (`transfer`; "A frame reifies only in its body's twin"), so that a
+//! (`transfer_to_twin`; "A frame reifies only in its body's twin"), so that a
 //! body whose activations make no closure -- an inlined conditional's
 //! Boolean path -- pays nothing for the frame a closure would reify.
 //!
@@ -46,7 +46,7 @@ use crate::heap::machine_words::MachineWord;
 use crate::heap::Heap;
 use crate::interpreter::Mutator;
 
-use super::baseline::{BodyAssembler, BodyRole, Lowering, Transfer};
+use super::baseline::{BodyAssembler, BodyRole, Lowering, TwinTransfer};
 use super::leaves::Leaf;
 use super::macro_assembler::{MacroAssembler, ObjectSize, Operand};
 use super::sends::{frame_slot, store_program_counter};
@@ -137,7 +137,7 @@ impl ClosureRegisters {
     }
 }
 
-/// `MakeClosure` in a body's twin (`transfer` is the lean body's):
+/// `MakeClosure` in a body's twin (`transfer_to_twin` is the lean body's):
 /// `vm::make_closure_into`'s work, with no exit. Its
 /// program counter stored, as the interpreter stores it first; the frame
 /// reified unless its reified word names a frame object already: a frame
@@ -196,10 +196,10 @@ pub(super) fn make_closure(
 /// stores none but in a debug build, whose twin checks the copied
 /// registers before it stores anything and may leave there. No exit
 /// follows a store, and nothing is changed before the twin is found.
-pub(super) fn transfer(body: &mut BodyAssembler) -> Lowering {
+pub(super) fn transfer_to_twin(body: &mut BodyAssembler) -> Lowering {
     let program_counter = body.program_counter;
     let word = body.macro_assembler.take_body_words(1);
-    body.transfers.push(Transfer {
+    body.twin_transfers.push(TwinTransfer {
         program_counter,
         word,
     });
@@ -228,6 +228,25 @@ pub(super) fn transfer(body: &mut BodyAssembler) -> Lowering {
     );
     let frame = roles.frame;
     let nil = Heap::machine_layout().nil_word;
+    // A debug build, whose lean prologue writes the reified word nil,
+    // holds the lean frame to being unreified, which no leaf may break
+    // (`materialize::release_leaf_frame`): the store below would otherwise
+    // lose the frame object a closure already keeps, and leave it married
+    // to an offset its return pops.
+    #[cfg(debug_assertions)]
+    {
+        let assembler = macro_assembler.assembler();
+        let unreified = assembler.label();
+        assembler.load(
+            Width::Word64,
+            spare,
+            frame_slot(frame, divorce.reified_register),
+        );
+        assembler.compare_immediate(spare, nil);
+        assembler.jump_if(Condition::Equal, unreified);
+        assembler.trap();
+        assembler.bind(unreified);
+    }
     macro_assembler
         .assembler()
         .store_immediate32(frame_slot(frame, divorce.reified_register), nil);
@@ -253,25 +272,17 @@ pub(super) fn transfer(body: &mut BodyAssembler) -> Lowering {
 /// as the push writes it and the walk reads it back for a frame whose
 /// code reifies it (`Heap::write_machine_frame`) -- unless the frame is
 /// the run loop's entry frame, whose flags its push wrote and which may
-/// say otherwise. The entry frame is the one the entry stub called: the
-/// native stack holds nothing above its return address, and the call
-/// stub did not make the entry, as the exit stub tells them apart
-/// (`stubs::assemble_exit_stub`). Clobbers the flags and `spare`.
+/// say otherwise, which the exit stub's own test tells apart
+/// (`MacroAssembler::branch_on_stretch_entry`). Clobbers the flags and
+/// `spare`.
 #[cfg(not(debug_assertions))]
 fn called_frame_flags(macro_assembler: &mut MacroAssembler, argument_count: u16, spare: Register) {
     let divorce = Heap::machine_divorce(argument_count);
     let roles = macro_assembler.roles();
-    let saved_stack_pointer = macro_assembler.block_word(BlockWord::SavedStackPointer);
-    let entered_by_call = macro_assembler.block_word(BlockWord::EnteredByCall);
     let assembler = macro_assembler.assembler();
     let (called, entry) = (assembler.label(), assembler.label());
-    assembler.move_register(spare, roles.stack_pointer);
-    assembler.add_immediate(spare, super::stubs::RETURN_ADDRESS_BYTES);
-    assembler.compare_memory(spare, saved_stack_pointer);
-    assembler.jump_if(Condition::NotEqual, called);
-    assembler.load(Width::Word64, spare, entered_by_call);
-    assembler.compare_immediate(spare, 0);
-    assembler.jump_if(Condition::Equal, entry);
+    macro_assembler.branch_on_stretch_entry(spare, called, entry);
+    let assembler = macro_assembler.assembler();
     assembler.bind(called);
     assembler.move_immediate(spare, Heap::machine_flags_word(argument_count));
     assembler.store(
@@ -1200,7 +1211,13 @@ fn further_hops(
 /// word holds below it (`Heap::register_slot`). A debug build refuses a
 /// dead register's read by an exit before anything is written, so that
 /// the interpreter refuses it as its own read is refused.
-#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        unused_variables,
+        reason = "only a debug build's dead-register check reads the program counter"
+    )
+)]
 fn married_local(
     macro_assembler: &mut MacroAssembler,
     index: u16,

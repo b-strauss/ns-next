@@ -9972,7 +9972,7 @@ impl<'gc> Heap<'gc> {
     /// body taking `argument_count` arguments at its return, as
     /// `pop_activation` divorces it (`jit::sends::return_from`), and what a
     /// lean body's transfer into its twin writes as the push does
-    /// (`jit::closures::transfer`).
+    /// (`jit::closures::transfer_to_twin`).
     #[cfg(ns_jit)]
     pub(crate) fn machine_divorce(argument_count: u16) -> MachineDivorce {
         let register = |field: usize| {

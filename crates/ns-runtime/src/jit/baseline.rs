@@ -41,19 +41,19 @@ pub(crate) struct BaselineBody {
     /// (`MacroAssembler::take_body_words`): the alignment padding after
     /// them is no word's.
     pub(crate) words: Option<std::ops::Range<u32>>,
-    /// A lean body's transfers, one per `MakeClosure`: the instruction's
+    /// A lean body's transfers into its twin, one per `MakeClosure`: the instruction's
     /// program counter and the index of the data word that holds the
-    /// address of its code in the twin (`closures::transfer`). None in a
+    /// address of its code in the twin (`closures::transfer_to_twin`). None in a
     /// twin.
-    pub(crate) transfers: Vec<Transfer>,
+    pub(crate) twin_transfers: Vec<TwinTransfer>,
 }
 
 /// A lean body's `MakeClosure`, which goes on in the twin at the same
 /// program counter: the instruction's program counter, and the index of
 /// the body's data word that holds the twin's address of it, 0 until the
-/// twin is compiled (`closures::transfer`).
+/// twin is compiled (`closures::transfer_to_twin`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Transfer {
+pub(crate) struct TwinTransfer {
     pub(crate) program_counter: u32,
     pub(crate) word: usize,
 }
@@ -182,8 +182,8 @@ pub(super) struct BodyAssembler {
     pub(super) role: BodyRole,
     /// Whether the body is a twin, which reifies its frame (`BodyCopy::Twin`).
     pub(super) reifies: bool,
-    /// The lean body's transfers, as `closures::transfer` takes them.
-    pub(super) transfers: Vec<Transfer>,
+    /// The lean body's transfers into its twin, as `closures::transfer_to_twin` takes them.
+    pub(super) twin_transfers: Vec<TwinTransfer>,
     /// How many registers a frame object of the body holds
     /// (`CompiledCode::frame_register_count`).
     pub(super) frame_register_count: usize,
@@ -1069,7 +1069,7 @@ pub(crate) fn compile(
         window_end: sends::window_end(code),
         role,
         reifies: copy == BodyCopy::Twin,
-        transfers: Vec::new(),
+        twin_transfers: Vec::new(),
         frame_register_count: code.frame_register_count(),
         futures_exit,
     };
@@ -1123,7 +1123,7 @@ pub(crate) fn compile(
         exits_at_once,
         reifies: body.reifies,
         words,
-        transfers: body.transfers,
+        twin_transfers: body.twin_transfers,
     })
 }
 
@@ -1387,7 +1387,7 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
         }
         // A closure, its frame reified inline (`closures::make_closure`),
         // in the twin; the lean body transfers the frame there
-        // (`closures::transfer`).
+        // (`closures::transfer_to_twin`).
         Instruction::MakeClosure {
             destination,
             code,
@@ -1397,7 +1397,7 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
             if body.reifies {
                 closures::make_closure(body, *destination, code, copied)
             } else {
-                closures::transfer(body)
+                closures::transfer_to_twin(body)
             }
         }
         // A register of the frame `depth` closure hops out, on the
@@ -1573,7 +1573,7 @@ mod tests {
             window_end: 0,
             role: super::BodyRole::Method,
             reifies: false,
-            transfers: Vec::new(),
+            twin_transfers: Vec::new(),
             frame_register_count: 0,
             futures_exit: false,
         };

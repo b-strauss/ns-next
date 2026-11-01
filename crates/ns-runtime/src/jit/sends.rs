@@ -65,7 +65,7 @@ const _: () = assert!(
 /// own slots (`own_slot_words`) -- but no reified word, program counter
 /// or flags word of a method's or a factory's frame, which a lean frame
 /// never needs and its transfer into the twin writes
-/// (`closures::transfer`) -- and in a debug build the dead register's
+/// (`closures::transfer_to_twin`) -- and in a debug build the dead register's
 /// word in the scratch registers and the flags word with the push's
 /// generation, the rest of the header the exit's walk's
 /// (`jit::materialize`) -- but for an initializer's kind, which its
@@ -363,7 +363,10 @@ fn own_slot_words(
 /// and the walk does not: the dead register's word in every scratch
 /// register (`heap.rs`'s `fill_temporaries`), and the flags word with the
 /// generation the push takes from the machine words, so that a handle to
-/// a frame since returned and pushed again is refused.
+/// a frame since returned and pushed again is refused; and the reified
+/// word nil, which a release build's lean frame leaves as the stack held
+/// it, so that a transfer can hold the frame to being unreified
+/// (`closures::transfer_to_twin`).
 #[cfg(debug_assertions)]
 fn debug_frame_words(body: &mut BodyAssembler, code: &CompiledCode) {
     let macro_assembler = &mut body.macro_assembler;
@@ -377,6 +380,9 @@ fn debug_frame_words(body: &mut BodyAssembler, code: &CompiledCode) {
     for register in first_scratch..window_end {
         assembler.store(Width::Word64, frame_slot(roles.frame, register), poison);
     }
+    let reified = Heap::machine_divorce(code.argument_count).reified_register;
+    let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
+    assembler.store_immediate32(frame_slot(roles.frame, reified), nil);
     macro_assembler.store_frame_generation(code.argument_count);
 }
 

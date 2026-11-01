@@ -505,6 +505,39 @@ impl MacroAssembler {
         }
     }
 
+    /// Tells apart, where the native stack pointer stands at a body's
+    /// base -- at an instruction boundary, or in the exit stub, which a
+    /// body jumps to -- the frame the stub that made the entry called
+    /// from every frame machine code pushed: jumps to `above` when a
+    /// compiled frame's return address lies above the entry's, and to
+    /// `entered_at_push` when the body is the entry stub's -- the run
+    /// loop's entry frame, whose header its push wrote -- and falls
+    /// through for the call stub's callee, a frame its prologue pushed.
+    /// The one test of which frame began the stretch, shared by the exit
+    /// stub (`stubs::assemble_exit_stub`) and a lean body's transfer
+    /// (`closures::transfer_to_twin`), so that the two cannot drift. Clobbers
+    /// the flags and `scratch`.
+    pub(crate) fn branch_on_stretch_entry(
+        &mut self,
+        scratch: Register,
+        above: Label,
+        entered_at_push: Label,
+    ) {
+        let saved_stack_pointer = self.block_word(BlockWord::SavedStackPointer);
+        let entered_by_call = self.block_word(BlockWord::EnteredByCall);
+        let assembler = &mut self.assembler;
+        // The body was called with the stack pointer one word below the
+        // saved one, the entry stub's return address; a compiled frame
+        // above it pushed one more each.
+        assembler.move_register(scratch, self.roles.stack_pointer);
+        assembler.add_immediate(scratch, super::stubs::RETURN_ADDRESS_BYTES);
+        assembler.compare_memory(scratch, saved_stack_pointer);
+        assembler.jump_if(Condition::NotEqual, above);
+        assembler.load(Width::Word64, scratch, entered_by_call);
+        assembler.compare_immediate(scratch, 0);
+        assembler.jump_if(Condition::Equal, entered_at_push);
+    }
+
     /// The address of the frame's register `register`.
     fn frame_slot(&self, register: u16) -> Memory {
         Memory {

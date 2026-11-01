@@ -847,14 +847,82 @@ mod tests {
         counters.PrivateUsage
     }
 
-    /// A Windows zone gives its commit charge back with its chunks: code
-    /// written into the first chunk runs, the 31 chunks above it --
-    /// written through, so committed -- are given back whole, the
-    /// system's commit charge falls by about as much and the process's
-    /// own does not rise, the first chunk's code still runs, and a write
-    /// past the end maps a chunk again, whose code runs as well. The
-    /// system's charge is every process's, so it is held to three
-    /// quarters of what was given back, not to all of it.
+    /// The process's shared commit in bytes (`SharedCommitUsage`): the
+    /// committed pages of the sections it maps, which `PrivateUsage`
+    /// leaves out. `None` where the system refuses the `_EX2` form, before
+    /// Windows 10 version 21H2.
+    #[cfg(windows)]
+    fn shared_commit_usage() -> Option<u64> {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        // SAFETY: plain data, for which all-zero is a valid value.
+        let mut counters: PROCESS_MEMORY_COUNTERS_EX2 = unsafe { std::mem::zeroed() };
+        let size =
+            u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX2>()).expect("small");
+        counters.cb = size;
+        // SAFETY: the call writes only the structure it is given, `size`
+        // bytes long, which the `_EX2` form extends.
+        let answered = unsafe {
+            K32GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                std::ptr::addr_of_mut!(counters).cast::<PROCESS_MEMORY_COUNTERS>(),
+                size,
+            )
+        };
+        (answered != 0).then_some(counters.SharedCommitUsage)
+    }
+
+    /// The handles the process holds open.
+    #[cfg(windows)]
+    fn handle_count() -> u32 {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+        let mut count = 0;
+        // SAFETY: the call writes only the count it is given.
+        let answered = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
+        assert!(answered != 0, "GetProcessHandleCount failed");
+        count
+    }
+
+    /// Whether the chunk of `zone` at `chunk` is a placeholder again in
+    /// both its views: reserved, no view of a section mapped there.
+    #[cfg(windows)]
+    fn is_placeholder(zone: &CodeZone, chunk: usize) -> bool {
+        use windows_sys::Win32::System::Memory::{
+            VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_MAPPED, MEM_RESERVE,
+        };
+        let (executable, writable) = zone.mapping.chunk_addresses(chunk);
+        [executable, writable].into_iter().all(|address| {
+            // SAFETY: plain data, for which all-zero is a valid value.
+            let mut information: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+            // SAFETY: querying an address of our own zone reads nothing the
+            // program owns and writes only the structure it is given.
+            let written = unsafe {
+                VirtualQuery(
+                    address.cast::<std::ffi::c_void>(),
+                    &mut information,
+                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+                )
+            };
+            assert!(written != 0, "VirtualQuery failed");
+            information.State == MEM_RESERVE && information.Type != MEM_MAPPED
+        })
+    }
+
+    /// A Windows zone gives its commit charge back with its chunks, by
+    /// facts no other process moves: code written into the first chunk
+    /// runs; the 31 chunks above it -- written through, so committed --
+    /// are given back whole, each a placeholder again in both views with
+    /// its section's handle closed, which the operating system's contract
+    /// makes the section's end and its commit charge's return; the
+    /// process's shared commit, which counts the committed pages of the
+    /// sections it maps, falls by exactly that much, and its private
+    /// commit does not rise by a chunk; the first chunk's code still runs, and a
+    /// write past the end maps a chunk again, whose code runs as well.
+    /// The system-wide charge, which every other process moves too, is
+    /// measured by hand only
+    /// (`the_system_commit_charge_falls_with_a_zone_s_chunks`).
     #[cfg(all(windows, target_arch = "x86_64"))]
     #[test]
     fn a_windows_zone_gives_its_commit_charge_back() {
@@ -879,74 +947,78 @@ mod tests {
             function()
         };
         assert_eq!(run(&zone, 0), 42);
-        // The system's charge moves with every other process too -- the
-        // rest of a test run among them -- so a decommit is tried up to
-        // five times, written through again before each, and one that
-        // the charge followed is enough.
-        let mut fallen_each = Vec::new();
-        for _ in 0..5 {
-            let system_before = system_commit_charge();
-            let private_before = private_usage();
-            let given_back = zone.decommit_above(1);
-            let system_after = system_commit_charge();
-            let private_after = private_usage();
-            assert_eq!(
-                given_back,
-                (chunks - 1) * chunk,
-                "every chunk above the first"
-            );
-            assert_eq!(zone.committed(), chunk);
-            assert!(
-                private_after <= private_before + chunk,
-                "the process's charge rose from {private_before} to {private_after}"
-            );
-            let fallen = system_before.saturating_sub(system_after);
-            fallen_each.push(fallen);
-            if fallen >= given_back / 4 * 3 {
-                break;
-            }
-            zone.write(CodeOffset(last), &[0xC3])
-                .expect("written again");
-        }
-        assert!(
-            fallen_each
-                .last()
-                .is_some_and(|fallen| *fallen >= (chunks - 1) * chunk / 4 * 3),
-            "the system's commit charge fell by {fallen_each:?} bytes, not {}",
-            (chunks - 1) * chunk
+        assert!((0..chunks).all(|index| !is_placeholder(zone.zone(), index)));
+        let (shared_before, private_before, handles_before) =
+            (shared_commit_usage(), private_usage(), handle_count());
+        let given_back = zone.decommit_above(1);
+        let (shared_after, private_after, handles_after) =
+            (shared_commit_usage(), private_usage(), handle_count());
+        assert_eq!(
+            given_back,
+            (chunks - 1) * chunk,
+            "every chunk above the first"
         );
-        // Deterministic beside the charge: the chunk above the first is a
-        // placeholder again in the executable view, reserved and not
-        // committed.
-        {
-            use windows_sys::Win32::System::Memory::{
-                VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_RESERVE,
-            };
-            let address = zone
-                .zone()
-                .executable_address(CodeOffset(u32::try_from(chunk).expect("small")));
-            // SAFETY: plain data, for which all-zero is a valid value.
-            let mut information: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-            // SAFETY: querying an address of our own zone reads nothing the
-            // program owns and writes only the structure it is given.
-            let written = unsafe {
-                VirtualQuery(
-                    std::ptr::with_exposed_provenance::<std::ffi::c_void>(address),
-                    &mut information,
-                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
-                )
-            };
-            assert!(written != 0, "VirtualQuery failed");
+        assert_eq!(zone.committed(), chunk);
+        assert!(
+            (1..chunks).all(|index| is_placeholder(zone.zone(), index)),
+            "every chunk given back is a placeholder again in both views"
+        );
+        assert!(
+            !is_placeholder(zone.zone(), 0),
+            "the first chunk stays mapped"
+        );
+        assert_eq!(
+            zone.zone().mapping.open_sections(),
+            1,
+            "only the first chunk's section is open"
+        );
+        assert_eq!(
+            handles_before - handles_after,
+            u32::try_from(chunks - 1).expect("small"),
+            "each chunk's section handle is closed"
+        );
+        if let (Some(before), Some(after)) = (shared_before, shared_after) {
             assert_eq!(
-                information.State, MEM_RESERVE,
-                "the chunk is no longer mapped"
+                before - after,
+                u64::try_from(given_back).expect("small"),
+                "the shared commit falls by what was given back"
             );
         }
+        // The process's own charge is held to not rising by a chunk: the
+        // decommit may take a page of the allocator's for its bookkeeping.
+        assert!(
+            private_after <= private_before + chunk,
+            "the process's charge rose from {private_before} to {private_after}"
+        );
         assert_eq!(run(&zone, 0), 42, "the kept chunk still runs");
         let again = u32::try_from(3 * chunk).expect("small");
         zone.write(CodeOffset(again), &answer_42)
             .expect("written again");
         assert_eq!(zone.committed(), 4 * chunk);
         assert_eq!(run(&zone, again), 42, "a chunk mapped again runs");
+    }
+
+    /// The system's commit charge falls by about as much as a zone gives
+    /// back: a measurement, run by hand
+    /// (`cargo nextest run -p ns-memory --run-ignored only`), since every
+    /// other process moves the system-wide charge too, which no gate can
+    /// hold a test to.
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    #[test]
+    #[ignore = "the system-wide charge moves with every other process"]
+    fn the_system_commit_charge_falls_with_a_zone_s_chunks() {
+        let chunk = platform::code_commit_granularity();
+        let chunks = 32;
+        let mut zone = CodeZone::reserve(chunks * chunk).expect("a zone");
+        zone.write(CodeOffset(0), &[0xC3]).expect("written");
+        let last = u32::try_from(chunks * chunk - 1).expect("small");
+        zone.write(CodeOffset(last), &[0xC3]).expect("written");
+        let before = system_commit_charge();
+        let given_back = zone.decommit_above(1);
+        let fallen = before.saturating_sub(system_commit_charge());
+        assert!(
+            fallen >= given_back / 4 * 3,
+            "the system's commit charge fell by {fallen} bytes, not {given_back}"
+        );
     }
 }

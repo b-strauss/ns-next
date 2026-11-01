@@ -299,7 +299,7 @@ impl JitState {
         body.free = true;
         let size = body.size();
         self.bytes_freed_since_compaction = self.bytes_freed_since_compaction.saturating_add(size);
-        self.statistics.freed_bodies += 1;
+        self.statistics.count_freed(body.lean.is_some());
         true
     }
 
@@ -639,7 +639,7 @@ impl JitState {
                     "internal: a live lean body's twin is freed or names another body"
                 );
             }
-            for transfer in &body.transfers {
+            for transfer in &body.twin_transfers {
                 let start = body.start + transfer.offset;
                 let Some(bytes) = zone.writer.bytes(start..start + 8) else {
                     unreachable!("internal: an installed body's words lie in the committed zone");
@@ -698,7 +698,8 @@ impl JitState {
             }
             // The slide drops the returns of every freed body.
             self.bodies[index].free = true;
-            self.statistics.freed_bodies += 1;
+            self.statistics
+                .count_freed(self.bodies[index].lean.is_some());
         }
     }
 
@@ -746,7 +747,7 @@ impl JitState {
                     let twin = &mut self.bodies[twin as usize];
                     if !twin.free {
                         twin.free = true;
-                        self.statistics.freed_bodies += 1;
+                        self.statistics.freed_twins += 1;
                         free_bytes += twin.size();
                     }
                 }
@@ -1064,8 +1065,8 @@ impl Mutator<'_> {
     /// site ranges, that every holder of an address into the zone was
     /// remapped: every cell agrees with its entry, which names a live
     /// body's start, a stub, or the miss stub (`InlineCaches::verify_cells`),
-    /// and every machine entry row names the start of a body the zone holds
-    /// and has not freed. The zone and collect stress modes so check every
+    /// and every machine entry row names the start of a lean body the zone
+    /// holds and has not freed; no cell names a twin's start. The zone and collect stress modes so check every
     /// compaction and every slide they make.
     #[cfg(all(ns_jit, debug_assertions))]
     fn verify_code_zone_holders(&self) {
@@ -1075,22 +1076,38 @@ impl Mutator<'_> {
         let Some(zone) = self.jit.zone.as_ref() else {
             return;
         };
+        let start_of = |body: &InstalledBody| {
+            zone.writer
+                .zone()
+                .executable_address(CodeOffset(body.start)) as u64
+        };
+        // Only a lean body is ever named: a twin is entered by its lean
+        // body's transfers and by a resumption alone.
         let starts: Vec<u64> = self
             .jit
             .bodies
             .iter()
-            .filter(|body| !body.free)
-            .map(|body| {
-                zone.writer
-                    .zone()
-                    .executable_address(CodeOffset(body.start)) as u64
-            })
+            .filter(|body| !body.free && body.lean.is_none())
+            .map(start_of)
+            .collect();
+        let twins: Vec<u64> = self
+            .jit
+            .bodies
+            .iter()
+            .filter(|body| !body.free && body.lean.is_some())
+            .map(start_of)
             .collect();
         for entry in self.heap.recorded_machine_entries() {
             assert!(
                 starts.contains(&entry),
-                "internal: a machine entry row names {entry:#x}, no live body's start, \
+                "internal: a machine entry row names {entry:#x}, no live lean body's start, \
                  after a compaction or a slide"
+            );
+        }
+        for entry in self.caches.cell_entries() {
+            assert!(
+                !twins.contains(&entry),
+                "internal: a cell names {entry:#x}, a twin's start, after a compaction or a slide"
             );
         }
         self.jit.verify_pairs();

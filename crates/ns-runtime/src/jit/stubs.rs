@@ -401,27 +401,17 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
         roles.exit_program_counter(),
     );
     assembler.store(Width::Word64, exit_code_address, roles.exit_code_address());
-    // The body was called with the stack pointer one word below the saved
-    // one, the entry stub's return address; a compiled frame above it
-    // pushed one more each.
     let (walk, next, innermost, done) = (
         assembler.label(),
         assembler.label(),
         assembler.label(),
         assembler.label(),
     );
-    assembler.move_register(scratch, roles.stack_pointer);
-    assembler.add_immediate(scratch, RETURN_ADDRESS_BYTES);
-    assembler.compare_memory(scratch, saved_stack_pointer);
-    assembler.jump_if(Condition::NotEqual, walk);
     // Nothing above the body the stub called: the entry stub's is the
     // frame the run loop entered, interpreted already, while the call
     // stub's is a callee no frame stands for yet, which is the innermost.
-    let entered_by_call = macro_assembler.block_word(BlockWord::EnteredByCall);
+    macro_assembler.branch_on_stretch_entry(scratch, walk, done);
     let assembler = macro_assembler.assembler();
-    assembler.load(Width::Word64, scratch, entered_by_call);
-    assembler.compare_immediate(scratch, 0);
-    assembler.jump_if(Condition::Equal, done);
     assembler.jump(innermost);
     assembler.bind(walk);
     // The outermost compiled return address, the entry's body's call, lies

@@ -335,12 +335,22 @@ pub(crate) struct CodeMapping {
 
 impl CodeMapping {
     /// The executable and the writable address of chunk `chunk`.
-    fn chunk_addresses(&self, chunk: usize) -> (*mut u8, *mut u8) {
+    pub(crate) fn chunk_addresses(&self, chunk: usize) -> (*mut u8, *mut u8) {
         let offset = chunk * CODE_CHUNK_BYTES;
         (
             self.executable.as_ptr().wrapping_add(offset),
             self.writable.as_ptr().wrapping_add(offset),
         )
+    }
+
+    /// How many chunks' sections are open. For tests.
+    #[cfg(test)]
+    pub(crate) fn open_sections(&self) -> usize {
+        self.sections
+            .borrow()
+            .iter()
+            .filter(|section| !section.is_null())
+            .count()
     }
 }
 

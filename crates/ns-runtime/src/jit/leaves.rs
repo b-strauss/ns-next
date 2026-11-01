@@ -856,7 +856,7 @@ fn grow_stack(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 }
 
 /// The twin leaf, which a lean body's transfer calls while the data word
-/// naming the twin's code is 0 (`jit::closures::transfer`): compiles the
+/// naming the twin's code is 0 (`jit::closures::transfer_to_twin`): compiles the
 /// twin of the body `arguments[0]`, an address inside it, names -- the
 /// same instructions compiled to reify their frame -- installs it and
 /// writes every transfer word of the lean body (`jit::compile_twin_at`).

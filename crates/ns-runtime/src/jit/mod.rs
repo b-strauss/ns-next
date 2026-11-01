@@ -188,8 +188,12 @@ pub struct JitStatistics {
     /// Bodies whose machine code was freed: dead or no longer named by
     /// their slots, at a full collection or a compaction; abandoned; or
     /// freed by their usage. Counted when freed, before a compaction
-    /// reclaims their bytes.
+    /// reclaims their bytes. A twin freed with its body is counted in
+    /// `freed_twins` instead.
     pub freed_bodies: u64,
+    /// Twins whose machine code was freed, each with its lean body
+    /// (`jit::zone`).
+    pub freed_twins: u64,
     /// Bytes of machine code and data words the compactions slid down.
     pub moved_bytes: u64,
     /// Abandoned bodies revived, which count their entries again: their
@@ -198,6 +202,18 @@ pub struct JitStatistics {
     /// since their abandonment reaching `revival_entries`
     /// (`JitState::note_abandoned_entry`).
     pub revived_bodies: u64,
+}
+
+impl JitStatistics {
+    /// Counts a freed installed body: in `freed_twins` for a twin, in
+    /// `freed_bodies` for any other.
+    fn count_freed(&mut self, twin: bool) {
+        if twin {
+            self.freed_twins += 1;
+        } else {
+            self.freed_bodies += 1;
+        }
+    }
 }
 
 /// What a body's `JitSlot` says once it is compiled, and so entered at a
@@ -324,6 +340,12 @@ pub(crate) struct JitSlot {
     /// While the body is abandoned, the interpreted entries left before it
     /// is revived (`JitState::note_abandoned_entry`).
     entries_before_revival: Cell<u32>,
+    /// Whether the compiler refused the body's twin for a reason no
+    /// compaction removes -- too large for the zone, or unassembled -- so
+    /// that it is never assembled again: the body is refused for good at
+    /// the next exit or resumption that needed it (`refuse_for_its_twin`),
+    /// as a reifying body so refused was before twins.
+    twin_refused: Cell<bool>,
 }
 
 impl Default for JitSlot {
@@ -338,6 +360,7 @@ impl Default for JitSlot {
             needed: Cell::new(0),
             abandonments: Cell::new(0),
             entries_before_revival: Cell::new(0),
+            twin_refused: Cell::new(false),
         }
     }
 }
@@ -713,15 +736,17 @@ struct InstalledBody {
     /// body. A twin is freed with its lean body, moves on its own and
     /// is named by no cell and no machine entry row.
     lean: Option<u32>,
-    /// A lean body's transfers (`closures::transfer`), each the program
+    /// A lean body's transfers (`closures::transfer_to_twin`), each the program
     /// counter of a `MakeClosure` and the offset from the body's start of
     /// the data word holding the twin's address of it: 0 while the body
     /// has no twin.
-    transfers: Vec<TransferWord>,
+    twin_transfers: Vec<TwinTransferWord>,
     /// The bytes a compile of the twin needed, its alignment's slack
     /// included, when it last found no room; 0 if none did, as
     /// `JitSlot::needed` is the lean body's.
     twin_needed: u32,
+    /// The settings the body was compiled under.
+    settings: CompileSettings,
     /// The offsets of its first byte and of the byte past its last.
     start: u32,
     end: u32,
@@ -746,11 +771,21 @@ struct InstalledBody {
     free: bool,
 }
 
+/// The settings of the JIT's state a body was compiled under, which its
+/// twin is compiled under too, so that both copies are the same lowering
+/// however a test changed the state between them
+/// (`JitState::set_counting`, `JitState::set_futures_exit`).
+#[derive(Clone, Copy, Debug)]
+struct CompileSettings {
+    counting: bool,
+    futures_exit: bool,
+}
+
 /// A lean body's `MakeClosure` and its transfer word: the instruction's
 /// program counter, and the word's offset from the body's start, which a
 /// compaction keeps.
 #[derive(Clone, Copy, Debug)]
-struct TransferWord {
+struct TwinTransferWord {
     program_counter: u32,
     offset: u32,
 }
@@ -1295,7 +1330,7 @@ impl JitState {
     /// Writes the transfer words of the lean body at `lean` in `bodies`
     /// through the zone's one writer: each the address of its
     /// `MakeClosure`'s code in the twin, or 0 while the body has none, so
-    /// that the next transfer compiles it (`closures::transfer`). Written
+    /// that the next transfer compiles it (`closures::transfer_to_twin`). Written
     /// when the twin is compiled and after a compaction moved either
     /// copy, between entries or from the twin leaf, before the transfer
     /// that called it reads its word again.
@@ -1305,7 +1340,7 @@ impl JitState {
         };
         let body = &self.bodies[lean as usize];
         let twin = body.twin.map(|twin| &self.bodies[twin as usize]);
-        for transfer in &body.transfers {
+        for transfer in &body.twin_transfers {
             let address = twin.map_or(0, |twin| {
                 let Some(offset) = twin.map.machine_offset(transfer.program_counter) else {
                     unreachable!("internal: a twin has code for every instruction");
@@ -2309,7 +2344,17 @@ fn compile(
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
 ) -> Result<([CodeOffset; 2], u32), Refusal> {
-    let body = assemble(state, code, feedback_base, method, baseline::BodyCopy::Lean)?;
+    let settings = CompileSettings {
+        counting: state.counting,
+        futures_exit: state.futures_exit,
+    };
+    let body = assemble(
+        settings,
+        code,
+        feedback_base,
+        method,
+        baseline::BodyCopy::Lean,
+    )?;
     if body.exits_at_once && !state.install_bodies_exiting_at_once {
         return Err(Refusal::ExitsAtOnce);
     }
@@ -2319,7 +2364,7 @@ fn compile(
         panic!("internal: a compiled body has no code for its first instruction");
     };
     let needed = needed_bytes(&body);
-    let map = match install_body(state, code, method, feedback_base, body) {
+    let map = match install_body(state, code, method, feedback_base, body, settings) {
         Ok(map) => map,
         Err(Refusal::ZoneFull) => {
             state.wanted_bytes = state.wanted_bytes.max(needed);
@@ -2333,25 +2378,26 @@ fn compile(
     Ok(([offset, first_instruction], map))
 }
 
-/// `code` assembled as its body's `copy`, for `method` when it is one's
-/// body, its sends' cells those of `feedback_base`'s range.
+/// `code` assembled as its body's `copy` under `settings`, for `method`
+/// when it is one's body, its sends' cells those of `feedback_base`'s
+/// range.
 #[cfg(ns_jit)]
 fn assemble(
-    state: &JitState,
+    settings: CompileSettings,
     code: &CompiledCode,
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
     copy: baseline::BodyCopy,
 ) -> Result<baseline::BaselineBody, Refusal> {
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
-    macro_assembler.set_count_back_edges(state.counting);
+    macro_assembler.set_count_back_edges(settings.counting);
     let role = baseline::BodyRole::of(code, method.is_some());
     baseline::compile(
         code,
         macro_assembler,
         feedback_base,
         role,
-        state.futures_exit,
+        settings.futures_exit,
         copy,
     )
 }
@@ -2378,6 +2424,7 @@ fn install_body(
     method: Option<&Rc<MixinMethod>>,
     feedback_base: FeedbackBase,
     body: baseline::BaselineBody,
+    settings: CompileSettings,
 ) -> Result<u32, Refusal> {
     let Some(zone) = state.zone.as_mut() else {
         panic!("internal: the JIT is on without a zone");
@@ -2418,8 +2465,8 @@ fn install_body(
         );
     }
     let words = body.words.as_ref().map_or(length, |words| words.start);
-    let transfers = body
-        .transfers
+    let twin_transfers = body
+        .twin_transfers
         .iter()
         .map(|transfer| {
             let Some(offset) = u32::try_from(transfer.word)
@@ -2429,7 +2476,7 @@ fn install_body(
             else {
                 unreachable!("internal: a body's data words lie within its bytes");
             };
-            TransferWord {
+            TwinTransferWord {
                 program_counter: transfer.program_counter,
                 offset,
             }
@@ -2442,8 +2489,9 @@ fn install_body(
         reifies: body.reifies,
         twin: None,
         lean: None,
-        transfers,
+        twin_transfers,
         twin_needed: 0,
+        settings,
         start: offset.0,
         end: offset.0 + length,
         words: offset.0 + words,
@@ -2476,10 +2524,13 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
     if let Some(twin) = body.twin {
         return Ok(twin);
     }
-    let needed = body.twin_needed;
+    let (needed, settings) = (body.twin_needed, body.settings);
     let Some(installed) = upgraded(body) else {
         unreachable!("internal: a lean body running or resumed lives");
     };
+    if installed.code.jit.twin_refused.get() {
+        return Err(Refusal::TooLarge);
+    }
     if state.zone_exhausted
         && needed > 0
         && state
@@ -2490,13 +2541,23 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         state.hold_compile();
         return Err(Refusal::ZoneFull);
     }
-    let twin = assemble(
-        state,
+    let twin = match assemble(
+        settings,
         &installed.code,
         installed.feedback_base,
         installed.method.as_ref(),
         baseline::BodyCopy::Twin,
-    )?;
+    ) {
+        Ok(twin) => twin,
+        Err(refusal) => {
+            installed
+                .code
+                .jit
+                .twin_refused
+                .set(refusal != Refusal::ZoneFull);
+            return Err(refusal);
+        }
+    };
     let needed = needed_bytes(&twin);
     let index = match install_body(
         state,
@@ -2504,6 +2565,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         installed.method.as_ref(),
         installed.feedback_base,
         twin,
+        settings,
     ) {
         Ok(index) => index,
         Err(Refusal::ZoneFull) => {
@@ -2517,7 +2579,10 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
             }
             return Err(Refusal::ZoneFull);
         }
-        Err(refusal) => return Err(refusal),
+        Err(refusal) => {
+            installed.code.jit.twin_refused.set(true);
+            return Err(refusal);
+        }
     };
     // A twin is as used as its lean body: the pair is freed as one.
     let usage = state.bodies[lean as usize].usage.get();
@@ -2670,6 +2735,11 @@ fn entry_of_frame(
     }
     let entry = twin_entry(&mut mutator.jit, code, feedback_base, program_counter);
     after_compile_trigger(mutator);
+    #[cfg(ns_jit)]
+    if entry.is_none() && code.jit.twin_refused.get() {
+        let code = mutator.heap.activation_code(activation);
+        refuse_for_its_twin(mutator, &code);
+    }
     entry
 }
 
@@ -3187,7 +3257,9 @@ fn resumption_after_exit(
     ) && !mutator.jit.install_bodies_exiting_at_once
     {
         let code = mutator.heap.activation_code(innermost);
-        if code.jit.note_exit() {
+        if code.jit.twin_refused.get() {
+            refuse_for_its_twin(mutator, &code);
+        } else if code.jit.note_exit() {
             abandon(mutator, &code);
         }
     }
@@ -3304,6 +3376,33 @@ fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     };
     if let Some(entry) = entry {
         let address = zone.writer.zone().executable_address(entry) as u64;
+        mutator.caches.refresh_cells_entering(address, &mutator.jit);
+    }
+}
+
+/// Refuses `code` for good once the compiler refused its twin for a reason
+/// no compaction removes (`JitSlot::twin_refused`): every activation that
+/// reifies its frame in machine code would exit, so the body stays
+/// interpreted, as a reifying body the compiler refused did before twins.
+/// Its machine code and its twin's are freed, and every cell and machine
+/// entry row that named it written afresh, as an abandonment does
+/// (`abandon`); between entries only.
+#[cfg(ns_jit)]
+fn refuse_for_its_twin(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    let installed = mutator.jit.installed(code).map(|body| body.start);
+    if installed.is_some() {
+        mutator.jit.free_body(code.jit.map.get());
+    }
+    if code.jit.state.get() != REFUSED {
+        code.jit.refuse();
+        mutator.jit.statistics.refused_bodies += 1;
+    }
+    mutator.heap.forget_machine_entry(code);
+    let Some(zone) = mutator.jit.zone.as_ref() else {
+        return;
+    };
+    if let Some(start) = installed {
+        let address = zone.writer.zone().executable_address(CodeOffset(start)) as u64;
         mutator.caches.refresh_cells_entering(address, &mutator.jit);
     }
 }
@@ -4045,6 +4144,39 @@ mod tests {
                     "a zone of {bytes} bytes, the body's words at {words}, its end at {end}"
                 );
             }
+        }
+
+        /// A twin the zone could not hold even empty is refused for good:
+        /// the refusal is recorded on the body's slot, and the twin is
+        /// never assembled again, so that the next exit or resumption that
+        /// needed it refuses the body (`refuse_for_its_twin`).
+        #[test]
+        fn a_twin_too_large_for_the_zone_is_never_assembled_again() {
+            let mut probe = JitState::for_test(1 << 16, true);
+            let making = body_making_a_closure();
+            enter_twice(&mut probe, &making);
+            compile_twin(&mut probe, 0).expect("a twin fits the probe");
+            let (lean, twin) = (&probe.bodies[0], &probe.bodies[1]);
+            assert!(
+                twin.size() > lean.size(),
+                "the twin reifies inline and holds a site of three words"
+            );
+            let bytes = lean.end as usize;
+            let mut state = JitState::for_test(bytes, true);
+            let code = body_making_a_closure();
+            enter_twice(&mut state, &code);
+            assert!(machine_entry(&state, &code).is_some(), "the lean body fits");
+            assert_eq!(
+                compile_twin(&mut state, 0),
+                Err(crate::jit::Refusal::TooLarge)
+            );
+            assert!(code.jit.twin_refused.get(), "the refusal is recorded");
+            assert_eq!(
+                compile_twin(&mut state, 0),
+                Err(crate::jit::Refusal::TooLarge),
+                "and answered without assembling the twin again"
+            );
+            assert_eq!(state.statistics().compiled_twins, 0);
         }
 
         /// `call:` sends `value:value:value:`, whose closure stub copies
