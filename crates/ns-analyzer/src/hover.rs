@@ -273,7 +273,7 @@ fn signature(declared: &Declared, text: &str) -> String {
 
 /// Whether only whitespace with one line break stands between the comment
 /// and the declaration: the comment is on the lines right above it.
-fn directly_above(text: &str, comment: Span, declaration: u32) -> bool {
+pub(crate) fn directly_above(text: &str, comment: Span, declaration: u32) -> bool {
     text.get(comment.end as usize..declaration as usize)
         .is_some_and(|gap| {
             gap.chars().all(char::is_whitespace)

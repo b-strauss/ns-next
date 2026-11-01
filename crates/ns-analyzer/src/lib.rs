@@ -18,6 +18,7 @@
 
 pub mod analysis;
 pub mod code_actions;
+pub mod doc_tags;
 pub mod document_symbols;
 pub mod documents;
 pub mod file_uri;

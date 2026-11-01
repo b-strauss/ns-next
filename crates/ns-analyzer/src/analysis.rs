@@ -116,6 +116,11 @@ fn analyze_unguarded(text: &str) -> Analysis {
         message: error.message,
         severity: Severity::Error,
     }));
+    findings.extend(crate::doc_tags::findings(
+        &resolution.module,
+        &comments,
+        text,
+    ));
     Analysis {
         findings,
         classified,
