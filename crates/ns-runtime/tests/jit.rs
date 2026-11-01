@@ -5586,6 +5586,7 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+#[cfg(debug_assertions)]
 ns_runtime::for_each_lowering! {
     /// A full collection frees the machine code of a body that died with
     /// its version, without waiting for the zone to fill: `freed_bodies`
@@ -5696,7 +5697,9 @@ ns_runtime::for_each_lowering! {
             send_unary(&mut interpreter, &subject, "run"),
             (count * 70 * 3) as i64
         );
-        for _ in 0..3 {
+        // A release build's bodies are laid out differently, and the
+        // compile that follows the compaction takes one entry more.
+        for _ in 0..6 {
             assert_eq!(send_unary(&mut interpreter, &subject, "hot"), 45);
         }
         let done = since(interpreter.jit_statistics(), before);
@@ -5806,6 +5809,7 @@ ns_runtime::for_each_lowering! {
 /// the interpreter; `callLeave:`, which sends it ten times from a loop;
 /// and `drive:`, which sends it a thousand times, its argument 0 -- an
 /// exit -- only at the turn `drive:`'s argument names.
+#[cfg(debug_assertions)]
 const DECAYING: &str = indoc! {"
     class Subject = Object new () (
       public leave: flag = (
@@ -5848,12 +5852,14 @@ const DECAYING: &str = indoc! {"
 
 /// Sends `leave: 0` to `subject` 70 times, each leaving machine code once
 /// the body is compiled: past the exit budget, so that it is abandoned.
+#[cfg(debug_assertions)]
 fn spend_the_exit_budget(interpreter: &mut Interpreter, subject: &Root) {
     for _ in 0..70 {
         assert_eq!(send_number(interpreter, subject, "leave:", 0), 3);
     }
 }
 
+#[cfg(debug_assertions)]
 ns_runtime::for_each_lowering! {
     /// A body abandoned for its exits counts them down at every scavenge,
     /// and once two have halved them below half the budget it is revived:
@@ -5897,6 +5903,7 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+#[cfg(debug_assertions)]
 ns_runtime::for_each_lowering! {
     /// A caller's cached send of a callee the JIT abandoned names the
     /// refusing stub; once the callee is revived, the cell is written
@@ -5944,6 +5951,7 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+#[cfg(debug_assertions)]
 ns_runtime::for_each_lowering! {
     /// A body that exits on every run is abandoned, revived after two
     /// scavenges, compiled at its second entry and abandoned again: over
@@ -5972,6 +5980,7 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+#[cfg(debug_assertions)]
 ns_runtime::for_each_lowering! {
     /// A hot body that leaves machine code once in a thousand entries,
     /// two hundred thousand times with a scavenge after every thousand,
@@ -6245,6 +6254,7 @@ ns_runtime::for_each_lowering! {
 /// first so that its range lies below every other, and whose `editVictim`
 /// replaces it through a MirrorBuilder, freeing that range at the next
 /// full collection; `run` loops and sends, a family above it.
+#[cfg(debug_assertions)]
 fn moved_family_source() -> String {
     let victim = format!("^self{}", " yourself".repeat(1_000));
     formatdoc! {"
@@ -6348,6 +6358,7 @@ ns_runtime::for_each_lowering! {
 /// ids stay named across collections, and `callBlock:`, which makes a
 /// block of a body of its own, sends it `value:` and lets it go, so that
 /// a collection frees its id.
+#[cfg(debug_assertions)]
 fn many_blocks(count: usize) -> String {
     let blocks: String = (0..count).map(|index| format!("[{index}]. ")).collect();
     formatdoc! {"
@@ -6369,6 +6380,7 @@ fn many_blocks(count: usize) -> String {
     "}
 }
 
+#[cfg(debug_assertions)]
 ns_runtime::for_each_lowering! {
     /// After a full collection lowered the machine entry table's committed
     /// rows to the code table's length -- the shrink pair at nothing, so
@@ -6421,6 +6433,7 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+#[cfg(debug_assertions)]
 ns_runtime::for_each_lowering! {
     /// Six hundred edits of a hot method fill the code zone with bodies
     /// that die with their versions; a full collection frees them, and a

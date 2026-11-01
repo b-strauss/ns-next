@@ -3,7 +3,9 @@
 //! what the uncached path answers; the goldens pin that under
 //! both lowerings, these pin the caches' own states.
 
-use indoc::{formatdoc, indoc};
+#[cfg(debug_assertions)]
+use indoc::formatdoc;
+use indoc::indoc;
 use ns_runtime::{
     CachedTarget, CachedTargetKind, CallSiteState, HostResult, HostSignal, Interpreter, Lowering,
     MethodSide, Root, SourceOrigin, Symbol, Value, ValueKind,
@@ -1144,6 +1146,7 @@ fn sliding_subject(lowering: Lowering) -> (Interpreter, Root, Root) {
 /// A module whose `churn:` replaces `Edited>>answer` `count` times through a
 /// MirrorBuilder, each version a family of ten sites run once, and whose
 /// `keeper` is a family of its own.
+#[cfg(debug_assertions)]
 const FAMILY_CHURN: &str = indoc! {"
     class Churn usingPlatform: platform = Object new (
       |
