@@ -38,8 +38,10 @@
 /// @factory makes the typed arrays module over `mirror` and `kernel`,
 /// copying the mirror into `vmMirror` and the kernel's `ArgumentError`,
 /// `Collection` and `IndexedCollection` into slots of their own and
-/// keeping nothing else of the kernel; the platform's root sends it, to a
-/// class the mirror answered, on the module's first demand.
+/// keeping nothing else of the kernel. The platform's root sends it to the
+/// class the mirror answers on the module's first demand, and again on the
+/// next demand after an unwind interrupted one, which records nothing; the
+/// loader sends it instead when an image names the module.
 /// @param mirror the VM mirror, through which a typed array reads and
 /// writes the elements in its ByteArray.
 /// @param kernel the kernel module instance; its `Collection` is
@@ -183,13 +185,14 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
   /// @param aByteArray a ByteArray whose size is a multiple of the
   /// subclass's `bytesPerElement`.
   /// @signals ArgumentError carrying `aByteArray`, 'on: requires a
-  /// ByteArray, got …' and its `printString`, for anything that is no
-  /// ByteArray.
+  /// ByteArray, got …' and its `printString`, for anything that answers
+  /// false to `isKindOfByteArray`, as everything but a ByteArray does
+  /// unless its class declares otherwise.
   /// @signals ArgumentError carrying `aByteArray`, 'on: requires a
   /// ByteArray whose size is a multiple of …, got a ByteArray of …', for
   /// one whose size is not.
   /// @signals Error of `subclassResponsibility`, for a ByteArray, when the
-  /// class defines no `bytesPerElement`, as `TypedArray` itself does not.
+  /// class's `bytesPerElement` is still `TypedArray`'s abstract one.
   private class TypedArray on: aByteArray = Collection <: IndexedCollection (
     |
       /// The ByteArray the elements are stored in: the one `on:` was given,
@@ -220,8 +223,8 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
     /// fixed when the view was made.
     ///
     /// @answers the number of elements.
-    /// @signals ArgumentError of `noByteArray:` when `bytes` holds no
-    /// ByteArray.
+    /// @signals ArgumentError of `noByteArray:` when `bytes` answers false
+    /// to `isKindOfByteArray`.
     /// @see `noByteArray:`.
     public size = (
       bytes isKindOfByteArray ifFalse: [^self noByteArray: #size].
@@ -230,11 +233,14 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
 
     /// Evaluates `action` with each element in turn, from the first,
     /// reading each element only when it reaches it, so that a store ahead
-    /// of the walk is seen. It signals what `action`'s `value:` signals.
+    /// of the walk is seen.
     ///
     /// @param action a block of one argument, or anything understanding
     /// `value:`; sent `value:` with each element.
     /// @answers the receiver.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a block that does not take
+    /// one argument, when the receiver is not empty.
     public do: action = (
       1 to: self size do: [:index | action value: (self at: index)].
     )
@@ -277,9 +283,11 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
       ^self subclassResponsibility.
     )
 
-    /// Refuses an access to a view whose `bytes` holds anything but a
-    /// ByteArray, which only a crafted image can make. It never returns:
-    /// an Error is not resumable.
+    /// Refuses an access to a view whose `bytes` answers anything but a
+    /// ByteArray: an object that answers true to `isKindOfByteArray`
+    /// without being one, which `on:` accepts; whatever a program's
+    /// subclass that overrides `bytes` answers; or one only a crafted
+    /// image can put there. It never returns: an Error is not resumable.
     ///
     /// Protected rather than private, since each typed array's own
     /// accessors signal it.
@@ -303,7 +311,7 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @signals ArgumentError of `on:`, carrying `aByteArray`, for anything
     /// else.
     /// @signals Error of `subclassResponsibility`, for a ByteArray, when the
-    /// receiver's class defines no `bytesPerElement`.
+    /// receiver's `bytesPerElement` is still `TypedArray`'s abstract one.
     /// @see `TypedArray`.
     private viewable: aByteArray = (
       aByteArray isKindOfByteArray ifFalse: [
@@ -549,8 +557,8 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
     /// `size`, a LargeInteger included.
     /// @signals ArgumentError carrying `index`, 'at: requires an Integer
     /// index, got …', for an index that is no Integer.
-    /// @signals ArgumentError of `noByteArray:` when `bytes` holds no
-    /// ByteArray.
+    /// @signals ArgumentError of `noByteArray:` when `bytes` answers false
+    /// to `isKindOfByteArray`.
     /// @see `noByteArray:`.
     public at: index = (
       bytes isKindOfByteArray ifFalse: [^self noByteArray: #at:].
@@ -571,8 +579,8 @@ class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
     /// `size`, a LargeInteger included.
     /// @signals ArgumentError carrying `index`, 'at:put: requires an
     /// Integer index, got …', for an index that is no Integer.
-    /// @signals ArgumentError of `noByteArray:` when `bytes` holds no
-    /// ByteArray.
+    /// @signals ArgumentError of `noByteArray:` when `bytes` answers false
+    /// to `isKindOfByteArray`.
     /// @signals ArgumentError carrying `value`, 'at:put: requires an
     /// Integer from 0 to 255, got …', for a value outside that range or no
     /// Integer.
