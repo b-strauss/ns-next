@@ -70,7 +70,12 @@ fn chunks_of(words: &Range<usize>) -> Range<usize> {
 impl ForwardingTable {
     /// The table for a collection whose occupied word ranges are `past`,
     /// `eden` and `old`, its first survivor moving to word `base_word`,
-    /// over `idle`'s buffer, grown to reach the highest of them.
+    /// over `idle`'s buffer. A buffer short of the highest of them grows to
+    /// the chunks of the first `committed_words` words of the space, not
+    /// just to the old top: committed memory grows by doubling
+    /// (`Space::ensure_committed`), so an old top that rises at every
+    /// collection reallocates and copies the buffer only as often as the
+    /// space commits more, and `into_idle` keeps what it grew.
     ///
     /// No two ranges share a chunk, which `summarize` would count twice:
     /// the regions' reservations meet at multiples of a chunk's 512 bytes
@@ -79,6 +84,7 @@ impl ForwardingTable {
         idle: IdleTable,
         [past, eden, old]: [Range<usize>; 3],
         base_word: usize,
+        committed_words: usize,
     ) -> ForwardingTable {
         let covered = [chunks_of(&old), chunks_of(&past), chunks_of(&eden)];
         if cfg!(debug_assertions) {
@@ -93,8 +99,9 @@ impl ForwardingTable {
         let needed = covered.iter().map(|range| range.end).max().unwrap_or(0);
         let mut chunks = idle.chunks;
         if chunks.len() < needed {
-            chunks.reserve_exact(needed - chunks.len());
-            chunks.resize(needed, Chunk::default());
+            let length = needed.max(committed_words.div_ceil(64));
+            chunks.reserve_exact(length - chunks.len());
+            chunks.resize(length, Chunk::default());
         }
         ForwardingTable {
             chunks,
@@ -241,7 +248,7 @@ mod tests {
 
     /// A table over a fresh buffer whose only occupied range is `old`.
     fn over_old(old: Range<usize>, base_word: usize) -> ForwardingTable {
-        ForwardingTable::over(IdleTable::default(), [0..0, 0..0, old], base_word)
+        ForwardingTable::over(IdleTable::default(), [0..0, 0..0, old], base_word, 0)
     }
 
     #[test]
@@ -260,7 +267,8 @@ mod tests {
     fn the_old_segment_keeps_the_bottom_and_the_nursery_follows_it() {
         // Base 128 words, the old segment from chunk 2 on; one young object
         // at words 10..13 and two old ones at 130..132 and 200..204.
-        let mut table = ForwardingTable::over(IdleTable::default(), [0..0, 0..64, 128..256], 128);
+        let mut table =
+            ForwardingTable::over(IdleTable::default(), [0..0, 0..64, 128..256], 128, 0);
         table.set_live(10..13);
         table.set_live(130..132);
         table.set_live(200..204);
@@ -301,7 +309,7 @@ mod tests {
         // Past at words 64..100, eden at 256..300, old from 640 on: chunks
         // 2..4 and 5..10 are gaps.
         let mut table =
-            ForwardingTable::over(IdleTable::default(), [64..100, 256..300, 640..700], 640);
+            ForwardingTable::over(IdleTable::default(), [64..100, 256..300, 640..700], 640, 0);
         table.set_live(70..72);
         table.set_live(260..263);
         table.set_live(650..654);
@@ -335,29 +343,54 @@ mod tests {
     #[test]
     fn a_shorter_eden_after_a_longer_one_reads_no_stale_bit() {
         let mut first =
-            ForwardingTable::over(IdleTable::default(), [0..0, 64..640, 1024..1100], 1024);
+            ForwardingTable::over(IdleTable::default(), [0..0, 64..640, 1024..1100], 1024, 0);
         first.set_live(80..90);
         first.set_live(500..510);
         first.set_live(1024..1030);
-        assert_eq!(first.summarize(), 10 + 10 + 6);
+        first.set_live(1060..1062);
+        assert_eq!(first.summarize(), 10 + 10 + 6 + 2);
         let idle = first.into_idle(2048);
 
         let later = |idle: IdleTable| {
-            let mut table = ForwardingTable::over(idle, [0..0, 64..128, 1024..1040], 1024);
+            let mut table = ForwardingTable::over(idle, [0..0, 64..128, 1024..1100], 1024, 0);
             table.set_live(70..72);
             table.set_live(1024..1030);
+            table.set_live(1070..1072);
             let live = table.summarize();
             (live, table)
         };
         let (recycled_live, recycled) = later(idle);
         let (fresh_live, fresh) = later(IdleTable::default());
         assert_eq!(recycled_live, fresh_live);
-        assert_eq!(recycled_live, 2 + 6);
-        for word in [70, 71, 1024, 1029] {
+        assert_eq!(recycled_live, 2 + 6 + 2);
+        for word in [70, 71, 1024, 1029, 1070, 1071] {
             assert_eq!(recycled.destination(word), fresh.destination(word));
         }
         assert!(!recycled.is_live(85), "a stale bit inside a covered chunk");
         assert!(!recycled.is_live(505), "a stale bit past the shorter eden");
+        assert!(!recycled.is_live(1060), "a stale bit in the old space");
+    }
+
+    /// A buffer that grows grows to the committed words, so a later
+    /// collection whose old top rose inside them finds it long enough and
+    /// copies nothing.
+    #[test]
+    fn a_buffer_grows_to_the_committed_words() {
+        let first = ForwardingTable::over(IdleTable::default(), [0..0, 0..0, 0..640], 0, 64 * 100);
+        assert_eq!(
+            first.chunks.len(),
+            100,
+            "the committed words' chunks, not the top's"
+        );
+        let idle = first.into_idle(64 * 100);
+        let buffer = idle.chunks.as_ptr();
+        let second = ForwardingTable::over(idle, [0..0, 0..0, 0..64 * 50], 0, 64 * 100);
+        assert_eq!(
+            second.chunks.as_ptr(),
+            buffer,
+            "the old top rose inside the buffer"
+        );
+        assert_eq!(second.chunks.len(), 100);
     }
 
     /// The buffer given back keeps only the chunks of the committed words,
@@ -385,7 +418,8 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "a survivor outside the occupied ranges")]
     fn a_survivor_in_a_gap_is_refused() {
-        let mut table = ForwardingTable::over(IdleTable::default(), [0..0, 64..128, 640..700], 640);
+        let mut table =
+            ForwardingTable::over(IdleTable::default(), [0..0, 64..128, 640..700], 640, 0);
         table.set_live(200..202);
     }
 }

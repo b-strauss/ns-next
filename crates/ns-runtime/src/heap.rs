@@ -11027,6 +11027,7 @@ impl<'gc> Heap<'gc> {
             std::mem::take(&mut self.idle_forwarding),
             [&past, &eden, &old_range].map(|range| range.start / 8..range.end / 8),
             NURSERY_END / 8,
+            self.space.committed() / 8,
         );
         let mut live_objects = 0;
         let words = self.space.words();
