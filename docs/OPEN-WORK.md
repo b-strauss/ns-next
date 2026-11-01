@@ -1119,6 +1119,32 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   instead. A list shared with the superclass's (a persistent list, or the
   level's own slots and a link) would keep it linear. Noted 2026-10-22.
   [object-model.md](design/object-model.md), "Instantiation".
+- **The stress gate's time** (noted with the user on 2026-11-01, to be
+  taken up in a session of its own). The stress step of `cargo xtask
+  gates end-of-batch` takes about 556 s: the ten suites run at once, so
+  both the slowest mode and the CPU work of all ten count. Measure first:
+  the nextest logs of one gate run (`.temp/stress-<MODE>.log`) give each
+  test's time, from which the slowest tests per mode and each crate's
+  share follow. The candidates, none measured yet:
+  - *`NS_NEXT_STRESS_COLLECT` is the slowest mode* (about 555 s against
+    350 to 415 s for the others). A full collection still has fixed costs
+    independent of the heap's size: the tables' reclamation
+    (`Mutator::reclaim_ids`, `Heap::held_mixin_ids`,
+    `Heap::module_trees`, hash maps built afresh at each collection) and
+    the marking came to about 20% of a profile of
+    `runtime/jit/counting_loop` under the reference lowering, which still
+    takes about 160 s alone and may hold up the end of the mode. This one
+    would also make every program's full collection cheaper, though full
+    collections are rare in real programs (none in most of the
+    benchmarks), so it is mainly a gain for the gate.
+  - *Crates no stress mode reaches*: the stress suites run the whole
+    workspace, `ns-syntax`, the formatter, `ns-analyzer`,
+    `ns-assembler` and `xtask` included, ten times over, though the modes
+    act only on the runtime; restricting them would cut the gate's CPU
+    work by those crates' share. A gain for the gate only.
+  - *The cell verification under `NS_NEXT_STRESS_SCAVENGE`*, paced by the
+    cells checked ("What stage 3's reviews left", "The stress
+    verification's cost", above). A gain for the gate only.
 
 ## Planned: language and library
 
