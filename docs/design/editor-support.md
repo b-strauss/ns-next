@@ -340,7 +340,7 @@ it folds:
 | Class | the header's `(` to the class's last `)`, the class side's when it has one | `(...)` | none |
 | Instance side | the members' `(` to their `)`; to the end of the line before when that `)` stands first on a line the class side opens on, as in `) : (`, and the class side folds; none after a header of one line | `(...)`, or `(...` when it ends with the line before | none |
 | Class side | the `(` after `:` to its `)` | `(...)` | none |
-| Method body | `(` to `)` | `(...)` | none |
+| Method body | the spaces before the `(` when the `(` follows the header on its line, else the `(`, to `)` | ` (...)` with those spaces, else `(...)` | none |
 | Closure | `[` to `]` | `[...]`, or `[:x :y \| ...]` with its parameters | none |
 | Slot section -- a class header's, or a body's temporaries | `\|` to `\|`, or `\|\|` to `\|\|` | `\|...\|` | none |
 | Comment | `(*` to `*)`, an unterminated one to the end of the file; a block of `///` lines, first to last | `(* `, the first non-blank line cut to 60 characters, ` ...*)`, or `/// `, that line, ` ...`; `(*...*)` or `///...` for a blank one | `comment` |
@@ -378,7 +378,7 @@ it folds:
 2026.2.3, so the server's ranges reach a `.ns` file as they are. Checked by
 hand under `runIde` (2026-10-04): fold markers on comments, class bodies,
 class sides, methods, closures and slot sections; a folded method shows
-`(...)`, in the editor's own font; and typing an unclosed `foo = (` inside a class keeps the folds of
+` (...)`, in the editor's own font; and typing an unclosed `foo = (` inside a class keeps the folds of
 the methods after it. That each of a class's folds keeps its marker is
 checked against the platform's own folding pass and gutter in a throwaway
 test over `Kernel.ns` (2026-10-14): every class line, `) (` and `) : (`
@@ -395,13 +395,24 @@ rule 10), and `public size = (`, `^size_.`, `)` reads as
 (`editor/NewspeakOneLineMethodFolding.kt`, a `lang.foldingBuilder` for
 Newspeak beside the platform's): the platform's `LspFoldingBuilder` starts
 a range collapsed only for the `imports` and `region` kinds, so no fold
-range of the server's can open folded. Two folds per method, the line break
-and indentation before the body and those after it, each shown as one space
-and in one `FoldingGroup`, so they open and close together; both lie inside
-the server's method fold. They open collapsed unless *Settings | Editor |
-General | Code Folding | Newspeak | One-line methods* is off
+range of the server's can open folded. Two folds per method in one
+`FoldingGroup`, so they open and close together, laid out as Java's
+one-liners are: the first from the spaces before the `(` (none when the
+`(` follows the `=` directly or starts its line) to the statement, shown
+as ` ( ` (`( ` without them), the second from the statement to the `)`
+included, shown as ` )`; each is as wide as the text it stands for, and a
+click on either bracket or the space beside it opens the method. The
+platform refuses a fold that partly overlaps one already in the editor
+(`FoldRegionsTree.checkIfValidToCreate`), whichever came first: the
+server's restored from the last session before any builder runs, or one
+that outlived an edit. The server's method fold therefore starts where the
+first of these does (the table above), so it contains both and every fold
+is created in either order; pinned in `NewspeakOneLineMethodFoldingTest`.
+They exist, collapsed, only while *Settings | Editor | General | Code
+Folding | Newspeak | One-line methods* is on
 (`NewspeakCodeFoldingOptionsProvider`, the `codeFoldingOptionsProvider`
-Java's options use; the value in `NewspeakSettings`, application-level).
+Java's options use; the value in `NewspeakSettings`, application-level);
+with it off the method has only the server's fold, as in Java.
 The file is never changed. The plugin has no Newspeak parser, so the method
 is found in the tokens: `= (` ending a line, one line of body, and a `)`
 alone on the next. A class header has the same shape but its `)` is followed
@@ -1513,8 +1524,9 @@ The server's own tests are described under its section, above ("Testing").
   same tokens, the platform test framework's standard check;
 - plugin tests on `BasePlatformTestCase` (`NewspeakEditorTest`) — file type,
   brace matching, commenting; `NewspeakOneLineMethodFoldingTest`, the
-  one-line methods' folds (which bodies fold and which stay open, the width,
-  the setting); `NewspeakIndentationTest`, the editor's indentation and
+  one-line methods' folds (which bodies fold and which stay open, the
+  ranges and texts of Java's layout, the width, the setting, and the
+  server's fold of the body created beside them in either order); `NewspeakIndentationTest`, the editor's indentation and
   width ("Indentation and width"): Enter after each opener, after a block's
   parameters with and without a type, after an opener with a comment behind
   it, but not after a temporaries' bar or an opener inside a string or

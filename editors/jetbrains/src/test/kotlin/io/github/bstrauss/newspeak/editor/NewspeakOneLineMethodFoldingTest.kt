@@ -1,17 +1,18 @@
 package io.github.bstrauss.newspeak.editor
 
+import com.intellij.openapi.util.TextRange
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 
 class NewspeakOneLineMethodFoldingTest : BasePlatformTestCase() {
-    /** What each fold of `source` shows, in order: the text it hides, then whether it opens collapsed. */
-    private fun folds(source: String): List<Pair<String, Boolean>> {
+    /** What each fold of `source` does, in order: the text it hides, then the text it shows; each opens collapsed. */
+    private fun folds(source: String): List<Pair<String, String>> {
         val file = myFixture.configureByText("Module.ns", source)
         return NewspeakOneLineMethodFolding()
             .buildFoldRegions(file, myFixture.editor.document, false)
             .map { descriptor ->
-                assertEquals(" ", descriptor.placeholderText)
-                descriptor.range.substring(source) to (descriptor.isCollapsedByDefault() ?: false)
+                assertEquals(true, descriptor.isCollapsedByDefault())
+                descriptor.range.substring(source) to descriptor.placeholderText!!
             }
     }
 
@@ -23,8 +24,15 @@ class NewspeakOneLineMethodFoldingTest : BasePlatformTestCase() {
         )
     """.trimIndent()
 
-    fun testAOneLineMethodFoldsOntoItsHeadersLine() {
-        assertEquals(listOf("\n    " to true, "\n  " to true), folds(oneLine))
+    fun testAOneLineMethodFoldsOntoItsHeadersLineAsJavasDoes() {
+        assertEquals(listOf(" (\n    " to " ( ", "\n  )" to " )"), folds(oneLine))
+    }
+
+    fun testWithoutASpaceBeforeItsBracketTheFirstFoldStartsAtTheBracket() {
+        assertEquals(
+            listOf("(\n    " to "( ", "\n  )" to " )"),
+            folds("class M = () (\n  public size =(\n    ^size_.\n  )\n)"),
+        )
     }
 
     fun testItsTwoFoldsOpenTogether() {
@@ -34,13 +42,41 @@ class NewspeakOneLineMethodFoldingTest : BasePlatformTestCase() {
         assertSame(descriptors[0].group, descriptors[1].group)
     }
 
-    fun testTheSettingDecidesWhetherItOpensFolded() {
+    fun testWithTheSettingOffThereAreNoFolds() {
         val state = NewspeakSettings.getInstance().state
         state.collapseOneLineMethods = false
         try {
-            assertEquals(listOf("\n    " to false, "\n  " to false), folds(oneLine))
+            assertEmpty(folds(oneLine))
         } finally {
             state.collapseOneLineMethods = true
+        }
+    }
+
+    fun testTheIndentationOfABracketStartingItsLineStaysOutside() {
+        assertEquals(
+            listOf("(\n    " to "( ", "\n  )" to " )"),
+            folds("class M = () (\n  public size =\n  (\n    ^size_.\n  )\n)"),
+        )
+    }
+
+    /**
+     * The platform refuses a fold that partly overlaps one already in the editor. The server's fold of
+     * the body (`folding.rs`, from the spaces before the `(` to the `)`) contains both of these, so every
+     * fold is created whichever comes first: after a restart the server's is restored before them.
+     */
+    fun testTheServersFoldOfTheBodyAndTheseAreCreatedInEitherOrder() {
+        val file = myFixture.configureByText("Module.ns", oneLine)
+        val descriptors = NewspeakOneLineMethodFolding().buildFoldRegions(file, myFixture.editor.document, false)
+        val server = TextRange(oneLine.indexOf(" (\n    ^"), oneLine.indexOf("  )") + 3)
+        val ours = descriptors.map { it.range to it.placeholderText!! }
+        for (order in listOf(listOf(server to " (...)") + ours, ours + listOf(server to " (...)"))) {
+            val model = myFixture.editor.foldingModel
+            model.runBatchFoldingOperation {
+                model.allFoldRegions.forEach(model::removeFoldRegion)
+                for ((range, placeholder) in order) {
+                    assertNotNull(model.addFoldRegion(range.startOffset, range.endOffset, placeholder))
+                }
+            }
         }
     }
 
