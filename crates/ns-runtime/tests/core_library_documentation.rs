@@ -29,6 +29,7 @@ const TAGGED_MODULES: &[&str] = &[
     "Manifest.ns",
     "platform/TranscriptFactory.ns",
     "platform/TimeFactory.ns",
+    "PlatformFactory.ns",
 ];
 
 /// Reads a core-library module and parses it.
