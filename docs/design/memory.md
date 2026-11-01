@@ -1839,7 +1839,7 @@ whose comment gives the reason: a program that collects between phases
 would otherwise give back at once what its next phase grows again. It
 counts collections, never time; the share is multiplied before it is
 divided, where HotSpot divides first, so that 100% reaches the band's end
-exactly. The code zone's counts its shrinks instead, since the zone is
+exactly. The code zone's damping counts its shrinks instead, since the zone is
 asked after each of its compactions as well as at the end of a full
 collection: a safepoint that serves both a compaction and a collection
 advances it twice, and the second ask finds the zone's growth flag
