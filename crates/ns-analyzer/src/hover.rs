@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Range};
 use ns_syntax::ast::{self, Anchor, Placement};
+use ns_syntax::doc_comment::{DocComment, DocTag, DocTagKind};
 use ns_syntax::{Comment, CommentKind, Span};
 
 use crate::documents::LineIndex;
@@ -27,7 +28,8 @@ pub struct Declared {
     pub kind: DeclaredKind,
     /// The source the signature is read from, whitespace runs shown as one
     /// space: a class's header up to its `(`, a method's pattern up to its
-    /// `=`, a slot's or a local's declaration, a parameter with its type.
+    /// `=`, a factory's pattern (empty for the default `new`), a slot's or
+    /// a local's declaration, a parameter with its type.
     pub signature: Span,
     /// A slot's initializer, which a signature too long to read leaves out.
     pub initializer: Option<Span>,
@@ -35,11 +37,16 @@ pub struct Declared {
     pub documentation: Option<Span>,
     /// The class whose member it is.
     pub container: Option<Container>,
+    /// A factory's class, by its declaration's node: the factory is
+    /// documented in the class's doc comment, by `@factory` and `@param`.
+    pub class: Option<Span>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclaredKind {
     Class,
+    /// A class's primary factory, a member of its class side.
+    Factory,
     Method,
     Slot,
     Parameter,
@@ -92,7 +99,7 @@ pub fn hover(
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: markdown(declared, text),
+            value: markdown(declared, declarations, text),
         }),
         range: Some(Range::new(
             line_index.position(text, reference.span.start),
@@ -102,23 +109,28 @@ pub fn hover(
 }
 
 /// The signature in a `newspeak` code block -- which an editor shows as the
-/// definition, highlighted as Newspeak -- then the doc comment, then the
-/// class that declares it.
-fn markdown(declared: &Declared, text: &str) -> String {
+/// definition, highlighted as Newspeak -- then the doc comment's description
+/// and its tags as the platform's section table, then the class that
+/// declares it.
+fn markdown(declared: &Declared, declarations: &HashMap<Span, Declared>, text: &str) -> String {
     let mut markdown = format!("```newspeak\n{}\n```", signature(declared, text));
-    let documentation = declared
-        .documentation
-        .filter(|comment| directly_above(text, *comment, declared.signature.start))
-        .map(|span| {
-            Comment {
-                kind: CommentKind::Line,
-                span,
-            }
-            .text(text)
-        });
-    if let Some(documentation) = documentation {
+    let (description, rows) = match declared.kind {
+        DeclaredKind::Factory => factory_documentation(declared, declarations, text),
+        _ => documentation(declared, text).map_or_else(
+            || (String::new(), Vec::new()),
+            |documentation| {
+                let rows = tag_rows(&documentation.tags);
+                (documentation.description, rows)
+            },
+        ),
+    };
+    if !description.is_empty() {
         markdown.push_str("\n\n");
-        markdown.push_str(&documentation);
+        markdown.push_str(&description);
+    }
+    if !rows.is_empty() {
+        markdown.push_str("\n\n");
+        markdown.push_str(&section_table(&rows));
     }
     if let Some(container) = declared.container {
         let name = slice(text, container.name);
@@ -132,6 +144,113 @@ fn markdown(declared: &Declared, text: &str) -> String {
     markdown
 }
 
+/// The doc comment on the lines right above `declared`, read.
+fn documentation(declared: &Declared, text: &str) -> Option<DocComment> {
+    declared
+        .documentation
+        .filter(|comment| directly_above(text, *comment, declared.signature.start))
+        .map(|span| {
+            DocComment::parse(
+                Comment {
+                    kind: CommentKind::Line,
+                    span,
+                },
+                text,
+            )
+        })
+}
+
+/// One row of the section table: its label and its items.
+type SectionRow = (&'static str, Vec<String>);
+
+/// A factory has no comment of its own: its class's says what it does, by
+/// `@factory`, and what its parameters are, by `@param`. What it answers
+/// needs no saying, so that row stands with a comment or without one.
+fn factory_documentation(
+    factory: &Declared,
+    declarations: &HashMap<Span, Declared>,
+    text: &str,
+) -> (String, Vec<SectionRow>) {
+    let class_documentation = factory
+        .class
+        .and_then(|class| declarations.get(&class))
+        .and_then(|class| documentation(class, text))
+        .unwrap_or_default();
+    let description = class_documentation
+        .tags
+        .iter()
+        .filter(|tag| tag.kind == DocTagKind::Factory)
+        .map(|tag| tag.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut rows = tag_rows(&class_documentation.tags);
+    rows.retain(|(label, _)| *label == PARAMS);
+    if let Some(container) = factory.container {
+        let name = slice(text, container.name);
+        rows.push((ANSWERS, vec![format!("a new instance of `{name}`.")]));
+    }
+    (description, rows)
+}
+
+const FACTORY: &str = "Factory:";
+const PARAMS: &str = "Params:";
+const ANSWERS: &str = "Answers:";
+const SIGNALS: &str = "Signals:";
+const SEE_ALSO: &str = "See Also:";
+
+/// The sections of `tags` in one order, whatever the comment's, each
+/// with its items in the comment's order; a section without a tag is left
+/// out. An unknown tag is no section: the description shows it.
+fn tag_rows(tags: &[DocTag]) -> Vec<SectionRow> {
+    let items = |kind: DocTagKind| -> Vec<String> {
+        tags.iter()
+            .filter(|tag| tag.kind == kind)
+            .map(section_item)
+            .collect()
+    };
+    [
+        (FACTORY, items(DocTagKind::Factory)),
+        (PARAMS, items(DocTagKind::Param)),
+        (ANSWERS, items(DocTagKind::Answers)),
+        (SIGNALS, items(DocTagKind::Signals)),
+        (SEE_ALSO, items(DocTagKind::See)),
+    ]
+    .into_iter()
+    .filter(|(_, items)| !items.is_empty())
+    .collect()
+}
+
+/// A tag as an item of its section: a parameter's or an error's name in
+/// code, a dash, then the text.
+fn section_item(tag: &DocTag) -> String {
+    match &tag.argument {
+        Some((name, _)) if tag.text.is_empty() => format!("`{name}`"),
+        Some((name, _)) => format!("`{name}` \u{2013} {}", tag.text),
+        None => tag.text.clone(),
+    }
+}
+
+/// The platform's section table (`DocumentationMarkup`'s `sections`), which
+/// a JetBrains IDE lays out as it does its own documentation. Each cell's
+/// text stands between blank lines, which end the HTML block, so the
+/// platform's converter renders it as Markdown and an item's code reads as
+/// the description's does (pinned by the plugin's `NewspeakHoverSectionsTest`).
+fn section_table(rows: &[SectionRow]) -> String {
+    let mut table = String::from("<table class='sections'>\n");
+    for (label, items) in rows {
+        table.push_str("<tr><td valign='top' class='section'><p>");
+        table.push_str(label);
+        table.push_str("</td><td valign='top'>\n\n");
+        for item in items {
+            table.push_str(item);
+            table.push_str("\n\n");
+        }
+        table.push_str("</td></tr>\n");
+    }
+    table.push_str("</table>");
+    table
+}
+
 fn signature(declared: &Declared, text: &str) -> String {
     let whole = collapse(slice(text, declared.signature));
     let whole = match declared.kind {
@@ -139,7 +258,9 @@ fn signature(declared: &Declared, text: &str) -> String {
         DeclaredKind::Method => whole.trim_end_matches('=').trim_end().to_string(),
         // The declaration without the `.` that ends it.
         DeclaredKind::Slot | DeclaredKind::Local => whole.trim_end_matches('.').to_string(),
-        DeclaredKind::Class | DeclaredKind::Parameter => whole,
+        // The default factory has no pattern in the source.
+        DeclaredKind::Factory if whole.is_empty() => "new".to_string(),
+        DeclaredKind::Class | DeclaredKind::Factory | DeclaredKind::Parameter => whole,
     };
     match declared.initializer {
         Some(initializer) if whole.chars().count() > SIGNATURE_CHARACTERS => {
@@ -186,14 +307,26 @@ mod tests {
     const MODULE: &str = indoc! {"
         /// A module of shapes.
         /// It grows.
+        /// @factory Makes the module from `platform`.
+        /// @param platform the platform it runs on.
         class Shapes usingPlatform: platform = Object new (
           | private count ::= 0. private limit = 10. private table = Array new: 1000 withAll: 'a value long enough to leave out of the signature'. |
         ) (
           /// A shape inside.
           /// Nested.
           class Inner = Object new () ()
-          /// Grows by `amount`,
+          /// A point.
+          /// @factory Makes the origin.
+          class Point = Object new () () : (
+            public origin = ( ^new )
+          )
+          /// {@summary Grows by `amount`.} Adds `step` too,
           /// *never* shrinks.
+          /// @see `make`
+          /// @signals ArgumentError when `amount` is no number.
+          /// @answers the limit.
+          /// @param amount how much to grow.
+          /// @param step how much more.
           public grow: amount <Integer> by: step = (
             | total ::= 0. |
             total:: amount + step.
@@ -240,29 +373,105 @@ mod tests {
         })
     }
 
-    #[test]
-    fn a_method_shows_its_pattern_its_doc_comment_and_its_class() {
-        let expected = "```newspeak\npublic grow: amount <Integer> by: step\n```\n\n\
-                        Grows by `amount`,\n*never* shrinks.\n\n*In* `Shapes`";
-        assert_eq!(hover_at("grow:", 0).as_deref(), Some(expected));
-        // Every keyword of the pattern, and a send the resolver binds to it.
-        assert_eq!(hover_at("by:", 0).as_deref(), Some(expected));
-        assert_eq!(hover_at("grow:", 1).as_deref(), Some(expected));
-        assert_eq!(hover_at("by:", 1).as_deref(), Some(expected));
+    /// One row of the section table, its items as the hover writes them.
+    fn row(label: &str, items: &[&str]) -> String {
+        let mut row =
+            format!("<tr><td valign='top' class='section'><p>{label}</td><td valign='top'>\n\n");
+        for item in items {
+            row.push_str(item);
+            row.push_str("\n\n");
+        }
+        row.push_str("</td></tr>\n");
+        row
+    }
+
+    fn table(rows: &[String]) -> String {
+        format!("<table class='sections'>\n{}</table>", rows.concat())
     }
 
     #[test]
-    fn a_class_shows_its_header_and_its_doc_comment() {
+    fn the_tags_become_sections_after_the_description() {
+        let expected = format!(
+            "```newspeak\npublic grow: amount <Integer> by: step\n```\n\n\
+             Grows by `amount`. Adds `step` too,\n*never* shrinks.\n\n{}\n\n*In* `Shapes`",
+            table(&[
+                row(
+                    "Params:",
+                    &["`amount` – how much to grow.", "`step` – how much more."]
+                ),
+                row("Answers:", &["the limit."]),
+                row(
+                    "Signals:",
+                    &["`ArgumentError` – when `amount` is no number."]
+                ),
+                row("See Also:", &["`make`"]),
+            ])
+        );
+        assert_eq!(hover_at("grow:", 0).as_deref(), Some(expected.as_str()));
+        // Every keyword of the pattern, and a send the resolver binds to it.
+        assert_eq!(hover_at("by:", 0).as_deref(), Some(expected.as_str()));
+        assert_eq!(hover_at("grow:", 1).as_deref(), Some(expected.as_str()));
+        assert_eq!(hover_at("by:", 1).as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn a_comment_without_tags_has_no_table() {
         let inner = "```newspeak\nclass Inner = Object new\n```\n\nA shape inside.\nNested.\n\n*In* `Shapes`";
         assert_eq!(hover_at("Inner", 0).as_deref(), Some(inner));
         assert_eq!(hover_at("Inner", 1).as_deref(), Some(inner));
-        assert_eq!(
-            hover_at("Shapes", 0).as_deref(),
-            Some(
-                "```newspeak\nclass Shapes usingPlatform: platform = Object new\n```\n\n\
-                 A module of shapes.\nIt grows."
-            )
+    }
+
+    #[test]
+    fn the_inline_summary_reads_as_its_text() {
+        let grow = hover_at("grow:", 0).expect("the method");
+        assert!(
+            grow.contains("\n\nGrows by `amount`. Adds `step` too,"),
+            "{grow}"
         );
+        assert!(!grow.contains("@summary"), "{grow}");
+    }
+
+    #[test]
+    fn the_factory_shows_its_signature_its_text_its_params_and_answers() {
+        let expected = format!(
+            "```newspeak\nusingPlatform: platform\n```\n\n\
+             Makes the module from `platform`.\n\n{}\n\n*In* `Shapes`'s class side",
+            table(&[
+                row("Params:", &["`platform` – the platform it runs on."]),
+                row("Answers:", &["a new instance of `Shapes`."]),
+            ])
+        );
+        // In the header, and a class-side send the resolver binds to it.
+        assert_eq!(
+            hover_at("usingPlatform:", 0).as_deref(),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            hover_at("usingPlatform:", 1).as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn the_default_factory_is_new() {
+        let expected = format!(
+            "```newspeak\nnew\n```\n\nMakes the origin.\n\n{}\n\n*In* `Point`'s class side",
+            table(&[row("Answers:", &["a new instance of `Point`."])])
+        );
+        assert_eq!(hover_at("^new", 0).as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn the_class_shows_its_factory_section() {
+        let expected = format!(
+            "```newspeak\nclass Shapes usingPlatform: platform = Object new\n```\n\n\
+             A module of shapes.\nIt grows.\n\n{}",
+            table(&[
+                row("Factory:", &["Makes the module from `platform`."]),
+                row("Params:", &["`platform` – the platform it runs on."]),
+            ])
+        );
+        assert_eq!(hover_at("Shapes", 0).as_deref(), Some(expected.as_str()));
     }
 
     #[test]
@@ -280,8 +489,8 @@ mod tests {
     #[test]
     fn a_parameter_and_a_local_show_their_declarations() {
         let amount = "```newspeak\namount <Integer>\n```";
-        assert_eq!(hover_at("amount", 1).as_deref(), Some(amount));
-        assert_eq!(hover_at("amount", 2).as_deref(), Some(amount));
+        assert_eq!(hover_at("amount", 3).as_deref(), Some(amount));
+        assert_eq!(hover_at("amount", 4).as_deref(), Some(amount));
         assert_eq!(
             hover_at("total", 1).as_deref(),
             Some("```newspeak\ntotal ::= 0\n```")
@@ -291,7 +500,7 @@ mod tests {
     #[test]
     fn a_single_line_or_a_comment_a_blank_line_away_is_no_doc_comment() {
         assert_eq!(
-            hover_at("make", 0).as_deref(),
+            hover_at("make", 1).as_deref(),
             Some("```newspeak\npublic make\n```\n\n*In* `Shapes`")
         );
         assert_eq!(
@@ -301,16 +510,10 @@ mod tests {
     }
 
     #[test]
-    fn a_class_side_method_and_the_factory_say_where_they_are() {
+    fn a_class_side_method_says_where_it_is() {
         assert_eq!(
             hover_at("fresh", 0).as_deref(),
             Some("```newspeak\npublic fresh\n```\n\nMakes one.\nFresh.\n\n*In* `Shapes`'s class side")
-        );
-        // `usingPlatform:` there is the factory, a send the resolver binds to the class.
-        let factory = hover_at("usingPlatform:", 1).expect("the factory");
-        assert!(
-            factory.starts_with("```newspeak\nclass Shapes usingPlatform: platform"),
-            "{factory}"
         );
     }
 

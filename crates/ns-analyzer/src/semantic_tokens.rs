@@ -133,7 +133,8 @@ struct SideMembers {
 }
 
 /// What a name a side declares is, and the node that declares it: the
-/// slot for its setter too, the class for its factory.
+/// slot for its setter too, the factory pattern (`factory_span`) for the
+/// factory.
 #[derive(Clone, Copy)]
 struct Member {
     kind: MemberKind,
@@ -162,7 +163,7 @@ impl ClassMembers {
             .map_or_else(|| "new".to_string(), selector_of);
         class_side.members.entry(factory).or_insert(Member {
             kind: MemberKind::Method,
-            declaration: declaration.span,
+            declaration: factory_span(declaration),
         });
         ClassMembers {
             instance_side: SideMembers::of(&declaration.instance_side),
@@ -210,6 +211,42 @@ fn selector_of(pattern: &ast::MessagePattern) -> String {
             .iter()
             .map(|part| format!("{}:", part.keyword.name))
             .collect(),
+    }
+}
+
+/// The node a class's factory is declared at, the key of its hover: the
+/// header's factory pattern, from its selector through its last parameter
+/// and that parameter's type, or, for the default `new`, which the source
+/// does not spell, the empty span at the class's name -- a span no other
+/// declaration has.
+fn factory_span(declaration: &ast::ClassDeclaration) -> Span {
+    let parameter_end = |parameter: &ast::Parameter| {
+        parameter
+            .type_annotation
+            .as_ref()
+            .map_or(parameter.name.span.end, |annotation| annotation.span.end)
+    };
+    match &declaration.factory {
+        Some(ast::MessagePattern::Unary {
+            selector,
+            type_parameters,
+        }) => Span::new(
+            selector.span.start,
+            type_parameters
+                .as_ref()
+                .map_or(selector.span.end, |annotation| annotation.span.end),
+        ),
+        Some(ast::MessagePattern::Binary {
+            selector,
+            parameter,
+        }) => Span::new(selector.span.start, parameter_end(parameter)),
+        Some(ast::MessagePattern::Keyword { parts }) => match (parts.first(), parts.last()) {
+            (Some(first), Some(last)) => {
+                Span::new(first.keyword.span.start, parameter_end(&last.parameter))
+            }
+            _ => Span::new(declaration.name.span.start, declaration.name.span.start),
+        },
+        None => Span::new(declaration.name.span.start, declaration.name.span.start),
     }
 }
 
@@ -324,6 +361,7 @@ impl Classifier<'_> {
                 initializer: None,
                 documentation: hover::doc_comment(&declaration.comments),
                 container,
+                class: None,
             },
         );
         self.emit_to(
@@ -341,6 +379,46 @@ impl Classifier<'_> {
             name: declaration.name.span,
             class_side: true,
         });
+        let factory = factory_span(declaration);
+        self.declare(
+            factory,
+            Declared {
+                kind: DeclaredKind::Factory,
+                signature: factory,
+                initializer: None,
+                documentation: None,
+                container: class_side_member,
+                class: Some(declaration.span),
+            },
+        );
+        // The header's factory pattern declares the class side's factory
+        // method, as a method's pattern declares the method.
+        match &declaration.factory {
+            Some(
+                ast::MessagePattern::Unary { selector, .. }
+                | ast::MessagePattern::Binary { selector, .. },
+            ) => {
+                self.emit_to(
+                    selector.span,
+                    TokenCategory::Method,
+                    true,
+                    false,
+                    Some(factory),
+                );
+            }
+            Some(ast::MessagePattern::Keyword { parts }) => {
+                for part in parts {
+                    self.emit_to(
+                        part.keyword.span,
+                        TokenCategory::Method,
+                        true,
+                        false,
+                        Some(factory),
+                    );
+                }
+            }
+            None => {}
+        }
         // A module root's clauses bind nothing; a nested class's receivers
         // resolve against the chain enclosing it. `resolve_superclass_clause`
         // records a binding at the receiver's span for every prefix, not
@@ -463,6 +541,7 @@ impl Classifier<'_> {
                     .map(|initializer| initializer.span),
                 documentation: hover::doc_comment(&slot.comments),
                 container,
+                class: None,
             },
         );
         self.emit_to(
@@ -491,6 +570,7 @@ impl Classifier<'_> {
                 initializer: None,
                 documentation: hover::doc_comment(&method.comments),
                 container,
+                class: None,
             },
         );
         let target = Some(method.span);
@@ -554,6 +634,7 @@ impl Classifier<'_> {
                     initializer: None,
                     documentation: None,
                     container: None,
+                    class: None,
                 },
             );
             self.emit_to(
@@ -578,6 +659,7 @@ impl Classifier<'_> {
                         .map(|initializer| initializer.span),
                     documentation: None,
                     container: None,
+                    class: None,
                 },
             );
             self.emit_to(
@@ -955,6 +1037,11 @@ mod tests {
     #[test]
     fn declarations() {
         assert_eq!(classified_at("Shapes", 0), Some((Class, true, false)));
+        // The header's factory pattern declares the class side's factory.
+        assert_eq!(
+            classified_at("usingPlatform:", 0),
+            Some((Method, true, false))
+        );
         assert_eq!(classified_at("platform", 0), Some((Parameter, true, false)));
         assert_eq!(classified_at("count", 0), Some((Property, true, false)));
         assert_eq!(classified_at("limit", 0), Some((Property, true, true)));
