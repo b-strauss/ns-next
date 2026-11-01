@@ -24,7 +24,10 @@
 /// every transcript is equal to every other.
 ///
 /// @factory makes the transcript's module over `mirror`, copied into its
-/// slot `vmMirror`; the platform's root sends it once, through the mirror.
+/// slot `vmMirror`. The platform's root sends it to the class the mirror
+/// answers on the module's first demand, and again on the next demand
+/// after an unwind interrupted one, which records nothing; the loader
+/// sends it instead when an image names the module.
 /// @param mirror the VM mirror, through which the transcript writes.
 class TranscriptFactory usingVmMirror: mirror = Value (
   |
@@ -60,6 +63,11 @@ class TranscriptFactory usingVmMirror: mirror = Value (
 
     /// Writes the `printString` of `object` to standard output, as
     /// `show:` does.
+    ///
+    /// A method of its own rather than a `show:` that takes any object,
+    /// since `show:` writes a String as it is and a String's `printString`
+    /// quotes it: `print: 'text'` writes 'text', quotes included, where
+    /// `show: 'text'` writes text.
     ///
     /// @param object any object; sent `printString`, whose answer must be
     /// a String or a Symbol, or `show:` signals its ArgumentError.
