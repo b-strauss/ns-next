@@ -4666,6 +4666,96 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `make:` makes six closures, so that its twin, which reifies its frame
+/// and allocates each closure inline, is several times its lean body,
+/// which only transfers at each `MakeClosure`; `run` makes no closure.
+const TWIN_TOO_LARGE: &str = indoc! {"
+    class Subject = Object new () (
+      make: x = (
+        | first second third fourth fifth sixth |
+        first:: [x].
+        second:: [x + 1].
+        third:: [x + 2].
+        fourth:: [x + 3].
+        fifth:: [x + 4].
+        sixth:: [x + 5].
+        ^x
+      )
+      public run = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < 20] whileTrue: [
+          total:: total + (self make: index).
+          index:: index + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A body whose twin the zone could not hold even empty is refused for
+    /// good at the exit its transfer makes (`refuse_for_its_twin`): the
+    /// zone is sized to end where a first interpreter placed `make:`'s
+    /// twin, right after its lean body, so that the lean body fits and the
+    /// twin does not. The lean body is compiled and transfers once; the
+    /// body is then refused, its code freed, nothing abandoned, and no
+    /// later run compiles it or a twin again -- though an abandoned body
+    /// would be revived after one interpreted entry here -- while every
+    /// run answers what the interpreter does.
+    fn a_body_whose_twin_is_too_large_is_refused_for_good(lowering) {
+        let make = Symbol::intern("make:");
+        let (mut probe, probe_class) = load_with(TWIN_TOO_LARGE, lowering);
+        assert_eq!(run(&mut probe, &probe_class), 190);
+        let lean = probe.jit_body_offset(&probe_class, MethodSide::Instance, make);
+        let twin = probe.jit_twin_offset(&probe_class, MethodSide::Instance, make);
+        let (mut interpreted, interpreted_class) = load_with(TWIN_TOO_LARGE, lowering);
+        interpreted.set_jit_enabled(false);
+        let expected = run(&mut interpreted, &interpreted_class);
+        let checked = lowering == Lowering::Optimized && !a_stress_mode_is_on();
+        let zone_bytes = match (lean, twin) {
+            (Some(lean), Some(twin)) if checked => {
+                assert!(lean < twin, "the twin follows its lean body");
+                usize::try_from(twin).expect("small")
+            }
+            _ => 1 << 20,
+        };
+        let (mut interpreter, class) = load_with(TWIN_TOO_LARGE, lowering);
+        interpreter.set_jit_zone_bytes(zone_bytes);
+        interpreter.set_jit_revival_entries(1);
+        let mut runs = Vec::new();
+        for _ in 0..3 {
+            let before = interpreter.jit_statistics();
+            assert_eq!(run(&mut interpreter, &class), expected);
+            runs.push(since(interpreter.jit_statistics(), before));
+            if checked {
+                assert_eq!(
+                    interpreter.jit_body_offset(&class, MethodSide::Instance, make),
+                    None,
+                    "the refused body's code is freed and never compiled again"
+                );
+                assert_eq!(
+                    interpreter.jit_twin_offset(&class, MethodSide::Instance, make),
+                    None
+                );
+            }
+        }
+        assert_eq!(expected, 190);
+        if checked {
+            assert!(runs[0].compiled_bodies >= 1, "the lean body is compiled");
+            assert!(runs[0].exits >= 1, "its transfer exits");
+            assert!(runs[0].refused_bodies >= 1, "the body is refused");
+            for (index, done) in runs.iter().enumerate() {
+                assert_eq!(done.compiled_twins, 0, "run {index} compiles no twin");
+                assert_eq!(done.abandoned_bodies, 0, "run {index} abandons nothing");
+                assert_eq!(done.revived_bodies, 0, "run {index} revives nothing");
+            }
+        }
+    }
+}
+
 /// Simultaneous slot clauses whose ends force seven futures a turn: two
 /// for each `Cycle`, whose `first` holds `second`'s future unforced; one
 /// for `Assigned`, whose `second` writes `first`, so that the end then

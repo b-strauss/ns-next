@@ -918,7 +918,8 @@ mod tests {
     /// makes the section's end and its commit charge's return; the
     /// process's shared commit, which counts the committed pages of the
     /// sections it maps, falls by exactly that much, and its private
-    /// commit does not rise by a chunk; the first chunk's code still runs, and a
+    /// commit does not rise by a chunk, where the test has its process to
+    /// itself; the first chunk's code still runs, and a
     /// write past the end maps a chunk again, whose code runs as well.
     /// The system-wide charge, which every other process moves too, is
     /// measured by hand only
@@ -972,24 +973,36 @@ mod tests {
             1,
             "only the first chunk's section is open"
         );
-        assert_eq!(
-            handles_before - handles_after,
-            u32::try_from(chunks - 1).expect("small"),
-            "each chunk's section handle is closed"
-        );
-        if let (Some(before), Some(after)) = (shared_before, shared_after) {
+        // The process's counters are exact only while no other test runs
+        // in the process: nextest gives each test a process of its own,
+        // which the gates run under, while libtest's threads would open
+        // and close other zones' sections between the two reads, in
+        // either direction, so that no bound on the counters would hold
+        // there. The checks above, of this zone's own chunks, hold either
+        // way.
+        let alone_in_the_process =
+            std::env::var("NEXTEST_EXECUTION_MODE").is_ok_and(|mode| mode == "process-per-test");
+        if alone_in_the_process {
             assert_eq!(
-                before - after,
-                u64::try_from(given_back).expect("small"),
-                "the shared commit falls by what was given back"
+                handles_before - handles_after,
+                u32::try_from(chunks - 1).expect("small"),
+                "each chunk's section handle is closed"
+            );
+            if let (Some(before), Some(after)) = (shared_before, shared_after) {
+                assert_eq!(
+                    before - after,
+                    u64::try_from(given_back).expect("small"),
+                    "the shared commit falls by what was given back"
+                );
+            }
+            // The process's own charge is held to not rising by a chunk:
+            // the decommit may take a page of the allocator's for its
+            // bookkeeping.
+            assert!(
+                private_after <= private_before + chunk,
+                "the process's charge rose from {private_before} to {private_after}"
             );
         }
-        // The process's own charge is held to not rising by a chunk: the
-        // decommit may take a page of the allocator's for its bookkeeping.
-        assert!(
-            private_after <= private_before + chunk,
-            "the process's charge rose from {private_before} to {private_after}"
-        );
         assert_eq!(run(&zone, 0), 42, "the kept chunk still runs");
         let again = u32::try_from(3 * chunk).expect("small");
         zone.write(CodeOffset(again), &answer_42)
