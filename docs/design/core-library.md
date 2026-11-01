@@ -1447,7 +1447,35 @@ The ordering and the arithmetic stay IEEE's: for a NaN `a = b` is true while
 `a <= b` is false, and a comparison of a NaN with anything answers `false`.
 It differs from Primordial Soup and Squeak, where a NaN equals nothing;
 Primordial Soup's `isNaN` is `^(self = self) not`, which no longer answers
-`true` here. Decided with the user on 2026-10-01;
+`true` here.
+
+The other Newspeak implementations keep IEEE's equality -- Primordial Soup's
+`Number_equal` compares `raw_left == raw_right` (`vm/primitives.cc`),
+SOMns's `EqualsPrim` `left == right` for two doubles -- and can, because in
+them a float's `==` does not follow its `=`: a NaN there is unequal to
+itself yet identical to itself. Here §3.1.1 ties the two together, so the
+options are only these:
+
+- IEEE's `=`, `==` following it: a NaN is not identical to itself, and every
+  `IdentityMap`, `includes:` and "is this still the same object" breaks on
+  it. Rejected: identity that is not reflexive is worse than an equality
+  that departs from IEEE in one case.
+- IEEE's `=`, a float's `==` comparing bits: `==` then no longer answers what
+  `=` does, a deviation from §3.1.1. Rejected.
+- Two equalities, IEEE's `=` and a second, reflexive one for the
+  collections, as Julia's `==` and `isequal`: `==` still has to follow `=`,
+  so a NaN is again not identical to itself, and every collection and every
+  program has to pick the right one. Rejected.
+- One `=`, reflexive, a NaN equal to every NaN: the only option that keeps
+  §3.1.1 and a reflexive identity, at the cost of the one departure from
+  IEEE. Chosen.
+
+IEEE's NaN unequal to itself served, among other things, as the portable
+test for a NaN in languages without one: `x != x`. Here `isNaN` is that
+test, a leaf of its own, so nothing needs the self-inequality; a program that
+wants IEEE's equality writes `a isNaN not and: [a = b]`. None of the options
+costs anything on the hot path. Decided with the user on 2026-10-01 and
+confirmed on 2026-11-01;
 `goldens/library/number/float/not_a_number_equals_itself` pins it, a NaN found again
 as a `Map` key included, and `every_nan_equals_every_other_and_hashes_alike`
 in `builtins/numbers/float.rs` NaNs of different bit patterns.

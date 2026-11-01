@@ -124,7 +124,8 @@ normal form, each a `SmallInteger` or a `LargeInteger`
 `Float`, like a `LargeInteger` and a `Fraction`, is a value object
 (§3.1.1), so its `=` and its hash come from its value, never from the
 identity hash: every number compares and hashes by its exact value, across
-the four classes, and a NaN equals a NaN either way.
+the four classes, and a NaN equals a NaN either way ([core-library.md](core-library.md),
+"A NaN equals a NaN", says why).
 
 **Small-integer arithmetic works on the tagged words**, as Cog's and Soup's
 does, and is what a JIT's tiers build on. The operations are methods on
