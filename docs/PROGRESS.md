@@ -60,6 +60,7 @@ first.
 | Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows | In progress | 2026-11-01 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md) |
 | A one-line method in the JetBrains plugin folded as Java's one-liners: brackets and their spaces in the folds, the server's method fold containing them | Complete | 2026-11-01 | — |
 | Doc comments: a block of `///` lines coloured and rendered in place as Markdown, a hover with a declaration's signature and doc comment, Java-style tags (`@param`, `@answers`, `@signals`, `@see`, `@factory`, `{@summary}`) as sections with the server's warnings, and the whole core library documented with them | Complete | 2026-11-01 | [doc-comment-tags](superpowers/plans/2026-11-01-1608-doc-comment-tags.md) |
+| Identity and equality documented: the contract of `==`, `=`, `hash` and `identityHash` at `Object`, what a value's identity is, and every class's own | Complete | 2026-11-01 | — |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
 
 ## Notes
@@ -6715,3 +6716,19 @@ A review found a likely defect in `Exception>>pass`, recorded in
 - `839292ff` to `b8477bc1`, `9a4683e9` -- the modules made consistent.
 - `da657d6f`, `6e6c991f` -- the highlighting lexer.
 - `f87fc0ae`, `2f043c6e` -- the documents.
+
+## Identity and equality documented (2026-11-01)
+
+`Object`'s `==`, `=`, `hash` and `identityHash` state the contract every
+class keeps -- `=` an equivalence relation agreeing with `hash`, `==`
+identity, the identity hash lazily drawn, 22 bits wide and kept across
+collections, migrations and images -- and where `==` and `=` differ: for a
+value (§3.1.1) identity is equality, so `'abc' == 'abc' copy`, `1 == 1.0`
+and two equal instances of a value class are identical. `Value`, `Behavior`,
+`Metaclass`, `Proxy`, the numbers, `String`, `Symbol`, the mirrors and the
+collections say how each keeps the contract, every claim probed. A
+forwarding `Proxy` breaks it from outside, recorded in
+[OPEN-WORK.md](OPEN-WORK.md).
+
+- `3b4a5b81`, `8567ade1`, `02a9c310`, `4d8633d8` -- the comments.
+- `ddcfb966`, `e95ce6df` -- the forwarding `Proxy` in the open work.
