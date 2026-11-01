@@ -91,6 +91,11 @@ object NewspeakIndentation {
         return opener.start == opening && opens && closer.start == closing && closer.type in CLOSERS
     }
 
+    /**
+     * Whether [offset] lies in a comment's token -- for a doc comment, the
+     * whitespace between its lines included. Its one caller asks about a
+     * bracket pair Enter splits, which never stands in that whitespace.
+     */
     fun isInComment(editor: Editor, offset: Int): Boolean =
         tokensFrom(editor, offset).firstOrNull()?.let { token -> token.type in COMMENTS } == true
 

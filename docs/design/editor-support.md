@@ -1656,7 +1656,10 @@ The server's own tests are described under its section, above ("Testing").
   under a remark that came to start its line, and a block broken by a line
   deleted, by its slashes broken and by code typed before either line;
   `NewspeakEditorTest` also finds a TODO in a doc comment through the TODO
-  index; `NewspeakInlineDocumentationProviderTest`,
+  index; `NewspeakDocCommentAgreementTest`, the PSI's blocks
+  (`NewspeakDocComments`) and the highlighter's doc-comment tokens the same
+  ranges over every golden, benchmark and core-library module and at the
+  rule's edges, since the rule is stated twice; `NewspeakInlineDocumentationProviderTest`,
   the rendered doc comments (every block and no single line, the Markdown
   rendered, the owner from the server's symbols and none without them, an
   item found by its range, nothing for another language's file);
