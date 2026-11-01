@@ -879,7 +879,8 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @param other any object; sent `reflects:` only when it is an
     /// instance of this module's `MixinMirror` or of the receiver's class,
     /// so that the reified mixin is handed to no other code.
-    /// @answers whether `other` is a mixin mirror on the same mixin.
+    /// @answers whether `other` is a mixin mirror on the same mixin, a
+    /// Boolean.
     public = other = (
       (vmMirror reflectionObject: self identicalTo: other ifFail: [false]) ifTrue: [^true].
       (self trusts: (vmMirror objectClass: other ifFail: [nil])) ifFalse: [^false].
@@ -1012,7 +1013,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @param other any object; sent `isKindOfClassDeclarationMirror`, and
     /// `instanceSide` when it answers true.
     /// @answers whether `other` is a class declaration mirror on the same
-    /// declaration: one whose instance side is the receiver's.
+    /// declaration: one whose instance side is the receiver's; a Boolean.
     public = other = (
       other isKindOfClassDeclarationMirror ifFalse: [^false].
       ^self instanceSide = other instanceSide.
@@ -1092,13 +1093,13 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^vmMirror reflectionMixin: mixin methodSource: selector ifFail: [nil].
     )
 
-    /// Compares the receiver with `other` by selector, by identity, and by
-    /// defining mixin.
+    /// Compares the receiver with `other` by the identity of their
+    /// selectors and by their defining mixins.
     ///
     /// @param other any object; sent `isKindOfMethodMirror`, and `name` and
     /// `definingMixin` when it answers true.
     /// @answers whether `other` is a method mirror on the same selector of
-    /// the same mixin.
+    /// the same mixin, a Boolean.
     public = other = (
       other isKindOfMethodMirror ifFalse: [^false].
       (vmMirror reflectionObject: selector identicalTo: other name ifFail: [false]) ifFalse: [
@@ -1201,13 +1202,13 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^MixinMirror reflecting: mixin.
     )
 
-    /// Compares the receiver with `other` by name, by identity, and by
-    /// defining mixin, which declares a name once.
+    /// Compares the receiver with `other` by the identity of their names
+    /// and by their defining mixins, a mixin declaring a name once.
     ///
     /// @param other any object; sent `isKindOfSlotDeclarationMirror`, and
     /// `name` and `definingMixin` when it answers true.
     /// @answers whether `other` is a slot declaration mirror on the same
-    /// name of the same mixin.
+    /// name of the same mixin, a Boolean.
     public = other = (
       other isKindOfSlotDeclarationMirror ifFalse: [^false].
       (vmMirror reflectionObject: slotName identicalTo: other name ifFail: [false]) ifFalse: [
@@ -1624,8 +1625,8 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     )
   )
 
-  /// Builds the facet `platform mirrors` answers: the one public member of
-  /// the module, named `build` like every shipped factory's.
+  /// Builds the facet `platform mirrors` answers. It is the module's one
+  /// public member, named `build` like every shipped factory's.
   ///
   /// @answers a new `Mirrors` namespace.
   public build = (
