@@ -25,7 +25,11 @@ const DOCUMENTED_MODULES: [&str; 8] = [
 /// The modules whose comments carry doc tags and are checked for them. A
 /// module joins when its comments are migrated, so the list fills module by
 /// module until it is every documented module and is removed.
-const TAGGED_MODULES: &[&str] = &["Manifest.ns", "platform/TranscriptFactory.ns"];
+const TAGGED_MODULES: &[&str] = &[
+    "Manifest.ns",
+    "platform/TranscriptFactory.ns",
+    "platform/TimeFactory.ns",
+];
 
 /// Reads a core-library module and parses it.
 fn read_module(name: &str) -> (String, Module) {
