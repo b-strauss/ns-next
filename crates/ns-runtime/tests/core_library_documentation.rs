@@ -11,8 +11,9 @@ use ns_syntax::doc_comment::DocTagKind;
 use ns_syntax::{Comment, CommentKind, DocComment};
 
 /// The modules the rule holds today.
-const DOCUMENTED_MODULES: [&str; 7] = [
+const DOCUMENTED_MODULES: [&str; 8] = [
     "Kernel.ns",
+    "Manifest.ns",
     "PlatformFactory.ns",
     "platform/TranscriptFactory.ns",
     "platform/TimeFactory.ns",
@@ -24,7 +25,7 @@ const DOCUMENTED_MODULES: [&str; 7] = [
 /// The modules whose comments carry doc tags and are checked for them. A
 /// module joins when its comments are migrated, so the list fills module by
 /// module until it is every documented module and is removed.
-const TAGGED_MODULES: &[&str] = &[];
+const TAGGED_MODULES: &[&str] = &["Manifest.ns"];
 
 /// Reads a core-library module and parses it.
 fn read_module(name: &str) -> (String, Module) {
