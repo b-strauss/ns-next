@@ -4160,6 +4160,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param action a one-argument block, or anything understanding
     /// `value:`.
     /// @answers the receiver.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for an `action` that does not
+    /// take one argument, when the receiver is not empty.
     public do: action = (
       1 to: self size do: [:index | action value: (self at: index)].
     )
@@ -4357,7 +4360,8 @@ class Kernel vmMirror: mirror = Value (
     /// @signals MessageNotUnderstood of `size` or `do:` for an argument
     /// that lacks it.
     /// @signals ArgumentError of `Array new:` for an argument gathered
-    /// into an Array whose `size` is no Integer of at least 0.
+    /// into an Array whose `size` is no Integer of at least 0 or too large
+    /// to allocate.
     public withAll: codePoints = (
       ^vmMirror stringClass: self withAll: codePoints ifFail: [
         (codePoints isKindOfArray or: [codePoints isKindOfString]) ifTrue: [
@@ -4503,8 +4507,8 @@ class Kernel vmMirror: mirror = Value (
     /// included; the builder is unchanged.
     /// @signals ArgumentError of `checkState:` when the receiver's state is
     /// not one its own members leave.
-    /// @signals ArgumentError of `ensureRoom:` when the appended bytes need
-    /// room the heap cannot allocate; the builder is unchanged.
+    /// @signals ArgumentError of `ensureRoom:` when the grown ByteArray is
+    /// too large to allocate; the builder is unchanged.
     public add: aString = (
       |
         byteTotal
@@ -4535,8 +4539,8 @@ class Kernel vmMirror: mirror = Value (
     /// argument; nothing is appended.
     /// @signals ArgumentError of `checkState:` when the receiver's state is
     /// not one its own members leave.
-    /// @signals ArgumentError of `ensureRoom:` when the code point needs
-    /// room the heap cannot allocate; nothing is appended.
+    /// @signals ArgumentError of `ensureRoom:` when the grown ByteArray is
+    /// too large to allocate; nothing is appended.
     public addCodePoint: codePoint = (
       self checkState: #addCodePoint:.
       (codePoint isKindOfInteger and: [
@@ -4562,8 +4566,8 @@ class Kernel vmMirror: mirror = Value (
     /// @answers the receiver.
     /// @signals ArgumentError of `add:`, any of them; the builder is
     /// unchanged.
-    /// @signals ArgumentError of `ensureRoom:` when the newline needs room
-    /// the heap cannot allocate; `aString` stays appended.
+    /// @signals ArgumentError of `ensureRoom:` when the ByteArray grown for
+    /// the newline is too large to allocate; `aString` stays appended.
     public writeln: aString = (
       self add: aString.
       self addCodePoint: 10.
@@ -4730,6 +4734,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param predicate a one-argument block answering a Boolean.
     /// @answers whether `predicate` answers true for every element, a
     /// Boolean.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the receiver is not empty.
     public allSatisfy: predicate = (
       self do: [:element | (predicate value: element) ifFalse: [^false]].
       ^true.
@@ -4742,6 +4749,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param predicate a one-argument block answering a Boolean.
     /// @answers whether `predicate` answers true for some element, a
     /// Boolean.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the receiver is not empty.
     public anySatisfy: predicate = (
       self do: [:element | (predicate value: element) ifTrue: [^true]].
       ^false.
@@ -4754,6 +4764,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param predicate a one-argument block answering a Boolean.
     /// @answers whether `predicate` answers false for every element, a
     /// Boolean.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the receiver is not empty.
     public noneSatisfy: predicate = (
       self do: [:element | (predicate value: element) ifTrue: [^false]].
       ^true.
@@ -4766,6 +4779,9 @@ class Kernel vmMirror: mirror = Value (
     /// @answers the first element for which `predicate` answers true.
     /// @signals Error 'No matching element detected' when it answers true
     /// for none.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the receiver is not empty.
     /// @see `detect:ifNone:`.
     public detect: predicate = (
       ^self detect: predicate ifNone: [
@@ -4782,6 +4798,12 @@ class Kernel vmMirror: mirror = Value (
     /// element matches.
     /// @answers the first element for which `predicate` answers true, or
     /// the value of `onNone` when it answers true for none.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the receiver is not empty.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for an `onNone` that declares any
+    /// parameter, when no element matches.
     public detect: predicate ifNone: onNone = (
       self do: [:element | (predicate value: element) ifTrue: [^element]].
       ^onNone value.
@@ -4795,6 +4817,12 @@ class Kernel vmMirror: mirror = Value (
     /// `value:`.
     /// @param between anything understanding `value`.
     /// @answers the receiver.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for an `action` that does not
+    /// take one argument, when the receiver is not empty.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a `between` that declares any
+    /// parameter, when the receiver holds at least two elements.
     public do: action separatedBy: between = (
       |
         first ::= true.
@@ -4824,6 +4852,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param fold a two-argument block.
     /// @answers `initial` for an empty collection, otherwise the last
     /// answer of `fold`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for a `fold` that does not take
+    /// two arguments, when the receiver is not empty.
     public inject: initial into: fold = (
       |
         accumulated ::= initial.
@@ -4849,6 +4880,9 @@ class Kernel vmMirror: mirror = Value (
     /// over the rest.
     /// @signals Error 'Cannot reduce an empty collection' for an empty
     /// collection.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for a `merge` that does not take
+    /// two arguments, when the receiver holds at least two elements.
     /// @see `reduce:ifEmpty:`.
     public reduce: merge = (
       ^self reduce: merge ifEmpty: [
@@ -4864,6 +4898,12 @@ class Kernel vmMirror: mirror = Value (
     /// collection is empty.
     /// @answers what `reduce:` answers for a collection that is not empty,
     /// the value of `onEmpty` for an empty one.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for a `merge` that does not take
+    /// two arguments, when the receiver holds at least two elements.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for an `onEmpty` that declares any
+    /// parameter, when the receiver is empty.
     /// @see `reduce:`.
     public reduce: merge ifEmpty: onEmpty = (
       |
@@ -4890,6 +4930,9 @@ class Kernel vmMirror: mirror = Value (
     /// `transform`'s answer for each element, added in `do:` order.
     /// @signals Error of `subclassResponsibility`, from
     /// `newForCollectUsingAdd:`, when the subclass does not define it.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `transform` that does not
+    /// take one argument, when the receiver is not empty.
     public collect: transform = (
       |
         result = self newForCollectUsingAdd: self size.
@@ -4906,6 +4949,9 @@ class Kernel vmMirror: mirror = Value (
     /// the elements for which `predicate` answers true, in `do:` order.
     /// @signals Error of `subclassResponsibility`, from
     /// `newForCollectUsingAdd:`, when the subclass does not define it.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the receiver is not empty.
     public select: predicate = (
       |
         result = self newForCollectUsingAdd: self size.
@@ -4922,6 +4968,9 @@ class Kernel vmMirror: mirror = Value (
     /// the elements for which `predicate` answers false, in `do:` order.
     /// @signals Error of `subclassResponsibility`, from
     /// `newForCollectUsingAdd:`, when the subclass does not define it.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the receiver is not empty.
     public reject: predicate = (
       |
         result = self newForCollectUsingAdd: self size.
@@ -4959,10 +5008,17 @@ class Kernel vmMirror: mirror = Value (
   /// hands it to a program, which meets it only through the classes that
   /// apply it.
   ///
-  /// The Errors and answers each member below names are those of a class
-  /// whose `at:`, `at:put:`, `size` and `newOfSize:` are a shipped
-  /// class's: a class that overrides one, or another member, decides them
-  /// for the members written over it.
+  /// An instance of a program's subclass of `Array` or `ByteArray` holds
+  /// no elements, which only the class itself gets: its leaves decline,
+  /// so `at:` ends in `doesNotUnderstand:`, a MessageNotUnderstood, and
+  /// `size`, through `Collection`'s, in the Error of `do:`'s
+  /// `subclassResponsibility`, as does a member here whose sends reach
+  /// them. The Errors and answers each member below names are those of a
+  /// receiver that holds its elements -- an instance of a shipped class
+  /// applying the mixin, `Array`, `ByteArray` or a typed array -- whose
+  /// class overrides none of `at:`, `at:put:`, `size`, `newOfSize:` and
+  /// the members here: an override decides them for the members written
+  /// over it.
   public class IndexedCollection = Collection () (
     /// Makes the new instance the sequence protocol builds its answers in;
     /// every class applying the mixin defines it.
@@ -5020,6 +5076,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param action a two-argument block, given the index and the
     /// element.
     /// @answers the receiver.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for an `action` that does not
+    /// take two arguments, when the receiver is not empty.
     public keysAndValuesDo: action = (
       1 to: self size do: [:index | action value: index value: (self at: index)].
     )
@@ -5240,6 +5299,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param transform a one-argument block.
     /// @answers a new Array of `transform`'s answer for each element, in
     /// order.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `transform` that does not
+    /// take one argument, when the receiver is not empty.
     public collect: transform = (
       |
         result = outer Kernel Array new: self size.
@@ -5254,6 +5316,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param predicate a one-argument block answering a Boolean.
     /// @answers a new collection of the receiver's kind holding the
     /// elements for which `predicate` answers true, in order.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the receiver is not empty.
     public select: predicate = (
       |
         result = self newOfSize: self size.
@@ -5276,6 +5341,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param predicate a one-argument block answering a Boolean.
     /// @answers a new collection of the receiver's kind holding the
     /// elements for which `predicate` answers false, in order.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the receiver is not empty.
     public reject: predicate = (
       ^self select: [:element | (predicate value: element) not].
     )
@@ -5286,6 +5354,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param lessOrEqual a two-argument block answering whether its first
     /// argument may precede its second.
     /// @answers the receiver.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for a `lessOrEqual` that does not
+    /// take two arguments, when the receiver holds at least two elements.
     /// @see `sortFrom:to:by:`.
     public sort: lessOrEqual = (
       ^self sortFrom: 1 to: self size by: lessOrEqual.
@@ -5310,6 +5381,9 @@ class Kernel vmMirror: mirror = Value (
     /// @answers the receiver.
     /// @signals ArgumentError of `copyFrom:to:` for a range the receiver
     /// does not hold or a bound that is no Integer.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for a `lessOrEqual` that does not
+    /// take two arguments, when the range holds at least two elements.
     /// @see `sort:`.
     public sortFrom: start to: stop by: lessOrEqual = (
       |
@@ -5353,6 +5427,9 @@ class Kernel vmMirror: mirror = Value (
     /// Integer; no run reaches past it.
     /// @param lessOrEqual as `sort:`'s.
     /// @answers the receiver.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for a `lessOrEqual` that does not
+    /// take two arguments, when the second run is not empty.
     private merge: source into: target from: left width: width count: count by: lessOrEqual = (
       |
         middle ::= left + width - 1.
