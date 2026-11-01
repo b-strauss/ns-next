@@ -2008,93 +2008,138 @@ class Kernel vmMirror: mirror = Value (
   /// so that an `Integer`, a `LargeInteger` and a `Float` receiver share
   /// one body. The compiler does not inline them; they are sent.
   public class Number = Value () (
-    /// Answers true: the receiver is a Number.
+    /// Identifies the receiver as a Number, without a class test.
+    ///
+    /// @answers true.
     public isKindOfNumber = (
       ^true.
     )
 
-    /// Answers false: a Number is no Float unless its class says so.
+    /// Identifies the receiver as no Float: a Number is no Float unless
+    /// its class says so.
+    ///
+    /// @answers false.
     public isKindOfFloat = (
       ^false.
     )
 
-    /// Answers false: a Number is no Integer unless its class says
-    /// so.
+    /// Identifies the receiver as no Integer: a Number is no Integer
+    /// unless its class says so.
+    ///
+    /// @answers false.
     public isKindOfInteger = (
       ^false.
     )
 
-    /// Answers false: a Number is no Fraction unless its class says
-    /// so.
+    /// Identifies the receiver as no Fraction: a Number is no Fraction
+    /// unless its class says so.
+    ///
+    /// @answers false.
     public isKindOfFraction = (
       ^false.
     )
 
-    /// Answers whether the receiver is less than `other` by their exact
-    /// values, a Boolean: false whenever either is a NaN.
+    /// Compares the receiver with `other` by their exact values.
     ///
-    /// other: a number.
-    ///
-    /// Signals an ArgumentError carrying `other`, '< requires a numeric
+    /// @param other a number.
+    /// @answers whether the receiver is less than `other`, a Boolean:
+    /// false whenever either is a NaN.
+    /// @signals ArgumentError carrying `other`, '< requires a numeric
     /// argument, got …', for any other argument.
     public < other = (
       ^vmMirror number: self lessThan: other ifFail: [^super < other].
     )
 
-    /// As `<`, whether the receiver is greater; its error text names
-    /// '>'.
+    /// As `<`, whether the receiver is greater.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is greater than `other`, a Boolean:
+    /// false whenever either is a NaN.
+    /// @signals ArgumentError carrying `other`, '> requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `<`.
     public > other = (
       ^vmMirror number: self greaterThan: other ifFail: [^super > other].
     )
 
-    /// As `<`, whether the receiver is less or equal; its error text
-    /// names '<='.
+    /// As `<`, whether the receiver is less or equal.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is less than or equal to `other`, a
+    /// Boolean: false whenever either is a NaN.
+    /// @signals ArgumentError carrying `other`, '<= requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `<`.
     public <= other = (
       ^vmMirror number: self lessOrEqual: other ifFail: [^super <= other].
     )
 
-    /// As `<`, whether the receiver is greater or equal; its error text
-    /// names '>='.
+    /// As `<`, whether the receiver is greater or equal.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is greater than or equal to `other`,
+    /// a Boolean: false whenever either is a NaN.
+    /// @signals ArgumentError carrying `other`, '>= requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `<`.
     public >= other = (
       ^vmMirror number: self greaterOrEqual: other ifFail: [^super >= other].
     )
 
-    /// Answers whether `other` is a number of the same exact value,
-    /// whatever its class: `1 = 1.0`, `(1/2) = 0.5`; a NaN equals a
-    /// NaN.
+    /// Compares the receiver with `other` by exact value, whatever its
+    /// class: `1 = 1.0`, `(1/2) = 0.5`; a NaN equals a NaN. It never
+    /// signals.
     ///
-    /// other: any object; never signals. Anything that is no number is
-    /// unequal.
+    /// @param other any object; anything that is no number is unequal.
+    /// @answers whether `other` is a number of the same exact value, a
+    /// Boolean.
     public = other = (
       ^vmMirror number: self equals: other ifFail: [^super = other].
     )
 
-    /// Answers a hash of the exact value, alike for every two numbers
-    /// `=` makes equal, whatever their classes; an integer's is the
-    /// integer itself.
+    /// Hashes the receiver by its exact value, so that the hash agrees
+    /// with `=` whatever the classes; an integer's is the integer
+    /// itself.
+    ///
+    /// @answers an Integer, alike for every two numbers `=` makes equal.
     public hash = (
       ^vmMirror numberHash: self ifFail: [^super hash].
     )
 
-    /// Answers the sum of the receiver and `other`: exact when neither
-    /// is a Float -- an integer when it is integral, a Fraction
-    /// otherwise -- and a Float computed by IEEE 754 when either is,
-    /// the other rounded to the nearest Float first.
+    /// Adds `other` to the receiver: exactly when neither is a Float, by
+    /// IEEE 754 when either is.
     ///
-    /// other: a number.
-    ///
-    /// Signals an ArgumentError carrying `other`, '+ requires a numeric
+    /// @param other a number.
+    /// @answers the sum of the receiver and `other`: exact when neither
+    /// is a Float -- an integer when it is integral, a Fraction otherwise
+    /// -- and a Float computed by IEEE 754 when either is, the other
+    /// rounded to the nearest Float first.
+    /// @signals ArgumentError carrying `other`, '+ requires a numeric
     /// argument, got …', for any other argument.
     public + other = (
       ^vmMirror number: self add: other ifFail: [^super + other].
     )
 
-    /// As `+`, the difference; its error text names '-'.
+    /// As `+`, the difference.
+    ///
+    /// @param other a number.
+    /// @answers the difference of the receiver and `other`, exact or a
+    /// Float as `+`'s sum is.
+    /// @signals ArgumentError carrying `other`, '- requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `+`.
     public - other = (
       ^vmMirror number: self subtract: other ifFail: [^super - other].
     )
 
-    /// As `+`, the product; its error text names '*'.
+    /// As `+`, the product.
+    ///
+    /// @param other a number.
+    /// @answers the product of the receiver and `other`, exact or a Float
+    /// as `+`'s sum is.
+    /// @signals ArgumentError carrying `other`, '* requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `+`.
     public * other = (
       ^vmMirror number: self multiply: other ifFail: [^super * other].
     )
@@ -2103,87 +2148,114 @@ class Kernel vmMirror: mirror = Value (
     /// is the Fraction (7/2) and `6 / 3` the Integer 2; a Float when
     /// either is, an infinity or a NaN for a zero divisor.
     ///
-    /// other: a number; not an exact zero when neither is a Float.
-    ///
-    /// Signals an ArgumentError: 'division by zero', carrying `other`,
-    /// for an exact zero `other` when neither is a Float, and '/
-    /// requires a numeric argument, got …', carrying `other`, for any
-    /// other argument.
+    /// @param other a number; not an exact zero when neither is a Float.
+    /// @answers the quotient of the receiver by `other`.
+    /// @signals ArgumentError 'division by zero', carrying `other`, for
+    /// an exact zero `other` when neither is a Float.
+    /// @signals ArgumentError carrying `other`, '/ requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `+`.
     public / other = (
       ^vmMirror number: self divide: other ifFail: [^super / other].
     )
 
-    /// Answers the quotient of the receiver by `other` rounded toward
+    /// Divides the receiver by `other`, rounding the quotient toward
+    /// negative infinity.
+    ///
+    /// @param other a number other than zero, 0.0 included.
+    /// @answers the quotient of the receiver by `other` rounded toward
     /// negative infinity: an integer when neither is a Float, a Float
     /// when either is.
-    ///
-    /// other: a number other than zero, 0.0 included.
-    ///
-    /// Signals an ArgumentError: 'division by zero', carrying `other`,
-    /// for a zero `other`, and '// requires a numeric argument, got …',
-    /// carrying `other`, for any other argument.
+    /// @signals ArgumentError 'division by zero', carrying `other`, for
+    /// a zero `other`.
+    /// @signals ArgumentError carrying `other`, '// requires a numeric
+    /// argument, got …', for any other argument.
     public // other = (
       ^vmMirror number: self floorDivide: other ifFail: [^super // other].
     )
 
-    /// Answers the remainder of `//`, `self - (self // other * other)`,
-    /// which takes the sign of `other`: exact when neither is a Float,
-    /// a Float when either is.
+    /// The remainder of `//`, `self - (self // other * other)`, which
+    /// takes the sign of `other`.
     ///
-    /// other: as `//`'s, with the same errors; the type error's text
-    /// names '\\'.
+    /// @param other as `//`'s.
+    /// @answers the remainder of `//`: exact when neither is a Float, a
+    /// Float when either is.
+    /// @signals ArgumentError 'division by zero', carrying `other`, for
+    /// a zero `other`, as `//` does.
+    /// @signals ArgumentError carrying `other`, '\\ requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `//`.
     public \\ other = (
       ^vmMirror number: self modulo: other ifFail: [^super \\ other].
     )
 
-    /// Answers the quotient of the receiver by `other` rounded toward
-    /// zero: an integer when neither is a Float, a Float when either
-    /// is.
+    /// Divides the receiver by `other`, rounding the quotient toward
+    /// zero.
     ///
-    /// other: as `//`'s, with the same errors; the type error's text
-    /// names 'quo:'.
+    /// @param other as `//`'s.
+    /// @answers the quotient of the receiver by `other` rounded toward
+    /// zero: an integer when neither is a Float, a Float when either is.
+    /// @signals ArgumentError 'division by zero', carrying `other`, for
+    /// a zero `other`, as `//` does.
+    /// @signals ArgumentError carrying `other`, 'quo: requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `//`.
     public quo: other = (
       ^vmMirror number: self quotient: other ifFail: [^super quo: other].
     )
 
-    /// Answers the remainder of `quo:`, `self - ((self quo: other) *
-    /// other)`, which takes the sign of the receiver: exact when
-    /// neither is a Float, a Float when either is.
+    /// The remainder of `quo:`, `self - ((self quo: other) * other)`,
+    /// which takes the sign of the receiver.
     ///
-    /// other: as `//`'s, with the same errors; the type error's text
-    /// names 'rem:'.
+    /// @param other as `//`'s.
+    /// @answers the remainder of `quo:`: exact when neither is a Float, a
+    /// Float when either is.
+    /// @signals ArgumentError 'division by zero', carrying `other`, for
+    /// a zero `other`, as `//` does.
+    /// @signals ArgumentError carrying `other`, 'rem: requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `//`.
     public rem: other = (
       ^vmMirror number: self remainder: other ifFail: [^super rem: other].
     )
 
-    /// Answers the nearest Float to the receiver's exact value, a tie
-    /// rounded to the even one: an infinity beyond the largest Float,
-    /// a zero below half the smallest.
+    /// Converts the receiver to the nearest Float, a tie rounded to the
+    /// even one.
+    ///
+    /// @answers the nearest Float to the receiver's exact value: an
+    /// infinity beyond the largest Float, a zero below half the
+    /// smallest.
     public asFloat = (
       ^vmMirror numberAsFloat: self ifFail: [^super asFloat].
     )
 
-    /// Answers `0 - self`, exactly.
+    /// Negates the receiver exactly.
+    ///
+    /// @answers `0 - self`.
     public negated = (
       ^0 - self.
     )
 
-    /// Answers the receiver without its sign: `negated` when it is
-    /// below 0, the receiver otherwise.
+    /// Drops the receiver's sign.
+    ///
+    /// @answers `negated` when the receiver is below 0, the receiver
+    /// otherwise.
     public abs = (
       ^self < 0 ifTrue: [self negated] ifFalse: [self].
     )
 
-    /// Answers the receiver raised to `exponent`: exactly by repeated
-    /// squaring for an integer `exponent` -- a negative one answering
-    /// the reciprocal, a Fraction for an integer receiver -- and
-    /// through `asFloat` and `Float>>raisedTo:` for any other.
+    /// Raises the receiver to `exponent`: exactly by repeated squaring
+    /// for an integer `exponent` -- a negative one answering the
+    /// reciprocal, a Fraction for an integer receiver other than 1 and
+    /// -1 -- and through `asFloat` and `Float>>raisedTo:` for any other.
     ///
-    /// exponent: a number.
-    ///
-    /// Signals the ArgumentError of `/`, 'division by zero', for a
-    /// zero receiver and a negative integer `exponent`, and
-    /// `Float>>raisedTo:`'s for an `exponent` that is no number.
+    /// @param exponent a number.
+    /// @answers the receiver raised to `exponent`.
+    /// @signals ArgumentError of `/`, 'division by zero', for a zero
+    /// receiver and a negative integer `exponent`.
+    /// @signals ArgumentError that `Float>>raisedTo:` signals for an
+    /// `exponent` that is no number.
+    /// @see `Float>>raisedTo:`.
     public raisedTo: exponent = (
       |
         result ::= 1.
@@ -2201,18 +2273,18 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// Evaluates `action` with the receiver, then with each number one
-    /// greater, in increasing order, while it is at most `stop`;
-    /// answers nil. Nothing is evaluated for a receiver above `stop`.
+    /// greater, in increasing order, while it is at most `stop`. Nothing
+    /// is evaluated for a receiver above `stop`.
     ///
-    /// stop: a number; compared with `<=`.
-    /// action: a block of one argument, or anything understanding
+    /// @param stop a number; compared with `<=`.
+    /// @param action a block of one argument, or anything understanding
     /// `value:`; sent `value:` with each number.
-    ///
-    /// Signals the ArgumentError the receiver's `<=` signals for a
-    /// `stop` that is no number, and an ArgumentError carrying the
-    /// block, 'wrong number of block arguments: block takes …, got
-    /// 1', for a block that does not take one argument, when the
-    /// receiver is at most `stop`.
+    /// @answers nil.
+    /// @signals ArgumentError the receiver's `<=` signals for a `stop`
+    /// that is no number.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a block that does not take
+    /// one argument, when the receiver is at most `stop`.
     public to: stop do: action = (
       |
         current ::= self.
@@ -2226,18 +2298,19 @@ class Kernel vmMirror: mirror = Value (
 
     /// Evaluates `action` with the receiver, then with each number
     /// `step` further on, while it is at most `stop` -- at least `stop`
-    /// for a negative `step`; answers nil.
+    /// for a negative `step`.
     ///
-    /// stop: a number; compared with `<=`, or `>=` for a negative
+    /// @param stop a number; compared with `<=`, or `>=` for a negative
     /// `step`.
-    /// step: a number other than zero, sent `<` with 0 first; a zero
-    /// `step` never ends from a receiver at most `stop`.
-    /// action: as `to:do:`'s.
-    ///
-    /// Signals the ArgumentError the receiver's comparison signals for
-    /// a `stop` that is no number, and `to:do:`'s ArgumentError for a
-    /// block that does not take one argument, when the loop runs a
-    /// step.
+    /// @param step a number other than zero, sent `<` with 0 first; a
+    /// zero `step` never ends from a receiver at most `stop`.
+    /// @param action as `to:do:`'s.
+    /// @answers nil.
+    /// @signals ArgumentError the receiver's comparison signals for a
+    /// `stop` that is no number.
+    /// @signals ArgumentError of `to:do:` for a block that does not take
+    /// one argument, when the loop runs a step.
+    /// @see `to:do:`.
     public to: stop by: step do: action = (
       |
         current ::= self.
@@ -2256,128 +2329,156 @@ class Kernel vmMirror: mirror = Value (
       ^nil.
     )
 
-    /// Answers the greater of the receiver and `other`: the receiver
-    /// when it is `>` `other`, `other` otherwise.
+    /// Picks the greater of the receiver and `other`.
     ///
-    /// other: a number.
-    ///
-    /// Signals the ArgumentError the receiver's `>` signals for an
-    /// `other` that is no number.
+    /// @param other a number.
+    /// @answers the receiver when it is `>` `other`, `other` otherwise.
+    /// @signals ArgumentError the receiver's `>` signals for an `other`
+    /// that is no number.
     public max: other = (
       ^self > other ifTrue: [self] ifFalse: [other].
     )
 
-    /// Answers the lesser of the receiver and `other`: the receiver
-    /// when it is `<` `other`, `other` otherwise.
+    /// Picks the lesser of the receiver and `other`.
     ///
-    /// other: a number.
-    ///
-    /// Signals the ArgumentError the receiver's `<` signals for an
-    /// `other` that is no number.
+    /// @param other a number.
+    /// @answers the receiver when it is `<` `other`, `other` otherwise.
+    /// @signals ArgumentError the receiver's `<` signals for an `other`
+    /// that is no number.
     public min: other = (
       ^self < other ifTrue: [self] ifFalse: [other].
     )
 
-    /// Answers whether the receiver is at least `min` and at most
-    /// `max`, a Boolean.
+    /// Tests whether the receiver lies between `min` and `max`, both
+    /// included.
     ///
-    /// min: a number.
-    /// max: a number.
-    ///
-    /// Signals the ArgumentError the receiver's `>=` or `<=` signals for
-    /// a bound that is no number.
+    /// @param min a number.
+    /// @param max a number.
+    /// @answers whether the receiver is at least `min` and at most `max`:
+    /// a Boolean for every number, whose `>=` and `<=` answer one; a
+    /// subclass's own `>=` and `<=` decide it otherwise.
+    /// @signals ArgumentError the receiver's `>=` or `<=` signals for a
+    /// bound that is no number.
     public between: min and: max = (
       ^self >= min and: [self <= max].
     )
 
-    /// Answers false: only a Float can be a NaN.
+    /// Tells whether the receiver is a NaN: only a Float can be one.
+    ///
+    /// @answers false.
     public isNaN = (
       ^false.
     )
 
-    /// Answers true: only a Float can be infinite or a NaN.
+    /// Tells whether the receiver is finite: only a Float can be
+    /// infinite or a NaN.
+    ///
+    /// @answers true.
     public isFinite = (
       ^true.
     )
 
-    /// Answers false: only a Float can be infinite.
+    /// Tells whether the receiver is infinite: only a Float can be.
+    ///
+    /// @answers false.
     public isInfinite = (
       ^false.
     )
 
-    /// Answers the square root of the receiver as a Float, computed on
-    /// `asFloat`.
+    /// Takes the square root of the receiver, computed on `asFloat`.
+    ///
+    /// @answers the square root of the receiver as a Float.
     public sqrt = (
       ^self asFloat sqrt.
     )
 
-    /// Answers the sine of the receiver in radians as a Float, computed on
-    /// `asFloat`.
+    /// Takes the sine of the receiver in radians, computed on `asFloat`.
+    ///
+    /// @answers the sine of the receiver as a Float.
     public sin = (
       ^self asFloat sin.
     )
 
-    /// Answers the cosine of the receiver in radians as a Float, computed on
+    /// Takes the cosine of the receiver in radians, computed on
     /// `asFloat`.
+    ///
+    /// @answers the cosine of the receiver as a Float.
     public cos = (
       ^self asFloat cos.
     )
 
-    /// Answers the tangent of the receiver in radians as a Float, computed on
+    /// Takes the tangent of the receiver in radians, computed on
     /// `asFloat`.
+    ///
+    /// @answers the tangent of the receiver as a Float.
     public tan = (
       ^self asFloat tan.
     )
 
-    /// Answers the arc sine of the receiver as a Float, computed on
-    /// `asFloat`.
+    /// Takes the arc sine of the receiver, computed on `asFloat`.
+    ///
+    /// @answers the arc sine of the receiver as a Float.
     public asin = (
       ^self asFloat asin.
     )
 
-    /// Answers the arc cosine of the receiver as a Float, computed on
-    /// `asFloat`.
+    /// Takes the arc cosine of the receiver, computed on `asFloat`.
+    ///
+    /// @answers the arc cosine of the receiver as a Float.
     public acos = (
       ^self asFloat acos.
     )
 
-    /// Answers the arc tangent of the receiver as a Float, computed on
-    /// `asFloat`.
+    /// Takes the arc tangent of the receiver, computed on `asFloat`.
+    ///
+    /// @answers the arc tangent of the receiver as a Float.
     public atan = (
       ^self asFloat atan.
     )
 
-    /// Answers `Float>>atan:` of the receiver's `asFloat`.
+    /// Sends `Float>>atan:` to the receiver's `asFloat`.
     ///
-    /// x: a number.
-    ///
-    /// Signals `Float>>atan:`'s ArgumentError for any other argument.
+    /// @param x a number.
+    /// @answers what `Float>>atan:` answers for the receiver's `asFloat`
+    /// and `x`.
+    /// @signals ArgumentError of `Float>>atan:` for any other argument.
+    /// @see `Float>>atan:`.
     public atan: x = (
       ^self asFloat atan: x.
     )
 
-    /// Answers e raised to the receiver as a Float, computed on
-    /// `asFloat`.
+    /// Raises e to the receiver, computed on `asFloat`.
+    ///
+    /// @answers e raised to the receiver as a Float.
     public exp = (
       ^self asFloat exp.
     )
 
-    /// Answers the natural logarithm of the receiver as a Float, computed on
+    /// Takes the natural logarithm of the receiver, computed on
     /// `asFloat`.
+    ///
+    /// @answers the natural logarithm of the receiver as a Float.
     public ln = (
       ^self asFloat ln.
     )
 
-    /// Answers the logarithm to base 10 of the receiver as a Float, computed on
+    /// Takes the logarithm to base 10 of the receiver, computed on
     /// `asFloat`.
+    ///
+    /// @answers the logarithm to base 10 of the receiver as a Float.
     public log = (
       ^self asFloat log.
     )
   )
 
   /// The superclass of `True` and `False`.
+  ///
+  /// It declares only `isKindOfBoolean`: every conditional and logical
+  /// message is answered by a method of `True` or of `False`.
   public class Boolean = Value () (
-    /// Answers true: the receiver is a Boolean.
+    /// Identifies the receiver as a Boolean, without a class test.
+    ///
+    /// @answers true.
     public isKindOfBoolean = (
       ^true.
     )
@@ -2396,133 +2497,212 @@ class Kernel vmMirror: mirror = Value (
   /// methods"). An argument that is no block is sent `value` like any
   /// other object; `printString` and `hash` alone are ordinary methods.
   public class True = Boolean () (
-    /// Answers the value of `trueBlock`; `falseBlock` is not
-    /// evaluated.
+    /// Evaluates `trueBlock`; `falseBlock` is not evaluated.
     ///
-    /// trueBlock: a block of no argument, or anything understanding
+    /// @param trueBlock a block of no argument, or anything understanding
     /// `value`; sent `value`.
-    /// falseBlock: any object.
+    /// @param falseBlock any object.
+    /// @answers the value of `trueBlock`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a `trueBlock` that declares
+    /// any parameter.
     public ifTrue: trueBlock ifFalse: falseBlock = (
       ^trueBlock value.
     )
 
     /// As `ifTrue:ifFalse:`, its arguments in the other order.
+    ///
+    /// @param falseBlock any object.
+    /// @param trueBlock as `ifTrue:ifFalse:`'s.
+    /// @answers the value of `trueBlock`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a `trueBlock` that declares
+    /// any parameter.
+    /// @see `ifTrue:ifFalse:`.
     public ifFalse: falseBlock ifTrue: trueBlock = (
       ^trueBlock value.
     )
 
-    /// Answers the value of `trueBlock`, sent `value`.
+    /// Evaluates `trueBlock`, sending it `value`.
+    ///
+    /// @param trueBlock as `ifTrue:ifFalse:`'s.
+    /// @answers the value of `trueBlock`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a `trueBlock` that declares
+    /// any parameter.
     public ifTrue: trueBlock = (
       ^trueBlock value.
     )
 
-    /// Answers nil; `falseBlock` is not evaluated.
+    /// Skips `falseBlock`, which is not evaluated.
+    ///
+    /// @param falseBlock any object.
+    /// @answers nil.
     public ifFalse: falseBlock = (
       ^nil.
     )
 
-    /// Answers false.
+    /// Negates the receiver.
+    ///
+    /// @answers false.
     public not = (
       ^false.
     )
 
-    /// Answers `other`, unevaluated: any object.
+    /// Ands the receiver with `other`, which is not evaluated.
+    ///
+    /// @param other any object.
+    /// @answers `other`, unevaluated.
     public & other = (
       ^other.
     )
 
-    /// Answers the value of `block`, sent `value`.
+    /// Ands the receiver with the value of `block`, sent `value`.
     ///
-    /// Signals an ArgumentError carrying the block, 'wrong number of
-    /// block arguments: block takes …, got 0', for a block that
-    /// declares any parameter.
+    /// @param block a block of no argument, or anything understanding
+    /// `value`.
+    /// @answers the value of `block`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a block that declares any
+    /// parameter.
     public and: block = (
       ^block value.
     )
 
-    /// Answers true; `other` is not looked at.
+    /// Ors the receiver with `other`, which is not looked at.
+    ///
+    /// @param other any object.
+    /// @answers true.
     public | other = (
       ^true.
     )
 
-    /// Answers true; `block` is not evaluated.
+    /// Ors the receiver with `block`, which is not evaluated.
+    ///
+    /// @param block any object.
+    /// @answers true.
     public or: block = (
       ^true.
     )
 
-    /// Answers the String 'true'.
+    /// Prints the receiver as its literal.
+    ///
+    /// @answers the String 'true'.
     public printString = (
       ^'true'.
     )
 
-    /// Answers 1.
+    /// Hashes the receiver to a constant, unlike `false`'s.
+    ///
+    /// @answers 1.
     public hash = (
       ^1.
     )
   )
 
   /// The class of `false`.
+  ///
+  /// Its methods are `True`'s with the branches exchanged, each a quick
+  /// method but `printString` and `hash`, as `True`'s are.
   public class False = Boolean () (
-    /// Answers the value of `falseBlock`; `trueBlock` is not
-    /// evaluated.
+    /// Evaluates `falseBlock`; `trueBlock` is not evaluated.
     ///
-    /// trueBlock: any object.
-    /// falseBlock: a block of no argument, or anything understanding
-    /// `value`; sent `value`.
+    /// @param trueBlock any object.
+    /// @param falseBlock a block of no argument, or anything
+    /// understanding `value`; sent `value`.
+    /// @answers the value of `falseBlock`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a `falseBlock` that declares
+    /// any parameter.
     public ifTrue: trueBlock ifFalse: falseBlock = (
       ^falseBlock value.
     )
 
     /// As `ifTrue:ifFalse:`, its arguments in the other order.
+    ///
+    /// @param falseBlock as `ifTrue:ifFalse:`'s.
+    /// @param trueBlock any object.
+    /// @answers the value of `falseBlock`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a `falseBlock` that declares
+    /// any parameter.
+    /// @see `ifTrue:ifFalse:`.
     public ifFalse: falseBlock ifTrue: trueBlock = (
       ^falseBlock value.
     )
 
-    /// Answers nil; `trueBlock` is not evaluated.
+    /// Skips `trueBlock`, which is not evaluated.
+    ///
+    /// @param trueBlock any object.
+    /// @answers nil.
     public ifTrue: trueBlock = (
       ^nil.
     )
 
-    /// Answers the value of `falseBlock`, sent `value`.
+    /// Evaluates `falseBlock`, sending it `value`.
+    ///
+    /// @param falseBlock as `ifTrue:ifFalse:`'s.
+    /// @answers the value of `falseBlock`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a `falseBlock` that declares
+    /// any parameter.
     public ifFalse: falseBlock = (
       ^falseBlock value.
     )
 
-    /// Answers true.
+    /// Negates the receiver.
+    ///
+    /// @answers true.
     public not = (
       ^true.
     )
 
-    /// Answers false; `other` is not looked at.
+    /// Ands the receiver with `other`, which is not looked at.
+    ///
+    /// @param other any object.
+    /// @answers false.
     public & other = (
       ^false.
     )
 
-    /// Answers false; `block` is not evaluated.
+    /// Ands the receiver with `block`, which is not evaluated.
+    ///
+    /// @param block any object.
+    /// @answers false.
     public and: block = (
       ^false.
     )
 
-    /// Answers `other`, unevaluated: any object.
+    /// Ors the receiver with `other`, which is not evaluated.
+    ///
+    /// @param other any object.
+    /// @answers `other`, unevaluated.
     public | other = (
       ^other.
     )
 
-    /// Answers the value of `block`, sent `value`.
+    /// Ors the receiver with the value of `block`, sent `value`.
     ///
-    /// Signals an ArgumentError carrying the block, 'wrong number of
-    /// block arguments: block takes …, got 0', for a block that
-    /// declares any parameter.
+    /// @param block a block of no argument, or anything understanding
+    /// `value`.
+    /// @answers the value of `block`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a block that declares any
+    /// parameter.
     public or: block = (
       ^block value.
     )
 
-    /// Answers the String 'false'.
+    /// Prints the receiver as its literal.
+    ///
+    /// @answers the String 'false'.
     public printString = (
       ^'false'.
     )
 
-    /// Answers 0.
+    /// Hashes the receiver to a constant, unlike `true`'s.
+    ///
+    /// @answers 0.
     public hash = (
       ^0.
     )
@@ -2531,234 +2711,297 @@ class Kernel vmMirror: mirror = Value (
   /// The integers, of any size: a literal such as `3` is one, and an
   /// integer outside -2^60 to 2^60 - 1 is a `LargeInteger`.
   public class Integer = Number () (
-    /// Answers true: the receiver is an Integer.
+    /// Identifies the receiver as an Integer, without a class test.
+    ///
+    /// @answers true.
     public isKindOfInteger = (
       ^true.
     )
 
-    /// Answers the sum of the receiver and `other`: an integer for an
+    /// Adds `other` to the receiver, exactly unless `other` is a Float.
+    ///
+    /// @param other a number.
+    /// @answers the sum of the receiver and `other`: an integer for an
     /// integer `other`, a LargeInteger only when it lies outside -2^60
     /// to 2^60 - 1; exactly, a Fraction or an integer, for a Fraction
     /// `other`; and a Float for a Float `other`, the receiver converted
     /// to the nearest Float first.
-    ///
-    /// other: a number.
-    ///
-    /// Signals an ArgumentError carrying `other`, '+ requires a numeric
+    /// @signals ArgumentError carrying `other`, '+ requires a numeric
     /// argument, got …', for any other argument.
     public + other = (
       ^vmMirror integer: self add: other ifFail: [^super + other].
     )
 
-    /// As `+`, the difference; its error text names '-'.
+    /// As `+`, the difference.
+    ///
+    /// @param other a number.
+    /// @answers the difference of the receiver and `other`: an integer,
+    /// a Fraction or a Float as `+`'s sum is.
+    /// @signals ArgumentError carrying `other`, '- requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `+`.
     public - other = (
       ^vmMirror integer: self subtract: other ifFail: [^super - other].
     )
 
-    /// As `+`, the product; its error text names '*'.
+    /// As `+`, the product.
+    ///
+    /// @param other a number.
+    /// @answers the product of the receiver and `other`: an integer, a
+    /// Fraction or a Float as `+`'s sum is.
+    /// @signals ArgumentError carrying `other`, '* requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `+`.
     public * other = (
       ^vmMirror integer: self multiply: other ifFail: [^super * other].
     )
 
-    /// Answers the quotient of the receiver by `other`, rounded toward
+    /// Divides the receiver by `other`, rounding the quotient toward
+    /// negative infinity.
+    ///
+    /// @param other a number other than zero, 0.0 included.
+    /// @answers the quotient of the receiver by `other` rounded toward
     /// negative infinity: an integer for an integer or a Fraction
     /// `other`, a Float for a Float `other`.
-    ///
-    /// other: a number other than zero, 0.0 included.
-    ///
-    /// Signals an ArgumentError: 'division by zero', carrying `other`,
-    /// for a zero `other`, and '// requires a numeric argument, got …',
-    /// carrying `other`, for any other argument.
+    /// @signals ArgumentError 'division by zero', carrying `other`, for
+    /// a zero `other`.
+    /// @signals ArgumentError carrying `other`, '// requires a numeric
+    /// argument, got …', for any other argument.
     public // other = (
       ^vmMirror integer: self floorDivide: other ifFail: [^super // other].
     )
 
-    /// Answers the remainder of `//`, `self - (self // other * other)`,
-    /// which takes the sign of `other`: exact for an integer or a
-    /// Fraction `other`, a Float for a Float `other`.
+    /// The remainder of `//`, `self - (self // other * other)`, which
+    /// takes the sign of `other`.
     ///
-    /// other: as `//`'s, with the same errors; the type error's text
-    /// names '\\'.
+    /// @param other as `//`'s.
+    /// @answers the remainder of `//`: exact for an integer or a
+    /// Fraction `other`, a Float for a Float `other`.
+    /// @signals ArgumentError 'division by zero', carrying `other`, for
+    /// a zero `other`, as `//` does.
+    /// @signals ArgumentError carrying `other`, '\\ requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `//`.
     public \\ other = (
       ^vmMirror integer: self modulo: other ifFail: [^super \\ other].
     )
 
-    /// Answers the bitwise and of the receiver and `other`, on the
-    /// two's-complement form of integers of any size.
+    /// Ands the receiver and `other` bitwise, on the two's-complement
+    /// form of integers of any size.
     ///
-    /// other: an Integer or a LargeInteger.
-    ///
-    /// Signals an ArgumentError carrying `other`, 'bitAnd: requires an
+    /// @param other an Integer or a LargeInteger.
+    /// @answers the bitwise and of the receiver and `other`.
+    /// @signals ArgumentError carrying `other`, 'bitAnd: requires an
     /// integer argument, got …', for any other argument.
     public bitAnd: other = (
       ^vmMirror integer: self bitAnd: other ifFail: [^super bitAnd: other].
     )
 
-    /// As `bitAnd:`, the bitwise or; its error text names 'bitOr:'.
+    /// As `bitAnd:`, the bitwise or.
+    ///
+    /// @param other an Integer or a LargeInteger.
+    /// @answers the bitwise or of the receiver and `other`.
+    /// @signals ArgumentError carrying `other`, 'bitOr: requires an
+    /// integer argument, got …', for any other argument.
+    /// @see `bitAnd:`.
     public bitOr: other = (
       ^vmMirror integer: self bitOr: other ifFail: [^super bitOr: other].
     )
 
-    /// As `bitAnd:`, the bitwise exclusive or; its error text names
-    /// 'bitXor:'.
+    /// As `bitAnd:`, the bitwise exclusive or.
+    ///
+    /// @param other an Integer or a LargeInteger.
+    /// @answers the bitwise exclusive or of the receiver and `other`.
+    /// @signals ArgumentError carrying `other`, 'bitXor: requires an
+    /// integer argument, got …', for any other argument.
+    /// @see `bitAnd:`.
     public bitXor: other = (
       ^vmMirror integer: self bitXor: other ifFail: [^super bitXor: other].
     )
 
-    /// Answers the receiver times 2 to the power `other`; 0 for a zero
+    /// Shifts the receiver left by `other` bits.
+    ///
+    /// @param other an Integer or a LargeInteger, at least 0.
+    /// @answers the receiver times 2 to the power `other`; 0 for a zero
     /// receiver, whatever non-negative count.
-    ///
-    /// other: an Integer or a LargeInteger, at least 0.
-    ///
-    /// Signals an ArgumentError carrying `other`: '<< requires an
-    /// integer argument, got …' for an argument that is no integer, '<<
-    /// takes a non-negative shift count, got …' for a negative one, and
-    /// '<< cannot allocate the result of shifting by … bits' for a
-    /// result too large to allocate.
+    /// @signals ArgumentError carrying `other`, '<< requires an integer
+    /// argument, got …', for an argument that is no integer.
+    /// @signals ArgumentError carrying `other`, '<< takes a non-negative
+    /// shift count, got …', for a negative one.
+    /// @signals ArgumentError carrying `other`, '<< cannot allocate the
+    /// result of shifting by … bits', for a result too large to
+    /// allocate.
     public << other = (
       ^vmMirror integer: self shiftLeft: other ifFail: [^super << other].
     )
 
-    /// Answers the receiver divided by 2 to the power `count`, rounded
-    /// toward negative infinity: the two's-complement shift, so a
-    /// negative receiver shifts to -1 at the least.
+    /// Shifts the receiver right by `count` bits: the two's-complement
+    /// shift, so a negative receiver shifts to -1 at the least.
     ///
-    /// count: an Integer or a LargeInteger, at least 0.
-    ///
-    /// Signals an ArgumentError carrying `count`: '>> requires an
-    /// integer argument, got …' for an argument that is no integer and
-    /// '>> takes a non-negative shift count, got …' for a negative
-    /// one.
+    /// @param count an Integer or a LargeInteger, at least 0.
+    /// @answers the receiver divided by 2 to the power `count`, rounded
+    /// toward negative infinity.
+    /// @signals ArgumentError carrying `count`, '>> requires an integer
+    /// argument, got …', for an argument that is no integer.
+    /// @signals ArgumentError carrying `count`, '>> takes a non-negative
+    /// shift count, got …', for a negative one.
     public >> count = (
       ^vmMirror integer: self shiftRight: count ifFail: [^super >> count].
     )
 
-    /// Answers the bitwise and of the receiver and `other` over their
-    /// two's complements, as `bitAnd:` does.
+    /// Ands the receiver and `other` bitwise over their two's
+    /// complements, as `bitAnd:` does.
     ///
-    /// other: an Integer or a LargeInteger.
-    ///
-    /// Signals an ArgumentError carrying `other`, 'bitAnd: requires an
+    /// @param other an Integer or a LargeInteger.
+    /// @answers the bitwise and of the receiver and `other`.
+    /// @signals ArgumentError carrying `other`, 'bitAnd: requires an
     /// integer argument, got …', for any other argument; the text names
     /// 'bitAnd:', not '&'.
+    /// @see `bitAnd:`.
     public & other = (
       ^self bitAnd: other.
     )
 
-    /// Answers the bitwise inclusive or of the receiver and `other` over
-    /// their two's complements, as `bitOr:` does.
+    /// Ors the receiver and `other` bitwise, inclusively, over their
+    /// two's complements, as `bitOr:` does.
     ///
-    /// other: an Integer or a LargeInteger.
-    ///
-    /// Signals an ArgumentError carrying `other`, 'bitOr: requires an
+    /// @param other an Integer or a LargeInteger.
+    /// @answers the bitwise inclusive or of the receiver and `other`.
+    /// @signals ArgumentError carrying `other`, 'bitOr: requires an
     /// integer argument, got …', for any other argument; the text names
     /// 'bitOr:', not '|'.
+    /// @see `bitOr:`.
     public | other = (
       ^self bitOr: other.
     )
 
-    /// Answers the greatest common divisor of the receiver and `other`,
-    /// an integer never negative; 0 when both are 0.
+    /// Finds the greatest common divisor of the receiver and `other`.
     ///
-    /// other: an Integer or a LargeInteger.
-    ///
-    /// Signals an ArgumentError carrying `other`, 'gcd: requires an
+    /// @param other an Integer or a LargeInteger.
+    /// @answers the greatest common divisor, an integer never negative;
+    /// 0 when both are 0.
+    /// @signals ArgumentError carrying `other`, 'gcd: requires an
     /// integer argument, got …', for any other argument.
     public gcd: other = (
       ^vmMirror integer: self gcd: other ifFail: [^super gcd: other].
     )
 
-    /// Answers the base-256 digit at `index` of the receiver's
-    /// magnitude, least significant first, an Integer from 0 to 255:
-    /// the sign is not a digit, so `-1 digitAt: 1` is 1.
+    /// Reads a base-256 digit of the receiver's magnitude, least
+    /// significant first: the sign is not a digit, so `-1 digitAt: 1`
+    /// is 1.
     ///
-    /// index: an Integer from 1 to `digitLength`.
-    ///
-    /// Signals an ArgumentError carrying `index`: 'digitAt: index …
-    /// out of range: valid indices are 1..… (digitLength …)' for an
-    /// Integer outside them, a LargeInteger included, and 'digitAt:
-    /// requires an integer argument, got …' for one that is no
-    /// integer.
+    /// @param index an Integer from 1 to `digitLength`.
+    /// @answers the digit at `index`, an Integer from 0 to 255.
+    /// @signals ArgumentError carrying `index`, 'digitAt: index … out of
+    /// range: valid indices are 1..… (digitLength …)', for an Integer
+    /// outside them, a LargeInteger included.
+    /// @signals ArgumentError carrying `index`, 'digitAt: requires an
+    /// integer argument, got …', for one that is no integer.
     public digitAt: index = (
       ^vmMirror integer: self digitAt: index ifFail: [^super digitAt: index].
     )
 
-    /// Answers how many base-256 digits the receiver's magnitude has,
-    /// an Integer: 0 for 0.
+    /// Counts the base-256 digits of the receiver's magnitude.
+    ///
+    /// @answers how many digits the magnitude has, an Integer: 0 for 0.
     public digitLength = (
       ^vmMirror integerDigitLength: self ifFail: [^super digitLength].
     )
 
-    /// Answers a new String of the receiver in `radix`: its digits from
-    /// '0' to '9' and 'A' to 'Z', most significant first, after a '-'
-    /// for a negative receiver.
+    /// Prints the receiver in `radix`: its digits from '0' to '9' and
+    /// 'A' to 'Z', most significant first, after a '-' for a negative
+    /// receiver.
     ///
-    /// radix: an Integer from 2 to 36.
-    ///
-    /// Signals an ArgumentError carrying `radix`: 'asStringRadix: takes
-    /// a radix from 2 to 36, got …' for an Integer outside them, a
-    /// LargeInteger included, and 'asStringRadix: requires an integer
-    /// argument, got …' for one that is no integer.
+    /// @param radix an Integer from 2 to 36.
+    /// @answers a new String of the receiver in `radix`.
+    /// @signals ArgumentError carrying `radix`, 'asStringRadix: takes a
+    /// radix from 2 to 36, got …', for an Integer outside them, a
+    /// LargeInteger included.
+    /// @signals ArgumentError carrying `radix`, 'asStringRadix: requires
+    /// an integer argument, got …', for one that is no integer.
     public asStringRadix: radix = (
       ^vmMirror integer: self asStringRadix: radix ifFail: [^super asStringRadix: radix].
     )
 
-    /// Answers the receiver itself: an integer is its own floor.
+    /// Rounds the receiver toward negative infinity: an integer is its
+    /// own floor.
+    ///
+    /// @answers the receiver.
     public floor = (
       ^self.
     )
 
-    /// Answers the receiver itself: an integer is its own ceiling.
+    /// Rounds the receiver toward positive infinity: an integer is its
+    /// own ceiling.
+    ///
+    /// @answers the receiver.
     public ceiling = (
       ^self.
     )
 
-    /// Answers the receiver itself: an integer is already rounded.
+    /// Rounds the receiver: an integer is already rounded.
+    ///
+    /// @answers the receiver.
     public rounded = (
       ^self.
     )
 
-    /// Answers the receiver itself: an integer has no fraction.
+    /// Truncates the receiver: an integer has no fraction.
+    ///
+    /// @answers the receiver.
     public truncated = (
       ^self.
     )
 
-    /// Answers the receiver itself.
+    /// Converts the receiver to an integer, which it already is.
+    ///
+    /// @answers the receiver.
     public asInteger = (
       ^self.
     )
 
-    /// Answers the receiver itself: an integer is the numerator of the
-    /// fraction it is, over 1.
+    /// Reads the receiver's numerator: an integer is the numerator of
+    /// the fraction it is, over 1.
+    ///
+    /// @answers the receiver.
     public numerator = (
       ^self.
     )
 
-    /// Answers 1: an integer is a fraction whose denominator is 1.
+    /// Reads the receiver's denominator: an integer is a fraction whose
+    /// denominator is 1.
+    ///
+    /// @answers 1.
     public denominator = (
       ^1.
     )
 
-    /// Answers true: an integer is a fraction whose denominator is 1.
+    /// Identifies the receiver as a fraction: an integer is a fraction
+    /// whose denominator is 1.
+    ///
+    /// @answers true.
     public isKindOfFraction = (
       ^true.
     )
 
-    /// Answers the receiver raised to `exponent` modulo `modulus`, an
-    /// integer from 0 to `modulus` - 1 for a positive `modulus`, by
-    /// squaring and multiplying modulo `modulus` at each step; a
-    /// negative `exponent` raises the receiver's inverse modulo
-    /// `modulus` to `exponent negated`.
+    /// Raises the receiver to `exponent` modulo `modulus`, by squaring
+    /// and multiplying modulo `modulus` at each step; a negative
+    /// `exponent` raises the receiver's inverse modulo `modulus` to
+    /// `exponent negated`.
     ///
-    /// exponent: an integer.
-    /// modulus: an integer other than 0.
+    /// An `exponent` that is no integer is not refused by an Error of
+    /// its own: the first send to fail is `<` (for `nil`) or `bitAnd:`
+    /// (for `2.5`), each a MessageNotUnderstood.
     ///
-    /// Signals the ArgumentError of `\\` for a `modulus` that is no
-    /// number or is 0, and the ArgumentError `reciprocalModulo:`
-    /// signals for a negative `exponent` when the receiver has no
-    /// inverse. An `exponent` that is no integer is not refused by an
-    /// Error of its own: the first send to fail is `<` (for `nil`) or
-    /// `bitAnd:` (for `2.5`), each a MessageNotUnderstood.
+    /// @param exponent an integer.
+    /// @param modulus an integer other than 0.
+    /// @answers the receiver raised to `exponent` modulo `modulus`, an
+    /// integer from 0 to `modulus` - 1 for a positive `modulus`.
+    /// @signals ArgumentError of `\\` for a `modulus` that is no number
+    /// or is 0.
+    /// @signals ArgumentError that `reciprocalModulo:` signals for a
+    /// negative `exponent` when the receiver has no inverse.
+    /// @see `reciprocalModulo:`.
     public raisedTo: exponent modulo: modulus = (
       |
         result
@@ -2778,17 +3021,17 @@ class Kernel vmMirror: mirror = Value (
       ^result.
     )
 
-    /// Answers the inverse of the receiver modulo `modulus`: the integer
-    /// from 0 to `modulus` - 1 whose product with the receiver is 1
-    /// modulo `modulus`, found by the extended Euclidean algorithm.
+    /// Finds the inverse of the receiver modulo `modulus` by the
+    /// extended Euclidean algorithm.
     ///
-    /// modulus: a positive integer.
-    ///
-    /// Signals an ArgumentError carrying `modulus`, 'reciprocalModulo:
-    /// … has no inverse modulo …', when the receiver and `modulus` have
-    /// a common divisor other than 1, and the ArgumentError of `\\`
-    /// for a `modulus` that is no number or is 0 (the first send to
-    /// fail, so `//` never sees it).
+    /// @param modulus a positive integer.
+    /// @answers the integer from 0 to `modulus` - 1 whose product with
+    /// the receiver is 1 modulo `modulus`.
+    /// @signals ArgumentError carrying `modulus`, 'reciprocalModulo: …
+    /// has no inverse modulo …', when the receiver and `modulus` have a
+    /// common divisor other than 1.
+    /// @signals ArgumentError of `\\` for a `modulus` that is no number
+    /// or is 0 (the first send to fail, so `//` never sees it).
     public reciprocalModulo: modulus = (
       |
         remainder ::= modulus.
@@ -2817,122 +3060,165 @@ class Kernel vmMirror: mirror = Value (
       ^coefficient \\ modulus.
     )
 
-    /// Answers the bitwise complement, `-1 - self`.
+    /// Complements the receiver bitwise.
+    ///
+    /// @answers `-1 - self`.
     public bitInvert = (
       ^-1 - self.
     )
 
     /// Evaluates `action` as many times as the receiver says, none for
-    /// a receiver below 1; answers nil.
-    ///
-    /// action: a block of no argument, or anything understanding
-    /// `value`; sent `value` each time.
-    ///
-    /// Signals an ArgumentError carrying the block, 'wrong number of
-    /// block arguments: block takes …, got 0', for a block that
-    /// declares any parameter, when the receiver is at least 1.
+    /// a receiver below 1.
     ///
     /// The compiler does not inline it; it is sent.
+    ///
+    /// @param action a block of no argument, or anything understanding
+    /// `value`; sent `value` each time.
+    /// @answers nil.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a block that declares any
+    /// parameter, when the receiver is at least 1.
     public timesRepeat: action = (
       1 to: self do: [:ignored | action value].
       ^nil.
     )
 
-    /// Answers whether the receiver is less than `other` by their exact
-    /// values, a Boolean: false whenever `other` is a NaN. A Float or a
-    /// Fraction `other` is compared by exact value, so 2^53 + 1 is
-    /// greater than the Float 2^53.
+    /// Compares the receiver with `other` by their exact values, a Float
+    /// or a Fraction `other` included, so 2^53 + 1 is greater than the
+    /// Float 2^53.
     ///
-    /// other: a number.
-    ///
-    /// Signals an ArgumentError carrying `other`, '< requires a numeric
+    /// @param other a number.
+    /// @answers whether the receiver is less than `other`, a Boolean:
+    /// false whenever `other` is a NaN.
+    /// @signals ArgumentError carrying `other`, '< requires a numeric
     /// argument, got …', for any other argument.
     public < other = (
       ^vmMirror integer: self lessThan: other ifFail: [^super < other].
     )
 
-    /// As `<`, whether the receiver is greater; its error text names
-    /// '>'.
+    /// As `<`, whether the receiver is greater.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is greater than `other`, a Boolean:
+    /// false whenever `other` is a NaN.
+    /// @signals ArgumentError carrying `other`, '> requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `<`.
     public > other = (
       ^vmMirror integer: self greaterThan: other ifFail: [^super > other].
     )
 
-    /// As `<`, whether the receiver is less or equal; its error text
-    /// names '<='.
+    /// As `<`, whether the receiver is less or equal.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is less than or equal to `other`, a
+    /// Boolean: false whenever `other` is a NaN.
+    /// @signals ArgumentError carrying `other`, '<= requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `<`.
     public <= other = (
       ^vmMirror integer: self lessOrEqual: other ifFail: [^super <= other].
     )
 
-    /// As `<`, whether the receiver is greater or equal; its error text
-    /// names '>='.
+    /// As `<`, whether the receiver is greater or equal.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is greater than or equal to `other`,
+    /// a Boolean: false whenever `other` is a NaN.
+    /// @signals ArgumentError carrying `other`, '>= requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `<`.
     public >= other = (
       ^vmMirror integer: self greaterOrEqual: other ifFail: [^super >= other].
     )
 
-    /// Answers whether `other` is a number of the same exact value:
-    /// `3 = 3.0` is true.
+    /// Compares the receiver with `other` by exact value: `3 = 3.0` is
+    /// true. It never signals.
     ///
-    /// other: any object; never signals. Anything that is no number is
-    /// unequal.
+    /// @param other any object; anything that is no number is unequal.
+    /// @answers whether `other` is a number of the same exact value, a
+    /// Boolean.
     public = other = (
       ^vmMirror integer: self equals: other ifFail: [^super = other].
     )
 
-    /// Answers the receiver itself, the hash every number of its value
+    /// Hashes the receiver to itself, the hash every number of its value
     /// answers.
+    ///
+    /// @answers the receiver.
     public hash = (
       ^self.
     )
 
-    /// Answers `0 - self`, an integer.
+    /// Negates the receiver.
+    ///
+    /// @answers `0 - self`, an integer.
     public negated = (
       ^vmMirror integerNegated: self ifFail: [^super negated].
     )
 
-    /// Answers the receiver without its sign, an integer.
+    /// Drops the receiver's sign.
+    ///
+    /// @answers the receiver without its sign, an integer.
     public abs = (
       ^vmMirror integerAbsolute: self ifFail: [^super abs].
     )
 
-    /// Answers the nearest Float, a tie rounded to the even one.
+    /// Converts the receiver to a Float, a tie rounded to the even one.
+    ///
+    /// @answers the nearest Float.
     public asFloat = (
       ^vmMirror integerAsFloat: self ifFail: [^super asFloat].
     )
 
-    /// Answers a new String of the decimal digits, after a '-' for a
+    /// Prints the receiver in decimal.
+    ///
+    /// @answers a new String of the decimal digits, after a '-' for a
     /// negative receiver.
     public printString = (
       ^vmMirror integerPrintString: self ifFail: [^super printString].
     )
 
-    /// Answers what `printString` answers.
+    /// Prints the receiver as `printString` does.
+    ///
+    /// @answers what `printString` answers.
     public asString = (
       ^vmMirror integerAsString: self ifFail: [^super asString].
     )
   ) : (
-    /// Answers the Integer `text` writes in decimal: `parse:radix:`
-    /// with radix 10, and its ArgumentErrors.
+    /// Reads the Integer `text` writes in decimal: `parse:radix:` with
+    /// radix 10, and its ArgumentErrors.
+    ///
+    /// @param text a String.
+    /// @answers what `parse:radix:` answers for `text` and radix 10.
+    /// @signals ArgumentError carrying `text`, 'parse:radix: requires a
+    /// String, got …', for a `text` that is no String.
+    /// @signals ArgumentError carrying `text`, 'parse:radix: requires
+    /// the digits of an Integer in radix 10, got …', for a String that
+    /// writes no integer.
+    /// @see `parse:radix:`.
     public parse: text = (
       ^self parse: text radix: 10.
     )
 
-    /// Answers the Integer `text` writes in `radix`: an optional '-'
-    /// and at least one digit, '0' to '9' then 'A' to 'Z' in either
-    /// case, each below `radix`; a LargeInteger beyond -2^60 to
-    /// 2^60 - 1.
-    ///
-    /// text: a String.
-    /// radix: an Integer from 2 to 36.
-    ///
-    /// Signals an ArgumentError: 'parse:radix: takes a radix from 2 to
-    /// 36, got …' carrying `radix` for one outside them, 'parse:radix:
-    /// requires a String, got …' carrying `text` for one that is no
-    /// String, and 'parse:radix: requires the digits of an Integer in
-    /// radix …, got …' carrying `text` for a String that writes no
-    /// integer, an empty one or a lone '-' included.
+    /// Reads the Integer `text` writes in `radix`: an optional '-' and
+    /// at least one digit, '0' to '9' then 'A' to 'Z' in either case,
+    /// each below `radix`.
     ///
     /// The leaf answers only for `Integer` itself; any other receiver
     /// falls to `super`.
+    ///
+    /// @param text a String.
+    /// @param radix an Integer from 2 to 36.
+    /// @answers the integer `text` writes; a LargeInteger beyond -2^60
+    /// to 2^60 - 1.
+    /// @signals ArgumentError carrying `radix`, 'parse:radix: takes a
+    /// radix from 2 to 36, got …', for one outside them.
+    /// @signals ArgumentError carrying `text`, 'parse:radix: requires a
+    /// String, got …', for one that is no String.
+    /// @signals ArgumentError carrying `text`, 'parse:radix: requires
+    /// the digits of an Integer in radix …, got …', for a String that
+    /// writes no integer, an empty one or a lone '-' included.
     public parse: text radix: radix = (
       ^vmMirror integerClass: self parse: text radix: radix ifFail: [
         ^super parse: text radix: radix.
@@ -2954,115 +3240,222 @@ class Kernel vmMirror: mirror = Value (
     /// As `Integer>>+`: the sum, an integer for an integer `other`,
     /// exact for a Fraction one and a Float for a Float one, with the
     /// same ArgumentError.
+    ///
+    /// @param other a number.
+    /// @answers the sum of the receiver and `other`, as `Integer>>+`
+    /// answers it.
+    /// @signals ArgumentError carrying `other`, '+ requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `Integer>>+`.
     public + other = (
       ^vmMirror largeInteger: self add: other ifFail: [^super + other].
     )
 
     /// As `Integer>>-`, with the same ArgumentError.
+    ///
+    /// @param other a number.
+    /// @answers the difference of the receiver and `other`, as
+    /// `Integer>>-` answers it.
+    /// @signals ArgumentError carrying `other`, '- requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `Integer>>-`.
     public - other = (
       ^vmMirror largeInteger: self subtract: other ifFail: [^super - other].
     )
 
     /// As `Integer>>*`, with the same ArgumentError.
+    ///
+    /// @param other a number.
+    /// @answers the product of the receiver and `other`, as `Integer>>*`
+    /// answers it.
+    /// @signals ArgumentError carrying `other`, '* requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `Integer>>*`.
     public * other = (
       ^vmMirror largeInteger: self multiply: other ifFail: [^super * other].
     )
 
     /// As `Integer>>//`: the quotient rounded toward negative infinity,
-    /// an integer for an integer or a Fraction `other` and a Float for
-    /// a Float one, with the same ArgumentErrors.
+    /// with the same ArgumentErrors.
+    ///
+    /// @param other a number other than zero, 0.0 included.
+    /// @answers the quotient rounded toward negative infinity: an
+    /// integer for an integer or a Fraction `other` and a Float for a
+    /// Float one.
+    /// @signals ArgumentError 'division by zero', carrying `other`, for
+    /// a zero `other`.
+    /// @signals ArgumentError carrying `other`, '// requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `Integer>>//`.
     public // other = (
       ^vmMirror largeInteger: self floorDivide: other ifFail: [^super // other].
     )
 
     /// As `Integer>>\\`: the remainder, with the sign of `other`, with
     /// the same ArgumentErrors.
+    ///
+    /// @param other as `//`'s.
+    /// @answers the remainder of `//`, as `Integer>>\\` answers it.
+    /// @signals ArgumentError 'division by zero', carrying `other`, for
+    /// a zero `other`.
+    /// @signals ArgumentError carrying `other`, '\\ requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `Integer>>\\`.
     public \\ other = (
       ^vmMirror largeInteger: self modulo: other ifFail: [^super \\ other].
     )
 
     /// As `Integer>>bitAnd:`, with the same ArgumentError.
+    ///
+    /// @param other an Integer or a LargeInteger.
+    /// @answers the bitwise and of the receiver and `other`.
+    /// @signals ArgumentError carrying `other`, 'bitAnd: requires an
+    /// integer argument, got …', for any other argument.
+    /// @see `Integer>>bitAnd:`.
     public bitAnd: other = (
       ^vmMirror largeInteger: self bitAnd: other ifFail: [^super bitAnd: other].
     )
 
     /// As `Integer>>bitOr:`, with the same ArgumentError.
+    ///
+    /// @param other an Integer or a LargeInteger.
+    /// @answers the bitwise or of the receiver and `other`.
+    /// @signals ArgumentError carrying `other`, 'bitOr: requires an
+    /// integer argument, got …', for any other argument.
+    /// @see `Integer>>bitOr:`.
     public bitOr: other = (
       ^vmMirror largeInteger: self bitOr: other ifFail: [^super bitOr: other].
     )
 
     /// As `Integer>>bitXor:`, with the same ArgumentError.
+    ///
+    /// @param other an Integer or a LargeInteger.
+    /// @answers the bitwise exclusive or of the receiver and `other`.
+    /// @signals ArgumentError carrying `other`, 'bitXor: requires an
+    /// integer argument, got …', for any other argument.
+    /// @see `Integer>>bitXor:`.
     public bitXor: other = (
       ^vmMirror largeInteger: self bitXor: other ifFail: [^super bitXor: other].
     )
 
     /// As `Integer>><<`: the receiver shifted left by `other` bits,
     /// with the same ArgumentErrors.
+    ///
+    /// @param other an Integer or a LargeInteger, at least 0.
+    /// @answers the receiver times 2 to the power `other`.
+    /// @signals ArgumentError carrying `other`, '<< requires an integer
+    /// argument, got …', for an argument that is no integer.
+    /// @signals ArgumentError carrying `other`, '<< takes a non-negative
+    /// shift count, got …', for a negative one.
+    /// @signals ArgumentError carrying `other`, '<< cannot allocate the
+    /// result of shifting by … bits', for a result too large to
+    /// allocate.
+    /// @see `Integer>><<`.
     public << other = (
       ^vmMirror largeInteger: self shiftLeft: other ifFail: [^super << other].
     )
 
-    /// As `Integer>><`: a Boolean by the exact values, false whenever
-    /// `other` is a NaN, with the same ArgumentError.
+    /// As `Integer>><`: by the exact values, with the same
+    /// ArgumentError.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is less than `other`, a Boolean:
+    /// false whenever `other` is a NaN.
+    /// @signals ArgumentError carrying `other`, '< requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `Integer>><`.
     public < other = (
       ^vmMirror largeInteger: self lessThan: other ifFail: [^super < other].
     )
 
     /// As `Integer>>>`, with the same ArgumentError.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is greater than `other`, a Boolean:
+    /// false whenever `other` is a NaN.
+    /// @signals ArgumentError carrying `other`, '> requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `Integer>>>`.
     public > other = (
       ^vmMirror largeInteger: self greaterThan: other ifFail: [^super > other].
     )
 
     /// As `Integer>><=`, with the same ArgumentError.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is less than or equal to `other`, a
+    /// Boolean: false whenever `other` is a NaN.
+    /// @signals ArgumentError carrying `other`, '<= requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `Integer>><=`.
     public <= other = (
       ^vmMirror largeInteger: self lessOrEqual: other ifFail: [^super <= other].
     )
 
     /// As `Integer>>>=`, with the same ArgumentError.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is greater than or equal to `other`,
+    /// a Boolean: false whenever `other` is a NaN.
+    /// @signals ArgumentError carrying `other`, '>= requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `Integer>>>=`.
     public >= other = (
       ^vmMirror largeInteger: self greaterOrEqual: other ifFail: [^super >= other].
     )
 
-    /// Answers whether `other` is a number of the same exact value,
-    /// whatever its class: a LargeInteger equals the Float or the
-    /// LargeInteger of its value, never an Integer within -2^60 to
-    /// 2^60 - 1, which is another value.
+    /// Compares the receiver with `other` by exact value, whatever its
+    /// class: a LargeInteger equals the Float or the LargeInteger of its
+    /// value, never an Integer within -2^60 to 2^60 - 1, which is
+    /// another value. It never signals.
     ///
-    /// other: any object; never signals. Anything that is no number is
-    /// unequal.
+    /// @param other any object; anything that is no number is unequal.
+    /// @answers whether `other` is a number of the same exact value, a
+    /// Boolean.
     public = other = (
       ^vmMirror largeInteger: self equals: other ifFail: [^super = other].
     )
 
-    /// Answers a hash of the value, alike for every number `=` makes
-    /// equal.
+    /// Hashes the receiver by its value, so that the hash agrees with
+    /// `=`.
+    ///
+    /// @answers an Integer, alike for every number `=` makes equal.
     public hash = (
       ^vmMirror largeIntegerHash: self ifFail: [^super hash].
     )
 
-    /// Answers `0 - self`, an integer.
+    /// Negates the receiver.
+    ///
+    /// @answers `0 - self`, an integer.
     public negated = (
       ^vmMirror largeIntegerNegated: self ifFail: [^super negated].
     )
 
-    /// Answers the receiver without its sign, an integer.
+    /// Drops the receiver's sign.
+    ///
+    /// @answers the receiver without its sign, an integer.
     public abs = (
       ^vmMirror largeIntegerAbsolute: self ifFail: [^super abs].
     )
 
-    /// Answers the nearest Float, a tie rounded to the even one; an
-    /// infinity beyond the largest Float.
+    /// Converts the receiver to a Float, a tie rounded to the even one.
+    ///
+    /// @answers the nearest Float; an infinity beyond the largest Float.
     public asFloat = (
       ^vmMirror largeIntegerAsFloat: self ifFail: [^super asFloat].
     )
 
-    /// Answers a new String of the decimal digits, after a '-' for a
+    /// Prints the receiver in decimal.
+    ///
+    /// @answers a new String of the decimal digits, after a '-' for a
     /// negative receiver.
     public printString = (
       ^vmMirror largeIntegerPrintString: self ifFail: [^super printString].
     )
 
-    /// Answers what `printString` answers.
+    /// Prints the receiver as `printString` does.
+    ///
+    /// @answers what `printString` answers.
     public asString = (
       ^vmMirror largeIntegerAsString: self ifFail: [^super asString].
     )
@@ -3071,263 +3464,347 @@ class Kernel vmMirror: mirror = Value (
   /// The 64-bit IEEE 754 floating-point numbers: a literal such as `1.5`
   /// is one.
   public class Float = Number () (
-    /// Answers true: the receiver is a Float.
+    /// Identifies the receiver as a Float, without a class test.
+    ///
+    /// @answers true.
     public isKindOfFloat = (
       ^true.
     )
 
-    /// Answers the sum of the receiver and `other` as IEEE 754 computes
-    /// it, a Float.
+    /// Adds `other` to the receiver as IEEE 754 computes it.
     ///
-    /// other: a number: a Float, or an Integer, a LargeInteger or a
-    /// Fraction, converted to the nearest Float first in one rounding.
-    ///
-    /// Signals an ArgumentError carrying `other`, '+ requires a numeric
+    /// @param other a number: a Float, or an Integer, a LargeInteger or
+    /// a Fraction, converted to the nearest Float first in one rounding.
+    /// @answers the sum of the receiver and `other`, a Float.
+    /// @signals ArgumentError carrying `other`, '+ requires a numeric
     /// argument, got …', for any other argument.
     public + other = (
       ^vmMirror float: self add: other ifFail: [^super + other].
     )
 
-    /// As `+`, the difference; its error text names '-'.
+    /// As `+`, the difference.
+    ///
+    /// @param other as `+`'s.
+    /// @answers the difference of the receiver and `other`, a Float.
+    /// @signals ArgumentError carrying `other`, '- requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `+`.
     public - other = (
       ^vmMirror float: self subtract: other ifFail: [^super - other].
     )
 
-    /// As `+`, the product; its error text names '*'.
+    /// As `+`, the product.
+    ///
+    /// @param other as `+`'s.
+    /// @answers the product of the receiver and `other`, a Float.
+    /// @signals ArgumentError carrying `other`, '* requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `+`.
     public * other = (
       ^vmMirror float: self multiply: other ifFail: [^super * other].
     )
 
     /// As `+`, the quotient: dividing by zero answers an infinity or a
-    /// NaN, never an error; its error text names '/'.
+    /// NaN, never an error.
+    ///
+    /// @param other as `+`'s.
+    /// @answers the quotient of the receiver by `other`, a Float.
+    /// @signals ArgumentError carrying `other`, '/ requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `+`.
     public / other = (
       ^vmMirror float: self divide: other ifFail: [^super / other].
     )
 
-    /// Answers whether the receiver is less than `other` by their exact
-    /// values, a Boolean: false whenever either side is a NaN. An
+    /// Compares the receiver with `other` by their exact values: an
     /// integer or a Fraction `other` is not rounded to a Float first,
     /// so the Float 2^53 is less than the integer 2^53 + 1.
     ///
-    /// other: a number.
-    ///
-    /// Signals an ArgumentError carrying `other`, '< requires a numeric
+    /// @param other a number.
+    /// @answers whether the receiver is less than `other`, a Boolean:
+    /// false whenever either side is a NaN.
+    /// @signals ArgumentError carrying `other`, '< requires a numeric
     /// argument, got …', for any other argument.
     public < other = (
       ^vmMirror float: self lessThan: other ifFail: [^super < other].
     )
 
-    /// As `<`, whether the receiver is greater; its error text names
-    /// '>'.
+    /// As `<`, whether the receiver is greater.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is greater than `other`, a Boolean:
+    /// false whenever either side is a NaN.
+    /// @signals ArgumentError carrying `other`, '> requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `<`.
     public > other = (
       ^vmMirror float: self greaterThan: other ifFail: [^super > other].
     )
 
-    /// As `<`, whether the receiver is less or equal; its error text
-    /// names '<='.
+    /// As `<`, whether the receiver is less or equal.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is less than or equal to `other`, a
+    /// Boolean: false whenever either side is a NaN.
+    /// @signals ArgumentError carrying `other`, '<= requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `<`.
     public <= other = (
       ^vmMirror float: self lessOrEqual: other ifFail: [^super <= other].
     )
 
-    /// As `<`, whether the receiver is greater or equal; its error text
-    /// names '>='.
+    /// As `<`, whether the receiver is greater or equal.
+    ///
+    /// @param other a number.
+    /// @answers whether the receiver is greater than or equal to `other`,
+    /// a Boolean: false whenever either side is a NaN.
+    /// @signals ArgumentError carrying `other`, '>= requires a numeric
+    /// argument, got …', for any other argument.
+    /// @see `<`.
     public >= other = (
       ^vmMirror float: self greaterOrEqual: other ifFail: [^super >= other].
     )
 
-    /// Answers whether `other` is a number of the same exact value,
-    /// whatever its class: `0.0` equals `-0.0` and `0`, every NaN every
-    /// other NaN, `0.5` the Fraction 1/2.
+    /// Compares the receiver with `other` by exact value, whatever its
+    /// class: `0.0` equals `-0.0` and `0`, every NaN every other NaN,
+    /// `0.5` the Fraction 1/2. It never signals.
     ///
-    /// other: any object; never signals. Anything that is no number is
-    /// unequal.
+    /// @param other any object; anything that is no number is unequal.
+    /// @answers whether `other` is a number of the same exact value, a
+    /// Boolean.
     public = other = (
       ^vmMirror float: self equals: other ifFail: [^super = other].
     )
 
-    /// Answers a hash of the exact value, alike for every number `=`
-    /// makes equal, whatever its class: an integral Float's is the
-    /// integer it is.
+    /// Hashes the receiver by its exact value, so that the hash agrees
+    /// with `=` whatever the classes: an integral Float's is the integer
+    /// it is.
+    ///
+    /// @answers an Integer, alike for every number `=` makes equal.
     public hash = (
       ^vmMirror floatHash: self ifFail: [^super hash].
     )
 
-    /// Answers the square root, a Float; a NaN for a negative
-    /// receiver.
+    /// Takes the square root of the receiver.
+    ///
+    /// @answers the square root, a Float; a NaN for a negative receiver.
     public sqrt = (
       ^vmMirror floatSquareRoot: self ifFail: [^super sqrt].
     )
 
-    /// Answers the sine of the receiver, in radians, a Float.
+    /// Takes the sine of the receiver, in radians.
+    ///
+    /// @answers the sine of the receiver, a Float.
     public sin = (
       ^vmMirror floatSine: self ifFail: [^super sin].
     )
 
-    /// Answers the cosine of the receiver, in radians, a Float.
+    /// Takes the cosine of the receiver, in radians.
+    ///
+    /// @answers the cosine of the receiver, a Float.
     public cos = (
       ^vmMirror floatCosine: self ifFail: [^super cos].
     )
 
-    /// Answers the tangent of the receiver, in radians, a Float.
+    /// Takes the tangent of the receiver, in radians.
+    ///
+    /// @answers the tangent of the receiver, a Float.
     public tan = (
       ^vmMirror floatTangent: self ifFail: [^super tan].
     )
 
-    /// Answers the arc sine of the receiver, in radians from -π/2 to
+    /// Takes the arc sine of the receiver.
+    ///
+    /// @answers the arc sine of the receiver, in radians from -π/2 to
     /// π/2, a Float; a NaN outside -1 to 1.
     public asin = (
       ^vmMirror floatArcSine: self ifFail: [^super asin].
     )
 
-    /// Answers the arc cosine of the receiver, in radians from 0 to π, a
-    /// Float; a NaN outside -1 to 1.
+    /// Takes the arc cosine of the receiver.
+    ///
+    /// @answers the arc cosine of the receiver, in radians from 0 to π,
+    /// a Float; a NaN outside -1 to 1.
     public acos = (
       ^vmMirror floatArcCosine: self ifFail: [^super acos].
     )
 
-    /// Answers the arc tangent of the receiver, in radians from -π/2 to
+    /// Takes the arc tangent of the receiver.
+    ///
+    /// @answers the arc tangent of the receiver, in radians from -π/2 to
     /// π/2, a Float.
     public atan = (
       ^vmMirror floatArcTangent: self ifFail: [^super atan].
     )
 
-    /// Answers the angle, in radians from -π to π, of the point whose
-    /// abscissa is `x` and whose ordinate is the receiver, a Float.
+    /// Measures the angle of the point whose abscissa is `x` and whose
+    /// ordinate is the receiver.
     ///
-    /// x: a number, converted to the nearest Float first.
-    ///
-    /// Signals an ArgumentError carrying `x`, 'atan: requires a numeric
+    /// @param x a number, converted to the nearest Float first.
+    /// @answers the angle, in radians from -π to π, a Float.
+    /// @signals ArgumentError carrying `x`, 'atan: requires a numeric
     /// argument, got …', for any other argument.
     public atan: x = (
       ^vmMirror float: self arcTangent: x ifFail: [^super atan: x].
     )
 
-    /// Answers e raised to the receiver, a Float.
+    /// Raises e to the receiver.
+    ///
+    /// @answers e raised to the receiver, a Float.
     public exp = (
       ^vmMirror floatExponential: self ifFail: [^super exp].
     )
 
-    /// Answers the natural logarithm of the receiver, a Float: minus
+    /// Takes the natural logarithm of the receiver.
+    ///
+    /// @answers the natural logarithm of the receiver, a Float: minus
     /// infinity for zero, a NaN below zero.
     public ln = (
       ^vmMirror floatNaturalLogarithm: self ifFail: [^super ln].
     )
 
-    /// Answers the logarithm of the receiver to base 10, a Float: minus
+    /// Takes the logarithm of the receiver to base 10.
+    ///
+    /// @answers the logarithm of the receiver to base 10, a Float: minus
     /// infinity for zero, a NaN below zero.
     public log = (
       ^vmMirror floatLogarithm: self ifFail: [^super log].
     )
 
-    /// Answers the receiver raised to `exponent` as IEEE 754's `pow`
-    /// computes it, a Float.
+    /// Raises the receiver to `exponent` as IEEE 754's `pow` computes
+    /// it.
     ///
-    /// exponent: a number, converted to the nearest Float first.
-    ///
-    /// Signals an ArgumentError carrying `exponent`, 'raisedTo:
-    /// requires a numeric argument, got …', for any other argument.
+    /// @param exponent a number, converted to the nearest Float first.
+    /// @answers the receiver raised to `exponent`, a Float.
+    /// @signals ArgumentError carrying `exponent`, 'raisedTo: requires a
+    /// numeric argument, got …', for any other argument.
     public raisedTo: exponent = (
       ^vmMirror float: self raisedTo: exponent ifFail: [^super raisedTo: exponent].
     )
 
-    /// Answers the greatest integral value not above the receiver, a
-    /// Float; an infinity or a NaN is answered as it is.
+    /// Rounds the receiver toward negative infinity; an infinity or a
+    /// NaN is answered as it is.
+    ///
+    /// @answers the greatest integral value not above the receiver, a
+    /// Float.
     public floor = (
       ^vmMirror floatFloor: self ifFail: [^super floor].
     )
 
-    /// Answers the least integral value not below the receiver, a
-    /// Float; an infinity or a NaN is answered as it is.
+    /// Rounds the receiver toward positive infinity; an infinity or a
+    /// NaN is answered as it is.
+    ///
+    /// @answers the least integral value not below the receiver, a
+    /// Float.
     public ceiling = (
       ^vmMirror floatCeiling: self ifFail: [^super ceiling].
     )
 
-    /// Answers the integral value nearest the receiver, a half rounded
-    /// away from zero, a Float that keeps the receiver's sign; an
-    /// infinity or a NaN is answered as it is.
+    /// Rounds the receiver to the nearest integral value, a half away
+    /// from zero; an infinity or a NaN is answered as it is.
+    ///
+    /// @answers the integral value nearest the receiver, a Float that
+    /// keeps the receiver's sign.
     public rounded = (
       ^vmMirror floatRounded: self ifFail: [^super rounded].
     )
 
-    /// Answers the receiver without its fraction, toward zero, a Float
-    /// that keeps the receiver's sign; an infinity or a NaN is answered
-    /// as it is.
+    /// Drops the receiver's fraction, toward zero; an infinity or a NaN
+    /// is answered as it is.
+    ///
+    /// @answers the receiver without its fraction, a Float that keeps
+    /// the receiver's sign.
     public truncated = (
       ^vmMirror floatTruncated: self ifFail: [^super truncated].
     )
 
-    /// Answers the receiver with its sign changed, a Float: `0.0
-    /// negated` is -0.0.
+    /// Changes the receiver's sign: `0.0 negated` is -0.0.
+    ///
+    /// @answers the receiver with its sign changed, a Float.
     public negated = (
       ^vmMirror floatNegated: self ifFail: [^super negated].
     )
 
-    /// Answers the receiver without its sign, a Float: -0.0 answers
-    /// 0.0.
+    /// Drops the receiver's sign: -0.0 answers 0.0.
+    ///
+    /// @answers the receiver without its sign, a Float.
     public abs = (
       ^vmMirror floatAbsolute: self ifFail: [^super abs].
     )
 
-    /// Answers the receiver itself.
+    /// Converts the receiver to a Float, which it already is.
+    ///
+    /// @answers the receiver.
     public asFloat = (
       ^self.
     )
 
-    /// Answers whether the receiver is a NaN.
+    /// Tells whether the receiver is a NaN.
+    ///
+    /// @answers whether the receiver is a NaN, a Boolean.
     public isNaN = (
       ^vmMirror floatIsNaN: self ifFail: [^super isNaN].
     )
 
-    /// Answers whether the receiver is neither an infinity nor a NaN.
+    /// Tells whether the receiver is finite.
+    ///
+    /// @answers whether the receiver is neither an infinity nor a NaN, a
+    /// Boolean.
     public isFinite = (
       ^vmMirror floatIsFinite: self ifFail: [^super isFinite].
     )
 
-    /// Answers whether the receiver is an infinity, of either sign.
+    /// Tells whether the receiver is infinite.
+    ///
+    /// @answers whether the receiver is an infinity, of either sign, a
+    /// Boolean.
     public isInfinite = (
       ^vmMirror floatIsInfinite: self ifFail: [^super isInfinite].
     )
 
-    /// Answers the receiver truncated toward zero, an integer of any
-    /// size.
+    /// Truncates the receiver toward zero to an integer.
     ///
-    /// Signals an ArgumentError carrying the receiver, 'asInteger
-    /// requires a finite Float, got …', for a NaN or an infinity.
+    /// @answers the receiver truncated toward zero, an integer of any
+    /// size.
+    /// @signals ArgumentError carrying the receiver, 'asInteger requires
+    /// a finite Float, got …', for a NaN or an infinity.
     public asInteger = (
       ^vmMirror floatAsInteger: self ifFail: [^super asInteger].
     )
 
-    /// Answers a new String of the receiver with `fractionDigits`
-    /// digits after the point, rounded half away from zero on its exact
-    /// binary value, keeping its sign even when every digit is zero;
+    /// Prints the receiver with `fractionDigits` digits after the point,
+    /// rounded half away from zero on its exact binary value, keeping
+    /// its sign even when every digit is zero.
+    ///
+    /// @param fractionDigits an Integer from 0 to 20.
+    /// @answers a new String of the receiver in that form;
     /// `printString`'s text when it is not within ±1e21, a NaN or an
     /// infinity included.
-    ///
-    /// fractionDigits: an Integer from 0 to 20.
-    ///
-    /// Signals an ArgumentError carrying `fractionDigits`:
-    /// 'asStringFixed: takes 0 to 20 fraction digits, got …' for an
-    /// Integer outside 0 to 20, a LargeInteger included, and
-    /// 'asStringFixed: requires a numeric argument, got …' for one that
-    /// is no Integer.
+    /// @signals ArgumentError carrying `fractionDigits`, 'asStringFixed:
+    /// takes 0 to 20 fraction digits, got …', for an Integer outside 0
+    /// to 20, a LargeInteger included.
+    /// @signals ArgumentError carrying `fractionDigits`, 'asStringFixed:
+    /// requires a numeric argument, got …', for one that is no Integer.
     public asStringFixed: fractionDigits = (
       ^vmMirror float: self asStringFixed: fractionDigits ifFail: [
         ^super asStringFixed: fractionDigits.
       ].
     )
 
-    /// Answers a new String of the receiver in exponent form: one digit,
-    /// a point and `fractionDigits` digits when there are any, rounded
-    /// half away from zero on its exact binary value, then 'e', the
-    /// exponent's sign and the exponent -- '3.0e+0', '6.67e+1',
-    /// '-0e+0'; 'NaN', 'Infinity' or '-Infinity' for those values.
+    /// Prints the receiver in exponent form: one digit, a point and
+    /// `fractionDigits` digits when there are any, rounded half away
+    /// from zero on its exact binary value, then 'e', the exponent's
+    /// sign and the exponent.
     ///
-    /// fractionDigits: an Integer from 0 to 20.
-    ///
-    /// Signals an ArgumentError carrying `fractionDigits`:
-    /// 'asStringExponential: takes 0 to 20 fraction digits, got …' for
-    /// an Integer outside 0 to 20, a LargeInteger included, and
-    /// 'asStringExponential: requires an integer argument, got …' for
+    /// @param fractionDigits an Integer from 0 to 20.
+    /// @answers a new String of the receiver in that form -- '3.0e+0',
+    /// '6.67e+1', '-0e+0'; 'NaN', 'Infinity' or '-Infinity' for those
+    /// values.
+    /// @signals ArgumentError carrying `fractionDigits`,
+    /// 'asStringExponential: takes 0 to 20 fraction digits, got …', for
+    /// an Integer outside 0 to 20, a LargeInteger included.
+    /// @signals ArgumentError carrying `fractionDigits`,
+    /// 'asStringExponential: requires an integer argument, got …', for
     /// one that is no Integer.
     public asStringExponential: fractionDigits = (
       ^vmMirror float: self asStringExponential: fractionDigits ifFail: [
@@ -3335,55 +3812,61 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
 
-    /// Answers a new String of the receiver with `digits` significant
-    /// digits, rounded half away from zero on its exact binary value:
-    /// in decimal ('66.7', '0.0000010'), or in `asStringExponential:`'s
-    /// form ('7e+1', '1.0e-7') when the value needs more than six zeros
-    /// after the point or its digits end before the point; 'NaN',
-    /// 'Infinity' or '-Infinity' for those values.
+    /// Prints the receiver with `digits` significant digits, rounded
+    /// half away from zero on its exact binary value: in decimal, or in
+    /// `asStringExponential:`'s form when the value needs more than six
+    /// zeros after the point or its digits end before the point.
     ///
-    /// digits: an Integer from 1 to 21.
-    ///
-    /// Signals an ArgumentError carrying `digits`: 'asStringPrecision:
-    /// takes 1 to 21 digits, got …' for an Integer outside 1 to 21, a
-    /// LargeInteger included, and 'asStringPrecision: requires an
-    /// integer argument, got …' for one that is no Integer.
+    /// @param digits an Integer from 1 to 21.
+    /// @answers a new String of the receiver in that form ('66.7',
+    /// '0.0000010', '7e+1', '1.0e-7'); 'NaN', 'Infinity' or '-Infinity'
+    /// for those values.
+    /// @signals ArgumentError carrying `digits`, 'asStringPrecision:
+    /// takes 1 to 21 digits, got …', for an Integer outside 1 to 21, a
+    /// LargeInteger included.
+    /// @signals ArgumentError carrying `digits`, 'asStringPrecision:
+    /// requires an integer argument, got …', for one that is no Integer.
+    /// @see `asStringExponential:`.
     public asStringPrecision: digits = (
       ^vmMirror float: self asStringPrecision: digits ifFail: [^super asStringPrecision: digits].
     )
 
-    /// Answers a new String of the shortest decimal text that reads
-    /// back as the receiver: in decimal when its first digit's power of
-    /// ten lies from -6 to 20, with '.0' after an integral value
-    /// ('3.0', '0.000001', '100000000000000000000.0'), and in exponent
-    /// form beyond ('1e+21', '1e-7'); 'NaN', 'Infinity' and
-    /// '-Infinity' for those values. A negative value, -0.0 included,
-    /// begins with '-'.
+    /// Prints the shortest decimal text that reads back as the receiver:
+    /// in decimal when its first digit's power of ten lies from -6 to
+    /// 20, with '.0' after an integral value, and in exponent form
+    /// beyond. A negative value, -0.0 included, begins with '-'.
+    ///
+    /// @answers a new String of that text ('3.0', '0.000001',
+    /// '100000000000000000000.0', '1e+21', '1e-7'); 'NaN', 'Infinity'
+    /// and '-Infinity' for those values.
     public printString = (
       ^vmMirror floatPrintString: self ifFail: [^super printString].
     )
 
-    /// Answers what `printString` answers.
+    /// Prints the receiver as `printString` does.
+    ///
+    /// @answers what `printString` answers.
     public asString = (
       ^vmMirror floatAsString: self ifFail: [^super asString].
     )
   ) : (
-    /// Answers the Float `text` names: an optional '-' or '+', then
+    /// Reads the Float `text` names: an optional '-' or '+', then
     /// 'Infinity', 'NaN', or decimal digits with an optional point and
     /// an optional exponent ('e' or 'E', an optional sign, digits),
     /// with at least one digit before the exponent -- every text
-    /// `printString` writes. The nearest Float to the decimal value;
-    /// an infinity beyond the largest.
-    ///
-    /// text: a String.
-    ///
-    /// Signals an ArgumentError carrying `text`: 'parse: requires the
-    /// text of a Float, got …' for a String that is no such text, a
-    /// lower-case 'nan' or 'inf', a space or an empty String included,
-    /// and 'parse: requires a String, got …' for anything else.
+    /// `printString` writes.
     ///
     /// The leaf answers only for `Float` itself; any other receiver
     /// falls to `super`.
+    ///
+    /// @param text a String.
+    /// @answers the nearest Float to the decimal value; an infinity
+    /// beyond the largest.
+    /// @signals ArgumentError carrying `text`, 'parse: requires the text
+    /// of a Float, got …', for a String that is no such text, a
+    /// lower-case 'nan' or 'inf', a space or an empty String included.
+    /// @signals ArgumentError carrying `text`, 'parse: requires a
+    /// String, got …', for anything else.
     public parse: text = (
       ^vmMirror floatClass: self parse: text ifFail: [^super parse: text].
     )
@@ -3399,48 +3882,66 @@ class Kernel vmMirror: mirror = Value (
   /// and `=` and `hash` can compare its parts. Its parts are two hidden
   /// fields, not slots: no program writes them.
   public class Fraction = Number () (
-    /// Answers true: the receiver is a Fraction.
+    /// Identifies the receiver as a Fraction, without a class test.
+    ///
+    /// @answers true.
     public isKindOfFraction = (
       ^true.
     )
 
-    /// Answers the numerator, an integer of either sign. A receiver
-    /// holding no value (`Fraction new`) makes the leaf decline, and
-    /// the send ends in doesNotUnderstand: (MessageNotUnderstood).
+    /// Reads the receiver's numerator. A receiver holding no value
+    /// (`Fraction new`) makes the leaf decline, and the send ends in
+    /// doesNotUnderstand:.
+    ///
+    /// @answers the numerator, an integer of either sign.
+    /// @signals MessageNotUnderstood for a receiver holding no value.
     public numerator = (
       ^vmMirror fractionNumerator: self ifFail: [^super numerator].
     )
 
-    /// Answers the denominator, an integer above 1. A receiver holding
-    /// no value (`Fraction new`) makes the leaf decline, and the send
-    /// ends in doesNotUnderstand: (MessageNotUnderstood).
+    /// Reads the receiver's denominator. A receiver holding no value
+    /// (`Fraction new`) makes the leaf decline, and the send ends in
+    /// doesNotUnderstand:.
+    ///
+    /// @answers the denominator, an integer above 1.
+    /// @signals MessageNotUnderstood for a receiver holding no value.
     public denominator = (
       ^vmMirror fractionDenominator: self ifFail: [^super denominator].
     )
 
-    /// Answers the greatest integer not above the receiver.
+    /// Rounds the receiver toward negative infinity.
+    ///
+    /// @answers the greatest integer not above the receiver.
     public floor = (
       ^self numerator // self denominator.
     )
 
-    /// Answers the least integer not below the receiver.
+    /// Rounds the receiver toward positive infinity.
+    ///
+    /// @answers the least integer not below the receiver.
     public ceiling = (
       ^(self numerator negated // self denominator) negated.
     )
 
-    /// Answers the receiver without its fraction, an integer toward
-    /// zero.
+    /// Drops the receiver's fraction, toward zero.
+    ///
+    /// @answers the receiver without its fraction, an integer.
     public truncated = (
       ^self numerator quo: self denominator.
     )
 
-    /// Answers `truncated`.
+    /// Converts the receiver to an integer by truncating it.
+    ///
+    /// @answers `truncated`.
+    /// @see `truncated`.
     public asInteger = (
       ^self truncated.
     )
 
-    /// Answers the integer nearest the receiver, a half rounded away
-    /// from zero.
+    /// Rounds the receiver to the nearest integer, a half away from
+    /// zero.
+    ///
+    /// @answers the integer nearest the receiver.
     public rounded = (
       |
         nearest = (self numerator abs * 2 + self denominator) // (self denominator * 2).
@@ -3448,53 +3949,58 @@ class Kernel vmMirror: mirror = Value (
       ^self numerator < 0 ifTrue: [nearest negated] ifFalse: [nearest].
     )
 
-    /// Answers a new String of the numerator and the denominator
-    /// between parentheses and separated by '/': '(3/4)', '(-1/2)'.
+    /// Prints the numerator and the denominator between parentheses and
+    /// separated by '/'.
+    ///
+    /// @answers a new String such as '(3/4)' or '(-1/2)'.
     public printString = (
       ^'(' , self numerator printString , '/' , self denominator printString , ')'.
     )
 
-    /// Answers what `printString` answers.
+    /// Prints the receiver as `printString` does.
+    ///
+    /// @answers what `printString` answers.
     public asString = (
       ^self printString.
     )
   ) : (
-    /// Answers `numerator` divided by `denominator`, exactly: an
-    /// Integer when `denominator` divides `numerator`, otherwise a
-    /// Fraction in normal form, its sign on the numerator.
-    ///
-    /// numerator: an integer.
-    /// denominator: an integer other than 0.
-    ///
-    /// Signals an ArgumentError: 'numerator:denominator: requires a
-    /// non-zero denominator' carrying `denominator` for 0, and
-    /// 'numerator:denominator: requires integers, got …' carrying the
-    /// first argument that is no integer.
+    /// Divides `numerator` by `denominator` exactly.
     ///
     /// The leaf answers only for `Fraction` itself; any other receiver
     /// falls to `super`.
+    ///
+    /// @param numerator an integer.
+    /// @param denominator an integer other than 0.
+    /// @answers an Integer when `denominator` divides `numerator`,
+    /// otherwise a Fraction in normal form, its sign on the numerator.
+    /// @signals ArgumentError carrying `denominator`,
+    /// 'numerator:denominator: requires a non-zero denominator', for 0.
+    /// @signals ArgumentError carrying the first argument that is no
+    /// integer, 'numerator:denominator: requires integers, got …', when
+    /// either is none.
     public numerator: numerator denominator: denominator = (
       ^vmMirror fractionClass: self numerator: numerator denominator: denominator ifFail: [
         ^super numerator: numerator denominator: denominator.
       ].
     )
 
-    /// Answers the Fraction `numerator`/`denominator`, a pair the
+    /// Makes the Fraction `numerator`/`denominator` from a pair the
     /// caller has put in normal form already: no factor common to both,
     /// `denominator` above 1. Nothing is reduced.
     ///
-    /// numerator: an integer.
-    /// denominator: an integer above 1 with no factor common to
-    /// `numerator`.
-    ///
-    /// Signals an ArgumentError carrying `denominator`,
-    /// 'reducedNumerator:denominator: requires a fraction in normal
-    /// form, got …/…', for a pair not in normal form, and one carrying
-    /// the argument, 'reducedNumerator:denominator: requires integers,
-    /// got …', for an argument that is no integer.
-    ///
     /// The leaf answers only for `Fraction` itself; any other receiver
     /// falls to `super`.
+    ///
+    /// @param numerator an integer.
+    /// @param denominator an integer above 1 with no factor common to
+    /// `numerator`.
+    /// @answers the Fraction `numerator`/`denominator`.
+    /// @signals ArgumentError carrying `denominator`,
+    /// 'reducedNumerator:denominator: requires a fraction in normal
+    /// form, got …/…', for a pair not in normal form.
+    /// @signals ArgumentError carrying the argument,
+    /// 'reducedNumerator:denominator: requires integers, got …', for an
+    /// argument that is no integer.
     public reducedNumerator: numerator denominator: denominator = (
       ^vmMirror fractionClass: self reducedNumerator: numerator denominator: denominator ifFail: [
         ^super reducedNumerator: numerator denominator: denominator.
