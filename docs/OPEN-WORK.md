@@ -621,13 +621,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       after the collection then gives back (`jit/zone.rs`,
       `InlineCaches::vacate_sites`), dirtying pages just before they go;
       a cost only, worth changing if a measurement shows it.
-    - *The stress gate's slowest test*: `runtime/jit/counting_loop` under
-      the reference lowering takes 563 to 576 s alone under
-      `NS_NEXT_STRESS_COLLECT`, nearly ten minutes (noted with the
-      user on 2026-10-31); why it takes so
-      long, and whether the collect stress mode should collect at every
-      safepoint of such a loop or at a pace of its own, is to be
-      investigated.
   - **What stage 3's reviews left** (2026-10-28 and 2026-10-29), none of
     them a wrong outcome:
     - *The architecture scan's blind spots*: `tests/jit_architecture_split.rs`
