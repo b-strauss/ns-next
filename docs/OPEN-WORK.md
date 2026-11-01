@@ -455,7 +455,20 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     `NESTED_CLASS_STUBS` slots or holds no class yet: only a public or
     protected chain's cell compares the receiver's own guard, which the
     stub's hidden slot needs (`jit::stub_entry`). A private one would
-    take the guarded accessors' recorded-guard compare.
+    take the guarded accessors' recorded-guard compare. It costs CD 3%:
+    a class's methods name its sibling classes by implicit-receiver
+    sends (`Vector2D x:y:` in `plus:` and `minus:`, `Node`,
+    `RedBlackTree`, `InsertResult`, `Vector3D`), each a refused call
+    and an exit, so the bodies that make them spend their budgets in 64
+    calls, their callers' refused calls abandon those in turn, and every
+    revival -- by the decay, at every second scavenge -- compiles them
+    again only for them to be abandoned again: 13,331 abandonments and
+    as many revivals in a run of four sends, the exits nearly all such
+    refused calls. A build that never revives an abandoned body ran CD
+    3.0% faster (2,980 ms against 3,073, one build a side, three
+    rounds, measured 2026-11-01); the guarded nested-class stub removes
+    the cause, where suppressing revival would end a rarely exiting
+    body's run interpreted again.
   - **Every initializer invocation calls a leaf.** `Leaf::Initializer`
     decides the invocation afresh each time (`jit::sends::initialize`),
     so an instantiation calls it once per level that runs code, and once
@@ -836,6 +849,18 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   the object, or keeping one per literal, would save the allocation.
   Unmeasured; noted 2026-10-02. [object-model.md](design/object-model.md),
   "Values and objects" ("Literals").
+- **A symbol literal costs machine code a leaf call.** `LoadLiteral` of
+  a `Symbol` (and of a `String`, a `LargeInteger` and a boxed `Float`)
+  lowers to the step leaf (`jit::baseline`, `allocated_literal`), which
+  views the frame (`materialize::leaf_frame`) and runs the instruction
+  interpreted: about 17 ns where a template would take one or two. Nearly
+  every step leaf call DeltaBlue makes is `#forward` (about 4,200 of every
+  4,300 sampled), about 2.2 million a run of 247 ms, so a template that
+  loads an interned symbol's handle -- kept current across moves, as a
+  closure site's words are -- would save about a seventh of the run.
+  Measured 2026-11-01 (a profile and a sampled count of the step leaf's
+  instructions). [execution.md](design/execution.md), "The code zone"
+  (the lookup by a code address).
 - **Cascades through the integer fast path.** `lower_cascade` emits every
   message with `emit_ordinary_send_with_receiver`, so a cascade's binary
   integer sends never get `IntegerBinary` (`compiler/lower.rs:1514`).

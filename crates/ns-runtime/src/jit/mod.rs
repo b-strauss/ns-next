@@ -874,6 +874,11 @@ pub(crate) struct JitState {
     /// stack, as a binary search over `bodies` and then over the body's
     /// returns, which the leaf stub's leaf made on every call, was not.
     returns: IdentityMap<u32, ReturnSite>,
+    /// The bodies the last lookups by an address inside the code found
+    /// (`installed_index_at`), so that a leaf handed the code's own
+    /// address rather than a call's return address finds its body
+    /// without the search over `bodies` (`BodyLookup`).
+    body_lookup: BodyLookup,
     /// Whether bodies are compiled and entered: never without a zone.
     enabled: bool,
     /// Whether machine code counts its backward jumps
@@ -1037,6 +1042,7 @@ impl JitState {
             unavailable,
             bodies: Vec::new(),
             returns: IdentityMap::default(),
+            body_lookup: BodyLookup::default(),
             counting: false,
             statistics: JitStatistics::default(),
             install_bodies_exiting_at_once: stress_jit,
@@ -1421,14 +1427,30 @@ impl JitState {
         let zone = self.zone.as_ref()?;
         let base = zone.writer.zone().executable_address(CodeOffset(0));
         let offset = u32::try_from(return_address.checked_sub(base)?.checked_sub(1)?).ok()?;
+        let holds = |index: usize| {
+            self.bodies
+                .get(index)
+                .is_some_and(|body| body.start <= offset && offset < body.end && !body.free)
+        };
+        let entry = self.body_lookup.entry(offset);
+        if let Some(index) = entry.get().checked_sub(1) {
+            if holds(index as usize) {
+                return Some(index);
+            }
+        }
+        self.body_lookup
+            .searches
+            .set(self.body_lookup.searches.get() + 1);
         // Installed in ascending order, so the body holding the offset, if
         // one does, is the last that starts at or before it.
         let after = self.bodies.partition_point(|body| body.start <= offset);
         let index = after.checked_sub(1)?;
-        let body = &self.bodies[index];
-        (offset < body.end && !body.free)
-            .then(|| u32::try_from(index).ok())
-            .flatten()
+        if !holds(index) {
+            return None;
+        }
+        let index = u32::try_from(index).ok()?;
+        entry.set(index + 1);
+        Some(index)
     }
 
     /// The installed body at `index` in `bodies`, unless it is freed.
@@ -1449,6 +1471,7 @@ impl JitState {
             unavailable: None,
             bodies: Vec::new(),
             returns: IdentityMap::default(),
+            body_lookup: BodyLookup::default(),
             enabled: true,
             counting: false,
             statistics: JitStatistics::default(),
@@ -1488,6 +1511,47 @@ pub(crate) struct Installed {
     /// Whether the body is a twin, which reifies its frame
     /// (`InstalledBody::reifies`).
     pub(crate) reifies: bool,
+}
+
+/// How many bodies `BodyLookup` remembers: a power of two.
+const BODY_LOOKUP_ENTRIES: usize = 256;
+
+/// The bodies the last lookups by an address inside the code found, one
+/// per entry an offset hashes to, each its index in `JitState::bodies`
+/// plus one, 0 for none. The step, initializer and own-slot leaves are
+/// handed the code's own address, which the call returns do not record,
+/// and DeltaBlue spent about a sixth of its time in the binary search
+/// over the installed bodies their lookups made, a search a twin per
+/// closure-making body lengthened. An entry is a hint, never trusted: it
+/// answers only when the body it names still holds the offset and is not
+/// freed, which a body that holds it is alone, since installed bodies
+/// never overlap -- so a compaction, a free or a replaced zone, which move,
+/// free or drop bodies, need not clear it.
+struct BodyLookup {
+    entries: [Cell<u32>; BODY_LOOKUP_ENTRIES],
+    /// The lookups that searched `bodies`, every one the entries did not
+    /// answer.
+    searches: Cell<u64>,
+}
+
+impl Default for BodyLookup {
+    fn default() -> BodyLookup {
+        BodyLookup {
+            entries: std::array::from_fn(|_| Cell::new(0)),
+            searches: Cell::new(0),
+        }
+    }
+}
+
+impl BodyLookup {
+    /// The entry an offset into the zone hashes to: the offsets of one
+    /// body's leaf calls lie a few dozen bytes apart and bodies at least
+    /// sixteen, so a multiplicative hash spreads both.
+    fn entry(&self, offset: u32) -> &Cell<u32> {
+        const SHIFT: u32 = u32::BITS - BODY_LOOKUP_ENTRIES.trailing_zeros();
+        let hashed = offset.wrapping_mul(0x9E37_79B1) >> SHIFT;
+        &self.entries[hashed as usize]
+    }
 }
 
 /// `body` as `Installed`, while its code and method live.
@@ -3953,6 +4017,37 @@ mod tests {
                 let outcome = std::panic::catch_unwind(|| padding_from(Some(text)));
                 assert!(outcome.is_err(), "{text:?} is refused");
             }
+        }
+
+        /// A lookup by an address inside the code, which the step,
+        /// initializer and own-slot leaves make, searches the installed
+        /// bodies once per address, and its remembered answer is never
+        /// trusted past the body's being freed.
+        #[test]
+        fn a_lookup_by_a_code_address_searches_once_and_never_answers_a_freed_body() {
+            let mut state = JitState::for_test(1 << 16, false);
+            let first = body_with_a_loop();
+            let second = body_with_a_loop();
+            enter_twice(&mut state, &first);
+            enter_twice(&mut state, &second);
+            let zone = state.zone.as_ref().expect("a zone");
+            let address = |code: &Rc<CompiledCode>| {
+                let start = machine_entry(&state, code).expect("compiled");
+                zone.writer.zone().executable_address(start) + 8
+            };
+            let (inside_first, inside_second) = (address(&first), address(&second));
+            let searches = |state: &JitState| state.body_lookup.searches.get();
+            assert_eq!(state.installed_index_at(inside_first), Some(0));
+            assert_eq!(searches(&state), 1);
+            for _ in 0..3 {
+                assert_eq!(state.installed_index_at(inside_first), Some(0));
+            }
+            assert_eq!(searches(&state), 1, "answered without a search");
+            assert_eq!(state.installed_index_at(inside_second), Some(1));
+            assert_eq!(state.installed_index_at(inside_second), Some(1));
+            assert_eq!(searches(&state), 2);
+            state.bodies[0].free = true;
+            assert_eq!(state.installed_index_at(inside_first), None, "freed");
         }
 
         #[test]

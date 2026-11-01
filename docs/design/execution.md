@@ -11358,6 +11358,20 @@ that make everything that grows reclaimable (plan
   - A freed body is skipped by every lookup (`installed`,
     `installed_body_at`, `body_of`, `return_site`) until the next
     compaction reclaims its bytes.
+  - A lookup by an address inside the code -- which the step,
+    initializer and own-slot leaves make, handed the code's own address
+    rather than a call's return address, which `returns` records --
+    goes through a direct-mapped table of 256 remembered answers
+    (`jit::BodyLookup`) before it searches the installed bodies. An
+    answer is only a hint: it is taken when the body it names still
+    holds the address and is not freed, which only the body holding it
+    can be, since installed bodies never overlap, so no compaction, free
+    or zone replacement has to clear the table. DeltaBlue made about 2.7
+    million such lookups a run and spent about a sixth of its time in
+    the binary search over the installed bodies, a search the twins
+    lengthened ("A frame reifies only in its body's twin"): 1.9% slower
+    at the twins (three layouts), 15% faster with the table (interim,
+    one build a side, 290.5 ms to 246.9).
 - **The slide and the fix-ups**, in Cog's order (`compactCogCompiledCode`,
   `:5723-5743`):
   1. mark the active bodies (Cog's `markActiveMethodsAndReferents`,
