@@ -74,7 +74,10 @@
                         implementationClass="io.github.bstrauss.newspeak.editor.NewspeakCommenter"/>
         <lang.quoteHandler language="Newspeak"
                            implementationClass="io.github.bstrauss.newspeak.editor.NewspeakQuoteHandler"/>
-        <lang.foldingBuilder language="Newspeak"
+        <!-- First, so that a one-line method's folds are created before the server's fold of its
+             body, which they partly overlap and which the platform therefore refuses
+             (NewspeakOneLineMethodFolding). -->
+        <lang.foldingBuilder language="Newspeak" order="first"
                              implementationClass="io.github.bstrauss.newspeak.editor.NewspeakOneLineMethodFolding"/>
         <codeFoldingOptionsProvider instance="io.github.bstrauss.newspeak.settings.NewspeakCodeFoldingOptionsProvider"/>
         <indexPatternBuilder implementation="io.github.bstrauss.newspeak.editor.NewspeakIndexPatternBuilder"/>

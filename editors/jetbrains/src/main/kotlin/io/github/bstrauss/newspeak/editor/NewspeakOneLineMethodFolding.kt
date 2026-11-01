@@ -23,10 +23,20 @@ import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes as Types
  *   )
  * ```
  *
- * reads as `public size = ( ^size_. )`. Two folds, the line break before the
- * body and the one after it, each shown as a space and opened together;
- * collapsed by default unless *Settings | Editor | General | Code Folding |
- * Newspeak | One-line methods* is off. The file is never changed.
+ * reads as `public size = ( ^size_. )`. Two folds, opened together, laid out
+ * as Java's: the first from the space before the `(` to the statement, shown
+ * as ` ( `, the second from the statement to the `)` included, shown as
+ * ` )`, so that each is as wide as the text it stands for and a click on
+ * either bracket or the space beside it opens the method. They start
+ * collapsed, and exist only while *Settings | Editor | General | Code
+ * Folding | Newspeak | One-line methods* is on. The file is never changed.
+ *
+ * The first fold overlaps the server's fold of the method body, which
+ * starts at the `(`, without containing it, and the platform refuses a
+ * region that partly overlaps one it already created; this builder is
+ * registered first (`order="first"` in `plugin.xml`), so a one-line method
+ * has these two folds and not the server's, as a Java one-liner has no
+ * method fold. With the setting off the server's fold is left alone.
  *
  * The method is found in the tokens, since the plugin has no Newspeak parser
  * (`NewspeakParserDefinition`): `= (` ending a line, one line of body, and a
@@ -38,24 +48,30 @@ class NewspeakOneLineMethodFolding : FoldingBuilderEx(), DumbAware {
     override fun buildFoldRegions(root: PsiElement, document: Document, quick: Boolean): Array<FoldingDescriptor> {
         val tokens = root.node.getChildren(null).filter { it.elementType != TokenType.WHITE_SPACE }
         val text = document.charsSequence
-        val collapsed = NewspeakSettings.getInstance().state.collapseOneLineMethods
+        if (!NewspeakSettings.getInstance().state.collapseOneLineMethods) return emptyArray()
         val descriptors = mutableListOf<FoldingDescriptor>()
         for (index in 0 until tokens.size - 1) {
             if (tokens[index].elementType != Types.EQUALS || tokens[index + 1].elementType != Types.LEFT_PARENTHESIS) continue
             val method = oneLineMethod(tokens, index + 1, text) ?: continue
             val group = FoldingGroup.newGroup("one-line method")
-            for (range in listOf(method.beforeBody, method.afterBody)) {
-                descriptors += FoldingDescriptor(method.opening, range, group, " ", collapsed, emptySet())
-            }
+            descriptors += FoldingDescriptor(method.opening, method.beforeBody, group, method.openingText, true, emptySet())
+            descriptors += FoldingDescriptor(method.closing, method.afterBody, group, CLOSING_TEXT, true, emptySet())
         }
         return descriptors.toTypedArray()
     }
 
-    override fun getPlaceholderText(node: ASTNode): String = " "
+    override fun getPlaceholderText(node: ASTNode): String =
+        if (node.elementType == Types.LEFT_PARENTHESIS) SPACED_OPENING_TEXT else CLOSING_TEXT
 
-    override fun isCollapsedByDefault(node: ASTNode): Boolean = NewspeakSettings.getInstance().state.collapseOneLineMethods
+    override fun isCollapsedByDefault(node: ASTNode): Boolean = true
 
-    private class OneLineMethod(val opening: ASTNode, val beforeBody: TextRange, val afterBody: TextRange)
+    private class OneLineMethod(
+        val opening: ASTNode,
+        val closing: ASTNode,
+        val beforeBody: TextRange,
+        val afterBody: TextRange,
+        val openingText: String,
+    )
 
     /** The method whose body opens at `tokens[openingIndex]`, when that body is one line and fits folded. */
     private fun oneLineMethod(tokens: List<ASTNode>, openingIndex: Int, text: CharSequence): OneLineMethod? {
@@ -84,10 +100,15 @@ class NewspeakOneLineMethodFolding : FoldingBuilderEx(), DumbAware {
         val statement = text.subSequence(first.startOffset, last.textRange.endOffset)
         val width = columns(header) + 1 + columns(statement) + 2
         if (width > MAXIMUM_WIDTH) return null
+        // The spaces before the `(` on its line, which the first fold hides with it.
+        var openingStart = opening.startOffset
+        while (openingStart > lineStart && (text[openingStart - 1] == ' ' || text[openingStart - 1] == '	')) openingStart--
         return OneLineMethod(
             opening,
-            TextRange(opening.textRange.endOffset, first.startOffset),
-            TextRange(last.textRange.endOffset, closing.startOffset),
+            closing,
+            TextRange(openingStart, first.startOffset),
+            TextRange(last.textRange.endOffset, closing.textRange.endOffset),
+            if (openingStart < opening.startOffset) SPACED_OPENING_TEXT else OPENING_TEXT,
         )
     }
 
@@ -121,5 +142,12 @@ class NewspeakOneLineMethodFolding : FoldingBuilderEx(), DumbAware {
     companion object {
         /** The formatter's width (`docs/design/formatting.md`, rule 1): a folded line never shows longer than it. */
         const val MAXIMUM_WIDTH = NewspeakCodeStyle.RIGHT_MARGIN
+
+        /** The first fold's text after a space it hides, and where no space stood before the `(`. */
+        const val SPACED_OPENING_TEXT = " ( "
+        const val OPENING_TEXT = "( "
+
+        /** The second fold's text. */
+        const val CLOSING_TEXT = " )"
     }
 }

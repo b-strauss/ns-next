@@ -1,17 +1,19 @@
 package io.github.bstrauss.newspeak.editor
 
+import com.intellij.lang.folding.LanguageFolding
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import io.github.bstrauss.newspeak.NewspeakLanguage
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 
 class NewspeakOneLineMethodFoldingTest : BasePlatformTestCase() {
-    /** What each fold of `source` shows, in order: the text it hides, then whether it opens collapsed. */
-    private fun folds(source: String): List<Pair<String, Boolean>> {
+    /** What each fold of `source` does, in order: the text it hides, then the text it shows; each opens collapsed. */
+    private fun folds(source: String): List<Pair<String, String>> {
         val file = myFixture.configureByText("Module.ns", source)
         return NewspeakOneLineMethodFolding()
             .buildFoldRegions(file, myFixture.editor.document, false)
             .map { descriptor ->
-                assertEquals(" ", descriptor.placeholderText)
-                descriptor.range.substring(source) to (descriptor.isCollapsedByDefault() ?: false)
+                assertEquals(true, descriptor.isCollapsedByDefault())
+                descriptor.range.substring(source) to descriptor.placeholderText!!
             }
     }
 
@@ -23,8 +25,15 @@ class NewspeakOneLineMethodFoldingTest : BasePlatformTestCase() {
         )
     """.trimIndent()
 
-    fun testAOneLineMethodFoldsOntoItsHeadersLine() {
-        assertEquals(listOf("\n    " to true, "\n  " to true), folds(oneLine))
+    fun testAOneLineMethodFoldsOntoItsHeadersLineAsJavasDoes() {
+        assertEquals(listOf(" (\n    " to " ( ", "\n  )" to " )"), folds(oneLine))
+    }
+
+    fun testWithoutASpaceBeforeItsBracketTheFirstFoldStartsAtTheBracket() {
+        assertEquals(
+            listOf("(\n    " to "( ", "\n  )" to " )"),
+            folds("class M = () (\n  public size =(\n    ^size_.\n  )\n)"),
+        )
     }
 
     fun testItsTwoFoldsOpenTogether() {
@@ -34,13 +43,36 @@ class NewspeakOneLineMethodFoldingTest : BasePlatformTestCase() {
         assertSame(descriptors[0].group, descriptors[1].group)
     }
 
-    fun testTheSettingDecidesWhetherItOpensFolded() {
+    fun testWithTheSettingOffThereAreNoFolds() {
         val state = NewspeakSettings.getInstance().state
         state.collapseOneLineMethods = false
         try {
-            assertEquals(listOf("\n    " to false, "\n  " to false), folds(oneLine))
+            assertEmpty(folds(oneLine))
         } finally {
             state.collapseOneLineMethods = true
+        }
+    }
+
+    fun testTheBuilderComesBeforeTheServersSoItsFoldsWin() {
+        assertInstanceOf(
+            LanguageFolding.INSTANCE.allForLanguage(NewspeakLanguage).first(),
+            NewspeakOneLineMethodFolding::class.java,
+        )
+    }
+
+    /** What the registration's order rests on: the server's fold of the body, `(` to `)`, is refused after them. */
+    fun testThePlatformRefusesTheServersFoldOfTheBodyAfterThem() {
+        val file = myFixture.configureByText("Module.ns", oneLine)
+        val descriptors = NewspeakOneLineMethodFolding().buildFoldRegions(file, myFixture.editor.document, false)
+        val opening = oneLine.indexOf("size = (") + "size = ".length
+        val closing = oneLine.indexOf("  )") + 3
+        val model = myFixture.editor.foldingModel
+        model.runBatchFoldingOperation {
+            for (descriptor in descriptors) {
+                val range = descriptor.range
+                assertNotNull(model.addFoldRegion(range.startOffset, range.endOffset, descriptor.placeholderText!!))
+            }
+            assertNull(model.addFoldRegion(opening, closing, "(...)"))
         }
     }
 

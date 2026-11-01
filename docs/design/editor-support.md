@@ -395,13 +395,24 @@ rule 10), and `public size = (`, `^size_.`, `)` reads as
 (`editor/NewspeakOneLineMethodFolding.kt`, a `lang.foldingBuilder` for
 Newspeak beside the platform's): the platform's `LspFoldingBuilder` starts
 a range collapsed only for the `imports` and `region` kinds, so no fold
-range of the server's can open folded. Two folds per method, the line break
-and indentation before the body and those after it, each shown as one space
-and in one `FoldingGroup`, so they open and close together; both lie inside
-the server's method fold. They open collapsed unless *Settings | Editor |
-General | Code Folding | Newspeak | One-line methods* is off
-(`NewspeakCodeFoldingOptionsProvider`, the `codeFoldingOptionsProvider`
-Java's options use; the value in `NewspeakSettings`, application-level).
+range of the server's can open folded. Two folds per method in one
+`FoldingGroup`, so they open and close together, laid out as Java's
+one-liners are: the first from the spaces before the `(` (none when the
+`(` follows the `=` directly) to the statement, shown as ` ( ` (`( `
+without them), the second from the statement to the `)` included, shown as
+` )`; each is as wide as the text it stands for, and a click on either
+bracket or the space beside it opens the method. The first overlaps the
+server's method fold, which starts at the `(`, without containing it, and
+the platform refuses a region that partly overlaps one already created
+(`FoldRegionsTree.checkIfValidToCreate`); the builder is registered
+`order="first"`, so its folds are created first and a one-line method has
+no fold of the server's, as a Java one-liner has no method fold. Both pinned
+in `NewspeakOneLineMethodFoldingTest`. They exist, collapsed, only while
+*Settings | Editor | General | Code Folding | Newspeak | One-line methods*
+is on (`NewspeakCodeFoldingOptionsProvider`, the
+`codeFoldingOptionsProvider` Java's options use; the value in
+`NewspeakSettings`, application-level); with it off the method keeps the
+server's fold, as in Java.
 The file is never changed. The plugin has no Newspeak parser, so the method
 is found in the tokens: `= (` ending a line, one line of body, and a `)`
 alone on the next. A class header has the same shape but its `)` is followed
@@ -1513,8 +1524,9 @@ The server's own tests are described under its section, above ("Testing").
   same tokens, the platform test framework's standard check;
 - plugin tests on `BasePlatformTestCase` (`NewspeakEditorTest`) — file type,
   brace matching, commenting; `NewspeakOneLineMethodFoldingTest`, the
-  one-line methods' folds (which bodies fold and which stay open, the width,
-  the setting); `NewspeakIndentationTest`, the editor's indentation and
+  one-line methods' folds (which bodies fold and which stay open, the
+  ranges and texts of Java's layout, the width, the setting, the
+  registration's order and the server's fold it displaces); `NewspeakIndentationTest`, the editor's indentation and
   width ("Indentation and width"): Enter after each opener, after a block's
   parameters with and without a type, after an opener with a comment behind
   it, but not after a temporaries' bar or an opener inside a string or
