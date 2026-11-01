@@ -10,8 +10,10 @@
 > the run markers share in `lsp/DocumentSymbolCache.kt`, the editing aids in
 > the `editor` package, every text in `messages/NewspeakBundle.properties`)
 > both exist: highlighting, a block of `///` lines in the doc-comment
-> colour and rendered in place as Markdown, a hover over a name showing its
-> declaration's signature and doc comment, errors as you type, code folding with one-line
+> colour and rendered in place as Markdown, its tags -- `@param`,
+> `@answers`, `@signals`, `@see`, `@factory` -- as Java's sections, a hover
+> over a name showing its declaration's signature and doc comment, a
+> warning for a tag that is wrong, errors as you type, code folding with one-line
 > methods shown on one line, hints with their quick fixes, a structure view
 > with breadcrumbs, Reformat Code, and typing in the formatter's
 > indentation and width, in every commercial JetBrains IDE from 2026.1.4, kept while a file has
@@ -56,9 +58,11 @@ runs a single module from its `main:args:`.
 6. **Formatting** — Reformat Code rewrites the file in the formatter's one
    layout ("Formatting"; [formatting.md](formatting.md)).
 7. **Documentation** — a block of `///` lines is a doc comment, coloured as
-   Java's and rendered in place as Markdown; a hover over a name the server
-   places at a declaration of the file shows that declaration's signature
-   and doc comment ("Hover").
+   Java's and rendered in place as Markdown, its tags as Java's sections; a
+   hover over a name the server places at a declaration of the file shows
+   that declaration's signature and doc comment; the server warns about a
+   tag that is wrong, and the structure view shows a member's summary
+   ("Hover", "Doc comments").
 
 Beside them, for a project's `newspeak.json`: completion and validation from
 the project file's schema, and running and benchmarking the project from the
@@ -288,7 +292,14 @@ excluded when the selector's tokens are found.
 - **Declarations** come from the AST: class names, slots, message patterns,
   parameters, temporaries. A lazy slot is a slot like any other, `readonly`
   when declared with `=`; its initializer is walked without the factory's
-  parameters in scope, as the resolver resolves it (§6).
+  parameters in scope, as the resolver resolves it (§6). A class header's
+  factory pattern declares the class side's primary factory, as a method's
+  pattern declares the method: each of its keywords (or its unary or binary
+  selector) is `method` with `declaration`, and names the factory's own
+  declaration, keyed by the pattern's span from its selector through its
+  last parameter's type (`factory_span`; for the default `new`, which the
+  source does not spell, the empty span at the class's name), so a hover
+  there shows the factory ("Hover").
 - **Uses** come from the bindings. `Local` and `OuterLocal` are a parameter or
   a local according to the declaration they bind to. The resolver records a
   slot read as a `LexicalSend { depth }`, as the specification makes it a send
@@ -432,8 +443,9 @@ than the formatter's 100 columns stay open.
 
 `textDocument/hover` over a name answers the declaration it names, in
 Markdown: the signature in a ` ```newspeak ` block, then the declaration's
-doc comment, then the class it is a member of (`*In* `Counter``, or
-`` `Counter`'s class side``). A client that reads the block as the
+doc comment -- its description, then its tags as a table of sections
+("Doc comments", below) -- then the class it is a member of
+(`*In* `Counter``, or `` `Counter`'s class side``). A client that reads the block as the
 definition shows it as one, highlighted as Newspeak -- the JetBrains
 platform does for a hover that starts with a fenced block
 (`createLspDocumentationData`, 2026.2.3), which is how its Quick
@@ -447,7 +459,8 @@ name names (`Reference`), and each declaration's parts (`Declared`). A
 declaration's own name names it; a parameter's or a local's use, the
 innermost declaration of that name, as the resolver bound it; a send the
 resolver binds lexically (`LexicalSend`, a slot's setter included), the
-member of the class at its depth, the factory of a class side its class;
+member of the class at its depth, the primary factory of a class side
+the factory's declaration, as its keywords in the class's header do;
 an inherited member, which the file does not declare, a send to an object,
 `super`'s and `outer`'s, none. The server sees one file, so a name another
 module declares has no hover.
@@ -456,6 +469,7 @@ module declares has no hover.
 |---|---|
 | Class | the header up to the instance side's `(`: `class Shapes usingPlatform: platform = Object new` |
 | Method | the pattern up to the body's `(`, its `=` left out: `public grow: amount <Integer> by: step` |
+| Factory | the header's factory pattern: `usingPlatform: platform`, or `new` for a class whose header names none |
 | Slot, local | the declaration, its `.` left out; past 80 characters its initializer is `...`: `private count ::= 0` |
 | Parameter | the name and its type: `amount <Integer>` |
 
@@ -464,8 +478,103 @@ or more `///` lines, attached before the declaration (`Anchor::Before`,
 `Placement::OwnLine`) and ending on the line right above it. A single `///`
 line, a `(* *)` comment and one a blank line away are no doc comment; the
 user decided so, so that what shows green and renders in the editor is what
-a hover shows. Its text is `Comment::text`'s, read as Markdown by the
-client.
+a hover shows. Its text is `Comment::text`'s, read as a doc comment
+(`ns_syntax::doc_comment`, "Doc comments" below): the description goes
+into the hover as Markdown, an inline `{@summary …}` replaced by its text,
+and the tags as the section table.
+
+**The factory** has no comment of its own: the class's doc comment
+describes it, as KDoc's `@constructor` does a primary constructor. Over
+the header's factory keywords, and over a send the resolver binds to the
+factory, the hover shows the factory's signature, the class comment's
+`@factory` text as its description, a "Params:" row of the class
+comment's `@param`s, and an "Answers:" row the server writes itself,
+``a new instance of `Shapes`.``, which stands with a class comment or without
+one; its container is `` `Shapes`'s class side``. Over the class's name the
+hover shows the class comment whole: its description, then its sections,
+"Factory:" and "Params:" among them.
+
+### Doc comments
+
+A doc comment carries Java's block tags, under Newspeak's names, and an
+inline summary. One grammar, stated twice: `ns_syntax::doc_comment`
+(`DocComment::parse`, for the server's hover and warnings and for the core
+library's documentation test) and the plugin's `editor/NewspeakDocTags.kt`
+(for the rendered view and the structure view's hover), each test of one
+named as its case in the other, so a rule changed in one is changed in
+both. It reads a doc comment's lines without their `///` and the one space
+after it:
+
+- **The description** is every line before the first tag line.
+- **A tag line**, outside a fenced code block (a line whose trimmed text
+  starts with three backticks opens or closes one, so an example's `@`
+  stays code), is one whose trimmed text starts with `@`, one or more ASCII
+  letters -- the tag's name -- and then whitespace or the line's end. An
+  `@` inside a line is text.
+- **A tag's text** is the rest of its line after the name, then every line
+  up to the next tag line, joined with `\n`; trailing blank lines dropped,
+  the first line's leading whitespace too.
+- **The known tags.** `@param name text`, a parameter; `@signals Class
+  text`, an Error class the member signals and when, one tag per class --
+  both take their text's first word as their argument; `@answers text`,
+  what a method answers; `@see text`, a related member; and `@factory
+  text`, in a class's comment, what the class's factory does, the class's
+  `@param`s being the factory's parameters (KDoc's `@constructor`). Any
+  other name is an unknown tag, kept with its text in order, and shown,
+  verbatim, as a paragraph of the description after the description's own
+  text, so a misspelt tag stays visible rather than vanishing.
+- **The inline summary**, `{@summary text}` in the description, ends at
+  the `}` matching its `{`, braces inside backtick code spans not counted;
+  the rendered description shows its text in its place.
+- **The summary** is the inline summary's text if there is one, else the
+  first sentence of the description's first paragraph: up to and including
+  the first `.` outside backtick code spans that whitespace follows or that
+  ends the paragraph, so `` `a.b` `` does not end it, else the whole
+  paragraph; whitespace runs collapsed to one space; none for an empty
+  description. The structure view's hover shows it ("Structure").
+
+There is no `@deprecated`, no `@since`, `@author` or `@version`, and no
+`[Name]` link: a reference stays in backticks until go to definition
+exists (`OPEN-WORK.md`, "Planned: editor support and the analyzer").
+
+**The sections.** The hover and the rendered view show the known tags after
+the description as the platform's section table, the one Java's rendered
+doc comments use (`DocumentationMarkup`'s `sections` classes): rows in one
+order whatever the comment's -- "Factory:", "Params:", "Answers:",
+"Signals:", "See Also:" -- each only when it has a tag, its items in the
+comment's order; a `@param`'s and a `@signals`'s item is its argument in
+code, a dash and its text (`` `stop` – a number. ``), the others' their text.
+The server writes the table into its Markdown as HTML, `<table
+class='sections'>`, a row `<tr><td valign='top' class='section'><p>Params:</td><td valign='top'>`,
+each cell's items between blank lines, which end the HTML block, so that
+the platform's converter keeps the classes and renders each item as
+Markdown, its code as the description's (`hover::section_table`; pinned by
+the plugin's `NewspeakHoverSectionsTest`). Another client sees a plain
+table. The plugin builds the same rows with `DocumentationMarkup`'s
+constants, its labels from `NewspeakBundle` (`doc.section.*`), each item
+through `DocMarkdownToHtmlConverter`.
+
+**The warnings.** `doc_tags.rs` checks every `///` comment of two or more
+lines against the declaration it documents -- by the hover's rule
+(`hover::doc_comment`, `hover::directly_above`), so a comment warns about
+exactly the declaration it renders over -- and publishes a warning with
+the other diagnostics, on the tag's `@name` or its argument:
+
+| Fault | Message |
+|---|---|
+| an unknown tag | ``unknown doc comment tag `@name`; the tags are @param, @answers, @signals, @see and @factory`` |
+| `@param` without a name | ``` `@param` needs the name of a parameter ``` |
+| `@signals` without a class | ``` `@signals` needs the class of the Error signalled ``` |
+| `@param` naming no parameter of a method or factory | ``` `name` is no parameter of `selector` ``` |
+| `@param` above a slot or a class without a factory | ``` `name` is no parameter: the comment documents a slot ``` (`a class without a factory`) |
+| `@factory` outside a class's comment | ``` `@factory` describes a class's factory: the comment documents a method ``` (`a slot`, `nothing`) |
+
+A `@param` in a comment that documents nothing has no parameters to be
+checked against and no warning. Whether a member has a `@param` for each
+parameter, an `@answers` or a `@factory` is no warning: the core library's
+documentation test holds its own modules to that
+(`crates/ns-runtime/tests/core_library_documentation.rs`; `CLAUDE.md`,
+"Conventions"), and other code is free to say less.
 
 ### Hints
 
@@ -863,6 +972,19 @@ in an `IconWrapperWithToolTip` carrying the same hover text, public API on
 2026.1 and 2026.2; it is a `RetrievableIcon` and keeps its tooltip when the
 tree replaces the icon inside it for a dark or selected variant.
 
+A member with a doc comment shows its summary ("Doc comments") on a line of
+its own under the hover in the table, the two escaped and joined as HTML
+(`Public method`, then `Answers the size of the receiver.`), in the
+tooltip and the icon's alike, so the view tells what a member does without
+opening it. The plugin reads it from the file's current text
+(`NewspeakDocComments.summaryAbove`: the doc comment ending on the line
+above the symbol's range), never from the server: a document symbol's
+`detail` carries words the plugin reads (the access, `class`, `value`),
+and the comment stands right above the symbol anyway. The summaries are
+computed once per change of the file, by the 0-based line each comment
+ends on, since the view asks for every row and a walk of the file per row
+would make a large module's tree quadratic.
+
 `NewspeakSymbolKinds`, the client's `symbolKindCustomizer`, gives each kind
 the same base icon for the breadcrumbs and sticky lines as for the tree,
 every kind named rather than left to the platform's defaults; it sees the
@@ -985,13 +1107,31 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   character's offset read back from its position, a position past its line
   or inside a surrogate pair clamped, a line the text lacks refused;
 - hover (`hover.rs`) — a method over each keyword of its pattern and of a
-  send bound to it, with its doc comment and its class; a class over its
-  declaration and a use; a slot over its name, its setter and a read, and a
-  long one's initializer left out; a parameter with its type and a local; a
-  single `///` line and a comment a blank line away showing none; a
-  class-side method and the factory a send names; a send to an object and
-  an inherited member answering no hover; and over the protocol, the
-  capability and a hover's Markdown and range (`protocol.rs`);
+  send bound to it, with its description, its tags as the section table in
+  the sections' order whatever the comment's, and its class; a comment
+  without tags with no table; an inline summary read as its text; the
+  factory over its header keyword and a send bound to it, with its
+  signature, its `@factory` text, its parameters and its answer, and the
+  default `new`; a class over its declaration and a use, with its
+  "Factory:" and "Params:" rows; a slot over its name, its setter and a
+  read, and a long one's initializer left out; a parameter with its type
+  and a local; a single `///` line and a comment a blank line away showing
+  none; a class-side method; a send to an object and an inherited member
+  answering no hover; and over the protocol, the capability and a hover's
+  Markdown and range (`protocol.rs`);
+- doc comments — the grammar (`ns_syntax::doc_comment`'s tests): a
+  comment without tags all description, `@factory` without an argument,
+  the tags splitting the description off with a tag's text over several
+  lines, an unknown tag kept in order and shown in the description, a
+  `@param` without a name, an `@` inside a line and a tag line inside a
+  code fence as text, the first sentence as the summary, not ended inside
+  code, an inline summary winning and read as its text, ending at its
+  closing brace outside code, every span holding on CRLF lines, and a
+  `(* *)` comment an empty doc comment; the warnings (`doc_tags.rs`): an
+  unknown tag, `@factory` outside a class, a tag without its argument, a
+  `@param` naming no parameter of a factory, of a method and of a class
+  without a factory, one above a slot, a single `///` line not checked, a warning placed on CRLF lines,
+  and a correct comment with none;
 - diagnostics — one `indoc!` module each with a lexer, a parser and a resolver
   error, checking range and message; a lexer error's findings come first, the
   parser's after them, and a syntax error keeps the names around it
@@ -1026,7 +1166,8 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   a receiver inside a keyword message's span, a lazy slot in both
   modifier orders and both forms, a name a slot on one side of a class and a
   method on the other, read from either side, from a nested class and from a
-  superclass clause, and the primary factory as a class-side member only),
+  superclass clause, the primary factory as a class-side member only, and
+  the header's factory keyword as a declared method),
   each expected category asserted
   directly rather than through an `insta` snapshot, so every expectation is
   stated and reviewed rather than accepted;
@@ -1190,9 +1331,13 @@ Components:
   place as Java's do: `NewspeakInlineDocumentationProvider`, the platform's
   `inlineDocumentationProvider` extension point (every language's, so it
   answers nothing for another file), hands the platform each block's range
-  and its text without the `///` and the space after it, read as Markdown by
-  the platform's own `DocMarkdownToHtmlConverter`, code fences highlighted as
-  Newspeak; no Markdown library of the plugin's own. The platform draws it,
+  and its text without the `///` and the space after it, read as a doc
+  comment (`NewspeakDocTags`, "Doc comments"): the description as Markdown
+  by the platform's own `DocMarkdownToHtmlConverter`, code fences
+  highlighted as Newspeak, an inline `{@summary …}` as its text and an
+  unknown tag as a paragraph of it, then the known tags as the platform's
+  section table, as Java's rendered tags, each item through the same
+  converter; no Markdown library of the plugin's own. The platform draws it,
   puts the toggle between the rendered and the raw text in the gutter, and
   follows *Settings | Editor | Appearance | Render documentation comments*
   and the reader mode. What a comment documents is the server's to say: its
@@ -1227,7 +1372,8 @@ Components:
   `NewspeakStructureElement`, over the server's document symbols, which
   `DocumentSymbolCache` keeps per file and stamp for the structure view and
   the module's play button alike, with `NewspeakSymbolKinds` and
-  `NewspeakDocumentSymbols` in the client descriptor's customization
+  `NewspeakDocumentSymbols` in the client descriptor's customization; a
+  row's hover adds the summary of the member's doc comment
   ("Structure").
 - **Settings** — *Languages & Frameworks → Newspeak*: an "ns-next-analyzer
   path", the server binary, and an "ns-next path", the runtime run
@@ -1661,18 +1807,30 @@ The server's own tests are described under its section, above ("Testing").
   ranges over every golden, benchmark and core-library module and at the
   rule's edges, since the rule is stated twice; `NewspeakInlineDocumentationProviderTest`,
   the rendered doc comments (every block and no single line, the Markdown
-  rendered, the owner from the server's symbols and none without them, an
-  item found by its range, nothing for another language's file);
+  rendered, the tags as the section table with their code rendered and
+  each item a paragraph of its own, the owner from the server's symbols
+  and none without them, an item found by its range, nothing for another
+  language's file); `NewspeakHoverSectionsTest`, the server's section table
+  through the platform's converter, its classes kept and its cells'
+  Markdown rendered;
   `NewspeakColorSettingsPageTest` is plain JUnit,
   over the colour settings page directly, with no platform test case needed
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
-  which cover the binary lookup order and the semantic-token classification;
+  which cover the binary lookup order and the semantic-token classification,
+  and `NewspeakDocTagsTest`, the doc comment's grammar case by case, each
+  test named as the Rust test of the same case (the Rust spans aside), with
+  the summary's Unicode whitespace and the sections in their order and none
+  without a known tag;
 - the structure view, in plain JUnit: `NewspeakSymbolKindsTest` (the icon
   per kind, every kind the server sends named),
   `NewspeakStructureElementTest` (a row's name, `lazy`, access icon, the
   base icon and hover of each element in "The rows", root, root value and
   nested value classes included, and `class` read together with the access
-  word and `lazy`) and `NewspeakStructureViewModelTest` (no answer and an
+  word and `lazy`; beside it, on `BasePlatformTestCase`,
+  `NewspeakStructureElementSummaryTest`: a hover with the summary of the
+  member's doc comment, the summary following an edit of its comment, and
+  a member without one keeping the kind's hover) and
+  `NewspeakStructureViewModelTest` (no answer and an
   empty answer make the model ask again, an answer with symbols is shown);
   on `BasePlatformTestCase`, `NewspeakStructureViewRefreshTest` (over a file
   never opened in an editor and a stand-in for the server: a new model of an

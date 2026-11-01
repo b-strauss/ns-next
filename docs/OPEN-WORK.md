@@ -1428,6 +1428,36 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   read-only fix could lift a value object's refusal of a mutable slot,
   while whether a class's instances are values is not in its declaration
   ([editor-support.md](design/editor-support.md), "Hints").
+- **`@deprecated`**, not a doc comment tag for now (decided with the user
+  on 2026-11-01); until it is, it is an unknown tag, shown in the
+  description and warned about. Adding it means a section of its own and
+  the grammar in both parsers; striking a deprecated member's uses through,
+  as Java's editor does, would need the uses' declarations across files
+  ([editor-support.md](design/editor-support.md), "Doc comments").
+- **`@since`, `@author` and `@version`**, not doc comment tags (decided
+  with the user on 2026-11-01); each is an unknown tag today. Adding one
+  means a section of the table and the grammar in both parsers.
+- **Links in doc comments** (decided with the user on 2026-11-01): no
+  `[Name]` link; a reference stays in backticks until go to definition
+  (above) exists, which a link needs to resolve a name to a declaration in
+  this or another module.
+- **Completion showing a member's summary.** The summary of a doc comment
+  (`{@summary …}`, else its first sentence) is shown by the structure
+  view's hover only; there is no completion yet, and when there is, its
+  items should carry the summary as Java's carry the first sentence
+  ([editor-support.md](design/editor-support.md), "Doc comments").
+- **`{@inheritDoc}`, undecided.** An override's comment cannot take its
+  overridden method's documentation, so an override in the core library
+  repeats or rephrases it; whether to add Javadoc's `{@inheritDoc}` (or to
+  inherit a missing comment, as Javadoc does) is not decided, and both need
+  the superclass's members, which the server sees only within one file.
+- **A doc comment's prose is not escaped as HTML.** The hover's Markdown
+  and the rendered view pass the description and the tags' text to the
+  platform's Markdown converter as they are, so `<Integer>` written outside
+  backticks is read as an inline HTML tag and vanishes. The core library
+  writes every type in backticks; escaping `<` and `&` outside code spans
+  in both `hover.rs` and `NewspeakDocTags` would make prose safe
+  ([editor-support.md](design/editor-support.md), "Doc comments").
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
@@ -1974,6 +2004,20 @@ classes and a class from source with no predecessor are not edited
   close it. The editor's hint B stays conservative regardless, never making
   such a local `=` ([editor-support.md](design/editor-support.md), "Hints").
   Noted 2026-10-14.
+- **`Exception>>pass` with no outer handler returns into the handler that
+  sent it**, likely (found by a review of `Kernel.ns`'s doc comments,
+  2026-11-01, not yet reproduced by a golden). With no enabled handler
+  outside the running one, `pass` runs `defaultAction` and answers its
+  value to the handler that sent `pass`; when that handler then completes,
+  its return signals 'return: sent to an exception that is not being
+  handled'. ANSI defines `pass` as `outer`, "except that control does not
+  return to the currently active handler": `defaultAction`'s value should
+  become the value of the `signal` that raised the exception, and the
+  handler should not run on. `Kernel.ns` documents
+  `pass` as it behaves today; the fix changes that comment with it. A
+  golden of an exception passed with no outer handler, its expected
+  output established from ANSI's definition, would pin it.
+  [core-library.md](design/core-library.md).
 
 ## Known defects and gaps
 

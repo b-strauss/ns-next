@@ -22,11 +22,19 @@
 > `Ephemeron` and `WeakMap` ("Weak references"). `Closure`'s `whileTrue:`
 > and `whileFalse:` and `Array>>do:` are Newspeak loops, for the JIT tiers
 > to see through ("Real bodies for control flow and `do:`").
-> Every member of `Kernel.ns`, `PlatformFactory.ns`, `TranscriptFactory.ns`,
-> `TimeFactory.ns`, `CollectionsFactory.ns`, `TypedArraysFactory.ns` and
-> `MirrorsFactory.ns` -- public, protected and private -- is documented
-> in place to the standard of Javadoc, by a `///` comment directly above it,
-> which `crates/ns-runtime/tests/core_library_documentation.rs` checks.
+> Every member of `Kernel.ns`, `Manifest.ns`, `PlatformFactory.ns`,
+> `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns`,
+> `TypedArraysFactory.ns` and `MirrorsFactory.ns` -- public, protected and
+> private -- is documented in place to the standard of Javadoc, by a doc
+> comment of two or more `///` lines directly above it, its tags --
+> `@param` for each argument in order, `@answers`, `@signals` for each
+> Error class, `@see`, and `@factory` for a class whose header names its
+> factory -- shown by the editor as Java's sections
+> ([editor-support.md](editor-support.md), "Doc comments"); `CLAUDE.md`,
+> "Conventions", states the rule, and
+> `crates/ns-runtime/tests/core_library_documentation.rs` holds every
+> member to a doc comment, its `@param`s, its `@answers` and its
+> `@factory`.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
 > `crates/ns-runtime/core-library/platform/TranscriptFactory.ns`,
@@ -3228,7 +3236,12 @@ so an image does not become unloadable with every Rust edit
 `the_two_fingerprints_differ` keeps the second from standing in for the
 first. Neither covers `Manifest.ns`, which a program compiles as a module
 of its own: an edit to it changes neither the shipped code nor the
-shipped world. `build.rs` names directories, not the artifact,
+shipped world. Both cover a shipped module's comments, which are part of
+its bytes, so an edit to a doc comment alone changes the image fingerprint
+in the wire-format fixture `crates/ns-runtime/tests/fixtures/golden-image.bin`
+(`the_wire_format_matches_the_golden_fixture` in `tests/image.rs`): the
+same commit regenerates it with `regenerate_the_golden_fixture`, and only
+its fingerprint bytes change. `build.rs` names directories, not the artifact,
 in `cargo:rerun-if-changed`: Cargo reruns a script whose named file is
 missing on every build, and a directory's scan sees the artifact appear.
 
@@ -5166,8 +5179,8 @@ a non-integral literal is a binary float" above), and there is no
   nothing back, and a removal selector's own changes while it
   scans (`removeAllSuchThat:`) are not reported. Every member of
   `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns`, public,
-  protected and private, is documented to the standard of Javadoc
-  (`CLAUDE.md`, "Conventions";
+  protected and private, is documented to the standard of Javadoc, with
+  doc tags (`CLAUDE.md`, "Conventions";
   `crates/ns-runtime/tests/core_library_documentation.rs`).
 
 - **The kernel's numbers** (decided with the user on 2026-10-11, built the
