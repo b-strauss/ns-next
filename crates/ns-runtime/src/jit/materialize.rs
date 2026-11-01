@@ -321,8 +321,8 @@ pub(crate) struct LeafFrame {
     /// frame is one machine code pushed, which reads as the innermost only
     /// for the leaf's length.
     restore: Option<(usize, u32)>,
-    /// Whether the frame is one machine code pushed whose code reifies no
-    /// frame, which no leaf may reify (`release_leaf_frame`).
+    /// Whether the frame is one machine code pushed that runs its body's
+    /// lean code, which no leaf may reify (`release_leaf_frame`).
     #[cfg(debug_assertions)]
     unreified: bool,
 }
@@ -378,15 +378,16 @@ pub(crate) fn leaf_frame(
 }
 
 /// Puts the stack back after a leaf ran in `frame`. A debug build first
-/// holds the leaf to having reified no frame machine code pushed whose
-/// code reifies none: such a frame's code keeps no reified word and its
-/// return divorces nothing (`MachineFrame::reifies`), so its frame object
-/// would stay married to an offset popped under it.
+/// holds the leaf to having reified no frame machine code pushed that runs
+/// its body's lean code: a lean body's frame is never reified, since its
+/// code keeps no reified word and its return divorces nothing
+/// (`MachineFrame::reifies`), so its frame object would stay married to an
+/// offset popped under it.
 pub(crate) fn release_leaf_frame(mutator: &mut Mutator<'_>, frame: LeafFrame) {
     #[cfg(debug_assertions)]
     assert!(
         !frame.unreified || mutator.heap.activation_reified(frame.activation).is_none(),
-        "internal: a leaf reified a frame whose code reifies none"
+        "internal: a leaf reified a frame running lean code"
     );
     if let Some(extent) = frame.restore {
         mutator.heap.restore_stack_extent(extent);

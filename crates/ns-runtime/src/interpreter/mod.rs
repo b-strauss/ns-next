@@ -1111,8 +1111,9 @@ impl Interpreter {
         })
     }
 
-    /// The data words of `method`'s body's machine code -- its closure
-    /// sites among them -- as the zone holds them. A test hook.
+    /// The data words of `method`'s body's machine code -- its transfer
+    /// words, which name its twin's code -- as the zone holds them. A test
+    /// hook.
     #[doc(hidden)]
     pub fn jit_body_words(
         &mut self,
@@ -1123,6 +1124,53 @@ impl Interpreter {
         self.enter(|mutator| {
             let code = method_code(mutator, class, side, method)?;
             mutator.jit.body_words(&code)
+        })
+    }
+
+    /// Whether the machine code of `method`'s body in this interpreter's
+    /// zone reifies its frame, if it has some: it never does, since every
+    /// body compiles lean and only its twin reifies. A test hook.
+    #[doc(hidden)]
+    pub fn jit_body_reifies(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<bool> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.body_reifies(&code)
+        })
+    }
+
+    /// The zone offset of the twin of `method`'s body -- its reifying
+    /// compile, made when a transfer first needed it -- if it has one. A
+    /// test hook.
+    #[doc(hidden)]
+    pub fn jit_twin_offset(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<u32> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.twin_offset(&code)
+        })
+    }
+
+    /// The data words of the twin of `method`'s body -- its closure sites
+    /// -- as the zone holds them, if it has a twin. A test hook.
+    #[doc(hidden)]
+    pub fn jit_twin_words(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<Vec<u64>> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.twin_words(&code)
         })
     }
 

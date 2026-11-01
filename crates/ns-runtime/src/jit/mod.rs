@@ -92,6 +92,11 @@ pub(crate) fn available() -> bool {
 pub struct JitStatistics {
     /// Bodies compiled to machine code.
     pub compiled_bodies: u64,
+    /// Twins compiled: the reifying compile of a body, made when a
+    /// transfer of its lean code or a resumption of a reified frame
+    /// first needs it (`docs/design/execution.md`, "A frame reifies only
+    /// in its body's twin"). Not counted in `compiled_bodies`.
+    pub compiled_twins: u64,
     /// Bodies refused -- entered while the JIT was off, or refused by the
     /// compiler: too many instructions, or code the assembler could not
     /// lay out -- which stay interpreted for good. A body that found no
@@ -696,10 +701,27 @@ struct InstalledBody {
     /// The feedback base the body's sends' cells were compiled against:
     /// its machine code is entered only by an activation with that base.
     feedback_base: FeedbackBase,
-    /// Whether the body reifies its frame (`baseline::reifies_its_frame`),
-    /// so that the frame keeps words its prologue wrote
-    /// (`MachineFrame::reifies`).
+    /// Whether the body is a twin, which reifies its frame and keeps the
+    /// words its transfer and its templates wrote
+    /// (`baseline::BodyCopy::Twin`, `MachineFrame::reifies`): whether a
+    /// frame reifies is decided by the code it runs.
     reifies: bool,
+    /// A lean body's twin, by its index in `bodies`, once a transfer or a
+    /// resumption compiled it (`compile_twin`); `None` for a twin.
+    twin: Option<u32>,
+    /// A twin's lean body, by its index in `bodies`; `None` for a lean
+    /// body. A twin is freed with its lean body, moves on its own and
+    /// is named by no cell and no machine entry row.
+    lean: Option<u32>,
+    /// A lean body's transfers (`closures::transfer`), each the program
+    /// counter of a `MakeClosure` and the offset from the body's start of
+    /// the data word holding the twin's address of it: 0 while the body
+    /// has no twin.
+    transfers: Vec<TransferWord>,
+    /// The bytes a compile of the twin needed, its alignment's slack
+    /// included, when it last found no room; 0 if none did, as
+    /// `JitSlot::needed` is the lean body's.
+    twin_needed: u32,
     /// The offsets of its first byte and of the byte past its last.
     start: u32,
     end: u32,
@@ -722,6 +744,15 @@ struct InstalledBody {
     /// Whether the body is freed: no lookup finds it, its returns are gone,
     /// and the next compaction reclaims its bytes.
     free: bool,
+}
+
+/// A lean body's `MakeClosure` and its transfer word: the instruction's
+/// program counter, and the word's offset from the body's start, which a
+/// compaction keeps.
+#[derive(Clone, Copy, Debug)]
+struct TransferWord {
+    program_counter: u32,
+    offset: u32,
 }
 
 impl InstalledBody {
@@ -1261,6 +1292,41 @@ impl JitState {
         }
     }
 
+    /// Writes the transfer words of the lean body at `lean` in `bodies`
+    /// through the zone's one writer: each the address of its
+    /// `MakeClosure`'s code in the twin, or 0 while the body has none, so
+    /// that the next transfer compiles it (`closures::transfer`). Written
+    /// when the twin is compiled and after a compaction moved either
+    /// copy, between entries or from the twin leaf, before the transfer
+    /// that called it reads its word again.
+    pub(super) fn write_transfer_words(&mut self, lean: u32) {
+        let Some(zone) = self.zone.as_mut() else {
+            return;
+        };
+        let body = &self.bodies[lean as usize];
+        let twin = body.twin.map(|twin| &self.bodies[twin as usize]);
+        for transfer in &body.transfers {
+            let address = twin.map_or(0, |twin| {
+                let Some(offset) = twin.map.machine_offset(transfer.program_counter) else {
+                    unreachable!("internal: a twin has code for every instruction");
+                };
+                zone.writer
+                    .zone()
+                    .executable_address(CodeOffset(twin.start + offset)) as u64
+            });
+            if zone
+                .writer
+                .write(
+                    CodeOffset(body.start + transfer.offset),
+                    &address.to_le_bytes(),
+                )
+                .is_err()
+            {
+                unreachable!("internal: an installed body's words lie in the committed zone");
+            }
+        }
+    }
+
     /// The innermost frame the last exit's walk materialized, taken.
     pub(crate) fn take_walked(&mut self) -> Option<ActivationReference> {
         self.walked.take()
@@ -1268,14 +1334,24 @@ impl JitState {
 
     /// The installed body holding the byte before `return_address`.
     fn installed_body_at(&self, return_address: usize) -> Option<&InstalledBody> {
+        let index = self.installed_index_at(return_address)?;
+        Some(&self.bodies[index as usize])
+    }
+
+    /// The index in `bodies` of the installed body holding the byte before
+    /// `return_address`, unless it is freed.
+    fn installed_index_at(&self, return_address: usize) -> Option<u32> {
         let zone = self.zone.as_ref()?;
         let base = zone.writer.zone().executable_address(CodeOffset(0));
         let offset = u32::try_from(return_address.checked_sub(base)?.checked_sub(1)?).ok()?;
         // Installed in ascending order, so the body holding the offset, if
         // one does, is the last that starts at or before it.
         let after = self.bodies.partition_point(|body| body.start <= offset);
-        let body = &self.bodies[after.checked_sub(1)?];
-        (offset < body.end && !body.free).then_some(body)
+        let index = after.checked_sub(1)?;
+        let body = &self.bodies[index];
+        (offset < body.end && !body.free)
+            .then(|| u32::try_from(index).ok())
+            .flatten()
     }
 
     /// The installed body at `index` in `bodies`, unless it is freed.
@@ -1332,7 +1408,8 @@ pub(crate) struct Installed {
     pub(crate) code: Rc<CompiledCode>,
     pub(crate) method: Option<Rc<MixinMethod>>,
     pub(crate) feedback_base: FeedbackBase,
-    /// Whether the body reifies its frame (`InstalledBody::reifies`).
+    /// Whether the body is a twin, which reifies its frame
+    /// (`InstalledBody::reifies`).
     pub(crate) reifies: bool,
 }
 
@@ -2221,8 +2298,10 @@ pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
 }
 
 /// Compiles `code`, its sends' cells those of `feedback_base`'s range,
-/// and installs it, answering its offset and that of its instruction at
-/// program counter 0 and its index among the installed bodies.
+/// and installs its lean body, answering its offset and that of its
+/// instruction at program counter 0 and its index among the installed
+/// bodies. Its twin waits for the first transfer or resumption that needs
+/// it (`compile_twin`).
 #[cfg(ns_jit)]
 fn compile(
     state: &mut JitState,
@@ -2230,28 +2309,80 @@ fn compile(
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
 ) -> Result<([CodeOffset; 2], u32), Refusal> {
-    let Some(zone) = state.zone.as_mut() else {
-        panic!("internal: the JIT is on without a zone");
-    };
-    let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
-    macro_assembler.set_count_back_edges(state.counting);
-    let role = baseline::BodyRole::of(code, method.is_some());
-    let body = baseline::compile(
-        code,
-        macro_assembler,
-        feedback_base,
-        role,
-        state.futures_exit,
-    )?;
+    let body = assemble(state, code, feedback_base, method, baseline::BodyCopy::Lean)?;
     if body.exits_at_once && !state.install_bodies_exiting_at_once {
         return Err(Refusal::ExitsAtOnce);
     }
-    let map = u32::try_from(state.bodies.len()).map_err(|_| Refusal::ZoneFull)?;
     // Every body has an instruction, its last a return or a jump, so a
     // map without program counter 0 is the JIT's own defect.
     let Some(first_instruction) = body.map.machine_offset(0) else {
         panic!("internal: a compiled body has no code for its first instruction");
     };
+    let needed = needed_bytes(&body);
+    let map = match install_body(state, code, method, feedback_base, body) {
+        Ok(map) => map,
+        Err(Refusal::ZoneFull) => {
+            state.wanted_bytes = state.wanted_bytes.max(needed);
+            code.jit.needed.set(needed);
+            return Err(Refusal::ZoneFull);
+        }
+        Err(refusal) => return Err(refusal),
+    };
+    let offset = CodeOffset(state.bodies[map as usize].start);
+    let first_instruction = CodeOffset(offset.0 + first_instruction);
+    Ok(([offset, first_instruction], map))
+}
+
+/// `code` assembled as its body's `copy`, for `method` when it is one's
+/// body, its sends' cells those of `feedback_base`'s range.
+#[cfg(ns_jit)]
+fn assemble(
+    state: &JitState,
+    code: &CompiledCode,
+    feedback_base: FeedbackBase,
+    method: Option<&Rc<MixinMethod>>,
+    copy: baseline::BodyCopy,
+) -> Result<baseline::BaselineBody, Refusal> {
+    let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
+    macro_assembler.set_count_back_edges(state.counting);
+    let role = baseline::BodyRole::of(code, method.is_some());
+    baseline::compile(
+        code,
+        macro_assembler,
+        feedback_base,
+        role,
+        state.futures_exit,
+        copy,
+    )
+}
+
+/// The bytes `body` needs of the zone, its alignment's slack included:
+/// what a compile that found no room records, so that an exhausted zone
+/// assembles it again only once it has that much (`may_compile_now`).
+#[cfg(ns_jit)]
+fn needed_bytes(body: &baseline::BaselineBody) -> u32 {
+    u32::try_from(body.code.bytes.len())
+        .unwrap_or(u32::MAX)
+        .saturating_add(body.code.alignment.max(BODY_ALIGNMENT))
+}
+
+/// Installs `body`, a compile of `code` -- `method`'s body when it is
+/// one's -- against `feedback_base`, and records its call returns,
+/// answering its index among the installed bodies: `Refusal::TooLarge`
+/// for a body the zone could not hold even with every other body freed,
+/// and `Refusal::ZoneFull` for one the room left does not hold.
+#[cfg(ns_jit)]
+fn install_body(
+    state: &mut JitState,
+    code: &Rc<CompiledCode>,
+    method: Option<&Rc<MixinMethod>>,
+    feedback_base: FeedbackBase,
+    body: baseline::BaselineBody,
+) -> Result<u32, Refusal> {
+    let Some(zone) = state.zone.as_mut() else {
+        panic!("internal: the JIT is on without a zone");
+    };
+    let map = u32::try_from(state.bodies.len()).map_err(|_| Refusal::ZoneFull)?;
     // A body the zone could not hold even with every other body freed is
     // refused for good, rather than compacting the zone in vain at every
     // second entry.
@@ -2263,21 +2394,11 @@ fn compile(
     if end_in_an_empty_zone.is_none_or(|end| end > zone.limit) {
         return Err(Refusal::TooLarge);
     }
-    // The body's data words, its closure sites among them, are installed
-    // with it, zeroed, so that each is filled at its first run; a zone too
-    // full for the code and its words refuses both, and the compaction
-    // that follows frees room for them at least.
-    let offset = match install_aligned(zone, &body.code.bytes, body.code.alignment) {
-        Ok(offset) => offset,
-        Err(refusal) => {
-            let needed = u32::try_from(body.code.bytes.len())
-                .unwrap_or(u32::MAX)
-                .saturating_add(body.code.alignment.max(BODY_ALIGNMENT));
-            state.wanted_bytes = state.wanted_bytes.max(needed);
-            code.jit.needed.set(needed);
-            return Err(refusal);
-        }
-    };
+    // The body's data words, its closure sites and its transfers among
+    // them, are installed with it, zeroed, so that each is filled at its
+    // first run; a zone too full for the code and its words refuses both,
+    // and the compaction that follows frees room for them at least.
+    let offset = install_aligned(zone, &body.code.bytes, body.code.alignment)?;
     let length = u32::try_from(body.code.bytes.len()).map_err(|_| Refusal::ZoneFull)?;
     for call in &body.map.returns {
         // Every call of a body is a cached send's or an initializer
@@ -2296,22 +2417,130 @@ fn compile(
             },
         );
     }
+    let words = body.words.as_ref().map_or(length, |words| words.start);
+    let transfers = body
+        .transfers
+        .iter()
+        .map(|transfer| {
+            let Some(offset) = u32::try_from(transfer.word)
+                .ok()
+                .and_then(|word| word.checked_mul(8))
+                .and_then(|bytes| bytes.checked_add(words))
+            else {
+                unreachable!("internal: a body's data words lie within its bytes");
+            };
+            TransferWord {
+                program_counter: transfer.program_counter,
+                offset,
+            }
+        })
+        .collect();
     state.bodies.push(InstalledBody {
         code: Rc::downgrade(code),
         method: method.map(Rc::downgrade),
         feedback_base,
         reifies: body.reifies,
+        twin: None,
+        lean: None,
+        transfers,
+        twin_needed: 0,
         start: offset.0,
         end: offset.0 + length,
-        words: offset.0 + body.words.as_ref().map_or(length, |words| words.start),
+        words: offset.0 + words,
         words_end: offset.0 + body.words.as_ref().map_or(length, |words| words.end),
         map: body.map,
         alignment: body.code.alignment.max(BODY_ALIGNMENT),
         usage: Cell::new(zone::INITIAL_USAGE),
         free: false,
     });
-    let first_instruction = CodeOffset(offset.0 + first_instruction);
-    Ok(([offset, first_instruction], map))
+    Ok(map)
+}
+
+/// Compiles the twin of the lean body at `lean` in `bodies` -- the same
+/// instructions compiled to reify their frame (`baseline::BodyCopy::Twin`)
+/// -- installs it, and writes the lean body's transfer words with the
+/// twin's address of each `MakeClosure`, answering the twin's index; the
+/// twin's, if it is compiled already. Called by the twin leaf at a
+/// transfer and by the resumption of a reified frame, both before
+/// anything of the frame is written; an install only appends, so no
+/// address a frame or a holder keeps moves. A zone with no room for the
+/// twin is treated as for any body that finds none (`compile_into_slot`):
+/// a compaction is asked for, and while the zone stays exhausted a twin
+/// known not to fit the room left is not assembled again.
+#[cfg(ns_jit)]
+fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
+    let Some(body) = state.live_body(lean) else {
+        unreachable!("internal: a twin is compiled for a live lean body");
+    };
+    debug_assert!(body.lean.is_none(), "internal: a twin has no twin");
+    if let Some(twin) = body.twin {
+        return Ok(twin);
+    }
+    let needed = body.twin_needed;
+    let Some(installed) = upgraded(body) else {
+        unreachable!("internal: a lean body running or resumed lives");
+    };
+    if state.zone_exhausted
+        && needed > 0
+        && state
+            .zone
+            .as_ref()
+            .is_none_or(|zone| zone.limit.saturating_sub(zone.next_offset) < needed)
+    {
+        state.hold_compile();
+        return Err(Refusal::ZoneFull);
+    }
+    let twin = assemble(
+        state,
+        &installed.code,
+        installed.feedback_base,
+        installed.method.as_ref(),
+        baseline::BodyCopy::Twin,
+    )?;
+    let needed = needed_bytes(&twin);
+    let index = match install_body(
+        state,
+        &installed.code,
+        installed.method.as_ref(),
+        installed.feedback_base,
+        twin,
+    ) {
+        Ok(index) => index,
+        Err(Refusal::ZoneFull) => {
+            state.wanted_bytes = state.wanted_bytes.max(needed);
+            state.bodies[lean as usize].twin_needed = needed;
+            if state.zone_exhausted {
+                state.hold_compile();
+            } else {
+                state.compaction_requested = true;
+                state.zone_exhausted = true;
+            }
+            return Err(Refusal::ZoneFull);
+        }
+        Err(refusal) => return Err(refusal),
+    };
+    // A twin is as used as its lean body: the pair is freed as one.
+    let usage = state.bodies[lean as usize].usage.get();
+    let twin_body = &mut state.bodies[index as usize];
+    twin_body.lean = Some(lean);
+    twin_body.usage.set(usage);
+    let lean_body = &mut state.bodies[lean as usize];
+    lean_body.twin = Some(index);
+    lean_body.twin_needed = 0;
+    state.write_transfer_words(lean);
+    state.statistics.compiled_twins += 1;
+    Ok(index)
+}
+
+/// The twin leaf's work (`leaves::twin`): the twin of the lean body the
+/// address inside the code `code_address` lies in compiled, unless it is,
+/// answering whether it is.
+#[cfg(ns_jit)]
+pub(crate) fn compile_twin_at(state: &mut JitState, code_address: usize) -> bool {
+    let Some(lean) = state.installed_index_at(code_address) else {
+        unreachable!("internal: a transfer lies in an installed body");
+    };
+    compile_twin(state, lean).is_ok()
 }
 
 #[cfg(not(ns_jit))]
@@ -2409,13 +2638,68 @@ pub(crate) fn entered(
         ),
         "internal: machine code is entered for a top-level activation"
     );
-    match mutator.jit.interpreter_entry(code, feedback_base, 0) {
+    match entry_of_frame(mutator, activation, code, feedback_base, 0) {
         Some(entry) => run_machine_code(mutator, activation, register_base, entry),
         None => Resumption::Interpreted {
             activation,
             program_counter: 0,
         },
     }
+}
+
+/// Where the run loop enters `code`'s machine code for `activation`, with
+/// `feedback_base`, at the instruction at `program_counter`: in the lean
+/// body for a frame whose reified word is nil, and in the twin for one the
+/// interpreter reified -- a frame an exit left, whose sender walk, or the
+/// `MakeClosure` the exit handed over, reified it -- compiled now if it is
+/// not yet, so that its sends store their program counters and its return
+/// divorces it, as the interpreter's pop would (`docs/design/execution.md`,
+/// "A frame reifies only in its body's twin"). `None` for a body without
+/// machine code here, and for a twin the zone has no room for.
+fn entry_of_frame(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    code: &CompiledCode,
+    feedback_base: FeedbackBase,
+    program_counter: u32,
+) -> Option<CodeOffset> {
+    if mutator.heap.activation_reified(activation).is_none() {
+        return mutator
+            .jit
+            .interpreter_entry(code, feedback_base, program_counter);
+    }
+    let entry = twin_entry(&mut mutator.jit, code, feedback_base, program_counter);
+    after_compile_trigger(mutator);
+    entry
+}
+
+/// Where `code`'s twin, compiled against `feedback_base`, starts the
+/// instruction at `program_counter`, the twin compiled if it is not yet.
+#[cfg(ns_jit)]
+fn twin_entry(
+    state: &mut JitState,
+    code: &CompiledCode,
+    feedback_base: FeedbackBase,
+    program_counter: u32,
+) -> Option<CodeOffset> {
+    let lean = u32::try_from(state.named_body(code)?).ok()?;
+    if !state.is_entered_here(code) || state.bodies[lean as usize].feedback_base != feedback_base {
+        return None;
+    }
+    let twin = compile_twin(state, lean).ok()?;
+    let twin = &state.bodies[twin as usize];
+    let offset = twin.map.machine_offset(program_counter)?;
+    Some(CodeOffset(twin.start + offset))
+}
+
+#[cfg(not(ns_jit))]
+fn twin_entry(
+    _state: &mut JitState,
+    _code: &CompiledCode,
+    _feedback_base: FeedbackBase,
+    _program_counter: u32,
+) -> Option<CodeOffset> {
+    None
 }
 
 /// A frame returned to, which an exit above it left stopped in machine
@@ -2435,10 +2719,7 @@ pub(crate) fn resumed(
     program_counter: u32,
 ) -> Resumption {
     let feedback_base = mutator.heap.activation_feedback_base(activation);
-    match mutator
-        .jit
-        .interpreter_entry(code, feedback_base, program_counter)
-    {
+    match entry_of_frame(mutator, activation, code, feedback_base, program_counter) {
         Some(entry) if native_stack_has_room() => {
             mutator.jit.statistics.resumed_entries += 1;
             run_machine_code(mutator, activation, register_base, entry)
@@ -3166,7 +3447,9 @@ mod tests {
         use crate::jit::macro_assembler::{Abi, LeafIndex, MacroAssembler, Operand};
         use crate::jit::stubs::testing::run_in;
         use crate::jit::stubs::{ExitKind, MachineExit};
-        use crate::jit::{install, machine_entry, note_entry, JitState};
+        use ns_memory::CodeOffset;
+
+        use crate::jit::{compile_twin, install, machine_entry, note_entry, JitState};
 
         fn body() -> Rc<CompiledCode> {
             Rc::new(CompiledCode::new(
@@ -3451,8 +3734,9 @@ mod tests {
             assert!(state.body_at(second_start + 1, heap).is_some());
         }
 
-        /// A body that makes a closure, so that it reifies its frame,
-        /// but returns 7 from its first named local before it does.
+        /// A body that makes a closure, so that its lean code transfers its
+        /// frame into its twin, but returns 7 from its first named local
+        /// before it does.
         pub(in crate::jit) fn body_making_a_closure() -> Rc<CompiledCode> {
             let block = Rc::new(CompiledCode::new(
                 CodeKind::Block,
@@ -3490,13 +3774,13 @@ mod tests {
             Rc::new(code)
         }
 
-        /// The return of a frame whose code reifies it divorces the frame
-        /// object in machine code -- inline, or through the divorce leaf
-        /// for one that retains its registers -- as the pop divorces it,
-        /// and leaves the frame unreified, so that the run loop's pop
+        /// The return of a frame running its body's twin divorces the
+        /// frame object in machine code -- inline, or through the divorce
+        /// leaf for one that retains its registers -- as the pop divorces
+        /// it, and leaves the frame unreified, so that the run loop's pop
         /// after it divorces nothing again: the frame the run loop
         /// entered machine code at, reified before, as the interpreter
-        /// reifies a frame an exit left.
+        /// reifies a frame an exit left, which enters the twin.
         #[test]
         fn a_reified_frame_is_divorced_by_its_return_in_machine_code() {
             for retains_registers in [false, true] {
@@ -3583,43 +3867,162 @@ mod tests {
             assert_eq!(mutator.heap.activation_depth(), depth);
         }
 
-        /// A body's closure site lies in the zone among the body's data
-        /// words: past its last instruction, on a cache line no
-        /// instruction shares, before the next body's code, and zeroed at
-        /// install, so that its first run fills it.
+        /// A frame the interpreter reified -- as a sender walk, or the
+        /// interpreter's run of a `MakeClosure` an exit handed over,
+        /// reifies a frame an exit left -- goes on in machine code only in
+        /// its body's twin, compiled for it even for a body that makes no
+        /// closure: the twin's sends store their program counters and its
+        /// return divorces the frame, so that the frame object records the
+        /// program counter the interpreter would have, as the lean code,
+        /// which stores none and divorces nothing, left it to the run
+        /// loop's pop to record the one the frame was resumed at. A frame
+        /// unreified goes on in the lean code, which compiles no twin.
         #[test]
-        fn closure_sites_live_with_their_body() {
+        fn a_frame_the_interpreter_reified_resumes_in_the_twin() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.enter(|mutator| {
+                let code = body();
+                note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
+                note_entry(&mut mutator.jit, &code, FeedbackBase::NOT_ASSIGNED, None);
+                let resume = |mutator: &mut crate::interpreter::Mutator<'_>, reified: bool| {
+                    let activation = push_factory(mutator, &code);
+                    let frame = reified.then(|| mutator.heap.reify(activation));
+                    // The program counter of the last send the frame
+                    // stopped at, as the exit's walk wrote it.
+                    mutator.heap.activation_set_program_counter(activation, 1);
+                    let register_base = mutator.heap.activation_register_base(activation);
+                    let crate::jit::Resumption::Returned { value } =
+                        crate::jit::resumed(mutator, activation, &code, register_base, 0)
+                    else {
+                        panic!("the body runs to its return in machine code");
+                    };
+                    assert_eq!(
+                        value,
+                        Immediate::small_integer(3).expect("a small integer").bits()
+                    );
+                    let divorced = frame.map(|frame| {
+                        (
+                            mutator.heap.frame_activation(frame).is_none(),
+                            mutator.heap.frame_register_shape(frame).0,
+                        )
+                    });
+                    mutator.heap.pop_activation(activation);
+                    divorced
+                };
+                assert_eq!(resume(mutator, false), None);
+                assert_eq!(
+                    mutator.jit.statistics.compiled_twins, 0,
+                    "an unreified frame goes on in the lean code"
+                );
+                assert_eq!(
+                    resume(mutator, true),
+                    Some((true, 1)),
+                    "the twin's return divorced the frame at the program counter it stored"
+                );
+                assert_eq!(mutator.jit.statistics.compiled_twins, 1);
+                assert_eq!(resume(mutator, true), Some((true, 1)));
+                assert_eq!(
+                    mutator.jit.statistics.compiled_twins, 1,
+                    "the twin is compiled once"
+                );
+            });
+        }
+
+        /// Pushes a factory's activation of `code`, as the run loop pushes
+        /// one: a top-level activation is never entered in machine code.
+        fn push_factory(
+            mutator: &mut crate::interpreter::Mutator<'_>,
+            code: &Rc<CompiledCode>,
+        ) -> crate::heap::ActivationReference {
+            let class = mutator.builtin_class(crate::types::BuiltinClass::Object);
+            mutator
+                .heap
+                .push_activation(
+                    crate::heap::ActivationHeader {
+                        receiver: crate::Value::object(class),
+                        current_class: Some(class),
+                        kind: crate::types::ActivationKind::Factory(class),
+                        method: None,
+                        feedback_base: FeedbackBase::NOT_ASSIGNED,
+                        code: Rc::clone(code),
+                        then: crate::types::Continuation::Deliver,
+                        counted: true,
+                    },
+                    crate::interpreter::Arguments::NONE,
+                    code.registers_above_header(),
+                )
+                .unwrap_or_else(|_| panic!("the stack holds the frame"))
+        }
+
+        /// A body's data words lie in the zone past its last instruction,
+        /// on a cache line no instruction shares, before the next body's
+        /// code, and zeroed at install, so that their first run fills
+        /// them: the lean body's transfer word, until the twin is compiled,
+        /// and the twin's closure site. The compile of the twin writes the
+        /// transfer word with the twin's address of the `MakeClosure`.
+        #[test]
+        fn data_words_live_with_their_body() {
             let mut state = JitState::for_test(1 << 16, true);
             let making = body_making_a_closure();
             let next = body();
             enter_twice(&mut state, &making);
             enter_twice(&mut state, &next);
             assert_eq!(state.statistics().compiled_bodies, 2);
-            let (first, second) = (&state.bodies[0], &state.bodies[1]);
             let alignment = crate::jit::macro_assembler::BODY_WORDS_ALIGNMENT;
-            assert!(first.words < first.end, "the body has data words");
-            assert_eq!(first.words_end - first.words, 24, "one site's three words");
-            assert_eq!(first.words % alignment, 0, "the words start a line");
-            assert_eq!(first.end % alignment, 0, "the words end a line");
-            let last_instruction = first
-                .map
-                .starts
-                .iter()
-                .map(|offset| first.start + offset)
-                .max()
-                .expect("an instruction");
-            assert!(last_instruction < first.words, "past the body's code");
+            let words = |state: &JitState, index: usize| {
+                let body = &state.bodies[index];
+                let zone = state.zone.as_ref().expect("a zone");
+                zone.writer
+                    .bytes(body.words..body.words_end)
+                    .expect("committed")
+                    .to_vec()
+            };
+            assert!(
+                words(&state, 0).iter().all(|byte| *byte == 0),
+                "zeroed at install"
+            );
+            let twin = compile_twin(&mut state, 0).expect("the twin fits");
+            assert_eq!(twin, 2, "installed after the bodies before it");
+            assert_eq!(compile_twin(&mut state, 0), Ok(twin), "compiled once");
+            assert_eq!(state.statistics().compiled_twins, 1);
+            for (index, word_bytes) in [(0, 8), (2, 24)] {
+                let body = &state.bodies[index];
+                assert!(body.words < body.end, "the body has data words");
+                assert_eq!(body.words_end - body.words, word_bytes);
+                assert_eq!(body.words % alignment, 0, "the words start a line");
+                assert_eq!(body.end % alignment, 0, "the words end a line");
+                let last_instruction = body
+                    .map
+                    .starts
+                    .iter()
+                    .map(|offset| body.start + offset)
+                    .max()
+                    .expect("an instruction");
+                assert!(last_instruction < body.words, "past the body's code");
+            }
+            let (first, second, twin) = (&state.bodies[0], &state.bodies[1], &state.bodies[2]);
             assert!(first.end <= second.start, "before the next body's");
+            assert!(second.end <= twin.start, "the twin after both");
             assert_eq!(
                 second.words, second.end,
-                "a body without sites has no words"
+                "a body without transfers has no words"
+            );
+            assert!(!first.reifies && twin.reifies);
+            assert_eq!((first.twin, twin.lean), (Some(2), Some(0)), "paired");
+            assert!(
+                words(&state, 2).iter().all(|byte| *byte == 0),
+                "the twin's site is zeroed at install"
             );
             let zone = state.zone.as_ref().expect("a zone");
-            let site = zone
-                .writer
-                .bytes(first.words..first.words + 24)
-                .expect("committed");
-            assert!(site.iter().all(|byte| *byte == 0), "zeroed at install");
+            let expected = zone.writer.zone().executable_address(CodeOffset(
+                twin.start + twin.map.machine_offset(2).expect("mapped"),
+            )) as u64;
+            assert_eq!(
+                words(&state, 0),
+                expected.to_le_bytes(),
+                "the transfer names the twin's `MakeClosure`"
+            );
         }
 
         /// A zone with room for a body's code but not for its closure

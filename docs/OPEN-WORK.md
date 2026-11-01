@@ -1470,36 +1470,6 @@ classes and a class from source with no predecessor are not edited
   load has no test, and gets one when this item is settled. Noted with
   the user on 2026-10-01, while planning the Are We Fast Yet benchmarks'
   stage 3.
-- **What a conditional's fallback closure costs its body's Boolean path**
-  (2026-10-31). Machine code reifies the frame of a body that contains a
-  `MakeClosure` (`jit::baseline::reifies_its_frame`), and every inlined
-  conditional with a block arm has one: the fallback a receiver that is
-  no Boolean takes, which makes the arms' closures and sends the message
-  (`compiler/lower.rs`, `emit_guarded_branch`). So nearly every body with
-  an `ifTrue:` pays, however its receivers run, the reifying prologue (the
-  reified word, the program counter, the flags word), a program counter
-  stored before each send, and the reified word's test at each return.
-  `bench_recursion.ns`, whose `fib:` has `count < 2 ifTrue: [^1]`, runs
-  about 4% slower than before closures ran in machine code, on code
-  otherwise instruction for instruction the same, at every zone padding
-  tried; leaving out any one of the three parts gives back part of it.
-  Lowering a
-  `MakeClosure` that only a failed guard reaches to an exit gives back the
-  old code and time (0.669 ms against 0.662 before and 0.691 now), but a
-  conditional sent to a receiver that is no Boolean, valid Newspeak, would
-  exit again where it runs in machine code now
-  (`outer_locals_run_without_an_exit` in `tests/jit.rs` covers it).
-  Options: (a) that exit; (b) two copies of such a body, the fallback's
-  `MakeClosure` going on in a second, reifying one, so that the Boolean
-  path pays nothing and the fallback stays compiled, at up to twice the
-  body's code and with whether a frame reifies decided by its machine
-  address for the exit's walk and the leaves; (c) Cog's way, a frame's
-  context slot written by every prologue, the program counter derived
-  from the return address and a married frame widowed lazily rather than
-  divorced at its return -- here a divorced frame's program counter is
-  the last send's, which an image records, so its derivation has to
-  reach the same one. Open: which, decided with the measurement of (b)'s
-  code size.
 
 ## Unexplained measurements and unmeasured decisions
 

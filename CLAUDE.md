@@ -34,7 +34,9 @@ Rust 1.98.0, edition 2021, seven crates:
   leaf, refusing, and the closure stubs, which enter a block's machine
   code through the machine entry table, `heap/machine_entries.rs`), the
   callee returns by `ret`, the miss leaf decides
-  what the cell did not and may compile the callee, and an exit at any
+  what the cell did not and may compile the callee, every body compiles
+  lean and its `MakeClosure` transfers the frame into a reifying twin
+  the twin leaf compiles on demand, and an exit at any
   depth of compiled frames materializes them (`jit/materialize.rs`); the
   VM's idioms and the register roles in `jit/macro_assembler.rs`, the
   entry, call, exit and miss stubs in `jit/stubs.rs`, the trigger, the
@@ -432,13 +434,21 @@ into the frame only after its last decline or exit, so an exit, which
 hands the instruction to the interpreter, never re-applies it. A leaf
 (`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
 activation and never pushes; only the miss leaf, the initializer leaf
-and the forcing leaf compile and install a callee; and a leaf answers "re-execute" only
+and the forcing leaf compile and install a callee, and the twin leaf
+the running body's twin; and a leaf answers "re-execute" only
 before it changed anything but a send's argument slots, which the mirror
 leaf places as the interpreter does and which nothing reads after the
-send but the send re-executed. No leaf reifies a frame machine code
-pushed whose code reifies none (`MachineFrame::reifies`), since its
-return divorces nothing and its frame object would stay married to a
-popped offset; a debug build asserts it as the leaf's view is released.
+send but the send re-executed. Every body compiles lean, and its
+`MakeClosure` transfers the frame into the body's reifying twin, so a
+lean body's frame is never reified: whether a frame reifies is decided
+by the copy it runs (`MachineFrame::reifies`), the run loop goes on in
+the twin with a frame the interpreter reified, and no leaf reifies a
+frame running lean code, whose return divorces nothing and whose frame
+object would stay married to a popped offset; a debug build asserts it
+as the leaf's view is released. A twin is freed, abandoned and replaced
+with its lean body, never alone, and the lean body's transfer words are
+written afresh wherever the twin moves (`execution.md`, "A frame reifies
+only in its body's twin").
 The cut (`cut.rs`), which carries out a non-local return in machine
 code, is the one routine that reads and pops activations other than
 its own: it runs no Newspeak code, never collects, never pushes, reads

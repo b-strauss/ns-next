@@ -2,7 +2,11 @@
 //! closures, non-local return, allocation and the barrier"): the frame
 //! the closure keeps reified inline, as Cog marries a frame in machine
 //! code, and the closure allocated and filled after it, as
-//! `vm::make_closure_into` makes both.
+//! `vm::make_closure_into` makes both -- in a body's twin. A body's lean
+//! code transfers its frame into the twin at the same program counter
+//! (`transfer`; "A frame reifies only in its body's twin"), so that a
+//! body whose activations make no closure -- an inlined conditional's
+//! Boolean path -- pays nothing for the frame a closure would reify.
 //!
 //! The frame object's and the closure's code ids are the heap's, which a
 //! full collection frees once nothing names them and mints again for
@@ -42,7 +46,7 @@ use crate::heap::machine_words::MachineWord;
 use crate::heap::Heap;
 use crate::interpreter::Mutator;
 
-use super::baseline::{BodyAssembler, BodyRole, Lowering};
+use super::baseline::{BodyAssembler, BodyRole, Lowering, Transfer};
 use super::leaves::Leaf;
 use super::macro_assembler::{MacroAssembler, ObjectSize, Operand};
 use super::sends::{frame_slot, store_program_counter};
@@ -133,7 +137,8 @@ impl ClosureRegisters {
     }
 }
 
-/// `MakeClosure`: `vm::make_closure_into`'s work, with no exit. Its
+/// `MakeClosure` in a body's twin (`transfer` is the lean body's):
+/// `vm::make_closure_into`'s work, with no exit. Its
 /// program counter stored, as the interpreter stores it first; the frame
 /// reified unless its reified word names a frame object already: a frame
 /// object bump-allocated -- or placed by the allocation leaf past the
@@ -170,6 +175,111 @@ pub(super) fn make_closure(
     }
     allocate_closure(body, site, destination, copied, &registers);
     Lowering::Template
+}
+
+/// `MakeClosure` in a lean body: the frame transferred into the body's
+/// twin, which makes the closure at the same program counter
+/// (`docs/design/execution.md`, "A frame reifies only in its body's
+/// twin"). The twin's address of the instruction is read from a data word
+/// of the body; while it is 0 the twin leaf compiles the twin and fills
+/// the word (`leaves::twin`), and a zone with no room for the twin makes
+/// the instruction an exit, nothing written. Then, at the instruction's
+/// own place, which an inlined conditional's Boolean path jumps over, it
+/// writes the words of the frame the twin reads and the lean prologue
+/// does not write: the reified word nil, since a lean frame is never
+/// reified and the word holds whatever the stack held there, and in a
+/// release build the flags word of a method's or a factory's frame a
+/// compiled call entered, a counted activation retaining no registers,
+/// which the prologue of a block or an initializer writes already and
+/// the run loop's entry frame holds from its push. The twin's
+/// `MakeClosure` stores its program counter first, so the transfer
+/// stores none but in a debug build, whose twin checks the copied
+/// registers before it stores anything and may leave there. No exit
+/// follows a store, and nothing is changed before the twin is found.
+pub(super) fn transfer(body: &mut BodyAssembler) -> Lowering {
+    let program_counter = body.program_counter;
+    let word = body.macro_assembler.take_body_words(1);
+    body.transfers.push(Transfer {
+        program_counter,
+        word,
+    });
+    let divorce = Heap::machine_divorce(body.argument_count);
+    let writes_flags = matches!(body.role, BodyRole::Method | BodyRole::Factory);
+    let macro_assembler = &mut body.macro_assembler;
+    let roles = macro_assembler.roles();
+    let (target, spare) = (roles.scratch[0], roles.scratch[1]);
+    let assembler = macro_assembler.assembler();
+    let (reload, compile) = (assembler.label(), assembler.label());
+    assembler.bind(reload);
+    macro_assembler.load_body_word(target, word);
+    let assembler = macro_assembler.assembler();
+    assembler.compare_immediate(target, 0);
+    assembler.jump_if(Condition::Equal, compile);
+    macro_assembler.call_leaf_out_of_line_or_exit(
+        compile,
+        Leaf::Twin.index(),
+        [
+            Operand::CodeAddress,
+            Operand::Immediate(u64::from(program_counter)),
+            Operand::Immediate(0),
+        ],
+        program_counter,
+        reload,
+    );
+    let frame = roles.frame;
+    let nil = Heap::machine_layout().nil_word;
+    macro_assembler
+        .assembler()
+        .store_immediate32(frame_slot(frame, divorce.reified_register), nil);
+    #[cfg(not(debug_assertions))]
+    if writes_flags {
+        called_frame_flags(macro_assembler, body.argument_count, spare);
+    }
+    #[cfg(debug_assertions)]
+    {
+        let _ = (writes_flags, spare);
+        macro_assembler.assembler().store_immediate32(
+            frame_slot(frame, divorce.program_counter_register),
+            Heap::machine_program_counter_word(program_counter),
+        );
+    }
+    macro_assembler.assembler().jump_register(target);
+    Lowering::Template
+}
+
+/// A release build's flags word of a method's or a factory's frame taking
+/// `argument_count` arguments that a compiled call entered: a counted
+/// method activation stopped in machine code that retains no registers,
+/// as the push writes it and the walk reads it back for a frame whose
+/// code reifies it (`Heap::write_machine_frame`) -- unless the frame is
+/// the run loop's entry frame, whose flags its push wrote and which may
+/// say otherwise. The entry frame is the one the entry stub called: the
+/// native stack holds nothing above its return address, and the call
+/// stub did not make the entry, as the exit stub tells them apart
+/// (`stubs::assemble_exit_stub`). Clobbers the flags and `spare`.
+#[cfg(not(debug_assertions))]
+fn called_frame_flags(macro_assembler: &mut MacroAssembler, argument_count: u16, spare: Register) {
+    let divorce = Heap::machine_divorce(argument_count);
+    let roles = macro_assembler.roles();
+    let saved_stack_pointer = macro_assembler.block_word(BlockWord::SavedStackPointer);
+    let entered_by_call = macro_assembler.block_word(BlockWord::EnteredByCall);
+    let assembler = macro_assembler.assembler();
+    let (called, entry) = (assembler.label(), assembler.label());
+    assembler.move_register(spare, roles.stack_pointer);
+    assembler.add_immediate(spare, super::stubs::RETURN_ADDRESS_BYTES);
+    assembler.compare_memory(spare, saved_stack_pointer);
+    assembler.jump_if(Condition::NotEqual, called);
+    assembler.load(Width::Word64, spare, entered_by_call);
+    assembler.compare_immediate(spare, 0);
+    assembler.jump_if(Condition::Equal, entry);
+    assembler.bind(called);
+    assembler.move_immediate(spare, Heap::machine_flags_word(argument_count));
+    assembler.store(
+        Width::Word64,
+        frame_slot(roles.frame, divorce.flags_register),
+        spare,
+    );
+    assembler.bind(entry);
 }
 
 /// The site's check, the site the body words from `site` on: its epoch

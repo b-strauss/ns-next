@@ -995,13 +995,15 @@ pub(crate) struct MachineFrame {
     /// (`CompiledCode::addresses_own_slots`), so that it records its
     /// entered level.
     pub(crate) addresses_own_slots: bool,
-    /// Whether its code reifies its frame (`jit::baseline::reifies_its_frame`):
-    /// its prologue wrote the reified word, the flags word and the program
-    /// counter, as the push writes them, and its code keeps all three
-    /// since -- the reified word and the flags' `retains_registers` as its
-    /// frame is reified and marked, the program counter at each point the
-    /// interpreter stores it -- so that its return divorces a reified
-    /// frame as the pop does.
+    /// Whether its code is its body's twin (`jit::baseline::BodyCopy`):
+    /// the transfer into the twin, or the push of the frame the run loop
+    /// resumed there, wrote the reified word and the flags word, and its
+    /// `MakeClosure` the program counter, as the push and the interpreter
+    /// write them, and the twin keeps all three since -- the reified word
+    /// and the flags' `retains_registers` as its frame is reified and
+    /// marked, the program counter at each point the interpreter stores it
+    /// -- so that its return divorces a reified frame as the pop does. A
+    /// frame running lean code is never reified.
     pub(crate) reifies: bool,
     /// The caller's offset and the top the frame was pushed at; `None`
     /// for a leaf's view of its own frame, whose caller nothing reads.
@@ -9778,8 +9780,8 @@ impl<'gc> Heap<'gc> {
     /// wrote (`MachineKind`); its operand is the selector or the current
     /// class. Code that addresses its own slots keeps the guard and the
     /// entered level its prologue wrote and its own-slot instructions
-    /// recorded since; any other records none, as the push does. Code
-    /// that reifies its frame (`MachineFrame::reifies`) keeps the reified
+    /// recorded since; any other records none, as the push does. A body's
+    /// twin, which reifies its frame (`MachineFrame::reifies`), keeps the reified
     /// word, the counted bit and `retains_registers` it wrote, and in a
     /// leaf's view the program counter too; any other is written unreified,
     /// counted and without retained registers, as the push writes a method's
@@ -9969,8 +9971,8 @@ impl<'gc> Heap<'gc> {
     /// What machine code reads and writes to divorce a reified frame of a
     /// body taking `argument_count` arguments at its return, as
     /// `pop_activation` divorces it (`jit::sends::return_from`), and what a
-    /// prologue of code that reifies its frame writes as the push does
-    /// (`jit::sends::prologue`).
+    /// lean body's transfer into its twin writes as the push does
+    /// (`jit::closures::transfer`).
     #[cfg(ns_jit)]
     pub(crate) fn machine_divorce(argument_count: u16) -> MachineDivorce {
         let register = |field: usize| {

@@ -33,28 +33,47 @@ pub(crate) struct BaselineBody {
     /// and the exit cost; such a body is neither installed nor entered
     /// (`jit::note_entry`).
     pub(crate) exits_at_once: bool,
-    /// Whether the code reifies its frame (`reifies_its_frame`).
+    /// Whether the code is a body's twin, which reifies its frame
+    /// (`BodyCopy::Twin`).
     pub(crate) reifies: bool,
     /// The offsets in the code of its first data word, past its last
     /// instruction, and of the byte past its last, if it has any
     /// (`MacroAssembler::take_body_words`): the alignment padding after
     /// them is no word's.
     pub(crate) words: Option<std::ops::Range<u32>>,
+    /// A lean body's transfers, one per `MakeClosure`: the instruction's
+    /// program counter and the index of the data word that holds the
+    /// address of its code in the twin (`closures::transfer`). None in a
+    /// twin.
+    pub(crate) transfers: Vec<Transfer>,
 }
 
-/// Whether `code` reifies its frame: whether it makes a closure, whose
-/// `MakeClosure` reifies the frame the closure keeps, so that its prologue
-/// writes the words the divorce at its return reads and its templates
-/// keep its program counter where the interpreter stores it
-/// (`MachineFrame::reifies`). No other instruction of a body reifies the
-/// frame running it.
-pub(crate) fn reifies_its_frame(code: &CompiledCode) -> bool {
-    (0..code.instruction_count()).any(|program_counter| {
-        matches!(
-            code.instruction(program_counter),
-            Instruction::MakeClosure { .. }
-        )
-    })
+/// A lean body's `MakeClosure`, which goes on in the twin at the same
+/// program counter: the instruction's program counter, and the index of
+/// the body's data word that holds the twin's address of it, 0 until the
+/// twin is compiled (`closures::transfer`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Transfer {
+    pub(crate) program_counter: u32,
+    pub(crate) word: usize,
+}
+
+/// Which of a body's two compiles is being made (`docs/design/execution.md`,
+/// "A frame reifies only in its body's twin").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BodyCopy {
+    /// The body as cells, machine entry rows and every entry name it: its
+    /// frame is never reified while it runs, so its prologue writes no
+    /// reified word, its sends store no program counter and its returns
+    /// test nothing; each `MakeClosure` transfers the frame into the twin
+    /// at the same program counter.
+    Lean,
+    /// The same instructions compiled to reify the frame: its
+    /// `MakeClosure`s reify it, its sends store their program counter
+    /// where the interpreter stores it, and its returns divorce a reified
+    /// frame (`MachineFrame::reifies`). It has no prologue, since only a
+    /// transfer and the resumption of a reified frame enter it.
+    Twin,
 }
 
 /// What a body runs as when a compiled call enters it, which its
@@ -161,8 +180,10 @@ pub(super) struct BodyAssembler {
     pub(super) window_end: u16,
     /// What the body runs as when a compiled call enters it.
     pub(super) role: BodyRole,
-    /// Whether the body reifies its frame (`reifies_its_frame`).
+    /// Whether the body is a twin, which reifies its frame (`BodyCopy::Twin`).
     pub(super) reifies: bool,
+    /// The lean body's transfers, as `closures::transfer` takes them.
+    pub(super) transfers: Vec<Transfer>,
     /// How many registers a frame object of the body holds
     /// (`CompiledCode::frame_register_count`).
     pub(super) frame_register_count: usize,
@@ -1014,16 +1035,18 @@ fn allocated_literal(literal: &Literal) -> bool {
 }
 
 /// Compiles `code` with `macro_assembler`, its sends' cells found from
-/// `feedback_base`: the prologue a compiled call enters at, then each
-/// instruction in turn, at a label whose offset the program-counter map
-/// records, and after the code the body's data words, its `MakeClosure`s'
-/// sites (`MacroAssembler::take_body_words`).
+/// `feedback_base`, as the `copy` of the body it is: for the lean body,
+/// the prologue a compiled call enters at; then each instruction in turn,
+/// at a label whose offset the program-counter map records, and after the
+/// code the body's data words -- the lean body's transfers, the twin's
+/// closure sites (`MacroAssembler::take_body_words`).
 pub(crate) fn compile(
     code: &CompiledCode,
     mut macro_assembler: MacroAssembler,
     feedback_base: FeedbackBase,
     role: BodyRole,
     futures_exit: bool,
+    copy: BodyCopy,
 ) -> Result<BaselineBody, Refusal> {
     // A program counter of the map, and an exit's, is a `u32`; the bound
     // is the zone's layout's, which a later stage's tables index by
@@ -1045,11 +1068,14 @@ pub(crate) fn compile(
         family_size: code.family_size,
         window_end: sends::window_end(code),
         role,
-        reifies: reifies_its_frame(code),
+        reifies: copy == BodyCopy::Twin,
+        transfers: Vec::new(),
         frame_register_count: code.frame_register_count(),
         futures_exit,
     };
-    sends::prologue(&mut body, code);
+    if copy == BodyCopy::Lean {
+        sends::prologue(&mut body, code);
+    }
     let mut exits = Vec::with_capacity(usize::from(count));
     let mut transfers = Vec::with_capacity(usize::from(count));
     for program_counter in 0..u32::from(count) {
@@ -1097,6 +1123,7 @@ pub(crate) fn compile(
         exits_at_once,
         reifies: body.reifies,
         words,
+        transfers: body.transfers,
     })
 }
 
@@ -1358,13 +1385,21 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
         Instruction::LoadEnclosingObject { destination, depth } => {
             body.load_enclosing_object(*destination, *depth)
         }
-        // A closure, its frame reified inline (`closures::make_closure`).
+        // A closure, its frame reified inline (`closures::make_closure`),
+        // in the twin; the lean body transfers the frame there
+        // (`closures::transfer`).
         Instruction::MakeClosure {
             destination,
             code,
             copied,
             ..
-        } => closures::make_closure(body, *destination, code, copied),
+        } => {
+            if body.reifies {
+                closures::make_closure(body, *destination, code, copied)
+            } else {
+                closures::transfer(body)
+            }
+        }
         // A register of the frame `depth` closure hops out, on the
         // activation stack or in its divorced frame object
         // (`closures::outer_local`).
@@ -1483,6 +1518,7 @@ mod tests {
             FeedbackBase::NOT_ASSIGNED,
             super::BodyRole::Method,
             false,
+            super::BodyCopy::Lean,
         )
         .expect("compiled")
     }
@@ -1537,6 +1573,7 @@ mod tests {
             window_end: 0,
             role: super::BodyRole::Method,
             reifies: false,
+            transfers: Vec::new(),
             frame_register_count: 0,
             futures_exit: false,
         };

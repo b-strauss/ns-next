@@ -6,7 +6,9 @@
 //! invocation and that of a future's forcing -- the three leaves that may
 //! compile and install a body, each at the moment a compiled call is
 //! about to be made, before anything of the call is written, so that
-//! none holds an address an install moves -- the leaf stub's run of a
+//! none holds an address an install moves -- the twin leaf, the fourth,
+//! which compiles and installs a running lean body's twin at its
+//! transfer before the transfer writes anything, the leaf stub's run of a
 //! target that is no method with code, a
 //! leaf-safe mirror send, an allocation past the inline bump's limit, the
 //! write barrier's remembering of an old object, the cold check of an
@@ -95,6 +97,8 @@ pub(crate) enum Leaf {
     /// Makes room on the activation stack for a frame a prologue pushes
     /// past the ordinary end (`grow_stack`).
     GrowStack = 17,
+    /// Compiles a lean body's twin for its transfers (`twin`).
+    Twin = 18,
 }
 
 impl Leaf {
@@ -121,7 +125,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 18] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 19] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -144,6 +148,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 18] {
         counted!(cut),
         counted!(cut_frame),
         counted!(grow_stack),
+        counted!(twin),
     ]
 }
 
@@ -846,6 +851,31 @@ fn grow_stack(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         DONE
     } else {
         mutator.jit.statistics.stack_growth_refusals += 1;
+        REFUSED
+    }
+}
+
+/// The twin leaf, which a lean body's transfer calls while the data word
+/// naming the twin's code is 0 (`jit::closures::transfer`): compiles the
+/// twin of the body `arguments[0]`, an address inside it, names -- the
+/// same instructions compiled to reify their frame -- installs it and
+/// writes every transfer word of the lean body (`jit::compile_twin_at`).
+/// Answers `DONE`, and `REFUSED` for a zone too full for it, which asks
+/// for a compaction as any compile that finds no room does, so that the
+/// exit after the call hands the `MakeClosure` to the interpreter. It runs
+/// no Newspeak code, cannot collect and reads no frame: only the zone, the
+/// installed bodies and the lean body's data words change, and no address
+/// a frame or a holder keeps, since an install only appends.
+fn twin(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    let [code_address, _, _] = arguments;
+    let Ok(code_address) = usize::try_from(code_address) else {
+        unreachable!("internal: an address fits the pointer width");
+    };
+    let compiled = jit::compile_twin_at(&mut mutator.jit, code_address);
+    jit::after_compile_trigger(mutator);
+    if compiled {
+        DONE
+    } else {
         REFUSED
     }
 }

@@ -23,6 +23,12 @@
 //! block's lasting words stay current. A compiled frame names its body by
 //! code and program counter, never by address, so a frame stopped in code
 //! a compaction freed resumes interpreted (`jit::resumed`).
+//!
+//! A lean body and its twin are one body to every step here: the twin is
+//! freed whenever its lean body is, by death, abandonment, a moved base or
+//! usage, and never alone, so that it takes the lean body's usage; each
+//! copy moves on its own, and the lean body's transfer words, which name
+//! the twin's code, are written afresh once the copies moved.
 
 use ns_memory::CodeOffset;
 
@@ -265,8 +271,14 @@ impl JitState {
     /// compaction at. Only between entries, where no return address into
     /// it exists.
     pub(super) fn free_body(&mut self, index: u32) {
+        let twin = self.bodies.get(index as usize).and_then(|body| body.twin);
         if self.mark_free(index) {
             self.returns.retain(|_, site| site.body != index);
+        }
+        if let Some(twin) = twin {
+            if self.mark_free(twin) {
+                self.returns.retain(|_, site| site.body != twin);
+            }
         }
     }
 
@@ -292,8 +304,16 @@ impl JitState {
     }
 
     /// Whether the body at `index` is still what its code's slot names:
-    /// its code lives, and it was neither abandoned nor compiled again.
+    /// its code lives, and it was neither abandoned nor compiled again; for
+    /// a twin, whether its lean body is, unfreed, and still has it as its
+    /// twin.
     fn still_named(&self, index: usize) -> bool {
+        if let Some(lean) = self.bodies[index].lean {
+            let lean_body = &self.bodies[lean as usize];
+            return !lean_body.free
+                && lean_body.twin.is_some_and(|twin| twin as usize == index)
+                && self.still_named(lean as usize);
+        }
         self.bodies[index]
             .code
             .upgrade()
@@ -360,6 +380,17 @@ impl JitState {
             if body.free || !slide.moves(body.feedback_base) {
                 continue;
             }
+            let Ok(number) = u32::try_from(index) else {
+                unreachable!("internal: a body's index fits its slot's map");
+            };
+            // A twin, compiled against its lean body's base, is freed with
+            // it; no cell and no machine entry row names it.
+            if body.lean.is_some() {
+                if self.mark_free(number) {
+                    indices.push(number);
+                }
+                continue;
+            }
             let code = body.code.upgrade();
             let start = body.start;
             if let Some(code) = &code {
@@ -367,9 +398,6 @@ impl JitState {
                     code.jit.forget();
                 }
             }
-            let Ok(number) = u32::try_from(index) else {
-                unreachable!("internal: a body's index fits its slot's map");
-            };
             if self.mark_free(number) {
                 indices.push(number);
                 freed.push(FreedBody {
@@ -544,6 +572,99 @@ impl JitState {
         )
     }
 
+    /// Whether the machine code `code`'s slot names reifies its frame, if
+    /// it has some: never, since every body compiles lean and only its
+    /// twin reifies (`baseline::BodyCopy`). For tests.
+    pub(crate) fn body_reifies(&self, code: &CompiledCode) -> Option<bool> {
+        let index = self.named_body(code)?;
+        Some(self.bodies[index].reifies)
+    }
+
+    /// The twin of the machine code `code`'s slot names, if it has one.
+    fn named_twin(&self, code: &CompiledCode) -> Option<&InstalledBody> {
+        let index = self.named_body(code)?;
+        let twin = self.bodies[index].twin?;
+        Some(&self.bodies[twin as usize])
+    }
+
+    /// The zone offset of the twin of the machine code `code`'s slot
+    /// names, if it has one. For tests.
+    pub(crate) fn twin_offset(&self, code: &CompiledCode) -> Option<u32> {
+        Some(self.named_twin(code)?.start)
+    }
+
+    /// The data words of the twin of the machine code `code`'s slot names
+    /// -- its closure sites -- as the zone holds them. For tests.
+    pub(crate) fn twin_words(&self, code: &CompiledCode) -> Option<Vec<u64>> {
+        let twin = self.named_twin(code)?;
+        let zone = self.zone.as_ref()?;
+        let bytes = zone.writer.bytes(twin.words..twin.words_end)?;
+        Some(
+            bytes
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|word| u64::from_le_bytes(*word))
+                .collect(),
+        )
+    }
+
+    /// A debug build's check, after every compaction and every slide of
+    /// the site ranges, that the lean bodies and their twins are paired:
+    /// a live lean body's twin is live and names it back, a live twin's
+    /// lean body is live and names it, and every transfer word of a live
+    /// lean body names its `MakeClosure`'s code in the twin, or is 0 for a
+    /// body without one.
+    #[cfg(debug_assertions)]
+    pub(crate) fn verify_pairs(&self) {
+        let Some(zone) = self.zone.as_ref() else {
+            return;
+        };
+        for (index, body) in self.bodies.iter().enumerate() {
+            if body.free {
+                continue;
+            }
+            if let Some(lean) = body.lean {
+                let lean = &self.bodies[lean as usize];
+                assert!(
+                    !lean.free && lean.twin.is_some_and(|twin| twin as usize == index),
+                    "internal: a live twin's lean body is freed or names another twin"
+                );
+                continue;
+            }
+            let twin = body.twin.map(|twin| &self.bodies[twin as usize]);
+            if let Some(twin) = twin {
+                assert!(
+                    !twin.free && twin.lean.is_some_and(|lean| lean as usize == index),
+                    "internal: a live lean body's twin is freed or names another body"
+                );
+            }
+            for transfer in &body.transfers {
+                let start = body.start + transfer.offset;
+                let Some(bytes) = zone.writer.bytes(start..start + 8) else {
+                    unreachable!("internal: an installed body's words lie in the committed zone");
+                };
+                let mut word = [0; 8];
+                word.copy_from_slice(&bytes);
+                let expected = twin.map_or(0, |twin| {
+                    let offset = twin
+                        .map
+                        .machine_offset(transfer.program_counter)
+                        .unwrap_or(0);
+                    zone.writer
+                        .zone()
+                        .executable_address(CodeOffset(twin.start + offset))
+                        as u64
+                });
+                assert_eq!(
+                    u64::from_le_bytes(word),
+                    expected,
+                    "internal: a transfer word does not name its twin's code"
+                );
+            }
+        }
+    }
+
     /// Step 1, Cog's `markActiveMethodsAndReferents` (`cointerp.c:17709-17725`):
     /// every body an activation runs, on the activation stack or suspended
     /// into its frame, is set to `MAXIMUM_USAGE`, so that freeing by usage
@@ -551,7 +672,11 @@ impl JitState {
     fn mark_active(&self, active: &[std::rc::Rc<CompiledCode>]) {
         for code in active {
             if let Some(index) = self.named_body(code) {
-                self.bodies[index].usage.set(MAXIMUM_USAGE);
+                let body = &self.bodies[index];
+                body.usage.set(MAXIMUM_USAGE);
+                if let Some(twin) = body.twin {
+                    self.bodies[twin as usize].usage.set(MAXIMUM_USAGE);
+                }
             }
         }
     }
@@ -600,11 +725,13 @@ impl JitState {
         };
         let mut freeable = ceiling;
         while freeable < MAXIMUM_USAGE {
-            for body in &mut self.bodies {
+            for index in 0..self.bodies.len() {
                 if freeing == Freeing::ToAQuarter && free_bytes >= wanted {
                     return (freed_any, free_bytes);
                 }
-                if body.free || body.usage.get() > freeable {
+                let body = &mut self.bodies[index];
+                // A twin goes with its lean body, never alone.
+                if body.free || body.lean.is_some() || body.usage.get() > freeable {
                     continue;
                 }
                 body.free = true;
@@ -614,6 +741,14 @@ impl JitState {
                 // Alive: a body whose code died was freed in step 2.
                 if let Some(code) = body.code.upgrade() {
                     code.jit.forget();
+                }
+                if let Some(twin) = body.twin {
+                    let twin = &mut self.bodies[twin as usize];
+                    if !twin.free {
+                        twin.free = true;
+                        self.statistics.freed_bodies += 1;
+                        free_bytes += twin.size();
+                    }
                 }
             }
             if freeing == Freeing::EveryInactiveBody {
@@ -725,7 +860,8 @@ impl JitState {
             body.words -= delta;
             body.words_end -= delta;
             body.usage.set(body.usage.get() / 2);
-            if let Some(code) = body.code.upgrade() {
+            // A twin's slot is its lean body's, which names the lean body.
+            if let Some(code) = body.code.upgrade().filter(|_| body.lean.is_none()) {
                 let first_instruction = code.jit.first_instruction.get() - delta;
                 code.jit.compiled(
                     identity,
@@ -750,6 +886,16 @@ impl JitState {
             }
         }
         self.returns = returns;
+        // The pairs renumbered: a twin survives exactly when its lean body
+        // does, since the two are freed together.
+        let renumber = |old: Option<u32>| {
+            old.and_then(|index| renumbered.get(index as usize).copied().flatten())
+                .map(|(index, _)| index)
+        };
+        for body in &mut self.bodies {
+            body.twin = renumber(body.twin);
+            body.lean = renumber(body.lean);
+        }
         // Every byte the survivors no longer cover -- the gaps their
         // alignment leaves and the room freed past the last -- is filled
         // with stops, as Cog fills the freed end of its zone
@@ -764,6 +910,17 @@ impl JitState {
         zone.next_offset = plan.new_end();
         self.statistics.zone_compactions += 1;
         self.statistics.moved_bytes += moved_bytes;
+        // The transfer words name the twin's code, which may have moved
+        // apart from the lean body: each written afresh at the lean body's
+        // new place.
+        for lean in 0..self.bodies.len() {
+            if self.bodies[lean].twin.is_some() {
+                let Ok(lean) = u32::try_from(lean) else {
+                    unreachable!("internal: a body's index fits its slot's map");
+                };
+                self.write_transfer_words(lean);
+            }
+        }
     }
 }
 
@@ -936,6 +1093,7 @@ impl Mutator<'_> {
                  after a compaction or a slide"
             );
         }
+        self.jit.verify_pairs();
     }
 }
 

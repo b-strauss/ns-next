@@ -79,6 +79,7 @@ const THREE_ANSWERS: &str = indoc! {"
 fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
     JitStatistics {
         compiled_bodies: after.compiled_bodies - before.compiled_bodies,
+        compiled_twins: after.compiled_twins - before.compiled_twins,
         refused_bodies: after.refused_bodies - before.refused_bodies,
         bodies_exiting_at_once: after.bodies_exiting_at_once - before.bodies_exiting_at_once,
         machine_back_edges: after.machine_back_edges - before.machine_back_edges,
@@ -4505,6 +4506,93 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A recursion whose base case returns from an inlined `ifTrue:`: under
+/// the optimized lowering the conditional's fallback makes the arm's
+/// closure, for a receiver that is no Boolean, and every receiver here is
+/// one.
+const RECURSION: &str = indoc! {"
+    class Subject = Object new () (
+      fib: count = (
+        count < 2 ifTrue: [^1].
+        ^(self fib: count - 1) + (self fib: count - 2)
+      )
+      public run = (
+        ^self fib: 15
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A body with an inlined conditional compiles lean -- no reifying
+    /// prologue, no program counter stored at its sends, no test of the
+    /// reified word at its returns -- and its Boolean path never transfers
+    /// into the twin, so that no twin is compiled: the closure the
+    /// conditional's fallback makes costs only the path that makes it.
+    fn a_conditional_costs_its_boolean_path_no_reification(lowering) {
+        let (mut interpreter, class) = load_with(RECURSION, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let mut statistics = interpreter.jit_statistics();
+        for _ in 0..3 {
+            let before = interpreter.jit_statistics();
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 987);
+            statistics = since(interpreter.jit_statistics(), before);
+        }
+        let selector = Symbol::intern("fib:");
+        let reifies = interpreter.jit_body_reifies(&class, MethodSide::Instance, selector);
+        let twin = interpreter.jit_twin_offset(&class, MethodSide::Instance, selector);
+        // The reference lowering inlines no conditional: its `ifTrue:` is a
+        // send of a real closure, which every activation makes. The zone
+        // stress mode may have freed `fib:`'s code by the end of the run.
+        if lowering == Lowering::Optimized {
+            assert_eq!(twin, None, "no transfer compiled its twin");
+            assert_eq!(statistics.compiled_twins, 0);
+            if !a_stress_mode_is_on() {
+                assert_eq!(reifies, Some(false), "`fib:` is compiled lean");
+                assert_ran_in_machine_code(&statistics, "run");
+            }
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A conditional sent to a receiver that is no Boolean -- `Yes`'s and
+    /// `Later`'s `ifTrue:` -- transfers its frame into the body's twin at
+    /// the fallback's `MakeClosure`, which spends no exit: the twin is
+    /// compiled once, at the first transfer, the later runs make no exit
+    /// but a safepoint's, and both lowerings answer what the interpreter
+    /// does.
+    fn a_conditional_sent_to_a_non_boolean_runs_in_the_twin(lowering) {
+        let run = |jit: bool| {
+            let (mut interpreter, class) = load_with(OUTER_LOCALS, lowering);
+            interpreter.set_jit_enabled(jit);
+            let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+            let mut answers = Vec::new();
+            let mut runs = Vec::new();
+            for _ in 0..3 {
+                let before = interpreter.jit_statistics();
+                answers.push(send_unary(&mut interpreter, &subject, "run"));
+                runs.push(since(interpreter.jit_statistics(), before));
+            }
+            let twin = interpreter.jit_twin_offset(
+                &class,
+                MethodSide::Instance,
+                Symbol::intern("countUpTo:"),
+            );
+            (answers, runs, twin)
+        };
+        let (compiled, runs, twin) = run(true);
+        let (interpreted, _, _) = run(false);
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(twin.is_some(), "`countUpTo:`'s transfer compiled its twin");
+            assert!(runs[0].compiled_twins + runs[1].compiled_twins > 0);
+            assert_eq!(runs[2].compiled_twins, 0, "each twin is compiled once");
+            assert_ran_in_machine_code(&runs[2], "run");
+            assert_eq!(runs[2].abandoned_bodies, 0);
+        }
+    }
+}
+
 /// Simultaneous slot clauses whose ends force seven futures a turn: two
 /// for each `Cycle`, whose `first` holds `second`'s future unforced; one
 /// for `Assigned`, whose `second` writes `first`, so that the end then
@@ -5002,7 +5090,7 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A body's closure site moves with its code: filled before the
+    /// A twin's closure site moves with its code: filled before the
     /// compaction, it is not filled again after it -- its words, the code
     /// table's epoch among them, are what they were -- and the body still
     /// makes the closure right.
@@ -5016,14 +5104,14 @@ ns_runtime::for_each_lowering! {
             assert_eq!(send_unary(&mut interpreter, &subject, "makeAndRun"), 13);
         }
         let selector = Symbol::intern("makeAndRun");
-        let words_before = interpreter.jit_body_words(&class, MethodSide::Instance, selector);
-        let offset_before = interpreter.jit_body_offset(&class, MethodSide::Instance, selector);
+        let words_before = interpreter.jit_twin_words(&class, MethodSide::Instance, selector);
+        let offset_before = interpreter.jit_twin_offset(&class, MethodSide::Instance, selector);
         abandon_a(&mut interpreter, &subject);
         interpreter.compact_jit_zone();
-        let words_after = interpreter.jit_body_words(&class, MethodSide::Instance, selector);
-        let offset_after = interpreter.jit_body_offset(&class, MethodSide::Instance, selector);
+        let words_after = interpreter.jit_twin_words(&class, MethodSide::Instance, selector);
+        let offset_after = interpreter.jit_twin_offset(&class, MethodSide::Instance, selector);
         assert_eq!(send_unary(&mut interpreter, &subject, "makeAndRun"), 13);
-        let words_run = interpreter.jit_body_words(&class, MethodSide::Instance, selector);
+        let words_run = interpreter.jit_twin_words(&class, MethodSide::Instance, selector);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             let Some(words_before) = words_before else {
                 panic!("`makeAndRun` is compiled");
@@ -5039,6 +5127,58 @@ ns_runtime::for_each_lowering! {
                 "moved with its code"
             );
             assert_eq!(words_run, Some(words_before), "not filled again");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A compaction moves a lean body and its twin, each down over the
+    /// code freed below it, and writes the lean body's transfer word
+    /// afresh: the next transfer reaches the twin at its new place, with
+    /// no exit and no twin compiled again.
+    fn a_compaction_moves_a_body_and_its_twin(lowering) {
+        let (mut interpreter, class) = load_with(MOVING, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..2 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "a"), 1);
+        }
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "makeAndRun"), 13);
+        }
+        let selector = Symbol::intern("makeAndRun");
+        let offsets = |interpreter: &mut Interpreter| {
+            (
+                interpreter.jit_body_offset(&class, MethodSide::Instance, selector),
+                interpreter.jit_twin_offset(&class, MethodSide::Instance, selector),
+            )
+        };
+        let (body_before, twin_before) = offsets(&mut interpreter);
+        let transfer_before = interpreter.jit_body_words(&class, MethodSide::Instance, selector);
+        abandon_a(&mut interpreter, &subject);
+        interpreter.compact_jit_zone();
+        let (body_after, twin_after) = offsets(&mut interpreter);
+        let transfer_after = interpreter.jit_body_words(&class, MethodSide::Instance, selector);
+        let before = interpreter.jit_statistics();
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "makeAndRun"), 13);
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            let (Some(body_before), Some(twin_before), Some(body_after), Some(twin_after)) =
+                (body_before, twin_before, body_after, twin_after)
+            else {
+                panic!("`makeAndRun` and its twin are compiled, and survive the compaction");
+            };
+            assert!(body_before < twin_before, "the twin compiled after its body");
+            assert!(body_after < body_before, "the body moved down");
+            assert!(twin_after < twin_before, "the twin moved down");
+            assert_ne!(
+                transfer_after, transfer_before,
+                "the transfer word names the twin's new place"
+            );
+            assert_eq!(done.compiled_twins, 0, "the twin is not compiled again");
+            assert_eq!(done.exits, 0, "nothing left machine code");
+            assert!(done.machine_entries + done.called_entries > 0);
         }
     }
 }

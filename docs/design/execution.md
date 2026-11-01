@@ -7808,9 +7808,8 @@ search's steps in registers. What the table still shows slower:
   has a `MakeClosure` on the path a receiver that is no Boolean takes,
   which makes the body reify its frame, and the reifying prologue, the
   program counter stored before each send and the test at each return
-  are paid on the Boolean path too ("What a conditional's fallback
-  closure costs its body's Boolean path" in
-  [OPEN-WORK.md](../OPEN-WORK.md)).
+  are paid on the Boolean path too -- what "A frame reifies only in its
+  body's twin" took off the Boolean path.
 
 ### What non-local return in machine code moved
 
@@ -10542,9 +10541,11 @@ sends and the inline caches in machine code.
   global cache as the interpreter's miss fills them, but acts on nothing:
   for a method machine code runs as an activation, and for a factory's
   body, it counts the callee's entry, compiling and installing it at its
-  second -- one of the three leaves that may compile, with the
+  second -- one of the three leaves that may compile a callee, with the
   initializer leaf and the forcing leaf, which decide a compiled call at
-  the same moment and share its tail (`sends::call_decided`), from inside
+  the same moment and share its tail (`sends::call_decided`), beside the
+  twin leaf, which compiles the running body's twin ("A frame reifies
+  only in its body's twin"), from inside
   machine code, which holds no address an install moves -- and answers
   its machine entry, the receiver and class handed
   over in the machine words (`CalleeReceiver`, `CalleeClass`); for a
@@ -11514,8 +11515,10 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   reified word written. Every closure keeps the frame that created it
   ("The closure keeps its defining activation"), so a frame is reified
   once per closure-creating activation, as often as closures are made;
-  a leaf there would cost a call on that path. The return of code that
-  reifies its frame divorces it inline, and calls a leaf only for a
+  a leaf there would cost a call on that path. It does so only in the
+  body's twin, into which the lean body's `MakeClosure` transfers the
+  frame ("A frame reifies only in its body's twin", below). The twin's
+  return divorces a reified frame inline, and calls a leaf only for a
   frame that retains its registers.
 - **A `MakeClosure`'s code ids are read from a site of its own, never
   compiled in.** A full collection frees the code id of a body nothing
@@ -11724,6 +11727,94 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   (`goldens/runtime/jit/non_local_return*.ns`). The cut runs no Newspeak
   code, never collects and never pushes; it is the one routine that
   reads and pops other activations, which no leaf may.
+
+### A frame reifies only in its body's twin
+
+Decided with the user on 2026-10-31, after the measurement of "What
+closures in machine code moved": every inlined conditional with a block
+arm has a `MakeClosure` on the path a receiver that is no Boolean takes
+(`compiler/lower.rs`, `emit_guarded_branch`), so when the whole body
+reified its frame, nearly every body with an `ifTrue:` paid -- on the
+Boolean path too -- the reifying prologue's words, a program counter
+stored before each send and the reified word's test at each return,
+`bench_recursion.ns` about 4% of it. Every body now compiles twice,
+the second time only on demand (`jit::baseline::BodyCopy`):
+
+- **The lean body** is what cells, machine entry rows and every entry
+  name: its frame is never reified while it runs, so its prologue writes
+  no reified word, no program counter and no flags word of a method's or
+  a factory's frame, its sends store no program counter and its returns
+  test nothing. Each `MakeClosure` lowers to a **transfer**
+  (`jit::closures::transfer`): at the instruction's place, which an
+  inlined conditional's Boolean path jumps over, it reads the
+  twin's address of the same instruction from a data word of its own,
+  writes the words of the frame the twin reads -- the reified word nil,
+  and in a release build the flags word of a method's or a factory's
+  frame a compiled call entered, leaving the run loop's entry frame's,
+  which its push wrote, as the exit stub tells the two apart -- and
+  jumps there. The twin's `MakeClosure` stores its program counter first,
+  so the transfer stores none (but in a debug build, whose twin checks
+  the copied registers first and may exit there).
+- **The twin** is the same instructions compiled to reify the frame, the
+  same `baseline::lower` with one flag: its `MakeClosure`s reify the
+  frame inline, its sends store their program counters where the
+  interpreter stores them, and its returns divorce a reified frame. Only
+  a transfer and the resumption of a reified frame enter it, so it has
+  no prologue. The first transfer that finds its word 0 calls the twin
+  leaf (`Leaf::Twin`), which compiles and installs the twin and writes
+  every transfer word of the lean body through the zone's one writer --
+  the fourth leaf that compiles, beside the miss, initializer and
+  forcing leaves, before the transfer has written anything. A zone too
+  full for the twin makes the transfer an exit, and asks for a
+  compaction as any compile that finds no room does; while the zone
+  stays exhausted, a twin known not to fit the room left is not
+  assembled again.
+- **A frame whose reified word is set runs only twin code.** Machine code
+  reifies a frame only at a `MakeClosure`, which a lean body transfers,
+  and no leaf reifies one, so a lean frame is never reified while it
+  runs; the run loop enters a frame the interpreter reified -- by a
+  sender walk, or by the `MakeClosure` an exit handed it -- in the twin,
+  compiling one for a body without a `MakeClosure` too
+  (`jit::entry_of_frame`). So every reified frame's divorce records the
+  program counter the interpreter's would: before, a body without a
+  `MakeClosure` whose frame the interpreter reified and machine code then
+  resumed stored no program counter at its later sends, and the loop's
+  pop recorded the one it was resumed at.
+- **Whether a frame reifies is decided by the code it runs.** The twin is
+  an installed body of its own, with its own program-counter map and call
+  returns, so the maps the exit's walk, the cut and the leaves read
+  (`JitState::return_site`, `body_of`, `returns`) answer the copy's
+  `reifies` (`MachineFrame::reifies`). No cell and no machine entry row
+  names a twin. The pair is one body to the zone (`jit::zone`): a twin is
+  freed whenever its lean body is -- by death, abandonment, a moved
+  feedback base or usage -- and never alone, takes its lean body's usage,
+  and both are marked active when an activation runs the body; each copy
+  moves on its own in a compaction, after which the lean body's transfer
+  words are written afresh, and a debug build checks every pair and
+  every transfer word after each compaction and slide.
+
+Prior art: Cog compiles a method twice when only one path needs a frame
+(`compileTwoPathFrameBuild`, `cogitX64SysV.c:30937-30990`, whose comment
+measures the frame build at 20% on the path that never needed it); V8
+exchanges interpreter and baseline frames mid-function over one frame
+layout (`builtins/x64/builtins-x64.cc:5657-5660`); Strongtalk puts a
+block's cost on the path that uses it (`vm/compiler/node.hpp:1179-1227`).
+Exiting at the fallback's `MakeClosure` was rejected: it carves out a valid
+construct, and its exits would abandon the whole method. Cog's lazy
+widowing was rejected: the fallback blocks here read their creator's
+registers by reference, so the divorce at the return stays.
+
+An interim measurement (one pinned release build a side, three rounds,
+`--iterations 15`, Queens and Richards `--iterations 8`) put
+`bench_recursion` at `master`'s time (0.674 ms against 0.667 pooled, and
+0.704 before), `bench_block` 2% faster, `bench_while` level, Queens
+level within its noise and Richards 3% faster. The twins add little
+code: the lean `fib:` body is 0xd40 bytes with its transfer word, and
+across the Are We Fast Yet programs a few twins are compiled each --
+DeltaBlue 15, Havlak 23 -- and the zone's use at the end of a run is
+mostly below the tree before's, since a lean body is smaller than the
+whole reifying one was: from 15% below (Json) to 6% above (Havlak), and
+11% above on `bench_while`, whose one twin is as large as its body.
 
 ### Tests
 

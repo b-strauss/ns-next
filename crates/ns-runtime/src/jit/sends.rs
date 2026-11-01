@@ -2,7 +2,9 @@
 //! through (`docs/design/execution.md`, "Sends in machine code"): the
 //! call through a site's cell, the callee's prologue -- its machine entry,
 //! the push's checks and the words of its frame the push writes -- and the
-//! return by `ret`.
+//! return by `ret`. Only a body's lean code has a prologue: its twin is
+//! entered by a transfer and by a resumption alone
+//! (`baseline::BodyCopy`).
 //!
 //! Every value stays in its frame register across a send, so a compiled
 //! frame's registers are the interpreter's at every send, and the callee
@@ -60,9 +62,10 @@ const _: () = assert!(
 /// stack, the safepoint (`Mutator::push_on_slots`); then the count, and
 /// the words of the frame the push writes but the header: the named
 /// locals nil, the guard and the entered level of code that addresses its
-/// own slots (`own_slot_words`), the reified word, the program counter
-/// and the flags word of code that reifies its frame
-/// (`reifying_frame_words`), and in a debug build the dead register's
+/// own slots (`own_slot_words`) -- but no reified word, program counter
+/// or flags word of a method's or a factory's frame, which a lean frame
+/// never needs and its transfer into the twin writes
+/// (`closures::transfer`) -- and in a debug build the dead register's
 /// word in the scratch registers and the flags word with the push's
 /// generation, the rest of the header the exit's walk's
 /// (`jit::materialize`) -- but for an initializer's kind, which its
@@ -177,9 +180,6 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     for register in header_end.saturating_add(copied)..code.local_count.max(header_end) {
         let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
         assembler.store_immediate32(frame_slot(roles.frame, register), nil);
-    }
-    if body.reifies {
-        reifying_frame_words(&mut body.macro_assembler, code.argument_count, scratch);
     }
     #[cfg(debug_assertions)]
     debug_frame_words(body, code);
@@ -359,40 +359,6 @@ fn own_slot_words(
     assembler.bind(recorded);
 }
 
-/// The words of a frame whose code reifies it that the push writes and
-/// the exit's walk keeps rather than writes, since the code keeps them
-/// (`MachineFrame::reifies`): the reified word nil, the program counter
-/// 0, and in a release build the flags word, a counted method activation
-/// stopped in machine code that retains no registers, which a debug build
-/// writes with its generation (`debug_frame_words`) and an initializer's
-/// prologue adds its kind to. Clobbers `scratch` in a release build.
-fn reifying_frame_words(
-    macro_assembler: &mut MacroAssembler,
-    argument_count: u16,
-    scratch: Register,
-) {
-    let roles = macro_assembler.roles();
-    let divorce = Heap::machine_divorce(argument_count);
-    let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
-    let assembler = macro_assembler.assembler();
-    assembler.store_immediate32(frame_slot(roles.frame, divorce.reified_register), nil);
-    assembler.store_immediate32(
-        frame_slot(roles.frame, divorce.program_counter_register),
-        Heap::machine_program_counter_word(0),
-    );
-    #[cfg(not(debug_assertions))]
-    {
-        assembler.move_immediate(scratch, Heap::machine_flags_word(argument_count));
-        assembler.store(
-            Width::Word64,
-            frame_slot(roles.frame, divorce.flags_register),
-            scratch,
-        );
-    }
-    #[cfg(debug_assertions)]
-    let _ = scratch;
-}
-
 /// A debug build's words of a pushed frame the interpreter's push writes
 /// and the walk does not: the dead register's word in every scratch
 /// register (`heap.rs`'s `fill_temporaries`), and the flags word with the
@@ -502,11 +468,11 @@ pub(super) fn frame_slot(frame: Register, register: u16) -> Memory {
 /// or to the call stub, for a callee an interpreter's send called, which
 /// the send's destination takes the value of (`stubs::assemble_call_stub`).
 /// A frame pushed by compiled code since the last exit delivers its value,
-/// so the return tests no continuation. Only a frame's own code reifies it
-/// while machine code runs it -- a frame reified while an exit left it
-/// stopped goes on in machine code as the run loop's entry frame, which
-/// the loop's pop divorces -- so only code that reifies its frame tests
-/// the reified word, and divorces a reified frame first, as the pop does
+/// so the return tests no continuation. A frame running a body's lean
+/// code is never reified -- its `MakeClosure` transfers it into the twin
+/// first, and a frame the interpreter reified goes on in machine code only
+/// in the twin (`jit::resumed`) -- so only the twin tests the reified
+/// word, and divorces a reified frame first, as the pop does
 /// (`divorce_if_reified`).
 pub(super) fn return_from(body: &mut BodyAssembler, register: u16) -> Lowering {
     if body.reifies {
@@ -610,7 +576,7 @@ fn divorce_if_reified(body: &mut BodyAssembler) {
     );
 }
 
-/// For code that reifies its frame, the program counter of the
+/// For a body's twin, the program counter of the
 /// instruction being lowered stored into the frame's header, as the
 /// interpreter stores it at the send that instruction is (`vm::send`,
 /// `vm::send_mirror`) and at a `MakeClosure` (`vm::make_closure_into`),
@@ -619,8 +585,8 @@ fn divorce_if_reified(body: &mut BodyAssembler) {
 /// into its frame -- right before the call of a send through its cell, on
 /// the paths that go on past an initializer invocation's leaf or a
 /// mirror send's, neither of which reads it, and first in a
-/// `MakeClosure`, which has no exit. Code that reifies no frame stores
-/// nothing: no divorce reads its frame's.
+/// `MakeClosure`, which has no exit. Lean code stores nothing: no divorce
+/// reads a lean frame's.
 pub(super) fn store_program_counter(body: &mut BodyAssembler) {
     if !body.reifies {
         return;
