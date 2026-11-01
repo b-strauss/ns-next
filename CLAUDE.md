@@ -8,7 +8,10 @@ Rust 1.98.0, edition 2021, seven crates:
   the AST is lossless except for layout -- parentheses, literal spellings,
   type annotations as tokens, the prologue, `<-:`, members in source order
   -- and every comment is attached to its node (`attach.rs`;
-  `docs/design/frontend.md`, "AST", "Comments"); `parse` refuses a source
+  `docs/design/frontend.md`, "AST", "Comments"); a doc comment's tags and
+  summary are `doc_comment.rs`'s, the grammar the JetBrains plugin's
+  `NewspeakDocTags` repeats (`docs/design/editor-support.md`, "Doc
+  comments"); `parse` refuses a source
   with errors, `parse_for_editor` answers a recovered module for the editor,
   its recovery bounded by a work budget (`docs/design/frontend.md`,
   "Recovery"); the printer (`printer/`: `print_module` writes a module back

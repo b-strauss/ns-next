@@ -59,6 +59,7 @@ first.
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `Array>>do:`, and a loop in the reference lowering | Complete | 2026-10-27 | [loop-bodies](superpowers/plans/2026-10-27-1529-loop-bodies.md) |
 | Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows | In progress | 2026-11-01 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md) |
 | A one-line method in the JetBrains plugin folded as Java's one-liners: brackets and their spaces in the folds, the server's method fold containing them | Complete | 2026-11-01 | — |
+| Doc comments: a block of `///` lines coloured and rendered in place as Markdown, a hover with a declaration's signature and doc comment, Java-style tags (`@param`, `@answers`, `@signals`, `@see`, `@factory`, `{@summary}`) as sections with the server's warnings, and the whole core library documented with them | Complete | 2026-11-01 | [doc-comment-tags](superpowers/plans/2026-11-01-1608-doc-comment-tags.md) |
 | Road step 9 (M6) — an optimizing JIT | Not started | — | — |
 
 ## Notes
@@ -6677,3 +6678,40 @@ there are no one-line folds, as in Java.
 
 - `478f16e2` -- the folds laid out as Java's.
 - `0f682c52` -- the server's method fold containing them.
+
+## Doc comments, the hover and doc tags (2026-11-01)
+
+A block of two or more `///` lines is a doc comment. The JetBrains plugin
+colours it as Java colours its doc comments -- the highlighting lexer merges
+the block into one token, so the colour is there as a file opens -- and
+renders it in place as Markdown through the platform's inline documentation,
+its owner the server's document symbol on the line after it. The language
+server answers `textDocument/hover` over a name the classifier places at a
+declaration of the file: the signature in a `newspeak` fence, which the
+platform shows as the definition, the doc comment and the class it is a
+member of; a class's factory has a hover of its own.
+
+A doc comment carries Java-style tags -- `@param`, `@answers`, `@signals`,
+`@see`, `@factory` for a class's factory -- and an inline `{@summary}`, its
+first sentence otherwise. One grammar, parsed in `ns_syntax::doc_comment`
+and in the plugin's `NewspeakDocTags`; the hover and the rendered view show
+the tags as the platform's section table, the server warns about an unknown
+tag and a `@param` naming no parameter, and the structure view's tooltip
+shows the summary. Every member of the shipped core library is documented
+with the tags, which `core_library_documentation.rs` enforces
+(`editor-support.md`, "Doc comments", "Hover"; `CLAUDE.md`, "Conventions").
+
+A review found a likely defect in `Exception>>pass`, recorded in
+[OPEN-WORK.md](OPEN-WORK.md) with what else the batch left open.
+
+- `91aa59f9`, `303765be` -- the doc-comment colour and the rendered view.
+- `1bf734a4` -- the hover.
+- `d8ecceed` -- the plan.
+- `4f7537c2`, `57fd28bf`, `186cd638`, `275cc35b`, `b22b7f53` -- the tag
+  grammar, the hover's sections and the factory's hover, the warnings, the
+  plugin's sections and summary.
+- `f4eec774`, `729ee4da`, `e3e6d531` -- the documentation test.
+- `9e92ea82` to `5947c10c` -- the core library documented module by module.
+- `839292ff` to `b8477bc1`, `9a4683e9` -- the modules made consistent.
+- `da657d6f`, `6e6c991f` -- the highlighting lexer.
+- `f87fc0ae`, `2f043c6e` -- the documents.
