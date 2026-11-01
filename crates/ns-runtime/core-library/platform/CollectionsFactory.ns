@@ -30,8 +30,10 @@
 ///
 /// @factory makes the collections module over `kernel`, copying its
 /// `ArgumentError`, `Collection`, `WeakArray` and `WeakMap` into slots of
-/// its own and keeping nothing else of it; the platform's root sends it
-/// once, through the mirror.
+/// its own and keeping nothing else of it. The platform's root sends it
+/// to the class the mirror answers on the module's first demand, and again
+/// on the next demand after an unwind interrupted one, which records
+/// nothing; the loader sends it instead when an image names the module.
 /// @param kernel the kernel module instance; its `Collection` is the
 /// superclass of `List`, `Map` and `Set`, its `ArgumentError` what they
 /// signal for an index or a capacity out of range, and its `WeakArray` and
@@ -349,6 +351,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @answers the receiver.
     /// @signals ConcurrentModification after the evaluation of `action`
     /// that added or removed an element.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for an `action` that does not
+    /// take one argument, when the list is not empty.
     public do: action = (
       |
         expected = modifications.
@@ -369,6 +374,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// element.
     /// @answers the receiver.
     /// @signals ConcurrentModification as `do:` does.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for an `action` that does not
+    /// take two arguments, when the list is not empty.
     public keysAndValuesDo: action = (
       |
         expected = modifications.
@@ -392,6 +400,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @answers whether `predicate` answers true for some element, a
     /// Boolean; false for an empty list.
     /// @signals ConcurrentModification as `do:` does.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the list is not empty.
     public anySatisfy: predicate = (
       |
         expected = modifications.
@@ -441,6 +452,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @param element any object.
     /// @param onAbsent anything understanding `value`.
     /// @answers `element`; when there is none, the value of `onAbsent`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for an `onAbsent` that declares
+    /// any parameter, when there is none.
     public remove: element ifAbsent: onAbsent = (
       |
         position ::= firstIndex.
@@ -515,6 +529,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @answers the receiver.
     /// @signals ConcurrentModification after the evaluation of
     /// `predicate` that added or removed an element.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the list is not empty; nothing is removed.
     public removeAllSuchThat: predicate = (
       |
         elements = self asArray.
@@ -568,6 +585,10 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// evaluation of `lessOrEqual` added or removed an element; the
     /// sorted copy is then not written back, and the list stays as the
     /// block left it.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for a `lessOrEqual` that does not
+    /// take two arguments, when the list holds at least two elements; the
+    /// list stays as it was.
     public sort: lessOrEqual = (
       |
         sorted
@@ -930,6 +951,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// the key is absent.
     /// @answers the value stored under `key`, or the value of `onAbsent`
     /// when the map holds no such key.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for an `onAbsent` that declares
+    /// any parameter, when the map holds no such key.
     public at: key ifAbsent: onAbsent = (
       |
         keyIndex = scanFor: key in: hashtable_.
@@ -946,6 +970,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// the key is absent.
     /// @answers the value stored under `key`, or the value of `generator`
     /// just stored there.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a `generator` that declares
+    /// any parameter, when the map holds no such key; nothing is stored.
     public at: key ifAbsentPut: generator = (
       ^self at: key ifAbsent: [self at: key put: generator value].
     )
@@ -994,6 +1021,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @param onAbsent anything understanding `value`.
     /// @answers the value `key` had; when the map holds no such key, the
     /// value of `onAbsent`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for an `onAbsent` that declares
+    /// any parameter, when the map holds no such key.
     public removeKey: key ifAbsent: onAbsent = (
       |
         keyIndex = scanFor: key in: hashtable_.
@@ -1036,6 +1066,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @answers the receiver.
     /// @signals ConcurrentModification after the evaluation of `action`
     /// that added or removed a key.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for an `action` that does not
+    /// take one argument, when the map is not empty.
     public do: action = (
       |
         data = data_.
@@ -1058,6 +1091,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @param action a two-argument block, given the key and the value.
     /// @answers the receiver.
     /// @signals ConcurrentModification as `do:` does.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 2', for an `action` that does not
+    /// take two arguments, when the map is not empty.
     public keysAndValuesDo: action = (
       |
         data = data_.
@@ -1096,6 +1132,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @answers the new map, holding each key with `transform`'s answer
     /// for its value, in the same order.
     /// @signals ConcurrentModification as `keysAndValuesDo:` does.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `transform` that does not
+    /// take one argument, when the map is not empty.
     public collect: transform = (
       |
         result = self newForCollectUsingAdd: size_.
@@ -1112,6 +1151,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @answers the new map, holding the keys whose values `predicate`
     /// answers true for, with their values, in the same order.
     /// @signals ConcurrentModification as `keysAndValuesDo:` does.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the map is not empty.
     public select: predicate = (
       |
         result = self newForCollectUsingAdd: size_.
@@ -1130,6 +1172,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @answers the new map, holding the keys whose values `predicate`
     /// answers false for, with their values, in the same order.
     /// @signals ConcurrentModification as `keysAndValuesDo:` does.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the map is not empty.
     public reject: predicate = (
       ^self select: [:value | (predicate value: value) not].
     )
@@ -1620,6 +1665,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @param onAbsent anything understanding `value`.
     /// @answers `element`; when the set holds none, the value of
     /// `onAbsent`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for an `onAbsent` that declares
+    /// any parameter, when the set holds none.
     public remove: element ifAbsent: onAbsent = (
       |
         index = scanFor: element in: hashtable_.
@@ -1655,6 +1703,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @answers the receiver.
     /// @signals ConcurrentModification after the evaluation of
     /// `predicate` that added or removed an element.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `predicate` that does not
+    /// take one argument, when the set is not empty; nothing is removed.
     public removeAllSuchThat: predicate = (
       |
         elements = self asArray.
@@ -1687,6 +1738,9 @@ class CollectionsFactory usingKernel: kernel = Value (
     /// @answers the receiver.
     /// @signals ConcurrentModification after the evaluation of `action`
     /// that added or removed an element.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for an `action` that does not
+    /// take one argument, when the set is not empty.
     public do: action = (
       |
         data = data_.
