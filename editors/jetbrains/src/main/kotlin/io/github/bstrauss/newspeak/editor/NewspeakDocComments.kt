@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.editor
 
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiWhiteSpace
@@ -43,6 +44,19 @@ object NewspeakDocComments {
     /** A doc comment's text as Markdown: each line without its `///` and the one space after it. */
     fun markdown(lines: List<PsiElement>): String =
         lines.joinToString("\n") { line -> line.text.removePrefix("///").removePrefix(" ").trimEnd() }
+
+    /**
+     * The summary (`NewspeakDocTags`) of the doc comment of `file` whose last
+     * line is `line - 1`, the one right above what starts on the 0-based
+     * `line`; `null` without such a comment or without a summary.
+     */
+    fun summaryAbove(file: PsiFile, line: Int): String? {
+        val document = PsiDocumentManager.getInstance(file.project).getDocument(file) ?: return null
+        val block = blocks(file).firstOrNull { lines ->
+            document.getLineNumber(lines.last().textRange.endOffset) == line - 1
+        } ?: return null
+        return NewspeakDocTags.parse(markdown(block)).summary
+    }
 
     /** The `///` line just before or after `comment` in its block, if there is one. */
     private fun blockNeighbour(comment: PsiElement, step: (PsiElement) -> PsiElement?): PsiElement? {

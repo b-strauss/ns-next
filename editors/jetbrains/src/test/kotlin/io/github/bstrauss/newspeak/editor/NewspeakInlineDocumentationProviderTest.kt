@@ -69,6 +69,24 @@ class NewspeakInlineDocumentationProviderTest : BasePlatformTestCase() {
         assertFalse(html, html.contains("///"))
     }
 
+    fun testTheTagsRenderAsSections() {
+        val file = myFixture.configureByText(
+            "Module.ns",
+            """
+            class M = () (
+              /// Grows.
+              /// @param amount how much.
+              grow: amount = ( ^amount )
+            )
+            """.trimIndent(),
+        )
+        val html = items(file).single().renderText()!!
+        assertTrue(html, html.contains("class='sections'"))
+        assertTrue(html, html.contains("Params:"))
+        assertTrue(html, Regex("<code>(<span[^>]*>)?amount(</span>)?</code>").containsMatchIn(html))
+        assertFalse(html, html.contains("@param"))
+    }
+
     fun testTheOwnerIsTheServersSymbolOnTheNextLine() {
         val file = myFixture.configureByText("Module.ns", source)
         val two = symbol("two", 8, 8)

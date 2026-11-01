@@ -71,7 +71,16 @@ private class NewspeakDocComment(
 
     override fun getDocumentationOwnerRange(): TextRange? = owner
 
-    override fun renderText(): String = DocMarkdownToHtmlConverter.convert(project, markdown, NewspeakLanguage)
+    /**
+     * The description, then the known tags as the platform's section table,
+     * as Java renders its tags; each part's Markdown through the platform's
+     * converter, so a tag's code reads as the description's does.
+     */
+    override fun renderText(): String {
+        val comment = NewspeakDocTags.parse(markdown)
+        val render = { text: String -> DocMarkdownToHtmlConverter.convert(project, text, NewspeakLanguage) }
+        return render(comment.description) + NewspeakDocTags.sectionsHtml(comment, render)
+    }
 
     override fun getOwnerTarget(): DocumentationTarget? = null
 }

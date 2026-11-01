@@ -1,6 +1,8 @@
 package io.github.bstrauss.newspeak.structure
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.projectView.PresentationData
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.NewspeakIcons
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.Position
@@ -115,5 +117,36 @@ class NewspeakStructureElementTest {
     @Test fun theRowIconIsTheKindsIconAloneWithoutAnAccess() {
         val temporary = presentationOf(symbol("old", SymbolKind.Variable, null))
         assertSame(AllIcons.Nodes.Variable, rowIconOf(temporary))
+    }
+}
+
+/** A row's hover with the summary of the doc comment above its symbol, read from the file. */
+class NewspeakStructureElementSummaryTest : BasePlatformTestCase() {
+    private val source = """
+        class Module = () (
+          /// Answers two. Always
+          /// the same.
+          two = ( ^2 )
+          three = ( ^3 )
+        )
+    """.trimIndent()
+
+    private fun method(name: String, line: Int): DocumentSymbol {
+        val range = Range(Position(line, 2), Position(line, source.lines()[line].length))
+        return DocumentSymbol(name, SymbolKind.Method, range, range, "public")
+    }
+
+    private fun tooltipOf(symbol: DocumentSymbol): String? {
+        val file = myFixture.configureByText("Module.ns", source)
+        val element = NewspeakStructureElement(project, file.virtualFile, symbol, psiFile = file)
+        return (element.presentation as PresentationData).tooltip
+    }
+
+    fun testATooltipShowsTheSummary() {
+        assertEquals("<html>Public method<br>Answers two.</html>", tooltipOf(method("two", 3)))
+    }
+
+    fun testAMemberWithoutADocCommentKeepsItsTooltip() {
+        assertEquals("Public method", tooltipOf(method("three", 4)))
     }
 }

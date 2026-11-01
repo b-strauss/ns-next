@@ -4,15 +4,19 @@ import com.intellij.icons.AllIcons
 import com.intellij.ide.projectView.PresentationData
 import com.intellij.ide.structureView.StructureViewTreeElement
 import com.intellij.navigation.ItemPresentation
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.util.getOffsetInDocument
+import com.intellij.psi.PsiFile
 import com.intellij.ui.IconManager
 import com.intellij.ui.icons.IconWrapperWithToolTip
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakIcons
+import io.github.bstrauss.newspeak.editor.NewspeakDocComments
 import io.github.bstrauss.newspeak.lsp.NewspeakSymbolKinds
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.SymbolKind
@@ -138,13 +142,17 @@ fun iconWithHover(icon: Icon?, tooltip: String?): Icon? {
  * The value is the symbol itself, which is what
  * `NewspeakStructureViewModel.getCurrentEditorElement` answers, so the view
  * can select the row at the caret. `root` marks a top-level symbol of the
- * answer: the module's class.
+ * answer: the module's class. `psiFile`, the file the tree is built for,
+ * gives a row's hover the summary of the doc comment above its symbol
+ * (`NewspeakDocComments.summaryAbove`); without it the hover is the kind's
+ * alone.
  */
 class NewspeakStructureElement(
     private val project: Project,
     private val file: VirtualFile,
     private val symbol: DocumentSymbol,
     private val root: Boolean = false,
+    private val psiFile: PsiFile? = null,
 ) : StructureViewTreeElement {
     override fun getValue(): DocumentSymbol = symbol
 
@@ -159,15 +167,30 @@ class NewspeakStructureElement(
      */
     override fun getPresentation(): ItemPresentation {
         val presentation = presentationOf(symbol, root)
-        val icon = iconWithHover(rowIconOf(presentation), presentation.tooltip)
+        val hover = withSummary(presentation.tooltip)
+        val icon = iconWithHover(rowIconOf(presentation), hover)
         return PresentationData(presentation.name, presentation.locationString, icon, null).apply {
-            tooltip = presentation.tooltip
+            tooltip = hover
         }
+    }
+
+    /**
+     * The kind's hover, then on a line of its own the summary of the
+     * symbol's doc comment, so the view tells what a member does without
+     * opening it; read from the file's current text rather than asked of the
+     * server, since the comment stands right above the symbol.
+     */
+    private fun withSummary(tooltip: String?): String? {
+        val file = psiFile ?: return tooltip
+        val line = symbol.range?.start?.line ?: return tooltip
+        val summary = runReadAction { NewspeakDocComments.summaryAbove(file, line) } ?: return tooltip
+        val lines = listOfNotNull(tooltip, summary).map(StringUtil::escapeXmlEntities)
+        return lines.joinToString("<br>", prefix = "<html>", postfix = "</html>")
     }
 
     override fun getChildren(): Array<StructureViewTreeElement> =
         symbol.children.orEmpty()
-            .map { child -> NewspeakStructureElement(project, file, child) }
+            .map { child -> NewspeakStructureElement(project, file, child, psiFile = psiFile) }
             .toTypedArray()
 
     /** To the symbol's name, which is what its `selectionRange` covers; positions are UTF-16, as a document's are. */
