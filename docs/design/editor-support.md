@@ -10,7 +10,7 @@
 > the run markers share in `lsp/DocumentSymbolCache.kt`, the editing aids in
 > the `editor` package, every text in `messages/NewspeakBundle.properties`)
 > both exist: highlighting, a block of `///` lines in the doc-comment
-> colour, errors as you type, code folding with one-line
+> colour and rendered in place as Markdown, errors as you type, code folding with one-line
 > methods shown on one line, hints with their quick fixes, a structure view
 > with breadcrumbs, Reformat Code, and typing in the formatter's
 > indentation and width, in every commercial JetBrains IDE from 2026.1.4, kept while a file has
@@ -1113,7 +1113,25 @@ Components:
   them), but a line's colour depends on the lines around it and the
   highlighter relexes only from an edited line on, so the lexer, one token a
   line, cannot decide it: `NewspeakDocCommentAnnotator` does, a `DumbAware`
-  annotator over the flat PSI's comment and whitespace leaves.
+  annotator over the flat PSI's comment and whitespace leaves, by the rule
+  in `editor/NewspeakDocComments.kt`, which the rendered view reads too.
+- **Rendered doc comments** — every doc comment, and only those, renders in
+  place as Java's do: `NewspeakInlineDocumentationProvider`, the platform's
+  `inlineDocumentationProvider` extension point (every language's, so it
+  answers nothing for another file), hands the platform each block's range
+  and its text without the `///` and the space after it, read as Markdown by
+  the platform's own `DocMarkdownToHtmlConverter`, code fences highlighted as
+  Newspeak; no Markdown library of the plugin's own. The platform draws it,
+  puts the toggle between the rendered and the raw text in the gutter, and
+  follows *Settings | Editor | Appearance | Render documentation comments*
+  and the reader mode. What a comment documents is the server's to say: its
+  owner is the document symbol (`DocumentSymbolCache`) that starts on the
+  line after it, the first in pre-order, so the outermost; before the server
+  has answered for the current text a comment has no owner and renders all
+  the same, and the daemon runs again once the answer is kept
+  (`DocumentSymbolCache.currentForDaemon`, which the module's play button
+  reads the same way). LSP has no rendered comments of its own: the server's
+  only part is the symbols.
 - **Editor features** — a `BraceMatcher` for `()`, `[]` and `{}`, a
   `Commenter` for `///` lines and `(* *)` blocks, a `QuoteHandler`. Not for `<>`: `<` and `>` are
   also binary selectors, and pairing a comparison with a type's closing
@@ -1552,7 +1570,11 @@ The server's own tests are described under its section, above ("Testing").
   comment); `NewspeakDocCommentAnnotatorTest`, which `///` lines take the
   doc-comment colour (a block of two, at the file's start too, and not a
   single line, a block split by a blank line or code, a trailing remark, or
-  a line beside a `(* *)` comment); `NewspeakColorSettingsPageTest` is plain JUnit,
+  a line beside a `(* *)` comment); `NewspeakInlineDocumentationProviderTest`,
+  the rendered doc comments (every block and no single line, the Markdown
+  rendered, the owner from the server's symbols and none without them, an
+  item found by its range, nothing for another language's file);
+  `NewspeakColorSettingsPageTest` is plain JUnit,
   over the colour settings page directly, with no platform test case needed
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
   which cover the binary lookup order and the semantic-token classification;
