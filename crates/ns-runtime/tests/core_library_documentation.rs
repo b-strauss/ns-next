@@ -130,6 +130,12 @@ fn the_tag_check_finds_each_fault() {
           /// @answers nil.
           public misplaced = ( ^nil )
 
+          /// Stands a blank line above its method.
+          ///
+          /// @answers nil.
+
+          public detached = ( ^nil )
+
           /// A nested class.
           ///
           /// @param value the value.
@@ -151,6 +157,31 @@ fn the_tag_check_finds_each_fault() {
             "Sample.ns: Sample>>Inner (class): a class whose header names its factory has exactly one `@factory`, this one has 0",
         ]
     );
+    let comments = comments_of(source);
+    let undocumented: Vec<String> = members_of(&module)
+        .into_iter()
+        .filter(|member| comment_above(source, &comments, member.start).is_none())
+        .map(|member| member.name)
+        .collect();
+    assert_eq!(undocumented, ["Sample>>detached"]);
+    // A line break is one whichever way it is written, and a second one
+    // detaches the comment whichever way either is written.
+    for (text, attached) in [
+        ("/// A.\nx", true),
+        ("/// A.\r\nx", true),
+        ("/// A.\rx", true),
+        ("/// A.\n\nx", false),
+        ("/// A.\r\n\r\nx", false),
+        ("/// A.\r\rx", false),
+        ("/// A.\n\r\nx", false),
+    ] {
+        let start = text.len() - 1;
+        assert_eq!(
+            comment_above(text, &comments_of(text), start).is_some(),
+            attached,
+            "{text:?}"
+        );
+    }
 }
 
 /// Everything the tags of each member of `module`, which `source` holds,
@@ -370,11 +401,20 @@ fn selector_of(pattern: &MessagePattern) -> (String, u32) {
     }
 }
 
-/// The comment that ends at or before `start` with only whitespace
-/// between it and `start`.
+/// The comment that ends at or before `start` with only whitespace and
+/// exactly one line break between it and `start` -- `\r\n` counted once, a
+/// lone `\r` as one -- as the hover and the rendered view require: a comment
+/// a blank line above a member is not the member's documentation there, so
+/// it is not here either.
 fn comment_above(source: &str, comments: &[Comment], start: usize) -> Option<Comment> {
     comments.iter().copied().find(|comment| {
         let end = comment.span.end as usize;
-        end <= start && source[end..start].chars().all(char::is_whitespace)
+        end <= start && {
+            let gap = &source[end..start];
+            gap.chars().all(char::is_whitespace)
+                && gap.matches('\n').count() + gap.matches('\r').count()
+                    - gap.matches("\r\n").count()
+                    == 1
+        }
     })
 }
