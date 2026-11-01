@@ -389,6 +389,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param block a block of no argument or one, or anything
     /// understanding `cull:`; sent `cull:` with the receiver.
     /// @answers the value of `block`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a block of two parameters or
+    /// more.
     public ifNotNil: block = (
       ^block cull: self.
     )
@@ -400,6 +403,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param nilBlock any object.
     /// @param notNilBlock as `ifNotNil:`'s block.
     /// @answers the value of `notNilBlock`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `notNilBlock` of two
+    /// parameters or more.
     public ifNil: nilBlock ifNotNil: notNilBlock = (
       ^notNilBlock cull: self.
     )
@@ -409,6 +415,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param notNilBlock as `ifNotNil:`'s block.
     /// @param nilBlock any object; not evaluated.
     /// @answers the value of `notNilBlock`.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 1', for a `notNilBlock` of two
+    /// parameters or more.
     /// @see `ifNil:ifNotNil:`.
     public ifNotNil: notNilBlock ifNil: nilBlock = (
       ^notNilBlock cull: self.
@@ -6543,9 +6552,9 @@ class Kernel vmMirror: mirror = Value (
     /// @answers nothing here, where it never returns; a subclass's own
     /// answers the Symbol #littleEndian or #bigEndian.
     /// @signals Error of `subclassResponsibility`, here,
-    /// 'DataView>>byteOrder is abstract: … must implement it', for a view
-    /// made by `over:` or one of a program's subclass: the two subclasses
-    /// `on:byteOrder:` makes define it.
+    /// 'DataView>>byteOrder is abstract: … must implement it', for the view
+    /// `over:` makes and an instance of a program's subclass that does not
+    /// define it: the two subclasses `on:byteOrder:` makes define it.
     public byteOrder = (
       ^self subclassResponsibility.
     )
@@ -7820,7 +7829,13 @@ class Kernel vmMirror: mirror = Value (
     /// @param handler a block of no argument or one, or anything
     /// understanding `cull:`; sent `cull:` with the exception.
     /// @answers the receiver's value; or, once `handler` runs, the
-    /// handler's value, unless it resumes, retries or passes the exception.
+    /// handler's value, unless it resumes, retries or passes the exception,
+    /// or ends this send with `return:`, whose argument it answers, or
+    /// `return`, which answers nil.
+    /// @signals ArgumentError carrying the receiver, 'wrong number of block
+    /// arguments: block takes …, got 0', for a receiver that declares
+    /// parameters, unless `exceptionClass` handles it, in which case
+    /// `handler` runs with it.
     /// @signals ArgumentError carrying the block, 'wrong number of block
     /// arguments: block takes …, got 1', for a `handler` block of two
     /// parameters or more, when it runs.
@@ -7842,6 +7857,9 @@ class Kernel vmMirror: mirror = Value (
     /// @param onUnwind a block of no argument, or anything understanding
     /// `value`; sent `value`.
     /// @answers the receiver's value, when the receiver completes.
+    /// @signals ArgumentError carrying the receiver, 'wrong number of block
+    /// arguments: block takes …, got 0', for a receiver that declares
+    /// parameters; `onUnwind` then runs as the unwind abandons this send.
     /// @signals ArgumentError carrying the block, 'wrong number of block
     /// arguments: block takes …, got 0', for an `onUnwind` block that
     /// declares parameters, when it runs.
@@ -7862,6 +7880,9 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// @param onUnwind as `ensure:`'s.
     /// @answers the receiver's value, when the receiver completes.
+    /// @signals ArgumentError carrying the receiver, 'wrong number of block
+    /// arguments: block takes …, got 0', for a receiver that declares
+    /// parameters; `onUnwind` then runs as the unwind abandons this send.
     /// @signals ArgumentError carrying the block, 'wrong number of block
     /// arguments: block takes …, got 0', for an `onUnwind` block that
     /// declares parameters, when an unwind abandons the receiver.
