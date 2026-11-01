@@ -1148,8 +1148,29 @@ impl JitState {
         // A JIT switched off is not wanted: no reason is reported for it.
         if !enabled {
             self.unavailable = None;
+            self.refuse_abandoned();
         }
         reserved
+    }
+
+    /// Refuses every body still abandoned, as the JIT switched off refuses
+    /// a body at its first entry: an abandoned body's push counts its
+    /// entries inline and reaches `entered` only at the one that would
+    /// revive it (`JitSlot::push_is_armed`), so without this its pushes
+    /// would go on paying the count while the JIT is off, and it would be
+    /// revived once the JIT is on again. Its machine code was freed and its
+    /// cells name the refusing stub since its abandonment, so nothing else
+    /// names it.
+    fn refuse_abandoned(&mut self) {
+        for body in std::mem::take(&mut self.abandoned) {
+            let Some(code) = body.upgrade() else {
+                continue;
+            };
+            if code.jit.is_abandoned() {
+                code.jit.refuse();
+                self.statistics.refused_bodies += 1;
+            }
+        }
     }
 
     /// Replaces the zone with one that installs code in at most `bytes`.
@@ -1438,6 +1459,7 @@ impl JitState {
                 return Some(index);
             }
         }
+        #[cfg(test)]
         self.body_lookup
             .searches
             .set(self.body_lookup.searches.get() + 1);
@@ -1524,13 +1546,15 @@ const BODY_LOOKUP_ENTRIES: usize = 256;
 /// over the installed bodies their lookups made, a search a twin per
 /// closure-making body lengthened. An entry is a hint, never trusted: it
 /// answers only when the body it names still holds the offset and is not
-/// freed, which a body that holds it is alone, since installed bodies
-/// never overlap -- so a compaction, a free or a replaced zone, which move,
-/// free or drop bodies, need not clear it.
+/// freed, and only the body holding an offset can, since live installed
+/// bodies never overlap -- so a compaction, a free or a replaced zone,
+/// which move, free or drop bodies, need not clear it.
 struct BodyLookup {
     entries: [Cell<u32>; BODY_LOOKUP_ENTRIES],
     /// The lookups that searched `bodies`, every one the entries did not
-    /// answer.
+    /// answer: kept for the tests alone, so that no other build pays a
+    /// store for it on every miss.
+    #[cfg(test)]
     searches: Cell<u64>,
 }
 
@@ -1538,6 +1562,7 @@ impl Default for BodyLookup {
     fn default() -> BodyLookup {
         BodyLookup {
             entries: std::array::from_fn(|_| Cell::new(0)),
+            #[cfg(test)]
             searches: Cell::new(0),
         }
     }
@@ -1549,7 +1574,11 @@ impl BodyLookup {
     /// sixteen, so a multiplicative hash spreads both.
     fn entry(&self, offset: u32) -> &Cell<u32> {
         const SHIFT: u32 = u32::BITS - BODY_LOOKUP_ENTRIES.trailing_zeros();
-        let hashed = offset.wrapping_mul(0x9E37_79B1) >> SHIFT;
+        // Fibonacci hashing: 2^32 divided by the golden ratio, odd so that
+        // the multiply is a bijection, whose top bits spread offsets that
+        // differ in their low bits alone, as nearby leaf calls' do.
+        const MULTIPLIER: u32 = 0x9E37_79B1;
+        let hashed = offset.wrapping_mul(MULTIPLIER) >> SHIFT;
         &self.entries[hashed as usize]
     }
 }
@@ -3890,6 +3919,30 @@ mod tests {
             assert_eq!(state.statistics().compiled_bodies, 0);
         }
 
+        /// An abandoned body counts its pushes inline and reaches `entered`
+        /// only at the one that would revive it, so switching the JIT off
+        /// refuses it at once: no push pays the count while the JIT is off,
+        /// and turning it on again revives nothing entered meanwhile.
+        #[test]
+        fn a_disabled_jit_refuses_an_abandoned_body_for_good() {
+            let mut state = JitState::for_test(1 << 16, true);
+            let code = body();
+            enter_twice(&mut state, &code);
+            assert!(machine_entry(&state, &code).is_some());
+            code.jit.abandon(state.revival_base);
+            state.abandoned.push(Rc::downgrade(&code));
+            let refused = state.statistics().refused_bodies;
+            let _ = state.set_enabled(false);
+            assert_eq!(format!("{:?}", code.jit), "JitSlot::Refused");
+            assert_eq!(state.statistics().refused_bodies, refused + 1);
+            let _ = state.set_enabled(true);
+            for _ in 0..super::super::REVIVAL_ENTRIES {
+                assert!(!code.jit.push_is_armed(), "a refused push pays the compare");
+            }
+            assert!(!state.decay_exits(), "nothing to revive");
+            assert_eq!(format!("{:?}", code.jit), "JitSlot::Refused");
+        }
+
         #[test]
         fn a_body_compiled_into_another_zone_is_compiled_again() {
             let mut first = JitState::for_test(1 << 16, true);
@@ -4037,6 +4090,13 @@ mod tests {
             };
             let (inside_first, inside_second) = (address(&first), address(&second));
             let searches = |state: &JitState| state.body_lookup.searches.get();
+            // The offset `installed_index_at` keys the entry by: the byte
+            // before the address, as a return address names its call.
+            let offset_of = |state: &JitState, address: usize| {
+                let zone = state.zone.as_ref().expect("a zone");
+                let base = zone.writer.zone().executable_address(CodeOffset(0));
+                u32::try_from(address - base - 1).expect("inside the zone")
+            };
             assert_eq!(state.installed_index_at(inside_first), Some(0));
             assert_eq!(searches(&state), 1);
             for _ in 0..3 {
@@ -4046,6 +4106,22 @@ mod tests {
             assert_eq!(state.installed_index_at(inside_second), Some(1));
             assert_eq!(state.installed_index_at(inside_second), Some(1));
             assert_eq!(searches(&state), 2);
+            // An entry naming a live body that no longer holds the address
+            // -- as after a compaction renumbered `bodies` -- or no body at
+            // all is not taken: the search answers the body holding it.
+            for stale in [2, 99] {
+                state
+                    .body_lookup
+                    .entry(offset_of(&state, inside_first))
+                    .set(stale);
+                assert_eq!(
+                    state.installed_index_at(inside_first),
+                    Some(0),
+                    "the body holding the address, not the remembered {}",
+                    stale - 1
+                );
+            }
+            assert_eq!(searches(&state), 4);
             state.bodies[0].free = true;
             assert_eq!(state.installed_index_at(inside_first), None, "freed");
         }
