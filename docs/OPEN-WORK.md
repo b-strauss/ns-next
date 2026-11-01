@@ -1452,11 +1452,16 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   inherit a missing comment, as Javadoc does) is not decided, and both need
   the superclass's members, which the server sees only within one file.
 - **A doc comment's prose is not escaped as HTML.** The hover's Markdown
-  and the rendered view pass the description and the tags' text to the
-  platform's Markdown converter as they are, so `<Integer>` written outside
-  backticks is read as an inline HTML tag and vanishes. The core library
-  writes every type in backticks; escaping `<` and `&` outside code spans
-  in both `hover.rs` and `NewspeakDocTags` would make prose safe
+  and the rendered view pass the description and the tags' text on as
+  they are. In JetBrains, the platform's `DocMarkdownToHtmlConverter`
+  escapes a tag it does not know -- `<Integer>`, `<selector>`, even
+  `<script>` show as written, in prose and in the section table's cells,
+  which the core library relies on where it writes a placeholder outside
+  backticks -- but passes a known HTML tag through: `<b>` is honoured, and
+  `</td></tr></table>` typed in a comment closes the hover's table early.
+  Another LSP client may render the raw HTML in the hover's Markdown as
+  it is. Escaping `<` and `&` outside code spans in both `hover.rs` and
+  `NewspeakDocTags` would make prose safe everywhere
   ([editor-support.md](design/editor-support.md), "Doc comments").
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
@@ -2005,8 +2010,11 @@ classes and a class from source with no predecessor are not edited
   such a local `=` ([editor-support.md](design/editor-support.md), "Hints").
   Noted 2026-10-14.
 - **`Exception>>pass` with no outer handler returns into the handler that
-  sent it**, likely (found by a review of `Kernel.ns`'s doc comments,
-  2026-11-01, not yet reproduced by a golden). With no enabled handler
+  sent it** (found by a review of `Kernel.ns`'s doc comments,
+  2026-11-01, reproduced by a probe, not yet pinned by a golden: a `pass`
+  with no outer handler, in a subclass whose `defaultAction` answers 42,
+  answers 42 to the handler, whose completion then signals 'return: sent
+  to an exception that is not being handled'). With no enabled handler
   outside the running one, `pass` runs `defaultAction` and answers its
   value to the handler that sent `pass`; when that handler then completes,
   its return signals 'return: sent to an exception that is not being
@@ -2023,10 +2031,11 @@ classes and a class from source with no predecessor are not edited
 
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first four, which a
-program can reach and which end the process, and six a program meets as a
-gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
+program can reach and which end the process, and seven a program meets as
+a gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
 text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
-that only answers `isKindOfArray` or `isKindOfString`, the error of a
+that only answers `isKindOfArray` or `isKindOfString`, the refusals of a
+program's subclass of `String` as an argument, the error of a
 `hash` that is no Integer, and the `u16` ceilings of instantiation.
 
 - **`<<`, `Array new:`, `ByteArray new:` and `WeakArray new:` probe a
@@ -2195,6 +2204,19 @@ that only answers `isKindOfArray` or `isKindOfString`, the error of a
   Telling the two declines apart -- a subject that is not `String` itself
   from an argument the leaf does not read -- would close it. Found by the
   collections and strings sub-project's review, 2026-10-10.
+  [core-library.md](design/core-library.md), "What exists".
+- **An instance of a program's subclass of `String` passes the String
+  checks it then fails.** Such an instance holds no code points, and the
+  leaves decline it, but `isKindOfString` answers true for it, so the
+  members that check an argument with it let it through:
+  `StringBuilder>>add:` ends in a `MessageNotUnderstood` of `utf8Size`
+  (`String>>utf8Size`'s leaf declines and `super` has none), and
+  `String>>startsWith:` reaches `lastIndexOf:startingAt:`, whose
+  `ArgumentError` names `lastIndexOf:startingAt:` rather than the
+  'startsWith: requires a String argument' its comment says
+  (`Kernel.ns`). `String>>indexOf:` refuses it with its own
+  `ArgumentError`, as for any argument that is no String. Checked with a
+  probe, 2026-11-01; found by a review of the doc comments.
   [core-library.md](design/core-library.md), "What exists".
 - **A `hash` that answers no Integer surfaces as "does not understand
   `#\\`" from a `Map` or a `Set`.** The probes
