@@ -10,7 +10,7 @@ import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionWithDelegate
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.application.PathManager
-import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.util.io.NioFiles
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.psi.PsiElement
@@ -169,7 +169,7 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
             runManager.addConfiguration(stored)
             assertSame(stored, createConfigurationFromGutter(project, file, null, NewspeakCommand.RUN))
         } finally {
-            FileUtil.delete(directory)
+            NioFiles.deleteRecursively(directory)
         }
     }
 

@@ -56,7 +56,7 @@ tasks.processResources {
 val executableSuffix = if (System.getProperty("os.name").startsWith("Windows")) ".exe" else ""
 
 /** The debug build is what the tests use: the release profile's fat LTO makes that build slow. */
-val buildLanguageServerDebug by tasks.registering(Exec::class) {
+val buildLanguageServerDebug = tasks.register<Exec>("buildLanguageServerDebug") {
     description = "Builds ns-next-analyzer (debug) with Cargo for the tests."
     workingDir = repositoryRoot
     commandLine("cargo", "build", "-p", "ns-analyzer")
@@ -128,7 +128,7 @@ val hostPlatform: Provider<String> = providers
         "$system-$architecture"
     }
 
-val buildLanguageServerRelease by tasks.registering(Exec::class) {
+val buildLanguageServerRelease = tasks.register<Exec>("buildLanguageServerRelease") {
     description = "Builds ns-next-analyzer (release) with Cargo for the plugin distribution."
     workingDir = repositoryRoot
     commandLine("cargo", "build", "-p", "ns-analyzer", "--release")

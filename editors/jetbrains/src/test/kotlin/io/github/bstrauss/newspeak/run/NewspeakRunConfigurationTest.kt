@@ -2,7 +2,7 @@ package io.github.bstrauss.newspeak.run
 
 import com.intellij.execution.configurations.RuntimeConfigurationError
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.util.io.NioFiles
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import java.nio.charset.StandardCharsets
@@ -30,7 +30,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
     override fun tearDown() {
         try {
             NewspeakSettings.getInstance().state.runtimePath = null
-            temporaryDirectories.forEach { directory -> FileUtil.delete(directory) }
+            temporaryDirectories.forEach { directory -> NioFiles.deleteRecursively(directory) }
         } finally {
             super.tearDown()
         }
