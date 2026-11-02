@@ -564,11 +564,17 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     inside a leaf therefore ends the whole test run rather than failing
     one test. A leaf that is to report such a defect returns it as a
     value, as a template's read does (`ExitKind::DeadRegister`).
-  - **Paths compiled for no target here**: the code zone's Linux, BSD and
-    Apple AArch64 paths are checked by clippy for
-    `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` (the `memory`
-    gate) and never run; the AArch64 encoder's stage runs the suite under
-    QEMU.
+  - **Paths no gate runs**: the code zone's Linux, BSD and Apple AArch64
+    paths are checked by clippy for `x86_64-unknown-linux-gnu` and
+    `aarch64-apple-darwin` (the `memory` gate). Linux x86-64 -- the JIT
+    under the System V convention -- ran on 2026-11-02 at `006b6d50`
+    under WSL (Ubuntu 22.04): the suite, `images`, `caches`, `stress`
+    with `run-corpus`, and the workspace's clippy all passed; the
+    `benchmarks` gate was not run, the clone having no JDK. It is run on
+    demand, not by a gate (decided with the user on 2026-11-02). BSD and
+    Apple AArch64 never ran. The AArch64 encoder's stage runs the suite
+    under QEMU, which checks correctness only: whether AArch64 runs fast
+    needs real hardware to measure on, which the project does not have.
   - **Small leftovers**: `ns-memory`'s `map_code` is an `unsafe fn` though
     its safety section asks nothing of its caller; the leaf shim could be
     `unsafe extern "C"`; `crates/ns-assembler/tests/encoding_sources.rs`
