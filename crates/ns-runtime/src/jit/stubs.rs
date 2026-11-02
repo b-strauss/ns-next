@@ -228,18 +228,13 @@ pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
 /// value in the block's `ExitProgramCounter`, so that the run loop pops
 /// the frame and applies its continuation (`vm::finish`). That frame's
 /// `Return` took one off the depth count, as every compiled frame's does,
-/// but the run loop's pop takes it off too, so the stub adds it back.
+/// but the run loop's pop takes it off too, so the stub adds it back
+/// before it writes the count back (`Roles::depth`).
 pub(crate) fn assemble_entry_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
     let roles = macro_assembler.roles();
     emit_entry(&mut macro_assembler, abi, Entered::AtPush);
-    macro_assembler.load_machine_words(roles.idiom_scratch);
-    let depth = MacroAssembler::machine_word(roles.idiom_scratch, MachineWord::DepthCount);
-    let assembler = macro_assembler.assembler();
-    let count = roles.depth_count;
-    assembler.load(Width::Word64, count, depth);
-    assembler.add_immediate(count, 1);
-    assembler.store(Width::Word64, depth, count);
+    macro_assembler.assembler().add_immediate(roles.depth, 1);
     emit_returned(&mut macro_assembler, abi);
     finish_stub(macro_assembler)
 }
@@ -320,6 +315,7 @@ fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, entered: Entered) 
     assembler.shift_left(roles.idiom_scratch, 3);
     assembler.add(roles.frame, roles.idiom_scratch);
     assembler.load(Width::Word64, roles.object_space, object_space_base);
+    macro_assembler.take_over_depth();
     if by_call {
         let machine_words = roles.idiom_scratch;
         macro_assembler.load_machine_words(machine_words);
@@ -347,10 +343,12 @@ fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, entered: Entered) 
         .store(Width::Word64, returned_value, roles.leaf_result);
 }
 
-/// The entry and the call stub after the body's return: `ExitKind::Returned`
-/// written and answered, the saved registers restored.
+/// The entry and the call stub after the body's return: the depth count
+/// written back, `ExitKind::Returned` written and answered, the saved
+/// registers restored.
 fn emit_returned(macro_assembler: &mut MacroAssembler, abi: Abi) {
     let roles = macro_assembler.roles();
+    macro_assembler.write_back_depth();
     let exit_kind = macro_assembler.block_word(BlockWord::ExitKind);
     let assembler = macro_assembler.assembler();
     assembler.move_immediate(roles.leaf_result, ExitKind::Returned as u64);
@@ -393,6 +391,9 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     let saved_stack_pointer = macro_assembler.block_word(BlockWord::SavedStackPointer);
     let cursor = macro_assembler.block_word(BlockWord::WalkCursor);
     let scratch = roles.idiom_scratch;
+    // First, before the walk's leaves and whatever the run loop does
+    // next read the count.
+    macro_assembler.write_back_depth();
     let assembler = macro_assembler.assembler();
     assembler.store(Width::Word64, exit_kind, roles.exit_kind());
     assembler.store(
@@ -495,6 +496,9 @@ pub(crate) fn assemble_cut_stub(abi: Abi) -> Assembled {
     // return address down.
     let (slot, next) = (roles.send_cells, roles.send_entry);
     let word_at = |base, displacement| Memory { base, displacement };
+    // The cut takes the frames it pops off the count, so it reads the
+    // count from the word, and machine code goes on with what it left.
+    macro_assembler.write_back_depth();
     let assembler = macro_assembler.assembler();
     let (walk, decided, refused) = (assembler.label(), assembler.label(), assembler.label());
     assembler.load(
@@ -538,13 +542,16 @@ pub(crate) fn assemble_cut_stub(abi: Abi) -> Assembled {
     assembler.bind(decided);
     assembler.compare_immediate(answer, i32::from(super::cut::EXIT));
     assembler.jump_if(Condition::Equal, refused);
+    macro_assembler.take_over_depth();
+    let assembler = macro_assembler.assembler();
     assembler.move_register(next, answer);
     assembler.load(Width::Word64, roles.frame, frame_register);
     assembler.load(Width::Word64, answer, value);
     assembler.load(Width::Word64, roles.stack_pointer, stack_pointer);
     assembler.jump_register(next);
     assembler.bind(refused);
-    assembler.return_();
+    macro_assembler.take_over_depth();
+    macro_assembler.assembler().return_();
     finish_stub(macro_assembler)
 }
 

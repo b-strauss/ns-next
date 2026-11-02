@@ -137,9 +137,16 @@ pub(crate) struct Roles {
     /// the field's load: entered after the send, whose level and key it
     /// shares a register with, is done with both.
     pub(crate) accessor_field: Register,
-    /// The activation count (`MachineWord::DepthCount`) while a prologue,
-    /// a return or the entry stub counts it.
-    pub(crate) depth_count: Register,
+    /// The activation count while machine code runs: the entry, call and
+    /// closure call stubs load it from `MachineWord::DepthCount`, a
+    /// prologue compares and increments it, a return decrements it, and
+    /// the word holds it again wherever Rust may read it -- every exit, a
+    /// return out of machine code, the cut's leaves -- so that no load and
+    /// store of the word lies on a send's path. A debug build writes a
+    /// word no count can be into the word while the register holds it
+    /// (`MachineWords::DEPTH_COUNT_HELD`), which every Rust reader of the
+    /// count refuses, so that a leaf reading it unwritten fails at once.
+    pub(crate) depth: Register,
     /// The end of the frame the prologue pushes, as a byte offset from the
     /// activation stack's base.
     pub(crate) frame_extent: Register,
@@ -167,10 +174,11 @@ impl Roles {
     /// template that uses one of those requires the entry stub to save
     /// them first.
     ///
-    /// Two registers play no role and are no scratch registers, `r13` and
-    /// `rbp`: preserved by both conventions and saved by the entry stub,
-    /// they are the free registers a value survives a leaf call in, `r13`
-    /// the one the register cache is to have.
+    /// `rbp` holds the depth count (`depth`), which a leaf call keeps
+    /// since both conventions have the callee preserve it. `r13` alone
+    /// plays no role and is no scratch register: preserved by both
+    /// conventions, it is the one free register a value survives a leaf
+    /// call in, which the register cache is to have.
     pub(crate) fn of(abi: Abi) -> Roles {
         match abi {
             Abi::Windows64 | Abi::SystemV => Roles {
@@ -191,7 +199,7 @@ impl Roles {
                 lookup_rule: RDX,
                 lookup_hash: RAX,
                 accessor_field: R10,
-                depth_count: RCX,
+                depth: RBP,
                 frame_extent: RAX,
                 stack_end: RDX,
                 poison: RDX,
@@ -262,17 +270,15 @@ impl Roles {
         R12
     }
 
-    /// What a prologue reads after its checks, of what the call handed it
-    /// and of what it counted: the machine words' address it stores the
-    /// count through, the depth count it is about to store, the receiver,
-    /// the current class, and a block's closure, `counted` word and
-    /// argument. None is pinned, so the stack's growth from a prologue
-    /// (`MacroAssembler::grow_stack_if`) keeps them on the native stack
-    /// across its leaf call.
-    pub(crate) fn call_handover(self) -> [Register; 7] {
+    /// What a prologue reads after its checks, of what the call handed it:
+    /// the machine words' address, the receiver, the current class, and a
+    /// block's closure, `counted` word and argument. None is pinned, so
+    /// the stack's growth from a prologue (`MacroAssembler::grow_stack_if`)
+    /// keeps them on the native stack across its leaf call; the depth
+    /// count is pinned, and the growth leaf neither reads nor writes it.
+    pub(crate) fn call_handover(self) -> [Register; 6] {
         [
             self.idiom_scratch,
-            self.depth_count,
             self.callee_receiver(),
             self.callee_class(),
             self.callee_closure(),
@@ -1592,6 +1598,33 @@ impl MacroAssembler {
         self.assembler.load(Width::Word64, target, machine_words);
     }
 
+    /// The depth count register (`Roles::depth`) := `MachineWord::DepthCount`,
+    /// at an entry into machine code and after a leaf that changed the
+    /// count; a debug build then writes `MachineWords::DEPTH_COUNT_HELD`
+    /// into the word, which no Rust reader accepts until machine code
+    /// writes the count back (`write_back_depth`). Clobbers the idiom
+    /// scratch register; keeps the flags.
+    pub(crate) fn take_over_depth(&mut self) {
+        let machine_words = self.roles.idiom_scratch;
+        self.load_machine_words(machine_words);
+        let word = Self::machine_word(machine_words, MachineWord::DepthCount);
+        self.assembler.load(Width::Word64, self.roles.depth, word);
+        #[cfg(debug_assertions)]
+        self.assembler
+            .store_immediate32(word, MachineWords::DEPTH_COUNT_HELD_IMMEDIATE);
+    }
+
+    /// `MachineWord::DepthCount` := the depth count register, before Rust
+    /// may read or write the count: at every exit, a return out of machine
+    /// code and before the cut's leaves. Clobbers the idiom scratch
+    /// register; keeps the flags.
+    pub(crate) fn write_back_depth(&mut self) {
+        let machine_words = self.roles.idiom_scratch;
+        self.load_machine_words(machine_words);
+        let word = Self::machine_word(machine_words, MachineWord::DepthCount);
+        self.assembler.store(Width::Word64, word, self.roles.depth);
+    }
+
     /// The machine word `word`, given the machine words' address in
     /// `machine_words`.
     pub(crate) fn machine_word(machine_words: Register, word: MachineWord) -> Memory {
@@ -2159,11 +2192,11 @@ impl MacroAssembler {
     /// past the machine words' `NextGeneration`, which it advances, as the
     /// heap's push takes it, so that a handle to a frame since returned
     /// and pushed again is refused. Clobbers the flags, the idiom scratch
-    /// register, `poison` and `depth_count`, whose values are dead here.
+    /// register, `poison` and `frame_extent`, whose values are dead here.
     #[cfg(debug_assertions)]
     pub(crate) fn store_frame_generation(&mut self, argument_count: u16) {
         let (generation, constant) = crate::heap::Heap::machine_flags(argument_count);
-        let (word, constant_word) = (self.roles.poison, self.roles.depth_count);
+        let (word, constant_word) = (self.roles.poison, self.roles.frame_extent);
         let machine_words = self.roles.idiom_scratch;
         self.load_machine_words(machine_words);
         let next = Self::machine_word(machine_words, MachineWord::NextGeneration);
