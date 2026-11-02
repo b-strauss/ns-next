@@ -1685,17 +1685,11 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
-- **A scavenge served at a loop's head costs a second round trip**
-  (2026-11-03). A served scavenge leaves the safepoint request set until
-  the next slow path clears it (`Interpreter::safepoint`), so a frame the
-  run loop sends back into machine code after it stops again at its first
-  poll, and comes back in once more; under a stress mode that holds the
-  request, every turn of a compiled loop is such a round trip, each exit
-  spending the body's budget. Unmeasured; clearing the request with the
-  scavenge would remove it. A body's count of back jumps is the body's,
-  so a frame that cannot switch delays another frame of the same body by
-  up to 39 jumps, also unmeasured ([execution.md](design/execution.md),
-  "When a body is compiled").
+- **A frame that cannot switch delays the other frames of its body**
+  (2026-11-03). A body's count of back jumps is the body's, so a frame
+  that cannot switch delays another frame of the same body by up to 39
+  jumps; unmeasured ([execution.md](design/execution.md), "When a body
+  is compiled").
 - **Whether the baseline compiler joins road step 9's compiler thread is
   undecided** (2026-11-02). Road step 9's optimizing compiler runs on a
   thread of its own, and V8 compiles even its baseline code there;
@@ -2509,12 +2503,7 @@ program's subclass of `String` as an argument, the error of a
   (`crates/ns-runtime/tests/jit.rs`) passes with the prologue's separate
   check of the request as with the one compare, a guard against a
   regression only; `compiling_takes_time_that_is_counted` was never seen
-  failing; the four ways a stretch that left for a safepoint at a loop's
-  head goes back into machine code are pinned together, by the count of
-  resumptions, which cannot tell one way from another, since the
-  request a served scavenge leaves set makes the next backward jump or
-  poll stop again (`a_called_body_goes_back_into_machine_code_after_its_safepoint`);
-  and the stub tests' harness writes `SafepointRequested` without
+  failing; and the stub tests' harness writes `SafepointRequested` without
   `DepthLimit` (`jit/stubs.rs`), which no test reads today.
 - The `ByteArray` sub-project's (noted 2026-10-13): the movers' test
   (`heap.rs`,

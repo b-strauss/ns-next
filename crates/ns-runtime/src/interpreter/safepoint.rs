@@ -49,7 +49,9 @@ impl Interpreter {
     /// served here too, for the same reason, unless a collection is pending
     /// as well: the collection empties the nursery, which serves both.
     ///
-    /// Otherwise the safepoint that took no request clears it. In a release
+    /// The request is then cleared, in the same call, unless serving it
+    /// raised another, and the safepoint that took no request clears it
+    /// too. In a release
     /// build this is now real work rather than a debug-only convenience --
     /// the collector's allocation limits ask for one -- but the same
     /// argument still applies to what is left when no request is pending: an
@@ -151,23 +153,26 @@ impl Interpreter {
         }
         if self.world.collection_requested() {
             self.world.collect();
-            // Returns without also clearing `safepoint_requested`: `collect`
-            // already cleared `collection_requested`, a separate boolean
-            // `reset_collection_limits` sets alongside the new limit,
-            // so the very next poll takes this same slow path once more,
-            // finds no request and no stress pending, and clears
-            // `safepoint_requested` there instead. Harmless -- one
-            // extra call to a `#[cold]` function per collection -- and
-            // simpler than threading a second clear through this branch.
-            return rebuilt;
-        }
-        // After the collection branch: a full collection empties the
-        // nursery as well, and clears a pending scavenge's flags with it.
-        if self.world.scavenge_requested() {
+        } else if self.world.scavenge_requested() {
+            // Only without a collection: a full collection empties the
+            // nursery as well, and clears a pending scavenge's flags with it.
             let tenure_all = self.world.tenure_all_requested();
             self.world.scavenge(tenure_all);
-            // As after a collection: the next poll finds nothing pending and
-            // clears the safepoint request there.
+        }
+        // What was served leaves the request standing only if serving it
+        // raised another -- a collection that freed a quarter of the code
+        // zone asks for its compaction, a scavenge that left the old space
+        // past its limit for a collection -- which the next poll serves.
+        // Otherwise the request is cleared in this same call: while a real
+        // one stands the depth limit is 0 and every compiled push is
+        // refused (`Heap::write_safepoint_request`), so a request left for
+        // the next poll to clear would cost a body that goes back into
+        // machine code at its loop's head a turn whose compiled sends all
+        // exit, and a second round trip through this slow path.
+        if self.world.collection_requested()
+            || self.world.scavenge_requested()
+            || self.world.code_zone_compaction_requested()
+        {
             return rebuilt;
         }
         // The request served, a stress mode holds it again, as its own.

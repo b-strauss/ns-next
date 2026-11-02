@@ -691,32 +691,42 @@ const ALLOCATING_CALLEE: &str = indoc! {"
     ) : ()
 "};
 
-ns_runtime::for_each_lowering! {
-    /// A poll that finds a scavenge requested in a called body stops the
-    /// body's frame at its loop's head, and once the safepoint is served
-    /// the frame goes back into machine code there, wherever the stop
-    /// reached the run loop: as the stop of a body called below a compiled
-    /// sender, the exit materializing both frames, or below the
-    /// interpreter's send, in the first twenty rounds, and as the stop of
-    /// the machine code a frame went on in when a send returned to it, in
-    /// the last twenty.
-    fn a_called_body_goes_back_into_machine_code_after_its_safepoint(lowering) {
-        let (mut interpreter, class) = load_with(ALLOCATING_CALLEE, lowering);
-        // `run` stays interpreted, its sends calling machine code.
-        interpreter.set_jit_compile_at_back_jump(u32::MAX);
-        interpreter.set_jit_counting(true);
-        let (answer, done) = run_measured(&mut interpreter, &class);
-        assert_eq!(answer, 40 * 19_999);
-        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            assert!(
-                done.safepoint_exits >= 1,
-                "a called body's poll found the scavenge requested: {done:?}"
-            );
-            assert_eq!(
-                done.safepoint_resumptions, done.safepoint_exits,
-                "every poll's exit went back into machine code: {done:?}"
-            );
-        }
+/// A poll that finds a scavenge requested in a called body stops the
+/// body's frame at its loop's head, and once the safepoint is served the
+/// frame goes back into machine code there, wherever the stop reached the
+/// run loop: as the stop of a body called below a compiled sender, the
+/// exit materializing both frames, or below the interpreter's send, in the
+/// first twenty rounds, and as the stop of the machine code a frame went
+/// on in when a send returned to it, in the last twenty. The safepoint
+/// clears the request it served, so that the turn after it finds no poll
+/// to stop at: a scavenge takes one poll's exit at most, and each such
+/// exit is a called body's stop that goes back in here, since no request
+/// left standing stops the frame again for another way back to take it.
+/// Only the optimized lowering: the reference lowering's sends exit, and
+/// its answer is the same.
+#[test]
+fn a_called_body_goes_back_into_machine_code_after_its_safepoint() {
+    let (mut interpreter, class) = load_with(ALLOCATING_CALLEE, Lowering::Optimized);
+    // `run` stays interpreted, its sends calling machine code.
+    interpreter.set_jit_compile_at_back_jump(u32::MAX);
+    interpreter.set_jit_counting(true);
+    let scavenges = interpreter.collector_statistics().scavenges;
+    let (answer, done) = run_measured(&mut interpreter, &class);
+    let scavenges = interpreter.collector_statistics().scavenges - scavenges;
+    assert_eq!(answer, 40 * 19_999);
+    if !a_stress_mode_is_on() {
+        assert!(
+            done.safepoint_exits >= 1,
+            "a called body's poll found the scavenge requested: {done:?}"
+        );
+        assert!(
+            u64::try_from(scavenges).expect("a small count") >= done.safepoint_exits,
+            "no poll found a served request still standing: {scavenges} scavenges, {done:?}"
+        );
+        assert_eq!(
+            done.safepoint_resumptions, done.safepoint_exits,
+            "every poll's exit went back into machine code: {done:?}"
+        );
     }
 }
 
@@ -3077,12 +3087,13 @@ fn machine_code_allocates_past_eden_as_the_interpreter_does() {
         );
         assert_eq!(compiled_scavenges, interpreted_scavenges);
         assert_eq!(compiled_heap, interpreted_heap);
-        // `fill:` runs to its return, but for its call that finds a
-        // scavenge requested: its prologue refuses it, and `run` pushes it
-        // and takes the safepoint.
+        // `fill:` runs to its return at every call: the scavenge its
+        // allocation requests is served at `run`'s next backward jump,
+        // which clears the request before the next call, so no prologue
+        // finds it standing and refuses the call.
         assert_eq!(
-            statistics.exits, compiled_scavenges as u64,
-            "only the call at each requested scavenge leaves machine code"
+            statistics.exits, 0,
+            "no call leaves machine code: {statistics:?}"
         );
         assert_eq!(statistics.safepoint_exits, 0, "`fill:` has no poll");
     }
