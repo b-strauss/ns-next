@@ -8189,6 +8189,153 @@ bounded by its floor or its limit, not by the iteration count:
   MiB. The cells grow only in the churns that grow the sites, and the
   machine entry and application id tables by one doubling at most.
 
+### What on-stack replacement moved
+
+**Measured 2026-11-02, `9b95559d` against `master` (`006b6d50`)**, by the
+same protocol: three pinned release builds a side with debug information
+(`CARGO_PROFILE_RELEASE_DEBUG=limited`), a, b and c laid out as there,
+the code zones at the three paddings on both sides (a none, b 208 bytes
+before the stubs and 32 before the bodies, c 96 and 176); `vm::run`
+spans about 51.6, 55.6 and 60.2 KB at `master` and 45.2, 48.6 and 52.3
+KB at `9b95559d`, and no build has a `run_stretch` or a `vm::run`
+closure of its own. Three rounds in one sitting, the order of the six
+binaries rotated each round; `--iterations 3` for CD, Havlak,
+Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest,
+among them the four sources of "What spec-conformant lookup moved" --
+`bench_new.ns`, `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns`,
+written out from there. Each cell is a side's medians per build pooled
+by geometric mean, in milliseconds; "separated" says whether the two
+sides' three builds lie apart. Between the two trees lies road step 8's
+fifth stage: on-stack replacement at an interpreted backward jump, the
+return into machine code after a poll's safepoint, the one compare at a
+push (a safepoint request lowers the depth limit) and the compile-time
+statistic.
+
+| Program | master (ms) | master's builds | `9b95559d` (ms) | range | vs master | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.204 | 0.202–0.207 | 0.204 | 0.202–0.205 | -0.1% | no |
+| `CD` | 3195.036 | 3154.041–3218.121 | 3207.049 | 3179.953–3249.218 | +0.4% | no |
+| `DeltaBlue` | 262.145 | 259.682–264.089 | 250.274 | 247.931–251.899 | -4.5% | faster |
+| `DeltaBlueTon80` | 1.939 | 1.911–1.975 | 1.964 | 1.923–2.043 | +1.3% | no |
+| `Havlak` | 1280.742 | 1268.938–1295.232 | 1244.221 | 1226.151–1266.247 | -2.9% | faster |
+| `Json` | 3.636 | 3.587–3.683 | 3.623 | 3.594–3.647 | -0.4% | no |
+| `List` | 0.195 | 0.190–0.205 | 0.190 | 0.188–0.194 | -2.6% | no |
+| `Mandelbrot` | 1871.109 | 1853.232–1881.362 | 1869.472 | 1857.379–1892.403 | -0.1% | no |
+| `NBody` | 1153.113 | 1145.820–1163.131 | 1147.871 | 1134.832–1161.959 | -0.5% | no |
+| `Permute` | 0.415 | 0.405–0.420 | 0.399 | 0.388–0.413 | -3.8% | no |
+| `Queens` | 0.313 | 0.312–0.316 | 0.321 | 0.319–0.324 | +2.6% | slower (see below) |
+| `Richards` | 18.017 | 17.845–18.300 | 17.739 | 17.566–17.997 | -1.5% | no |
+| `RichardsTon80` | 1.806 | 1.764–1.844 | 1.800 | 1.774–1.822 | -0.3% | no |
+| `Sieve` | 0.413 | 0.401–0.436 | 0.387 | 0.375–0.404 | -6.2% | no |
+| `Storage` | 0.709 | 0.697–0.725 | 0.698 | 0.694–0.703 | -1.5% | no |
+| `Towers` | 0.510 | 0.505–0.518 | 0.510 | 0.493–0.528 | +0.0% | no |
+| `bench_block` | 0.864 | 0.863–0.865 | 0.862 | 0.851–0.874 | -0.2% | no |
+| `bench_loop` | 0.522 | 0.512–0.538 | 0.545 | 0.517–0.587 | +4.4% | no |
+| `bench_megamorphic` | 4.808 | 4.767–4.846 | 0.715 | 0.711–0.717 | -85.1% | faster |
+| `bench_send` | 0.513 | 0.504–0.519 | 0.516 | 0.508–0.524 | +0.6% | no |
+| `bench_signal` | 19.568 | 19.527–19.646 | 19.698 | 19.591–19.871 | +0.7% | no |
+| `bench_while` | 6.523 | 6.462–6.623 | 6.327 | 6.028–6.504 | -3.0% | no |
+| `bench_recursion` | 0.652 | 0.628–0.665 | 0.671 | 0.664–0.677 | +2.9% | no |
+| `bench_new` | 3.091 | 3.059–3.142 | 1.908 | 1.904–1.915 | -38.3% | faster |
+| `bench_new2` | 4.833 | 4.771–4.885 | 3.340 | 3.292–3.394 | -30.9% | faster |
+| `bench_newarg` | 4.955 | 4.905–5.031 | 3.419 | 3.400–3.456 | -31.0% | faster |
+| `bench_do` | 0.720 | 0.718–0.724 | 0.745 | 0.711–0.802 | +3.5% | no |
+
+The geometric mean over the twenty-three sources of "What reclamation
+moved" is -8.6%, over all twenty-seven -11.3%. The gains are frames that
+ran interpreted to their return at `master`:
+
+- **A loop that left its machine code goes back into it.**
+  `bench_megamorphic`'s `main:args:` leaves its machine code early in
+  every send's loop (17 exits in nine sends, `--jit-statistics`), and at
+  `master` ran the rest of its 50,000 turns interpreted -- "What
+  reclamation moved" found its loop running interpreted; now its next
+  backward jump switches it back, nine switches in nine sends, and the
+  program runs 85.1% faster. `bench_new.ns`, `bench_new2.ns` and
+  `bench_newarg.ns` are the same shape -- a loop of 20,000 turns in a
+  `main:args:` that leaves its code early, 18 exits and 10 switches in
+  nine sends of `bench_new.ns` -- and run 31% to 38% faster.
+- **A loop that polled out goes back in after the safepoint, or at its
+  next backward jump.** Havlak switches 1,478 times at a backward jump
+  and resumes 307 times after a safepoint in four sends, DeltaBlue 140
+  and 3; both are faster with their builds separated (-2.9%, -4.5%).
+- `bench_loop`'s, `bench_do`'s and `bench_while`'s `main:args:` switch
+  once or twice in nine sends, in the discarded warm-up, whose loop ran
+  interpreted at `master`; from the second send on they are entered
+  compiled on both trees, and the timed runs are level.
+
+**What is slower is where the code lies.** Queens (+2.6%, separated)
+switches only in its warm-up (five switches, no resumption, in nine
+sends), so its timed runs execute the same bodies on both trees, with
+the push's one compare instead of two. Thirty iterations a run on the
+same six builds, three rounds, measured it +1.0% and no longer
+separated (`9b95559d`'s build b below `master`'s build a), and four more
+build pairs at other zone paddings (stubs and bodies 16 and 48, 144 and
+80, 48 and 240, 320 and 112; build a's flags), thirty iterations, three
+rounds, put `9b95559d` at 314.7 µs pooled against `master`'s 319.1,
+1.4% faster, and faster at three of the four paddings. `bench_loop`'s
++4.4% is build a alone (0.587 ms against 0.517 and 0.532 for b and c),
+and `bench_do`'s +3.5% one round of build c (1.024 ms, against 0.703 and
+0.717 in the other two). `bench_recursion`'s +2.9% is not separated:
+`master`'s build b ran 0.602 to 0.664 ms, the other five builds 0.656 to
+0.701.
+
+**What the baseline compiler takes.** `--jit-statistics` prints the
+time spent compiling bodies and twins, measured around each compile
+(`JitStatistics::compile_nanoseconds`). One pinned release build
+(`9b95559d`'s build a): `run` three times a program, its process timed
+from outside (the median; a program that prints `hi` takes 7.0 ms), and
+`bench` with the iterations above, its compile time set against the
+sends' time, the median times the sends, the warm-up included. The
+warm-up is slower than the median, so that share is an upper bound.
+`run-corpus` takes no `--jit-statistics` and prints no line.
+
+| Program | `run`: bodies, twins | `run`: compile (ms) | `run`: process (ms) | share | `bench`: sends | `bench`: bodies, twins | `bench`: compile (ms) | sends × median (ms) | share |
+|---|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 11, 1 | 0.224 | 20.7 | 1.08% | 9 | 25, 2 | 0.448 | 1.8 | 24.22% |
+| `CD` | 3,681, 946 | 75.851 | 3,265.5 | 2.32% | 4 | 14,626, 3,800 | 286.080 | 12,955.4 | 2.21% |
+| `DeltaBlue` | 116, 12 | 1.515 | 279.8 | 0.54% | 4 | 147, 16 | 1.923 | 988.8 | 0.19% |
+| `DeltaBlueTon80` | 100, 12 | 1.055 | 24.9 | 4.24% | 9 | 125, 15 | 1.415 | 17.3 | 8.16% |
+| `Havlak` | 120, 18 | 1.593 | 1,267.5 | 0.13% | 4 | 146, 23 | 2.022 | 4,745.3 | 0.04% |
+| `Json` | 54, 1 | 0.763 | 24.9 | 3.06% | 9 | 83, 2 | 1.061 | 32.0 | 3.31% |
+| `List` | 8, 0 | 0.135 | 19.3 | 0.70% | 9 | 22, 1 | 0.352 | 1.8 | 20.01% |
+| `Mandelbrot` | 7, 1 | 0.194 | 1,870.1 | 0.01% | 4 | 22, 3 | 0.457 | 7,356.8 | 0.01% |
+| `NBody` | 16, 3 | 0.379 | 1,167.6 | 0.03% | 4 | 39, 5 | 0.717 | 4,494.3 | 0.02% |
+| `Permute` | 6, 1 | 0.133 | 20.2 | 0.66% | 9 | 21, 2 | 0.381 | 3.4 | 11.07% |
+| `Queens` | 11, 2 | 0.169 | 22.0 | 0.77% | 9 | 26, 4 | 0.416 | 2.9 | 14.36% |
+| `Richards` | 52, 4 | 0.531 | 41.1 | 1.29% | 9 | 80, 7 | 0.991 | 156.6 | 0.63% |
+| `RichardsTon80` | 32, 3 | 0.475 | 21.5 | 2.21% | 9 | 61, 4 | 0.912 | 16.4 | 5.58% |
+| `Sieve` | 6, 1 | 0.112 | 21.1 | 0.53% | 9 | 21, 3 | 0.365 | 3.8 | 9.50% |
+| `Storage` | 6, 1 | 0.135 | 20.7 | 0.65% | 9 | 22, 2 | 0.373 | 6.3 | 5.94% |
+| `Towers` | 11, 1 | 0.153 | 20.9 | 0.73% | 9 | 28, 3 | 0.432 | 4.4 | 9.92% |
+| `bench_block` | 3, 1 | 0.074 | 10.0 | 0.74% | 9 | 5, 1 | 0.100 | 7.6 | 1.31% |
+| `bench_loop` | 1, 0 | 0.051 | 7.0 | 0.73% | 9 | 3, 0 | 0.076 | 5.2 | 1.45% |
+| `bench_megamorphic` | 6, 0 | 0.094 | 8.1 | 1.16% | 9 | 13, 0 | 0.129 | 6.5 | 1.99% |
+| `bench_send` | 2, 0 | 0.053 | 7.0 | 0.76% | 9 | 4, 0 | 0.078 | 4.6 | 1.69% |
+| `bench_signal` | 46, 3 | 0.435 | 28.4 | 1.53% | 9 | 179, 11 | 1.579 | 178.2 | 0.89% |
+| `bench_while` | 6, 0 | 0.075 | 14.7 | 0.51% | 9 | 8, 1 | 0.129 | 57.8 | 0.22% |
+| `bench_recursion` | 1, 0 | 0.037 | 7.7 | 0.48% | 9 | 3, 0 | 0.067 | 6.0 | 1.12% |
+
+A body or twin compiles in about 12 to 25 µs (CD's 18,426 in 286 ms,
+Havlak's 169 in 2.0 ms), so the share is the number of compiles against
+the run's length:
+
+- **Over a whole process** the compiler takes 0.01% (Mandelbrot) to 4.2%
+  (DeltaBlueTon80) of `run`: 1.6% or less for every microbenchmark and
+  for every program of a second or longer but CD. The highest are the
+  programs of a few milliseconds -- DeltaBlueTon80 4.2%, Json 3.1%,
+  RichardsTon80 2.2% -- where 35 to 112 compiles fall in a process of
+  about 22 to 25 ms, most of it the boot and the project's parse.
+- **CD** is the one long program whose share counts, 2.2% to 2.3% either
+  way: its churn ("What reclamation moved") compiles 3,681 bodies and
+  946 twins in one run, abandoned and revived over and over, which the
+  nested-class accessor item in [OPEN-WORK.md](../OPEN-WORK.md) ends.
+- **Against the sends alone**, on `bench`, a program whose send takes
+  less than a millisecond spends on compiling about as much as one or
+  two of its sends -- Bounce 24%, List 20%, Queens 14% of nine sends --
+  nearly all of it in the warm-up and the first sends; a program whose
+  send takes 100 ms or more spends 0.6% or less, CD's 2.2% apart.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -11601,8 +11748,8 @@ templates that read and write the slots, then the cache.
   mutator, but leaves the body interpreted until the code is installed
   at a safepoint, and the miss leaf could no longer compile a callee
   from inside machine code, so warm-up runs more interpreted and exits
-  more. The share of a run a baseline compile takes is measured
-  (`OPEN-WORK.md`), so that road step 9, which builds the thread, the
+  more. The share of a run the baseline compiler takes is measured
+  ("What on-stack replacement moved"), so that road step 9, which builds the thread, the
   body's snapshot and the installation at a safepoint, decides whether
   the baseline compiler joins it (decided with the user on 2026-11-02).
 
