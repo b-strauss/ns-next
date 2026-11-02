@@ -551,6 +551,10 @@ ns_runtime::for_each_lowering! {
                 done.machine_back_edges >= 99_000,
                 "the loop closes in machine code after its scavenges: {done:?}"
             );
+            assert_eq!(
+                done.safepoint_resumptions, done.safepoint_exits,
+                "every poll's exit went back into machine code: {done:?}"
+            );
         }
     }
 }
@@ -599,11 +603,16 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// The allocating loop sent once, its body compiled at its first
-    /// interpreted backward jump: whether that jump, or any later one the
-    /// interpreter runs, finds a safepoint requested, the frame switches
-    /// into the machine code at the loop's head -- after the safepoint, if
-    /// it is taken there.
+    /// An interpreted backward jump that finds a safepoint requested stops
+    /// the frame at its loop's head, and once the safepoint is served the
+    /// frame switches into machine code there, as the jump would have
+    /// switched it: the counting loop sent once, its body compiled at its
+    /// first interpreted backward jump, run while the cache stress mode
+    /// holds the request, so that no interpreted backward jump gets past
+    /// the safepoint's test -- every compile at a backward jump, and every
+    /// switch, is the safepoint's. The allocating loop, with no request
+    /// held, switches at its first backward jump, its scavenges' requests
+    /// found by machine code's polls.
     fn an_interpreted_back_jump_at_a_safepoint_switches_after_it(lowering) {
         let (mut interpreter, class) = load_with(ALLOCATING_LOOP, lowering);
         interpreter.set_jit_compile_at_back_jump(1);
@@ -611,6 +620,102 @@ ns_runtime::for_each_lowering! {
         assert_eq!(answer, 199_999);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(done.back_edge_switches >= 1, "the frame switches: {done:?}");
+        }
+        #[cfg(debug_assertions)]
+        {
+            let (mut interpreter, class) = load_with(COUNTING_LOOP, lowering);
+            interpreter.set_jit_compile_at_back_jump(1);
+            interpreter.set_stress_caches(true);
+            let (answer, done) = run_measured(&mut interpreter, &class);
+            assert_eq!(answer, 500_500);
+            if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+                assert_eq!(
+                    done.back_edge_compiles, 1,
+                    "compiled after the first jump's safepoint: {done:?}"
+                );
+                assert_eq!(
+                    done.back_edge_stretch_exits, 0,
+                    "no interpreted jump got past the request: {done:?}"
+                );
+                assert!(
+                    done.safepoint_resumptions >= 1,
+                    "the frame went into machine code after the safepoint: {done:?}"
+                );
+            }
+        }
+    }
+}
+
+/// `ALLOCATING_LOOP` in a method of its own, `allocate:`, sent by
+/// `allocateFrom:`, which `run` sends forty times from a loop the
+/// interpreter runs: `allocate:`'s machine code runs below
+/// `allocateFrom:`'s, called through its cell, or below the interpreter's
+/// send. From the twentieth round on, `allocate:` first sends `start`,
+/// whose machine code exits at its send of a message the class's
+/// `doesNotUnderstand:` answers with 0, so that `allocate:`'s frame,
+/// materialized with it, goes on in its machine code when `start`
+/// returns to it, and its loop runs there.
+const ALLOCATING_CALLEE: &str = indoc! {"
+    class Subject = Object new () (
+      allocate: round = (
+        |
+          index ::= round < 20 ifTrue: [0] ifFalse: [self start].
+          last
+        |
+        [index < 10000] whileTrue: [
+          last:: {index. index. index. index. index. index. index. index. index. index. index. index. index. index. index. index}.
+          index:: index + 1.
+        ].
+        ^(last at: 16) + index.
+      )
+      allocateFrom: round = (
+        ^self allocate: round
+      )
+      start = (
+        ^self unknownStart
+      )
+      public doesNotUnderstand: message = (
+        ^0
+      )
+      public run = (
+        |
+          sum ::= 0.
+          round ::= 0.
+        |
+        [round < 40] whileTrue: [
+          sum:: sum + (self allocateFrom: round).
+          round:: round + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A poll that finds a scavenge requested in a called body stops the
+    /// body's frame at its loop's head, and once the safepoint is served
+    /// the frame goes back into machine code there, wherever the stop
+    /// reached the run loop: as the stop of a body called below a compiled
+    /// sender, the exit materializing both frames, or below the
+    /// interpreter's send, in the first twenty rounds, and as the stop of
+    /// the machine code a frame went on in when a send returned to it, in
+    /// the last twenty.
+    fn a_called_body_goes_back_into_machine_code_after_its_safepoint(lowering) {
+        let (mut interpreter, class) = load_with(ALLOCATING_CALLEE, lowering);
+        // `run` stays interpreted, its sends calling machine code.
+        interpreter.set_jit_compile_at_back_jump(u32::MAX);
+        interpreter.set_jit_counting(true);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 40 * 19_999);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.safepoint_exits >= 1,
+                "a called body's poll found the scavenge requested: {done:?}"
+            );
+            assert_eq!(
+                done.safepoint_resumptions, done.safepoint_exits,
+                "every poll's exit went back into machine code: {done:?}"
+            );
         }
     }
 }
@@ -5602,10 +5707,15 @@ ns_runtime::for_each_lowering! {
         }
         // `spin`, compiled right after `a`, runs its loop while the mode
         // compacts: it is active, so it survives, and slides down over
-        // `a`, which no activation runs, freed below it. The backward
-        // jumps' trigger is set past `spin`'s turns, so that its first
-        // send, which takes a safepoint at every backward jump, does not
-        // compile it below `a`.
+        // `a`, which no activation runs, freed below it. The mode holds
+        // the safepoint request, so that every interpreted backward jump
+        // of `spin`'s first send stops at a safepoint, and a backward jump
+        // stopped by a safepoint counts toward the body's compile as any
+        // other does: the loop's head is where the frame would have
+        // switched had nothing been requested (`vm::after_safepoint`). The
+        // backward jumps' trigger is set past `spin`'s turns here, so
+        // that the first send leaves `spin` uncompiled and its second
+        // entry compiles it right after `a`.
         let (mut interpreter, class) = load_with(MOVING, lowering);
         interpreter.set_stress_zone(true);
         interpreter.set_jit_compile_at_back_jump(u32::MAX);
@@ -5974,6 +6084,9 @@ ns_runtime::for_each_lowering! {
             last.compiled_calls + last.called_entries >= 10,
             "`hot` runs in machine code: {last:?}"
         );
+        // A compiled call its callee refused would be counted too, and
+        // would leave the machine code by an exit.
+        assert_eq!(last.exits, 0, "no call was refused: {last:?}");
     }
 }
 
