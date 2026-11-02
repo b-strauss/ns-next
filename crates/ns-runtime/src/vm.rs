@@ -67,6 +67,11 @@ impl FrameRegisters {
 enum Leave {
     /// A safepoint is requested; the frame is written back.
     Safepoint,
+    /// `Safepoint`, at a backward jump -- an interpreted one, or a
+    /// machine-code poll's exit, every poll being a backward jump's -- so
+    /// that the frame stands at its loop's head, where it may go back into
+    /// machine code once the safepoint is served (`run`).
+    SafepointAtLoopHead,
     /// A backward jump whose frame switches into machine code at its
     /// target (`jit::back_edge_ready`); the frame is written back there,
     /// where the next stretch comes into machine code as it does at the
@@ -237,10 +242,12 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
             |mutator| run_stretch(mutator, &mut frame, floor, &mut arrival),
         );
         match leave {
-            Leave::Safepoint => {
+            leave @ (Leave::Safepoint | Leave::SafepointAtLoopHead) => {
+                let at_loop_head = matches!(leave, Leave::SafepointAtLoopHead);
                 // The suspend stress mode put a different frame on top --
                 // the running activation, suspended and resumed -- whose
-                // state the stretch wrote back before it left.
+                // state the stretch wrote back before it left; it goes on
+                // interpreted, as a frame resumed does.
                 if interpreter.safepoint(floor) {
                     frame = interpreter.enter(|mutator| {
                         let top = mutator
@@ -254,18 +261,48 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
                         )
                     });
                 } else {
-                    // A full collection may have slid the inline caches'
-                    // ranges, rewriting the frame's base in its header
-                    // (`InlineCaches::plan_slide`): every other word the
-                    // loop carries stays as it was.
-                    frame.feedback_base = interpreter
-                        .enter(|mutator| mutator.heap.activation_feedback_base(frame.activation));
+                    arrival = interpreter
+                        .enter(|mutator| after_safepoint(mutator, &mut frame, at_loop_head));
                 }
             }
             Leave::BackEdge => arrival = Some(Arrival::BackEdge),
             Leave::Exit(result) => return result,
         }
     }
+}
+
+/// The frame `run` goes on with once the safepoint is served, `frame` still
+/// the one the stretch left: its feedback base read again -- a full
+/// collection may have slid the inline caches' ranges, rewriting it in the
+/// frame's header (`InlineCaches::plan_slide`), while every other word the
+/// loop carries stays as it was -- and, for a frame a backward jump stopped
+/// at its loop's head, the way back into machine code there when the jump
+/// would have taken it had no safepoint been requested
+/// (`jit::back_edge_ready`, which counts the jump the safepoint skipped).
+/// Without it a loop that allocates would leave its machine code at the
+/// poll of its first scavenge and run interpreted until a later backward
+/// jump switched it back. Out of line, so that the run loop pays for it
+/// only at a safepoint.
+#[cold]
+#[inline(never)]
+fn after_safepoint(
+    mutator: &mut Mutator<'_>,
+    frame: &mut FrameRegisters,
+    at_loop_head: bool,
+) -> Option<Arrival> {
+    frame.feedback_base = mutator.heap.activation_feedback_base(frame.activation);
+    let switches = at_loop_head
+        && frame.code.jit.back_edge_is_armed()
+        && crate::jit::back_edge_ready(
+            mutator,
+            frame.activation,
+            &frame.code,
+            frame.program_counter,
+        );
+    switches.then(|| {
+        mutator.jit.note_safepoint_resumption();
+        Arrival::BackEdge
+    })
 }
 
 /// Instructions of the running frame and every frame it switches to, inside
@@ -330,7 +367,7 @@ fn run_stretch<'gc>(
                     .heap
                     .activation_set_program_counter(running.activation, running.program_counter);
                 *frame = running;
-                return Leave::Safepoint;
+                return Leave::SafepointAtLoopHead;
             }
             Switched::Exited => {
                 return Leave::Exit(
@@ -376,7 +413,7 @@ fn run_stretch<'gc>(
                     program_counter = target;
                     if backward {
                         if mutator.heap.safepoint_requested() {
-                            break 'run Leave::Safepoint;
+                            break 'run Leave::SafepointAtLoopHead;
                         }
                         if code.jit.back_edge_is_armed() {
                             break 'run Leave::BackEdge;
@@ -1450,8 +1487,9 @@ fn run_stretch<'gc>(
                         register_base = running.register_base;
                         handoff.activation = activation;
                         handoff.feedback_base = feedback_base;
+                        // Machine code's poll: at a loop's head.
                         if safepoint {
-                            break 'run Leave::Safepoint;
+                            break 'run Leave::SafepointAtLoopHead;
                         }
                     }
                     if mutator.heap.safepoint_requested() {
@@ -1475,9 +1513,12 @@ fn run_stretch<'gc>(
                     program_counter = handoff.program_counter;
                     feedback_base = handoff.feedback_base;
                     register_base = mutator.heap.activation_register_base(activation);
-                    if matches!(transfer, Transfer::StoppedAtSafepoint)
-                        || mutator.heap.safepoint_requested()
-                    {
+                    // A called body's poll stopped at a loop's head; any
+                    // other stop at the instruction an exit handed over.
+                    if matches!(transfer, Transfer::StoppedAtSafepoint) {
+                        break 'run Leave::SafepointAtLoopHead;
+                    }
+                    if mutator.heap.safepoint_requested() {
                         break 'run Leave::Safepoint;
                     }
                 }

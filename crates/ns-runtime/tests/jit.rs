@@ -110,6 +110,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         back_edge_switches: after.back_edge_switches - before.back_edge_switches,
         back_edge_stretch_exits: after.back_edge_stretch_exits - before.back_edge_stretch_exits,
         back_edge_compiles: after.back_edge_compiles - before.back_edge_compiles,
+        safepoint_resumptions: after.safepoint_resumptions - before.safepoint_resumptions,
     }
 }
 
@@ -491,35 +492,67 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A loop of 100,000 turns, each allocating an `Array` through the
+/// generic leaf, so that the allocations fill eden, whose request for a
+/// scavenge only a back edge's poll can notice in a loop that makes no
+/// send.
+const ALLOCATING_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          index ::= 0.
+          last
+        |
+        [index < 100000] whileTrue: [
+          last:: {index. index. index. index. index. index. index. index. index. index. index. index. index. index. index. index}.
+          index:: index + 1.
+        ].
+        ^(last at: 16) + index.
+      )
+    ) : ()
+"};
+
 ns_runtime::for_each_lowering! {
-    /// Each iteration allocates an `Array` through the generic leaf, and
-    /// the allocations fill eden, whose request for a scavenge only a back
-    /// edge's poll can notice in a loop that makes no send: the machine
-    /// code exits there, and the interpreter takes the safepoint and runs
-    /// the rest of the loop.
+    /// The machine code exits at the poll that found the scavenge
+    /// requested, the interpreter takes the safepoint, and the frame goes
+    /// back into the machine code at the loop's head, where the rest of
+    /// the loop runs.
     fn a_back_edge_poll_takes_the_safepoint(lowering) {
-        let source = indoc! {"
-            class Subject = Object new () (
-              public run = (
-                |
-                  index ::= 0.
-                  last
-                |
-                [index < 100000] whileTrue: [
-                  last:: {index. index. index. index. index. index. index. index. index. index. index. index. index. index. index. index}.
-                  index:: index + 1.
-                ].
-                ^(last at: 16) + index.
-              )
-            ) : ()
-        "};
-        let (mut interpreter, class) = load_with(source, lowering);
+        let (mut interpreter, class) = load_with(ALLOCATING_LOOP, lowering);
         interpreter.set_jit_stress(true);
+        interpreter.set_jit_counting(true);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 199_999);
         let done = since(interpreter.jit_statistics(), before);
         if lowering == Lowering::Optimized {
             assert!(done.safepoint_exits >= 1, "a back edge found the scavenge requested");
+        }
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.safepoint_resumptions >= 1,
+                "the frame went back into machine code after a safepoint: {done:?}"
+            );
+            assert!(
+                done.machine_back_edges >= 99_000,
+                "the loop closes in machine code after its scavenges: {done:?}"
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The allocating loop sent once, its body compiled at its first
+    /// interpreted backward jump: whether that jump, or any later one the
+    /// interpreter runs, finds a safepoint requested, the frame switches
+    /// into the machine code at the loop's head -- after the safepoint, if
+    /// it is taken there.
+    fn an_interpreted_back_jump_at_a_safepoint_switches_after_it(lowering) {
+        let (mut interpreter, class) = load_with(ALLOCATING_LOOP, lowering);
+        interpreter.set_jit_compile_at_back_jump(1);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 199_999);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.back_edge_switches >= 1, "the frame switches: {done:?}");
         }
     }
 }
@@ -5511,9 +5544,13 @@ ns_runtime::for_each_lowering! {
         }
         // `spin`, compiled right after `a`, runs its loop while the mode
         // compacts: it is active, so it survives, and slides down over
-        // `a`, which no activation runs, freed below it.
+        // `a`, which no activation runs, freed below it. The backward
+        // jumps' trigger is set past `spin`'s turns, so that its first
+        // send, which takes a safepoint at every backward jump, does not
+        // compile it below `a`.
         let (mut interpreter, class) = load_with(MOVING, lowering);
         interpreter.set_stress_zone(true);
+        interpreter.set_jit_compile_at_back_jump(u32::MAX);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let before = interpreter.jit_statistics();
         assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1999 * 1000);
@@ -6860,7 +6897,8 @@ ns_runtime::for_each_lowering! {
         }
         let done = since(interpreter.jit_statistics(), before);
         assert_eq!(
-            done.back_edge_stretch_exits, done.back_edge_switches,
+            done.back_edge_stretch_exits + done.safepoint_resumptions,
+            done.back_edge_switches,
             "every stretch that ended at a backward jump switched: {done:?}"
         );
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {

@@ -225,6 +225,12 @@ pub struct JitStatistics {
     /// Bodies compiled at their `COMPILE_AT_BACK_JUMP`th interpreted
     /// backward jump rather than at an entry (`back_edge_ready`).
     pub back_edge_compiles: u64,
+    /// Entries into machine code at a loop's head right after the
+    /// safepoint a backward jump stopped at -- a machine-code poll's exit
+    /// or an interpreted jump's test -- so that a loop that allocates goes
+    /// on in machine code after each scavenge (`vm::run`). Each is one of
+    /// `back_edge_switches`, and none of `back_edge_stretch_exits`.
+    pub safepoint_resumptions: u64,
 }
 
 impl JitStatistics {
@@ -1318,6 +1324,13 @@ impl JitState {
     /// switch into machine code (`JitStatistics::back_edge_stretch_exits`).
     pub(crate) fn note_back_edge_stretch_exit(&mut self) {
         self.statistics.back_edge_stretch_exits += 1;
+    }
+
+    /// Counts a frame that goes back into machine code at its loop's head
+    /// once the safepoint its backward jump stopped at is served
+    /// (`JitStatistics::safepoint_resumptions`).
+    pub(crate) fn note_safepoint_resumption(&mut self) {
+        self.statistics.safepoint_resumptions += 1;
     }
 
     /// Makes the bodies compiled from now on count their back edges, and
