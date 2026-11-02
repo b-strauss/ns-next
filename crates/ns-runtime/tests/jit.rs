@@ -108,6 +108,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         abandoned_entries_out_of_line: after.abandoned_entries_out_of_line
             - before.abandoned_entries_out_of_line,
         back_edge_switches: after.back_edge_switches - before.back_edge_switches,
+        back_edge_stretch_exits: after.back_edge_stretch_exits - before.back_edge_stretch_exits,
         back_edge_compiles: after.back_edge_compiles - before.back_edge_compiles,
     }
 }
@@ -6173,7 +6174,13 @@ ns_runtime::for_each_lowering! {
     /// never decay; a hot body that leaves machine code once in a thousand
     /// calls is abandoned at its sixty-fourth exit all the same, and
     /// revived once it has been entered interpreted often enough, so that
-    /// a long run goes on in machine code.
+    /// a long run goes on calling its machine code. Its caller, entered
+    /// once and compiled by on-stack replacement, spends its own exit
+    /// budget on the refused calls while the callee is abandoned, and is
+    /// abandoned for the rest of the test: the callee's machine code is
+    /// then called from the interpreter through the call stub, which the
+    /// last run's assertion admits beside a call through the caller's cell
+    /// (`docs/OPEN-WORK.md`, "Known defects and gaps").
     fn a_rare_exit_without_allocation_does_not_end_a_long_run_interpreted(lowering) {
         let (mut interpreter, class) = load_with(ALLOCATION_FREE, lowering);
         interpreter.set_jit_counting(true);
@@ -6785,5 +6792,87 @@ ns_runtime::for_each_lowering! {
         assert_eq!(answer, 5_000_050_000);
         assert_eq!(done.back_edge_switches, 0);
         assert_eq!(done.back_edge_compiles, 0);
+    }
+}
+
+/// `chain_of`'s recursion through `count` bodies, each looping 50 turns
+/// before it sends the next, so that its 40th backward jump compiles it,
+/// and the last sending `loop`, a loop of 10,000 turns: the first few
+/// bodies fill a small zone with code that stays active below the rest,
+/// so that every later body, `loop` among them, finds no room to compile
+/// into.
+fn chain_ending_in_a_loop(count: usize) -> String {
+    let methods: String = (0..count)
+        .map(|index| {
+            let next = if index + 1 == count {
+                "self loop".to_string()
+            } else {
+                format!("(self m{}) + 1", index + 1)
+            };
+            formatdoc! {"
+                  m{index} = (
+                    |
+                      index ::= 0.
+                    |
+                    [index < 50] whileTrue: [
+                      index:: index + 1.
+                    ].
+                    ^{next}
+                  )
+            "}
+        })
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {methods}  loop = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 10000] whileTrue: [
+              sum:: sum + 1.
+              index:: index + 1.
+            ].
+            ^sum
+          )
+          public run = (
+            ^self m0
+          )
+        ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// A loop whose body cannot switch into machine code -- the zone, full
+    /// of the active code of the chain below it, has no room to compile
+    /// it into -- counts its backward jumps out of line and tries again
+    /// only every 40th, and ends the run loop's stretch only to switch:
+    /// never at every turn of its 10,000.
+    fn a_loop_that_cannot_switch_never_leaves_its_stretch_at_every_turn(lowering) {
+        let count = 300;
+        let source = chain_ending_in_a_loop(count);
+        let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_jit_zone_bytes(16_384);
+        let expected = 10_000 + count as i64 - 1;
+        let before = interpreter.jit_statistics();
+        for _ in 0..3 {
+            assert_eq!(run(&mut interpreter, &class), expected);
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        assert_eq!(
+            done.back_edge_stretch_exits, done.back_edge_switches,
+            "every stretch that ended at a backward jump switched: {done:?}"
+        );
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.zone_compactions >= 1, "the zone filled: {done:?}");
+            assert!(
+                done.back_edge_compiles < 10,
+                "the zone holds a few of the bodies: {done:?}"
+            );
+            assert!(
+                done.back_edge_stretch_exits <= 10,
+                "not at every turn of the 30,000: {done:?}"
+            );
+        }
     }
 }

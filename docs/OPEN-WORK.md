@@ -2451,6 +2451,18 @@ program's subclass of `String` as an argument, the error of a
   [object-model.md](design/object-model.md), "An application has two ids",
   that every `MixinMethod` owns its body, or key the row by method.
   [execution.md](design/execution.md), "Representation".
+- **A caller entered once and compiled by on-stack replacement can be
+  abandoned for good in practice** (2026-11-02): while a callee it calls
+  in its loop is abandoned, every call is refused, the caller exits at
+  each and switches back in at its next backward jump, so it spends its
+  own exit budget and is abandoned too. Its revival waits for its
+  interpreted entries or for collections, and a caller entered once in a
+  run that allocates nothing gets neither, so its loop runs interpreted
+  to its end, calling the revived callee's machine code through the call
+  stub. `crates/ns-runtime/tests/jit.rs`,
+  `a_rare_exit_without_allocation_does_not_end_a_long_run_interpreted`,
+  shows it (`run:exitEvery:`).
+  [execution.md](design/execution.md), "When a body is compiled".
 
 ## Missing tests
 

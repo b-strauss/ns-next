@@ -217,8 +217,13 @@ pub struct JitStatistics {
     /// Entries into machine code at an interpreted backward jump, the
     /// frame switched in place at the loop's head (`at_back_edge`).
     pub back_edge_switches: u64,
+    /// Interpreted backward jumps that ended the run loop's stretch to
+    /// come into machine code there (`vm::Leave::BackEdge`): only those
+    /// `back_edge_ready` found ready to switch, so that a body that cannot
+    /// switch never leaves its stretch at every turn.
+    pub back_edge_stretch_exits: u64,
     /// Bodies compiled at their `COMPILE_AT_BACK_JUMP`th interpreted
-    /// backward jump rather than at an entry (`at_back_edge`).
+    /// backward jump rather than at an entry (`back_edge_ready`).
     pub back_edge_compiles: u64,
 }
 
@@ -379,7 +384,9 @@ pub(crate) struct JitSlot {
     twin_refused: Cell<bool>,
     /// The body's interpreted backward jumps while it has no machine code
     /// in this zone, which compile it at `JitState::compile_at_back_jump`
-    /// (`at_back_edge`): the body's, not a frame's, as its entries are.
+    /// (`back_edge_ready`): the body's, not a frame's, as its entries are.
+    /// Once it has machine code, the back jumps since a frame of it could
+    /// not switch into it, 0 while none failed.
     back_jumps: Cell<u32>,
 }
 
@@ -449,15 +456,31 @@ impl JitSlot {
     }
 
     /// Whether an interpreted backward jump in the body has anything to do
-    /// with the JIT out of line (`at_back_edge`): true while the body
+    /// with the JIT out of line (`back_edge_ready`): true while the body
     /// counts its entries or is compiled, so that its loop counts its back
     /// jumps or switches into its machine code; false once it is
     /// abandoned, refused or exits at once, which no back jump changes. The
-    /// one load and compare the interpreter's backward jump pays for the
-    /// JIT.
+    /// one load and compare the interpreter's backward jump pays inline for
+    /// the JIT.
     #[inline(always)]
     pub(crate) fn back_edge_is_armed(&self) -> bool {
         self.state.get() <= COMPILED
+    }
+
+    /// Counts an interpreted backward jump towards `threshold`, answering
+    /// whether this one reaches it, which starts the count afresh: after
+    /// every try, so that a compile the exhausted zone holds, or a switch
+    /// the frame could not make, is tried again only as many back jumps
+    /// later, each held compile counting towards the next compaction
+    /// (`JitState::hold_compile`).
+    fn count_back_jump(&self, threshold: u32) -> bool {
+        let back_jumps = self.back_jumps.get() + 1;
+        if back_jumps < threshold {
+            self.back_jumps.set(back_jumps);
+            return false;
+        }
+        self.back_jumps.set(0);
+        true
     }
 
     /// Whether the JIT abandoned the body and has not revived it yet.
@@ -544,6 +567,7 @@ impl JitSlot {
     fn compiled(&self, zone: u64, offsets: [CodeOffset; 2], map: u32) {
         let [offset, first_instruction] = offsets;
         self.exits.set(0);
+        self.back_jumps.set(0);
         self.state.set(COMPILED);
         self.zone.set(zone);
         self.offset.set(offset.0);
@@ -1288,6 +1312,12 @@ impl JitState {
     /// (`COMPILE_AT_BACK_JUMP` otherwise), at least the first.
     pub(crate) fn set_compile_at_back_jump(&mut self, jumps: u32) {
         self.compile_at_back_jump = jumps.max(1);
+    }
+
+    /// Counts a stretch of the run loop that ended at a backward jump to
+    /// switch into machine code (`JitStatistics::back_edge_stretch_exits`).
+    pub(crate) fn note_back_edge_stretch_exit(&mut self) {
+        self.statistics.back_edge_stretch_exits += 1;
     }
 
     /// Makes the bodies compiled from now on count their back edges, and
@@ -3083,28 +3113,38 @@ pub(crate) fn resumed(
 
 /// An interpreted backward jump of `activation`, whose body `code` has an
 /// armed slot (`JitSlot::back_edge_is_armed`), to `target`, the head of
-/// the loop it closes: on-stack replacement (`docs/design/execution.md`,
-/// "Between the tiers"). A body with machine code in this zone is entered
-/// there at once, through its program-counter map -- the twin's for a
-/// reified frame, as for a frame returned to (`entry_of_frame`) -- since
-/// at a back edge baseline code holds every value in the frame's words,
-/// which are already machine code's. A body without counts the jump, and
-/// at its `JitState::compile_at_back_jump`th is compiled as an entry
-/// compiles it and entered at once. `None` when the frame goes on
-/// interpreted at `target`. Out of line, so that the interpreter's
-/// backward jump pays only the slot's test for the JIT.
+/// the loop it closes: answers whether the frame switches into machine
+/// code there, on-stack replacement (`docs/design/execution.md`, "Between
+/// the tiers"), so that the run loop ends its stretch for `at_back_edge`
+/// only when the switch happens. A body without machine code in this zone
+/// counts the jump, and at its `JitState::compile_at_back_jump`th is
+/// compiled as an entry compiles it. A body with machine code switches
+/// when the frame can enter it at `target` -- its feedback base the
+/// body's, the twin compiled for a reified frame, room on the native
+/// stack (`entry_of_frame`); when it cannot, the body waits as many back
+/// jumps again before it tries, so that neither a frame that never can
+/// nor a twin an exhausted zone holds costs every turn a try. Out of
+/// line, so that the interpreter's backward jump pays only the slot's
+/// test for the JIT inline.
 #[cold]
 #[inline(never)]
-pub(crate) fn at_back_edge(
+pub(crate) fn back_edge_ready(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
     code: &Rc<CompiledCode>,
-    register_base: RegisterBase,
-    target: u32,
-) -> Option<Resumption> {
+    target: usize,
+) -> bool {
     let slot = &code.jit;
+    let Ok(target) = u32::try_from(target) else {
+        unreachable!("internal: a program counter fits 32 bits");
+    };
     let feedback_base = mutator.heap.activation_feedback_base(activation);
-    if !mutator.jit.is_entered_here(code) {
+    if mutator.jit.is_entered_here(code) {
+        // A body whose frame could not enter at its last try waits.
+        if slot.back_jumps.get() > 0 && !slot.count_back_jump(mutator.jit.compile_at_back_jump) {
+            return false;
+        }
+    } else {
         // Refused as `note_entry` refuses a body entered while the JIT is
         // off, and as `entered` refuses a top-level activation's, whose
         // frame machine code would treat as a factory's.
@@ -3116,18 +3156,11 @@ pub(crate) fn at_back_edge(
         {
             slot.refuse();
             mutator.jit.statistics.refused_bodies += 1;
-            return None;
+            return false;
         }
-        let back_jumps = slot.back_jumps.get() + 1;
-        if back_jumps < mutator.jit.compile_at_back_jump {
-            slot.back_jumps.set(back_jumps);
-            return None;
+        if !slot.count_back_jump(mutator.jit.compile_at_back_jump) {
+            return false;
         }
-        // Counted afresh after every attempt, so that a compile the
-        // exhausted zone holds is tried again only after as many back
-        // jumps again, not at every turn of the loop, each held compile
-        // counting towards the next compaction (`JitState::hold_compile`).
-        slot.back_jumps.set(0);
         if mutator.jit.may_compile_now(slot) {
             let method = mutator.heap.activation_method(activation);
             compile_into_slot(&mut mutator.jit, code, feedback_base, method.as_ref());
@@ -3136,7 +3169,7 @@ pub(crate) fn at_back_edge(
         }
         after_compile_trigger(mutator);
         if !mutator.jit.is_entered_here(code) {
-            return None;
+            return false;
         }
         mutator.jit.statistics.back_edge_compiles += 1;
         // The row the closure stubs enter a block through, which only a
@@ -3147,11 +3180,37 @@ pub(crate) fn at_back_edge(
             note_block_entry(mutator, id, code);
         }
     }
-    // Compiled frames keep their return addresses on the native stack,
-    // and `run_machine_code` would answer program counter 0 without room.
-    if !native_stack_has_room() {
+    // Compiled frames keep their return addresses on the native stack.
+    let ready = native_stack_has_room()
+        && entry_of_frame(mutator, activation, code, feedback_base, target).is_some();
+    if !ready && mutator.jit.is_entered_here(code) {
+        slot.back_jumps.set(1);
+    }
+    ready
+}
+
+/// The switch `back_edge_ready` answered for: runs `activation`'s
+/// machine code from `target`, the loop's head, through its
+/// program-counter map -- the twin's for a reified frame, as for a frame
+/// returned to (`entry_of_frame`) -- since at a back edge baseline code
+/// holds every value in the frame's words, which are already machine
+/// code's. Counts nothing and compiles nothing but a twin. `None` when
+/// the frame goes on interpreted at `target`: its body has no machine
+/// code here it can enter.
+#[cold]
+#[inline(never)]
+pub(crate) fn at_back_edge(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    code: &Rc<CompiledCode>,
+    register_base: RegisterBase,
+    target: u32,
+) -> Option<Resumption> {
+    // `run_machine_code` would answer program counter 0 without room.
+    if !mutator.jit.is_entered_here(code) || !native_stack_has_room() {
         return None;
     }
+    let feedback_base = mutator.heap.activation_feedback_base(activation);
     let entry = entry_of_frame(mutator, activation, code, feedback_base, target)?;
     mutator.jit.statistics.back_edge_switches += 1;
     Some(run_machine_code(mutator, activation, register_base, entry))
