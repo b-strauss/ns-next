@@ -8336,6 +8336,68 @@ the run's length:
   nearly all of it in the warm-up and the first sends; a program whose
   send takes 100 ms or more spends 0.6% or less, CD's 2.2% apart.
 
+**The depth count in a machine register, measured and not kept.**
+`5987fe81` kept the count in `rbp`, which both x64 conventions preserve
+and the entry stub saves, while machine code ran: the entry, call and
+closure call stubs loaded it from `DepthCount`, a prologue compared and
+incremented the register -- no load and no store of the word -- and a
+return decremented it, while the word held the count again at every
+exit (the exit stub's first store), at a return out of machine code
+(the entry and the call stubs) and around the cut's leaves, which take
+the popped frames off it; the growth leaf reads no count, so nothing
+was written back around it. A debug build wrote a word no count can be
+into `DepthCount` while the register held it, which every Rust reader
+refused: the suite, the goldens and `tests/jit.rs` under all nine
+stress modes passed, and the guard caught a write-back removed on
+purpose. Measured on 2026-11-03 against `e392cc91` (machine code
+identical to `9b95559d`, whose three builds above were reused) by the
+same protocol, the variant's three builds made alike; `vm::run` spans
+the same 45.2, 48.6 and 52.3 KB on both sides, since only the JIT's code
+changed.
+
+| Program | before (ms) | builds | register (ms) | builds | vs before | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.207 | 0.203–0.210 | 0.207 | 0.205–0.208 | -0.1% | no |
+| `CD` | 3209.163 | 3193.494–3226.461 | 3172.295 | 3153.299–3186.932 | -1.1% | faster |
+| `DeltaBlue` | 249.811 | 247.893–251.024 | 245.795 | 242.083–249.217 | -1.6% | no |
+| `DeltaBlueTon80` | 1.973 | 1.904–2.067 | 1.929 | 1.916–1.938 | -2.2% | no |
+| `Havlak` | 1235.561 | 1227.309–1246.455 | 1216.069 | 1208.725–1226.655 | -1.6% | faster |
+| `Json` | 3.605 | 3.589–3.635 | 3.614 | 3.590–3.627 | +0.2% | no |
+| `List` | 0.203 | 0.197–0.208 | 0.198 | 0.191–0.212 | -2.4% | no |
+| `Mandelbrot` | 1867.659 | 1842.647–1897.058 | 1850.516 | 1839.027–1857.816 | -0.9% | no |
+| `NBody` | 1141.546 | 1123.939–1154.465 | 1146.471 | 1139.743–1154.132 | +0.4% | no |
+| `Permute` | 0.406 | 0.397–0.417 | 0.405 | 0.398–0.411 | -0.3% | no |
+| `Queens` | 0.319 | 0.313–0.325 | 0.315 | 0.312–0.318 | -1.3% | no |
+| `Richards` | 17.641 | 17.505–17.780 | 17.733 | 17.591–17.907 | +0.5% | no |
+| `RichardsTon80` | 1.822 | 1.813–1.834 | 1.793 | 1.788–1.799 | -1.6% | faster |
+| `Sieve` | 0.399 | 0.391–0.405 | 0.398 | 0.392–0.407 | -0.4% | no |
+| `Storage` | 0.702 | 0.694–0.708 | 0.723 | 0.705–0.757 | +3.0% | no |
+| `Towers` | 0.481 | 0.464–0.490 | 0.499 | 0.478–0.516 | +3.9% | no |
+| `bench_block` | 0.863 | 0.853–0.870 | 0.822 | 0.818–0.826 | -4.8% | faster |
+| `bench_loop` | 0.545 | 0.516–0.579 | 0.529 | 0.513–0.542 | -2.9% | no |
+| `bench_megamorphic` | 0.712 | 0.700–0.725 | 0.739 | 0.727–0.748 | +3.7% | slower |
+| `bench_send` | 0.516 | 0.507–0.527 | 0.506 | 0.504–0.507 | -2.0% | no |
+| `bench_signal` | 19.644 | 19.413–19.891 | 19.638 | 19.575–19.737 | -0.0% | no |
+| `bench_while` | 6.359 | 6.084–6.521 | 6.348 | 6.007–6.549 | -0.2% | no |
+| `bench_recursion` | 0.669 | 0.665–0.675 | 0.618 | 0.590–0.632 | -7.7% | faster |
+| `bench_new` | 1.933 | 1.922–1.950 | 1.908 | 1.901–1.915 | -1.3% | faster |
+| `bench_new2` | 3.358 | 3.296–3.455 | 3.295 | 3.279–3.305 | -1.9% | no |
+| `bench_newarg` | 3.440 | 3.417–3.473 | 3.401 | 3.375–3.424 | -1.1% | no |
+| `bench_do` | 0.714 | 0.705–0.720 | 0.723 | 0.719–0.728 | +1.3% | no |
+
+The geometric mean over the 23 sources moved -0.9% (-0.9% over all 27),
+but not beyond noise: build against build it was -1.2% at a, +0.35% at
+b and -1.8% at c, round against round -1.3%, -0.03% and -1.3%, and the
+two sides' per-build means overlap (4.820, 4.806 and 4.834 before;
+4.764, 4.823 and 4.746 with the register). Six programs are faster
+with their builds separated -- `bench_recursion` -7.7%, the one that
+does little but push and return, `bench_block` -4.8%, CD, Havlak,
+RichardsTon80 and `bench_new` 1.1% to 1.6% -- and `bench_megamorphic`
+is 3.7% slower with its builds separated. The plan kept the variant
+only if the mean was faster beyond noise and no program slower beyond
+noise; neither held, so `de9d9cea` reverted it ("Safepoints and the
+depth limit" has the decision).
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -10332,9 +10394,14 @@ sees.
   the activation stack's committed end.
 - **The count stays exact.** The goldens pin where a recursion overflows,
   so the running total of counted activations agrees with the
-  interpreter's at every check. Compiled code may keep it in a machine
-  register and writes it back at the exit; whether it does is road step
-  8's measurement. An inlined scope is not counted at run time: at a
+  interpreter's at every check. Baseline code keeps it in its machine
+  word, `DepthCount`, which a compiled push loads, compares, increments
+  and stores and a return loads, decrements and stores: kept in `rbp`
+  instead, written back at every exit, every return out of machine code
+  and around the cut's leaves, it moved the mean of the 23 sources
+  -0.9%, within the builds' spread, and `bench_megamorphic.ns` +3.7%
+  beyond it, so it was reverted (measured on 2026-11-03, "What on-stack
+  replacement moved"); `rbp` stays free with `r13`. An inlined scope is not counted at run time: at a
   call site d scopes deep the compiler adds d to the push's comparison
   and to its increment, a constant, so the count includes every
   activation a deoptimization could rebuild there.
@@ -10474,8 +10541,7 @@ sees.
 ### Open
 
 What the contract leaves to road steps 8 and 9 is in
-[OPEN-WORK.md](../OPEN-WORK.md): where the depth count lives in machine
-code, measured; and the home of a closure created in an inlined
+[OPEN-WORK.md](../OPEN-WORK.md): the home of a closure created in an inlined
 scope, since a frame object is married only to a frame that stands for
 one activation. A closure the optimizer does not inline still reifies the
 frame it is created in, whatever it captured, since `enclosingActivation`
@@ -11684,8 +11750,9 @@ Strongtalk, V8 and HotSpot again for it.
   and only a count at the limit or a frame the ordinary room cannot hold
   exits, so that the interpreter raises the overflow. The innermost
   frame and the
-  number of live frames are derived by the exit's walk. Whether the
-  count lives in a machine register is stage 5's measurement.
+  number of live frames are derived by the exit's walk. The count stays
+  in its word: stage 5 measured it in a machine register and found no
+  gain beyond noise ("Safepoints and the depth limit").
 - **The megamorphic stub probes a machine-readable mirror of the global
   cache** beside the cells, written wherever the global cache is, as
   Cog's open PIC probes the method cache (`cogitX64SysV.c:29031-29168`),
