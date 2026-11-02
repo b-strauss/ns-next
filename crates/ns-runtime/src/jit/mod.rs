@@ -64,10 +64,11 @@ const COMPILE_AT_ENTRY: u32 = 2;
 
 /// The interpreted backward jump at which a body without machine code is
 /// compiled, and its frame switched into the code at the loop's head: its
-/// 40th, Cog's `MinBackwardJumpCountForCompile` (`cointerp.c:217`,
-/// `:2743`), so that a loop in a body entered once -- a benchmark's main
-/// loop -- runs compiled (`docs/design/execution.md`, "When a body is
-/// compiled").
+/// 40th, Cog's `MinBackwardJumpCountForCompile`
+/// (`prior-art/opensmalltalk-vm/src/spur64.sista/cointerp.c:218`, `:2759`,
+/// counted at `:8379-8409`), so that a loop in a body entered once -- a
+/// benchmark's main loop -- runs compiled (`docs/design/execution.md`,
+/// "When a body is compiled").
 const COMPILE_AT_BACK_JUMP: u32 = 40;
 
 /// Every body starts at a multiple of this many bytes of the zone, the
