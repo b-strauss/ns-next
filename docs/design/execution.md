@@ -10594,9 +10594,10 @@ the baseline JIT's foundation moved" that of the first two.
   that the AArch64 port writes one `Roles::of` and its idioms and nothing
   above them (decided with the user on 2026-10-29: the split is held by
   a source scan, `crates/ns-runtime/tests/jit_architecture_split.rs`,
-  rather than a crate of its own). `r13` plays no role: preserved by
-  both conventions, it is the one free register a value survives a leaf
-  call in, kept for the register cache, and a leaf call keeps the stack
+  rather than a crate of its own). Two registers play no role, `r13`
+  and `rbp`: preserved by both conventions and saved by the entry stub,
+  they are the free registers a value survives a leaf call in, `r13`
+  kept for the register cache; and a leaf call keeps the stack
   pointer it aligned away from in block word `LeafStackPointer` (14)
   instead. Its idioms are the only way a
   template touches a frame, the block, a leaf, a poll or an exit: load and
