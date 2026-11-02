@@ -59,7 +59,8 @@ pub(crate) fn print_collector_statistics(statistics: &ns_runtime::CollectorStati
 /// what a compiler thread of its own would take off the mutator.
 pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
     eprintln!(
-        "jit: {} bodies, {} twins compiled in {:.3} ms; {} back-edge switches,          {} resumptions after a safepoint, {} exits",
+        "jit: {} bodies, {} twins compiled in {:.3} ms; {} back-edge switches, \
+         {} resumptions after a safepoint, {} exits",
         statistics.compiled_bodies,
         statistics.compiled_twins,
         statistics.compile_nanoseconds as f64 / 1_000_000.0,

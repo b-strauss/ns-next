@@ -446,9 +446,25 @@ fn jit_statistics_print_one_line_to_stderr() {
         .filter(|line| line.starts_with("jit: "))
         .collect();
     assert_eq!(lines.len(), 1, "stderr: {stderr}");
-    assert!(lines[0].contains("bodies,"), "{}", lines[0]);
-    assert!(lines[0].contains("back-edge switches"), "{}", lines[0]);
-    assert!(lines[0].ends_with(" exits"), "{}", lines[0]);
+    // The words are fixed, only the numbers vary.
+    let mut shape = String::new();
+    let mut in_digits = false;
+    for character in lines[0].chars() {
+        if character.is_ascii_digit() || (in_digits && character == '.') {
+            if !in_digits {
+                shape.push('#');
+            }
+            in_digits = true;
+        } else {
+            in_digits = false;
+            shape.push(character);
+        }
+    }
+    assert_eq!(
+        shape,
+        "jit: # bodies, # twins compiled in # ms; # back-edge switches, \
+         # resumptions after a safepoint, # exits"
+    );
 }
 
 /// `--collector-statistics` prints the collector's counts and pauses to
