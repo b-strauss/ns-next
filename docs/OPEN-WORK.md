@@ -1661,6 +1661,16 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **What share of a run the baseline compiler takes is not measured**
+  (2026-11-02). Road step 9's optimizing compiler runs on a thread of its
+  own, and V8 compiles even its baseline code there; whether ns-next's
+  baseline compiler joins it -- taking its time off the mutator, at the
+  cost of a body left interpreted until its code is installed and of a
+  miss leaf that can no longer compile a callee -- depends on that share,
+  over the Are We Fast Yet benchmarks, the microbenchmarks and
+  `run-corpus`. Road step 8's fifth stage adds the statistic; the
+  measurement is taken before road step 9 decides
+  ([execution.md](design/execution.md), "When a body is compiled").
 - **A program in machine code measures where its bodies land in the code
   zone** (2026-10-30). `bench_loop.ns` measured 5% slower after the
   closures in machine code on machine code identical to the tree before,

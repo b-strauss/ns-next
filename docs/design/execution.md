@@ -10198,13 +10198,32 @@ sees.
   compiled bit, once materialized, is the whole conversion, since its
   words are the interpreter's.
 - **An interpreted frame becomes a baseline one in place**, on-stack
-  replacement at a backward jump whose counter trips: the frame's
-  compiled bit is set and the loop enters the code at that jump's
-  machine address, a back edge being a point where baseline code holds
-  every value in its slot. Cog switches there and only there
-  (`attemptToSwitchToMachineCode:`, `cointerp.c:14623-14735`, `:8379-8393`).
+  replacement at a backward jump ("When a body is compiled" below says
+  when): the interpreter has taken the jump's poll, and the loop enters
+  the code at the start of the jump's target, the loop's head, through
+  the program-counter map every body has -- the entry a frame returned to
+  already takes (`jit::resumed`, `entry_of_frame`), the twin's for a
+  reified frame -- a back edge being a point where baseline code holds
+  every value in its slot. Nothing of the frame is rewritten: its words
+  are already machine code's. Cog switches at a back jump and only there,
+  rewriting its interpreter frame into a machine-code one
+  (`attemptToSwitchToMachineCode:`, `cointerp.c:14623-14735`,
+  `:8379-8393`); V8's Sparkplug switch keeps the frame, rewrites one
+  slot and enters at the loop header's start
+  (`Generate_InterpreterOnStackReplacement_ToBaseline`,
+  `src/builtins/x64/builtins-x64.cc:5660-5767`;
+  `GetBaselinePCForNextExecutedBytecode`, `src/objects/code-inl.h:405-425`).
   Without it a hot loop in a method entered once -- a benchmark's main
   loop -- would never run compiled.
+- **A frame that left its machine code at a poll goes back into it** once
+  the safepoint is served, at the poll's program counter, a loop's head:
+  without it a loop that allocates would run interpreted from its first
+  scavenge to its frame's return. Cog never leaves at a poll -- its
+  backward jump calls the interrupt check's trampoline, which returns
+  into the code (`cogitX64SysV.c:38851-38858`) -- but here a safepoint is
+  the run loop's alone, so the poll exits, and the run loop enters the
+  code again as it does a frame returned to. Decided with the user on
+  2026-11-02.
 - **An optimized frame is deoptimized lazily**, when it would become the
   top of the stack: one below the top whose code was invalidated is only
   marked, and converted when control returns into it, as HotSpot defers
@@ -11549,11 +11568,43 @@ templates that read and write the slots, then the cache.
   data on the compiled code, not in machine code. A body that cannot be
   compiled -- past a size the zone's layout bounds -- is marked and never
   tried again.
-- **On-stack replacement at a back edge** whose per-frame counter in the
-  flags word trips, as Cog's 40 back jumps (`cointerp.c:2759`,
-  `:8379-8409`); "Between the tiers" above says how.
+- **On-stack replacement at a back edge**: an interpreted backward jump
+  in a body with machine code in this zone switches to it at once,
+  counting nothing; in a body without, it counts the body's back jumps,
+  and the 40th compiles the body, synchronously, and switches, as Cog
+  does at its 40 back jumps (`MinBackwardJumpCountForCompile`,
+  `cointerp.c:2759`, `:8379-8409`), which compiles there too. The
+  counter is the body's, beside its count of entries in its `JitSlot`,
+  as V8's budget is its function's (`FeedbackCell`,
+  `src/interpreter/interpreter-assembler.cc:1179-1206`) and HotSpot's
+  back-edge counter its method's (`MethodCounters`,
+  `cpu/x86/templateTable_x86.cpp:1815-1861`), not the frame's, as Cog's
+  byte in the flags word is: the frames share one format, so the switch
+  needs no state of the frame, and the flags word keeps its bits, which
+  a debug build's generation fills. Cog's threshold, not HotSpot's 60000
+  (`Tier3BackEdgeThreshold`, `share/compiler/compiler_globals.hpp:189`)
+  or V8's budget weighted by bytes: the body compiles at its second
+  entry, as early as Cog's, and synchronously, where HotSpot's lowest
+  compiled tier is a profiling compiler run on a thread of its own and
+  its switch copies the frame into an OSR nmethod of its own
+  (`SharedRuntime::OSR_migration_begin`, `share/runtime/sharedRuntime.cpp:3815-3884`).
+  An abandoned body counts nothing and is not entered: its state is no
+  longer counting, and its revival is by entries, as it is today.
+  "Between the tiers" above says how the frame switches. Decided with
+  the user on 2026-11-02.
 - **Compilation on a thread of its own** is road step 9's; the second
-  mapping keeps it open.
+  mapping keeps it open. Its optimizing compiler needs one, since its
+  compile is costly; V8 compiles even its Sparkplug code there by
+  default (`concurrent_sparkplug`, `src/flags/flag-definitions.h:1276`).
+  The baseline compiler stays synchronous until a measurement says
+  otherwise: a compile on a thread of its own takes its time off the
+  mutator, but leaves the body interpreted until the code is installed
+  at a safepoint, and the miss leaf could no longer compile a callee
+  from inside machine code, so warm-up runs more interpreted and exits
+  more. The share of a run a baseline compile takes is measured
+  (`OPEN-WORK.md`), so that road step 9, which builds the thread, the
+  body's snapshot and the installation at a safepoint, decides whether
+  the baseline compiler joins it (decided with the user on 2026-11-02).
 
 ### The code zone
 
