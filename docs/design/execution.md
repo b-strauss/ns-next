@@ -11875,7 +11875,18 @@ words nor the machine words name one.
 ### Polls and the depth check
 
 The entry's depth check is the poll ("Safepoints and the depth limit"
-above). A back edge compares against the same request word, one compare,
+above): a compiled callee's prologue compares the depth count with the
+`DepthLimit` machine word and nothing else, and a real safepoint request
+lowers that word to 0 while it is pending, so the one compare refuses the
+push for the depth and the request alike, and the interpreter takes the
+push and, at it, the safepoint. Every write of the request word goes
+through `Heap::write_safepoint_request`, which writes the limit word with
+it -- 0 exactly while the request word is a real request's 1, the limit
+`set_depth_limit` last set otherwise -- so a debug build's stress hold
+(`STRESS_HOLD`) lowers nothing and compiled frames still nest under a
+stress mode, their polls taking the hold; the interpreter's own push
+compares against its constants and never reads the word. A back edge
+compares against the request word itself, one compare,
 as Cog's backward jumps check `stackLimit` (`:38851-38858`); V8 polls at
 a back edge only when its budget runs out
 (`src/interpreter/interpreter-generator.cc:2520-2521`). Whether the depth

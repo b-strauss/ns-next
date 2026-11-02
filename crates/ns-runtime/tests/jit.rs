@@ -540,6 +540,49 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `ALLOCATING_LOOP` with a send to a compiled method in each turn, right
+/// after the allocation that may request a scavenge.
+const ALLOCATING_LOOP_WITH_A_CALL: &str = indoc! {"
+    class Subject = Object new () (
+      successorOf: value = (
+        | successor |
+        successor:: value + 1.
+        ^successor.
+      )
+      public run = (
+        |
+          index ::= 0.
+          last
+        |
+        [index < 100000] whileTrue: [
+          last:: {index. index. index. index. index. index. index. index. index. index. index. index. index. index. index. index}.
+          index:: self successorOf: index.
+        ].
+        ^(last at: 16) + index.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A compiled call made while a scavenge is requested is refused by
+    /// its callee's one depth compare, the request having lowered the
+    /// depth limit word, and the interpreter takes the push.
+    fn a_compiled_call_at_a_requested_safepoint_is_refused(lowering) {
+        let (mut interpreter, class) = load_with(ALLOCATING_LOOP_WITH_A_CALL, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_jit_counting(true);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 199_999);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.pushes_refused >= 1,
+                "a call found the scavenge requested: {done:?}"
+            );
+        }
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// The allocating loop sent once, its body compiled at its first
     /// interpreted backward jump: whether that jump, or any later one the

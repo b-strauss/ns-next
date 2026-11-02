@@ -84,6 +84,11 @@ const _: () = assert!(
 /// The depth limit word is a bound, not the limit: at or past it the
 /// interpreter decides, as it does while a `doesNotUnderstand:` handler
 /// holds the reserve the word does not count (`MachineWord::DepthLimit`).
+/// A real safepoint request lowers the word to 0, so that the one compare
+/// refuses every push while one is pending and the interpreter takes the
+/// safepoint at the push (`Heap::write_safepoint_request`); a stress
+/// mode's hold leaves it, and the frames it lets nest take the hold at
+/// their polls.
 pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     let role = body.role;
     let macro_assembler = &mut body.macro_assembler;
@@ -101,25 +106,6 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     assembler.load(Width::Word64, depth, word(MachineWord::DepthCount));
     assembler.compare_memory(depth, word(MachineWord::DepthLimit));
     macro_assembler.exit_if(Condition::AboveOrEqual, ExitKind::PushRefused, 0);
-    let assembler = macro_assembler.assembler();
-    assembler.load(
-        Width::Word64,
-        scratch,
-        word(MachineWord::SafepointRequested),
-    );
-    // A debug build refuses a real request alone, never the hold of a stress
-    // mode, which the polls of the frames it lets nest take
-    // (`Heap::set_safepoint_requested`).
-    #[cfg(debug_assertions)]
-    {
-        assembler.compare_immediate(scratch, 1);
-        macro_assembler.exit_if(Condition::Equal, ExitKind::PushRefused, 0);
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        assembler.compare_immediate(scratch, 0);
-        macro_assembler.exit_if(Condition::NotEqual, ExitKind::PushRefused, 0);
-    }
     let assembler = macro_assembler.assembler();
     assembler.move_register(scratch, roles.frame);
     assembler.load(Width::Word64, end, stack_base);

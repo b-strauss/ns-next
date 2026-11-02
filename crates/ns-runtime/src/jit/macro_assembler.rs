@@ -140,8 +140,8 @@ pub(crate) struct Roles {
     /// The activation count (`MachineWord::DepthCount`) while a prologue,
     /// a return or the entry stub counts it.
     pub(crate) depth_count: Register,
-    /// The prologue's safepoint request word, then the end of the frame
-    /// it pushes as a byte offset from the activation stack's base.
+    /// The end of the frame the prologue pushes, as a byte offset from the
+    /// activation stack's base.
     pub(crate) frame_extent: Register,
     /// The prologue's bound on `frame_extent`, the ordinary stack's end.
     pub(crate) stack_end: Register,
