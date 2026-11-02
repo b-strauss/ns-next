@@ -94,7 +94,7 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     let machine_words = roles.idiom_scratch;
-    let (depth, scratch, end) = (roles.depth, roles.frame_extent, roles.stack_end);
+    let (depth, scratch, end) = (roles.depth_count, roles.frame_extent, roles.stack_end);
     let word = |name| MacroAssembler::machine_word(machine_words, name);
     let frame_end_bytes = (i32::from(code.argument_count)
         + i32::from(HEADER_REGISTERS)
@@ -103,6 +103,7 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     let stack_base = macro_assembler.block_word(BlockWord::StackBase);
     macro_assembler.load_machine_words(machine_words);
     let assembler = macro_assembler.assembler();
+    assembler.load(Width::Word64, depth, word(MachineWord::DepthCount));
     assembler.compare_memory(depth, word(MachineWord::DepthLimit));
     macro_assembler.exit_if(Condition::AboveOrEqual, ExitKind::PushRefused, 0);
     let assembler = macro_assembler.assembler();
@@ -124,6 +125,7 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     );
     let assembler = macro_assembler.assembler();
     assembler.add_immediate(depth, 1);
+    assembler.store(Width::Word64, word(MachineWord::DepthCount), depth);
     // Only now, every check passed: the receiver and the current class the
     // call handed over.
     let receiver_place = Heap::receiver_register(code.argument_count);
@@ -594,8 +596,14 @@ pub(super) fn store_program_counter(body: &mut BodyAssembler) {
 /// `ReturnSlotIfFilled`'s return of a filled lazy slot (`jit::baseline`).
 pub(super) fn return_value(macro_assembler: &mut MacroAssembler) {
     let roles = macro_assembler.roles();
+    let machine_words = roles.idiom_scratch;
+    macro_assembler.load_machine_words(machine_words);
+    let depth = MacroAssembler::machine_word(machine_words, MachineWord::DepthCount);
     let assembler = macro_assembler.assembler();
-    assembler.add_immediate(roles.depth, -1);
+    let count = roles.depth_count;
+    assembler.load(Width::Word64, count, depth);
+    assembler.add_immediate(count, -1);
+    assembler.store(Width::Word64, depth, count);
     assembler.return_();
 }
 

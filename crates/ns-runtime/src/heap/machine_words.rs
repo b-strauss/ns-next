@@ -234,29 +234,9 @@ impl MachineWords {
         }
     }
 
-    /// What a debug build's machine code writes into
-    /// `MachineWord::DepthCount` while its depth count register holds the
-    /// count (`jit::macro_assembler::Roles::depth`), as the 32-bit
-    /// immediate its store sign-extends: a count no activation stack
-    /// reaches, so that `get` refuses a Rust read of the count machine
-    /// code has not written back.
-    #[cfg(debug_assertions)]
-    pub(crate) const DEPTH_COUNT_HELD_IMMEDIATE: i32 = i32::MIN;
-
-    /// `DEPTH_COUNT_HELD_IMMEDIATE` as the word holds it.
-    #[cfg(debug_assertions)]
-    pub(crate) const DEPTH_COUNT_HELD: u64 =
-        (Self::DEPTH_COUNT_HELD_IMMEDIATE as i64).cast_unsigned();
-
     #[inline(always)]
     pub(crate) fn get(&self, word: MachineWord) -> u64 {
-        let value = self.words[word.index()].get();
-        #[cfg(debug_assertions)]
-        assert!(
-            !(word == MachineWord::DepthCount && value == Self::DEPTH_COUNT_HELD),
-            "internal: the depth count was read while machine code held it in its register"
-        );
-        value
+        self.words[word.index()].get()
     }
 
     #[inline(always)]
