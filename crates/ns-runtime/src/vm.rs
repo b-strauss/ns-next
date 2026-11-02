@@ -67,8 +67,27 @@ impl FrameRegisters {
 enum Leave {
     /// A safepoint is requested; the frame is written back.
     Safepoint,
+    /// A backward jump in a body the JIT counts the back jumps of or has
+    /// compiled (`JitSlot::back_edge_is_armed`); the frame is written back
+    /// at the jump's target, where the next stretch comes into machine code
+    /// as it does at the run's base activation (`jit::at_back_edge`).
+    BackEdge,
     /// The run's base activation is done.
     Exit(HostResult),
+}
+
+/// How the loop comes into machine code at a frame
+/// (`machine_code_switch`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Arrival {
+    /// A push: the JIT counts the body's entry and runs its machine code,
+    /// if any (`jit::entered`).
+    Pushed,
+    /// A frame returned to that stopped in machine code (`jit::resumed`).
+    ReturnedTo,
+    /// An interpreted backward jump to the frame's program counter, the
+    /// loop's head: on-stack replacement (`jit::at_back_edge`).
+    BackEdge,
 }
 
 /// Where control goes after a send, a return, an unwind or a forcing: one
@@ -152,7 +171,9 @@ impl Handoff {
 ///
 /// Its safepoints are every switch to another activation -- a push, or a
 /// caller resumed -- and every backward jump. Each stretch between two
-/// safepoints the loop takes is one entry (`Interpreter::enter`), and the
+/// safepoints the loop takes, or a safepoint and a backward jump that
+/// comes into machine code (`Leave::BackEdge`), is one entry
+/// (`Interpreter::enter`), and the
 /// safepoint is outside every one: what the loop carries from one stretch to
 /// the next is `FrameRegisters` -- the running `ActivationReference`, its
 /// code, its `program_counter`, its `FeedbackBase` and its `RegisterBase`,
@@ -194,8 +215,9 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
     // entry and runs its machine code as the stretch does for a push of
     // its own: a host's entry send would otherwise never run compiled. The
     // first stretch makes it, since the machine code may return the base
-    // activation, which only a stretch can finish.
-    let mut entering = true;
+    // activation, which only a stretch can finish; and a stretch after a
+    // backward jump that left for machine code comes in there the same way.
+    let mut arrival = Some(Arrival::Pushed);
     loop {
         // The stretch is forced into the loop rather than left to the
         // inliner. It is large -- every cached send inlines its hit path --
@@ -213,7 +235,7 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
         // lands here.
         let leave = interpreter.enter(
             #[inline(always)]
-            |mutator| run_stretch(mutator, &mut frame, floor, &mut entering),
+            |mutator| run_stretch(mutator, &mut frame, floor, &mut arrival),
         );
         match leave {
             Leave::Safepoint => {
@@ -241,6 +263,7 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
                         .enter(|mutator| mutator.heap.activation_feedback_base(frame.activation));
                 }
             }
+            Leave::BackEdge => arrival = Some(Arrival::BackEdge),
             Leave::Exit(result) => return result,
         }
     }
@@ -266,7 +289,7 @@ fn run_stretch<'gc>(
     mutator: &mut Mutator<'gc>,
     frame: &mut FrameRegisters,
     floor: usize,
-    entering: &mut bool,
+    arrival: &mut Option<Arrival>,
 ) -> Leave {
     let mut activation = frame.activation;
     let mut code = Rc::clone(&frame.code);
@@ -281,8 +304,14 @@ fn run_stretch<'gc>(
         exit: None,
         resume_in_machine_code: false,
     };
-    // The run's base activation, entered as a push is (`run`).
-    if std::mem::take(entering) && code.jit.push_is_armed() {
+    // The run's base activation, entered as a push is, or the target of a
+    // backward jump that left the last stretch for machine code (`run`),
+    // whose test of the slot the jump made.
+    let switching = match arrival.take() {
+        Some(Arrival::Pushed) => code.jit.push_is_armed().then_some(Arrival::Pushed),
+        other => other,
+    };
+    if let Some(way) = switching {
         let switched = machine_code_switch(
             mutator,
             &mut handoff,
@@ -290,7 +319,7 @@ fn run_stretch<'gc>(
             activation,
             Rc::clone(&code),
             program_counter,
-            false,
+            way,
         );
         let running = match switched {
             Switched::Run(running) => running,
@@ -321,21 +350,30 @@ fn run_stretch<'gc>(
         handoff.activation = activation;
         handoff.feedback_base = feedback_base;
     }
-    'run: loop {
+    let leave = 'run: loop {
         // A jump to `target`, from every instruction that jumps -- written
         // once, so that the set of jumps that test the safepoint when they
         // go backward is exactly the set of jumps. A backward jump closes a
-        // loop, so that a loop that makes no send still passes a safepoint.
-        // Leaving breaks out of the loop to the one write-back below it,
-        // which every safepoint shares. Defined inside the labelled loop so
-        // that its label is in scope where the macro is written.
+        // loop, so that a loop that makes no send still passes a safepoint;
+        // and in a body the JIT counts or has compiled it leaves for the
+        // next stretch to come into machine code at the loop's head,
+        // on-stack replacement, which costs the interpreted loop the slot's
+        // load and compare (`JitSlot::back_edge_is_armed`). Leaving breaks
+        // out of the loop to the one write-back below it, which every
+        // safepoint shares. Defined inside the labelled loop so that its
+        // label is in scope where the macro is written.
         macro_rules! jump_to {
             ($target:expr) => {{
                 let target = $target as usize;
                 let backward = target <= program_counter;
                 program_counter = target;
-                if backward && mutator.heap.safepoint_requested() {
-                    break 'run;
+                if backward {
+                    if mutator.heap.safepoint_requested() {
+                        break 'run Leave::Safepoint;
+                    }
+                    if code.jit.back_edge_is_armed() {
+                        break 'run Leave::BackEdge;
+                    }
                 }
                 continue 'run;
             }};
@@ -1363,7 +1401,7 @@ fn run_stretch<'gc>(
                         if resume {
                             mutator.heap.clear_compiled(activation);
                         }
-                        break 'run;
+                        break 'run Leave::Safepoint;
                     }
                     let switched = machine_code_switch(
                         mutator,
@@ -1372,7 +1410,11 @@ fn run_stretch<'gc>(
                         activation,
                         code,
                         program_counter,
-                        resume,
+                        if resume {
+                            Arrival::ReturnedTo
+                        } else {
+                            Arrival::Pushed
+                        },
                     );
                     let (running, safepoint) = match switched {
                         Switched::Run(running) => (running, false),
@@ -1394,11 +1436,11 @@ fn run_stretch<'gc>(
                     handoff.activation = activation;
                     handoff.feedback_base = feedback_base;
                     if safepoint {
-                        break 'run;
+                        break 'run Leave::Safepoint;
                     }
                 }
                 if mutator.heap.safepoint_requested() {
-                    break 'run;
+                    break 'run Leave::Safepoint;
                 }
             }
             Transfer::Exited => {
@@ -1421,15 +1463,16 @@ fn run_stretch<'gc>(
                 if matches!(transfer, Transfer::StoppedAtSafepoint)
                     || mutator.heap.safepoint_requested()
                 {
-                    break 'run;
+                    break 'run Leave::Safepoint;
                 }
             }
         }
-    }
-    // A safepoint is requested, at a switch or a backward jump: the frame
-    // the stretch stands at, written back for the next one -- its program
-    // counter into its stack frame too, where the safepoint finds it when
-    // it suspends the activation into its frame.
+    };
+    // A safepoint is requested, at a switch or a backward jump, or a
+    // backward jump leaves for machine code: the frame the stretch stands
+    // at, written back for the next one -- its program counter into its
+    // stack frame too, where the safepoint finds it when it suspends the
+    // activation into its frame.
     mutator
         .heap
         .activation_set_program_counter(activation, program_counter);
@@ -1440,7 +1483,7 @@ fn run_stretch<'gc>(
         feedback_base,
         register_base,
     };
-    Leave::Safepoint
+    leave
 }
 
 const WIDE_SEND: &str = "internal: a wide send's site holds its registers";
@@ -2565,10 +2608,12 @@ enum Switched {
 }
 
 /// The loop's way into machine code at a switch to `activation`, which
-/// runs `code` from `program_counter`: a push -- the JIT counts the
-/// body's entry and runs its machine code, if any (`jit::entered`) -- or,
-/// with `resume`, a frame returned to that stopped in machine code
-/// (`jit::resumed`). When the machine code returns the frame it was
+/// runs `code` from `program_counter`, as it `arrives` there: a push --
+/// the JIT counts the body's entry and runs its machine code, if any
+/// (`jit::entered`) -- a frame returned to that stopped in machine code
+/// (`jit::resumed`), or an interpreted backward jump to the loop's head
+/// (`jit::at_back_edge`), which goes on interpreted there when the body
+/// has no machine code to switch to. When the machine code returns the frame it was
 /// entered at, the frame is finished here as a return the loop ran is
 /// (`finish`), and the frame that switches to, if it is one machine code
 /// takes again, is entered in turn: a loop, never a recursion, however
@@ -2583,17 +2628,25 @@ fn machine_code_switch<'gc>(
     mut activation: ActivationReference,
     mut code: Rc<CompiledCode>,
     mut program_counter: usize,
-    mut resume: bool,
+    mut arrives: Arrival,
 ) -> Switched {
     loop {
         let register_base = mutator.heap.activation_register_base(activation);
-        let resumption = if resume {
-            let Ok(resumed_at) = u32::try_from(program_counter) else {
-                unreachable!("internal: a program counter fits 32 bits");
-            };
-            crate::jit::resumed(mutator, activation, &code, register_base, resumed_at)
-        } else {
-            crate::jit::entered(mutator, activation, &code, register_base)
+        let Ok(arrived_at) = u32::try_from(program_counter) else {
+            unreachable!("internal: a program counter fits 32 bits");
+        };
+        let resumption = match arrives {
+            Arrival::Pushed => crate::jit::entered(mutator, activation, &code, register_base),
+            Arrival::ReturnedTo => {
+                crate::jit::resumed(mutator, activation, &code, register_base, arrived_at)
+            }
+            Arrival::BackEdge => {
+                crate::jit::at_back_edge(mutator, activation, &code, register_base, arrived_at)
+                    .unwrap_or(Resumption::Interpreted {
+                        activation,
+                        program_counter: arrived_at,
+                    })
+            }
         };
         match resumption {
             Resumption::Interpreted {
@@ -2626,7 +2679,12 @@ fn machine_code_switch<'gc>(
                             .take()
                             .expect("internal: a switch names its code");
                         program_counter = handoff.program_counter;
-                        resume = std::mem::take(&mut handoff.resume_in_machine_code);
+                        let resume = std::mem::take(&mut handoff.resume_in_machine_code);
+                        arrives = if resume {
+                            Arrival::ReturnedTo
+                        } else {
+                            Arrival::Pushed
+                        };
                         // A switch is a safepoint: one requested meanwhile
                         // is taken before machine code runs again.
                         if mutator.heap.safepoint_requested()
