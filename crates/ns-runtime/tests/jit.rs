@@ -111,6 +111,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         back_edge_stretch_exits: after.back_edge_stretch_exits - before.back_edge_stretch_exits,
         back_edge_compiles: after.back_edge_compiles - before.back_edge_compiles,
         safepoint_resumptions: after.safepoint_resumptions - before.safepoint_resumptions,
+        compile_nanoseconds: after.compile_nanoseconds - before.compile_nanoseconds,
     }
 }
 
@@ -128,6 +129,20 @@ ns_runtime::for_each_lowering! {
         let done = since(interpreter.jit_statistics(), before);
         assert!(taken_up(done) >= 1, "`answer`, entered three times, is taken up");
         assert_eq!(done.refused_bodies, 0);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The wall time of the baseline compiler is counted, so that a
+    /// compiler thread of its own can be judged by what it would take off
+    /// the mutator.
+    fn compiling_takes_time_that_is_counted(lowering) {
+        let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 42);
+        let done = since(interpreter.jit_statistics(), before);
+        assert!(done.compiled_bodies >= 1, "`answer` is compiled");
+        assert!(done.compile_nanoseconds > 0);
     }
 }
 

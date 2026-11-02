@@ -72,6 +72,10 @@ enum Command {
         /// Print the collector's counts and pauses to stderr after the run.
         #[arg(long)]
         collector_statistics: bool,
+        /// Print the JIT's counts and the baseline compiler's time to stderr
+        /// after the run.
+        #[arg(long)]
+        jit_statistics: bool,
         /// A script of the project's `newspeak.json`: its arguments go to
         /// `main:args:` first, then any given after `--`.
         #[arg(long)]
@@ -122,6 +126,10 @@ enum Command {
         /// timed runs.
         #[arg(long)]
         collector_statistics: bool,
+        /// Print the JIT's counts and the baseline compiler's time to stderr
+        /// after the run.
+        #[arg(long)]
+        jit_statistics: bool,
         /// A script of the project's `newspeak.json`: its arguments go to
         /// `main:args:` first, then any given after `--`.
         #[arg(long)]
@@ -194,6 +202,7 @@ fn execute(command: Command) -> ExitCode {
             lowering,
             cache_statistics,
             collector_statistics,
+            jit_statistics,
             script,
             arguments,
         } => commands::run::execute(
@@ -201,6 +210,7 @@ fn execute(command: Command) -> ExitCode {
             lowering.into(),
             cache_statistics,
             collector_statistics,
+            jit_statistics,
             script.as_deref(),
             &arguments,
         ),
@@ -214,6 +224,7 @@ fn execute(command: Command) -> ExitCode {
             iterations,
             cache_statistics,
             collector_statistics,
+            jit_statistics,
             script,
             arguments,
         } => commands::bench::execute(
@@ -221,6 +232,7 @@ fn execute(command: Command) -> ExitCode {
             iterations,
             cache_statistics,
             collector_statistics,
+            jit_statistics,
             script.as_deref(),
             &arguments,
         ),

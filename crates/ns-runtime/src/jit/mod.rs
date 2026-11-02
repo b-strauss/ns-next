@@ -231,9 +231,19 @@ pub struct JitStatistics {
     /// on in machine code after each scavenge (`vm::run`). Each is one of
     /// `back_edge_switches`, and none of `back_edge_stretch_exits`.
     pub safepoint_resumptions: u64,
+    /// Wall time of every compile of a body or a twin, assembly and
+    /// installation included, refused ones too, in nanoseconds: what a
+    /// compiler thread of its own would take off the mutator.
+    pub compile_nanoseconds: u64,
 }
 
 impl JitStatistics {
+    /// Adds the time since `started` to `compile_nanoseconds`.
+    fn count_compile_time(&mut self, started: std::time::Instant) {
+        let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.compile_nanoseconds = self.compile_nanoseconds.saturating_add(elapsed);
+    }
+
     /// Counts a freed installed body: in `freed_twins` for a twin, in
     /// `freed_bodies` for any other.
     fn count_freed(&mut self, twin: bool) {
@@ -2596,7 +2606,10 @@ fn compile_into_slot(
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
 ) {
-    match compile(state, code, feedback_base, method) {
+    let started = std::time::Instant::now();
+    let outcome = compile(state, code, feedback_base, method);
+    state.statistics.count_compile_time(started);
+    match outcome {
         Ok((offsets, map)) => {
             code.jit.compiled(state.zone_identity(), offsets, map);
             state.statistics.compiled_bodies += 1;
@@ -2861,6 +2874,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         state.hold_compile();
         return Err(Refusal::ZoneFull);
     }
+    let started = std::time::Instant::now();
     let twin = match assemble(
         settings,
         &installed.code,
@@ -2870,6 +2884,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
     ) {
         Ok(twin) => twin,
         Err(refusal) => {
+            state.statistics.count_compile_time(started);
             installed
                 .code
                 .jit
@@ -2879,14 +2894,16 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         }
     };
     let needed = needed_bytes(&twin);
-    let index = match install_body(
+    let installation = install_body(
         state,
         &installed.code,
         installed.method.as_ref(),
         installed.feedback_base,
         twin,
         settings,
-    ) {
+    );
+    state.statistics.count_compile_time(started);
+    let index = match installation {
         Ok(index) => index,
         Err(Refusal::ZoneFull) => {
             state.wanted_bytes = state.wanted_bytes.max(needed);
