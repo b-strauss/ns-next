@@ -5907,7 +5907,9 @@ ns_runtime::for_each_lowering! {
     /// returned, in a program that allocates nothing and so never runs a
     /// full collection: the compiles the exhausted zone holds ask for a
     /// compaction again, which frees the recursion's idle bodies, and a
-    /// method hot only afterwards is compiled and runs in machine code.
+    /// method hot only afterwards is compiled and runs in machine code,
+    /// every call of it counted (`Interpreter::set_jit_counting`), whether
+    /// its caller calls it from machine code or from the interpreter.
     fn an_exhausted_zone_compiles_again_without_a_collection(lowering) {
         let count = 300;
         let source = chain_of(count).replacen(
@@ -5917,6 +5919,7 @@ ns_runtime::for_each_lowering! {
         );
         let (mut interpreter, class) = load_with(&source, lowering);
         interpreter.set_jit_zone_bytes(16_384);
+        interpreter.set_jit_counting(true);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let collections = interpreter.collector_statistics().collections;
         let before = interpreter.jit_statistics();
@@ -5948,8 +5951,12 @@ ns_runtime::for_each_lowering! {
                 .is_some(),
             "`hot` is compiled"
         );
+        // `hot` is called from `runHot:`'s machine code through its cell
+        // where the zone had room for `runHot:` at its loop's 40th backward
+        // jump, and from the interpreter through the call stub otherwise:
+        // a debug build's larger machine code leaves no room for it.
         assert!(
-            last.machine_entries + last.called_entries >= 10,
+            last.compiled_calls + last.called_entries >= 10,
             "`hot` runs in machine code: {last:?}"
         );
     }
