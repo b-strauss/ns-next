@@ -8738,6 +8738,19 @@ re-entries; Primordial Soup and Cog need no second bound because nothing in
 them re-enters the interpreter from native code. ns-next is in their position:
 nothing re-enters its run loop from Rust ("No re-entry from Rust" below), so
 one bound, L ("The depth limit" above), is all it needs.
+Weighed again with the user on 2026-11-03 against a byte bound as V8's
+and HotSpot's, the stack pointer against a limit (`--stack-size`,
+`-Xss`), the count is kept: its memory traffic at every call is within
+noise -- kept in `rbp`, which removed it, the count moved the mean
+-0.9%, within the builds' spread ("What on-stack replacement moved",
+"The depth count in a machine register, measured and not kept") -- and
+only the count makes a recursion overflow at the same depth under both
+lowerings and in every tier, which the depth-limit goldens that count
+alike pin; a byte bound would give that up and need machine code to
+check the native stack pointer instead. A program that needs a deeper
+recursion than L has L raised, not the model changed; what bounds L is
+the native stack an entry into machine code needs, eight bytes an
+activation (`jit::NATIVE_STACK_NEED`).
 
 ### No re-entry from Rust
 
@@ -10413,8 +10426,10 @@ sees.
   words are the interpreter's.
 - **An interpreted frame becomes a baseline one in place**, on-stack
   replacement at a backward jump ("When a body is compiled" below says
-  when): the interpreter has taken the jump's poll, and the loop enters
-  the code at the start of the jump's target, the loop's head, through
+  when): the interpreter has taken the jump's poll, `jit::back_edge_ready`
+  has answered that the frame switches, the stretch has ended there
+  (`vm::Leave::BackEdge`), and the next one enters the code
+  (`jit::at_back_edge`) at the start of the jump's target, the loop's head, through
   the program-counter map every body has -- the entry a frame returned to
   already takes (`jit::resumed`, `entry_of_frame`), the twin's for a
   reified frame -- a back edge being a point where baseline code holds
@@ -10432,7 +10447,15 @@ sees.
 - **A frame that left its machine code at a poll goes back into it** once
   the safepoint is served, at the poll's program counter, a loop's head:
   without it a loop that allocates would run interpreted from its first
-  scavenge to its frame's return. Cog never leaves at a poll -- its
+  scavenge to its frame's return. So does a frame an interpreted backward
+  jump stopped at a safepoint, when the jump would have switched it: the
+  stretch leaves for either at the loop's head
+  (`vm::Leave::SafepointAtLoopHead`), wherever the stop reached the run
+  loop -- the stretch's own entry into machine code, a push's or a
+  returned-to frame's within it, a called body's stop below the
+  interpreter's send -- and `vm::after_safepoint` asks
+  `jit::back_edge_ready`, which counts the jump the safepoint stopped as
+  any other. Cog never leaves at a poll -- its
   backward jump calls the interrupt check's trampoline, which returns
   into the code (`cogitX64SysV.c:38851-38858`) -- but here a safepoint is
   the run loop's alone, so the poll exits, and the run loop enters the
@@ -10550,17 +10573,24 @@ activation" above); one it inlines creates neither.
 
 ## The baseline JIT's foundation
 
-Road step 8's first four stages are built ("Planned: the baseline JIT",
+Road step 8's first five stages are built ("Planned: the baseline JIT",
 "Stages" below): the code zone and the x64 encoder; the entry, the exit
 and the instructions without a send; sends and the inline caches in
 machine code -- with the entry at an interpreter's send, which calls a
 compiled callee as a compiled send does ("The entry at a send" below);
-and closures, non-local return, allocation and the write barrier, with
+closures, non-local return, allocation and the write barrier, with
 the reclamation of everything the JIT and the tables beside the object
 space grow ("Stage 4: closures, non-local return, allocation and the
-barrier", "The code zone" below).
-On x64 a body is compiled at its second entry, and every compiled body
-is entered wherever it runs: at a send, a push and a frame returned to.
+barrier", "The code zone" below); and on-stack replacement at an
+interpreted backward jump, the return into machine code after a poll's
+safepoint and the one compare at a compiled push ("When a body is
+compiled", "Polls and the depth check" below; "Between the tiers" and
+"Safepoints and the depth limit" above).
+On x64 a body is compiled at its second entry, or at the 40th backward
+jump the interpreter runs in it, where its frame switches into the
+code at the loop's head, and every compiled body is entered wherever it
+runs: at a send, a push, a frame returned to and an interpreted
+backward jump.
 Its machine
 code runs until an instruction it cannot carry out -- one with no
 template, a send whose call is refused, a non-local return it cannot
@@ -10571,12 +10601,13 @@ depth of compiled frames materializes all of them before the interpreter
 runs. Only x64 has an encoder: the JIT is compiled where
 `crates/ns-runtime/build.rs` sets `cfg(ns_jit)`, on x64 alone, the one
 line the AArch64 port changes; elsewhere `jit::available` answers `false`
-and every body stays interpreted. What the design names beyond the four
-stages -- on-stack replacement, the register cache, the AArch64 encoder
--- is still planned. "What allocation and the barrier in machine code
-moved", "What closures in machine code moved", "What non-local return
-in machine code moved" and "What reclamation moved" have the
-measurements of stage 4's parts, "What the entry at a send moved" that
+and every body stays interpreted. What the design names beyond the five
+stages -- the register cache, the AArch64 encoder -- is still planned.
+"What on-stack replacement moved" has the measurement of stage 5, the
+depth count kept in a register among it, "What allocation and the
+barrier in machine code moved", "What closures in machine code moved",
+"What non-local return in machine code moved" and "What reclamation
+moved" those of stage 4's parts, "What the entry at a send moved" that
 of the entry, "What sends in machine code moved" that of stage 3, "What
 the baseline JIT's foundation moved" that of the first two.
 
@@ -11033,7 +11064,9 @@ sends and the inline caches in machine code.
   2026-10-28): the call hands the callee's receiver and current class in fixed
   registers (`Roles::callee_receiver`, `callee_class`) and writes nothing
   into the callee's frame; the callee's prologue checks the depth count
-  against `DepthLimit`, the safepoint request and the frame's end against
+  against `DepthLimit`, which a pending safepoint request lowers to 0, so
+  that the one compare refuses the call for the depth and the request
+  alike ("Polls and the depth check" below), and the frame's end against
   `OrdinaryStackEnd`, refusing the call with `ExitKind::PushRefused`
   before anything is written when one fails -- but a frame past the
   ordinary end calls the growth leaf first (`jit::leaves::grow_stack`,
@@ -11786,9 +11819,20 @@ templates that read and write the slots, then the cache.
 - **On-stack replacement at a back edge**: an interpreted backward jump
   in a body with machine code in this zone switches to it at once,
   counting nothing; in a body without, it counts the body's back jumps,
-  and the 40th compiles the body, synchronously, and switches, as Cog
+  and the 40th (`jit::COMPILE_AT_BACK_JUMP`) compiles the body,
+  synchronously, and switches, as Cog
   does at its 40 back jumps (`MinBackwardJumpCountForCompile`,
-  `cointerp.c:218`, `:2759`, `:8379-8409`), which compiles there too. The
+  `cointerp.c:218`, `:2759`, `:8379-8409`), which compiles there too.
+  The interpreter's backward jump pays one load and one compare inline
+  (`JitSlot::back_edge_is_armed`, true while the body counts its entries
+  or is compiled); the count, the compile and the question whether the
+  frame can enter -- its feedback base the body's, the twin for a
+  reified frame, room on the native stack -- are `jit::back_edge_ready`'s,
+  out of line, and the stretch ends only when it answers yes. A frame
+  that cannot enter, or a compile the exhausted zone holds, makes the
+  body wait as many back jumps again before it tries, so that a loop that
+  never switches pays no try at every turn; a backward jump a safepoint
+  stopped counts as any other ("Between the tiers" above). The
   counter is the body's, beside its count of entries in its `JitSlot`,
   as V8's budget is its function's (`FeedbackCell`,
   `src/interpreter/interpreter-assembler.cc:1179-1206`) and HotSpot's
@@ -12104,8 +12148,15 @@ compares against its constants and never reads the word. A back edge
 compares against the request word itself, one compare,
 as Cog's backward jumps check `stackLimit` (`:38851-38858`); V8 polls at
 a back edge only when its budget runs out
-(`src/interpreter/interpreter-generator.cc:2520-2521`). Whether the depth
-count lives in a machine register is measured.
+(`src/interpreter/interpreter-generator.cc:2520-2521`). A back edge's
+poll that finds a request exits at the loop's head
+(`vm::Leave::SafepointAtLoopHead`, as an interpreted backward jump that
+finds one leaves its stretch), and once the safepoint is served the
+frame goes back into its machine code there (`vm::after_safepoint`,
+`JitStatistics::safepoint_resumptions`; "Between the tiers" above). The
+depth count stays in its machine word: kept in `rbp` it moved the mean
+within noise and one program beyond it, slower ("Safepoints and the
+depth limit" above).
 
 ### What the templates emit inline
 
@@ -12535,11 +12586,15 @@ above; "What allocation and the barrier in machine code moved", "What
 closures in machine code moved", "What non-local return in machine code
 moved", "What reclamation moved"), which made a closure's activation a
 compiled call and so removed the bridge's cost from every block a
-compiled send or an interpreted `value` send activates. The fifth -- on-stack replacement at a back edge, the polls,
-and whether the depth count lives in a machine register -- is next
-([OPEN-WORK.md](../OPEN-WORK.md), "Next"; "When a body is compiled",
-"Polls and the depth check" above, "Between the tiers" and "Safepoints
-and the depth limit" in "Planned: the deoptimization contract").
+compiled send or an interpreted `value` send activates. The fifth is
+built too: on-stack replacement at an interpreted backward jump, the
+return into machine code after a poll's safepoint, the one compare at
+a compiled push, and the depth count measured in `rbp` and left in its
+machine word ("When a body is compiled", "Polls and the depth check"
+above, "Between the tiers" and "Safepoints and the depth limit" in
+"Planned: the deoptimization contract"; "What on-stack replacement
+moved"). The register cache is next ([OPEN-WORK.md](../OPEN-WORK.md),
+"Next"; "The register cache" above).
 
 ## Decisions
 

@@ -15,23 +15,20 @@ when they were written.
 
 ## Next
 
-**Road step 8's fifth stage: on-stack replacement, the polls and the
-depth count's measurement** ([execution.md](design/execution.md),
-"Planned: the baseline JIT", "When a body is compiled", "Polls and the
-depth check", "Stages"; "Between the tiers" and "Safepoints and the
-depth limit" in "Planned: the deoptimization contract"): an interpreted
-frame becomes a baseline one in place at a backward jump whose per-frame
-counter trips, as Cog switches at its 40 back jumps, so that a hot loop
-in a method entered once -- a benchmark's main loop -- runs compiled; a compiled push's checks of the depth and of a
-safepoint request become one compare, a request lowering the limit as
-Cog's `stackLimit` does; and whether the depth count lives in a machine
-register while machine code runs, written back at the exit, or stays in
-the machine words, is measured.
+**Road step 8's sixth stage: the register cache**
+([execution.md](design/execution.md), "Planned: the baseline JIT", "The
+register cache", "Stages"): within a basic block the baseline keeps a
+body's registers, which are frame slots, in machine registers, and
+writes them back before every send, poll, merge point, exit and leaf
+call -- Cog's simulated stack and `ssFlushTo:` -- so that every compiled
+frame's registers still hold every value an observer can need; the
+templates read and write the slots today. `r13` and `rbp` play no role
+(`Roles::of`), `r13` kept for the cache.
 
-Its first four stages are built ("The baseline JIT's foundation",
+Its first five stages are built ("The baseline JIT's foundation",
 "Sends, returns and the exit that materializes", "The entry at a send",
 "Stage 4: closures, non-local return, allocation and the barrier", "The
-code zone"): `ns-memory`'s doubly mapped code zone and the entry into
+code zone", "When a body is compiled", "Polls and the depth check"): `ns-memory`'s doubly mapped code zone and the entry into
 machine code, `ns-assembler` with the x64 encoder, and in `jit/` the
 macro assembler of the VM's idioms and its register roles, the stubs and
 the baseline compiler's one exhaustive `match`; a cached send calls
@@ -56,10 +53,23 @@ with three builds a side, the geometric mean over twenty-three sources
 is 54.6% faster than `master` and 5.7% faster than stage 4's tree before
 the reclamation ("What reclamation moved"); `bench_megamorphic` (+2.8%),
 `bench_recursion` (+0.7%) and, against that tree, `bench_signal` (+0.9%)
-are slower, each item below. The stages after the fifth, each measured
-against the tree before it: the register cache; the AArch64 encoder
-under QEMU. Road step 8 as a whole, Cog's class, for x64 and arm64, is
-"The road to a high-performance VM" below.
+were slower, each item below. Stage 5 brought back into machine code
+the frames that ran interpreted to their return: an interpreted
+backward jump switches its frame into the body's machine code at the
+loop's head, the body compiled at its 40th such jump if it has none
+(`jit::back_edge_ready`, `jit::at_back_edge`), a frame that left its
+machine code for a poll's safepoint goes back into it once the
+safepoint is served, a compiled push makes one compare for the depth
+and a safepoint request, and the depth count, measured in `rbp`, stays
+in its machine word. Measured with three builds a side, the geometric
+mean over the twenty-three sources is 8.6% faster than `master`,
+stage 4's tree,
+`bench_megamorphic` 85.1%, `bench_new` 38.3%, Havlak 2.9% and DeltaBlue
+4.5%, Queens' +2.6% the code's placement ("What on-stack replacement
+moved"). The stages after the sixth, each measured against the tree
+before it: the AArch64 encoder under QEMU. Road step 8 as a whole,
+Cog's class, for x64 and arm64, is "The road to a high-performance VM"
+below.
 Road step 7 is complete: 7c wrote the contract the JIT tiers build
 to ([execution.md](design/execution.md), "Planned: the deoptimization
 contract"). The step between 7 and 8 is built: `Closure>>whileTrue:` and
@@ -401,12 +411,17 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   everything that grows, built (2026-11-01,
   [its plan](superpowers/plans/2026-10-30-0103-jit-closures.md); "Stage
   4: closures, non-local return, allocation and the barrier", "The code
-  zone"), stage 5 next ("Next" above).
-  Left to it, and measured: whether the depth count lives in a machine
-  register while machine code runs, written back at the exit, or stays in
-  memory ("Planned: the deoptimization contract", "Safepoints and the
-  depth limit"); whether a send calls through its cache cell or through a
-  patched direct call, which stage 3's measurement could not isolate
+  zone"), its fifth, on-stack replacement at an interpreted backward
+  jump, the return into machine code after a poll's safepoint and the
+  one compare at a compiled push, built (2026-11-03,
+  [its plan](superpowers/plans/2026-11-02-2051-jit-osr.md); "When a body
+  is compiled", "Polls and the depth check"), 8.6% faster than `master`
+  on the geometric mean over twenty-three sources and no program slower
+  but Queens, by the code's placement, the depth count left in its
+  machine word after `rbp` measured no faster ("What on-stack
+  replacement moved"), the register cache next ("Next" above).
+  Left to it, and measured: whether a send calls through its cache cell
+  or through a patched direct call, which stage 3's measurement could not isolate
   ("What sends in machine code moved"); and the code zone's default size,
   16 MiB today (`jit::DEFAULT_ZONE_BYTES`), a first guess, which no
   measured program fills: only CD compacts it, six times in a run, all of
@@ -805,9 +820,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   code moved" measured +3.1% against `master` (not reproduced in a second
   sitting), and "What reclamation moved" +2.8% (4.744 against 4.613 ms,
   2026-11-01), with stage 4's tree before the reclamation already +2.7%
-  in the same sitting and level with the head (+0.1%); its loop runs
-  interpreted, so the cost lies in the interpreter's send or its layout.
-  To be diagnosed. [object-model.md](design/object-model.md), "What a
+  in the same sitting and level with the head (+0.1%); its loop ran
+  interpreted there, so the cost lies in the interpreter's send or its
+  layout. Since stage 5 its loop runs in machine code, 85.1% faster than
+  `master` ("What on-stack replacement moved" in
+  [execution.md](design/execution.md)), so the cost is the interpreter's
+  alone, to be diagnosed with the JIT off. [object-model.md](design/object-model.md), "What a
   slot access checks"; [execution.md](design/execution.md), "What
   reclamation moved".
 - **A mirror walks again what it walked a moment ago** (2026-10-18): a
@@ -1667,6 +1685,17 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **A scavenge served at a loop's head costs a second round trip**
+  (2026-11-03). A served scavenge leaves the safepoint request set until
+  the next slow path clears it (`Interpreter::safepoint`), so a frame the
+  run loop sends back into machine code after it stops again at its first
+  poll, and comes back in once more; under a stress mode that holds the
+  request, every turn of a compiled loop is such a round trip, each exit
+  spending the body's budget. Unmeasured; clearing the request with the
+  scavenge would remove it. A body's count of back jumps is the body's,
+  so a frame that cannot switch delays another frame of the same body by
+  up to 39 jumps, also unmeasured ([execution.md](design/execution.md),
+  "When a body is compiled").
 - **Whether the baseline compiler joins road step 9's compiler thread is
   undecided** (2026-11-02). Road step 9's optimizing compiler runs on a
   thread of its own, and V8 compiles even its baseline code there;
@@ -2473,6 +2502,20 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- Road step 8's fifth stage's (noted 2026-11-02 to 2026-11-03): the
+  wait of a body whose frame could not switch at a backward jump, or
+  whose compile the exhausted zone held (`jit::back_edge_ready`), has no
+  test of its own; `a_compiled_call_at_a_requested_safepoint_is_refused`
+  (`crates/ns-runtime/tests/jit.rs`) passes with the prologue's separate
+  check of the request as with the one compare, a guard against a
+  regression only; `compiling_takes_time_that_is_counted` was never seen
+  failing; the four ways a stretch that left for a safepoint at a loop's
+  head goes back into machine code are pinned together, by the count of
+  resumptions, which cannot tell one way from another, since the
+  request a served scavenge leaves set makes the next backward jump or
+  poll stop again (`a_called_body_goes_back_into_machine_code_after_its_safepoint`);
+  and the stub tests' harness writes `SafepointRequested` without
+  `DepthLimit` (`jit/stubs.rs`), which no test reads today.
 - The `ByteArray` sub-project's (noted 2026-10-13): the movers' test
   (`heap.rs`,
   `an_aligned_byte_array_keeps_its_bytes_through_every_mover_at_every_position`)
