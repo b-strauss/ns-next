@@ -426,6 +426,47 @@ fn benchmark_rejects_zero_iterations() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("iterations"));
 }
 
+/// `--jit-statistics` prints one `jit: ` line to stderr after the run and
+/// leaves stdout as it was.
+#[test]
+fn jit_statistics_print_one_line_to_stderr() {
+    let program = common::golden("language/control-flow/while_loop");
+    let plain = ns_next().arg("run").arg(&program).output().unwrap();
+    let counted = ns_next()
+        .arg("run")
+        .arg(&program)
+        .arg("--jit-statistics")
+        .output()
+        .unwrap();
+    assert_eq!(counted.status.code(), plain.status.code());
+    assert_eq!(counted.stdout, plain.stdout);
+    let stderr = String::from_utf8_lossy(&counted.stderr);
+    let lines: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("jit: "))
+        .collect();
+    assert_eq!(lines.len(), 1, "stderr: {stderr}");
+    // The words are fixed, only the numbers vary.
+    let mut shape = String::new();
+    let mut in_digits = false;
+    for character in lines[0].chars() {
+        if character.is_ascii_digit() || (in_digits && character == '.') {
+            if !in_digits {
+                shape.push('#');
+            }
+            in_digits = true;
+        } else {
+            in_digits = false;
+            shape.push(character);
+        }
+    }
+    assert_eq!(
+        shape,
+        "jit: # bodies, # twins compiled in # ms; # back-edge switches, \
+         # resumptions after a safepoint, # exits"
+    );
+}
+
 /// `--collector-statistics` prints the collector's counts and pauses to
 /// stderr after the timed runs, exactly as `--cache-statistics` prints the
 /// inline caches' sizes there. This is the one collector test that can run

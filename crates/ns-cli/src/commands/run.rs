@@ -12,6 +12,7 @@ pub(crate) fn execute(
     lowering: ns_runtime::Lowering,
     cache_statistics: bool,
     collector_statistics: bool,
+    jit_statistics: bool,
     script: Option<&str>,
     program_arguments: &[String],
 ) -> ExitCode {
@@ -37,6 +38,9 @@ pub(crate) fn execute(
     }
     if collector_statistics {
         entry::print_collector_statistics(&loaded.interpreter.collector_statistics());
+    }
+    if jit_statistics {
+        entry::print_jit_statistics(&loaded.interpreter.jit_statistics());
     }
     entry::report_entry_send(result)
 }

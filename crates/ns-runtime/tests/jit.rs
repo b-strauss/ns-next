@@ -107,6 +107,11 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         revived_bodies: after.revived_bodies - before.revived_bodies,
         abandoned_entries_out_of_line: after.abandoned_entries_out_of_line
             - before.abandoned_entries_out_of_line,
+        back_edge_switches: after.back_edge_switches - before.back_edge_switches,
+        back_edge_stretch_exits: after.back_edge_stretch_exits - before.back_edge_stretch_exits,
+        back_edge_compiles: after.back_edge_compiles - before.back_edge_compiles,
+        safepoint_resumptions: after.safepoint_resumptions - before.safepoint_resumptions,
+        compile_nanoseconds: after.compile_nanoseconds - before.compile_nanoseconds,
     }
 }
 
@@ -124,6 +129,20 @@ ns_runtime::for_each_lowering! {
         let done = since(interpreter.jit_statistics(), before);
         assert!(taken_up(done) >= 1, "`answer`, entered three times, is taken up");
         assert_eq!(done.refused_bodies, 0);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// The wall time of the baseline compiler is counted, so that a
+    /// compiler thread of its own can be judged by what it would take off
+    /// the mutator.
+    fn compiling_takes_time_that_is_counted(lowering) {
+        let (mut interpreter, class) = load_with(THREE_ANSWERS, lowering);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 42);
+        let done = since(interpreter.jit_statistics(), before);
+        assert!(done.compiled_bodies >= 1, "`answer` is compiled");
+        assert!(done.compile_nanoseconds > 0);
     }
 }
 
@@ -321,7 +340,9 @@ ns_runtime::for_each_lowering! {
     /// loop is all templates, so its code can jump back before it exits,
     /// and the second run -- `run`'s second entry -- compiles it and enters
     /// its machine code. The reference lowering's loop starts with a send,
-    /// so there `run` exits at once and is never entered.
+    /// so there `run` exits at once and is never entered. The backward
+    /// jumps' trigger is set past the loop's 1,000 turns, so that the
+    /// first run's loop does not compile `run` first (`jit::at_back_edge`).
     fn a_body_that_loops_is_entered_at_its_second_entry(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -339,6 +360,7 @@ ns_runtime::for_each_lowering! {
             ) : ()
         "};
         let (mut interpreter, class) = load_with(source, lowering);
+        interpreter.set_jit_compile_at_back_jump(u32::MAX);
         assert_eq!(run(&mut interpreter, &class), 500_500);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 500_500);
@@ -485,36 +507,226 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A loop of 100,000 turns, each allocating an `Array` through the
+/// generic leaf, so that the allocations fill eden, whose request for a
+/// scavenge only a back edge's poll can notice in a loop that makes no
+/// send.
+const ALLOCATING_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          index ::= 0.
+          last
+        |
+        [index < 100000] whileTrue: [
+          last:: {index. index. index. index. index. index. index. index. index. index. index. index. index. index. index. index}.
+          index:: index + 1.
+        ].
+        ^(last at: 16) + index.
+      )
+    ) : ()
+"};
+
 ns_runtime::for_each_lowering! {
-    /// Each iteration allocates an `Array` through the generic leaf, and
-    /// the allocations fill eden, whose request for a scavenge only a back
-    /// edge's poll can notice in a loop that makes no send: the machine
-    /// code exits there, and the interpreter takes the safepoint and runs
-    /// the rest of the loop.
+    /// The machine code exits at the poll that found the scavenge
+    /// requested, the interpreter takes the safepoint, and the frame goes
+    /// back into the machine code at the loop's head, where the rest of
+    /// the loop runs.
     fn a_back_edge_poll_takes_the_safepoint(lowering) {
-        let source = indoc! {"
-            class Subject = Object new () (
-              public run = (
-                |
-                  index ::= 0.
-                  last
-                |
-                [index < 100000] whileTrue: [
-                  last:: {index. index. index. index. index. index. index. index. index. index. index. index. index. index. index. index}.
-                  index:: index + 1.
-                ].
-                ^(last at: 16) + index.
-              )
-            ) : ()
-        "};
-        let (mut interpreter, class) = load_with(source, lowering);
+        let (mut interpreter, class) = load_with(ALLOCATING_LOOP, lowering);
         interpreter.set_jit_stress(true);
+        interpreter.set_jit_counting(true);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), 199_999);
         let done = since(interpreter.jit_statistics(), before);
         if lowering == Lowering::Optimized {
             assert!(done.safepoint_exits >= 1, "a back edge found the scavenge requested");
         }
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.safepoint_resumptions >= 1,
+                "the frame went back into machine code after a safepoint: {done:?}"
+            );
+            assert!(
+                done.machine_back_edges >= 99_000,
+                "the loop closes in machine code after its scavenges: {done:?}"
+            );
+            assert_eq!(
+                done.safepoint_resumptions, done.safepoint_exits,
+                "every poll's exit went back into machine code: {done:?}"
+            );
+        }
+    }
+}
+
+/// `ALLOCATING_LOOP` with a send to a compiled method in each turn, right
+/// after the allocation that may request a scavenge.
+const ALLOCATING_LOOP_WITH_A_CALL: &str = indoc! {"
+    class Subject = Object new () (
+      successorOf: value = (
+        | successor |
+        successor:: value + 1.
+        ^successor.
+      )
+      public run = (
+        |
+          index ::= 0.
+          last
+        |
+        [index < 100000] whileTrue: [
+          last:: {index. index. index. index. index. index. index. index. index. index. index. index. index. index. index. index}.
+          index:: self successorOf: index.
+        ].
+        ^(last at: 16) + index.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A compiled call made while a scavenge is requested is refused by
+    /// its callee's one depth compare, the request having lowered the
+    /// depth limit word, and the interpreter takes the push.
+    fn a_compiled_call_at_a_requested_safepoint_is_refused(lowering) {
+        let (mut interpreter, class) = load_with(ALLOCATING_LOOP_WITH_A_CALL, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_jit_counting(true);
+        let before = interpreter.jit_statistics();
+        assert_eq!(run(&mut interpreter, &class), 199_999);
+        let done = since(interpreter.jit_statistics(), before);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.pushes_refused >= 1,
+                "a call found the scavenge requested: {done:?}"
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// An interpreted backward jump that finds a safepoint requested stops
+    /// the frame at its loop's head, and once the safepoint is served the
+    /// frame switches into machine code there, as the jump would have
+    /// switched it: the counting loop sent once, its body compiled at its
+    /// first interpreted backward jump, run while the cache stress mode
+    /// holds the request, so that no interpreted backward jump gets past
+    /// the safepoint's test -- every compile at a backward jump, and every
+    /// switch, is the safepoint's. The allocating loop, with no request
+    /// held, switches at its first backward jump, its scavenges' requests
+    /// found by machine code's polls.
+    fn an_interpreted_back_jump_at_a_safepoint_switches_after_it(lowering) {
+        let (mut interpreter, class) = load_with(ALLOCATING_LOOP, lowering);
+        interpreter.set_jit_compile_at_back_jump(1);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 199_999);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.back_edge_switches >= 1, "the frame switches: {done:?}");
+        }
+        #[cfg(debug_assertions)]
+        {
+            let (mut interpreter, class) = load_with(COUNTING_LOOP, lowering);
+            interpreter.set_jit_compile_at_back_jump(1);
+            interpreter.set_stress_caches(true);
+            let (answer, done) = run_measured(&mut interpreter, &class);
+            assert_eq!(answer, 500_500);
+            if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+                assert_eq!(
+                    done.back_edge_compiles, 1,
+                    "compiled after the first jump's safepoint: {done:?}"
+                );
+                assert_eq!(
+                    done.back_edge_stretch_exits, 0,
+                    "no interpreted jump got past the request: {done:?}"
+                );
+                assert!(
+                    done.safepoint_resumptions >= 1,
+                    "the frame went into machine code after the safepoint: {done:?}"
+                );
+            }
+        }
+    }
+}
+
+/// `ALLOCATING_LOOP` in a method of its own, `allocate:`, sent by
+/// `allocateFrom:`, which `run` sends forty times from a loop the
+/// interpreter runs: `allocate:`'s machine code runs below
+/// `allocateFrom:`'s, called through its cell, or below the interpreter's
+/// send. From the twentieth round on, `allocate:` first sends `start`,
+/// whose machine code exits at its send of a message the class's
+/// `doesNotUnderstand:` answers with 0, so that `allocate:`'s frame,
+/// materialized with it, goes on in its machine code when `start`
+/// returns to it, and its loop runs there.
+const ALLOCATING_CALLEE: &str = indoc! {"
+    class Subject = Object new () (
+      allocate: round = (
+        |
+          index ::= round < 20 ifTrue: [0] ifFalse: [self start].
+          last
+        |
+        [index < 10000] whileTrue: [
+          last:: {index. index. index. index. index. index. index. index. index. index. index. index. index. index. index. index}.
+          index:: index + 1.
+        ].
+        ^(last at: 16) + index.
+      )
+      allocateFrom: round = (
+        ^self allocate: round
+      )
+      start = (
+        ^self unknownStart
+      )
+      public doesNotUnderstand: message = (
+        ^0
+      )
+      public run = (
+        |
+          sum ::= 0.
+          round ::= 0.
+        |
+        [round < 40] whileTrue: [
+          sum:: sum + (self allocateFrom: round).
+          round:: round + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// A poll that finds a scavenge requested in a called body stops the
+/// body's frame at its loop's head, and once the safepoint is served the
+/// frame goes back into machine code there, wherever the stop reached the
+/// run loop: as the stop of a body called below a compiled sender, the
+/// exit materializing both frames, or below the interpreter's send, in the
+/// first twenty rounds, and as the stop of the machine code a frame went
+/// on in when a send returned to it, in the last twenty. The safepoint
+/// clears the request it served, so that the turn after it finds no poll
+/// to stop at: a scavenge takes one poll's exit at most, and each such
+/// exit is a called body's stop that goes back in here, since no request
+/// left standing stops the frame again for another way back to take it.
+/// Only the optimized lowering: the reference lowering's sends exit, and
+/// its answer is the same.
+#[test]
+fn a_called_body_goes_back_into_machine_code_after_its_safepoint() {
+    let (mut interpreter, class) = load_with(ALLOCATING_CALLEE, Lowering::Optimized);
+    // `run` stays interpreted, its sends calling machine code.
+    interpreter.set_jit_compile_at_back_jump(u32::MAX);
+    interpreter.set_jit_counting(true);
+    let scavenges = interpreter.collector_statistics().scavenges;
+    let (answer, done) = run_measured(&mut interpreter, &class);
+    let scavenges = interpreter.collector_statistics().scavenges - scavenges;
+    assert_eq!(answer, 40 * 19_999);
+    if !a_stress_mode_is_on() {
+        assert!(
+            done.safepoint_exits >= 1,
+            "a called body's poll found the scavenge requested: {done:?}"
+        );
+        assert!(
+            u64::try_from(scavenges).expect("a small count") >= done.safepoint_exits,
+            "no poll found a served request still standing: {scavenges} scavenges, {done:?}"
+        );
+        assert_eq!(
+            done.safepoint_resumptions, done.safepoint_exits,
+            "every poll's exit went back into machine code: {done:?}"
+        );
     }
 }
 
@@ -2628,7 +2840,11 @@ ns_runtime::for_each_lowering! {
     /// (`Interpreter::set_jit_futures_exit`), so it exits at once -- is
     /// refused by the miss leaf, which writes the cells the decision went
     /// through afresh, naming the refusing stub: the site's later sends
-    /// exit at once rather than calling the miss leaf again.
+    /// exit at once rather than calling the miss leaf again. `run` sends
+    /// it once, before its loop, which only makes `run` worth compiling:
+    /// a call in the loop would leave machine code at every turn, the
+    /// loop's backward jump switching back in (`jit::at_back_edge`), until
+    /// `run` had spent its exit budget and were abandoned.
     fn a_callee_never_compiled_is_refused_without_the_miss_leaf(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -2640,11 +2856,11 @@ ns_runtime::for_each_lowering! {
               )
               public run = (
                 |
-                  sum ::= 0.
+                  sum ::= self step: 0.
                   index ::= 0.
                 |
                 [index < 100] whileTrue: [
-                  sum:: sum + (self step: index).
+                  sum:: sum + index.
                   index:: index + 1.
                 ].
                 ^sum.
@@ -2653,10 +2869,10 @@ ns_runtime::for_each_lowering! {
         "};
         let (mut interpreter, class) = load_with(source, lowering);
         interpreter.set_jit_futures_exit(true);
-        assert_eq!(run(&mut interpreter, &class), 5050);
-        assert_eq!(run(&mut interpreter, &class), 5050);
+        assert_eq!(run(&mut interpreter, &class), 4951);
+        assert_eq!(run(&mut interpreter, &class), 4951);
         let (answer, done) = run_measured(&mut interpreter, &class);
-        assert_eq!(answer, 5050);
+        assert_eq!(answer, 4951);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert!(done.machine_entries >= 1, "`run`, which loops, is entered");
             assert_eq!(done.send_exits, 1, "the call of `step:` is refused");
@@ -2668,10 +2884,14 @@ ns_runtime::for_each_lowering! {
 /// `count` classes sharing a `step:` whose body makes a future at once, so
 /// that it exits at once and is never compiled once the test hook has
 /// machine code leave a future's making to the interpreter
-/// (`Interpreter::set_jit_futures_exit`) -- sent at one site of a
-/// loop in turn, each run starting at the next class: with two to four the
+/// (`Interpreter::set_jit_futures_exit`) -- sent at one site once per run,
+/// before `run`'s loop, each run to the next class: with two to four the
 /// site is polymorphic, its callee reached through its block's slots; with
-/// five or more megamorphic, reached through the global cache's rows.
+/// five or more megamorphic, reached through the global cache's rows. The
+/// loop only makes `run` worth compiling: a call in it would leave machine
+/// code at every turn, the loop's backward jump switching back in
+/// (`jit::at_back_edge`), until `run` had spent its exit budget and were
+/// abandoned.
 fn refused_through(count: usize) -> String {
     let fills: String = (1..=count)
         .map(|index| format!("      steppers at: {index} put: Stepper{index} new.\n"))
@@ -2700,8 +2920,9 @@ fn refused_through(count: usize) -> String {
                   index ::= 0.
                 |
                 start: start + 1.
+                sum:: (steppers at: start \\\\ {count} + 1) step: 0.
                 [index < 100] whileTrue: [
-                  sum:: sum + ((steppers at: index + start \\\\ {count} + 1) step: index).
+                  sum:: sum + index.
                   index:: index + 1.
                 ].
                 ^sum.
@@ -2737,12 +2958,12 @@ ns_runtime::for_each_lowering! {
                 })
             };
             for _ in 0..count + 2 {
-                assert_eq!(run_once(&mut interpreter), 5050);
+                assert_eq!(run_once(&mut interpreter), 4951);
             }
             // A full turn of the classes, each run's first call another's.
             let before = interpreter.jit_statistics();
             for _ in 0..count {
-                assert_eq!(run_once(&mut interpreter), 5050);
+                assert_eq!(run_once(&mut interpreter), 4951);
             }
             let done = since(interpreter.jit_statistics(), before);
             if let Err(message) = interpreter.verify_cells() {
@@ -2789,8 +3010,10 @@ const VECTORS: usize = 3000;
 /// block of its branch never taken writes every local; it writes two of
 /// them and answers their sum read back from the vector. `run` sends it
 /// `VECTORS` times from a loop and answers what the first and the last
-/// vector answered. `run` is entered once, so it stays interpreted and
-/// takes every safepoint the allocations request in its own loop, and
+/// vector answered. `run` is entered once, and the backward jumps'
+/// trigger is set past its loop's turns (`run_vectors`), so it stays
+/// interpreted and takes every safepoint the allocations request in its
+/// own loop, and
 /// `fill:`, compiled at its second entry, runs from its first instruction
 /// to its return without a poll.
 fn vectors_source() -> String {
@@ -2830,6 +3053,7 @@ fn vectors_source() -> String {
 fn run_vectors(jit: bool) -> (i64, JitStatistics, ns_runtime::HeapStatistics, usize) {
     let (mut interpreter, class) = load_with(&vectors_source(), Lowering::Optimized);
     interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_compile_at_back_jump(u32::MAX);
     let before = interpreter.jit_statistics();
     let scavenges = interpreter.collector_statistics().scavenges;
     let answer = run(&mut interpreter, &class);
@@ -2863,12 +3087,13 @@ fn machine_code_allocates_past_eden_as_the_interpreter_does() {
         );
         assert_eq!(compiled_scavenges, interpreted_scavenges);
         assert_eq!(compiled_heap, interpreted_heap);
-        // `fill:` runs to its return, but for its call that finds a
-        // scavenge requested: its prologue refuses it, and `run` pushes it
-        // and takes the safepoint.
+        // `fill:` runs to its return at every call: the scavenge its
+        // allocation requests is served at `run`'s next backward jump,
+        // which clears the request before the next call, so no prologue
+        // finds it standing and refuses the call.
         assert_eq!(
-            statistics.exits, compiled_scavenges as u64,
-            "only the call at each requested scavenge leaves machine code"
+            statistics.exits, 0,
+            "no call leaves machine code: {statistics:?}"
         );
         assert_eq!(statistics.safepoint_exits, 0, "`fill:` has no poll");
     }
@@ -3863,13 +4088,15 @@ ns_runtime::for_each_lowering! {
 }
 
 /// A home an interpreted frame's send called through the call stub: `run`,
-/// sent once, stays interpreted, and calls `find:`, compiled at its second
+/// sent once, stays interpreted -- the backward jumps' trigger set past
+/// its loop -- and calls `find:`, compiled at its second
 /// entry, through the call stub, so that each later `^` out of `do:` is
 /// cut into the call stub, which hands the value to `run`'s send as
 /// `find:`'s return would.
 #[test]
 fn a_non_local_return_into_an_interpreted_caller_cuts_into_the_call_stub() {
     let (mut interpreter, class) = load_with(FOUND, Lowering::Optimized);
+    interpreter.set_jit_compile_at_back_jump(u32::MAX);
     let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     assert_eq!(send_unary(&mut interpreter, &subject, "fill"), 100);
     let depth = interpreter.enter(|mutator| mutator.heap().counted_depth());
@@ -5491,9 +5718,18 @@ ns_runtime::for_each_lowering! {
         }
         // `spin`, compiled right after `a`, runs its loop while the mode
         // compacts: it is active, so it survives, and slides down over
-        // `a`, which no activation runs, freed below it.
+        // `a`, which no activation runs, freed below it. The mode holds
+        // the safepoint request, so that every interpreted backward jump
+        // of `spin`'s first send stops at a safepoint, and a backward jump
+        // stopped by a safepoint counts toward the body's compile as any
+        // other does: the loop's head is where the frame would have
+        // switched had nothing been requested (`vm::after_safepoint`). The
+        // backward jumps' trigger is set past `spin`'s turns here, so
+        // that the first send leaves `spin` uncompiled and its second
+        // entry compiles it right after `a`.
         let (mut interpreter, class) = load_with(MOVING, lowering);
         interpreter.set_stress_zone(true);
+        interpreter.set_jit_compile_at_back_jump(u32::MAX);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let before = interpreter.jit_statistics();
         assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1999 * 1000);
@@ -5807,7 +6043,9 @@ ns_runtime::for_each_lowering! {
     /// returned, in a program that allocates nothing and so never runs a
     /// full collection: the compiles the exhausted zone holds ask for a
     /// compaction again, which frees the recursion's idle bodies, and a
-    /// method hot only afterwards is compiled and runs in machine code.
+    /// method hot only afterwards is compiled and runs in machine code,
+    /// every call of it counted (`Interpreter::set_jit_counting`), whether
+    /// its caller calls it from machine code or from the interpreter.
     fn an_exhausted_zone_compiles_again_without_a_collection(lowering) {
         let count = 300;
         let source = chain_of(count).replacen(
@@ -5817,6 +6055,7 @@ ns_runtime::for_each_lowering! {
         );
         let (mut interpreter, class) = load_with(&source, lowering);
         interpreter.set_jit_zone_bytes(16_384);
+        interpreter.set_jit_counting(true);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let collections = interpreter.collector_statistics().collections;
         let before = interpreter.jit_statistics();
@@ -5848,10 +6087,17 @@ ns_runtime::for_each_lowering! {
                 .is_some(),
             "`hot` is compiled"
         );
+        // `hot` is called from `runHot:`'s machine code through its cell
+        // where the zone had room for `runHot:` at its loop's 40th backward
+        // jump, and from the interpreter through the call stub otherwise:
+        // a debug build's larger machine code leaves no room for it.
         assert!(
-            last.machine_entries + last.called_entries >= 10,
+            last.compiled_calls + last.called_entries >= 10,
             "`hot` runs in machine code: {last:?}"
         );
+        // A compiled call its callee refused would be counted too, and
+        // would leave the machine code by an exit.
+        assert_eq!(last.exits, 0, "no call was refused: {last:?}");
     }
 }
 
@@ -5986,10 +6232,16 @@ ns_runtime::for_each_lowering! {
             assert_eq!(decayed.revived_bodies, 1, "`leave:` is revived");
             // The miss refuses the first call, which counts nothing; the
             // interpreter's push of `leave:` counts its first entry, and the
-            // rest of the run, interpreted, calls it once compiled.
+            // loop's next backward jump switches back into `callLeave:`'s
+            // machine code (`jit::at_back_edge`), whose next call through
+            // the miss stub compiles `leave:` and calls it.
             assert!(
-                first.called_entries >= 1,
-                "the interpreted rest of the run called `leave:`'s machine code: {first:?}"
+                first.back_edge_switches >= 1,
+                "the rest of the run went back into machine code: {first:?}"
+            );
+            assert!(
+                first.compiled_calls >= 1,
+                "and called `leave:`'s machine code: {first:?}"
             );
             assert_eq!(second.send_exits, 0, "no call is refused: {second:?}");
             assert_eq!(second.exits, 0, "nothing leaves machine code");
@@ -6148,7 +6400,13 @@ ns_runtime::for_each_lowering! {
     /// never decay; a hot body that leaves machine code once in a thousand
     /// calls is abandoned at its sixty-fourth exit all the same, and
     /// revived once it has been entered interpreted often enough, so that
-    /// a long run goes on in machine code.
+    /// a long run goes on calling its machine code. Its caller, entered
+    /// once and compiled by on-stack replacement, spends its own exit
+    /// budget on the refused calls while the callee is abandoned, and is
+    /// abandoned for the rest of the test: the callee's machine code is
+    /// then called from the interpreter through the call stub, which the
+    /// last run's assertion admits beside a call through the caller's cell
+    /// (`docs/OPEN-WORK.md`, "Known defects and gaps").
     fn a_rare_exit_without_allocation_does_not_end_a_long_run_interpreted(lowering) {
         let (mut interpreter, class) = load_with(ALLOCATION_FREE, lowering);
         interpreter.set_jit_counting(true);
@@ -6173,10 +6431,14 @@ ns_runtime::for_each_lowering! {
                 last.exits, 0,
                 "the last thousand calls stay in machine code: {last:?}"
             );
+            // `run:exitEvery:`, compiled at its loop's 40th backward jump,
+            // spends its own budget on `hot:`'s refused calls while `hot:` is
+            // abandoned, and is abandoned in turn: it calls `hot:`'s machine
+            // code through its cell, or from the interpreter through the
+            // call stub.
             assert!(
-                last.compiled_calls >= 1000,
-                "`run:exitEvery:` calls `hot:` through its cell: {}",
-                last.compiled_calls
+                last.compiled_calls + last.called_entries >= 1000,
+                "every call of `hot:` enters its machine code: {last:?}"
             );
         }
     }
@@ -6553,6 +6815,291 @@ ns_runtime::for_each_lowering! {
             );
             assert!(sizes.zone_committed_bytes < filled, "the zone shrank");
             assert!(after.decommits > before.decommits, "the compaction decommitted");
+        }
+    }
+}
+
+/// A summing loop of 100,000 turns in `run`, which the host sends once:
+/// its body is never entered a second time, so only its backward jumps can
+/// bring its loop into machine code.
+const LOOP_ENTERED_ONCE: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 100000] whileTrue: [
+          sum:: sum + index.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// On-stack replacement: `run`'s interpreted loop counts its backward
+    /// jumps, the 40th compiles the body and the frame switches into its
+    /// machine code at the loop's head, where the rest of the loop runs.
+    /// The reference lowering sends `whileTrue:`, so its loop has no
+    /// backward jump.
+    fn a_loop_in_a_method_entered_once_runs_in_machine_code(lowering) {
+        let (mut interpreter, class) = load_with(LOOP_ENTERED_ONCE, lowering);
+        interpreter.set_jit_counting(true);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 5_000_050_000);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(done.back_edge_compiles, 1, "the 40th backward jump compiles `run`");
+            assert_eq!(done.back_edge_switches, 1, "and the frame switches once");
+            assert!(
+                done.machine_back_edges >= 99_000,
+                "the rest of the loop closes in machine code: {}",
+                done.machine_back_edges
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A body compiled while one of its frames runs interpreted: the
+    /// outer activation of `run:` sends itself once before its loop, and
+    /// that inner activation, the body's second entry, compiles it. The
+    /// outer frame, interpreted, switches into that machine code at its
+    /// loop's first backward jump, counting nothing and compiling nothing.
+    fn a_body_compiled_meanwhile_switches_at_its_next_back_jump(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              public run: depth = (
+                |
+                  sum ::= 0.
+                  index ::= 1.
+                |
+                depth > 0 ifTrue: [sum:: self run: depth - 1].
+                [index <= 1000] whileTrue: [
+                  sum:: sum + index.
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+              public run = (
+                ^self run: 1
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 1_001_000);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(
+                done.back_edge_switches >= 1,
+                "the outer frame switches: {}",
+                done.back_edge_switches
+            );
+            assert_eq!(done.back_edge_compiles, 0, "the inner entry compiled the body");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A loop whose every turn leaves machine code -- a send its receiver
+    /// answers in its `doesNotUnderstand:`, which machine code hands to the
+    /// interpreter -- switches back at each backward jump only until its
+    /// body has spent its exit budget: the JIT then abandons it, and the
+    /// rest of the 10,000 turns run interpreted, not an exit and an entry
+    /// each.
+    fn a_loop_that_always_exits_is_abandoned_not_reentered(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              public doesNotUnderstand: message = (
+                ^1
+              )
+              public run = (
+                |
+                  sum ::= 0.
+                  index ::= 0.
+                |
+                [index < 10000] whileTrue: [
+                  sum:: sum + self one.
+                  index:: index + 1.
+                ].
+                ^sum.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 10_000);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.abandoned_bodies >= 1, "`run` is abandoned: {done:?}");
+            assert!(
+                done.back_edge_switches <= 2 * 64,
+                "switches bounded by the exit budget: {}",
+                done.back_edge_switches
+            );
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A frame the interpreter reified -- its loop makes a block that
+    /// reads `index` on every turn -- switches into the body's twin, which
+    /// stores its sends' program counters and divorces it at its return.
+    fn a_reified_frame_switches_into_the_twin(lowering) {
+        let source = indoc! {"
+            class Subject = Object new (
+              |
+                last ::= nil.
+              |
+            ) (
+              public run = (
+                |
+                  sum ::= 0.
+                  index ::= 0.
+                |
+                [index < 10000] whileTrue: [
+                  last:: [index].
+                  sum:: sum + index.
+                  index:: index + 1.
+                ].
+                ^sum + last value.
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 50_005_000);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.compiled_twins >= 1, "the twin is compiled: {done:?}");
+            assert!(done.back_edge_switches >= 1, "the frame switches: {done:?}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A block's loop switches as a method's does: the block is entered
+    /// once, its 40th backward jump compiles it, records its machine entry
+    /// row and switches.
+    fn a_block_with_a_loop_entered_once_switches(lowering) {
+        let source = indoc! {"
+            class Subject = Object new () (
+              public run = (
+                ^[
+                  |
+                    sum ::= 0.
+                    index ::= 1.
+                  |
+                  [index <= 100000] whileTrue: [
+                    sum:: sum + index.
+                    index:: index + 1.
+                  ].
+                  sum
+                ] value
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load_with(source, lowering);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 5_000_050_000);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(done.back_edge_switches, 1, "{done:?}");
+            assert_eq!(done.back_edge_compiles, 1, "{done:?}");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// While the JIT is off a backward jump neither compiles nor switches:
+    /// its body is refused, as a push refuses it.
+    fn no_back_edge_switches_while_the_jit_is_off(lowering) {
+        let (mut interpreter, class) = load_with(LOOP_ENTERED_ONCE, lowering);
+        interpreter.set_jit_enabled(false);
+        let (answer, done) = run_measured(&mut interpreter, &class);
+        assert_eq!(answer, 5_000_050_000);
+        assert_eq!(done.back_edge_switches, 0);
+        assert_eq!(done.back_edge_compiles, 0);
+    }
+}
+
+/// `chain_of`'s recursion through `count` bodies, each looping 50 turns
+/// before it sends the next, so that its 40th backward jump compiles it,
+/// and the last sending `loop`, a loop of 10,000 turns: the first few
+/// bodies fill a small zone with code that stays active below the rest,
+/// so that every later body, `loop` among them, finds no room to compile
+/// into.
+fn chain_ending_in_a_loop(count: usize) -> String {
+    let methods: String = (0..count)
+        .map(|index| {
+            let next = if index + 1 == count {
+                "self loop".to_string()
+            } else {
+                format!("(self m{}) + 1", index + 1)
+            };
+            formatdoc! {"
+                  m{index} = (
+                    |
+                      index ::= 0.
+                    |
+                    [index < 50] whileTrue: [
+                      index:: index + 1.
+                    ].
+                    ^{next}
+                  )
+            "}
+        })
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {methods}  loop = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 10000] whileTrue: [
+              sum:: sum + 1.
+              index:: index + 1.
+            ].
+            ^sum
+          )
+          public run = (
+            ^self m0
+          )
+        ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// A loop whose body cannot switch into machine code -- the zone, full
+    /// of the active code of the chain below it, has no room to compile
+    /// it into -- counts its backward jumps out of line and tries again
+    /// only every 40th, and ends the run loop's stretch only to switch:
+    /// never at every turn of its 10,000.
+    fn a_loop_that_cannot_switch_never_leaves_its_stretch_at_every_turn(lowering) {
+        let count = 300;
+        let source = chain_ending_in_a_loop(count);
+        let (mut interpreter, class) = load_with(&source, lowering);
+        interpreter.set_jit_zone_bytes(16_384);
+        let expected = 10_000 + count as i64 - 1;
+        let before = interpreter.jit_statistics();
+        for _ in 0..3 {
+            assert_eq!(run(&mut interpreter, &class), expected);
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        assert_eq!(
+            done.back_edge_stretch_exits + done.safepoint_resumptions,
+            done.back_edge_switches,
+            "every stretch that ended at a backward jump switched: {done:?}"
+        );
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(done.zone_compactions >= 1, "the zone filled: {done:?}");
+            assert!(
+                done.back_edge_compiles < 10,
+                "the zone holds a few of the bodies: {done:?}"
+            );
+            assert!(
+                done.back_edge_stretch_exits <= 10,
+                "not at every turn of the 30,000: {done:?}"
+            );
         }
     }
 }

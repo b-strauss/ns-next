@@ -57,7 +57,7 @@ first.
 | Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames, written into `execution.md` for road steps 8 and 9 to build to | Complete | 2026-10-27 | — |
 | The handler search as a leaf: `activationNextHandler:` walks the frames and reifies only the `on:do:` activation it answers | Complete | 2026-10-27 | [handler-search-leaf](superpowers/plans/2026-10-27-0126-handler-search-leaf.md) |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `Array>>do:`, and a loop in the reference lowering | Complete | 2026-10-27 | [loop-bodies](superpowers/plans/2026-10-27-1529-loop-bodies.md) |
-| Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows | In progress | 2026-11-01 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md) |
+| Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows; stage 5, on-stack replacement at an interpreted backward jump, the return into machine code after a poll's safepoint, one compare at a compiled push for the depth and a safepoint request, the compile time counted (`--jit-statistics`), and the depth count measured in `rbp` and left in its machine word | In progress | 2026-11-03 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md), [jit-osr](superpowers/plans/2026-11-02-2051-jit-osr.md) |
 | A one-line method in the JetBrains plugin folded as Java's one-liners: brackets and their spaces in the folds, the server's method fold containing them | Complete | 2026-11-01 | — |
 | Doc comments: a block of `///` lines coloured and rendered in place as Markdown, a hover with a declaration's signature and doc comment, Java-style tags (`@param`, `@answers`, `@signals`, `@see`, `@factory`, `{@summary}`) as sections with the server's warnings, and the whole core library documented with them | Complete | 2026-11-01 | [doc-comment-tags](superpowers/plans/2026-11-01-1608-doc-comment-tags.md) |
 | Identity and equality documented: the contract of `==`, `=`, `hash` and `identityHash` at `Object`, what a value's identity is, and every class's own | Complete | 2026-11-01 | — |
@@ -6745,3 +6745,57 @@ the user, now records the options weighed against §3.1.1 and the prior art
 
 - `786d36a1` -- the decision written out.
 - `b3b9ff6a` -- the constants and their golden.
+
+## On-stack replacement, road step 8's fifth stage (2026-11-03)
+
+Road step 8's fifth stage ([execution.md](design/execution.md), "When a
+body is compiled", "Polls and the depth check", "Between the tiers",
+"Safepoints and the depth limit"; [its
+plan](superpowers/plans/2026-11-02-2051-jit-osr.md)). An interpreted
+backward jump in a body with machine code switches its frame into the
+code at the loop's head, in place, through the program-counter map a
+frame returned to takes; a body without counts its back jumps, and the
+40th compiles it, Cog's `MinBackwardJumpCountForCompile`, the counter the
+body's, in its `JitSlot` (`jit::back_edge_ready`, out of line behind one
+load and compare, and `jit::at_back_edge`). A frame that left its
+machine code for a poll's safepoint, or that an interpreted backward
+jump stopped at one, goes back into the code at the loop's head once the
+safepoint is served (`vm::Leave::SafepointAtLoopHead`,
+`vm::after_safepoint`). A safepoint request lowers the depth limit word
+to 0, so a compiled push makes one compare for the depth and the request
+alike. `--jit-statistics` prints the time spent compiling. The depth
+count kept in `rbp` while machine code runs was built and measured: the
+mean -0.9%, within the builds' spread, and `bench_megamorphic` +3.7%
+beyond it, so it was reverted, and `r13` and `rbp` play no role.
+
+Measured with three builds a side ([execution.md](design/execution.md),
+"What on-stack replacement moved"): the geometric mean over twenty-three
+sources 8.6% faster than `master`, over all twenty-seven 11.3% --
+`bench_megamorphic` -85.1%, `bench_new` -38.3%, `bench_newarg` -31.0%,
+`bench_new2` -30.9%, DeltaBlue -4.5%, Havlak -2.9%, each a loop that ran
+interpreted to its frame's return at `master` -- with Queens +2.6%, its
+builds separated, the code's placement by a sweep of four more zone
+paddings. The baseline compiler takes 0.01% to 4.2% of a whole run. No
+golden, `run-corpus` output or benchmark outcome changed.
+
+- `2d7e6750`, `97a9c66c` -- the design and the plan, the depth register
+  `rbp`.
+- `4cafbc64` -- Linux x86-64 run under WSL, on demand.
+- `eb19e900`, `28a6eaf7`, `b90b041c` -- on-stack replacement, the
+  stretch ended only for a switch, the exhausted zone's test in a build
+  without debug assertions.
+- `a7036ae4` -- the return into machine code after a poll's safepoint.
+- `9a2f8ddd` -- one compare at a compiled push.
+- `0e2dde27`, `9b95559d` -- the compile time and `--jit-statistics`.
+- `a719b4c6` -- what on-stack replacement moved.
+- `e392cc91`, `5987fe81`, `de9d9cea`, `42b5fec5` -- the depth count in
+  `rbp`, measured and reverted.
+- `67deaa2c` -- every way back into machine code after a loop head's
+  safepoint pinned.
+- `869d7043` -- Cog's backward jump count cited from one tree.
+- The documents' commit after them.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
+8's sixth stage, the register cache, next; a caller compiled by on-stack
+replacement that its abandoned callee abandons too; and whether the
+baseline compiler joins road step 9's compiler thread.

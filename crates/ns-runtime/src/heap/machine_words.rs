@@ -69,7 +69,10 @@ pub(crate) enum MachineWord {
     /// The count at which a counted push is refused:
     /// `MAX_ACTIVATION_DEPTH` while the depth limit's reserve is free,
     /// `MAX_ACTIVATION_DEPTH + DEPTH_RESERVE` while a VM error's `signal`
-    /// holds it (`Mutator::set_depth_reserve`).
+    /// holds it (`Mutator::set_depth_reserve`) -- and 0 while a real
+    /// safepoint request is pending, so that a compiled callee's one
+    /// compare refuses its push for the request too
+    /// (`Heap::write_safepoint_request`).
     DepthLimit,
     /// Where an ordinary push may end without a growth, in words from the
     /// activation stack's base (`FrameStack::ordinary_end`).

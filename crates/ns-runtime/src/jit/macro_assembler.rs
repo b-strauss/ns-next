@@ -140,8 +140,8 @@ pub(crate) struct Roles {
     /// The activation count (`MachineWord::DepthCount`) while a prologue,
     /// a return or the entry stub counts it.
     pub(crate) depth_count: Register,
-    /// The prologue's safepoint request word, then the end of the frame
-    /// it pushes as a byte offset from the activation stack's base.
+    /// The end of the frame the prologue pushes, as a byte offset from the
+    /// activation stack's base.
     pub(crate) frame_extent: Register,
     /// The prologue's bound on `frame_extent`, the ordinary stack's end.
     pub(crate) stack_end: Register,
@@ -167,9 +167,10 @@ impl Roles {
     /// template that uses one of those requires the entry stub to save
     /// them first.
     ///
-    /// `r13` plays no role and is no scratch register: preserved by both
-    /// conventions, it is the one free register a value survives a leaf
-    /// call in, which the register cache is to have.
+    /// Two registers play no role and are no scratch registers, `r13` and
+    /// `rbp`: preserved by both conventions and saved by the entry stub,
+    /// they are the free registers a value survives a leaf call in, `r13`
+    /// the one the register cache is to have.
     pub(crate) fn of(abi: Abi) -> Roles {
         match abi {
             Abi::Windows64 | Abi::SystemV => Roles {

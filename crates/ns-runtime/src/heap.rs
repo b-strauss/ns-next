@@ -2167,6 +2167,10 @@ pub struct Heap<'gc> {
     /// holds it set for its own reasons, for as long as the mode is on.
     /// Otherwise the safepoint that takes a request clears it.
     machine_words: MachineWords,
+    /// The limit `set_depth_limit` was last given, which the
+    /// `MachineWord::DepthLimit` word holds while no real safepoint
+    /// request is pending (`write_safepoint_request`).
+    depth_limit: usize,
     /// The bytes the objects take, from the space's start to its top, at
     /// which the next allocation asks for a collection. Checked against the
     /// top the allocation already has in hand, so the hot path pays one
@@ -2633,6 +2637,7 @@ impl<'gc> Heap<'gc> {
                 sweep_at: MIN_ROOT_SWEEP,
             }),
             machine_words,
+            depth_limit: crate::interpreter::MAX_ACTIVATION_DEPTH,
             next_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
@@ -6836,11 +6841,17 @@ impl<'gc> Heap<'gc> {
             .set(MachineWord::DepthCount, count.wrapping_add_signed(delta));
     }
 
-    /// Sets the depth limit's word: the limit with the reserve free, or
-    /// past the reserve while it is held (`Mutator::set_depth_reserve`).
-    pub(crate) fn set_depth_limit(&self, limit: usize) {
-        self.machine_words
-            .set(MachineWord::DepthLimit, limit as u64);
+    /// Sets the depth limit: the limit with the reserve free, or past the
+    /// reserve while it is held (`Mutator::set_depth_reserve`). Its word
+    /// takes it at once unless a real safepoint request holds the word at
+    /// 0, in which case the request's clearing gives it the limit
+    /// (`write_safepoint_request`).
+    pub(crate) fn set_depth_limit(&mut self, limit: usize) {
+        self.depth_limit = limit;
+        if !self.real_safepoint_requested() {
+            self.machine_words
+                .set(MachineWord::DepthLimit, limit as u64);
+        }
     }
 
     /// The word of the machine words `word` names, for a test.
@@ -9366,7 +9377,27 @@ impl<'gc> Heap<'gc> {
 
     /// A request served (`Interpreter::safepoint`).
     pub(crate) fn clear_safepoint_request(&mut self) {
-        self.machine_words.set(MachineWord::SafepointRequested, 0);
+        self.write_safepoint_request(0);
+    }
+
+    /// Writes the safepoint request's word, the one way it is written, and
+    /// with it the depth limit's: 0 exactly while a real request (1) is
+    /// pending, the limit `set_depth_limit` last set otherwise. A compiled
+    /// callee's prologue compares the depth count with that one word, so a
+    /// real request refuses every compiled push without a compare of its
+    /// own, and the interpreter takes the push and the safepoint
+    /// (`jit::sends::prologue`). A stress mode's hold (`STRESS_HOLD`)
+    /// lowers nothing, so that under a stress mode compiled frames still
+    /// nest.
+    fn write_safepoint_request(&mut self, word: u64) {
+        self.machine_words
+            .set(MachineWord::SafepointRequested, word);
+        let limit = if word == 1 {
+            0
+        } else {
+            self.depth_limit as u64
+        };
+        self.machine_words.set(MachineWord::DepthLimit, limit);
     }
 
     /// Holds the request set for a stress mode, or drops it. A held
@@ -9378,15 +9409,14 @@ impl<'gc> Heap<'gc> {
     #[cfg(debug_assertions)]
     pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
         let word = if requested { STRESS_HOLD } else { 0 };
-        self.machine_words
-            .set(MachineWord::SafepointRequested, word);
+        self.write_safepoint_request(word);
     }
 
     /// Asks the run loop's next safepoint to take its slow path: an
     /// allocation's limits, and a compile that found the code zone full
     /// (`jit::after_compile_trigger`).
     pub(crate) fn request_safepoint(&mut self) {
-        self.machine_words.set(MachineWord::SafepointRequested, 1);
+        self.write_safepoint_request(1);
     }
 
     // ---------- What machine code is entered with ----------
@@ -19371,6 +19401,42 @@ mod tests {
             }
         }
         assert!(ends.len() >= 3, "the stack grew more than once");
+    }
+
+    #[test]
+    fn a_real_request_lowers_the_depth_limit_word() {
+        use crate::interpreter::{DEPTH_RESERVE, MAX_ACTIVATION_DEPTH};
+        let mut heap = Heap::new();
+        heap.set_depth_limit(MAX_ACTIVATION_DEPTH);
+        heap.request_safepoint();
+        assert_eq!(heap.machine_word(MachineWord::DepthLimit), 0);
+        heap.set_depth_limit(MAX_ACTIVATION_DEPTH + DEPTH_RESERVE);
+        assert_eq!(heap.machine_word(MachineWord::DepthLimit), 0);
+        heap.clear_safepoint_request();
+        assert_eq!(
+            heap.machine_word(MachineWord::DepthLimit),
+            (MAX_ACTIVATION_DEPTH + DEPTH_RESERVE) as u64
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_stress_hold_leaves_the_depth_limit_word() {
+        use crate::interpreter::MAX_ACTIVATION_DEPTH;
+        let mut heap = Heap::new();
+        heap.set_depth_limit(MAX_ACTIVATION_DEPTH);
+        heap.set_safepoint_requested(true);
+        assert_eq!(
+            heap.machine_word(MachineWord::DepthLimit),
+            MAX_ACTIVATION_DEPTH as u64
+        );
+        heap.request_safepoint();
+        heap.set_safepoint_requested(false);
+        assert_eq!(
+            heap.machine_word(MachineWord::DepthLimit),
+            MAX_ACTIVATION_DEPTH as u64,
+            "dropping the hold over a real request gives the limit back"
+        );
     }
 
     #[test]

@@ -519,8 +519,13 @@ set the stretch writes its frame back and leaves its entry, and `run` calls
 line, so `vm.rs` holds the compare and the call and nothing of what a
 safepoint does. The safepoint serves a request -- a full collection if one
 is pending, which empties the nursery too, and otherwise a pending scavenge
--- and clears the flag, except under a stress mode below, which keeps it
-set. The collector's triggers set it in a release build too:
+-- and clears the flag in the same call, so that no compiled push the
+next turn makes finds the request's depth limit of 0 and is refused
+(`Heap::write_safepoint_request`), unless serving it raised another
+request -- the compaction of the code zone a collection's freed code
+asks for, the collection a scavenge that leaves the old space past its
+limit asks for -- which the next poll serves, and except under a stress
+mode below, which keeps it set. The collector's triggers set it in a release build too:
 `allocate_block`, which every allocation reaching eden's scavenge
 threshold takes, since the fast bump's limit lies below it ("Inline
 allocation"), compares eden's occupied bytes against the scavenge

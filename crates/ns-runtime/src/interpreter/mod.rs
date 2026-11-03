@@ -1236,6 +1236,16 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.set_counting(counting));
     }
 
+    /// Sets the interpreted backward jump at which a body without machine
+    /// code is compiled and its frame switched into the code
+    /// (`jit::COMPILE_AT_BACK_JUMP`, 40, otherwise), so that a test reaches
+    /// the switch in a loop of a few turns. A test hook, set before the
+    /// loop it is meant for runs.
+    #[doc(hidden)]
+    pub fn set_jit_compile_at_back_jump(&mut self, jumps: u32) {
+        self.enter(|mutator| mutator.jit.set_compile_at_back_jump(jumps));
+    }
+
     /// Sets the interpreted entries after which a body abandoned for the
     /// first time is revived (`jit::REVIVAL_ENTRIES`, 4,096, otherwise), so
     /// that a test reaches a revival by entries cheaply. A test hook, set

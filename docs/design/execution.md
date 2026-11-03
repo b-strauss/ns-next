@@ -16,9 +16,13 @@
 > which are the callee's first registers (road step 7a′, "Overlapping
 > register windows"). The contract compiled frames will keep with
 > interpreted ones is written (road step 7c, "Planned: the
-> deoptimization contract"), and the baseline JIT's first four stages
+> deoptimization contract"), and the baseline JIT's first five stages
 > are built on x64 (road step 8, "The baseline JIT's foundation"): a body
-> is compiled at its second entry and entered wherever it runs; its sends
+> is compiled at its second entry, or at its fortieth interpreted backward
+> jump, and entered wherever it runs -- a frame
+> switching into its machine code at a loop's head, on-stack replacement,
+> and going back in there after a poll's safepoint ("Between the tiers");
+> its sends
 > call through the inline caches' cells, it allocates, stores through the
 > write barrier, makes closures, calls blocks, forces futures and cuts a
 > non-local return in machine code, and it exits to the interpreter
@@ -8189,6 +8193,231 @@ bounded by its floor or its limit, not by the iteration count:
   MiB. The cells grow only in the churns that grow the sites, and the
   machine entry and application id tables by one doubling at most.
 
+### What on-stack replacement moved
+
+**Measured 2026-11-02, `9b95559d` against `master` (`006b6d50`)**, by the
+same protocol: three pinned release builds a side with debug information
+(`CARGO_PROFILE_RELEASE_DEBUG=limited`), a, b and c laid out as there,
+the code zones at the three paddings on both sides (a none, b 208 bytes
+before the stubs and 32 before the bodies, c 96 and 176); `vm::run`
+spans about 51.6, 55.6 and 60.2 KB at `master` and 45.2, 48.6 and 52.3
+KB at `9b95559d`, and no build has a `run_stretch` or a `vm::run`
+closure of its own. The branch's `vm::run` is smaller in the binary
+while the codegen gate counts more instructions in it (9252 against
+9142) because the two measure different code: the gate the rlib's
+listing before the binary's fat LTO, where both trees call the same
+functions out of line but the branch's two new ones (`back_edge_ready`,
+`after_safepoint`), and the binary that code after it, where `master`'s
+fat LTO inlines into `vm::run` what the rlib calls --
+`locals::read_outer_local`, `write_outer_local`, `load_vector` and
+`store_vector`, `sends::enclosing_object`,
+`Mutator::new_array_from_registers`, `check_applied_clause` and
+`Heap::allocate_object` -- and the branch's does not: build a's
+`vm::run` makes 515 calls at `master` and 451 at `9b95559d`, about
+10,450 and 9,190 instructions. All eight are interpreted code's, off
+the paths machine code runs; why the LTO inliner decides differently
+for a caller the rlib barely changed is not established
+([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained measurements and
+unmeasured decisions"). Three rounds in one sitting, the order of the six
+binaries rotated each round; `--iterations 3` for CD, Havlak,
+Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest,
+among them the four sources of "What spec-conformant lookup moved" --
+`bench_new.ns`, `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns`,
+written out from there. Each cell is a side's medians per build pooled
+by geometric mean, in milliseconds; "separated" says whether the two
+sides' three builds lie apart. Between the two trees lies road step 8's
+fifth stage: on-stack replacement at an interpreted backward jump, the
+return into machine code after a poll's safepoint, the one compare at a
+push (a safepoint request lowers the depth limit) and the compile-time
+statistic.
+
+| Program | master (ms) | master's builds | `9b95559d` (ms) | range | vs master | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.204 | 0.202–0.207 | 0.204 | 0.202–0.205 | -0.1% | no |
+| `CD` | 3195.036 | 3154.041–3218.121 | 3207.049 | 3179.953–3249.218 | +0.4% | no |
+| `DeltaBlue` | 262.145 | 259.682–264.089 | 250.274 | 247.931–251.899 | -4.5% | faster |
+| `DeltaBlueTon80` | 1.939 | 1.911–1.975 | 1.964 | 1.923–2.043 | +1.3% | no |
+| `Havlak` | 1280.742 | 1268.938–1295.232 | 1244.221 | 1226.151–1266.247 | -2.9% | faster |
+| `Json` | 3.636 | 3.587–3.683 | 3.623 | 3.594–3.647 | -0.4% | no |
+| `List` | 0.195 | 0.190–0.205 | 0.190 | 0.188–0.194 | -2.6% | no |
+| `Mandelbrot` | 1871.109 | 1853.232–1881.362 | 1869.472 | 1857.379–1892.403 | -0.1% | no |
+| `NBody` | 1153.113 | 1145.820–1163.131 | 1147.871 | 1134.832–1161.959 | -0.5% | no |
+| `Permute` | 0.415 | 0.405–0.420 | 0.399 | 0.388–0.413 | -3.8% | no |
+| `Queens` | 0.313 | 0.312–0.316 | 0.321 | 0.319–0.324 | +2.6% | slower (see below) |
+| `Richards` | 18.017 | 17.845–18.300 | 17.739 | 17.566–17.997 | -1.5% | no |
+| `RichardsTon80` | 1.806 | 1.764–1.844 | 1.800 | 1.774–1.822 | -0.3% | no |
+| `Sieve` | 0.413 | 0.401–0.436 | 0.387 | 0.375–0.404 | -6.2% | no |
+| `Storage` | 0.709 | 0.697–0.725 | 0.698 | 0.694–0.703 | -1.5% | no |
+| `Towers` | 0.510 | 0.505–0.518 | 0.510 | 0.493–0.528 | +0.0% | no |
+| `bench_block` | 0.864 | 0.863–0.865 | 0.862 | 0.851–0.874 | -0.2% | no |
+| `bench_loop` | 0.522 | 0.512–0.538 | 0.545 | 0.517–0.587 | +4.4% | no |
+| `bench_megamorphic` | 4.808 | 4.767–4.846 | 0.715 | 0.711–0.717 | -85.1% | faster |
+| `bench_send` | 0.513 | 0.504–0.519 | 0.516 | 0.508–0.524 | +0.6% | no |
+| `bench_signal` | 19.568 | 19.527–19.646 | 19.698 | 19.591–19.871 | +0.7% | no |
+| `bench_while` | 6.523 | 6.462–6.623 | 6.327 | 6.028–6.504 | -3.0% | no |
+| `bench_recursion` | 0.652 | 0.628–0.665 | 0.671 | 0.664–0.677 | +2.9% | no |
+| `bench_new` | 3.091 | 3.059–3.142 | 1.908 | 1.904–1.915 | -38.3% | faster |
+| `bench_new2` | 4.833 | 4.771–4.885 | 3.340 | 3.292–3.394 | -30.9% | faster |
+| `bench_newarg` | 4.955 | 4.905–5.031 | 3.419 | 3.400–3.456 | -31.0% | faster |
+| `bench_do` | 0.720 | 0.718–0.724 | 0.745 | 0.711–0.802 | +3.5% | no |
+
+The geometric mean over the twenty-three sources of "What reclamation
+moved" is -8.6%, over all twenty-seven -11.3%. The gains are frames that
+ran interpreted to their return at `master`:
+
+- **A loop that left its machine code goes back into it.**
+  `bench_megamorphic`'s `main:args:` leaves its machine code early in
+  every send's loop (17 exits in nine sends, `--jit-statistics`), and at
+  `master` ran the rest of its 50,000 turns interpreted -- "What
+  reclamation moved" found its loop running interpreted; now its next
+  backward jump switches it back, nine switches in nine sends, and the
+  program runs 85.1% faster. `bench_new.ns`, `bench_new2.ns` and
+  `bench_newarg.ns` are the same shape -- a loop of 20,000 turns in a
+  `main:args:` that leaves its code early, 18 exits and 10 switches in
+  nine sends of `bench_new.ns` -- and run 31% to 38% faster.
+- **A loop that polled out goes back in after the safepoint, or at its
+  next backward jump.** Havlak switches 1,478 times at a backward jump
+  and resumes 307 times after a safepoint in four sends, DeltaBlue 140
+  and 3; both are faster with their builds separated (-2.9%, -4.5%).
+- `bench_loop`'s, `bench_do`'s and `bench_while`'s `main:args:` switch
+  once or twice in nine sends, in the discarded warm-up, whose loop ran
+  interpreted at `master`; from the second send on they are entered
+  compiled on both trees, and the timed runs are level.
+
+**What is slower is where the code lies.** Queens (+2.6%, separated)
+switches only in its warm-up (five switches, no resumption, in nine
+sends), so its timed runs execute the same bodies on both trees, with
+the push's one compare instead of two. Thirty iterations a run on the
+same six builds, three rounds, measured it +1.0% and no longer
+separated (`9b95559d`'s build b below `master`'s build a), and four more
+build pairs at other zone paddings (stubs and bodies 16 and 48, 144 and
+80, 48 and 240, 320 and 112; build a's flags), thirty iterations, three
+rounds, put `9b95559d` at 314.7 µs pooled against `master`'s 319.1,
+1.4% faster, and faster at three of the four paddings. `bench_loop`'s
++4.4% is build a alone (0.587 ms against 0.517 and 0.532 for b and c),
+and `bench_do`'s +3.5% one round of build c (1.024 ms, against 0.703 and
+0.717 in the other two). `bench_recursion`'s +2.9% is not separated:
+`master`'s build b ran 0.602 to 0.664 ms, the other five builds 0.656 to
+0.701.
+
+**What the baseline compiler takes.** `--jit-statistics` prints the
+time spent compiling bodies and twins, measured around each compile
+(`JitStatistics::compile_nanoseconds`). One pinned release build
+(`9b95559d`'s build a): `run` three times a program, its process timed
+from outside (the median; a program that prints `hi` takes 7.0 ms), and
+`bench` with the iterations above, its compile time set against the
+sends' time, the median times the sends, the warm-up included. The
+warm-up is slower than the median, so that share is an upper bound.
+`run-corpus` takes no `--jit-statistics` and prints no line.
+
+| Program | `run`: bodies, twins | `run`: compile (ms) | `run`: process (ms) | share | `bench`: sends | `bench`: bodies, twins | `bench`: compile (ms) | sends × median (ms) | share |
+|---|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 11, 1 | 0.224 | 20.7 | 1.08% | 9 | 25, 2 | 0.448 | 1.8 | 24.22% |
+| `CD` | 3,681, 946 | 75.851 | 3,265.5 | 2.32% | 4 | 14,626, 3,800 | 286.080 | 12,955.4 | 2.21% |
+| `DeltaBlue` | 116, 12 | 1.515 | 279.8 | 0.54% | 4 | 147, 16 | 1.923 | 988.8 | 0.19% |
+| `DeltaBlueTon80` | 100, 12 | 1.055 | 24.9 | 4.24% | 9 | 125, 15 | 1.415 | 17.3 | 8.16% |
+| `Havlak` | 120, 18 | 1.593 | 1,267.5 | 0.13% | 4 | 146, 23 | 2.022 | 4,745.3 | 0.04% |
+| `Json` | 54, 1 | 0.763 | 24.9 | 3.06% | 9 | 83, 2 | 1.061 | 32.0 | 3.31% |
+| `List` | 8, 0 | 0.135 | 19.3 | 0.70% | 9 | 22, 1 | 0.352 | 1.8 | 20.01% |
+| `Mandelbrot` | 7, 1 | 0.194 | 1,870.1 | 0.01% | 4 | 22, 3 | 0.457 | 7,356.8 | 0.01% |
+| `NBody` | 16, 3 | 0.379 | 1,167.6 | 0.03% | 4 | 39, 5 | 0.717 | 4,494.3 | 0.02% |
+| `Permute` | 6, 1 | 0.133 | 20.2 | 0.66% | 9 | 21, 2 | 0.381 | 3.4 | 11.07% |
+| `Queens` | 11, 2 | 0.169 | 22.0 | 0.77% | 9 | 26, 4 | 0.416 | 2.9 | 14.36% |
+| `Richards` | 52, 4 | 0.531 | 41.1 | 1.29% | 9 | 80, 7 | 0.991 | 156.6 | 0.63% |
+| `RichardsTon80` | 32, 3 | 0.475 | 21.5 | 2.21% | 9 | 61, 4 | 0.912 | 16.4 | 5.58% |
+| `Sieve` | 6, 1 | 0.112 | 21.1 | 0.53% | 9 | 21, 3 | 0.365 | 3.8 | 9.50% |
+| `Storage` | 6, 1 | 0.135 | 20.7 | 0.65% | 9 | 22, 2 | 0.373 | 6.3 | 5.94% |
+| `Towers` | 11, 1 | 0.153 | 20.9 | 0.73% | 9 | 28, 3 | 0.432 | 4.4 | 9.92% |
+| `bench_block` | 3, 1 | 0.074 | 10.0 | 0.74% | 9 | 5, 1 | 0.100 | 7.6 | 1.31% |
+| `bench_loop` | 1, 0 | 0.051 | 7.0 | 0.73% | 9 | 3, 0 | 0.076 | 5.2 | 1.45% |
+| `bench_megamorphic` | 6, 0 | 0.094 | 8.1 | 1.16% | 9 | 13, 0 | 0.129 | 6.5 | 1.99% |
+| `bench_send` | 2, 0 | 0.053 | 7.0 | 0.76% | 9 | 4, 0 | 0.078 | 4.6 | 1.69% |
+| `bench_signal` | 46, 3 | 0.435 | 28.4 | 1.53% | 9 | 179, 11 | 1.579 | 178.2 | 0.89% |
+| `bench_while` | 6, 0 | 0.075 | 14.7 | 0.51% | 9 | 8, 1 | 0.129 | 57.8 | 0.22% |
+| `bench_recursion` | 1, 0 | 0.037 | 7.7 | 0.48% | 9 | 3, 0 | 0.067 | 6.0 | 1.12% |
+
+A body or twin compiles in about 12 to 25 µs (CD's 18,426 in 286 ms,
+Havlak's 169 in 2.0 ms), so the share is the number of compiles against
+the run's length:
+
+- **Over a whole process** the compiler takes 0.01% (Mandelbrot) to 4.2%
+  (DeltaBlueTon80) of `run`: 1.6% or less for every microbenchmark and
+  for every program of a second or longer but CD. The highest are the
+  programs of a few milliseconds -- DeltaBlueTon80 4.2%, Json 3.1%,
+  RichardsTon80 2.2% -- where 35 to 112 compiles fall in a process of
+  about 22 to 25 ms, most of it the boot and the project's parse.
+- **CD** is the one long program whose share counts, 2.2% to 2.3% either
+  way: its churn ("What reclamation moved") compiles 3,681 bodies and
+  946 twins in one run, abandoned and revived over and over, which the
+  nested-class accessor item in [OPEN-WORK.md](../OPEN-WORK.md) ends.
+- **Against the sends alone**, on `bench`, a program whose send takes
+  less than a millisecond spends on compiling about as much as one or
+  two of its sends -- Bounce 24%, List 20%, Queens 14% of nine sends --
+  nearly all of it in the warm-up and the first sends; a program whose
+  send takes 100 ms or more spends 0.6% or less, CD's 2.2% apart.
+
+**The depth count in a machine register, measured and not kept.**
+`5987fe81` kept the count in `rbp`, which both x64 conventions preserve
+and the entry stub saves, while machine code ran: the entry, call and
+closure call stubs loaded it from `DepthCount`, a prologue compared and
+incremented the register -- no load and no store of the word -- and a
+return decremented it, while the word held the count again at every
+exit (the exit stub's first store), at a return out of machine code
+(the entry and the call stubs) and around the cut's leaves, which take
+the popped frames off it; the growth leaf reads no count, so nothing
+was written back around it. A debug build wrote a word no count can be
+into `DepthCount` while the register held it, which every Rust reader
+refused: the suite, the goldens and `tests/jit.rs` under all nine
+stress modes passed, and the guard caught a write-back removed on
+purpose. Measured on 2026-11-03 against `e392cc91` (machine code
+identical to `9b95559d`, whose three builds above were reused) by the
+same protocol, the variant's three builds made alike; `vm::run` spans
+the same 45.2, 48.6 and 52.3 KB on both sides, since only the JIT's code
+changed.
+
+| Program | before (ms) | builds | register (ms) | builds | vs before | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.207 | 0.203–0.210 | 0.207 | 0.205–0.208 | -0.1% | no |
+| `CD` | 3209.163 | 3193.494–3226.461 | 3172.295 | 3153.299–3186.932 | -1.1% | faster |
+| `DeltaBlue` | 249.811 | 247.893–251.024 | 245.795 | 242.083–249.217 | -1.6% | no |
+| `DeltaBlueTon80` | 1.973 | 1.904–2.067 | 1.929 | 1.916–1.938 | -2.2% | no |
+| `Havlak` | 1235.561 | 1227.309–1246.455 | 1216.069 | 1208.725–1226.655 | -1.6% | faster |
+| `Json` | 3.605 | 3.589–3.635 | 3.614 | 3.590–3.627 | +0.2% | no |
+| `List` | 0.203 | 0.197–0.208 | 0.198 | 0.191–0.212 | -2.4% | no |
+| `Mandelbrot` | 1867.659 | 1842.647–1897.058 | 1850.516 | 1839.027–1857.816 | -0.9% | no |
+| `NBody` | 1141.546 | 1123.939–1154.465 | 1146.471 | 1139.743–1154.132 | +0.4% | no |
+| `Permute` | 0.406 | 0.397–0.417 | 0.405 | 0.398–0.411 | -0.3% | no |
+| `Queens` | 0.319 | 0.313–0.325 | 0.315 | 0.312–0.318 | -1.3% | no |
+| `Richards` | 17.641 | 17.505–17.780 | 17.733 | 17.591–17.907 | +0.5% | no |
+| `RichardsTon80` | 1.822 | 1.813–1.834 | 1.793 | 1.788–1.799 | -1.6% | faster |
+| `Sieve` | 0.399 | 0.391–0.405 | 0.398 | 0.392–0.407 | -0.4% | no |
+| `Storage` | 0.702 | 0.694–0.708 | 0.723 | 0.705–0.757 | +3.0% | no |
+| `Towers` | 0.481 | 0.464–0.490 | 0.499 | 0.478–0.516 | +3.9% | no |
+| `bench_block` | 0.863 | 0.853–0.870 | 0.822 | 0.818–0.826 | -4.8% | faster |
+| `bench_loop` | 0.545 | 0.516–0.579 | 0.529 | 0.513–0.542 | -2.9% | no |
+| `bench_megamorphic` | 0.712 | 0.700–0.725 | 0.739 | 0.727–0.748 | +3.7% | slower |
+| `bench_send` | 0.516 | 0.507–0.527 | 0.506 | 0.504–0.507 | -2.0% | no |
+| `bench_signal` | 19.644 | 19.413–19.891 | 19.638 | 19.575–19.737 | -0.0% | no |
+| `bench_while` | 6.359 | 6.084–6.521 | 6.348 | 6.007–6.549 | -0.2% | no |
+| `bench_recursion` | 0.669 | 0.665–0.675 | 0.618 | 0.590–0.632 | -7.7% | faster |
+| `bench_new` | 1.933 | 1.922–1.950 | 1.908 | 1.901–1.915 | -1.3% | faster |
+| `bench_new2` | 3.358 | 3.296–3.455 | 3.295 | 3.279–3.305 | -1.9% | no |
+| `bench_newarg` | 3.440 | 3.417–3.473 | 3.401 | 3.375–3.424 | -1.1% | no |
+| `bench_do` | 0.714 | 0.705–0.720 | 0.723 | 0.719–0.728 | +1.3% | no |
+
+The geometric mean over the 23 sources moved -0.9% (-0.9% over all 27),
+but not beyond noise: build against build it was -1.2% at a, +0.35% at
+b and -1.8% at c, round against round -1.3%, -0.03% and -1.3%, and the
+two sides' per-build means overlap (4.820, 4.806 and 4.834 before;
+4.764, 4.823 and 4.746 with the register). Six programs are faster
+with their builds separated -- `bench_recursion` -7.7%, the one that
+does little but push and return, `bench_block` -4.8%, CD, Havlak,
+RichardsTon80 and `bench_new` 1.1% to 1.6% -- and `bench_megamorphic`
+is 3.7% slower with its builds separated. The plan kept the variant
+only if the mean was faster beyond noise and no program slower beyond
+noise; neither held, so `de9d9cea` reverted it ("Safepoints and the
+depth limit" has the decision).
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -8529,6 +8758,19 @@ re-entries; Primordial Soup and Cog need no second bound because nothing in
 them re-enters the interpreter from native code. ns-next is in their position:
 nothing re-enters its run loop from Rust ("No re-entry from Rust" below), so
 one bound, L ("The depth limit" above), is all it needs.
+Weighed again with the user on 2026-11-03 against a byte bound as V8's
+and HotSpot's, the stack pointer against a limit (`--stack-size`,
+`-Xss`), the count is kept: its memory traffic at every call is within
+noise -- kept in `rbp`, which removed it, the count moved the mean
+-0.9%, within the builds' spread ("What on-stack replacement moved",
+"The depth count in a machine register, measured and not kept") -- and
+only the count makes a recursion overflow at the same depth under both
+lowerings and in every tier, which the depth-limit goldens that count
+alike pin; a byte bound would give that up and need machine code to
+check the native stack pointer instead. A program that needs a deeper
+recursion than L has L raised, not the model changed; what bounds L is
+the native stack an entry into machine code needs, eight bytes an
+activation (`jit::NATIVE_STACK_NEED`).
 
 ### No re-entry from Rust
 
@@ -10185,9 +10427,14 @@ sees.
   the activation stack's committed end.
 - **The count stays exact.** The goldens pin where a recursion overflows,
   so the running total of counted activations agrees with the
-  interpreter's at every check. Compiled code may keep it in a machine
-  register and writes it back at the exit; whether it does is road step
-  8's measurement. An inlined scope is not counted at run time: at a
+  interpreter's at every check. Baseline code keeps it in its machine
+  word, `DepthCount`, which a compiled push loads, compares, increments
+  and stores and a return loads, decrements and stores: kept in `rbp`
+  instead, written back at every exit, every return out of machine code
+  and around the cut's leaves, it moved the mean of the 23 sources
+  -0.9%, within the builds' spread, and `bench_megamorphic.ns` +3.7%
+  beyond it, so it was reverted (measured on 2026-11-03, "What on-stack
+  replacement moved"); `rbp` stays free with `r13`. An inlined scope is not counted at run time: at a
   call site d scopes deep the compiler adds d to the push's comparison
   and to its increment, a constant, so the count includes every
   activation a deoptimization could rebuild there.
@@ -10198,13 +10445,42 @@ sees.
   compiled bit, once materialized, is the whole conversion, since its
   words are the interpreter's.
 - **An interpreted frame becomes a baseline one in place**, on-stack
-  replacement at a backward jump whose counter trips: the frame's
-  compiled bit is set and the loop enters the code at that jump's
-  machine address, a back edge being a point where baseline code holds
-  every value in its slot. Cog switches there and only there
-  (`attemptToSwitchToMachineCode:`, `cointerp.c:14623-14735`, `:8379-8393`).
+  replacement at a backward jump ("When a body is compiled" below says
+  when): the interpreter has taken the jump's poll, `jit::back_edge_ready`
+  has answered that the frame switches, the stretch has ended there
+  (`vm::Leave::BackEdge`), and the next one enters the code
+  (`jit::at_back_edge`) at the start of the jump's target, the loop's head, through
+  the program-counter map every body has -- the entry a frame returned to
+  already takes (`jit::resumed`, `entry_of_frame`), the twin's for a
+  reified frame -- a back edge being a point where baseline code holds
+  every value in its slot. Nothing of the frame is rewritten: its words
+  are already machine code's. Cog switches at a back jump and only there,
+  rewriting its interpreter frame into a machine-code one
+  (`attemptToSwitchToMachineCode:`, `cointerp.c:14623-14735`,
+  `:8379-8393`); V8's Sparkplug switch keeps the frame, rewrites one
+  slot and enters at the loop header's start
+  (`Generate_InterpreterOnStackReplacement_ToBaseline`,
+  `src/builtins/x64/builtins-x64.cc:5660-5767`;
+  `GetBaselinePCForNextExecutedBytecode`, `src/objects/code-inl.h:405-425`).
   Without it a hot loop in a method entered once -- a benchmark's main
   loop -- would never run compiled.
+- **A frame that left its machine code at a poll goes back into it** once
+  the safepoint is served, at the poll's program counter, a loop's head:
+  without it a loop that allocates would run interpreted from its first
+  scavenge to its frame's return. So does a frame an interpreted backward
+  jump stopped at a safepoint, when the jump would have switched it: the
+  stretch leaves for either at the loop's head
+  (`vm::Leave::SafepointAtLoopHead`), wherever the stop reached the run
+  loop -- the stretch's own entry into machine code, a push's or a
+  returned-to frame's within it, a called body's stop below the
+  interpreter's send -- and `vm::after_safepoint` asks
+  `jit::back_edge_ready`, which counts the jump the safepoint stopped as
+  any other. Cog never leaves at a poll -- its
+  backward jump calls the interrupt check's trampoline, which returns
+  into the code (`cogitX64SysV.c:38851-38858`) -- but here a safepoint is
+  the run loop's alone, so the poll exits, and the run loop enters the
+  code again as it does a frame returned to. Decided with the user on
+  2026-11-02.
 - **An optimized frame is deoptimized lazily**, when it would become the
   top of the stack: one below the top whose code was invalidated is only
   marked, and converted when control returns into it, as HotSpot defers
@@ -10308,8 +10584,7 @@ sees.
 ### Open
 
 What the contract leaves to road steps 8 and 9 is in
-[OPEN-WORK.md](../OPEN-WORK.md): where the depth count lives in machine
-code, measured; and the home of a closure created in an inlined
+[OPEN-WORK.md](../OPEN-WORK.md): the home of a closure created in an inlined
 scope, since a frame object is married only to a frame that stands for
 one activation. A closure the optimizer does not inline still reifies the
 frame it is created in, whatever it captured, since `enclosingActivation`
@@ -10318,17 +10593,24 @@ activation" above); one it inlines creates neither.
 
 ## The baseline JIT's foundation
 
-Road step 8's first four stages are built ("Planned: the baseline JIT",
+Road step 8's first five stages are built ("Planned: the baseline JIT",
 "Stages" below): the code zone and the x64 encoder; the entry, the exit
 and the instructions without a send; sends and the inline caches in
 machine code -- with the entry at an interpreter's send, which calls a
 compiled callee as a compiled send does ("The entry at a send" below);
-and closures, non-local return, allocation and the write barrier, with
+closures, non-local return, allocation and the write barrier, with
 the reclamation of everything the JIT and the tables beside the object
 space grow ("Stage 4: closures, non-local return, allocation and the
-barrier", "The code zone" below).
-On x64 a body is compiled at its second entry, and every compiled body
-is entered wherever it runs: at a send, a push and a frame returned to.
+barrier", "The code zone" below); and on-stack replacement at an
+interpreted backward jump, the return into machine code after a poll's
+safepoint and the one compare at a compiled push ("When a body is
+compiled", "Polls and the depth check" below; "Between the tiers" and
+"Safepoints and the depth limit" above).
+On x64 a body is compiled at its second entry, or at the 40th backward
+jump the interpreter runs in it, where its frame switches into the
+code at the loop's head, and every compiled body is entered wherever it
+runs: at a send, a push, a frame returned to and an interpreted
+backward jump.
 Its machine
 code runs until an instruction it cannot carry out -- one with no
 template, a send whose call is refused, a non-local return it cannot
@@ -10339,12 +10621,13 @@ depth of compiled frames materializes all of them before the interpreter
 runs. Only x64 has an encoder: the JIT is compiled where
 `crates/ns-runtime/build.rs` sets `cfg(ns_jit)`, on x64 alone, the one
 line the AArch64 port changes; elsewhere `jit::available` answers `false`
-and every body stays interpreted. What the design names beyond the four
-stages -- on-stack replacement, the register cache, the AArch64 encoder
--- is still planned. "What allocation and the barrier in machine code
-moved", "What closures in machine code moved", "What non-local return
-in machine code moved" and "What reclamation moved" have the
-measurements of stage 4's parts, "What the entry at a send moved" that
+and every body stays interpreted. What the design names beyond the five
+stages -- the register cache, the AArch64 encoder -- is still planned.
+"What on-stack replacement moved" has the measurement of stage 5, the
+depth count kept in a register among it, "What allocation and the
+barrier in machine code moved", "What closures in machine code moved",
+"What non-local return in machine code moved" and "What reclamation
+moved" those of stage 4's parts, "What the entry at a send moved" that
 of the entry, "What sends in machine code moved" that of stage 3, "What
 the baseline JIT's foundation moved" that of the first two.
 
@@ -10428,9 +10711,10 @@ the baseline JIT's foundation moved" that of the first two.
   that the AArch64 port writes one `Roles::of` and its idioms and nothing
   above them (decided with the user on 2026-10-29: the split is held by
   a source scan, `crates/ns-runtime/tests/jit_architecture_split.rs`,
-  rather than a crate of its own). `r13` plays no role: preserved by
-  both conventions, it is the one free register a value survives a leaf
-  call in, kept for the register cache, and a leaf call keeps the stack
+  rather than a crate of its own). Two registers play no role, `r13`
+  and `rbp`: preserved by both conventions and saved by the entry stub,
+  they are the free registers a value survives a leaf call in, `r13`
+  kept for the register cache; and a leaf call keeps the stack
   pointer it aligned away from in block word `LeafStackPointer` (14)
   instead. Its idioms are the only way a
   template touches a frame, the block, a leaf, a poll or an exit: load and
@@ -10800,7 +11084,9 @@ sends and the inline caches in machine code.
   2026-10-28): the call hands the callee's receiver and current class in fixed
   registers (`Roles::callee_receiver`, `callee_class`) and writes nothing
   into the callee's frame; the callee's prologue checks the depth count
-  against `DepthLimit`, the safepoint request and the frame's end against
+  against `DepthLimit`, which a pending safepoint request lowers to 0, so
+  that the one compare refuses the call for the depth and the request
+  alike ("Polls and the depth check" below), and the frame's end against
   `OrdinaryStackEnd`, refusing the call with `ExitKind::PushRefused`
   before anything is written when one fails -- but a frame past the
   ordinary end calls the growth leaf first (`jit::leaves::grow_stack`,
@@ -11517,8 +11803,9 @@ Strongtalk, V8 and HotSpot again for it.
   and only a count at the limit or a frame the ordinary room cannot hold
   exits, so that the interpreter raises the overflow. The innermost
   frame and the
-  number of live frames are derived by the exit's walk. Whether the
-  count lives in a machine register is stage 5's measurement.
+  number of live frames are derived by the exit's walk. The count stays
+  in its word: stage 5 measured it in a machine register and found no
+  gain beyond noise ("Safepoints and the depth limit").
 - **The megamorphic stub probes a machine-readable mirror of the global
   cache** beside the cells, written wherever the global cache is, as
   Cog's open PIC probes the method cache (`cogitX64SysV.c:29031-29168`),
@@ -11549,11 +11836,54 @@ templates that read and write the slots, then the cache.
   data on the compiled code, not in machine code. A body that cannot be
   compiled -- past a size the zone's layout bounds -- is marked and never
   tried again.
-- **On-stack replacement at a back edge** whose per-frame counter in the
-  flags word trips, as Cog's 40 back jumps (`cointerp.c:2759`,
-  `:8379-8409`); "Between the tiers" above says how.
+- **On-stack replacement at a back edge**: an interpreted backward jump
+  in a body with machine code in this zone switches to it at once,
+  counting nothing; in a body without, it counts the body's back jumps,
+  and the 40th (`jit::COMPILE_AT_BACK_JUMP`) compiles the body,
+  synchronously, and switches, as Cog
+  does at its 40 back jumps (`MinBackwardJumpCountForCompile`,
+  `cointerp.c:218`, `:2759`, `:8379-8409`), which compiles there too.
+  The interpreter's backward jump pays one load and one compare inline
+  (`JitSlot::back_edge_is_armed`, true while the body counts its entries
+  or is compiled); the count, the compile and the question whether the
+  frame can enter -- its feedback base the body's, the twin for a
+  reified frame, room on the native stack -- are `jit::back_edge_ready`'s,
+  out of line, and the stretch ends only when it answers yes. A frame
+  that cannot enter, or a compile the exhausted zone holds, makes the
+  body wait as many back jumps again before it tries, so that a loop that
+  never switches pays no try at every turn; a backward jump a safepoint
+  stopped counts as any other ("Between the tiers" above). The
+  counter is the body's, beside its count of entries in its `JitSlot`,
+  as V8's budget is its function's (`FeedbackCell`,
+  `src/interpreter/interpreter-assembler.cc:1179-1206`) and HotSpot's
+  back-edge counter its method's (`MethodCounters`,
+  `cpu/x86/templateTable_x86.cpp:1815-1861`), not the frame's, as Cog's
+  byte in the flags word is: the frames share one format, so the switch
+  needs no state of the frame, and the flags word keeps its bits, which
+  a debug build's generation fills. Cog's threshold, not HotSpot's 60000
+  (`Tier3BackEdgeThreshold`, `share/compiler/compiler_globals.hpp:189`)
+  or V8's budget weighted by bytes: the body compiles at its second
+  entry, as early as Cog's, and synchronously, where HotSpot's lowest
+  compiled tier is a profiling compiler run on a thread of its own and
+  its switch copies the frame into an OSR nmethod of its own
+  (`SharedRuntime::OSR_migration_begin`, `share/runtime/sharedRuntime.cpp:3815-3884`).
+  An abandoned body counts nothing and is not entered: its state is no
+  longer counting, and its revival is by entries, as it is today.
+  "Between the tiers" above says how the frame switches. Decided with
+  the user on 2026-11-02.
 - **Compilation on a thread of its own** is road step 9's; the second
-  mapping keeps it open.
+  mapping keeps it open. Its optimizing compiler needs one, since its
+  compile is costly; V8 compiles even its Sparkplug code there by
+  default (`concurrent_sparkplug`, `src/flags/flag-definitions.h:1276`).
+  The baseline compiler stays synchronous until a measurement says
+  otherwise: a compile on a thread of its own takes its time off the
+  mutator, but leaves the body interpreted until the code is installed
+  at a safepoint, and the miss leaf could no longer compile a callee
+  from inside machine code, so warm-up runs more interpreted and exits
+  more. The share of a run the baseline compiler takes is measured
+  ("What on-stack replacement moved"), so that road step 9, which builds the thread, the
+  body's snapshot and the installation at a safepoint, decides whether
+  the baseline compiler joins it (decided with the user on 2026-11-02).
 
 ### The code zone
 
@@ -11824,11 +12154,29 @@ words nor the machine words name one.
 ### Polls and the depth check
 
 The entry's depth check is the poll ("Safepoints and the depth limit"
-above). A back edge compares against the same request word, one compare,
+above): a compiled callee's prologue compares the depth count with the
+`DepthLimit` machine word and nothing else, and a real safepoint request
+lowers that word to 0 while it is pending, so the one compare refuses the
+push for the depth and the request alike, and the interpreter takes the
+push and, at it, the safepoint. Every write of the request word goes
+through `Heap::write_safepoint_request`, which writes the limit word with
+it -- 0 exactly while the request word is a real request's 1, the limit
+`set_depth_limit` last set otherwise -- so a debug build's stress hold
+(`STRESS_HOLD`) lowers nothing and compiled frames still nest under a
+stress mode, their polls taking the hold; the interpreter's own push
+compares against its constants and never reads the word. A back edge
+compares against the request word itself, one compare,
 as Cog's backward jumps check `stackLimit` (`:38851-38858`); V8 polls at
 a back edge only when its budget runs out
-(`src/interpreter/interpreter-generator.cc:2520-2521`). Whether the depth
-count lives in a machine register is measured.
+(`src/interpreter/interpreter-generator.cc:2520-2521`). A back edge's
+poll that finds a request exits at the loop's head
+(`vm::Leave::SafepointAtLoopHead`, as an interpreted backward jump that
+finds one leaves its stretch), and once the safepoint is served the
+frame goes back into its machine code there (`vm::after_safepoint`,
+`JitStatistics::safepoint_resumptions`; "Between the tiers" above). The
+depth count stays in its machine word: kept in `rbp` it moved the mean
+within noise and one program beyond it, slower ("Safepoints and the
+depth limit" above).
 
 ### What the templates emit inline
 
@@ -12258,11 +12606,15 @@ above; "What allocation and the barrier in machine code moved", "What
 closures in machine code moved", "What non-local return in machine code
 moved", "What reclamation moved"), which made a closure's activation a
 compiled call and so removed the bridge's cost from every block a
-compiled send or an interpreted `value` send activates. The fifth -- on-stack replacement at a back edge, the polls,
-and whether the depth count lives in a machine register -- is next
-([OPEN-WORK.md](../OPEN-WORK.md), "Next"; "When a body is compiled",
-"Polls and the depth check" above, "Between the tiers" and "Safepoints
-and the depth limit" in "Planned: the deoptimization contract").
+compiled send or an interpreted `value` send activates. The fifth is
+built too: on-stack replacement at an interpreted backward jump, the
+return into machine code after a poll's safepoint, the one compare at
+a compiled push, and the depth count measured in `rbp` and left in its
+machine word ("When a body is compiled", "Polls and the depth check"
+above, "Between the tiers" and "Safepoints and the depth limit" in
+"Planned: the deoptimization contract"; "What on-stack replacement
+moved"). The register cache is next ([OPEN-WORK.md](../OPEN-WORK.md),
+"Next"; "The register cache" above).
 
 ## Decisions
 

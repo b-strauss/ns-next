@@ -30,7 +30,12 @@ Rust 1.98.0, edition 2021, seven crates:
   (`Mutator::enter_sent` in `interpreter/mod.rs`, `jit::called`, and a
   block's through the closure call stub, `jit::called_closure`), a push
   and a frame returned to cross a bridge whose entry block lasts between
-  entries -- unless its code exits at once; a cached send calls through its site's
+  entries -- unless its code exits at once; an interpreted backward jump
+  switches its frame into the body's machine code at the loop's head,
+  on-stack replacement, the body compiled at the 40th such jump if it has
+  none (`jit::back_edge_ready`, `jit::at_back_edge`), and a frame that
+  left its code for a poll's safepoint goes back into it there once the
+  safepoint is served (`vm::after_safepoint`); a cached send calls through its site's
   machine-readable cell (`interpreter/inline_cache/cells.rs`) into the
   callee's machine code or a stub the cell names (`jit/sends.rs`,
   `jit/targets.rs`: polymorphic, megamorphic, accessor, mirror method,

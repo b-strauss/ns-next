@@ -18,6 +18,9 @@ struct BenchmarkStatistics {
     /// The collector's counts and pauses after the timed runs, when
     /// `--collector-statistics` asked for them.
     collector_statistics: Option<ns_runtime::CollectorStatistics>,
+    /// The JIT's counts after the timed runs, when `--jit-statistics` asked
+    /// for them.
+    jit_statistics: Option<ns_runtime::JitStatistics>,
 }
 
 /// Reports a failed entry send on stderr, once, and answers the exit code
@@ -70,6 +73,7 @@ fn benchmark_entry(
     iterations: u32,
     cache_statistics: bool,
     collector_statistics: bool,
+    jit_statistics: bool,
     program_arguments: &[String],
 ) -> Result<BenchmarkStatistics, ExitCode> {
     let mut loaded = program::load_program(program, ns_runtime::Lowering::Optimized);
@@ -108,6 +112,7 @@ fn benchmark_entry(
     let cache_statistics = cache_statistics.then(|| loaded.interpreter.cache_statistics());
     let collector_statistics =
         collector_statistics.then(|| loaded.interpreter.collector_statistics());
+    let jit_statistics = jit_statistics.then(|| loaded.interpreter.jit_statistics());
     Ok(BenchmarkStatistics {
         iterations,
         median,
@@ -115,6 +120,7 @@ fn benchmark_entry(
         max,
         cache_statistics,
         collector_statistics,
+        jit_statistics,
     })
 }
 
@@ -125,6 +131,7 @@ pub(crate) fn execute(
     iterations: u32,
     cache_statistics: bool,
     collector_statistics: bool,
+    jit_statistics: bool,
     script: Option<&str>,
     program_arguments: &[String],
 ) -> ExitCode {
@@ -156,6 +163,7 @@ pub(crate) fn execute(
         iterations,
         cache_statistics,
         collector_statistics,
+        jit_statistics,
         &arguments,
     ) {
         Ok(statistics) => {
@@ -168,6 +176,9 @@ pub(crate) fn execute(
             }
             if let Some(collector_statistics) = &statistics.collector_statistics {
                 entry::print_collector_statistics(collector_statistics);
+            }
+            if let Some(jit_statistics) = &statistics.jit_statistics {
+                entry::print_jit_statistics(jit_statistics);
             }
         }
         Err(code) => return code,
