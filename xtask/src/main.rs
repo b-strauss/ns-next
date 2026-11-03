@@ -32,7 +32,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
   stress               the suite under the nine stress modes and without the JIT, then run-corpus plain and under each mode
-  release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without an encoder, and for aarch64-apple-darwin, Apple's JIT
+  release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without a JIT, and for aarch64-apple-darwin, Apple's JIT
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
   linux                in WSL: clippy, the suite and the doctests for x86_64-unknown-linux-gnu
@@ -66,14 +66,26 @@ fn stress_suite_runs() -> Vec<(String, String)> {
 const SHIPPED_CODE: &str = "crates/ns-runtime/core-library/shipped-code.bin";
 
 /// The first step of each WSL group: the working tree copied into the WSL
-/// clone, so that uncommitted work is checked too. The clone keeps its own
-/// `.git` and build directory, and `prior-art/` and `.temp/` hold nothing
-/// the gates build.
-const COPY_INTO_WSL: &str = "rsync -a --delete --exclude .git --exclude target \
-    --exclude prior-art --exclude .temp /mnt/d/Workspace/ns-next/ ~/workspace/ns-next/";
+/// directory, so that uncommitted work is checked too. `.git` is copied,
+/// since a test lists the tracked sources with it; the directory keeps its
+/// own build directory, and `prior-art/` and `.temp/` hold nothing the
+/// gates build. The source is the checkout the gate runs from, so a
+/// gate run from another checkout tests that one.
+fn copy_into_wsl() -> String {
+    // Forward slashes survive the quoting of `wsl -e bash -lc` where
+    // backslashes would depend on how the arguments are re-split;
+    // `wslpath -u` takes either spelling.
+    let root = repository_root().to_string_lossy().replace('\\', "/");
+    format!(
+        "mkdir -p {WSL_CLONE} && rsync -a --delete --exclude target --exclude prior-art \
+         --exclude .temp \"$(wslpath -u '{root}')/\" {WSL_CLONE}/"
+    )
+}
 
-/// The WSL clone the groups `linux` and `aarch64` run in.
-const WSL_CLONE: &str = "~/workspace/ns-next";
+/// The directory the groups `linux` and `aarch64` copy the checkout into and
+/// run in: the gates' own, so that `rsync --delete` never touches a clone
+/// of the user's.
+const WSL_CLONE: &str = "~/.cache/ns-next-gates";
 
 /// What the `aarch64` group's cargo runs with: the cross linker, the
 /// target's libraries for `qemu-aarch64`, which binfmt hands every AArch64
@@ -272,7 +284,7 @@ fn group(name: &str) -> Option<Vec<Part>> {
         // The size tests are `cfg(not(debug_assertions))`, so only a build
         // without debug assertions runs them; the profile skips the release
         // profile's fat LTO, which a test run does not need. Beside them,
-        // `ns-runtime`'s lint for a target without an encoder, where no
+        // `ns-runtime`'s lint for a target without a JIT, where no
         // `cfg(ns_jit)` code is compiled, and for Apple's JIT, whose code
         // zone no other gate builds.
         "release-checks" => steps(vec![
@@ -286,7 +298,7 @@ fn group(name: &str) -> Option<Vec<Part>> {
                     "release-checks",
                 ],
             ),
-            runtime_lint("lint without an encoder", "aarch64-pc-windows-msvc"),
+            runtime_lint("lint without a JIT", "aarch64-pc-windows-msvc"),
             runtime_lint("lint for Apple's JIT", "aarch64-apple-darwin"),
         ]),
         "codegen" => vec![Part::Codegen],
@@ -368,7 +380,7 @@ fn in_wsl(name: &str, environment: &str, commands: &[(&str, &str)]) -> Vec<Step>
     } else {
         format!("{environment} && ")
     };
-    let mut steps = vec![Step::wsl(&format!("{name} copy"), COPY_INTO_WSL)];
+    let mut steps = vec![Step::wsl(&format!("{name} copy"), &copy_into_wsl())];
     steps.extend(commands.iter().map(|(label, command)| {
         Step::wsl(
             &format!("{name} {label}"),
@@ -717,7 +729,7 @@ mod tests {
         assert_eq!(group("codegen"), Some(vec![Part::Codegen]));
         let labels = labels_of(&group("end-of-batch").expect("a group")).join(",");
         assert!(labels.contains(
-            "release checks,lint without an encoder,lint for Apple's JIT,codegen,stress suites"
+            "release checks,lint without a JIT,lint for Apple's JIT,codegen,stress suites"
         ));
     }
 
@@ -742,9 +754,12 @@ mod tests {
                 panic!("{name} is one run of steps");
             };
             assert_eq!(steps[0].program, Program::Wsl);
-            assert_eq!(steps[0].arguments, ["-e", "bash", "-lc", COPY_INTO_WSL]);
+            assert_eq!(
+                steps[0].arguments,
+                ["-e", "bash", "-lc", copy_into_wsl().as_str()]
+            );
             assert!(steps[1..].iter().all(|step| step.program == Program::Wsl
-                && step.arguments[3].contains("cd ~/workspace/ns-next && cargo")));
+                && step.arguments[3].contains("cd ~/.cache/ns-next-gates && cargo")));
         }
     }
 
