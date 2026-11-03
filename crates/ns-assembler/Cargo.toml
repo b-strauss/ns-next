@@ -13,6 +13,12 @@ description = "The abstract machine operations ns-next's JIT emits, and their en
 # out of the build.
 [dev-dependencies]
 iced-x86 = { version = "1.21", default-features = false, features = ["decoder", "intel", "std"] }
+# The AArch64 encodings are held to `yaxpeax-arm` as the x64 ones to iced,
+# so a wrong field shows as the wrong instruction text. Its decoder and its
+# text are all the tests use; its serde support stays out of the build.
+# `yaxpeax-arch` is named for the `Decoder` trait and the byte reader.
+yaxpeax-arm = { version = "0.5", default-features = false, features = ["std", "fmt"] }
+yaxpeax-arch = { version = "0.3", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

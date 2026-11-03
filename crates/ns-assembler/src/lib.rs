@@ -38,12 +38,15 @@
 
 use std::fmt;
 
+pub mod aarch64;
 pub mod x64;
 
+pub use aarch64::Aarch64;
 pub use x64::X64;
 
 /// A machine register, numbered as the target architecture numbers it in
-/// its encodings ([`x64::RAX`] … [`x64::R15`]).
+/// its encodings ([`x64::RAX`] … [`x64::R15`], [`aarch64::X0`] …
+/// [`aarch64::X30`] and [`aarch64::SP`]).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Register(pub u8);
 
@@ -290,8 +293,8 @@ pub enum BranchForm {
 /// The encoding of the operations for one architecture.
 ///
 /// An encoder may emit several instructions for one operation, and may
-/// keep registers of its own out of the operands it is given (configured
-/// per target, as AArch64's x18 on Apple and Windows), but it honours
+/// keep registers of its own out of the operands it is given (AArch64's
+/// x16 and x17, its scratch registers, x18 and x30), but it honours
 /// [`Condition`]'s contract on the flags exactly: an operation that keeps
 /// them emits nothing that changes them, one that sets them defines every
 /// condition the contract names for it.
