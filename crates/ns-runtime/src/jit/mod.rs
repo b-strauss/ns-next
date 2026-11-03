@@ -3149,7 +3149,9 @@ pub(crate) fn resumed(
 /// the tiers"), so that the run loop ends its stretch for `at_back_edge`
 /// only when the switch happens. A body without machine code in this zone
 /// counts the jump, and at its `JitState::compile_at_back_jump`th is
-/// compiled as an entry compiles it. A body with machine code switches
+/// compiled as an entry compiles it; one compiled into another zone is
+/// compiled into this one at once, as `note_entry` compiles it at its next
+/// entry. A body with machine code switches
 /// when the frame can enter it at `target` -- its feedback base the
 /// body's, the twin compiled for a reified frame, room on the native
 /// stack (`entry_of_frame`); when it cannot, the body waits as many back
@@ -3189,7 +3191,12 @@ pub(crate) fn back_edge_ready(
             mutator.jit.statistics.refused_bodies += 1;
             return false;
         }
-        if !slot.count_back_jump(mutator.jit.compile_at_back_jump) {
+        // A body compiled into another zone is compiled into this one at
+        // once, as `note_entry` compiles it at its next entry: it came due
+        // already, where it was compiled first.
+        if slot.state.get() == COMPILED {
+            slot.back_jumps.set(0);
+        } else if !slot.count_back_jump(mutator.jit.compile_at_back_jump) {
             return false;
         }
         if mutator.jit.may_compile_now(slot) {
@@ -3241,6 +3248,16 @@ pub(crate) fn at_back_edge(
     if !mutator.jit.is_entered_here(code) || !native_stack_has_room() {
         return None;
     }
+    // `back_edge_ready` refuses a top-level activation's body before it
+    // compiles it, and a body compiled at a push stays one no top-level
+    // activation runs, as at `entered`.
+    debug_assert!(
+        !matches!(
+            mutator.heap.activation_kind(activation),
+            crate::types::ActivationKind::TopLevel
+        ),
+        "internal: machine code is entered for a top-level activation"
+    );
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     let entry = entry_of_frame(mutator, activation, code, feedback_base, target)?;
     mutator.jit.statistics.back_edge_switches += 1;

@@ -2515,7 +2515,10 @@ program's subclass of `String` as an argument, the error of a
   (`crates/ns-runtime/tests/jit.rs`) passes with the prologue's separate
   check of the request as with the one compare, a guard against a
   regression only; `compiling_takes_time_that_is_counted` was never seen
-  failing; and the stub tests' harness writes `SafepointRequested` without
+  failing; the compile at a backward jump of a body compiled into
+  another zone, at once as at an entry, has no test: it needs a frame
+  that runs on across its zone's replacement, or a body two
+  interpreters run; and the stub tests' harness writes `SafepointRequested` without
   `DepthLimit` (`jit/stubs.rs`), which no test reads today.
 - The `ByteArray` sub-project's (noted 2026-10-13): the movers' test
   (`heap.rs`,
