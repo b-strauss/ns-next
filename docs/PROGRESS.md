@@ -6796,6 +6796,25 @@ golden, `run-corpus` output or benchmark outcome changed.
 - The documents' commit after them.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
-8's sixth stage, the register cache, next; a caller compiled by on-stack
+8's next stage; a caller compiled by on-stack
 replacement that its abandoned callee abandons too; and whether the
 baseline compiler joins road step 9's compiler thread.
+
+## No register cache in the baseline, measured (2026-11-03)
+
+Road step 8's planned sixth stage, a register cache in the baseline
+([execution.md](design/execution.md), "The register cache", "What a
+register cache would move"), was measured before it was built. A
+throwaway counter in the interpreter found that a cache would serve 27%
+to 75% of the frame loads, and a fused compare-and-branch would apply
+at most 0.08 times per instruction run. Two timed variants of
+`load_frame_register` showed what loads cost: doubling every load moved
+the geometric mean +1.8%, and adding a store-to-load forwarding to every
+load +2.4%. A cache would therefore move it by about 1%, inside the noise.
+Decided with the user: the baseline keeps reading and writing the
+slots, as V8's Sparkplug does, and register allocation, with the fused
+comparison, goes to road step 9. The AArch64 encoder is the baseline's
+last stage and next. Neither measurement was committed; no code changed
+but two comments.
+
+- The documents' commit.

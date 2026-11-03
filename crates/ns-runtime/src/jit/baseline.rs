@@ -1199,12 +1199,11 @@ fn reaches_before_an_exit(code: &CompiledCode, exits: &[bool], transfers: &[bool
 /// extension point"):
 ///
 /// 1. **A template** -- machine code written against the macro
-///    assembler's idioms and the register cache's operand interface,
-///    never against an encoder -- for an instruction whose work machine
-///    code does itself.
+///    assembler's idioms, never against an encoder -- for an
+///    instruction whose work machine code does itself.
 /// 2. **A leaf call** -- the instruction's own interpreter step, a Rust
-///    function shared with `vm::run`, called through the leaf stub with
-///    the frame's registers flushed -- only for an instruction that runs
+///    function shared with `vm::run`, called through the leaf stub --
+///    only for an instruction that runs
 ///    no Newspeak code, cannot collect and reads no other activation.
 /// 3. **An exit that re-executes it** -- the frame handed to the
 ///    interpreter at that instruction -- for every other one. Always

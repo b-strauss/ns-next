@@ -15,15 +15,20 @@ when they were written.
 
 ## Next
 
-**Road step 8's sixth stage: the register cache**
+**Road step 8's last stage: the AArch64 encoder under QEMU**
 ([execution.md](design/execution.md), "Planned: the baseline JIT", "The
-register cache", "Stages"): within a basic block the baseline keeps a
-body's registers, which are frame slots, in machine registers, and
-writes them back before every send, poll, merge point, exit and leaf
-call -- Cog's simulated stack and `ssFlushTo:` -- so that every compiled
-frame's registers still hold every value an observer can need; the
-templates read and write the slots today. `r13` and `rbp` play no role
-(`Roles::of`), `r13` kept for the cache.
+foundation and the one extension point", "Executable memory", "Tests",
+"Stages"): `ns-assembler`'s second encoder, every encoding checked
+against a disassembler as x64's is against `iced-x86`, the macro
+assembler's AArch64 idioms and its `Roles::of`, the instruction cache
+flushed once per install, and `cfg(ns_jit)` set for AArch64 in
+`crates/ns-runtime/build.rs`; the suite cross-compiled for
+`aarch64-unknown-linux-gnu` and run under `qemu-aarch64` in WSL2. A
+register cache, planned as the sixth stage, was measured on 2026-11-03
+and is not one: it would have moved the geometric mean by about 1%,
+inside the noise, and register allocation is road step 9's ("The
+register cache", "What a register cache would move"; the item in "The
+road to a high-performance VM" below).
 
 Its first five stages are built ("The baseline JIT's foundation",
 "Sends, returns and the exit that materializes", "The entry at a send",
@@ -66,8 +71,7 @@ mean over the twenty-three sources is 8.6% faster than `master`,
 stage 4's tree,
 `bench_megamorphic` 85.1%, `bench_new` 38.3%, Havlak 2.9% and DeltaBlue
 4.5%, Queens' +2.6% the code's placement ("What on-stack replacement
-moved"). The stages after the sixth, each measured against the tree
-before it: the AArch64 encoder under QEMU. Road step 8 as a whole,
+moved"). Road step 8 as a whole,
 Cog's class, for x64 and arm64, is "The road to a high-performance VM"
 below.
 Road step 7 is complete: 7c wrote the contract the JIT tiers build
@@ -419,7 +423,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   on the geometric mean over twenty-three sources and no program slower
   but Queens, by the code's placement, the depth count left in its
   machine word after `rbp` measured no faster ("What on-stack
-  replacement moved"), the register cache next ("Next" above).
+  replacement moved"), the AArch64 encoder next ("Next" above).
   Left to it, and measured: whether a send calls through its cache cell
   or through a patched direct call, which stage 3's measurement could not isolate
   ("What sends in machine code moved"); and the code zone's default size,
@@ -716,6 +720,20 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       2^20 rows where 1,024 is the default.
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class.
+  - **Register allocation over a body** (decided with the user on
+    2026-11-03): a frame register's value kept in a machine register
+    across instructions and the merges of the inlined forms, an
+    immediate literal taken as an operand, and a `SmallInteger`
+    comparison fused with the branch that tests it. The baseline has no
+    register cache: measured before it was built, one would have served
+    27% to 75% of the frame loads and moved the geometric mean by about
+    1%, inside the noise, and a fusable comparison runs at most 0.08
+    times per instruction. Only a store a body provably needs no longer
+    may be left out, and only once the collector's pre-pass nils what
+    the frame did not write, or the leftover analysis is broken.
+    `r13` is left free for it (`Roles::of`).
+    [execution.md](design/execution.md), "The register cache", "What a
+    register cache would move".
   - **The home of a closure created in an inlined scope** (noted with the
     user on 2026-10-27): a frame object is married only to a frame that
     stands for one activation, so a block the optimizer does not inline,
