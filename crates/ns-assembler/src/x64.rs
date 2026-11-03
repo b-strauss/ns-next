@@ -424,6 +424,12 @@ const RIP_RELATIVE: u8 = 0b101;
 /// Intel SDM Vol. 2A, 2.2.1.6 RIP-Relative Addressing.
 const LABEL_REFERENCE_SIZE: i64 = 7;
 
+/// The bytes `push` and `call` move the stack pointer by in 64-bit mode.
+///
+/// Intel SDM Vol. 2B, PUSH—Push Word, Doubleword, or Quadword Onto the Stack
+/// (in 64-bit mode the stack pointer moves by 8); Vol. 1, 6.2 Stack Alignment.
+const STACK_SLOT_BYTES: i32 = 8;
+
 /// `RET` (`C3`) — near return.
 ///
 /// Intel SDM Vol. 2B, RET—Return From Procedure.
@@ -687,6 +693,15 @@ fn condition_code(condition: Condition) -> u8 {
 }
 
 impl Encoder for X64 {
+    fn stack_slot_bytes(&self) -> i32 {
+        STACK_SLOT_BYTES
+    }
+
+    fn instruction_alignment(&self) -> u32 {
+        // Instructions have any address.
+        1
+    }
+
     fn fill_with_stops(&self, length: usize, code: &mut Vec<u8>) {
         code.resize(code.len() + length, BREAKPOINT);
     }
@@ -867,6 +882,12 @@ impl Encoder for X64 {
                 indirect_branch(code, INDIRECT_CALL_EXTENSION, target);
             }
             Operation::JumpRegister { target } => {
+                indirect_branch(code, INDIRECT_JUMP_EXTENSION, target);
+            }
+            // `call` pushes the return address, which `ret` pops: nothing to
+            // save, and a jump past nothing is a plain jump.
+            Operation::EnterCalled => {}
+            Operation::JumpIntoCalled { target } => {
                 indirect_branch(code, INDIRECT_JUMP_EXTENSION, target);
             }
             Operation::Push { source } => opcode_register(code, PUSH_REGISTER_BASE, source),

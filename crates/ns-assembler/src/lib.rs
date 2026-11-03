@@ -106,7 +106,7 @@ pub struct Memory {
 /// - **Keeps**: every other operation -- `move_register`, `move_if`,
 ///   `move_immediate`, `load`, `store`, `store_immediate32`, `push`, `pop`,
 ///   `add_stack`, `load_code_address`, `load_labelled`, `load_label_address`, `jump`, `jump_if`,
-///   `jump_register`, `return_` and `trap` -- so a compare
+///   `jump_register`, `enter_called`, `jump_into_called`, `return_` and `trap` -- so a compare
 ///   may be separated from its branch by moves, loads and stores.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Condition {
@@ -228,6 +228,16 @@ pub enum Operation {
     CallRegister { target: Register },
     /// Jumps to the address in `target`.
     JumpRegister { target: Register },
+    /// The first operation of every address a call reaches: after it the
+    /// return address the call left lies at `[stack pointer + 0]`, where
+    /// [`Operation::Return`] expects it. An architecture whose call already
+    /// leaves it there encodes nothing.
+    EnterCalled,
+    /// Jumps to the address in `target`, which begins with
+    /// [`Operation::EnterCalled`], past that operation: the return address
+    /// is already saved where the callee expects it. A stub's tail jump
+    /// into a callee.
+    JumpIntoCalled { target: Register },
     /// Pushes `source` on the machine stack.
     Push { source: Register },
     /// Pops the machine stack into `target`.
@@ -325,6 +335,14 @@ pub trait Encoder {
     /// moved or freed body left -- traps at once rather than running what
     /// lay there before.
     fn fill_with_stops(&self, length: usize, code: &mut Vec<u8>);
+
+    /// The bytes one return address, or one pushed register, takes on the
+    /// machine stack: the stack pointer moves by multiples of it.
+    fn stack_slot_bytes(&self) -> i32;
+
+    /// The alignment, in bytes, every instruction of the code must have in
+    /// memory: 1 where instructions have any address.
+    fn instruction_alignment(&self) -> u32;
 }
 
 /// The code an [`Assembler`] produced.
@@ -336,7 +354,8 @@ pub struct Assembled {
     /// bound at, `None` for one never bound.
     pub label_offsets: Vec<Option<u32>>,
     /// The alignment the code's first byte must have in memory for every
-    /// [`Assembler::align_data`] to align there too: the largest asked
+    /// [`Assembler::align_data`] to align there too, and the encoder's
+    /// [`Encoder::instruction_alignment`] to hold: the largest asked
     /// for, 1 when none was.
     pub alignment: u32,
 }
@@ -439,6 +458,13 @@ impl<E: Encoder> Assembler<E> {
             bound: Vec::new(),
             alignment: 1,
         }
+    }
+
+    /// The encoder, for what depends on the target: its stack slot, its
+    /// instruction alignment.
+    #[must_use]
+    pub fn encoder(&self) -> &E {
+        &self.encoder
     }
 
     /// A new label, not yet bound.
@@ -676,6 +702,21 @@ impl<E: Encoder> Assembler<E> {
         self.emit(Operation::JumpRegister { target });
     }
 
+    /// The first operation of every address a call reaches: afterwards the
+    /// return address the call left lies at `[stack pointer + 0]`, where
+    /// [`Assembler::return_`] expects it. Keeps the flags.
+    pub fn enter_called(&mut self) {
+        self.emit(Operation::EnterCalled);
+    }
+
+    /// Jumps to the address in `target`, which begins with
+    /// [`Assembler::enter_called`], past that operation: the return address
+    /// is already saved where it expects it. A stub's tail jump into a
+    /// callee. Keeps the flags.
+    pub fn jump_into_called(&mut self, target: Register) {
+        self.emit(Operation::JumpIntoCalled { target });
+    }
+
     /// Pushes `source` on the machine stack. Keeps the flags.
     pub fn push(&mut self, source: Register) {
         self.emit(Operation::Push { source });
@@ -893,7 +934,7 @@ impl<E: Encoder> Assembler<E> {
         Ok(Assembled {
             bytes,
             label_offsets,
-            alignment: self.alignment,
+            alignment: self.alignment.max(self.encoder.instruction_alignment()),
         })
     }
 }
