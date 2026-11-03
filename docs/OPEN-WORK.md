@@ -1685,18 +1685,24 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
-- **Why fat LTO stopped inlining eight functions into `vm::run`**
-  (2026-11-03). In the binary, `master`'s `vm::run` inlines
+- **The interpreter's eight helpers `vm::run` no longer inlines are
+  not measured by the final protocol** (2026-11-03). Since road step 8's
+  fifth stage, the interpreted backward jump's test of
+  `JitSlot::back_edge_is_armed` lowers LLVM's static frequency estimate
+  of the instruction loop, so fat LTO no longer counts the call sites of
   `read_outer_local`, `write_outer_local`, `load_vector`, `store_vector`,
   `enclosing_object`, `new_array_from_registers`, `check_applied_clause`
-  and `allocate_object`, and road step 8's fifth stage's calls them,
-  12% fewer bytes, while the rlib's listing the codegen gate reads calls
-  all eight in both trees and grew by the stage's two new calls only
+  and `Heap::allocate_object` as locally hot and calls them
   ([execution.md](design/execution.md), "What on-stack replacement
-  moved"). Which of the inliner's limits the stage crossed is not
-  established, nor whether the interpreted paths of the eight pay for it;
-  no program separated slower but Queens, which a padding sweep laid to
-  placement.
+  moved", which has the mechanism). An interim measurement under
+  `NS_NEXT_NO_JIT=1` moved the geometric mean +0.03% and `bench_block.ns`
+  +2.7%; left as it is with the user, since machine code runs none of
+  the eight. What would settle it: a final measurement under
+  `NS_NEXT_NO_JIT=1`, and if `bench_block.ns`'s cost holds, the test
+  compiled out where the JIT is (`cfg!(ns_jit)`, always false on a target
+  without one, today AArch64) and `#[inline(always)]` on the helpers --
+  worth taking up when interpreted speed is measured for the AArch64
+  port.
 - **A frame that cannot switch delays the other frames of its body**
   (2026-11-03). A body's count of back jumps is the body's, so a frame
   that cannot switch delays another frame of the same body by up to 39

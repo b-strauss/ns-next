@@ -8215,10 +8215,27 @@ fat LTO inlines into `vm::run` what the rlib calls --
 `Heap::allocate_object` -- and the branch's does not: build a's
 `vm::run` makes 515 calls at `master` and 451 at `9b95559d`, about
 10,450 and 9,190 instructions. All eight are interpreted code's, off
-the paths machine code runs; why the LTO inliner decides differently
-for a caller the rlib barely changed is not established
-([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained measurements and
-unmeasured decisions"). Three rounds in one sitting, the order of the six
+the paths machine code runs. None of them is cheap enough to inline at
+LLVM's default threshold (their costs are 345 to 440 against 250); at
+`master` fat LTO inlined them because their call sites counted as
+*locally hot* -- a block the static block-frequency estimate runs at
+least 60 times per entry of `vm::run` (`HotCallSiteRelFreq`), which at
+`-O3` raises the threshold to 525 (`LocallyHotCallSiteThreshold`). The
+interpreted backward jump's test of `JitSlot::back_edge_is_armed` is a
+new edge out of the instruction loop, and the estimate's busiest block
+fell from 712 times the entry to 252 (961 with the test removed, 406
+with its exit marked `std::hint::cold_path`), so no call site in
+`vm::run` counts as locally hot any more (25 before) and 64 count as
+cold (39 before); measured with `-C llvm-args=-pass-remarks=inline` and
+`-print-bfi` on the binary's LTO, since rustc's `-C remark` reports the
+crate's own optimization only, where the two trees decide alike. An
+interim measurement under `NS_NEXT_NO_JIT=1` (one pinned build a side,
+three rounds, eleven Are We Fast Yet programs and the seven micro
+sources) moved the geometric mean +0.03%; `bench_block.ns`, whose block
+writes a variable held in an indirection vector -- `load_vector` and
+`store_vector` -- was +2.7% with its rounds apart, Richards +0.8%, both
+within what one build a side can tell. Left as it is, decided with the
+user on 2026-11-03: machine code runs none of the eight. Three rounds in one sitting, the order of the six
 binaries rotated each round; `--iterations 3` for CD, Havlak,
 Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest,
 among them the four sources of "What spec-conformant lookup moved" --
