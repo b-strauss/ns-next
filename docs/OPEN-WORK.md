@@ -1685,6 +1685,18 @@ classes and a class from source with no predecessor are not edited
 
 ## Unexplained measurements and unmeasured decisions
 
+- **Why fat LTO stopped inlining eight functions into `vm::run`**
+  (2026-11-03). In the binary, `master`'s `vm::run` inlines
+  `read_outer_local`, `write_outer_local`, `load_vector`, `store_vector`,
+  `enclosing_object`, `new_array_from_registers`, `check_applied_clause`
+  and `allocate_object`, and road step 8's fifth stage's calls them,
+  12% fewer bytes, while the rlib's listing the codegen gate reads calls
+  all eight in both trees and grew by the stage's two new calls only
+  ([execution.md](design/execution.md), "What on-stack replacement
+  moved"). Which of the inliner's limits the stage crossed is not
+  established, nor whether the interpreted paths of the eight pay for it;
+  no program separated slower but Queens, which a padding sweep laid to
+  placement.
 - **A frame that cannot switch delays the other frames of its body**
   (2026-11-03). A body's count of back jumps is the body's, so a frame
   that cannot switch delays another frame of the same body by up to 39

@@ -16,9 +16,13 @@
 > which are the callee's first registers (road step 7a′, "Overlapping
 > register windows"). The contract compiled frames will keep with
 > interpreted ones is written (road step 7c, "Planned: the
-> deoptimization contract"), and the baseline JIT's first four stages
+> deoptimization contract"), and the baseline JIT's first five stages
 > are built on x64 (road step 8, "The baseline JIT's foundation"): a body
-> is compiled at its second entry and entered wherever it runs; its sends
+> is compiled at its second entry, or at its fortieth interpreted backward
+> jump, and entered wherever it runs -- a frame
+> switching into its machine code at a loop's head, on-stack replacement,
+> and going back in there after a poll's safepoint ("Between the tiers");
+> its sends
 > call through the inline caches' cells, it allocates, stores through the
 > write barrier, makes closures, calls blocks, forces futures and cuts a
 > non-local return in machine code, and it exits to the interpreter
@@ -8198,7 +8202,23 @@ the code zones at the three paddings on both sides (a none, b 208 bytes
 before the stubs and 32 before the bodies, c 96 and 176); `vm::run`
 spans about 51.6, 55.6 and 60.2 KB at `master` and 45.2, 48.6 and 52.3
 KB at `9b95559d`, and no build has a `run_stretch` or a `vm::run`
-closure of its own. Three rounds in one sitting, the order of the six
+closure of its own. The branch's `vm::run` is smaller in the binary
+while the codegen gate counts more instructions in it (9252 against
+9142) because the two measure different code: the gate the rlib's
+listing before the binary's fat LTO, where both trees call the same
+functions out of line but the branch's two new ones (`back_edge_ready`,
+`after_safepoint`), and the binary that code after it, where `master`'s
+fat LTO inlines into `vm::run` what the rlib calls --
+`locals::read_outer_local`, `write_outer_local`, `load_vector` and
+`store_vector`, `sends::enclosing_object`,
+`Mutator::new_array_from_registers`, `check_applied_clause` and
+`Heap::allocate_object` -- and the branch's does not: build a's
+`vm::run` makes 515 calls at `master` and 451 at `9b95559d`, about
+10,450 and 9,190 instructions. All eight are interpreted code's, off
+the paths machine code runs; why the LTO inliner decides differently
+for a caller the rlib barely changed is not established
+([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained measurements and
+unmeasured decisions"). Three rounds in one sitting, the order of the six
 binaries rotated each round; `--iterations 3` for CD, Havlak,
 Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest,
 among them the four sources of "What spec-conformant lookup moved" --
