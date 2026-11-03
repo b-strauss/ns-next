@@ -8435,6 +8435,133 @@ only if the mean was faster beyond noise and no program slower beyond
 noise; neither held, so `de9d9cea` reverted it ("Safepoints and the
 depth limit" has the decision).
 
+### What a register cache would move
+
+**Measured 2026-11-03 on `master` (`8de90fb8`), before building it**,
+to decide whether the baseline's sixth stage should be a register
+cache. The cache would keep a frame register's value in a machine
+register after a template loaded or wrote it, so that a later template
+reads it without a load. Two measurements were made, neither of them
+committed.
+
+**What it would save, counted.** A throwaway counter at the
+interpreter's instruction fetch ran every source under
+`NS_NEXT_NO_JIT=1` -- the bytecode machine code compiles -- and
+weighted, by how often each instruction ran, the frame register reads
+a cache could serve. It counted four things: a read of a register that
+the same basic block had already read or written, with a send, a
+compiled call or an exit emptying the cache; the same with the state
+carried across the merge after an inlined form's fallback send, whose
+cold path would reload what the hot one holds; an `IntegerBinary`
+comparison whose fast path's `Jump` lands on a branch over its
+destination, which a fused compare-and-branch would take on the flags;
+and an `IntegerBinary` operand last written by an immediate
+`LoadLiteral`. Per executed instruction:
+
+| Source | Instructions run | Block reads | Merge reads | Fused compares | Constant operands | ns per instruction, JIT on |
+|---|---|---|---|---|---|---|
+| `bench_block` | 1,350,133 | 0.30 | 0.48 | 0.037 | 0.074 | 0.64 |
+| `bench_loop` | 850,133 | 0.12 | 0.35 | 0.059 | 0.118 | 0.64 |
+| `bench_megamorphic` | 1,610,162 | 0.22 | 0.44 | 0.062 | 0.124 | 0.44 |
+| `bench_recursion` | 3,156,319 | 0.23 | 0.50 | 0.077 | 0.154 | 0.21 |
+| `bench_send` | 950,133 | 0.16 | 0.37 | 0.053 | 0.158 | 0.54 |
+| `bench_signal` | 4,305,133 | 0.23 | 0.44 | 0.070 | 0.125 | 4.58 |
+| `bench_while` | 8,400,164 | 0.10 | 0.29 | 0.000 | 0.095 | 0.75 |
+| `Bounce` | 374,055 | 0.17 | 0.40 | 0.068 | 0.047 | 0.55 |
+| `CD` | 632,179,448 | 0.17 | 0.45 | 0.016 | 0.037 | 5.07 |
+| `DeltaBlue` | 123,564,694 | 0.12 | 0.33 | 0.040 | 0.026 | 2.03 |
+| `DeltaBlueTon80` | 1,187,630 | 0.08 | 0.30 | 0.035 | 0.023 | 1.65 |
+| `Havlak` | 674,585,723 | 0.16 | 0.38 | 0.046 | 0.070 | 1.84 |
+| `Json` | 2,588,409 | 0.17 | 0.36 | 0.065 | 0.075 | 1.40 |
+| `List` | 299,986 | 0.07 | 0.22 | 0.001 | 0.001 | 0.63 |
+| `Mandelbrot` | 835,789,945 | 0.17 | 0.92 | 0.001 | 0.093 | 2.24 |
+| `NBody` | 340,255,024 | 0.05 | 0.50 | 0.021 | 0.019 | 3.37 |
+| `Permute` | 408,210 | 0.15 | 0.33 | 0.052 | 0.073 | 0.98 |
+| `Queens` | 372,293 | 0.11 | 0.36 | 0.031 | 0.060 | 0.86 |
+| `Richards` | 9,917,971 | 0.06 | 0.23 | 0.008 | 0.012 | 1.79 |
+| `RichardsTon80` | 816,780 | 0.07 | 0.24 | 0.020 | 0.028 | 2.20 |
+| `Sieve` | 306,836 | 0.14 | 0.48 | 0.071 | 0.088 | 1.26 |
+| `Storage` | 260,223 | 0.19 | 0.42 | 0.048 | 0.132 | 2.68 |
+| `Towers` | 519,669 | 0.18 | 0.33 | 0.000 | 0.055 | 0.98 |
+
+The last column divides "What on-stack replacement moved"'s time for
+the source by the instructions it runs. Machine code already runs
+`fib:` at about one cycle per instruction, on a 5.5 GHz Core Ultra 9
+285K, so the processor overlaps the frame loads with the rest, and no
+count of cycles per load holds. Most of the Are We Fast Yet programs
+spend 1.3 to 5 ns per instruction, in sends and allocation, not in frame
+loads.
+
+**What a load costs, measured.** Two variants of `load_frame_register`
+were each timed against `master`, by the interim protocol of the
+`measuring-performance` skill: one pinned release build a side, the
+seven micro sources and the eleven short Are We Fast Yet programs,
+`--iterations 15`, three rounds with the order rotated. The first
+variant loaded every frame register twice, the second load into the idiom
+scratch register, which costs throughput. The second variant stored
+the loaded value back and loaded it again, which puts one more
+store-to-load forwarding on the critical path of every load -- the
+latency a cache would save.
+
+| Source | master (ms) | twice (ms) | Change | stored and reloaded (ms) | Change |
+|---|---|---|---|---|---|
+| `Bounce` | 0.207 | 0.213 | +3.1% | 0.240 | +16.0% |
+| `DeltaBlueTon80` | 1.830 | 1.899 | +3.8% | 1.960 | +5.3% |
+| `Json` | 3.461 | 3.628 | +4.8% | 3.731 | +8.2% |
+| `List` | 0.188 | 0.187 | -0.3% | 0.188 | -2.0% |
+| `Permute` | 0.387 | 0.393 | +1.7% | 0.380 | -5.2% |
+| `Queens` | 0.320 | 0.322 | +0.7% | 0.320 | -0.1% |
+| `Richards` | 16.853 | 17.091 | +1.4% | 17.443 | +3.4% |
+| `RichardsTon80` | 1.576 | 1.639 | +3.9% | 1.730 | +12.6% |
+| `Sieve` | 0.237 | 0.246 | +3.8% | 0.213 | -9.9% |
+| `Storage` | 0.679 | 0.667 | -1.8% | 0.724 | +12.4% |
+| `Towers` | 0.438 | 0.467 | +6.5% | 0.450 | +2.9% |
+| `bench_block` | 0.857 | 0.852 | -0.5% | 0.938 | +11.4% |
+| `bench_loop` | 0.578 | 0.605 | +4.8% | 0.531 | -8.3% |
+| `bench_megamorphic` | 0.705 | 0.692 | -1.9% | 0.723 | +1.6% |
+| `bench_recursion` | 0.663 | 0.685 | +3.2% | 0.661 | -0.1% |
+| `bench_send` | 0.523 | 0.505 | -3.4% | 0.513 | +2.0% |
+| `bench_signal` | 19.088 | 19.133 | +0.2% | 18.749 | -2.5% |
+| `bench_while` | 6.225 | 6.386 | +2.6% | 6.160 | -0.4% |
+
+The two variants were measured one after the other, each beside its
+own three rounds of the same `master` binary; the second change is
+against those rounds, which the table does not show. Doubling every
+load moved the geometric mean +1.8%, and doubling its forwarding
+latency +2.4%. A single build a side spreads by more than that (up to
+16% between two builds of one tree, the `measuring-performance`
+skill's point 3), as
+`bench_loop` and Sieve, *faster* by 8.3% and 9.9% with more work,
+show. A cache would serve 27% (List) to 75% (Mandelbrot) of the loads,
+the merge column against all of a source's frame reads, about 45% on
+most, so it would move the geometric mean by about 1%, inside the noise of every measurement here. The fused
+compare saves a few instructions more where it applies, at most 0.08
+times per instruction run, and on the long programs 0.001 to 0.05
+times. Not covered: the five seconds-long programs, which the count puts
+no higher, and the three builds a side a final measurement takes.
+
+**Why it is not worth a stage here.** Cog caches its operand stack
+because a stack bytecode pushes and pops every intermediate value, and
+its gain is the stack entry consumed before anything spills it: it
+keeps its temporaries written through (`tempsValidAndVolatileEntriesSpilled`,
+`prior-art/opensmalltalk-vm/src/spur64.sista/cogitX64SysV.c:40797-40860`)
+and voids the cache at every merge (`mergeWithFixupIfRequired`,
+`:40924-40990`). The register code here writes each intermediate once,
+to the register its consumer reads, so that traffic does not exist. And
+the store Cog skips may not be skipped here: the leftover analysis takes
+every register a frame writes as cleaned, so a skipped store would leave
+a callee's leftover there for the collector's pre-pass to trace
+("What the collector traces" in [memory.md](memory.md)), and an older
+value kept would keep alive an object the interpreter lets go, which a
+`WeakArray` shows. V8's Sparkplug, the baseline over Ignition, a
+register machine like this one, caches nothing but the accumulator and
+stores every register the interpreter would
+(`prior-art/v8/docs/compiler/sparkplug/compiler-sparkplug.md:17`, `:33`),
+and leaves register allocation to Maglev. So the baseline reads and
+writes the slots, and register allocation is road step 9's ("The
+register cache" in "Planned: the baseline JIT"). Decided with the user
+on 2026-11-03.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -10242,7 +10369,12 @@ Each step gets its own design when it comes up.
   Strongtalk's and HotSpot's class: recompiling hot code along the receiver
   types the caches recorded, inlining the sends that make Newspeak slow when
   they are not inlined -- slot accessors, `outer` sends, kernel methods that
-  forward to the VM mirror -- and deoptimizing when a speculation fails. Its
+  forward to the VM mirror -- and deoptimizing when a speculation fails.
+  Its compiler allocates machine registers over a body, which the
+  baseline does not ("The register cache" in "Planned: the baseline
+  JIT"): a frame register's value kept across instructions and merges,
+  and a comparison fused with the branch that tests it, taken on the
+  flags. Its
   target is measured against Java with the Are We Fast Yet benchmarks, whose
   Newspeak versions SOMns carries (`prior-art/somns/core-lib/Benchmarks`)
   and whose Java counterparts are under `benchmarks/are-we-fast-yet/java/`
@@ -10639,7 +10771,7 @@ runs. Only x64 has an encoder: the JIT is compiled where
 `crates/ns-runtime/build.rs` sets `cfg(ns_jit)`, on x64 alone, the one
 line the AArch64 port changes; elsewhere `jit::available` answers `false`
 and every body stays interpreted. What the design names beyond the five
-stages -- the register cache, the AArch64 encoder -- is still planned.
+stages, the AArch64 encoder, is still planned.
 "What on-stack replacement moved" has the measurement of stage 5, the
 depth count kept in a register among it, "What allocation and the
 barrier in machine code moved", "What closures in machine code moved",
@@ -10731,7 +10863,8 @@ the baseline JIT's foundation moved" that of the first two.
   rather than a crate of its own). Two registers play no role, `r13`
   and `rbp`: preserved by both conventions and saved by the entry stub,
   they are the free registers a value survives a leaf call in, `r13`
-  kept for the register cache; and a leaf call keeps the stack
+  left for road step 9's register allocation ("The register cache"
+  below); and a leaf call keeps the stack
   pointer it aligned away from in block word `LeafStackPointer` (14)
   instead. Its idioms are the only way a
   template touches a frame, the block, a leaf, a poll or an exit: load and
@@ -11584,8 +11717,8 @@ lowering of one instruction:
 - **The macro assembler**, `crates/ns-runtime/src/jit/`, which writes the
   VM's idioms once in the abstract operations: load an object's guard,
   check a cache cell, bump-allocate in eden, the write barrier, the depth
-  check and the safepoint poll, load and store a frame register, spill
-  and fill the register cache. HotSpot's layering is the model -- encoder,
+  check and the safepoint poll, load and store a frame register.
+  HotSpot's layering is the model -- encoder,
   then `MacroAssembler` with every VM idiom, then one subclass per client
   (`cpu/x86/macroAssembler_x86.hpp:44`; the interpreter, C1, C2 and the
   stubs share `profile_receiver_type`, the poll and the allocation) -- and
@@ -11605,11 +11738,9 @@ exhaustive, so a new instruction cannot compile until it chooses one of
 three lowerings:
 
 1. **A template**: machine code written against the macro assembler's
-   idioms and the register cache's operand interface, never against an
-   encoder.
+   idioms, never against an encoder.
 2. **A leaf call**: the instruction's own interpreter step, a Rust
-   function shared with `vm::run`, called through the leaf stub with the
-   frame's registers flushed. Only an instruction that runs no Newspeak
+   function shared with `vm::run`, called through the leaf stub. Only an instruction that runs no Newspeak
    code, cannot collect and reads no other activation may take it --
    HotSpot's `JRT_LEAF` class (`share/runtime/interfaceSupport.inline.hpp:300-314`).
 3. **An exit that re-executes it**: the frame is materialized and handed
@@ -11618,11 +11749,7 @@ three lowerings:
    at its next back edge. Always correct, so every instruction has a
    lowering from the day it is added.
 
-What the register cache flushes around an instruction it reads from the
-instruction's declared register effects (`registers_read`,
-`register_written`, `successors` in `bytecode.rs`), which every
-instruction already declares; whether its lowering can reach an observer
-it reads from the lowering chosen. So a new instruction adds one arm and,
+So a new instruction adds one arm and,
 for a template, the idioms it lacks to the macro assembler; nothing below
 changes. A new architecture adds an encoder and the macro assembler's
 per-architecture idioms; nothing above changes.
@@ -11833,16 +11960,26 @@ Strongtalk, V8 and HotSpot again for it.
 
 ### The register cache
 
-Since a body's registers are frame slots, the baseline caches them in
-machine registers within a basic block and writes them back before every
-send, poll, merge point, exit and leaf call -- Cog's simulated stack and
-`ssFlushTo:` (`:40797-40860`, `:40924-40990`, `:38825-38840`), which keeps
-the contract's "every compiled frame's registers hold every value an
-observer can need" true by construction. V8's Sparkplug keeps nothing but
-its accumulator in a register (`docs/compiler/sparkplug/compiler-sparkplug.md:17`)
-and HotSpot's C1 keeps nothing across a call
-(`share/c1/c1_LinearScan.cpp:1254-1286`). Built in two measured stages:
-templates that read and write the slots, then the cache.
+The baseline has none: every template loads the frame registers it
+reads from their slots and stores the one it writes, as the interpreter
+does, so every compiled frame's registers hold every value an observer
+can need at every instruction, and an exit flushes nothing. This is V8's
+Sparkplug's arrangement, which keeps only Ignition's accumulator in a
+machine register and stores every register the interpreter would
+(`docs/compiler/sparkplug/compiler-sparkplug.md:17`, `:33`); HotSpot's
+C1, an optimizing compiler, keeps nothing across a call
+(`share/c1/c1_LinearScan.cpp:1254-1286`). Cog's simulated stack, which
+caches its operand stack in registers and spills it before every send,
+merge and trap (`ssFlushTo:`, `:40797-40860`, `:40924-40990`,
+`:38825-38840`), pays because a stack bytecode pushes and pops every
+intermediate value; this register code writes each once, and the store
+Cog skips may not be skipped here. Measured before it was built, a cache
+would have served 27% to 75% of the frame loads, and doubling every
+load's cost moved the geometric mean by about 2%, so the cache would
+move it by about 1%, inside the noise ("What a register cache would
+move"). Register allocation, and the compare fused with its branch, are
+road step 9's, whose compiler allocates registers over a body
+("Planned: JIT tiers"). Decided with the user on 2026-11-03.
 
 ### When a body is compiled
 
@@ -12611,7 +12748,9 @@ encoder; entry, exit and the instructions without a send, every body
 compilable since an instruction without a template exits; sends and the
 caches; closures, non-local return, allocation and the barrier;
 on-stack replacement, the polls and the depth count's measurement; the
-register cache; the AArch64 encoder under QEMU. The first four are
+AArch64 encoder under QEMU. A register cache was measured before it
+would have been the sixth and is not one ("The register cache" above).
+The first four are
 built: the first three, and the entry into machine code at its cost
 after them -- an interpreter's send calling a compiled callee, every
 compiled body entered ("The baseline JIT's foundation" above, "What
@@ -12630,8 +12769,8 @@ a compiled push, and the depth count measured in `rbp` and left in its
 machine word ("When a body is compiled", "Polls and the depth check"
 above, "Between the tiers" and "Safepoints and the depth limit" in
 "Planned: the deoptimization contract"; "What on-stack replacement
-moved"). The register cache is next ([OPEN-WORK.md](../OPEN-WORK.md),
-"Next"; "The register cache" above).
+moved"). The AArch64 encoder is next ([OPEN-WORK.md](../OPEN-WORK.md),
+"Next").
 
 ## Decisions
 

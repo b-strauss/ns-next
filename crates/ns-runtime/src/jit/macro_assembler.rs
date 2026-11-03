@@ -170,7 +170,9 @@ impl Roles {
     /// Two registers play no role and are no scratch registers, `r13` and
     /// `rbp`: preserved by both conventions and saved by the entry stub,
     /// they are the free registers a value survives a leaf call in, `r13`
-    /// the one the register cache is to have.
+    /// left for road step 9's register allocation: the baseline keeps no
+    /// frame register in a machine register (`docs/design/execution.md`,
+    /// "The register cache").
     pub(crate) fn of(abi: Abi) -> Roles {
         match abi {
             Abi::Windows64 | Abi::SystemV => Roles {

@@ -57,7 +57,7 @@ first.
 | Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames, written into `execution.md` for road steps 8 and 9 to build to | Complete | 2026-10-27 | — |
 | The handler search as a leaf: `activationNextHandler:` walks the frames and reifies only the `on:do:` activation it answers | Complete | 2026-10-27 | [handler-search-leaf](superpowers/plans/2026-10-27-0126-handler-search-leaf.md) |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `Array>>do:`, and a loop in the reference lowering | Complete | 2026-10-27 | [loop-bodies](superpowers/plans/2026-10-27-1529-loop-bodies.md) |
-| Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows; stage 5, on-stack replacement at an interpreted backward jump, the return into machine code after a poll's safepoint, one compare at a compiled push for the depth and a safepoint request, the compile time counted (`--jit-statistics`), and the depth count measured in `rbp` and left in its machine word | In progress | 2026-11-03 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md), [jit-osr](superpowers/plans/2026-11-02-2051-jit-osr.md) |
+| Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows; stage 5, on-stack replacement at an interpreted backward jump, the return into machine code after a poll's safepoint, one compare at a compiled push for the depth and a safepoint request, the compile time counted (`--jit-statistics`), and the depth count measured in `rbp` and left in its machine word; a register cache measured before it was built and left to road step 9 | In progress | 2026-11-03 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md), [jit-osr](superpowers/plans/2026-11-02-2051-jit-osr.md) |
 | A one-line method in the JetBrains plugin folded as Java's one-liners: brackets and their spaces in the folds, the server's method fold containing them | Complete | 2026-11-01 | — |
 | Doc comments: a block of `///` lines coloured and rendered in place as Markdown, a hover with a declaration's signature and doc comment, Java-style tags (`@param`, `@answers`, `@signals`, `@see`, `@factory`, `{@summary}`) as sections with the server's warnings, and the whole core library documented with them | Complete | 2026-11-01 | [doc-comment-tags](superpowers/plans/2026-11-01-1608-doc-comment-tags.md) |
 | Identity and equality documented: the contract of `==`, `=`, `hash` and `identityHash` at `Object`, what a value's identity is, and every class's own | Complete | 2026-11-01 | — |
@@ -6796,6 +6796,25 @@ golden, `run-corpus` output or benchmark outcome changed.
 - The documents' commit after them.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
-8's sixth stage, the register cache, next; a caller compiled by on-stack
+8's next stage; a caller compiled by on-stack
 replacement that its abandoned callee abandons too; and whether the
 baseline compiler joins road step 9's compiler thread.
+
+## No register cache in the baseline, measured (2026-11-03)
+
+Road step 8's planned sixth stage, a register cache in the baseline
+([execution.md](design/execution.md), "The register cache", "What a
+register cache would move"), was measured before it was built. A
+throwaway counter in the interpreter found that a cache would serve 27%
+to 75% of the frame loads, and a fused compare-and-branch would apply
+at most 0.08 times per instruction run. Two timed variants of
+`load_frame_register` showed what loads cost: doubling every load moved
+the geometric mean +1.8%, and adding a store-to-load forwarding to every
+load +2.4%. A cache would therefore move it by about 1%, inside the noise.
+Decided with the user: the baseline keeps reading and writing the
+slots, as V8's Sparkplug does, and register allocation, with the fused
+comparison, goes to road step 9. The AArch64 encoder is the baseline's
+last stage and next. Neither measurement was committed; no code changed
+but two comments.
+
+- The documents' commit.
