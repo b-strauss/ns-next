@@ -32,10 +32,12 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
   stress               the suite under the nine stress modes and without the JIT, then run-corpus plain and under each mode
-  release-checks       the suite without debug assertions (cargo profile release-checks), and ns-runtime's clippy for aarch64-apple-darwin, a target without an encoder
+  release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without an encoder, and for aarch64-apple-darwin, Apple's JIT
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
-  end-of-batch         images, caches, benchmarks, release-checks, codegen and stress, for a batch that changed the runtime";
+  linux                in WSL: clippy, the suite and the doctests for x86_64-unknown-linux-gnu
+  aarch64              in WSL: clippy for aarch64-unknown-linux-gnu, and the suite under qemu-aarch64
+  end-of-batch         images, caches, benchmarks, release-checks, codegen, stress, linux and aarch64, for a batch that changed the runtime";
 
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
@@ -63,12 +65,33 @@ fn stress_suite_runs() -> Vec<(String, String)> {
 /// mixins, relative to the repository root.
 const SHIPPED_CODE: &str = "crates/ns-runtime/core-library/shipped-code.bin";
 
+/// The first step of each WSL group: the working tree copied into the WSL
+/// clone, so that uncommitted work is checked too. The clone keeps its own
+/// `.git` and build directory, and `prior-art/` and `.temp/` hold nothing
+/// the gates build.
+const COPY_INTO_WSL: &str = "rsync -a --delete --exclude .git --exclude target \
+    --exclude prior-art --exclude .temp /mnt/d/Workspace/ns-next/ ~/workspace/ns-next/";
+
+/// The WSL clone the groups `linux` and `aarch64` run in.
+const WSL_CLONE: &str = "~/workspace/ns-next";
+
+/// What the `aarch64` group's cargo runs with: the cross linker, the
+/// target's libraries for `qemu-aarch64`, which binfmt hands every AArch64
+/// executable to -- the test binaries and the `ns-next` the `ns-cli` tests
+/// spawn -- and a test thread's stack as large as a main thread's, since
+/// an emulated test's deep recursion needs more than the default.
+const AARCH64_ENVIRONMENT: &str = "export \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    QEMU_LD_PREFIX=/usr/aarch64-linux-gnu RUST_MIN_STACK=8388608";
+
 /// What runs a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Program {
     Cargo,
     /// The plugin's Gradle wrapper, `editors/jetbrains/gradlew`.
     Gradle,
+    /// A bash script in the default WSL distribution, `wsl -e bash -lc`.
+    Wsl,
 }
 
 /// One command of a gate.
@@ -98,6 +121,13 @@ impl Step {
         Step {
             program: Program::Gradle,
             ..Step::cargo(label, arguments)
+        }
+    }
+
+    fn wsl(label: &str, script: &str) -> Step {
+        Step {
+            program: Program::Wsl,
+            ..Step::cargo(label, &["-e", "bash", "-lc", script])
         }
     }
 
@@ -243,7 +273,8 @@ fn group(name: &str) -> Option<Vec<Part>> {
         // without debug assertions runs them; the profile skips the release
         // profile's fat LTO, which a test run does not need. Beside them,
         // `ns-runtime`'s lint for a target without an encoder, where no
-        // `cfg(ns_jit)` code is compiled, which no other gate builds.
+        // `cfg(ns_jit)` code is compiled, and for Apple's JIT, whose code
+        // zone no other gate builds.
         "release-checks" => steps(vec![
             Step::cargo(
                 "release checks",
@@ -255,26 +286,45 @@ fn group(name: &str) -> Option<Vec<Part>> {
                     "release-checks",
                 ],
             ),
-            Step::cargo(
-                "lint without an encoder",
-                &[
-                    "clippy",
-                    "-p",
-                    "ns-runtime",
-                    "--all-targets",
-                    "--target",
-                    "aarch64-apple-darwin",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            ),
+            runtime_lint("lint without an encoder", "aarch64-pc-windows-msvc"),
+            runtime_lint("lint for Apple's JIT", "aarch64-apple-darwin"),
         ]),
         "codegen" => vec![Part::Codegen],
         "plugin-verification" => steps(vec![Step::gradle(
             "plugin verification",
             &["-p", "editors/jetbrains", "verifyPlugin", "buildPlugin"],
         )]),
+        "linux" => steps(in_wsl(
+            "linux",
+            "",
+            &[
+                ("shipped code", "cargo xtask shipped-code"),
+                (
+                    "lint",
+                    "cargo clippy --workspace --all-targets -- -D warnings",
+                ),
+                ("suite", "cargo nextest run --workspace --test-threads 8"),
+                ("doctests", "cargo test --workspace --doc"),
+            ],
+        )),
+        // No doctests: `cargo test --doc` would build them for the host.
+        "aarch64" => steps(in_wsl(
+            "aarch64",
+            AARCH64_ENVIRONMENT,
+            &[
+                ("shipped code", "cargo xtask shipped-code"),
+                (
+                    "lint",
+                    "cargo clippy --workspace --all-targets \
+                     --target aarch64-unknown-linux-gnu -- -D warnings",
+                ),
+                (
+                    "suite",
+                    "cargo nextest run --workspace \
+                     --target aarch64-unknown-linux-gnu --test-threads 8",
+                ),
+            ],
+        )),
         "end-of-batch" => [
             "images",
             "caches",
@@ -282,12 +332,50 @@ fn group(name: &str) -> Option<Vec<Part>> {
             "release-checks",
             "codegen",
             "stress",
+            "linux",
+            "aarch64",
         ]
         .iter()
         .flat_map(|name| group(name).expect("a group"))
         .collect(),
         _ => return None,
     })
+}
+
+/// `ns-runtime`'s clippy for `target`, warning-free.
+fn runtime_lint(label: &str, target: &str) -> Step {
+    Step::cargo(
+        label,
+        &[
+            "clippy",
+            "-p",
+            "ns-runtime",
+            "--all-targets",
+            "--target",
+            target,
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )
+}
+
+/// A WSL group: the tree copied into the clone, then each of `commands`
+/// run there after `environment`, each step labelled `<name> <label>`.
+fn in_wsl(name: &str, environment: &str, commands: &[(&str, &str)]) -> Vec<Step> {
+    let prefix = if environment.is_empty() {
+        String::new()
+    } else {
+        format!("{environment} && ")
+    };
+    let mut steps = vec![Step::wsl(&format!("{name} copy"), COPY_INTO_WSL)];
+    steps.extend(commands.iter().map(|(label, command)| {
+        Step::wsl(
+            &format!("{name} {label}"),
+            &format!("{prefix}cd {WSL_CLONE} && {command}"),
+        )
+    }));
+    steps
 }
 
 fn main() -> ExitCode {
@@ -434,6 +522,7 @@ fn command_of(step: &Step, root: &Path) -> Command {
             command.arg("--no-daemon");
             command
         }
+        Program::Wsl => Command::new("wsl"),
     };
     command.args(&step.arguments).current_dir(root);
     for (name, value) in &step.environment {
@@ -627,7 +716,55 @@ mod tests {
     fn the_codegen_group_runs_the_budgets() {
         assert_eq!(group("codegen"), Some(vec![Part::Codegen]));
         let labels = labels_of(&group("end-of-batch").expect("a group")).join(",");
-        assert!(labels.contains("release checks,lint without an encoder,codegen,stress suites"));
+        assert!(labels.contains(
+            "release checks,lint without an encoder,lint for Apple's JIT,codegen,stress suites"
+        ));
+    }
+
+    /// The WSL groups run after everything that runs on the host, `aarch64`
+    /// last, since the suite under emulation is the longest step of all.
+    #[test]
+    fn the_end_of_batch_runs_linux_and_aarch64_last() {
+        let mut expected = group("stress").expect("a group");
+        expected.extend(group("linux").expect("a group"));
+        expected.extend(group("aarch64").expect("a group"));
+        let parts = group("end-of-batch").expect("a group");
+        assert!(parts.ends_with(&expected));
+    }
+
+    /// Each WSL group first copies the working tree into the clone, so that
+    /// what it checks is the tree on the host, uncommitted work included.
+    #[test]
+    fn the_wsl_groups_copy_the_tree_first() {
+        for name in ["linux", "aarch64"] {
+            let parts = group(name).expect("a group");
+            let [Part::Steps(steps)] = parts.as_slice() else {
+                panic!("{name} is one run of steps");
+            };
+            assert_eq!(steps[0].program, Program::Wsl);
+            assert_eq!(steps[0].arguments, ["-e", "bash", "-lc", COPY_INTO_WSL]);
+            assert!(steps[1..].iter().all(|step| step.program == Program::Wsl
+                && step.arguments[3].contains("cd ~/workspace/ns-next && cargo")));
+        }
+    }
+
+    /// The `aarch64` suite runs for its target, through the cross linker
+    /// and the emulator's library prefix.
+    #[test]
+    fn the_aarch64_suite_runs_for_its_target() {
+        let parts = group("aarch64").expect("a group");
+        let [Part::Steps(steps)] = parts.as_slice() else {
+            panic!("aarch64 is one run of steps");
+        };
+        let suite = &steps.last().expect("a step").arguments[3];
+        assert!(suite.contains("--target aarch64-unknown-linux-gnu"));
+        for variable in [
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc",
+            "QEMU_LD_PREFIX=/usr/aarch64-linux-gnu",
+            "RUST_MIN_STACK=8388608",
+        ] {
+            assert!(suite.contains(variable), "{variable}");
+        }
     }
 
     #[test]
