@@ -1055,6 +1055,42 @@ fn a_jump_into_a_called_address_skips_its_save() {
 }
 
 #[test]
+fn a_call_into_a_body_saves_the_return_address_itself() {
+    for target in allowed() {
+        assert_eq!(
+            text(|assembler| assembler.call_unentered(target)),
+            format!(
+                "bl $+0x8\nb $+0xc\nstr x30, [sp, #-0x10]!\nbr {}",
+                name(target)
+            )
+        );
+    }
+    // The callee's `ret` lands on the `b`, which goes on at the operation
+    // after the call, 16 bytes past its start.
+    let mut assembler = Assembler::<Aarch64>::new();
+    let after = assembler.label();
+    assembler.call_unentered(aarch64::X0);
+    assembler.bind(after);
+    assembler.return_();
+    match assembler.finish() {
+        Ok(assembled) => assert_eq!(assembled.label_offsets[after.index()], Some(16)),
+        Err(error) => panic!("assembly failed: {error}"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "reserved")]
+fn a_call_into_a_body_through_a_scratch_register_is_refused() {
+    text(|assembler| assembler.call_unentered(aarch64::X16));
+}
+
+#[test]
+#[should_panic(expected = "stack pointer")]
+fn a_call_into_a_body_through_the_stack_pointer_is_refused() {
+    text(|assembler| assembler.call_unentered(aarch64::SP));
+}
+
+#[test]
 fn a_checked_multiply_is_four_instructions() {
     for target in allowed() {
         for source in allowed() {

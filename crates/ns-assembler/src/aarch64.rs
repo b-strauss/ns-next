@@ -805,10 +805,28 @@ const LOAD_LITERAL: u32 = 0x5800_0000;
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
 const BRANCH: u32 = 0x1400_0000;
 
-/// The bits of `B`'s signed `imm26`, in instructions.
+/// The bits of `B`'s signed `imm26`, in instructions, which `BL` shares.
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
 const BRANCH_DISTANCE_BITS: u32 = 26;
+
+/// `BL label` — call `imm26` instructions from the instruction, the
+/// return address into `x30`.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BL--Branch-with-link->
+const BRANCH_WITH_LINK: u32 = 0x9400_0000;
+
+/// How far `CallUnentered`'s `BL` calls: past itself and the `B` after it,
+/// to the save of `x30` (`STR`, pre-index), as `BL`'s byte distance.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BL--Branch-with-link->
+const UNENTERED_SAVE_DISTANCE: i64 = 2 * INSTRUCTION_BYTES as i64;
+
+/// How far `CallUnentered`'s `B`, where the callee returns to, jumps: past
+/// itself, the save and the `BR`, to the next operation.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
+const UNENTERED_SKIP_DISTANCE: i64 = 3 * INSTRUCTION_BYTES as i64;
 
 /// `B.cond label` — jump `imm19` instructions from the instruction when
 /// `cond`, at bits 3:0, holds.
@@ -1499,6 +1517,25 @@ impl Encoder for Aarch64 {
                     code,
                     three_registers(BRANCH_WITH_LINK_REGISTER, 0, target, 0),
                 );
+            }
+            Operation::CallUnentered { target } => {
+                let target = general(target, "a call");
+                // `bl` to the save rather than an `adr` of the return
+                // address, so that the processor's return-address predictor
+                // sees the call the callee's `ret` returns from; that `ret`
+                // lands on the `b`, which skips the save and the `br`.
+                let Some(save) = instruction_field(UNENTERED_SAVE_DISTANCE, BRANCH_DISTANCE_BITS)
+                else {
+                    unreachable!("a bl reaches two instructions on");
+                };
+                let Some(skip) = instruction_field(UNENTERED_SKIP_DISTANCE, BRANCH_DISTANCE_BITS)
+                else {
+                    unreachable!("a b reaches three instructions on");
+                };
+                emit(code, BRANCH_WITH_LINK | save);
+                emit(code, BRANCH | skip);
+                push(code, own(X30));
+                emit(code, three_registers(BRANCH_REGISTER, 0, target, 0));
             }
             Operation::JumpRegister { target } => {
                 let target = general(target, "a jump");

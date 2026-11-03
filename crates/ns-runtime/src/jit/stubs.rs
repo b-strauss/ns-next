@@ -341,7 +341,16 @@ fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, entered: Entered) 
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, roles.idiom_scratch, machine_entry);
     assembler.store(Width::Word64, saved_stack_pointer, roles.stack_pointer);
-    assembler.call_register(roles.idiom_scratch);
+    if by_call {
+        assembler.call_register(roles.idiom_scratch);
+    } else {
+        // The run loop's push enters at an instruction -- the first past
+        // the prologue, a loop's head, the one after a send or a served
+        // safepoint -- which fall-through and branches reach too, so it
+        // cannot begin with `enter_called`: the call saves the return
+        // address itself.
+        assembler.call_unentered(roles.idiom_scratch);
+    }
     let returned_value = macro_assembler.block_word(BlockWord::ExitProgramCounter);
     macro_assembler
         .assembler()
@@ -718,7 +727,9 @@ pub(super) mod testing {
         }
 
         /// `run`, but entering `body` through the call stub, as an
-        /// interpreter's send calls a compiled callee.
+        /// interpreter's send calls a compiled callee: `body` begins with
+        /// `enter_called`, as a prologue does, where `run`'s body, which
+        /// the entry stub calls as an instruction inside a body, does not.
         pub(crate) fn run_called<C>(
             &self,
             body: CodeOffset,
@@ -887,6 +898,8 @@ mod tests {
     fn an_exit_at_once_materializes_the_callee_the_call_stub_called() {
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
+            // Called through the call stub, as a prologue is.
+            macro_assembler.assembler().enter_called();
             macro_assembler.exit(ExitKind::Reexecute, 7);
         });
         let leaves: [Leaf<Vec<[u64; 3]>>; 4] =

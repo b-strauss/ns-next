@@ -878,7 +878,9 @@ impl Encoder for X64 {
                 code.push(modrm(MODRM_MODE_REGISTER, TEST_IMMEDIATE_EXTENSION, left));
                 code.extend_from_slice(&right.to_le_bytes());
             }
-            Operation::CallRegister { target } => {
+            // `call` pushes the return address where `EnterCalled` finds it,
+            // whatever the callee begins with.
+            Operation::CallRegister { target } | Operation::CallUnentered { target } => {
                 indirect_branch(code, INDIRECT_CALL_EXTENSION, target);
             }
             Operation::JumpRegister { target } => {

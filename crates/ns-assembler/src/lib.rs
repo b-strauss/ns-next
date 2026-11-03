@@ -104,8 +104,8 @@ pub struct Memory {
 ///   `shift_right_logical` -- x64's
 ///   instructions set the flags, AArch64's plain `and`, `orr`, `lsl` and
 ///   `asr` keep them, so neither may be relied on -- `divide_signed`,
-///   whose flags x64 leaves undefined, and `call_register`, whose callee
-///   may do anything.
+///   whose flags x64 leaves undefined, and `call_register` and
+///   `call_unentered`, whose callee may do anything.
 /// - **Keeps**: every other operation -- `move_register`, `move_if`,
 ///   `move_immediate`, `load`, `store`, `store_immediate32`, `push`, `pop`,
 ///   `add_stack`, `load_code_address`, `load_labelled`, `load_label_address`, `jump`, `jump_if`,
@@ -229,6 +229,11 @@ pub enum Operation {
     },
     /// Calls the address in `target`.
     CallRegister { target: Register },
+    /// Calls the address in `target`, which does not begin with
+    /// [`Operation::EnterCalled`] -- a position inside a body -- saving the
+    /// return address where that operation would, so that the callee's
+    /// [`Operation::Return`] returns to the operation after this one.
+    CallUnentered { target: Register },
     /// Jumps to the address in `target`.
     JumpRegister { target: Register },
     /// The first operation of every address a call reaches: after it the
@@ -696,6 +701,16 @@ impl<E: Encoder> Assembler<E> {
     /// do anything with them.
     pub fn call_register(&mut self, target: Register) {
         self.emit(Operation::CallRegister { target });
+    }
+
+    /// Calls the address in `target`, which does not begin with
+    /// [`Assembler::enter_called`] -- a position inside a body, reached by
+    /// fall-through and branches too -- saving the return address where
+    /// `enter_called` would, so that the callee's [`Assembler::return_`]
+    /// returns to the operation after this one. Clobbers the flags: the
+    /// callee may do anything with them.
+    pub fn call_unentered(&mut self, target: Register) {
+        self.emit(Operation::CallUnentered { target });
     }
 
     /// Jumps to the address in `target`, pushing nothing: a jump that
