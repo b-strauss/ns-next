@@ -73,11 +73,11 @@ mean over the twenty-three sources is 8.6% faster than `master`,
 stage 4's tree,
 `bench_megamorphic` 85.1%, `bench_new` 38.3%, Havlak 2.9% and DeltaBlue
 4.5%, Queens' +2.6% the code's placement ("What on-stack replacement
-moved"). Stage 6 assembled all of it for AArch64 on Linux and Apple's
+moved"). Stage 6 is all of it on AArch64, on Linux and Apple's
 platforms, Windows on ARM staying interpreted: the AAPCS64 roles mapped
 one to one from x64's, the return address in a 16-byte slot on `sp`
-behind three operations of the call convention that leave x64's machine
-code byte for byte as it was, and the suite run under `qemu-aarch64` in
+behind three operations of the call convention that encode on x64 as
+nothing, `jmp` and `call`, and the suite run under `qemu-aarch64` in
 WSL2 in the gate group `aarch64`, beside `linux`, both at the end of a
 batch ("Fixed registers and the calling convention", "The native stack
 carries the return addresses", "Tests"); AArch64 is unmeasured, since

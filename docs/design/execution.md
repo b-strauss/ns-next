@@ -10781,12 +10781,12 @@ platforms (decided with the user on 2026-11-03). Windows on ARM stays
 interpreted, its calling convention and unwinding ones no stub crosses
 yet ([OPEN-WORK.md](../OPEN-WORK.md)); there, and on every other target,
 `jit::available` answers `false` and every body stays interpreted. x64's
-machine code is byte for byte what it was before the AArch64 port, which
-an FNV hash of every stub and of every body the JIT compiled over the
-benchmarks, the runnable corpus and every golden, each assembled under
-both x64 conventions, lean and twin -- about 21,700 hashes -- showed
-identical before and after it, so the port needed no measurement on
-x64; AArch64 has none, since QEMU times nothing ("Stages" below).
+machine code is the same as that of the tree the AArch64 stage started
+from, by an FNV comparison of every stub and of every body the JIT
+compiles over the benchmarks, the runnable corpus and every golden, each
+assembled under both x64 conventions, lean and twin -- about 21,700
+hashes -- so x64 needed no new measurement; AArch64 has none, since QEMU
+times nothing ("Stages" below).
 "What on-stack replacement moved" has the measurement of stage 5, the
 depth count kept in a register among it, "What allocation and the
 barrier in machine code moved", "What closures in machine code moved",
@@ -12914,8 +12914,8 @@ encoder; entry, exit and the instructions without a send, every body
 compilable since an instruction without a template exits; sends and the
 caches; closures, non-local return, allocation and the barrier;
 on-stack replacement, the polls and the depth count's measurement; the
-AArch64 encoder under QEMU. A register cache was measured before it
-would have been the sixth and is not one ("The register cache" above).
+AArch64 encoder under QEMU. A register cache is no stage: it was
+measured and left to road step 9 ("The register cache" above).
 All six are built: the first three, and the entry into machine code at
 its cost after them -- an interpreter's send calling a compiled callee,
 every compiled body entered ("The baseline JIT's foundation" above,
@@ -12938,8 +12938,9 @@ moved"); and the sixth, the AArch64 encoder, its suite passing under
 QEMU ("Fixed registers and the calling convention", "Tests" above). The
 sixth alone is not measured: QEMU times nothing, so AArch64's speed is
 unknown until it runs on hardware ([OPEN-WORK.md](../OPEN-WORK.md)), and
-x64 needed no measurement, since its machine code is byte for byte the
-tree's before ("The baseline JIT's foundation" above).
+x64 needed no new measurement, since its machine code is the same as
+that of the tree the stage started from, by an FNV comparison ("The
+baseline JIT's foundation" above).
 
 ## Decisions
 
