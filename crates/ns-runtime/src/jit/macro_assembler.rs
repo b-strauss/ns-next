@@ -6,6 +6,10 @@
 //! plays which role is decided here, per ABI ("Fixed registers and the
 //! calling convention").
 
+use ns_assembler::aarch64::{
+    SP, X0, X1, X19, X2, X20, X21, X22, X23, X24, X25, X26, X27, X28, X29, X3, X4, X5, X6, X7, X8,
+    X9,
+};
 use ns_assembler::x64::{
     DIVIDEND, R10, R11, R12, R13, R14, R15, R8, R9, RAX, RBP, RBX, RCX, RDI, RDX, REMAINDER, RSI,
     RSP,
@@ -25,6 +29,10 @@ pub(crate) enum Abi {
     Windows64,
     /// The System V AMD64 convention of Linux and macOS.
     SystemV,
+    /// The Arm 64-bit procedure call standard, AAPCS64, of Linux and of
+    /// Apple's platforms, which differ in nothing the JIT relies on: the
+    /// encoder never names `x18`, the register Apple reserves.
+    Aapcs64,
 }
 
 /// `length` bytes that stop the program wherever execution enters them:
@@ -45,13 +53,6 @@ pub(crate) fn stop_bytes(abi: Abi, length: usize) -> Vec<u8> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Encoding {
     X64(X64),
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no ABI selects AArch64 yet; the tests encode through it"
-        )
-    )]
     Aarch64(Aarch64),
 }
 
@@ -113,7 +114,9 @@ impl Encoder for Encoding {
 impl Abi {
     /// The convention of the platform this build runs on.
     pub(crate) const fn host() -> Abi {
-        if cfg!(windows) {
+        if cfg!(target_arch = "aarch64") {
+            Abi::Aapcs64
+        } else if cfg!(windows) {
             Abi::Windows64
         } else {
             Abi::SystemV
@@ -124,6 +127,7 @@ impl Abi {
     pub(crate) fn encoding(self) -> Encoding {
         match self {
             Abi::Windows64 | Abi::SystemV => Encoding::X64(X64),
+            Abi::Aapcs64 => Encoding::Aarch64(Aarch64),
         }
     }
 
@@ -134,15 +138,20 @@ impl Abi {
     pub(crate) const fn stack_slot_bytes(self) -> i32 {
         match self {
             Abi::Windows64 | Abi::SystemV => 8,
+            Abi::Aapcs64 => 16,
         }
     }
 
     /// The registers a callee of this convention preserves, in the order
-    /// the entry stub pushes them.
+    /// the entry stub pushes them. Under AAPCS64 `x29`, the frame pointer,
+    /// is among them though no role takes it: Apple requires it to address
+    /// a valid frame record at all times, so machine code never writes it
+    /// and the save is only the convention's due.
     pub(crate) fn callee_saved(self) -> &'static [Register] {
         match self {
             Abi::Windows64 => &[RBX, RBP, RDI, RSI, R12, R13, R14, R15],
             Abi::SystemV => &[RBX, RBP, R12, R13, R14, R15],
+            Abi::Aapcs64 => &[X19, X20, X21, X22, X23, X24, X25, X26, X27, X28, X29],
         }
     }
 
@@ -152,6 +161,7 @@ impl Abi {
         match self {
             Abi::Windows64 => RCX,
             Abi::SystemV => RDI,
+            Abi::Aapcs64 => X0,
         }
     }
 }
@@ -244,6 +254,22 @@ pub(crate) struct Roles {
     /// which the entry stub saves and the exit stub resets, and through
     /// which a stub reads the return address on top of the stack.
     pub(crate) stack_pointer: Register,
+    /// The registers a stub or a call is entered with, which the methods
+    /// below name.
+    entered_with: EnteredWith,
+}
+
+/// The registers the exit stub and a compiled call's callee are entered
+/// with (`Roles::exit_program_counter` and its neighbours).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct EnteredWith {
+    exit_program_counter: Register,
+    exit_code_address: Register,
+    callee_receiver: Register,
+    callee_class: Register,
+    callee_closure: Register,
+    callee_counted: Register,
+    callee_argument: Register,
 }
 
 impl Roles {
@@ -262,6 +288,14 @@ impl Roles {
     /// left for road step 9's register allocation: the baseline keeps no
     /// frame register in a machine register (`docs/design/execution.md`,
     /// "The register cache").
+    ///
+    /// Under AAPCS64 each role takes the register x64's does, one to one
+    /// (`rax` `x0`, `rcx` `x1`, `rdx` `x2`, `rsi` `x3`, `rdi` `x4`, `r8`
+    /// to `r10` `x5` to `x7`, `r12` `x8`, `r11` `x9`, the pinned `rbx`,
+    /// `r14` and `r15` the preserved `x19` to `x21`, and `r13` and `rbp`'s
+    /// place `x22` and `x23`), so that every register two roles share
+    /// under x64 they share here, and no other. `x24` to `x29` take no
+    /// role; the encoder keeps `x16` to `x18` and `x30` for itself.
     pub(crate) fn of(abi: Abi) -> Roles {
         match abi {
             Abi::Windows64 | Abi::SystemV => Roles {
@@ -288,6 +322,49 @@ impl Roles {
                 poison: RDX,
                 return_address: RSI,
                 stack_pointer: RSP,
+                entered_with: EnteredWith {
+                    exit_program_counter: RCX,
+                    exit_code_address: RDX,
+                    callee_receiver: RSI,
+                    callee_class: RDI,
+                    callee_closure: R9,
+                    callee_counted: R10,
+                    callee_argument: R12,
+                },
+            },
+            Abi::Aapcs64 => Roles {
+                frame: X19,
+                context: X20,
+                object_space: X21,
+                idiom_scratch: X9,
+                leaf_result: X0,
+                scratch: &[X0, X1, X2, X3, X4, X5, X6, X7, X8],
+                dividend: X0,
+                remainder: X2,
+                placement: [X0, X2, X5, X6, X7, X8],
+                send_cells: X5,
+                send_guard: X6,
+                send_level: X7,
+                send_key: X7,
+                send_entry: X1,
+                lookup_rule: X2,
+                lookup_hash: X0,
+                accessor_field: X7,
+                depth_count: X1,
+                frame_extent: X0,
+                stack_end: X2,
+                poison: X2,
+                return_address: X3,
+                stack_pointer: SP,
+                entered_with: EnteredWith {
+                    exit_program_counter: X1,
+                    exit_code_address: X2,
+                    callee_receiver: X3,
+                    callee_class: X4,
+                    callee_closure: X6,
+                    callee_counted: X7,
+                    callee_argument: X8,
+                },
             },
         }
     }
@@ -300,13 +377,13 @@ impl Roles {
 
     /// The register the exit stub takes the exit's program counter in.
     pub(crate) fn exit_program_counter(self) -> Register {
-        RCX
+        self.entered_with.exit_program_counter
     }
 
     /// The register the exit stub takes an address inside the exiting code
     /// in, which names the body an exit leaves (`jit::materialize`).
     pub(crate) fn exit_code_address(self) -> Register {
-        RDX
+        self.entered_with.exit_code_address
     }
 
     /// The register a compiled call hands its callee's receiver in, as the
@@ -316,14 +393,14 @@ impl Roles {
     /// leaves the sender's registers -- a source of the send among them --
     /// as they were. A scratch register everywhere else.
     pub(crate) fn callee_receiver(self) -> Register {
-        RSI
+        self.entered_with.callee_receiver
     }
 
     /// The register a compiled call hands its callee's current class in,
     /// as the word its header place 1 stores, under `callee_receiver`'s
     /// rule. A scratch register everywhere else.
     pub(crate) fn callee_class(self) -> Register {
-        RDI
+        self.entered_with.callee_class
     }
 
     /// The register a call of a block's body hands the closure in, which
@@ -333,7 +410,7 @@ impl Roles {
     /// else -- the send's guard while a send compares it -- since no cell
     /// names a block's body.
     pub(crate) fn callee_closure(self) -> Register {
-        R9
+        self.entered_with.callee_closure
     }
 
     /// The register a call of a block's body hands 1 in when the block's
@@ -341,7 +418,7 @@ impl Roles {
     /// flow exempts it, which its prologue writes into the frame's flags
     /// word, under `callee_closure`'s rule.
     pub(crate) fn callee_counted(self) -> Register {
-        R10
+        self.entered_with.callee_counted
     }
 
     /// The register a call of a block's body of one parameter hands the
@@ -350,7 +427,7 @@ impl Roles {
     /// send's slots as they were; the word no value is for a call whose
     /// argument already lies in its slot. Under `callee_closure`'s rule.
     pub(crate) fn callee_argument(self) -> Register {
-        R12
+        self.entered_with.callee_argument
     }
 
     /// What a prologue reads after its checks, of what the call handed it
@@ -2526,6 +2603,17 @@ impl LeafCallLayout {
                 copies: [0, 8, 16],
                 frame_bytes: 32,
             },
+            Abi::Aapcs64 => LeafCallLayout {
+                block: X0,
+                leaf: X1,
+                places: [
+                    Place::Register(X2),
+                    Place::Register(X3),
+                    Place::Register(X4),
+                ],
+                copies: [0, 8, 16],
+                frame_bytes: 32,
+            },
         }
     }
 }
@@ -2535,10 +2623,10 @@ impl LeafCallLayout {
 mod encoding_tests {
     use ns_assembler::{Aarch64, Assembler, Encoder, Register, X64};
 
-    use super::{Abi, Encoding};
+    use super::{Abi, Encoding, Roles};
 
     /// Every encoding encodes what its encoder does: the operations, the
-    /// stops, the stack slot and the alignment.
+    /// label references, the stops, the stack slot and the alignment.
     #[test]
     fn an_encoding_encodes_as_its_encoder() {
         fn assembled<E: Encoder>(encoder: E) -> Vec<u8> {
@@ -2551,6 +2639,15 @@ mod encoding_tests {
             assembler.jump(label);
             assembler.jump_into_called(target);
             assembler.return_();
+            // A word of data after the code, which a label reference
+            // reaches relative to its own position.
+            let data = assembler.label();
+            assembler.load_labelled(target, data, 8);
+            assembler.load_label_address(target, data, 0);
+            assembler.return_();
+            assembler.align_data(8);
+            assembler.bind(data);
+            assembler.zeroed_data(16);
             match assembler.finish() {
                 Ok(assembled) => assembled.bytes,
                 Err(error) => panic!("the code lays out: {error}"),
@@ -2583,11 +2680,75 @@ mod encoding_tests {
         );
     }
 
+    /// The register each role of `roles` plays, in one order, then the
+    /// scratch registers and the placement's.
+    fn played(roles: Roles) -> Vec<Register> {
+        let mut registers = vec![
+            roles.frame,
+            roles.context,
+            roles.object_space,
+            roles.idiom_scratch,
+            roles.leaf_result,
+            roles.dividend,
+            roles.remainder,
+            roles.send_cells,
+            roles.send_guard,
+            roles.send_level,
+            roles.send_key,
+            roles.send_entry,
+            roles.lookup_rule,
+            roles.lookup_hash,
+            roles.accessor_field,
+            roles.depth_count,
+            roles.frame_extent,
+            roles.stack_end,
+            roles.poison,
+            roles.return_address,
+            roles.stack_pointer,
+            roles.exit_kind(),
+            roles.exit_program_counter(),
+            roles.exit_code_address(),
+            roles.callee_receiver(),
+            roles.callee_class(),
+            roles.callee_closure(),
+            roles.callee_counted(),
+            roles.callee_argument(),
+        ];
+        registers.extend(roles.scratch);
+        registers.extend(roles.placement);
+        registers
+    }
+
+    /// The roles under AAPCS64 share a register exactly where x64's do,
+    /// so that every argument about which role a value survives in carries
+    /// over; and each pinned role sits in a register the convention
+    /// preserves, so that a leaf call keeps it.
+    #[test]
+    fn the_aapcs64_roles_alias_as_x64_s_do() {
+        let x64 = played(Roles::of(Abi::SystemV));
+        let aarch64 = played(Roles::of(Abi::Aapcs64));
+        assert_eq!(x64.len(), aarch64.len());
+        let pairs: Vec<(Register, Register)> = x64.into_iter().zip(aarch64).collect();
+        for (first, (x64_first, aarch64_first)) in pairs.iter().enumerate() {
+            for (second, (x64_second, aarch64_second)) in pairs.iter().enumerate() {
+                assert_eq!(
+                    x64_first == x64_second,
+                    aarch64_first == aarch64_second,
+                    "roles {first} and {second}"
+                );
+            }
+        }
+        let roles = Roles::of(Abi::Aapcs64);
+        for pinned in [roles.frame, roles.context, roles.object_space] {
+            assert!(Abi::Aapcs64.callee_saved().contains(&pinned));
+        }
+    }
+
     /// The stack slot an ABI states as a constant, which the room an entry
     /// checks for is computed from, is its encoder's.
     #[test]
     fn an_abi_s_stack_slot_is_its_encoder_s() {
-        for abi in [Abi::Windows64, Abi::SystemV] {
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
             assert_eq!(abi.stack_slot_bytes(), abi.encoding().stack_slot_bytes());
         }
     }

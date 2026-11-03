@@ -7,10 +7,10 @@
 //!
 //! The rule, for every file under `src/jit/` but `macro_assembler.rs`:
 //! no code outside a test module (`#[cfg(test)]`, or an `all` requiring
-//! `test`) names `ns_assembler`'s `x64` module -- a `use` of it, a path
-//! through it. There is no exception: even the stack pointer the stubs
-//! save and reset is a role (`Roles::stack_pointer`), since x64's `RSP`
-//! is AArch64's `sp`.
+//! `test`) names `ns_assembler`'s `x64` or `aarch64` module -- a `use` of
+//! it, a path through it. There is no exception: even the stack pointer
+//! the stubs save and reset is a role (`Roles::stack_pointer`), since
+//! x64's `RSP` is AArch64's `sp`.
 
 use std::path::{Path, PathBuf};
 
@@ -39,14 +39,20 @@ fn code_of(line: &str) -> &str {
     line.find("//").map_or(line, |start| &line[..start])
 }
 
-/// Whether `code` names the identifier `x64` on its own, as a module path
-/// segment does, rather than as part of a longer identifier.
-fn names_the_x64_module(code: &str) -> bool {
+/// The modules of `ns_assembler` that name an architecture's registers.
+const ARCHITECTURE_MODULES: [&str; 2] = ["x64", "aarch64"];
+
+/// Whether `code` names the identifier of an architecture's module on its
+/// own, as a module path segment does, rather than as part of a longer
+/// identifier.
+fn names_an_architecture_module(code: &str) -> bool {
     let is_identifier = |character: char| character.is_ascii_alphanumeric() || character == '_';
-    code.match_indices("x64").any(|(start, _)| {
-        let before = code[..start].chars().next_back();
-        let after = code[start + 3..].chars().next();
-        !before.is_some_and(is_identifier) && !after.is_some_and(is_identifier)
+    ARCHITECTURE_MODULES.iter().any(|module| {
+        code.match_indices(module).any(|(start, _)| {
+            let before = code[..start].chars().next_back();
+            let after = code[start + module.len()..].chars().next();
+            !before.is_some_and(is_identifier) && !after.is_some_and(is_identifier)
+        })
     })
 }
 
@@ -123,7 +129,7 @@ fn lines_outside_test_modules(source: &str) -> Vec<(usize, &str)> {
 }
 
 #[test]
-fn no_jit_file_but_the_macro_assembler_names_an_x64_register() {
+fn no_jit_file_but_the_macro_assembler_names_an_architecture_s_register() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("jit");
@@ -141,7 +147,7 @@ fn no_jit_file_but_the_macro_assembler_names_an_x64_register() {
         let source = std::fs::read_to_string(&path).expect("a JIT source is readable");
         for (number, line) in lines_outside_test_modules(&source) {
             let code = code_of(line);
-            if !names_the_x64_module(code) {
+            if !names_an_architecture_module(code) {
                 continue;
             }
             violations.push(format!("{}:{number}: {}", path.display(), line.trim()));
@@ -161,13 +167,19 @@ fn no_jit_file_but_the_macro_assembler_names_an_x64_register() {
 
 #[test]
 fn the_scan_finds_a_use_and_a_path_but_not_prose_or_a_test_module() {
-    assert!(names_the_x64_module("use ns_assembler::x64::{RAX, RCX};"));
-    assert!(names_the_x64_module(
+    assert!(names_an_architecture_module(
+        "use ns_assembler::x64::{RAX, RCX};"
+    ));
+    assert!(names_an_architecture_module(
         "    let value = ns_assembler::x64::RAX;"
     ));
-    assert!(!names_the_x64_module(code_of("    // x64's registers")));
-    assert!(!names_the_x64_module("fn the_jit_is_available_on_x64() {"));
-    assert!(!names_the_x64_module("Assembler<X64>"));
+    assert!(!names_an_architecture_module(code_of(
+        "    // x64's registers"
+    )));
+    assert!(!names_an_architecture_module(
+        "fn the_jit_is_available_on_x64() {"
+    ));
+    assert!(!names_an_architecture_module("Assembler<X64>"));
     assert!(is_test_configuration(
         "#[cfg(all(test, target_arch = \"x86_64\"))]"
     ));
@@ -180,8 +192,36 @@ fn the_scan_finds_a_use_and_a_path_but_not_prose_or_a_test_module() {
     let source = "use a::b;\n#[cfg(test)]\nmod tests {\n    use ns_assembler::x64::RAX;\n    fn f() {\n    }\n}\nuse ns_assembler::x64::RCX;\n";
     let kept: Vec<usize> = lines_outside_test_modules(source)
         .into_iter()
-        .filter(|(_, line)| names_the_x64_module(code_of(line)))
+        .filter(|(_, line)| names_an_architecture_module(code_of(line)))
         .map(|(number, _)| number)
         .collect();
     assert_eq!(kept, vec![8]);
+}
+
+#[test]
+fn a_file_naming_aarch64_is_refused() {
+    assert!(names_an_architecture_module(
+        "use ns_assembler::aarch64::{X0, X1};"
+    ));
+    assert!(names_an_architecture_module(
+        "    let value = ns_assembler::aarch64::X19;"
+    ));
+    assert!(!names_an_architecture_module(code_of(
+        "    // aarch64's registers"
+    )));
+    assert!(!names_an_architecture_module("Assembler<Aarch64>"));
+    assert!(!names_an_architecture_module("Encoding::Aarch64(Aarch64)"));
+    let source = "use a::b;
+#[cfg(all(test, ns_jit))]
+mod tests {
+    use ns_assembler::aarch64::X0;
+}
+use ns_assembler::aarch64::SP;
+";
+    let kept: Vec<usize> = lines_outside_test_modules(source)
+        .into_iter()
+        .filter(|(_, line)| names_an_architecture_module(code_of(line)))
+        .map(|(number, _)| number)
+        .collect();
+    assert_eq!(kept, vec![6]);
 }

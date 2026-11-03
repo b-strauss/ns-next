@@ -2696,6 +2696,7 @@ fn compile(
         futures_exit: state.futures_exit,
     };
     let body = assemble(
+        macro_assembler::Abi::host(),
         settings,
         code,
         feedback_base,
@@ -2725,18 +2726,21 @@ fn compile(
     Ok(([offset, first_instruction], map))
 }
 
-/// `code` assembled as its body's `copy` under `settings`, for `method`
-/// when it is one's body, its sends' cells those of `feedback_base`'s
-/// range.
+/// `code` assembled for `abi` as its body's `copy` under `settings`, for
+/// `method` when it is one's body, its sends' cells those of
+/// `feedback_base`'s range. The JIT assembles for the host's convention;
+/// a test assembles for another's, so that no host is needed to find an
+/// operation its encoder cannot lay out.
 #[cfg(ns_jit)]
 fn assemble(
+    abi: macro_assembler::Abi,
     settings: CompileSettings,
     code: &CompiledCode,
     feedback_base: FeedbackBase,
     method: Option<&Rc<MixinMethod>>,
     copy: baseline::BodyCopy,
 ) -> Result<baseline::BaselineBody, Refusal> {
-    let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
+    let mut macro_assembler = macro_assembler::MacroAssembler::new(abi);
     macro_assembler.set_count_back_edges(settings.counting);
     let role = baseline::BodyRole::of(code, method.is_some());
     baseline::compile(
@@ -2890,6 +2894,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
     }
     let started = std::time::Instant::now();
     let twin = match assemble(
+        macro_assembler::Abi::host(),
         settings,
         &installed.code,
         installed.feedback_base,
@@ -3899,8 +3904,11 @@ mod tests {
     use super::{CallReturn, JitSlot, ProgramCounterMap};
 
     #[test]
-    fn the_jit_is_available_on_x64() {
-        assert!(!cfg!(target_arch = "x86_64") || super::available());
+    fn the_jit_is_available_on_its_architectures() {
+        let has_a_back_end = cfg!(target_arch = "x86_64")
+            || (cfg!(target_arch = "aarch64")
+                && (cfg!(target_os = "linux") || cfg!(target_os = "macos")));
+        assert!(!has_a_back_end || super::available());
     }
 
     #[test]
@@ -5085,5 +5093,180 @@ mod tests {
                 );
             });
         }
+    }
+}
+
+/// Machine code for an architecture other than the host's: every stub and
+/// every body the shipped core library and the language goldens compile
+/// to, assembled for AAPCS64 on whatever host the suite runs on, so that
+/// an operation the AArch64 encoder cannot lay out is found without an
+/// AArch64 machine.
+#[cfg(all(test, ns_jit))]
+mod cross_assembly_tests {
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+
+    use super::macro_assembler::Abi;
+    use super::{assemble, baseline, stubs, targets, CompileSettings, FeedbackBase};
+    use crate::bytecode::{CompiledCode, Instruction};
+    use crate::mixin::{MethodEntry, Mixin, MixinMethod};
+    use crate::Lowering;
+
+    /// The bytes of an assembled stub are whole AArch64 instructions.
+    fn assert_instructions(name: &str, bytes: &[u8]) {
+        assert!(!bytes.is_empty(), "the {name} stub has code");
+        assert_eq!(bytes.len() % 4, 0, "the {name} stub is whole instructions");
+    }
+
+    #[test]
+    fn every_stub_assembles_for_aapcs64() {
+        let abi = Abi::Aapcs64;
+        let stubs = [
+            ("entry", stubs::assemble_entry_stub(abi)),
+            ("call", stubs::assemble_call_stub(abi)),
+            ("closure call", stubs::assemble_closure_call_stub(abi)),
+            ("exit", stubs::assemble_exit_stub(abi)),
+            ("cut", stubs::assemble_cut_stub(abi)),
+            ("miss", stubs::assemble_miss_stub(abi)),
+            ("refusing", stubs::assemble_refusing_stub(abi)),
+            ("polymorphic", targets::assemble_polymorphic_stub(abi)),
+            ("megamorphic", targets::assemble_megamorphic_stub(abi)),
+            ("accessor", targets::assemble_accessor_stubs(abi).0),
+        ];
+        for (name, assembled) in &stubs {
+            assert_instructions(name, &assembled.bytes);
+        }
+    }
+
+    /// A body to compile: its code, and the method it is the body of when
+    /// it is one's.
+    type Body = (Rc<CompiledCode>, Option<Rc<MixinMethod>>);
+
+    fn collect(code: &Rc<CompiledCode>, method: Option<&Rc<MixinMethod>>, into: &mut Vec<Body>) {
+        for instruction in code.instructions() {
+            if let Instruction::MakeClosure { code: block, .. } = instruction {
+                collect(&block, None, into);
+            }
+        }
+        into.push((Rc::clone(code), method.cloned()));
+    }
+
+    fn collect_mixin(mixin: &Rc<Mixin>, into: &mut Vec<Body>) {
+        for entry in mixin.methods.values() {
+            match entry {
+                MethodEntry::Compiled(method) => collect(&method.code, Some(method), into),
+                MethodEntry::Factory(factory) => collect(&factory.code, None, into),
+                MethodEntry::SlotAccessor(_) | MethodEntry::Primitive(_) => {}
+            }
+        }
+        for code in [
+            &mixin.initializer_code,
+            &mixin.own_initializer_code,
+            &mixin.standalone_initializer_code,
+            &mixin.superclass_clause_code,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            collect(code, None, into);
+        }
+        if let Some(class_side) = &mixin.class_side {
+            collect_mixin(class_side, into);
+        }
+        for nested in mixin.declared_nested().iter() {
+            collect_mixin(nested, into);
+        }
+    }
+
+    fn sources_under(directory: &Path, into: &mut Vec<PathBuf>) {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(directory)
+            .expect("a directory")
+            .map(|entry| entry.expect("an entry").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                sources_under(&path, into);
+            } else if path.extension().is_some_and(|extension| extension == "ns") {
+                into.push(path);
+            }
+        }
+    }
+
+    /// Every body of the shipped core library and of the programs under
+    /// `goldens/language/` that resolve, compiled under `lowering`.
+    fn golden_bodies(lowering: Lowering) -> Vec<Body> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        sources_under(&root.join("goldens/language"), &mut files);
+        let mut modules = vec![crate::interpreter::kernel::resolved_kernel()];
+        for shipped in crate::interpreter::core_library::SHIPPED_MODULES {
+            modules.push(crate::interpreter::core_library::resolved_shipped_module(
+                shipped.name,
+            ));
+        }
+        for file in &files {
+            let source = std::fs::read_to_string(file).expect("readable");
+            // A golden that does not parse or resolve records that error
+            // and compiles nothing.
+            let resolved = ns_syntax::parse(&source).ok().and_then(|module| {
+                crate::resolve(
+                    module,
+                    Rc::from(source.as_str()),
+                    crate::SourceOrigin::File(file.clone()),
+                )
+                .ok()
+            });
+            if let Some(resolved) = resolved {
+                modules.push(Rc::new(resolved));
+            }
+        }
+        let mut interpreter = crate::Interpreter::bootstrap_with(lowering);
+        let mut bodies = Vec::new();
+        for module in &modules {
+            collect_mixin(&interpreter.compile_module(module), &mut bodies);
+        }
+        bodies
+    }
+
+    #[test]
+    fn every_golden_body_compiles_for_aapcs64() {
+        let mut compiled = 0usize;
+        let mut failures = Vec::new();
+        for lowering in [Lowering::Optimized, Lowering::Reference] {
+            for (code, method) in golden_bodies(lowering) {
+                for counting in [false, true] {
+                    let settings = CompileSettings {
+                        counting,
+                        futures_exit: false,
+                    };
+                    for copy in [baseline::BodyCopy::Lean, baseline::BodyCopy::Twin] {
+                        match assemble(
+                            Abi::Aapcs64,
+                            settings,
+                            &code,
+                            FeedbackBase::from_raw(0),
+                            method.as_ref(),
+                            copy,
+                        ) {
+                            Ok(body) => {
+                                assert_eq!(body.code.bytes.len() % 4, 0);
+                                compiled += 1;
+                            }
+                            Err(refusal) => failures.push(format!(
+                                "{lowering:?} {copy:?} counting {counting}: {refusal:?}\n{}",
+                                crate::bytecode::disassemble(&code, "body")
+                            )),
+                        }
+                    }
+                }
+            }
+        }
+        for failure in failures.iter().take(3) {
+            eprintln!("{failure}");
+        }
+        assert!(failures.is_empty(), "{} bodies failed", failures.len());
+        eprintln!("{compiled} bodies compiled");
+        assert!(compiled > 10_000, "only {compiled} bodies");
     }
 }

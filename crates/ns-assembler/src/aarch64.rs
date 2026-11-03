@@ -11,7 +11,7 @@
 //! Register 31 is the stack pointer in this crate's numbering ([`SP`]),
 //! and the zero register in many encodings. The encoder decides per
 //! instruction which the field means, never names the zero register as an
-//! operand, and moves the stack pointer through [`SCRATCH`] where the form
+//! operand, and moves the stack pointer through a scratch register where the form
 //! it needs would read the zero register.
 //!
 //! A call is `blr`, which leaves the return address in `x30`; every
@@ -1312,16 +1312,42 @@ impl Encoder for Aarch64 {
             Operation::MoveImmediate { target, value } => {
                 move_immediate(code, general(target, "a move of an immediate"), value);
             }
+            // A load or store reads 31 in its data field as the zero
+            // register, so the stack pointer -- which the JIT saves to
+            // memory and restores from it -- goes through the second
+            // scratch register, the first being free for a displacement.
             Operation::Load {
                 width,
                 target,
                 source,
-            } => access(code, width, true, general(target, "a load"), source),
+            } => {
+                if target == SP && width == Width::Word64 {
+                    let second = own(SECOND_SCRATCH);
+                    access(code, width, true, second, source);
+                    move_through_add(code, own(SP), second);
+                } else {
+                    access(code, width, true, general(target, "a narrow load"), source);
+                }
+            }
             Operation::Store {
                 width,
                 target,
                 source,
-            } => access(code, width, false, general(source, "a store"), target),
+            } => {
+                if source == SP && width == Width::Word64 {
+                    let second = own(SECOND_SCRATCH);
+                    move_through_add(code, second, own(SP));
+                    access(code, width, false, second, target);
+                } else {
+                    access(
+                        code,
+                        width,
+                        false,
+                        general(source, "a narrow store"),
+                        target,
+                    );
+                }
+            }
             Operation::StoreImmediate32 { target, value } => {
                 if value == 0 {
                     access(code, Width::Word64, false, ZERO_REGISTER, target);

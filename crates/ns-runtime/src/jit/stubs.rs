@@ -683,17 +683,29 @@ pub(super) mod testing {
         /// Makes every later run set the block's `word` to `value`, as
         /// the JIT sets a lasting word: an address a body under test
         /// reaches through the block.
+        #[cfg_attr(
+            not(target_arch = "x86_64"),
+            expect(dead_code, reason = "only the tests gated to `x86_64` call it")
+        )]
         pub(crate) fn set_block_word(&mut self, word: BlockWord, value: u64) {
             self.block_words.push((word, value));
         }
 
         /// Makes every later run set the machine word `word` to `value`:
         /// what a body under test reads of the heap there.
+        #[cfg_attr(
+            not(target_arch = "x86_64"),
+            expect(dead_code, reason = "only the tests gated to `x86_64` call it")
+        )]
         pub(crate) fn set_machine_word(&mut self, word: MachineWord, value: u64) {
             self.machine_words.push((word, value));
         }
 
         /// Installs the body `build` writes and finishes.
+        #[cfg_attr(
+            not(target_arch = "x86_64"),
+            expect(dead_code, reason = "only the tests gated to `x86_64` call it")
+        )]
         pub(crate) fn body(&mut self, build: impl FnOnce(&mut MacroAssembler)) -> CodeOffset {
             let mut macro_assembler = MacroAssembler::new(Abi::host());
             build(&mut macro_assembler);
@@ -730,6 +742,10 @@ pub(super) mod testing {
         /// interpreter's send calls a compiled callee: `body` begins with
         /// `enter_called`, as a prologue does, where `run`'s body, which
         /// the entry stub calls as an instruction inside a body, does not.
+        #[cfg_attr(
+            not(target_arch = "x86_64"),
+            expect(dead_code, reason = "only the tests gated to `x86_64` call it")
+        )]
         pub(crate) fn run_called<C>(
             &self,
             body: CodeOffset,

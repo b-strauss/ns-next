@@ -917,13 +917,69 @@ fn a_subtract_from_the_stack_pointer_is_refused() {
 }
 
 #[test]
+fn a_store_of_the_stack_pointer_goes_through_x17() {
+    let near = Memory {
+        base: aarch64::X1,
+        displacement: 8,
+    };
+    assert_eq!(
+        text(|assembler| assembler.store(Width::Word64, near, aarch64::SP)),
+        "mov x17, sp
+str x17, [x1, #0x8]"
+    );
+    let far = Memory {
+        base: aarch64::X1,
+        displacement: 32768,
+    };
+    assert_eq!(
+        text(|assembler| assembler.store(Width::Word64, far, aarch64::SP)),
+        "mov x17, sp
+mov x16, #0x8000
+str x17, [x1, x16]"
+    );
+}
+
+#[test]
+fn a_load_into_the_stack_pointer_goes_through_x17() {
+    let near = Memory {
+        base: aarch64::X1,
+        displacement: 8,
+    };
+    assert_eq!(
+        text(|assembler| assembler.load(Width::Word64, aarch64::SP, near)),
+        "ldr x17, [x1, #0x8]
+mov sp, x17"
+    );
+    let far = Memory {
+        base: aarch64::X1,
+        displacement: 32768,
+    };
+    assert_eq!(
+        text(|assembler| assembler.load(Width::Word64, aarch64::SP, far)),
+        "mov x16, #0x8000
+ldr x17, [x1, x16]
+mov sp, x17"
+    );
+}
+
+#[test]
 #[should_panic(expected = "stack pointer")]
-fn a_load_into_the_stack_pointer_is_refused() {
+fn a_narrow_load_into_the_stack_pointer_is_refused() {
     let memory = Memory {
         base: aarch64::X0,
         displacement: 0,
     };
-    text(|assembler| assembler.load(Width::Word64, aarch64::SP, memory));
+    text(|assembler| assembler.load(Width::Word32, aarch64::SP, memory));
+}
+
+#[test]
+#[should_panic(expected = "stack pointer")]
+fn a_narrow_store_of_the_stack_pointer_is_refused() {
+    let memory = Memory {
+        base: aarch64::X0,
+        displacement: 0,
+    };
+    text(|assembler| assembler.store(Width::Byte, memory, aarch64::SP));
 }
 
 #[test]
