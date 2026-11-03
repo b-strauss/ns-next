@@ -2564,13 +2564,6 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
-- Road step 8's sixth stage's (noted 2026-11-03 to 2026-11-04):
-  `a_sends_call_maps_its_return_address_to_the_send` (`jit/baseline.rs`)
-  assembles its body under System V and AAPCS64 on every host and no
-  longer under Win64, the convention every other gate runs; and the
-  AArch64 encoder refuses `jump_into_called` through `sp` and a push of
-  `x30` with no `should_panic` test of either
-  (`crates/ns-assembler/tests/aarch64_encodings.rs`).
 - Road step 8's fifth stage's (noted 2026-11-02 to 2026-11-03): the
   wait of a body whose frame could not switch at a backward jump, or
   whose compile the exhausted zone held (`jit::back_edge_ready`), has no
@@ -2700,11 +2693,6 @@ program's subclass of `String` as an argument, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
-- The WSL gate groups' copy names the development machine's checkout
-  (noted 2026-11-03): `COPY_INTO_WSL` (`xtask/src/main.rs`) rsyncs from
-  `/mnt/d/Workspace/ns-next/`, a literal, rather than from the
-  repository root `wslpath` would translate, so `linux` and `aarch64`
-  copy the wrong tree, or none, from any other checkout.
 - The AArch64 encoder's sources are unfetched (noted 2026-11-03): every
   constant of `crates/ns-assembler/src/aarch64.rs` cites a
   developer.arm.com page, as the convention asks, but the pages' paths

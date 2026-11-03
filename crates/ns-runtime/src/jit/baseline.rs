@@ -1573,6 +1573,11 @@ mod tests {
             [RAX, RCX],
             [&CALL_RAX, &CALL_RCX],
         );
+        a_sends_call_maps_its_return_address_under(
+            Abi::Windows64,
+            [RAX, RCX],
+            [&CALL_RAX, &CALL_RCX],
+        );
         a_sends_call_maps_its_return_address_under(Abi::Aapcs64, [X9, X10], [&BLR_X9, &BLR_X10]);
     }
 

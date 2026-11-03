@@ -1147,6 +1147,18 @@ fn a_call_into_a_body_through_the_stack_pointer_is_refused() {
 }
 
 #[test]
+#[should_panic(expected = "stack pointer")]
+fn a_jump_into_a_body_through_the_stack_pointer_is_refused() {
+    text(|assembler| assembler.jump_into_called(aarch64::SP));
+}
+
+#[test]
+#[should_panic(expected = "reserved")]
+fn a_push_of_the_link_register_is_refused() {
+    text(|assembler| assembler.push(aarch64::X30));
+}
+
+#[test]
 fn a_checked_multiply_is_four_instructions() {
     for target in allowed() {
         for source in allowed() {

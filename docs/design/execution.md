@@ -12898,14 +12898,11 @@ lookup's remembered answers ("The code zone").
   interpreter. QEMU does not model an incoherent instruction cache, so a
   missing flush passes there; Apple's `MAP_JIT` path is checked by
   clippy only (`release-checks`' lint for `aarch64-apple-darwin`).
-- **The WSL setup** the two groups need: an Ubuntu distribution (26.04.1
-  today) with `qemu-user-binfmt` (QEMU 10.2.1 today),
-  `gcc-aarch64-linux-gnu`, `rsync`, rustup with the target
-  `aarch64-unknown-linux-gnu` and `cargo-nextest`, and the clone at
-  `~/workspace/ns-next`. WSL masks `systemd-binfmt`, so the binfmt
-  registration is made at boot by `/etc/wsl.conf`'s `[boot] command`.
-  The rsync's source is the Windows checkout at
-  `/mnt/d/Workspace/ns-next/` (`xtask/src/main.rs`, `COPY_INTO_WSL`).
+- **The WSL setup** the two groups need is listed in `CLAUDE.md`,
+  "Working in this repository" (QEMU is 10.2.1 today); the gates copy the
+  checkout into `~/.cache/ns-next-gates`, which they create. The rsync's source is the checkout the gate
+  runs from, translated by
+  `wslpath -u` (`xtask/src/main.rs`, `copy_into_wsl`).
 
 ### Stages
 

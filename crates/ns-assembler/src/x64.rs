@@ -427,7 +427,7 @@ const LABEL_REFERENCE_SIZE: i64 = 7;
 /// The bytes `push` and `call` move the stack pointer by in 64-bit mode.
 ///
 /// Intel SDM Vol. 2B, PUSH—Push Word, Doubleword, or Quadword Onto the Stack
-/// (in 64-bit mode the stack pointer moves by 8); Vol. 1, 6.2 Stack Alignment.
+/// (in 64-bit mode the stack pointer moves by 8); Vol. 1, 6.2.2 Stack Alignment.
 const STACK_SLOT_BYTES: i32 = 8;
 
 /// `RET` (`C3`) — near return.

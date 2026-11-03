@@ -749,7 +749,7 @@ const ADDEND_SHIFT: u32 = 10;
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SDIV--Signed-divide->
 const SIGNED_DIVIDE: u32 = 0x9AC0_0C00;
 
-/// `shift` 10, bits 23:22, of a shifted-register `SUBS`: the second
+/// `shift` 0b10, bits 23:22, of a shifted-register `SUBS`: the second
 /// operand shifted right arithmetically.
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--shifted-register---Subtract-optionally-shifted-register--setting-flags->
@@ -1277,7 +1277,7 @@ impl Encoder for Aarch64 {
         // misaligned, and no instruction runs from there.
         assert!(
             length.is_multiple_of(instruction_bytes),
-            "a stop fill is a multiple of 4 bytes, not {length}"
+            "a stop fill is a multiple of {INSTRUCTION_BYTES} bytes, not {length}"
         );
         for _ in 0..length / instruction_bytes {
             emit(code, UNDEFINED);

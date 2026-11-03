@@ -434,14 +434,15 @@ two minutes (the copy into WSL 20 s, the suite 79 s) and `aarch64` about
 8.5 minutes (the suite under QEMU 498 s), so `end-of-batch` about
 twenty-eight minutes in all.
 
-The groups `linux` and `aarch64` run in WSL2, in a clone at
-`~/workspace/ns-next` the Windows working tree is rsynced into first, so
+The groups `linux` and `aarch64` run in WSL2, in a directory of their own,
+`~/.cache/ns-next-gates` the Windows working tree is rsynced into first, so
 uncommitted work is checked too: `linux` the suite for
 `x86_64-unknown-linux-gnu`, System V's convention and Linux's memory
 layer, and `aarch64` the suite cross-compiled for
 `aarch64-unknown-linux-gnu` and run through binfmt's `qemu-aarch64`, the
 only run of AArch64's machine code; what each needs installed, the QEMU
-version among it, is [execution.md](execution.md), "Tests".
+version among it, is `CLAUDE.md`'s, "Working in this repository", and
+[execution.md](execution.md), "Tests", has the clone.
 
 A check that runs over many inputs is split into trials that nextest runs
 in parallel, not kept as one test that runs alone at the end of the suite
