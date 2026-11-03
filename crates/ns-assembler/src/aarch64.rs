@@ -14,12 +14,20 @@
 //! operand, and moves the stack pointer through [`SCRATCH`] where the form
 //! it needs would read the zero register.
 //!
+//! A call is `blr`, which leaves the return address in `x30`; every
+//! address a call reaches begins by pushing it into a 16-byte slot on
+//! `sp` (`EnterCalled`), and a return pops it before `ret`, so `sp` stays
+//! 16-byte aligned and the return address lies at `[sp + 0]`, where the
+//! operations expect it. A conditional branch is one `b.cond` in both forms, reaching a
+//! mebibyte either way; past that the code does not assemble, rather than
+//! every forward check becoming a taken branch over an unconditional `b`.
+//!
 //! Every opcode, field shift, field mask, condition code and limit is a
 //! named constant whose documentation cites the instruction's page of the
 //! Arm A64 Instruction Set Architecture on developer.arm.com, and the
-//! registers the encoder keeps cite the Procedure Call Standard there. No
-//! numeric pattern appears in a function body; `tests/encoding_sources.rs`
-//! holds every encoder file to that.
+//! registers cite the Procedure Call Standard there. No numeric pattern
+//! appears in a function body; `tests/encoding_sources.rs` holds every
+//! encoder file to that.
 
 use crate::{
     BranchForm, BranchKind, Condition, Encoder, LabelReference, Memory, Operation, Register, Width,
@@ -27,7 +35,8 @@ use crate::{
 
 /// `x0`: register number 0, as an instruction's register fields name it.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -35,7 +44,8 @@ use crate::{
 pub const X0: Register = Register(0);
 /// `x1`: register number 1.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -43,7 +53,8 @@ pub const X0: Register = Register(0);
 pub const X1: Register = Register(1);
 /// `x2`: register number 2.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -51,7 +62,8 @@ pub const X1: Register = Register(1);
 pub const X2: Register = Register(2);
 /// `x3`: register number 3.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -59,7 +71,8 @@ pub const X2: Register = Register(2);
 pub const X3: Register = Register(3);
 /// `x4`: register number 4.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -67,7 +80,8 @@ pub const X3: Register = Register(3);
 pub const X4: Register = Register(4);
 /// `x5`: register number 5.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -75,7 +89,8 @@ pub const X4: Register = Register(4);
 pub const X5: Register = Register(5);
 /// `x6`: register number 6.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -83,7 +98,8 @@ pub const X5: Register = Register(5);
 pub const X6: Register = Register(6);
 /// `x7`: register number 7.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -91,7 +107,8 @@ pub const X6: Register = Register(6);
 pub const X7: Register = Register(7);
 /// `x8`: register number 8.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -99,7 +116,8 @@ pub const X7: Register = Register(7);
 pub const X8: Register = Register(8);
 /// `x9`: register number 9.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -107,27 +125,33 @@ pub const X8: Register = Register(8);
 pub const X9: Register = Register(9);
 /// `x10`: register number 10.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X10: Register = Register(10);
 /// `x11`: register number 11.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X11: Register = Register(11);
 /// `x12`: register number 12.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X12: Register = Register(12);
 /// `x13`: register number 13.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X13: Register = Register(13);
 /// `x14`: register number 14.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X14: Register = Register(14);
 /// `x15`: register number 15.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X15: Register = Register(15);
 /// `x16`: register number 16, IP0, the encoder's first scratch register
 /// and never an operand.
@@ -149,43 +173,53 @@ pub const X17: Register = Register(17);
 pub const X18: Register = Register(18);
 /// `x19`: register number 19.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X19: Register = Register(19);
 /// `x20`: register number 20.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X20: Register = Register(20);
 /// `x21`: register number 21.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X21: Register = Register(21);
 /// `x22`: register number 22.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X22: Register = Register(22);
 /// `x23`: register number 23.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X23: Register = Register(23);
 /// `x24`: register number 24.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X24: Register = Register(24);
 /// `x25`: register number 25.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X25: Register = Register(25);
 /// `x26`: register number 26.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X26: Register = Register(26);
 /// `x27`: register number 27.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X27: Register = Register(27);
 /// `x28`: register number 28.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers).
 pub const X28: Register = Register(28);
 /// `x29`: register number 29, the frame pointer of the procedure call
 /// standard.
@@ -196,13 +230,15 @@ pub const X29: Register = Register(29);
 /// `x30`: register number 30, the link register a call writes, owned by
 /// the call convention and never an operand.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BLR--Branch-with-link-to-register->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers: the link register).
 pub const X30: Register = Register(30);
 /// `sp`, the stack pointer: register number 31 where an instruction's
 /// field reads it as the stack pointer, never the zero register, which no
 /// operand names.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value->
+/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// Registers: the stack pointer).
 #[expect(
     clippy::min_ident_chars,
     reason = "the architecture's own name of the register"
@@ -657,6 +693,146 @@ const CONDITION_GREATER: u32 = 0b1100;
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_LESS_OR_EQUAL: u32 = 0b1101;
 
+/// `BLR Xn` — call the address in `Xn`, the return address into `x30`.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BLR--Branch-with-link-to-register->
+const BRANCH_WITH_LINK_REGISTER: u32 = 0xD63F_0000;
+
+/// `BR Xn` — jump to the address in `Xn`.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BR--Branch-to-register->
+const BRANCH_REGISTER: u32 = 0xD61F_0000;
+
+/// `RET` — return to the address in `x30`, the default `Rn` already in
+/// place.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/RET--Return-from-subroutine->
+const RETURN_TO_LINK_REGISTER: u32 = 0xD65F_03C0;
+
+/// `STR Xt, [Xn|SP, #simm9]!` (immediate, pre-index, 64-bit) — store, then
+/// keep the lowered address in the base: a push.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate-->
+const STORE_PRE_INDEX: u32 = 0xF800_0C00;
+
+/// `LDR Xt, [Xn|SP], #simm9` (immediate, post-index, 64-bit) — load, then
+/// raise the base: a pop.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
+const LOAD_POST_INDEX: u32 = 0xF840_0400;
+
+/// `SMULH Xd, Xn, Xm` (`Ra` 31 in place) — the high 64 bits of the signed
+/// 128-bit product.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SMULH--Signed-multiply-high->
+const SIGNED_MULTIPLY_HIGH: u32 = 0x9B40_7C00;
+
+/// `MUL Xd, Xn, Xm`, the `MADD` alias with the zero register as `Ra`
+/// already in place — the low 64 bits of the product.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MUL--Multiply--an-alias-of-MADD->
+const MULTIPLY: u32 = 0x9B00_7C00;
+
+/// `MSUB Xd, Xn, Xm, Xa` (64-bit) — `Xa - Xn * Xm`.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MSUB--Multiply-subtract->
+const MULTIPLY_SUBTRACT: u32 = 0x9B00_8000;
+
+/// The shift that places a multiply-add's `Ra`, the addend, bits 14:10.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MSUB--Multiply-subtract->
+const ADDEND_SHIFT: u32 = 10;
+
+/// `SDIV Xd, Xn, Xm` (64-bit) — the signed quotient, truncated toward
+/// zero.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SDIV--Signed-divide->
+const SIGNED_DIVIDE: u32 = 0x9AC0_0C00;
+
+/// `shift` 10, bits 23:22, of a shifted-register `SUBS`: the second
+/// operand shifted right arithmetically.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--shifted-register---Subtract-optionally-shifted-register--setting-flags->
+const SHIFTED_ARITHMETIC_RIGHT: u32 = 0b10 << 22;
+
+/// The shift that places a shifted-register operand's `imm6`, its shift
+/// amount, bits 15:10.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--shifted-register---Subtract-optionally-shifted-register--setting-flags->
+const SHIFT_AMOUNT_SHIFT: u32 = 10;
+
+/// `CCMP Xn, Xm, #nzcv, cond` (register, 64-bit) — the flags of
+/// `Xn - Xm` when `cond` holds, `nzcv` otherwise.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CCMP--register---Conditional-compare--register-->
+const CONDITIONAL_COMPARE_REGISTER: u32 = 0xFA40_0000;
+
+/// The `nzcv` of a conditional compare with V alone set, bits 3:0.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CCMP--register---Conditional-compare--register-->
+const FLAGS_OVERFLOW_ALONE: u32 = 0b0001;
+
+/// `ADR Xd, label` — the address `immhi:immlo` bytes from the
+/// instruction.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
+const ADDRESS: u32 = 0x1000_0000;
+
+/// The bits of `ADR`'s `immlo`, the distance's low two bits, at bits
+/// 30:29.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
+const ADDRESS_LOW_BITS: u32 = 2;
+
+/// The shift that places `ADR`'s `immlo`.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
+const ADDRESS_LOW_SHIFT: u32 = 29;
+
+/// The bits of `ADR`'s signed distance, `immhi:immlo`.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
+const ADDRESS_DISTANCE_BITS: u32 = 21;
+
+/// `LDR Xt, label` (literal, 64-bit) — load the word `imm19` instructions
+/// from the instruction.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--literal---Load-register--literal-->
+const LOAD_LITERAL: u32 = 0x5800_0000;
+
+/// `B label` — jump `imm26` instructions from the instruction.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
+const BRANCH: u32 = 0x1400_0000;
+
+/// The bits of `B`'s signed `imm26`, in instructions.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
+const BRANCH_DISTANCE_BITS: u32 = 26;
+
+/// `B.cond label` — jump `imm19` instructions from the instruction when
+/// `cond`, at bits 3:0, holds.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
+const BRANCH_CONDITIONAL: u32 = 0x5400_0000;
+
+/// The bits of the signed `imm19` of `B.cond` and `LDR` (literal), in
+/// instructions.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
+const CONDITIONAL_DISTANCE_BITS: u32 = 19;
+
+/// The shift that places the `imm19` of `B.cond` and `LDR` (literal), and
+/// `ADR`'s `immhi`, bits 23:5.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
+const CONDITIONAL_DISTANCE_SHIFT: u32 = 5;
+
+/// `UDF #0` — permanently undefined: the stop, and the trap.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UDF--Permanently-undefined->
+const UNDEFINED: u32 = 0x0000_0000;
+
 /// A register's number for a field that reads 31 as the stack pointer:
 /// any register but the reserved ones.
 fn general_or_stack(register: Register) -> u32 {
@@ -999,6 +1175,57 @@ fn shift_count(count: u8) -> u32 {
     u32::from(count)
 }
 
+/// `distance` as a signed field of `bits` bits counting units of `unit`
+/// bytes, when it is a whole number of them the field holds.
+fn signed_field(distance: i64, unit: i64, bits: u32) -> Option<u32> {
+    if distance % unit != 0 {
+        return None;
+    }
+    let units = distance / unit;
+    let limit = 1_i64 << (bits - 1);
+    if units < -limit || units >= limit {
+        return None;
+    }
+    Some(low_bits(units.cast_unsigned(), element_mask(bits)))
+}
+
+/// `distance` in instructions, as a signed field of `bits` bits.
+fn instruction_field(distance: i64, bits: u32) -> Option<u32> {
+    signed_field(distance, i64::from(INSTRUCTION_BYTES), bits)
+}
+
+/// `adr target` of the address `distance` bytes away, which reaches every
+/// byte within a mebibyte.
+fn address(target: u32, distance: i64) -> Option<u32> {
+    let field = signed_field(distance, 1, ADDRESS_DISTANCE_BITS)?;
+    let low = field & ((1 << ADDRESS_LOW_BITS) - 1);
+    let high = field >> ADDRESS_LOW_BITS;
+    Some(
+        ADDRESS
+            | (low << ADDRESS_LOW_SHIFT)
+            | (high << CONDITIONAL_DISTANCE_SHIFT)
+            | (target << DESTINATION_SHIFT),
+    )
+}
+
+/// `str source, [sp, #-16]!`: one slot down, keeping `sp` 16-byte aligned.
+fn push(code: &mut Vec<u8>, source: u32) {
+    let offset = low_bits(sign_extended(-STACK_SLOT_BYTES), UNSCALED_OFFSET_MASK);
+    emit(
+        code,
+        three_registers(STORE_PRE_INDEX, source, own(SP), 0) | (offset << UNSCALED_OFFSET_SHIFT),
+    );
+}
+
+/// `ldr target, [sp], #16`: the slot [`push`] filled.
+fn pop(code: &mut Vec<u8>, target: u32) {
+    let offset = low_bits(sign_extended(STACK_SLOT_BYTES), UNSCALED_OFFSET_MASK);
+    emit(
+        code,
+        three_registers(LOAD_POST_INDEX, target, own(SP), 0) | (offset << UNSCALED_OFFSET_SHIFT),
+    );
+}
+
 /// The condition code `cond`.
 fn condition_code(condition: Condition) -> u32 {
     match condition {
@@ -1026,8 +1253,17 @@ impl Encoder for Aarch64 {
         INSTRUCTION_BYTES
     }
 
-    fn fill_with_stops(&self, _length: usize, _code: &mut Vec<u8>) {
-        todo!("the AArch64 stop fill")
+    fn fill_with_stops(&self, length: usize, code: &mut Vec<u8>) {
+        let instruction_bytes = INSTRUCTION_BYTES as usize;
+        // A part of an instruction would leave the code after the fill
+        // misaligned, and no instruction runs from there.
+        assert!(
+            length.is_multiple_of(instruction_bytes),
+            "a stop fill is a multiple of 4 bytes, not {length}"
+        );
+        for _ in 0..length / instruction_bytes {
+            emit(code, UNDEFINED);
+        }
     }
 
     fn encode(&self, operation: Operation, code: &mut Vec<u8>) {
@@ -1192,36 +1428,167 @@ impl Encoder for Aarch64 {
                     );
                 }
             }
-            Operation::MultiplyChecked { .. } => todo!("the AArch64 checked multiply"),
-            Operation::DivideSigned { .. } => todo!("the AArch64 signed divide"),
-            Operation::CallRegister { .. } => todo!("the AArch64 register call"),
-            Operation::JumpRegister { .. } => todo!("the AArch64 register jump"),
-            Operation::EnterCalled => todo!("the AArch64 entry of a called address"),
-            Operation::JumpIntoCalled { .. } => todo!("the AArch64 jump into a called address"),
-            Operation::Push { .. } => todo!("the AArch64 push"),
-            Operation::Pop { .. } => todo!("the AArch64 pop"),
-            Operation::LoadCodeAddress { .. } => todo!("the AArch64 code address"),
-            Operation::Return => todo!("the AArch64 return"),
-            Operation::Trap => todo!("the AArch64 trap"),
+            Operation::MultiplyChecked { target, source } => {
+                let (target, source) =
+                    (general(target, "a multiply"), general(source, "a multiply"));
+                let high = own(SCRATCH);
+                // The high word first, while `target` still holds the
+                // factor.
+                emit(
+                    code,
+                    three_registers(SIGNED_MULTIPLY_HIGH, high, target, source),
+                );
+                emit(code, three_registers(MULTIPLY, target, target, source));
+                // The product fits exactly when the high word is the low
+                // word's sign.
+                emit(
+                    code,
+                    three_registers(
+                        SUBTRACT_REGISTER_SETTING_FLAGS | SHIFTED_ARITHMETIC_RIGHT,
+                        ZERO_REGISTER,
+                        high,
+                        target,
+                    ) | (HIGHEST_BIT << SHIFT_AMOUNT_SHIFT),
+                );
+                // On equal, zero minus zero clears V; otherwise V alone is
+                // set, so `Overflow` and `NoOverflow` read the fit.
+                emit(
+                    code,
+                    three_registers(
+                        CONDITIONAL_COMPARE_REGISTER,
+                        FLAGS_OVERFLOW_ALONE,
+                        ZERO_REGISTER,
+                        ZERO_REGISTER,
+                    ) | (CONDITION_EQUAL << CONDITION_SHIFT),
+                );
+            }
+            Operation::DivideSigned {
+                dividend,
+                remainder,
+                divisor,
+            } => {
+                // The remainder is written while the dividend and the
+                // divisor are still read, so no two may share a register.
+                assert!(
+                    dividend != remainder && dividend != divisor && remainder != divisor,
+                    "a division takes three distinct registers, not x{}, x{} and x{}",
+                    dividend.0,
+                    remainder.0,
+                    divisor.0
+                );
+                let (dividend, remainder, divisor) = (
+                    general(dividend, "a division"),
+                    general(remainder, "a division"),
+                    general(divisor, "a division"),
+                );
+                let quotient = own(SCRATCH);
+                emit(
+                    code,
+                    three_registers(SIGNED_DIVIDE, quotient, dividend, divisor),
+                );
+                emit(
+                    code,
+                    three_registers(MULTIPLY_SUBTRACT, remainder, quotient, divisor)
+                        | (dividend << ADDEND_SHIFT),
+                );
+                emit(code, three_registers(MOVE_REGISTER, dividend, 0, quotient));
+            }
+            Operation::CallRegister { target } => {
+                let target = general(target, "a call");
+                emit(
+                    code,
+                    three_registers(BRANCH_WITH_LINK_REGISTER, 0, target, 0),
+                );
+            }
+            Operation::JumpRegister { target } => {
+                let target = general(target, "a jump");
+                emit(code, three_registers(BRANCH_REGISTER, 0, target, 0));
+            }
+            Operation::EnterCalled => push(code, own(X30)),
+            Operation::JumpIntoCalled { target } => {
+                let target = general(target, "a jump");
+                let skipping = own(SCRATCH);
+                // `add`, never `adds`: the jump keeps the flags. The save
+                // [`Operation::EnterCalled`] encodes is one instruction.
+                emit(
+                    code,
+                    three_registers(ADD_IMMEDIATE, skipping, target, 0)
+                        | (INSTRUCTION_BYTES << ARITHMETIC_IMMEDIATE_SHIFT),
+                );
+                emit(code, three_registers(BRANCH_REGISTER, 0, skipping, 0));
+            }
+            Operation::Push { source } => push(code, general(source, "a push")),
+            Operation::Pop { target } => pop(code, general(target, "a pop")),
+            Operation::LoadCodeAddress { target } => {
+                let target = general(target, "a code address");
+                let Some(instruction) = address(target, i64::from(INSTRUCTION_BYTES)) else {
+                    panic!("an adr reaches the next instruction");
+                };
+                emit(code, instruction);
+            }
+            Operation::Return => {
+                pop(code, own(X30));
+                emit(code, RETURN_TO_LINK_REGISTER);
+            }
+            Operation::Trap => emit(code, UNDEFINED),
         }
     }
 
     fn encode_branch(
         &self,
-        _kind: BranchKind,
+        kind: BranchKind,
         _form: BranchForm,
-        _distance: i64,
-        _code: &mut Vec<u8>,
+        distance: i64,
+        code: &mut Vec<u8>,
     ) -> bool {
-        todo!("the AArch64 branches")
+        // Both forms are one instruction, so the long form is the short
+        // one: a conditional branch beyond `b.cond`'s mebibyte answers
+        // `false` rather than becoming an inverted `b.cond` over a `b`,
+        // which would make every forward check a taken branch.
+        let instruction = match kind {
+            BranchKind::Unconditional => {
+                instruction_field(distance, BRANCH_DISTANCE_BITS).map(|field| BRANCH | field)
+            }
+            BranchKind::Conditional(condition) => {
+                instruction_field(distance, CONDITIONAL_DISTANCE_BITS).map(|field| {
+                    BRANCH_CONDITIONAL
+                        | (field << CONDITIONAL_DISTANCE_SHIFT)
+                        | condition_code(condition)
+                })
+            }
+        };
+        match instruction {
+            Some(instruction) => {
+                emit(code, instruction);
+                true
+            }
+            None => false,
+        }
     }
 
     fn encode_label_reference(
         &self,
-        _reference: LabelReference,
-        _distance: i64,
-        _code: &mut Vec<u8>,
+        reference: LabelReference,
+        distance: i64,
+        code: &mut Vec<u8>,
     ) -> bool {
-        todo!("the AArch64 label references")
+        let instruction = match reference {
+            LabelReference::Load { target } => {
+                let target = general(target, "a literal load");
+                instruction_field(distance, CONDITIONAL_DISTANCE_BITS).map(|field| {
+                    LOAD_LITERAL
+                        | (field << CONDITIONAL_DISTANCE_SHIFT)
+                        | (target << DESTINATION_SHIFT)
+                })
+            }
+            LabelReference::Address { target } => address(general(target, "an address"), distance),
+        };
+        match instruction {
+            Some(instruction) => {
+                emit(code, instruction);
+                true
+            }
+            None => false,
+        }
     }
 }

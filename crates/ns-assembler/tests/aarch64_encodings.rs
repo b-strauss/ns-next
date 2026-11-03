@@ -1,16 +1,20 @@
-//! Every AArch64 operation of moves, memory, arithmetic, logic and
-//! compares, over every operand register and the displacements and
-//! immediates at the edges of each encoding's forms, held to the text an
-//! independent disassembler, `yaxpeax-arm`, reads back from its bytes.
+//! Every AArch64 operation, over every operand register and the
+//! displacements, immediates and distances at the edges of each encoding's
+//! forms, held to the text an independent disassembler, `yaxpeax-arm`,
+//! reads back from its bytes.
 //!
 //! The expected text is `yaxpeax-arm`'s: the preferred alias (`mov`, `cmp`,
 //! `cmn`, `tst`, `lsl`, `lsr`, `asr`), immediates in lower-case hexadecimal
 //! behind `#0x`, a negative offset as `#-0x…`, a move-wide immediate as the
-//! value the register receives, and one line per instruction.
+//! value the register receives, a branch's or a label reference's target as
+//! `$+0x…` or `$-0x…` from the instruction, and one line per instruction.
 //! `the_disassembler_writes_the_text_these_tests_expect` pins that format
 //! against instruction words assembled by hand from the Arm manual.
 
-use ns_assembler::{aarch64, Aarch64, Assembler, Condition, Encoder, Memory, Register, Width};
+use ns_assembler::{
+    aarch64, Aarch64, Assembled, Assembler, AssemblyError, BranchForm, BranchKind, Condition,
+    Encoder, Label, LabelReference, Memory, Register, Width,
+};
 use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv8::a64::{InstDecoder, Instruction};
 
@@ -279,7 +283,7 @@ fn memories(bases: impl Iterator<Item = Register> + Clone) -> Vec<Memory> {
 #[test]
 fn the_disassembler_writes_the_text_these_tests_expect() {
     // Words assembled by hand from the Arm manual's encodings.
-    let pinned: [(u32, &str); 12] = [
+    let pinned: [(u32, &str); 19] = [
         (0xAA01_03E0, "mov x0, x1"),
         (0x9100_03E0, "mov x0, sp"),
         (0xD2A0_0020, "mov x0, #0x10000"),
@@ -292,6 +296,13 @@ fn the_disassembler_writes_the_text_these_tests_expect() {
         (0xEB30_63FF, "cmp sp, x16"),
         (0x9240_021F, "and sp, x16, #0x1"),
         (0xD37F_F800, "lsl x0, x0, #0x1"),
+        (0xF81F_0FFE, "str x30, [sp, #-0x10]!"),
+        (0xF841_07FE, "ldr x30, [sp], #0x10"),
+        (0x1400_0001, "b $+0x4"),
+        (0x54FF_FFE1, "b.ne $-0x4"),
+        (0x5800_0020, "ldr x0, $+0x4"),
+        (0x3000_0000, "adr x0, $+0x1"),
+        (0x0000_0000, "udf #0x0"),
     ];
     for (word, expected) in pinned {
         assert_eq!(disassemble(&word.to_le_bytes()), expected);
@@ -913,4 +924,481 @@ fn a_load_into_the_stack_pointer_is_refused() {
         displacement: 0,
     };
     text(|assembler| assembler.load(Width::Word64, aarch64::SP, memory));
+}
+
+#[test]
+fn the_boundaries_of_the_load_forms_are_where_the_manual_puts_them() {
+    // Literal sequences, independent of `access_lines`, so that a
+    // misjudged boundary shared by it and the encoder cannot pass.
+    let expected = [
+        (4095, "mov x16, #0xfff\nldr x0, [x1, x16]"),
+        (4096, "ldr x0, [x1, #0x1000]"),
+        (32760, "ldr x0, [x1, #0x7ff8]"),
+        (32768, "mov x16, #0x8000\nldr x0, [x1, x16]"),
+        (255, "ldur x0, [x1, #0xff]"),
+        (-256, "ldur x0, [x1, #-0x100]"),
+        (-257, "mov x16, #0xfffffffffffffeff\nldr x0, [x1, x16]"),
+    ];
+    for (displacement, lines) in expected {
+        let memory = Memory {
+            base: aarch64::X1,
+            displacement,
+        };
+        assert_eq!(
+            text(|assembler| assembler.load(Width::Word64, aarch64::X0, memory)),
+            lines,
+            "{displacement}"
+        );
+    }
+}
+
+#[test]
+fn the_boundaries_of_the_add_immediate_forms_are_where_the_manual_puts_them() {
+    let expected = [
+        (4095, "adds x0, x0, #0xfff"),
+        (4096, "adds x0, x0, #0x1, lsl #12"),
+        (-4096, "subs x0, x0, #0x1, lsl #12"),
+        (0xFFF << 12, "adds x0, x0, #0xfff, lsl #12"),
+        (0x1000 << 12, "mov x16, #0x1000000\nadds x0, x0, x16"),
+        (
+            0x1001 << 12,
+            "mov x16, #0x1000\nmovk x16, #0x100, lsl #16\nadds x0, x0, x16",
+        ),
+        (4097, "mov x16, #0x1001\nadds x0, x0, x16"),
+    ];
+    for (value, lines) in expected {
+        assert_eq!(
+            text(|assembler| assembler.add_immediate(aarch64::X0, value)),
+            lines,
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn a_move_of_an_immediate_breaks_a_tie_for_movz_and_sets_three_halfwords() {
+    let expected = [
+        // Two halfwords of zeros and two of ones: movz on the tie.
+        (
+            0xFFFF_FFFF_0000_0000,
+            "mov x0, #0xffff00000000\nmovk x0, #0xffff, lsl #48",
+        ),
+        // Fewer halfwords that are not all ones than that are not zero:
+        // movn.
+        (
+            0xFFFF_FFFF_0000_1234,
+            "mov x0, #0xffffffffffff1234\nmovk x0, #0x0, lsl #16",
+        ),
+        (
+            0x1234_5678_9ABC,
+            "mov x0, #0x9abc\nmovk x0, #0x5678, lsl #16\nmovk x0, #0x1234, lsl #32",
+        ),
+        (
+            0x1234_5678_9ABC_DEF0,
+            "mov x0, #0xdef0\nmovk x0, #0x9abc, lsl #16\nmovk x0, #0x5678, lsl #32\n\
+             movk x0, #0x1234, lsl #48",
+        ),
+        (0, "mov x0, #0x0"),
+        (u64::MAX, "mov x0, #0xffffffffffffffff"),
+    ];
+    for (value, lines) in expected {
+        assert_eq!(
+            text(|assembler| assembler.move_immediate(aarch64::X0, value)),
+            lines,
+            "{value:#x}"
+        );
+    }
+}
+
+#[test]
+fn a_call_saves_and_a_return_restores_the_link_register() {
+    for target in allowed() {
+        let register = name(target);
+        assert_eq!(
+            text(|assembler| assembler.call_register(target)),
+            format!("blr {register}")
+        );
+        assert_eq!(
+            text(|assembler| assembler.jump_register(target)),
+            format!("br {register}")
+        );
+    }
+    assert_eq!(text(Assembler::enter_called), "str x30, [sp, #-0x10]!");
+    assert_eq!(text(Assembler::return_), "ldr x30, [sp], #0x10\nret");
+}
+
+#[test]
+fn a_push_and_a_pop_move_the_stack_pointer_by_a_slot() {
+    for register in allowed() {
+        let named = name(register);
+        assert_eq!(
+            text(|assembler| assembler.push(register)),
+            format!("str {named}, [sp, #-0x10]!")
+        );
+        assert_eq!(
+            text(|assembler| assembler.pop(register)),
+            format!("ldr {named}, [sp], #0x10")
+        );
+    }
+}
+
+#[test]
+fn a_jump_into_a_called_address_skips_its_save() {
+    // The save is one instruction, the four bytes the jump skips.
+    assert_eq!(bytes(Assembler::enter_called).len(), 4);
+    for target in allowed() {
+        assert_eq!(
+            text(|assembler| assembler.jump_into_called(target)),
+            format!("add x16, {}, #0x4\nbr x16", name(target))
+        );
+    }
+}
+
+#[test]
+fn a_checked_multiply_is_four_instructions() {
+    for target in allowed() {
+        for source in allowed() {
+            let (product, factor) = (name(target), name(source));
+            assert_eq!(
+                text(|assembler| assembler.multiply_checked(target, source)),
+                format!(
+                    "smulh x16, {product}, {factor}\nmul {product}, {product}, {factor}\n\
+                     cmp x16, {product}, asr #63\nccmp xzr, xzr, #0x1, eq"
+                )
+            );
+        }
+    }
+}
+
+#[test]
+fn a_division_leaves_quotient_and_remainder() {
+    for dividend in allowed() {
+        for remainder in allowed().filter(|register| *register != dividend) {
+            for divisor in allowed().filter(|register| ![dividend, remainder].contains(register)) {
+                let (dividend_name, remainder_name, divisor_name) =
+                    (name(dividend), name(remainder), name(divisor));
+                assert_eq!(
+                    text(|assembler| assembler.divide_signed(dividend, remainder, divisor)),
+                    format!(
+                        "sdiv x16, {dividend_name}, {divisor_name}\n\
+                         msub {remainder_name}, x16, {divisor_name}, {dividend_name}\n\
+                         mov {dividend_name}, x16"
+                    )
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "distinct")]
+fn a_division_into_its_own_divisor_is_refused() {
+    text(|assembler| assembler.divide_signed(aarch64::X0, aarch64::X1, aarch64::X1));
+}
+
+#[test]
+#[should_panic(expected = "distinct")]
+fn a_division_whose_remainder_is_its_dividend_is_refused() {
+    text(|assembler| assembler.divide_signed(aarch64::X0, aarch64::X0, aarch64::X1));
+}
+
+#[test]
+#[should_panic(expected = "stack pointer")]
+fn a_push_of_the_stack_pointer_is_refused() {
+    text(|assembler| assembler.push(aarch64::SP));
+}
+
+#[test]
+#[should_panic(expected = "reserved")]
+fn a_call_through_a_scratch_register_is_refused() {
+    text(|assembler| assembler.call_register(aarch64::X16));
+}
+
+/// One mebibyte, the reach of `adr`, `ldr` (literal) and `b.cond`.
+const MEBIBYTE: i64 = 1 << 20;
+
+fn assembled(build: impl FnOnce(&mut Assembler<Aarch64>)) -> Result<Assembled, AssemblyError> {
+    let mut assembler = Assembler::<Aarch64>::new();
+    build(&mut assembler);
+    assembler.finish()
+}
+
+fn data_bytes(count: i64) -> u32 {
+    match u32::try_from(count) {
+        Ok(count) => count,
+        Err(_) => panic!("{count} bytes of data"),
+    }
+}
+
+/// The text of the operation `emit` emits, naming a label `distance`
+/// bytes away: for a positive distance the operation comes first and the
+/// label after zero data, otherwise the label first and the operation
+/// after the zero data.
+fn reached(
+    distance: i64,
+    emit: impl Fn(&mut Assembler<Aarch64>, Label),
+) -> Result<String, AssemblyError> {
+    if distance > 0 {
+        let assembled = assembled(|assembler| {
+            let label = assembler.label();
+            emit(assembler, label);
+            assembler.zeroed_data(data_bytes(distance - 4));
+            assembler.bind(label);
+        })?;
+        Ok(disassemble(&assembled.bytes[..4]))
+    } else {
+        let assembled = assembled(|assembler| {
+            let label = assembler.label();
+            assembler.bind(label);
+            assembler.zeroed_data(data_bytes(-distance));
+            emit(assembler, label);
+        })?;
+        let length = assembled.bytes.len();
+        Ok(disassemble(&assembled.bytes[length - 4..]))
+    }
+}
+
+fn out_of_reach(result: &Result<String, AssemblyError>) -> bool {
+    matches!(result, Err(AssemblyError::BranchOutOfReach(_)))
+}
+
+#[test]
+fn a_label_reference_reaches_a_mebibyte_either_way() {
+    let load = |assembler: &mut Assembler<Aarch64>, label| {
+        assembler.load_labelled(aarch64::X3, label, 0);
+    };
+    let address = |assembler: &mut Assembler<Aarch64>, label| {
+        assembler.load_label_address(aarch64::X3, label, 0);
+    };
+    assert_eq!(
+        reached(MEBIBYTE - 4, load),
+        Ok("ldr x3, $+0xffffc".to_owned())
+    );
+    assert_eq!(
+        reached(-MEBIBYTE, load),
+        Ok("ldr x3, $-0x100000".to_owned())
+    );
+    assert_eq!(
+        reached(MEBIBYTE - 4, address),
+        Ok("adr x3, $+0xffffc".to_owned())
+    );
+    assert_eq!(
+        reached(-MEBIBYTE, address),
+        Ok("adr x3, $-0x100000".to_owned())
+    );
+    for distance in [MEBIBYTE, MEBIBYTE + 4, -MEBIBYTE - 4] {
+        assert!(out_of_reach(&reached(distance, load)), "{distance}");
+        assert!(out_of_reach(&reached(distance, address)), "{distance}");
+    }
+    // The displacement is part of the distance, forward and backward.
+    let displaced = |assembler: &mut Assembler<Aarch64>, label| {
+        assembler.load_labelled(aarch64::X3, label, 8);
+    };
+    assert_eq!(reached(8, displaced), Ok("ldr x3, $+0x10".to_owned()));
+    assert_eq!(reached(-8, displaced), Ok("ldr x3, $+0x0".to_owned()));
+    let past_the_reach = |assembler: &mut Assembler<Aarch64>, label| {
+        assembler.load_labelled(aarch64::X3, label, 4);
+    };
+    assert!(out_of_reach(&reached(MEBIBYTE - 4, past_the_reach)));
+    // A literal load reaches only words; an address reaches every byte.
+    let unaligned_load = |assembler: &mut Assembler<Aarch64>, label| {
+        assembler.load_labelled(aarch64::X3, label, 2);
+    };
+    assert!(out_of_reach(&reached(8, unaligned_load)));
+    assert!(out_of_reach(&reached(-8, unaligned_load)));
+    let unaligned_address = |assembler: &mut Assembler<Aarch64>, label| {
+        assembler.load_label_address(aarch64::X3, label, 3);
+    };
+    assert_eq!(
+        reached(8, unaligned_address),
+        Ok("adr x3, $+0xb".to_owned())
+    );
+    assert_eq!(
+        reached(MEBIBYTE - 4, unaligned_address),
+        Ok("adr x3, $+0xfffff".to_owned())
+    );
+    // The encoder answers `false` and appends nothing.
+    let mut code = Vec::new();
+    let reference = LabelReference::Load {
+        target: aarch64::X3,
+    };
+    assert!(!Aarch64.encode_label_reference(reference, MEBIBYTE, &mut code));
+    assert!(!Aarch64.encode_label_reference(reference, 2, &mut code));
+    assert!(code.is_empty());
+}
+
+#[test]
+fn a_code_address_is_that_of_the_next_operation() {
+    for target in allowed() {
+        assert_eq!(
+            text(|assembler| assembler.load_code_address(target)),
+            format!("adr {}, $+0x4", name(target))
+        );
+    }
+}
+
+/// Every branch kind with its mnemonic.
+fn branch_kinds() -> Vec<(BranchKind, String)> {
+    let conditions = [
+        (Condition::Equal, "eq"),
+        (Condition::NotEqual, "ne"),
+        (Condition::Less, "lt"),
+        (Condition::LessOrEqual, "le"),
+        (Condition::Greater, "gt"),
+        (Condition::GreaterOrEqual, "ge"),
+        (Condition::Below, "lo"),
+        (Condition::BelowOrEqual, "ls"),
+        (Condition::Above, "hi"),
+        (Condition::AboveOrEqual, "hs"),
+        (Condition::Overflow, "vs"),
+        (Condition::NoOverflow, "vc"),
+    ];
+    std::iter::once((BranchKind::Unconditional, "b".to_owned()))
+        .chain(
+            conditions
+                .into_iter()
+                .map(|(condition, code)| (BranchKind::Conditional(condition), format!("b.{code}"))),
+        )
+        .collect()
+}
+
+fn emit_branch(assembler: &mut Assembler<Aarch64>, kind: BranchKind, label: Label) {
+    match kind {
+        BranchKind::Unconditional => assembler.jump(label),
+        BranchKind::Conditional(condition) => assembler.jump_if(condition, label),
+    }
+}
+
+/// The text of `kind`'s branch in `form` at `distance`, straight from the
+/// encoder, or `None` when it answers that the form does not reach.
+fn encoded_branch(kind: BranchKind, form: BranchForm, distance: i64) -> Option<String> {
+    let mut code = Vec::new();
+    if Aarch64.encode_branch(kind, form, distance, &mut code) {
+        Some(disassemble(&code))
+    } else {
+        assert!(code.is_empty(), "a branch out of reach appends nothing");
+        None
+    }
+}
+
+#[test]
+fn a_branch_past_a_mebibyte_is_out_of_reach_only_when_conditional() {
+    for (kind, mnemonic) in branch_kinds() {
+        let branch =
+            |assembler: &mut Assembler<Aarch64>, label| emit_branch(assembler, kind, label);
+        assert_eq!(
+            reached(MEBIBYTE - 4, branch),
+            Ok(format!("{mnemonic} $+0xffffc"))
+        );
+        assert_eq!(
+            reached(-MEBIBYTE, branch),
+            Ok(format!("{mnemonic} $-0x100000"))
+        );
+        for distance in [MEBIBYTE, MEBIBYTE + 4, -MEBIBYTE - 4] {
+            let result = reached(distance, branch);
+            if kind == BranchKind::Unconditional {
+                let expected = if distance < 0 {
+                    format!("b $-0x{:x}", -distance)
+                } else {
+                    format!("b $+0x{distance:x}")
+                };
+                assert_eq!(result, Ok(expected));
+            } else {
+                assert!(out_of_reach(&result), "{mnemonic} {distance}");
+            }
+        }
+        for form in [BranchForm::Short, BranchForm::Long] {
+            // Not a multiple of four: no form reaches it.
+            assert_eq!(encoded_branch(kind, form, 2), None);
+            assert_eq!(encoded_branch(kind, form, -6), None);
+        }
+    }
+    // `b` reaches 128 MiB either way.
+    for form in [BranchForm::Short, BranchForm::Long] {
+        let unconditional = BranchKind::Unconditional;
+        assert_eq!(
+            encoded_branch(unconditional, form, 128 * MEBIBYTE - 4),
+            Some("b $+0x7fffffc".to_owned())
+        );
+        assert_eq!(
+            encoded_branch(unconditional, form, -128 * MEBIBYTE),
+            Some("b $-0x8000000".to_owned())
+        );
+        assert_eq!(encoded_branch(unconditional, form, 128 * MEBIBYTE), None);
+        assert_eq!(
+            encoded_branch(unconditional, form, -128 * MEBIBYTE - 4),
+            None
+        );
+    }
+}
+
+#[test]
+fn forward_and_backward_branches_patch_to_the_same_text() {
+    for (kind, _) in branch_kinds() {
+        for between in [0_i64, 1, 7, 100] {
+            let forward = bytes(|assembler| {
+                let label = assembler.label();
+                emit_branch(assembler, kind, label);
+                for _ in 0..between {
+                    assembler.move_register(aarch64::X0, aarch64::X1);
+                }
+                assembler.bind(label);
+            });
+            let distance = 4 + 4 * between;
+            let direct = encoded_branch(kind, BranchForm::Long, distance);
+            assert_eq!(Some(disassemble(&forward[..4])), direct);
+            assert_eq!(direct, encoded_branch(kind, BranchForm::Short, distance));
+            let backward = bytes(|assembler| {
+                let label = assembler.label();
+                assembler.bind(label);
+                for _ in 0..between {
+                    assembler.move_register(aarch64::X0, aarch64::X1);
+                }
+                emit_branch(assembler, kind, label);
+            });
+            let length = backward.len();
+            let distance = -4 * between;
+            let direct = encoded_branch(kind, BranchForm::Short, distance);
+            assert_eq!(Some(disassemble(&backward[length - 4..])), direct);
+            assert_eq!(direct, encoded_branch(kind, BranchForm::Long, distance));
+        }
+    }
+}
+
+#[test]
+fn the_alignment_is_at_least_four() {
+    let alignment = |data_alignment: Option<u32>| match assembled(|assembler| {
+        assembler.trap();
+        if let Some(data_alignment) = data_alignment {
+            assembler.align_data(data_alignment);
+        }
+    }) {
+        Ok(assembled) => assembled.alignment,
+        Err(error) => panic!("assembly failed: {error}"),
+    };
+    assert_eq!(alignment(None), 4);
+    assert_eq!(alignment(Some(1)), 4);
+    assert_eq!(alignment(Some(2)), 4);
+    assert_eq!(alignment(Some(8)), 8);
+    assert_eq!(alignment(Some(64)), 64);
+}
+
+#[test]
+fn the_stops_are_undefined_instructions() {
+    assert_eq!(text(Assembler::trap), "udf #0x0");
+    for length in [0, 4, 12, 64] {
+        let mut code = Vec::new();
+        Aarch64.fill_with_stops(length, &mut code);
+        assert_eq!(code.len(), length);
+        assert!(code.iter().all(|byte| *byte == 0));
+        if length > 0 {
+            assert_eq!(disassemble(&code), vec!["udf #0x0"; length / 4].join("\n"));
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "multiple of 4")]
+fn a_stop_fill_of_part_of_an_instruction_is_refused() {
+    Aarch64.fill_with_stops(6, &mut Vec::new());
 }
