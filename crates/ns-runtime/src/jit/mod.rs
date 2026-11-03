@@ -4134,6 +4134,15 @@ mod tests {
             ))
         }
 
+        /// The size of a zone with `room` bytes past its stubs: a test that
+        /// fills a zone fixes the room, since the stubs' size is the
+        /// architecture's and its ABI's.
+        fn zone_bytes_with_room(room: usize) -> usize {
+            let state = JitState::for_test(1 << 20, true);
+            let zone = state.zone.as_ref().expect("a zone");
+            zone.next_offset as usize + room
+        }
+
         pub(in crate::jit) fn enter_twice(state: &mut JitState, code: &Rc<CompiledCode>) {
             note_entry(state, code, FeedbackBase::NOT_ASSIGNED, None);
             note_entry(state, code, FeedbackBase::NOT_ASSIGNED, None);
@@ -4940,8 +4949,7 @@ mod tests {
         /// entries but compiles nothing.
         #[test]
         fn a_full_zone_asks_for_a_compaction() {
-            // Three pages: the stubs take most of two.
-            let mut state = JitState::for_test(12_288, true);
+            let mut state = JitState::for_test(zone_bytes_with_room(1_344), true);
             let bodies: Vec<Rc<CompiledCode>> = (0..200).map(|_| body()).collect();
             for code in &bodies {
                 enter_twice(&mut state, code);
@@ -4988,7 +4996,7 @@ mod tests {
         /// end waits on entries, never on allocation or time.
         #[test]
         fn an_exhausted_zone_asks_again_after_its_held_compiles() {
-            let mut state = JitState::for_test(12_288, true);
+            let mut state = JitState::for_test(zone_bytes_with_room(1_344), true);
             let bodies: Vec<Rc<CompiledCode>> = (0..200).map(|_| body()).collect();
             for code in &bodies {
                 enter_twice(&mut state, code);
