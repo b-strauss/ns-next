@@ -844,7 +844,7 @@ mod tests {
     use super::testing::Machine;
     use super::{BlockWord, ExitKind, MachineExit};
     use crate::jit::macro_assembler::{
-        leaf_call_argument_registers, Abi, LeafIndex, Operand, Roles,
+        leaf_call_argument_registers, Abi, LeafIndex, MacroAssembler, Operand, Roles,
     };
 
     /// The host's first `COUNT` scratch registers, in the roles' order:
@@ -912,15 +912,24 @@ mod tests {
     /// A callee the call stub called is a frame no interpreted one stands
     /// for, so an exit with no compiled frame above it materializes it as
     /// the innermost; the entry stub's body is the frame the run loop
-    /// entered, interpreted already, which the exit leaves alone.
+    /// entered, interpreted already, which the exit leaves alone. The run
+    /// loop enters past the prologue a call enters at, as it enters a
+    /// compiled body.
     #[test]
     fn an_exit_at_once_materializes_the_callee_the_call_stub_called() {
         let mut machine = Machine::new();
-        let body = machine.body(|macro_assembler| {
-            // Called through the call stub, as a prologue is.
-            macro_assembler.assembler().enter_called();
-            macro_assembler.exit(ExitKind::Reexecute, 7);
-        });
+        let mut macro_assembler = MacroAssembler::new(Abi::host());
+        // Called through the call stub, as a prologue is.
+        macro_assembler.assembler().enter_called();
+        let past_the_prologue = macro_assembler.assembler().label();
+        macro_assembler.assembler().bind(past_the_prologue);
+        macro_assembler.exit(ExitKind::Reexecute, 7);
+        let assembled = macro_assembler.finish().expect("assembled");
+        let body = machine.install(&assembled);
+        let entered = ns_memory::CodeOffset(
+            body.0
+                + assembled.label_offsets[past_the_prologue.index()].expect("the label is bound"),
+        );
         let leaves: [Leaf<Vec<[u64; 3]>>; 4] =
             [unexpected, unexpected, unexpected, record_innermost];
         assert_eq!(
@@ -939,7 +948,7 @@ mod tests {
         assert_eq!(kind, ExitKind::Reexecute as u64);
         assert_eq!(program_counter, 7);
         recorded.clear();
-        let (exit, block) = machine.run(body, &mut frame, 0, false, &mut recorded, &leaves);
+        let (exit, block) = machine.run(entered, &mut frame, 0, false, &mut recorded, &leaves);
         assert_eq!(exit, MachineExit::Reexecute { program_counter: 7 });
         assert_eq!(block[BlockWord::EnteredByCall.index()], 0);
         assert!(recorded.is_empty(), "the entry's frame is the run loop's");
