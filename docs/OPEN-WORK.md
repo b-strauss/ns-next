@@ -15,26 +15,28 @@ when they were written.
 
 ## Next
 
-**Road step 8's last stage: the AArch64 encoder under QEMU**
-([execution.md](design/execution.md), "Planned: the baseline JIT", "The
-foundation and the one extension point", "Executable memory", "Tests",
-"Stages"): `ns-assembler`'s second encoder, every encoding checked
-against a disassembler as x64's is against `iced-x86`, the macro
-assembler's AArch64 idioms and its `Roles::of`, the instruction cache
-flushed once per install, and `cfg(ns_jit)` set for AArch64 in
-`crates/ns-runtime/build.rs`; the suite cross-compiled for
-`aarch64-unknown-linux-gnu` and run under `qemu-aarch64` in WSL2. A
-register cache, planned as the sixth stage, was measured on 2026-11-03
-and is not one: it would have moved the geometric mean by about 1%,
-inside the noise, and register allocation is road step 9's ("The
-register cache", "What a register cache would move"; the item in "The
-road to a high-performance VM" below).
+**Road step 9, an optimizing JIT with type feedback, inlining and
+deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
+along the receiver types the inline caches recorded, built to the
+deoptimization contract road step 7c wrote and on the feedback, frames,
+assembler and code zone road step 8 left for it
+([execution.md](design/execution.md), "Planned: JIT tiers", "Planned:
+the deoptimization contract"; the entry in "The road to a
+high-performance VM" below). It is not designed yet: like every step of
+the road it gets its own design when it comes up, grounded in
+`prior-art/`. What it is already known to have to decide is in its entry
+below -- register allocation over a body, the home of a closure created
+in an inlined scope, scalar replacement of value objects -- beside what
+the baseline's stages left to the steps after them (the items under
+step 8).
 
-Its first five stages are built ("The baseline JIT's foundation",
-"Sends, returns and the exit that materializes", "The entry at a send",
-"Stage 4: closures, non-local return, allocation and the barrier", "The
-code zone", "When a body is compiled", "Polls and the depth check"): `ns-memory`'s doubly mapped code zone and the entry into
-machine code, `ns-assembler` with the x64 encoder, and in `jit/` the
+Road step 8 is complete (2026-11-04): the baseline JIT, Cog's class,
+in six stages ("The baseline JIT's foundation", "Sends, returns and the
+exit that materializes", "The entry at a send", "Stage 4: closures,
+non-local return, allocation and the barrier", "The code zone", "When a
+body is compiled", "Polls and the depth check", "Stages"): `ns-memory`'s
+doubly mapped code zone and the entry into machine code, `ns-assembler`
+with the x64 and AArch64 encoders, and in `jit/` the
 macro assembler of the VM's idioms and its register roles, the stubs and
 the baseline compiler's one exhaustive `match`; a cached send calls
 through a machine-readable cell beside its cache entry into the callee's
@@ -71,9 +73,16 @@ mean over the twenty-three sources is 8.6% faster than `master`,
 stage 4's tree,
 `bench_megamorphic` 85.1%, `bench_new` 38.3%, Havlak 2.9% and DeltaBlue
 4.5%, Queens' +2.6% the code's placement ("What on-stack replacement
-moved"). Road step 8 as a whole,
-Cog's class, for x64 and arm64, is "The road to a high-performance VM"
-below.
+moved"). Stage 6 assembled all of it for AArch64 on Linux and Apple's
+platforms, Windows on ARM staying interpreted: the AAPCS64 roles mapped
+one to one from x64's, the return address in a 16-byte slot on `sp`
+behind three operations of the call convention that leave x64's machine
+code byte for byte as it was, and the suite run under `qemu-aarch64` in
+WSL2 in the gate group `aarch64`, beside `linux`, both at the end of a
+batch ("Fixed registers and the calling convention", "The native stack
+carries the return addresses", "Tests"); AArch64 is unmeasured, since
+QEMU times nothing. Road step 8 as a whole, Cog's class, for x64 and
+arm64, is "The road to a high-performance VM" below.
 Road step 7 is complete: 7c wrote the contract the JIT tiers build
 to ([execution.md](design/execution.md), "Planned: the deoptimization
 contract"). The step between 7 and 8 is built: `Closure>>whileTrue:` and
@@ -400,7 +409,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   control flow and `do:`"; [compiler.md](design/compiler.md), "What it
   emits"; [execution.md](design/execution.md), "What Newspeak loop bodies
   moved".
-- **Step 8, a baseline JIT**, Cog's class, for x64 and arm64, to the
+- **Step 8, a baseline JIT -- built**, Cog's class, for x64 and arm64, to the
   contract of 7c, designed ([execution.md](design/execution.md),
   "Planned: the baseline JIT"), its first two stages built (2026-10-27,
   [their plan](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md);
@@ -423,7 +432,12 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   on the geometric mean over twenty-three sources and no program slower
   but Queens, by the code's placement, the depth count left in its
   machine word after `rbp` measured no faster ("What on-stack
-  replacement moved"), the AArch64 encoder next ("Next" above).
+  replacement moved"), and its sixth, the AArch64 encoder, built
+  (2026-11-04, [its plan](superpowers/plans/2026-11-03-2047-jit-aarch64.md);
+  "Fixed registers and the calling convention", "The native stack carries
+  the return addresses", "Tests"), the JIT compiled for AArch64 on Linux
+  and Apple's platforms and its suite passing under QEMU, x64's machine
+  code byte for byte unchanged and AArch64's unmeasured.
   Left to it, and measured: whether a send calls through its cache cell
   or through a patched direct call, which stage 3's measurement could not isolate
   ("What sends in machine code moved"); and the code zone's default size,
@@ -576,24 +590,42 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     needed none, but a copy the interpreter does not treat as a read
     would.
   - **The idioms' scratch register is guarded by a `debug_assert!` alone**
-    (`r11`, `load_frame_register`): a template that kept a value in it
+    (`r11`, `x9` under AAPCS64, `load_frame_register`): a template that kept a value in it
     across an idiom would be found only by a debug build that reaches it.
   - **A panic inside a leaf aborts the process**, by design, since nothing
     unwinds through machine code; a debug build's dead-register read
     inside a leaf therefore ends the whole test run rather than failing
     one test. A leaf that is to report such a defect returns it as a
     value, as a template's read does (`ExitKind::DeadRegister`).
-  - **Paths no gate runs**: the code zone's Linux, BSD and Apple AArch64
-    paths are checked by clippy for `x86_64-unknown-linux-gnu` and
-    `aarch64-apple-darwin` (the `memory` gate). Linux x86-64 -- the JIT
-    under the System V convention -- ran on 2026-11-02 at `006b6d50`
-    under WSL (Ubuntu 22.04): the suite, `images`, `caches`, `stress`
-    with `run-corpus`, and the workspace's clippy all passed; the
-    `benchmarks` gate was not run, the clone having no JDK. It is run on
-    demand, not by a gate (decided with the user on 2026-11-02). BSD and
-    Apple AArch64 never ran. The AArch64 encoder's stage runs the suite
-    under QEMU, which checks correctness only: whether AArch64 runs fast
-    needs real hardware to measure on, which the project does not have.
+  - **Paths no gate runs** (2026-11-04): the gate groups `linux` and
+    `aarch64` run the suite on Linux x64 and, under QEMU, on Linux
+    AArch64, at the end of a batch, but neither runs `images`, `caches`,
+    `stress` or the benchmarks there -- the WSL clone has no JDK -- so
+    those run on Windows x64 alone. The code zone's BSD and Apple AArch64
+    paths, and Apple's JIT, are checked by clippy alone (`memory`,
+    `release-checks`) and never ran; QEMU models no incoherent
+    instruction cache, so a missing flush would pass the `aarch64` group.
+  - **AArch64's speed is unmeasured** (2026-11-04). QEMU checks
+    correctness only and times nothing, so whether the port's code is
+    fast -- the 16-byte return-address slot, the `movz`/`movk`
+    constants without a literal pool, the `call_unentered` sequence at
+    every entry at a push, a conditional branch's one `b.cond` -- and
+    whether the codegen budgets x64 is held to have an AArch64 analogue,
+    needs real hardware to measure on, which the project does not have
+    ([execution.md](design/execution.md), "Stages").
+  - **Windows on ARM runs interpreted** (2026-11-04). `build.rs` sets
+    `cfg(ns_jit)` for AArch64 on Linux and Apple's platforms only. Much
+    of what the JIT needs there exists: the encoder never uses `x18`,
+    the register Windows reserves, so `Roles::of(Abi::Aapcs64)` would
+    serve, and `ns-memory`'s Windows code zone and native-stack bounds
+    exist and build for that target. What is open is whether Windows on ARM's
+    convention and unwinding differ from AAPCS64 in anything a stub
+    crosses -- the entry, the leaf shim, the stack probes and the
+    unwinder that finds machine code on the stack -- and a machine to
+    run it on: no gate builds the JIT for `aarch64-pc-windows-msvc`
+    (`release-checks` lints it without one), and nothing of it has ever
+    run ([execution.md](design/execution.md), "The baseline JIT's
+    foundation").
   - **Small leftovers**: `ns-memory`'s `map_code` is an `unsafe fn` though
     its safety section asks nothing of its caller; the leaf shim could be
     `unsafe extern "C"`; `crates/ns-assembler/tests/encoding_sources.rs`
@@ -731,7 +763,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     times per instruction. Only a store a body provably needs no longer
     may be left out, and only once the collector's pre-pass nils what
     the frame did not write, or the leftover analysis is broken.
-    `r13` is left free for it (`Roles::of`).
+    `r13` is left free for it, `x22` under AAPCS64 (`Roles::of`).
     [execution.md](design/execution.md), "The register cache", "What a
     register cache would move".
   - **The home of a closure created in an inlined scope** (noted with the
@@ -1718,9 +1750,9 @@ classes and a class from source with no predecessor are not edited
   the eight. What would settle it: a final measurement under
   `NS_NEXT_NO_JIT=1`, and if `bench_block.ns`'s cost holds, the test
   compiled out where the JIT is (`cfg!(ns_jit)`, always false on a target
-  without one, today AArch64) and `#[inline(always)]` on the helpers --
-  worth taking up when interpreted speed is measured for the AArch64
-  port.
+  without one, today Windows on ARM) and `#[inline(always)]` on the
+  helpers -- worth taking up when interpreted speed is measured on such
+  a target.
 - **A frame that cannot switch delays the other frames of its body**
   (2026-11-03). A body's count of back jumps is the body's, so a frame
   that cannot switch delays another frame of the same body by up to 39
@@ -2532,6 +2564,13 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- Road step 8's sixth stage's (noted 2026-11-03 to 2026-11-04):
+  `a_sends_call_maps_its_return_address_to_the_send` (`jit/baseline.rs`)
+  assembles its body under System V and AAPCS64 on every host and no
+  longer under Win64, the convention every other gate runs; and the
+  AArch64 encoder refuses `jump_into_called` through `sp` and a push of
+  `x30` with no `should_panic` test of either
+  (`crates/ns-assembler/tests/aarch64_encodings.rs`).
 - Road step 8's fifth stage's (noted 2026-11-02 to 2026-11-03): the
   wait of a body whose frame could not switch at a backward jump, or
   whose compile the exhausted zone held (`jit::back_edge_ready`), has no
@@ -2661,6 +2700,17 @@ program's subclass of `String` as an argument, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- The WSL gate groups' copy names the development machine's checkout
+  (noted 2026-11-03): `COPY_INTO_WSL` (`xtask/src/main.rs`) rsyncs from
+  `/mnt/d/Workspace/ns-next/`, a literal, rather than from the
+  repository root `wslpath` would translate, so `linux` and `aarch64`
+  copy the wrong tree, or none, from any other checkout.
+- The AArch64 encoder's sources are unfetched (noted 2026-11-03): every
+  constant of `crates/ns-assembler/src/aarch64.rs` cites a
+  developer.arm.com page, as the convention asks, but the pages' paths
+  were written from the site's naming scheme and never opened, so a
+  citation may name a page that does not exist; `tests/encoding_sources.rs`
+  checks only the prefix.
 - Leftovers of the cast lints' reviews (noted 2026-10-26): no 32-bit
   target is installed or gated, so the `cfg(not(target_pointer_width =
   "64"))` paths and the 32-bit index fix (`builtins/collections.rs`'s

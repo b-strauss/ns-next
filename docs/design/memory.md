@@ -2668,9 +2668,11 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   hands machine code (`EntryBlock`, `Cell`s behind an `Rc`, kept from
   one entry to the next), and the shim through which machine code calls
   Rust ([execution.md](execution.md), "The baseline JIT's foundation",
-  "The entry at a send", "Executable memory"). Only the x64 Windows
-  path runs here; the Linux, BSD and Apple AArch64 paths are checked by
-  clippy alone (the `memory` gate). The bounds of the running thread's
+  "The entry at a send", "Executable memory"). The x64 Windows path
+  runs in every gate, the Linux path, x64's and AArch64's, in the gate
+  groups `linux` and `aarch64` at the end of a batch, AArch64's under
+  QEMU; the BSD and Apple AArch64 paths are checked by clippy alone (the
+  `memory` gate). The bounds of the running thread's
   native stack are read there too (`native_stack.rs`), for the entry's
   check of its room ([execution.md](execution.md), "The native stack
   carries the return addresses").

@@ -22,7 +22,9 @@ Rust 1.98.0, edition 2021, seven crates:
   instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
   `bytecode/compact.rs`; what a callee leaves in a frame's registers is
   `bytecode/leftovers.rs`'s analysis), the VM (`vm.rs`), the baseline JIT
-  (`jit/`, x64 only so far: a body compiled at its second entry through
+  (`jit/`, on x64 and on AArch64 Linux and Apple, the targets `build.rs`
+  sets `cfg(ns_jit)` for, Windows on ARM interpreted; AArch64 run under
+  QEMU only and unmeasured: a body compiled at its second entry through
   the one exhaustive `match` over `Instruction` in `jit/baseline.rs`, each
   instruction a template, a leaf of `jit/leaves.rs` or an exit that hands
   the frame to the interpreter, and every compiled body entered wherever
@@ -153,11 +155,14 @@ Rust 1.98.0, edition 2021, seven crates:
   layer", "The object space"), and the JIT (`execution.md`, "Executable
   memory").
 - `crates/ns-assembler` — the abstract machine operations the JIT emits and
-  the x64 encoder, knowing nothing of the VM: labels, branches sized in one
-  pass, a stated contract on the condition flags, every encoding constant
-  named and sourced (Conventions, below), every encoding checked against
-  `iced-x86`, a dev-dependency only (`execution.md`, "The foundation and
-  the one extension point").
+  two encoders, x64 (`x64.rs`) and AArch64 (`aarch64.rs`, which keeps
+  `x16`, `x17`, `x18` and `x30` for itself), knowing nothing of the VM:
+  labels, branches sized in one pass, a stated contract on the condition
+  flags, the call convention's operations (`enter_called` begins every
+  address a call reaches, `jump_into_called`, `call_unentered`), every
+  encoding constant named and sourced (Conventions, below), every encoding
+  checked against `iced-x86` and `yaxpeax-arm`, dev-dependencies only
+  (`execution.md`, "The foundation and the one extension point").
 
 `xtask/` — the repository's own tasks, run as `cargo xtask <task>`: the gates
 of "The gates" below, grouped, and `shipped-code`, which writes that
@@ -530,10 +535,18 @@ protected `&mut`, so machine code's access to a word inside it is
 undefined behaviour once a leaf has written that word, which no test and
 no tool detects (`execution.md`, "The baseline JIT's foundation", "The
 machine words"). No file under `jit/` but `macro_assembler.rs` names an
-architecture's registers outside a test module: a template, a send or a
-stub uses the macro assembler's idioms and its `Roles`, and a new
-register need is a new named role, held by
-`crates/ns-runtime/tests/jit_architecture_split.rs`.
+architecture's registers or its encoder (`x64`, `aarch64`) outside a test
+module: a template, a send or a stub uses the macro assembler's idioms
+and its `Roles`, and a new register need is a new named role, held by
+`crates/ns-runtime/tests/jit_architecture_split.rs`. Every address a
+call reaches begins with `enter_called`, which on AArch64 stores the
+return address in a 16-byte slot on `sp`; a stub's tail jump into one is
+`jump_into_called`, and a call into a body's middle -- the entry at a
+push, an on-stack replacement, a resumption -- is `call_unentered`, or the
+return address is saved twice or not at all and every walk of the native
+stack reads the wrong frame, invisibly on x64, where all three are the
+plain `call` and `jmp` (`execution.md`, "The native stack carries the
+return addresses").
 
 **A chain of messages is walked link by link.** `a b + c …` is a left-nested
 `Send` as deep as the chain is long, and every chain length is valid
@@ -571,13 +584,16 @@ every one runs on 18 threads.
 | `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
-| `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy for `aarch64-apple-darwin`, a target without an encoder, warning-free | when a change touches a type a size test pins; the end of a batch that changed the runtime |
+| `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy, warning-free, for `aarch64-pc-windows-msvc`, a target without an encoder, where no `cfg(ns_jit)` code is compiled, and for `aarch64-apple-darwin`, Apple's JIT (`rustup target add` both) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
 | `stress` | the suite under the nine stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
+| `linux` | in WSL, in the clone `~/workspace/ns-next` the working tree is first rsynced into (`.git`, `target`, `prior-art` and `.temp` excluded): `cargo xtask shipped-code`, `cargo clippy --workspace --all-targets` warning-free, the default suite on 8 threads and the doctests, all for `x86_64-unknown-linux-gnu` | the end of a batch that changed the runtime |
+| `aarch64` | in WSL, the same copy, then the shipped code, clippy for `aarch64-unknown-linux-gnu` warning-free, and the suite cross-compiled for it on 8 threads, run through binfmt's `qemu-aarch64` (`aarch64-linux-gnu-gcc` the linker, `QEMU_LD_PREFIX=/usr/aarch64-linux-gnu`, `RUST_MIN_STACK=8388608`), no doctests; needs QEMU 8.1 or newer (`docs/design/execution.md`, "Tests"); about 8.5 minutes | the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew --no-daemon verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 
-`end-of-batch` is `images`, `caches`, `benchmarks`, `release-checks`, `codegen`
-and `stress` together.
+`end-of-batch` is `images`, `caches`, `benchmarks`, `release-checks`, `codegen`,
+`stress`, `linux` and `aarch64` together, the two WSL groups last; neither runs
+at a commit, nor under a stress mode.
 "The runtime" is `crates/ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or
 `ns-memory`; a batch that changed only `crates/ns-analyzer`, the plugin or
 Markdown runs no stress mode, no `run-corpus` and no benchmark programs, since
