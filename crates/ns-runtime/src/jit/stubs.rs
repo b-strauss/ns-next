@@ -308,6 +308,7 @@ fn emit_entry(macro_assembler: &mut MacroAssembler, abi: Abi, entered: Entered) 
     let saved_stack_pointer = macro_assembler.block_word(BlockWord::SavedStackPointer);
     let entered_by_call = macro_assembler.block_word(BlockWord::EnteredByCall);
     let assembler = macro_assembler.assembler();
+    assembler.enter_called();
     for register in abi.callee_saved() {
         assembler.push(*register);
     }
@@ -393,6 +394,8 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     let saved_stack_pointer = macro_assembler.block_word(BlockWord::SavedStackPointer);
     let cursor = macro_assembler.block_word(BlockWord::WalkCursor);
     let scratch = roles.idiom_scratch;
+    let slot_bytes = abi.stack_slot_bytes();
+    // Jumped to, never called: no return address of its own to save.
     let assembler = macro_assembler.assembler();
     assembler.store(Width::Word64, exit_kind, roles.exit_kind());
     assembler.store(
@@ -415,9 +418,9 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     assembler.jump(innermost);
     assembler.bind(walk);
     // The outermost compiled return address, the entry's body's call, lies
-    // two words below the saved stack pointer.
+    // two slots below the saved stack pointer.
     assembler.load(Width::Word64, scratch, saved_stack_pointer);
-    assembler.add_immediate(scratch, -2 * RETURN_ADDRESS_BYTES);
+    assembler.add_immediate(scratch, -2 * slot_bytes);
     assembler.store(Width::Word64, cursor, scratch);
     assembler.bind(next);
     assembler.load(Width::Word64, scratch, cursor);
@@ -441,7 +444,7 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     );
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, scratch, cursor);
-    assembler.add_immediate(scratch, -RETURN_ADDRESS_BYTES);
+    assembler.add_immediate(scratch, -slot_bytes);
     assembler.store(Width::Word64, cursor, scratch);
     assembler.jump(next);
     assembler.bind(innermost);
@@ -463,9 +466,6 @@ pub(crate) fn assemble_exit_stub(abi: Abi) -> Assembled {
     assembler.return_();
     finish_stub(macro_assembler)
 }
-
-/// The bytes a return address takes on the native stack.
-pub(super) const RETURN_ADDRESS_BYTES: i32 = 8;
 
 /// The cut stub, which a `NonLocalReturn`'s template calls with the
 /// program counter in the leaf result's register, the block's register 0
@@ -495,7 +495,9 @@ pub(crate) fn assemble_cut_stub(abi: Abi) -> Assembled {
     // return address down.
     let (slot, next) = (roles.send_cells, roles.send_entry);
     let word_at = |base, displacement| Memory { base, displacement };
+    let slot_bytes = abi.stack_slot_bytes();
     let assembler = macro_assembler.assembler();
+    assembler.enter_called();
     let (walk, decided, refused) = (assembler.label(), assembler.label(), assembler.label());
     assembler.load(
         Width::Word64,
@@ -514,12 +516,12 @@ pub(crate) fn assemble_cut_stub(abi: Abi) -> Assembled {
     assembler.compare_immediate(answer, i32::from(super::cut::EXIT));
     assembler.jump_if(Condition::Equal, refused);
     assembler.move_register(slot, roles.stack_pointer);
-    assembler.add_immediate(slot, RETURN_ADDRESS_BYTES);
+    assembler.add_immediate(slot, slot_bytes);
     assembler.store(Width::Word64, cursor, slot);
     assembler.bind(walk);
     assembler.load(Width::Word64, slot, cursor);
     assembler.load(Width::Word64, roles.return_address, word_at(slot, 0));
-    assembler.load(Width::Word64, next, word_at(slot, RETURN_ADDRESS_BYTES));
+    assembler.load(Width::Word64, next, word_at(slot, slot_bytes));
     macro_assembler.call_leaf(
         Leaf::CutFrame.index(),
         [
@@ -532,7 +534,7 @@ pub(crate) fn assemble_cut_stub(abi: Abi) -> Assembled {
     assembler.compare_immediate(answer, i32::from(super::cut::CONTINUE));
     assembler.jump_if(Condition::NotEqual, decided);
     assembler.load(Width::Word64, slot, cursor);
-    assembler.add_immediate(slot, RETURN_ADDRESS_BYTES);
+    assembler.add_immediate(slot, slot_bytes);
     assembler.store(Width::Word64, cursor, slot);
     assembler.jump(walk);
     assembler.bind(decided);
@@ -553,6 +555,7 @@ pub(crate) fn assemble_cut_stub(abi: Abi) -> Assembled {
 /// in where they find no entry for the send (`emit_miss`).
 pub(crate) fn assemble_miss_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
+    macro_assembler.assembler().enter_called();
     emit_miss(&mut macro_assembler);
     finish_stub(macro_assembler)
 }
@@ -599,7 +602,7 @@ pub(super) fn emit_miss(macro_assembler: &mut MacroAssembler) {
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, roles.callee_receiver(), receiver);
     assembler.load(Width::Word64, roles.callee_class(), class);
-    assembler.jump_register(answer);
+    assembler.jump_into_called(answer);
 }
 
 /// The stub a send's cell names for a target machine code does not run: a
@@ -608,6 +611,7 @@ pub(super) fn emit_miss(macro_assembler: &mut MacroAssembler) {
 /// caller re-executes the send and the interpreter runs it.
 pub(crate) fn assemble_refusing_stub(abi: Abi) -> Assembled {
     let mut macro_assembler = MacroAssembler::new(abi);
+    macro_assembler.assembler().enter_called();
     macro_assembler.exit(ExitKind::PushRefused, 0);
     finish_stub(macro_assembler)
 }

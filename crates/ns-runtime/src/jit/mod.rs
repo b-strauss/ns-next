@@ -76,12 +76,25 @@ const COMPILE_AT_BACK_JUMP: u32 = 40;
 const BODY_ALIGNMENT: u32 = 16;
 
 /// The native stack an entry into machine code needs left: a return
-/// address of eight bytes for every activation the depth limit and its
+/// address's stack slot for every activation the depth limit and its
 /// reserve count, since compiled frames keep theirs on the native stack,
 /// and 64 KiB for the deepest leaf call below the innermost
 /// (`docs/design/execution.md`, "The native stack carries the return
 /// addresses"). A thread with less runs interpreted.
-pub(crate) const NATIVE_STACK_NEED: usize = (MAX_ACTIVATION_DEPTH + DEPTH_RESERVE) * 8 + 64 * 1024;
+pub(crate) const NATIVE_STACK_NEED: usize =
+    (MAX_ACTIVATION_DEPTH + DEPTH_RESERVE) * RETURN_ADDRESS_BYTES + 64 * 1024;
+
+/// The bytes a compiled frame's return address takes on the native stack,
+/// the host convention's stack slot.
+#[cfg(ns_jit)]
+const RETURN_ADDRESS_BYTES: usize = macro_assembler::Abi::host()
+    .stack_slot_bytes()
+    .unsigned_abs() as usize;
+
+/// No machine code runs, so no frame keeps a return address on the
+/// native stack.
+#[cfg(not(ns_jit))]
+const RETURN_ADDRESS_BYTES: usize = 0;
 
 /// Whether the running thread's native stack has `NATIVE_STACK_NEED` left
 /// below the caller; `false` where the platform does not say.

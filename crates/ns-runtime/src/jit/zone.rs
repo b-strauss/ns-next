@@ -954,7 +954,10 @@ fn fill_with_stops(zone: &mut super::Zone, start: u32, end: u32) {
     if start >= end {
         return;
     }
-    let stops = super::macro_assembler::stop_bytes((end - start) as usize);
+    let stops = super::macro_assembler::stop_bytes(
+        super::macro_assembler::Abi::host(),
+        (end - start) as usize,
+    );
     if zone.writer.write(CodeOffset(start), &stops).is_err() {
         unreachable!("internal: the room a body left lies in the committed zone");
     }

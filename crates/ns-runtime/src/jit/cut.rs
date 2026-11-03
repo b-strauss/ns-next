@@ -345,8 +345,13 @@ fn register_bytes() -> u64 {
     u64::from(super::sends::REGISTER_BYTES.unsigned_abs())
 }
 
-/// The bytes of a return address on the native stack
-/// (`stubs::RETURN_ADDRESS_BYTES`), as an address's addend.
+/// The bytes of a return address on the native stack, the host
+/// convention's stack slot (`Abi::stack_slot_bytes`), as an address's
+/// addend.
 fn return_address_bytes() -> u64 {
-    u64::from(super::stubs::RETURN_ADDRESS_BYTES.unsigned_abs())
+    u64::from(
+        super::macro_assembler::Abi::host()
+            .stack_slot_bytes()
+            .unsigned_abs(),
+    )
 }

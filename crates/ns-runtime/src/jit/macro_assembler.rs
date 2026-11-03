@@ -11,7 +11,8 @@ use ns_assembler::x64::{
     RSP,
 };
 use ns_assembler::{
-    Assembled, Assembler, AssemblyError, Condition, Label, Memory, Register, Width, X64,
+    Aarch64, Assembled, Assembler, AssemblyError, BranchForm, BranchKind, Condition, Encoder,
+    Label, LabelReference, Memory, Operation, Register, Width, X64,
 };
 
 use super::stubs::{BlockWord, ExitKind};
@@ -31,20 +32,108 @@ pub(crate) enum Abi {
 /// freed body left (`jit::zone`), so that an address into it something
 /// failed to remap traps at once rather than running stale code, as Cog
 /// fills its freed method zone with stop instructions (`stopsFromto`).
-pub(crate) fn stop_bytes(length: usize) -> Vec<u8> {
-    use ns_assembler::Encoder;
+pub(crate) fn stop_bytes(abi: Abi, length: usize) -> Vec<u8> {
     let mut code = Vec::with_capacity(length);
-    X64.fill_with_stops(length, &mut code);
+    abi.encoding().fill_with_stops(length, &mut code);
     code
+}
+
+/// The encoder of an ABI's architecture, which the macro assembler
+/// assembles through: one type over every encoder, so that the idioms,
+/// the templates and the stubs are written once and the ABI alone decides
+/// which machine code they become.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Encoding {
+    X64(X64),
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no ABI selects AArch64 yet; the tests encode through it"
+        )
+    )]
+    Aarch64(Aarch64),
+}
+
+impl Encoder for Encoding {
+    fn encode(&self, operation: Operation, code: &mut Vec<u8>) {
+        match self {
+            Encoding::X64(encoder) => encoder.encode(operation, code),
+            Encoding::Aarch64(encoder) => encoder.encode(operation, code),
+        }
+    }
+
+    fn encode_branch(
+        &self,
+        kind: BranchKind,
+        form: BranchForm,
+        distance: i64,
+        code: &mut Vec<u8>,
+    ) -> bool {
+        match self {
+            Encoding::X64(encoder) => encoder.encode_branch(kind, form, distance, code),
+            Encoding::Aarch64(encoder) => encoder.encode_branch(kind, form, distance, code),
+        }
+    }
+
+    fn encode_label_reference(
+        &self,
+        reference: LabelReference,
+        distance: i64,
+        code: &mut Vec<u8>,
+    ) -> bool {
+        match self {
+            Encoding::X64(encoder) => encoder.encode_label_reference(reference, distance, code),
+            Encoding::Aarch64(encoder) => encoder.encode_label_reference(reference, distance, code),
+        }
+    }
+
+    fn fill_with_stops(&self, length: usize, code: &mut Vec<u8>) {
+        match self {
+            Encoding::X64(encoder) => encoder.fill_with_stops(length, code),
+            Encoding::Aarch64(encoder) => encoder.fill_with_stops(length, code),
+        }
+    }
+
+    fn stack_slot_bytes(&self) -> i32 {
+        match self {
+            Encoding::X64(encoder) => encoder.stack_slot_bytes(),
+            Encoding::Aarch64(encoder) => encoder.stack_slot_bytes(),
+        }
+    }
+
+    fn instruction_alignment(&self) -> u32 {
+        match self {
+            Encoding::X64(encoder) => encoder.instruction_alignment(),
+            Encoding::Aarch64(encoder) => encoder.instruction_alignment(),
+        }
+    }
 }
 
 impl Abi {
     /// The convention of the platform this build runs on.
-    pub(crate) fn host() -> Abi {
+    pub(crate) const fn host() -> Abi {
         if cfg!(windows) {
             Abi::Windows64
         } else {
             Abi::SystemV
+        }
+    }
+
+    /// The encoder of this convention's architecture.
+    pub(crate) fn encoding(self) -> Encoding {
+        match self {
+            Abi::Windows64 | Abi::SystemV => Encoding::X64(X64),
+        }
+    }
+
+    /// The bytes a return address, or a pushed register, takes on the
+    /// native stack under this convention: its encoder's stack slot
+    /// (`Encoder::stack_slot_bytes`), as a constant, since the room an
+    /// entry into machine code checks for is one (`jit::NATIVE_STACK_NEED`).
+    pub(crate) const fn stack_slot_bytes(self) -> i32 {
+        match self {
+            Abi::Windows64 | Abi::SystemV => 8,
         }
     }
 
@@ -376,7 +465,7 @@ enum ColdPath {
 /// covers: an idiom is the one place its layout, its debug check and its
 /// calling sequence are decided, so a copy would drift from it.
 pub(crate) struct MacroAssembler {
-    assembler: Assembler<X64>,
+    assembler: Assembler<Encoding>,
     roles: Roles,
     abi: Abi,
     /// The instruction the code being emitted lowers, at which a debug
@@ -404,7 +493,7 @@ pub(crate) const BODY_WORDS_ALIGNMENT: u32 = 64;
 impl MacroAssembler {
     pub(crate) fn new(abi: Abi) -> MacroAssembler {
         MacroAssembler {
-            assembler: Assembler::new(),
+            assembler: Assembler::with_encoder(abi.encoding()),
             roles: Roles::of(abi),
             abi,
             #[cfg(debug_assertions)]
@@ -484,7 +573,7 @@ impl MacroAssembler {
     }
 
     /// The abstract operations, for what no idiom covers.
-    pub(crate) fn assembler(&mut self) -> &mut Assembler<X64> {
+    pub(crate) fn assembler(&mut self) -> &mut Assembler<Encoding> {
         &mut self.assembler
     }
 
@@ -528,12 +617,13 @@ impl MacroAssembler {
     ) {
         let saved_stack_pointer = self.block_word(BlockWord::SavedStackPointer);
         let entered_by_call = self.block_word(BlockWord::EnteredByCall);
+        let slot_bytes = self.abi.stack_slot_bytes();
         let assembler = &mut self.assembler;
-        // The body was called with the stack pointer one word below the
+        // The body was called with the stack pointer one slot below the
         // saved one, the entry stub's return address; a compiled frame
         // above it pushed one more each.
         assembler.move_register(scratch, self.roles.stack_pointer);
-        assembler.add_immediate(scratch, super::stubs::RETURN_ADDRESS_BYTES);
+        assembler.add_immediate(scratch, slot_bytes);
         assembler.compare_memory(scratch, saved_stack_pointer);
         assembler.jump_if(Condition::NotEqual, above);
         assembler.load(Width::Word64, scratch, entered_by_call);
@@ -621,17 +711,24 @@ impl MacroAssembler {
     /// before the operand is read.
     pub(crate) fn call_leaf(&mut self, leaf: LeafIndex, arguments: [Operand; 3]) {
         let roles = self.roles;
+        let stack_pointer = roles.stack_pointer;
         let layout = LeafCallLayout::of(self.abi);
         for argument in arguments {
             assert!(
-                argument != Operand::Register(RSP),
+                argument != Operand::Register(stack_pointer),
                 "a leaf call's operand cannot be the stack pointer it realigns"
             );
         }
+        // A byte offset into the frame the call carves below the aligned
+        // stack pointer, whatever the architecture's stack slot.
+        let stack_slot = |displacement| Memory {
+            base: stack_pointer,
+            displacement,
+        };
         let saved_stack_pointer = self.block_word(BlockWord::LeafStackPointer);
         self.assembler
-            .store(Width::Word64, saved_stack_pointer, RSP);
-        self.assembler.and_immediate(RSP, -16);
+            .store(Width::Word64, saved_stack_pointer, stack_pointer);
+        self.assembler.and_immediate(stack_pointer, -16);
         self.assembler.add_stack(-layout.frame_bytes);
         let assignments = arguments.into_iter().zip(layout.places).zip(layout.copies);
         for ((argument, place), copy) in assignments.clone() {
@@ -715,7 +812,8 @@ impl MacroAssembler {
         self.assembler
             .load(Width::Word64, roles.idiom_scratch, shim);
         self.assembler.call_register(roles.idiom_scratch);
-        self.assembler.load(Width::Word64, RSP, saved_stack_pointer);
+        self.assembler
+            .load(Width::Word64, stack_pointer, saved_stack_pointer);
     }
 
     /// Calls the code at the address in `target`, and answers a label
@@ -2432,11 +2530,66 @@ impl LeafCallLayout {
     }
 }
 
-/// The stack word at `displacement` from the stack pointer.
-fn stack_slot(displacement: i32) -> Memory {
-    Memory {
-        base: RSP,
-        displacement,
+/// The encoding's delegation, which holds on every host.
+#[cfg(test)]
+mod encoding_tests {
+    use ns_assembler::{Aarch64, Assembler, Encoder, Register, X64};
+
+    use super::{Abi, Encoding};
+
+    /// Every encoding encodes what its encoder does: the operations, the
+    /// stops, the stack slot and the alignment.
+    #[test]
+    fn an_encoding_encodes_as_its_encoder() {
+        fn assembled<E: Encoder>(encoder: E) -> Vec<u8> {
+            let mut assembler = Assembler::with_encoder(encoder);
+            let target = Register(2);
+            let label = assembler.label();
+            assembler.enter_called();
+            assembler.bind(label);
+            assembler.add_immediate(target, 1);
+            assembler.jump(label);
+            assembler.jump_into_called(target);
+            assembler.return_();
+            match assembler.finish() {
+                Ok(assembled) => assembled.bytes,
+                Err(error) => panic!("the code lays out: {error}"),
+            }
+        }
+        fn stops(encoder: &impl Encoder) -> Vec<u8> {
+            let mut code = Vec::new();
+            encoder.fill_with_stops(16, &mut code);
+            code
+        }
+        assert_eq!(assembled(Encoding::X64(X64)), assembled(X64));
+        assert_eq!(assembled(Encoding::Aarch64(Aarch64)), assembled(Aarch64));
+        assert_eq!(stops(&Encoding::X64(X64)), stops(&X64));
+        assert_eq!(stops(&Encoding::Aarch64(Aarch64)), stops(&Aarch64));
+        assert_eq!(
+            Encoding::X64(X64).stack_slot_bytes(),
+            X64.stack_slot_bytes()
+        );
+        assert_eq!(
+            Encoding::Aarch64(Aarch64).stack_slot_bytes(),
+            Aarch64.stack_slot_bytes()
+        );
+        assert_eq!(
+            Encoding::Aarch64(Aarch64).instruction_alignment(),
+            Aarch64.instruction_alignment()
+        );
+        assert_eq!(
+            Encoding::X64(X64).instruction_alignment(),
+            X64.instruction_alignment()
+        );
+    }
+
+    /// The stack slot an ABI states as a constant, which the room an entry
+    /// checks for is computed from, is its encoder's.
+    #[test]
+    fn an_abi_s_stack_slot_is_its_encoder_s() {
+        for abi in [Abi::Windows64, Abi::SystemV] {
+            assert_eq!(abi.stack_slot_bytes(), abi.encoding().stack_slot_bytes());
+        }
     }
 }
 
