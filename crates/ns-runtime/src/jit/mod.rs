@@ -807,8 +807,10 @@ struct AccessorStubs {
 pub(crate) enum Refusal {
     /// More instructions than a program counter of the map holds.
     TooManyInstructions,
-    /// The assembler could not lay the body out.
-    Unassembled,
+    /// The assembler could not lay the body out, for the reason it
+    /// names; `None` in a build without an encoder (`cfg(ns_jit)` unset),
+    /// where nothing is assembled.
+    Unassembled(Option<ns_assembler::AssemblyError>),
     /// No room left in the zone, or its memory could not be committed:
     /// the body counts its entries again, and the zone is compacted at
     /// the next safepoint (`jit::zone`).
@@ -2650,7 +2652,7 @@ fn compile_into_slot(
                 state.zone_exhausted = true;
             }
         }
-        Err(Refusal::TooManyInstructions | Refusal::Unassembled | Refusal::TooLarge) => {
+        Err(Refusal::TooManyInstructions | Refusal::Unassembled(_) | Refusal::TooLarge) => {
             code.jit.refuse();
             state.statistics.refused_bodies += 1;
         }
@@ -2971,7 +2973,7 @@ fn compile(
     _feedback_base: FeedbackBase,
     _method: Option<&Rc<MixinMethod>>,
 ) -> Result<([CodeOffset; 2], u32), Refusal> {
-    Err(Refusal::Unassembled)
+    Err(Refusal::Unassembled(None))
 }
 
 /// Where the run loop goes on after it entered machine code.
@@ -5131,10 +5133,62 @@ mod cross_assembly_tests {
             ("refusing", stubs::assemble_refusing_stub(abi)),
             ("polymorphic", targets::assemble_polymorphic_stub(abi)),
             ("megamorphic", targets::assemble_megamorphic_stub(abi)),
-            ("accessor", targets::assemble_accessor_stubs(abi).0),
         ];
         for (name, assembled) in &stubs {
             assert_instructions(name, &assembled.bytes);
+        }
+        // The accessor stubs are one piece of code and the offsets of its
+        // entries, each of which a cell jumps to, so each must start an
+        // instruction inside it.
+        let (accessors, entries) = targets::assemble_accessor_stubs(abi);
+        assert_instructions("accessor", &accessors.bytes);
+        // Destructured, so that an entry added later is checked too.
+        let targets::AccessorEntries {
+            getters,
+            setters,
+            parameters,
+            mirror_methods,
+            row_stubs,
+            nil,
+            true_constant,
+            false_constant,
+            receiver,
+            act,
+            guarded_getters,
+            guarded_setters,
+            nested_classes,
+            closure_values,
+            values_of_parameters,
+            culls,
+        } = entries;
+        let offsets = [
+            getters,
+            setters,
+            parameters,
+            mirror_methods,
+            row_stubs,
+            guarded_getters,
+            guarded_setters,
+            nested_classes,
+            closure_values,
+            values_of_parameters,
+            culls,
+        ]
+        .into_iter()
+        .flatten()
+        .chain([nil, true_constant, false_constant, receiver, act]);
+        let length = accessors.bytes.len();
+        for offset in offsets {
+            let offset = usize::try_from(offset).expect("an offset");
+            assert!(
+                offset < length,
+                "an accessor entry at {offset} lies inside the code"
+            );
+            assert_eq!(
+                offset % 4,
+                0,
+                "the accessor entry at {offset} starts an instruction"
+            );
         }
     }
 

@@ -1330,8 +1330,9 @@ const NO_VALUE_IMMEDIATE: i32 = crate::heap::Word::NO_VALUE_BITS as i32;
 
 const _: () = assert!(crate::heap::Word::NO_VALUE_BITS < 8);
 
-/// These run machine code, so they are x64's whatever `cfg(ns_jit)` says.
-#[cfg(all(test, target_arch = "x86_64"))]
+/// These run machine code, on every architecture with an encoder: the
+/// registers they name are roles.
+#[cfg(all(test, ns_jit))]
 mod tests {
     use ns_assembler::Memory;
 

@@ -1117,7 +1117,7 @@ pub(crate) fn compile(
     let assembled = body
         .macro_assembler
         .finish()
-        .map_err(|_| Refusal::Unassembled)?;
+        .map_err(|error| Refusal::Unassembled(Some(error)))?;
     let words = words
         .and_then(|label| assembled.label_offsets[label.index()])
         .map(|start| start..start + word_bytes);

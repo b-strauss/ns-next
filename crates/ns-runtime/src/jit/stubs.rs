@@ -683,29 +683,17 @@ pub(super) mod testing {
         /// Makes every later run set the block's `word` to `value`, as
         /// the JIT sets a lasting word: an address a body under test
         /// reaches through the block.
-        #[cfg_attr(
-            not(target_arch = "x86_64"),
-            expect(dead_code, reason = "only the tests gated to `x86_64` call it")
-        )]
         pub(crate) fn set_block_word(&mut self, word: BlockWord, value: u64) {
             self.block_words.push((word, value));
         }
 
         /// Makes every later run set the machine word `word` to `value`:
         /// what a body under test reads of the heap there.
-        #[cfg_attr(
-            not(target_arch = "x86_64"),
-            expect(dead_code, reason = "only the tests gated to `x86_64` call it")
-        )]
         pub(crate) fn set_machine_word(&mut self, word: MachineWord, value: u64) {
             self.machine_words.push((word, value));
         }
 
         /// Installs the body `build` writes and finishes.
-        #[cfg_attr(
-            not(target_arch = "x86_64"),
-            expect(dead_code, reason = "only the tests gated to `x86_64` call it")
-        )]
         pub(crate) fn body(&mut self, build: impl FnOnce(&mut MacroAssembler)) -> CodeOffset {
             let mut macro_assembler = MacroAssembler::new(Abi::host());
             build(&mut macro_assembler);
@@ -742,10 +730,6 @@ pub(super) mod testing {
         /// interpreter's send calls a compiled callee: `body` begins with
         /// `enter_called`, as a prologue does, where `run`'s body, which
         /// the entry stub calls as an instruction inside a body, does not.
-        #[cfg_attr(
-            not(target_arch = "x86_64"),
-            expect(dead_code, reason = "only the tests gated to `x86_64` call it")
-        )]
         pub(crate) fn run_called<C>(
             &self,
             body: CodeOffset,
@@ -849,25 +833,44 @@ pub(super) mod testing {
     }
 }
 
-/// These name x64's registers, so they are x64's whatever `cfg(ns_jit)`
-/// says (`build.rs`).
-#[cfg(all(test, target_arch = "x86_64"))]
+/// The stubs run as machine code, on every architecture with an encoder:
+/// each register a test names is a role, a scratch register or a free
+/// survivor of the host's.
+#[cfg(all(test, ns_jit))]
 mod tests {
-    use ns_assembler::x64::{R12, R13, R8, RAX, RBP, RCX, RDI, RDX, RSI};
+    use ns_assembler::Register;
     use ns_memory::Leaf;
 
     use super::testing::Machine;
     use super::{BlockWord, ExitKind, MachineExit};
-    use crate::jit::macro_assembler::{LeafIndex, Operand};
+    use crate::jit::macro_assembler::{
+        leaf_call_argument_registers, Abi, LeafIndex, Operand, Roles,
+    };
+
+    /// The host's first `COUNT` scratch registers, in the roles' order:
+    /// x64's `rax` and `rcx`, AAPCS64's `x0` and `x1`.
+    fn scratch<const COUNT: usize>() -> [Register; COUNT] {
+        let roles = Roles::of(Abi::host());
+        std::array::from_fn(|index| roles.scratch[index])
+    }
 
     #[test]
     fn the_entry_stub_runs_a_body_that_exits_at_once() {
         let mut machine = Machine::new();
         // The body overwrites every register the entry stub saves and the
-        // roles do not already overwrite, so a register the stubs failed to
-        // restore shows in the locals Rust keeps across the calls.
+        // roles do not pin, so a register the stubs failed to restore
+        // shows in the locals Rust keeps across the calls.
+        let abi = Abi::host();
+        let roles = Roles::of(abi);
+        let pinned = [roles.frame, roles.context, roles.object_space];
+        let overwritten: Vec<Register> = abi
+            .callee_saved()
+            .iter()
+            .copied()
+            .filter(|register| !pinned.contains(register))
+            .collect();
         let body = machine.body(|macro_assembler| {
-            for register in [RBP, RSI, RDI, R12, R13] {
+            for register in overwritten {
                 macro_assembler.load_immediate_word(register, 0xDEAD_BEEF_0000_0000);
             }
             macro_assembler.exit(ExitKind::Reexecute, 7);
@@ -984,30 +987,41 @@ mod tests {
 
     #[test]
     fn a_leaf_call_takes_its_operands_from_the_argument_registers_themselves() {
-        // Each operand sits in a register another argument is passed in, on
-        // both ABIs, so moving the arguments one by one would overwrite one
-        // before it is read.
+        // Each operand sits in a scratch register another argument is
+        // passed in, so moving the arguments one by one would overwrite one
+        // before it is read: under Win64 `rcx`, `rdx` and `r8`, under
+        // System V `rcx`, `rdx` and `rsi`, under AAPCS64 `x0`, `x1` and
+        // `x2`.
+        let abi = Abi::host();
+        let arguments = leaf_call_argument_registers(abi);
+        let passing: Vec<Register> = Roles::of(abi)
+            .scratch
+            .iter()
+            .copied()
+            .filter(|register| arguments.contains(register))
+            .collect();
+        let [first, second, third] = [passing[0], passing[1], passing[2]];
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
-            macro_assembler.load_frame_register(RCX, 0);
-            macro_assembler.load_frame_register(RDX, 1);
-            macro_assembler.load_frame_register(R8, 2);
+            macro_assembler.load_frame_register(first, 0);
+            macro_assembler.load_frame_register(second, 1);
+            macro_assembler.load_frame_register(third, 2);
             macro_assembler.call_leaf(
                 LeafIndex(0),
                 [
-                    Operand::Register(R8),
-                    Operand::Register(RCX),
-                    Operand::Register(RDX),
+                    Operand::Register(third),
+                    Operand::Register(first),
+                    Operand::Register(second),
                 ],
             );
             // Immediates beside a register, the third one too wide for a
             // sign-extended store.
-            macro_assembler.load_frame_register(RDX, 1);
+            macro_assembler.load_frame_register(second, 1);
             macro_assembler.call_leaf(
                 LeafIndex(1),
                 [
                     Operand::Immediate(1 << 40),
-                    Operand::Register(RDX),
+                    Operand::Register(second),
                     Operand::Immediate(u64::MAX - (1 << 40)),
                 ],
             );
@@ -1035,17 +1049,18 @@ mod tests {
 
     #[test]
     fn a_leaf_call_aligns_the_native_stack_at_any_depth() {
+        let [pushed, popped] = scratch();
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
             for depth in 0..4u16 {
                 for _ in 0..depth {
-                    macro_assembler.assembler().push(RAX);
+                    macro_assembler.assembler().push(pushed);
                 }
                 macro_assembler.call_leaf(LeafIndex(0), [Operand::Immediate(0); 3]);
                 let result = macro_assembler.roles().leaf_result;
                 macro_assembler.store_frame_register(depth, result);
                 for _ in 0..depth {
-                    macro_assembler.assembler().pop(RCX);
+                    macro_assembler.assembler().pop(popped);
                 }
             }
             macro_assembler.exit(ExitKind::Reexecute, 0);
@@ -1058,16 +1073,19 @@ mod tests {
 
     #[test]
     fn a_value_in_the_free_callee_saved_register_survives_a_leaf_call() {
-        // `r13` plays no role, so a leaf call keeps it, as the register
-        // cache is to rely on: the call saves the stack pointer in the
-        // block, not in a register.
+        // A free survivor (`r13` under x64, `x22` under AAPCS64) plays no
+        // role, so a leaf call keeps it, as the register cache is to rely
+        // on: the call saves the stack pointer in the block, not in a
+        // register.
+        let [survivor, _] = Roles::free_survivors(Abi::host());
+        let [pushed, popped] = scratch();
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
-            macro_assembler.load_immediate_word(R13, 0x1234_5678_9ABC);
-            macro_assembler.assembler().push(RAX);
+            macro_assembler.load_immediate_word(survivor, 0x1234_5678_9ABC);
+            macro_assembler.assembler().push(pushed);
             macro_assembler.call_leaf(LeafIndex(0), [Operand::Immediate(0); 3]);
-            macro_assembler.assembler().pop(RCX);
-            macro_assembler.store_frame_register(0, R13);
+            macro_assembler.assembler().pop(popped);
+            macro_assembler.store_frame_register(0, survivor);
             macro_assembler.exit(ExitKind::Reexecute, 0);
         });
         let mut frame = [0u64; 8];
@@ -1078,12 +1096,13 @@ mod tests {
 
     #[test]
     fn a_poll_exits_only_when_a_safepoint_is_requested() {
+        let [value] = scratch();
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
             macro_assembler.set_exit_at_every_poll(false);
             macro_assembler.poll(3);
-            macro_assembler.load_immediate_word(RAX, 42);
-            macro_assembler.store_frame_register(0, RAX);
+            macro_assembler.load_immediate_word(value, 42);
+            macro_assembler.store_frame_register(0, value);
             macro_assembler.exit(ExitKind::Reexecute, 4);
         });
         let mut frame = [0u64; 8];
@@ -1097,12 +1116,13 @@ mod tests {
 
     #[test]
     fn a_poll_under_the_exit_stress_mode_exits_whatever_is_requested() {
+        let [value] = scratch();
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
             macro_assembler.set_exit_at_every_poll(true);
             macro_assembler.poll(3);
-            macro_assembler.load_immediate_word(RAX, 42);
-            macro_assembler.store_frame_register(0, RAX);
+            macro_assembler.load_immediate_word(value, 42);
+            macro_assembler.store_frame_register(0, value);
             macro_assembler.exit(ExitKind::Reexecute, 4);
         });
         let mut frame = [0u64; 8];

@@ -448,6 +448,18 @@ impl Roles {
             self.callee_argument(),
         ]
     }
+
+    /// The two registers under `abi` that play no role and are no scratch
+    /// registers (`of`): preserved by the convention and saved by the
+    /// entry stub, the free registers a value survives a leaf call in,
+    /// which the tests that run machine code hold to that.
+    #[cfg(test)]
+    pub(crate) fn free_survivors(abi: Abi) -> [Register; 2] {
+        match abi {
+            Abi::Windows64 | Abi::SystemV => [R13, RBP],
+            Abi::Aapcs64 => [X22, X23],
+        }
+    }
 }
 
 /// An index into the leaf table `CodeZone::enter` is given.
@@ -2618,9 +2630,24 @@ impl LeafCallLayout {
     }
 }
 
+/// The registers a leaf call under `abi` passes the shim's arguments in
+/// -- the block, the leaf's index and the leaf's arguments that go in a
+/// register -- for the tests that move operands out of them.
+#[cfg(test)]
+pub(crate) fn leaf_call_argument_registers(abi: Abi) -> Vec<Register> {
+    let layout = LeafCallLayout::of(abi);
+    let mut registers = vec![layout.block, layout.leaf];
+    registers.extend(layout.places.iter().filter_map(|place| match place {
+        Place::Register(register) => Some(*register),
+        Place::Stack(_) => None,
+    }));
+    registers
+}
+
 /// The encoding's delegation, which holds on every host.
 #[cfg(test)]
 mod encoding_tests {
+    use ns_assembler::aarch64::{X22, X23};
     use ns_assembler::{Aarch64, Assembler, Encoder, Register, X64};
 
     use super::{Abi, Encoding, Roles};
@@ -2721,12 +2748,16 @@ mod encoding_tests {
 
     /// The roles under AAPCS64 share a register exactly where x64's do,
     /// so that every argument about which role a value survives in carries
-    /// over; and each pinned role sits in a register the convention
-    /// preserves, so that a leaf call keeps it.
+    /// over; each pinned role sits in a register the convention preserves,
+    /// so that a leaf call keeps it; and the two free survivors, `x22` and
+    /// `x23` as `r13` and `rbp` under x64, are preserved too and play no
+    /// role.
     #[test]
     fn the_aapcs64_roles_alias_as_x64_s_do() {
-        let x64 = played(Roles::of(Abi::SystemV));
-        let aarch64 = played(Roles::of(Abi::Aapcs64));
+        let mut x64 = played(Roles::of(Abi::SystemV));
+        let mut aarch64 = played(Roles::of(Abi::Aapcs64));
+        x64.extend(Roles::free_survivors(Abi::SystemV));
+        aarch64.extend(Roles::free_survivors(Abi::Aapcs64));
         assert_eq!(x64.len(), aarch64.len());
         let pairs: Vec<(Register, Register)> = x64.into_iter().zip(aarch64).collect();
         for (first, (x64_first, aarch64_first)) in pairs.iter().enumerate() {
@@ -2742,6 +2773,14 @@ mod encoding_tests {
         for pinned in [roles.frame, roles.context, roles.object_space] {
             assert!(Abi::Aapcs64.callee_saved().contains(&pinned));
         }
+        assert_eq!(Roles::free_survivors(Abi::Aapcs64), [X22, X23]);
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let roles = played(Roles::of(abi));
+            for survivor in Roles::free_survivors(abi) {
+                assert!(abi.callee_saved().contains(&survivor), "{abi:?}");
+                assert!(!roles.contains(&survivor), "{abi:?}");
+            }
+        }
     }
 
     /// The stack slot an ABI states as a constant, which the room an entry
@@ -2754,24 +2793,31 @@ mod encoding_tests {
     }
 }
 
-/// These name x64's registers, so they are x64's whatever `cfg(ns_jit)`
-/// says (`build.rs`).
-#[cfg(all(test, target_arch = "x86_64"))]
+/// The idioms run as machine code, on every architecture with an encoder:
+/// each register a test names is one of the host's scratch registers.
+#[cfg(all(test, ns_jit))]
 mod tests {
-    use ns_assembler::x64::{RAX, RCX, RDX, RSI};
-    use ns_assembler::Memory;
+    use ns_assembler::{Memory, Register};
 
-    use super::ObjectSize;
+    use super::{Abi, ObjectSize, Roles};
     use crate::jit::stubs::testing::Machine;
     use crate::jit::stubs::{ExitKind, MachineExit};
 
+    /// The host's first `COUNT` scratch registers, in the roles' order:
+    /// x64's `rax`, `rcx`, `rdx` and `rsi`, AAPCS64's `x0` to `x3`.
+    fn scratch<const COUNT: usize>() -> [Register; COUNT] {
+        let roles = Roles::of(Abi::host());
+        std::array::from_fn(|index| roles.scratch[index])
+    }
+
     #[test]
     fn a_body_moves_one_frame_register_into_another() {
+        let [first] = scratch();
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
             macro_assembler.set_program_counter(0);
-            macro_assembler.load_frame_register(RAX, 2);
-            macro_assembler.store_frame_register(5, RAX);
+            macro_assembler.load_frame_register(first, 2);
+            macro_assembler.store_frame_register(5, first);
             macro_assembler.exit(ExitKind::Reexecute, 1);
         });
         let mut frame = [10, 11, 12, 13, 14, 15, 16, 17];
@@ -2782,10 +2828,11 @@ mod tests {
 
     #[test]
     fn the_register_base_places_the_frame_in_the_stack() {
+        let [first] = scratch();
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
-            macro_assembler.load_frame_register(RAX, 0);
-            macro_assembler.store_frame_register(1, RAX);
+            macro_assembler.load_frame_register(first, 0);
+            macro_assembler.store_frame_register(1, first);
             macro_assembler.exit(ExitKind::Reexecute, 1);
         });
         let mut frame = [10, 11, 12, 13, 14, 15, 16, 17];
@@ -2795,12 +2842,13 @@ mod tests {
 
     #[test]
     fn an_immediate_word_of_every_width_reaches_a_register() {
+        let [first] = scratch();
         let words = [0, 7, 0xFFFF_FFFF, u64::MAX, 0x1234_5678_9ABC_DEF0];
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
             for (register, word) in (0u16..).zip(words) {
-                macro_assembler.load_immediate_word(RAX, word);
-                macro_assembler.store_frame_register(register, RAX);
+                macro_assembler.load_immediate_word(first, word);
+                macro_assembler.store_frame_register(register, first);
             }
             macro_assembler.exit(ExitKind::Reexecute, 0);
         });
@@ -2812,11 +2860,12 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn a_register_load_traps_on_poison_in_debug() {
+        let [first] = scratch();
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
             macro_assembler.set_program_counter(9);
-            macro_assembler.load_frame_register(RAX, 3);
-            macro_assembler.store_frame_register(5, RAX);
+            macro_assembler.load_frame_register(first, 3);
+            macro_assembler.store_frame_register(5, first);
             macro_assembler.exit(ExitKind::Reexecute, 10);
         });
         let mut frame = [0u64; 8];
@@ -2870,10 +2919,11 @@ mod tests {
     /// Runs `load_enclosing_object` at `depth` on `frame`, answering what
     /// it left in register 15.
     fn enclosing_object(frame: &mut [u64; 16], depth: u16) -> u64 {
+        let [first] = scratch();
         let mut machine = Machine::new();
         let body = machine.body(|macro_assembler| {
-            macro_assembler.load_enclosing_object(RAX, 0, depth);
-            macro_assembler.store_frame_register(15, RAX);
+            macro_assembler.load_enclosing_object(first, 0, depth);
+            macro_assembler.store_frame_register(15, first);
             macro_assembler.exit(ExitKind::Reexecute, 0);
         });
         machine.run(body, frame, 0, false, &mut (), &[]);
@@ -2908,6 +2958,7 @@ mod tests {
     /// a declaring chain shorter than the depth -- and answers N otherwise.
     #[test]
     fn the_lexical_class_walk_takes_its_missing_label_where_the_chain_ends() {
+        let [first] = scratch();
         let layout = crate::heap::Heap::machine_layout();
         let declaring = FakeClass::new();
         let mut class = FakeClass::new();
@@ -2916,8 +2967,8 @@ mod tests {
             let mut machine = Machine::new();
             let body = machine.body(|macro_assembler| {
                 let missing = macro_assembler.assembler().label();
-                macro_assembler.load_lexical_class(RAX, 0, depth, missing);
-                macro_assembler.store_frame_register(15, RAX);
+                macro_assembler.load_lexical_class(first, 0, depth, missing);
+                macro_assembler.store_frame_register(15, first);
                 macro_assembler.exit(ExitKind::Reexecute, 1);
                 macro_assembler.assembler().bind(missing);
                 macro_assembler.exit(ExitKind::Reexecute, 2);
@@ -2948,6 +2999,7 @@ mod tests {
     /// writes anything, and answers S otherwise.
     #[test]
     fn the_superclass_load_exits_where_there_is_no_current_class_or_superclass() {
+        let [first] = scratch();
         let layout = crate::heap::Heap::machine_layout();
         let superclass = FakeClass::new();
         let without_superclass = FakeClass::new();
@@ -2956,8 +3008,8 @@ mod tests {
         let load = |frame: &mut [u64; 16]| {
             let mut machine = Machine::new();
             let body = machine.body(|macro_assembler| {
-                macro_assembler.load_superclass(RAX, 0, 7);
-                macro_assembler.store_frame_register(15, RAX);
+                macro_assembler.load_superclass(first, 0, 7);
+                macro_assembler.store_frame_register(15, first);
                 macro_assembler.exit(ExitKind::Reexecute, 99);
             });
             let (exit, _) = machine.run(body, frame, 0, false, &mut (), &[]);
@@ -3027,17 +3079,18 @@ mod tests {
     /// and an exit at 1, or an exit at 2 when it takes the slow path; the
     /// register form's bytes in register 1 of the frame.
     fn allocate(eden: &FakeEden, size: ObjectSize, fields: usize) -> (MachineExit, u64) {
+        let [first, second, third] = scratch();
         let mut machine = eden.machine();
         let body = machine.body(|macro_assembler| {
             let slow = macro_assembler.assembler().label();
             if let ObjectSize::Register(bytes) = size {
                 macro_assembler.load_frame_register(bytes, 1);
             }
-            macro_assembler.load_immediate_word(RCX, HEADER);
-            macro_assembler.load_immediate_word(RDX, CLASS);
-            macro_assembler.bump_allocate(RAX, size, RCX, RDX, slow);
-            macro_assembler.nil_fill(RAX, 0, fields);
-            macro_assembler.store_frame_register(0, RAX);
+            macro_assembler.load_immediate_word(second, HEADER);
+            macro_assembler.load_immediate_word(third, CLASS);
+            macro_assembler.bump_allocate(first, size, second, third, slow);
+            macro_assembler.nil_fill(first, 0, fields);
+            macro_assembler.store_frame_register(0, first);
             macro_assembler.exit(ExitKind::Reexecute, 1);
             macro_assembler.assembler().bind(slow);
             macro_assembler.exit(ExitKind::Reexecute, 2);
@@ -3073,8 +3126,9 @@ mod tests {
     /// The bytes in a register bump as a constant's do.
     #[test]
     fn an_allocation_of_a_size_in_a_register_bumps_as_a_constant_one() {
+        let [_, _, _, fourth] = scratch();
         let eden = FakeEden::new(16, 16);
-        let (exit, object) = allocate(&eden, ObjectSize::Register(RSI), 3);
+        let (exit, object) = allocate(&eden, ObjectSize::Register(fourth), 3);
         assert_eq!((exit, object), (BUMPED, eden.start()));
         assert_eq!(eden.top(), eden.start() + 8 * 5);
         assert_eq!(eden.words[..5], [HEADER, CLASS, NIL, NIL, NIL]);
@@ -3163,6 +3217,7 @@ mod tests {
         computed: bool,
     ) -> (u64, Vec<u64>) {
         let layout = crate::heap::Heap::machine_layout();
+        let [first, second, third, fourth] = scratch();
         let word_index =
             |displacement: i32| usize::try_from(displacement / 8).expect("after the start");
         let mut words = [0u64; 4];
@@ -3174,26 +3229,31 @@ mod tests {
             address.wrapping_sub(holder),
         );
         let body = machine.body(|macro_assembler| {
-            macro_assembler.load_frame_register(RAX, 0);
-            macro_assembler.load_frame_register(RCX, 1);
+            macro_assembler.load_frame_register(first, 0);
+            macro_assembler.load_frame_register(second, 1);
             if computed {
                 let object_space = macro_assembler.roles().object_space;
                 let assembler = macro_assembler.assembler();
-                assembler.move_register(RSI, RAX);
-                assembler.add(RSI, object_space);
+                assembler.move_register(fourth, first);
+                assembler.add(fourth, object_space);
                 macro_assembler.store_with_barrier_at(
-                    RAX,
+                    first,
                     Memory {
-                        base: RSI,
+                        base: fourth,
                         displacement: layout.fields_displacement,
                     },
-                    RCX,
-                    RDX,
+                    second,
+                    third,
                 );
             } else {
-                macro_assembler.store_with_barrier(RAX, layout.fields_displacement, RCX, RDX);
+                macro_assembler.store_with_barrier(
+                    first,
+                    layout.fields_displacement,
+                    second,
+                    third,
+                );
             }
-            macro_assembler.store_frame_register(2, RAX);
+            macro_assembler.store_frame_register(2, first);
             macro_assembler.exit(ExitKind::Reexecute, 1);
         });
         let mut frame = [holder, value, 0, 0];
@@ -3262,23 +3322,24 @@ mod tests {
     /// `SmallInteger` word `index` of the object whose word is `object`,
     /// the object space starting at `words`; `None` where it fails.
     fn indexed_offset(words: &[u64], object: u64, index: u64, bytes: bool) -> Option<u64> {
+        let [first, second, third, fourth] = scratch();
         let address = words.as_ptr().expose_provenance() as u64;
         let mut machine = Machine::new();
         machine.set_block_word(crate::jit::stubs::BlockWord::ObjectSpaceBase, address);
         let body = machine.body(|macro_assembler| {
             let failed = macro_assembler.assembler().label();
-            macro_assembler.load_frame_register(RAX, 0);
-            macro_assembler.load_frame_register(RCX, 1);
+            macro_assembler.load_frame_register(first, 0);
+            macro_assembler.load_frame_register(second, 1);
             if bytes {
-                macro_assembler.load_byte_address(RAX, RCX, RDX, RSI, failed);
+                macro_assembler.load_byte_address(first, second, third, fourth, failed);
             } else {
-                macro_assembler.load_element_address(RAX, RCX, RDX, failed);
+                macro_assembler.load_element_address(first, second, third, failed);
             }
-            macro_assembler.store_frame_register(2, RDX);
-            macro_assembler.store_frame_register(3, RAX);
+            macro_assembler.store_frame_register(2, third);
+            macro_assembler.store_frame_register(3, first);
             macro_assembler.exit(ExitKind::Reexecute, 1);
             macro_assembler.assembler().bind(failed);
-            macro_assembler.store_frame_register(3, RAX);
+            macro_assembler.store_frame_register(3, first);
             macro_assembler.exit(ExitKind::Reexecute, 2);
         });
         let mut frame = [object, index, 0, 0];
@@ -3438,17 +3499,18 @@ mod tests {
     /// through: the object whose header is `words[1]` when `object` is
     /// `None`, the word `object` otherwise.
     fn index_checked(words: &[u64], object: Option<u64>, index: u16) -> bool {
+        let [first, second] = scratch();
         let address = words.as_ptr().expose_provenance() as u64;
         let mut machine = Machine::new();
         machine.set_block_word(crate::jit::stubs::BlockWord::ObjectSpaceBase, address);
         let body = machine.body(|macro_assembler| {
             let failed = macro_assembler.assembler().label();
-            macro_assembler.load_frame_register(RAX, 0);
-            macro_assembler.check_array_index(RAX, index, RCX, failed);
-            macro_assembler.store_frame_register(1, RAX);
+            macro_assembler.load_frame_register(first, 0);
+            macro_assembler.check_array_index(first, index, second, failed);
+            macro_assembler.store_frame_register(1, first);
             macro_assembler.exit(ExitKind::Reexecute, 1);
             macro_assembler.assembler().bind(failed);
-            macro_assembler.store_frame_register(1, RAX);
+            macro_assembler.store_frame_register(1, first);
             macro_assembler.exit(ExitKind::Reexecute, 2);
         });
         let word = object.unwrap_or(8);
@@ -3573,23 +3635,24 @@ mod tests {
         rows: u64,
     ) -> Result<u64, u32> {
         let layout = crate::heap::Heap::machine_layout();
+        let [first, second, third, fourth] = scratch();
         let mut machine = machine_with_rows(table, rows);
         let body = machine.body(|macro_assembler| {
             let (cold, failed) = (
                 macro_assembler.assembler().label(),
                 macro_assembler.assembler().label(),
             );
-            macro_assembler.check_own_slot_guard(0, RAX, RCX, cold);
-            macro_assembler.load_own_slot_address(0, own_index, RAX, RDX, RCX, failed);
+            macro_assembler.check_own_slot_guard(0, first, second, cold);
+            macro_assembler.load_own_slot_address(0, own_index, first, third, second, failed);
             macro_assembler.assembler().load(
                 ns_assembler::Width::Word64,
-                RSI,
+                fourth,
                 Memory {
-                    base: RDX,
+                    base: third,
                     displacement: layout.fields_displacement,
                 },
             );
-            macro_assembler.store_frame_register(15, RSI);
+            macro_assembler.store_frame_register(15, fourth);
             macro_assembler.exit(ExitKind::Reexecute, 1);
             macro_assembler.assembler().bind(cold);
             macro_assembler.exit(ExitKind::Reexecute, 2);
@@ -3703,6 +3766,7 @@ mod tests {
     /// and whose class names no row the table records.
     #[test]
     fn the_value_check_is_taken_exactly_for_a_value_classs_instance() {
+        let [first, second] = scratch();
         let layout = crate::heap::Heap::machine_layout();
         let flag = u64::try_from(layout.application_value_slots_flag).expect("a flag");
         let table = application_rows(&[(0, 0), (0, flag)]);
@@ -3713,12 +3777,12 @@ mod tests {
             let mut machine = machine_with_rows(&table, rows);
             let body = machine.body(|macro_assembler| {
                 let label = macro_assembler.assembler().label();
-                macro_assembler.load_frame_register(RAX, 0);
-                macro_assembler.jump_if_value_slots(RAX, RCX, label);
-                macro_assembler.store_frame_register(1, RAX);
+                macro_assembler.load_frame_register(first, 0);
+                macro_assembler.jump_if_value_slots(first, second, label);
+                macro_assembler.store_frame_register(1, first);
                 macro_assembler.exit(ExitKind::Reexecute, 1);
                 macro_assembler.assembler().bind(label);
-                macro_assembler.store_frame_register(1, RAX);
+                macro_assembler.store_frame_register(1, first);
                 macro_assembler.exit(ExitKind::Reexecute, 2);
             });
             let receiver = instance_handle(&words);

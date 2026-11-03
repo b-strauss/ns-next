@@ -607,6 +607,25 @@ mod tests {
         assert_eq!(function(), 7);
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn code_written_while_the_zone_is_shared_runs_on_aarch64() {
+        // What a leaf does while code of the zone runs: the zone is shared
+        // with the code, and the writer still writes and the code runs.
+        let mut writer = CodeZone::reserve(1 << 16).expect("a zone");
+        let shared = std::rc::Rc::clone(writer.zone());
+        writer
+            .write(CodeOffset(0), &instructions(&[MOVE_7_TO_W0, RETURN]))
+            .expect("written");
+        let address =
+            std::ptr::with_exposed_provenance::<()>(shared.executable_address(CodeOffset(0)));
+        // SAFETY: the address is the start of the two instructions above, a
+        // complete function of the C calling convention, in the zone's
+        // executable view, which `shared` keeps alive.
+        let function = unsafe { std::mem::transmute::<*const (), extern "C" fn() -> u32>(address) };
+        assert_eq!(function(), 7);
+    }
+
     #[test]
     #[should_panic(expected = "an offset past the code zone")]
     fn an_executable_address_past_the_zone_panics() {
@@ -671,6 +690,49 @@ mod tests {
         assert_eq!(function(), 42);
     }
 
+    /// `mov w0, #7`.
+    #[cfg(target_arch = "aarch64")]
+    const MOVE_7_TO_W0: u32 = 0x5280_00E0;
+
+    /// `mov w0, #42`.
+    #[cfg(target_arch = "aarch64")]
+    const MOVE_42_TO_W0: u32 = 0x5280_0540;
+
+    /// `ret`.
+    #[cfg(target_arch = "aarch64")]
+    const RETURN: u32 = 0xD65F_03C0;
+
+    /// `ldr x0, [x0, #0]`: the first argument's word at displacement 0
+    /// into the answer, whose unsigned scaled offset, in words, lies at
+    /// bit 10 (`LOAD_OFFSET_SHIFT`).
+    #[cfg(target_arch = "aarch64")]
+    const LOAD_X0_FROM_X0: u32 = 0xF940_0000;
+
+    /// Where `LOAD_X0_FROM_X0`'s offset in words lies.
+    #[cfg(target_arch = "aarch64")]
+    const LOAD_OFFSET_SHIFT: u32 = 10;
+
+    /// AArch64 instruction words as the little-endian bytes the zone holds.
+    #[cfg(target_arch = "aarch64")]
+    fn instructions(words: &[u32]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn written_code_runs_from_the_executable_view_on_aarch64() {
+        let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
+        zone.write(CodeOffset(16), &instructions(&[MOVE_42_TO_W0, RETURN]))
+            .expect("written");
+        let address =
+            std::ptr::with_exposed_provenance::<()>(zone.zone().executable_address(CodeOffset(16)));
+        // SAFETY: the address is the start of the two instructions above, a
+        // complete function of the C calling convention, in the zone's
+        // executable view, which lives until the end of the test.
+        let function = unsafe { std::mem::transmute::<*const (), extern "C" fn() -> u32>(address) };
+        assert_eq!(function(), 42);
+    }
+
     /// `mov rax, [first argument + displacement]; ret`: a body answering one
     /// word of the block it is entered with.
     #[cfg(target_arch = "x86_64")]
@@ -680,6 +742,16 @@ mod tests {
         #[cfg(not(windows))]
         let register_byte = 0x47;
         [0x48, 0x8B, register_byte, word * 8, 0xC3]
+    }
+
+    /// `ldr x0, [x0, #word * 8]; ret`: a body answering one word of the
+    /// block it is entered with.
+    #[cfg(target_arch = "aarch64")]
+    fn a_body_answering_the_block_word(word: u8) -> Vec<u8> {
+        instructions(&[
+            LOAD_X0_FROM_X0 | (u32::from(word) << LOAD_OFFSET_SHIFT),
+            RETURN,
+        ])
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -701,7 +773,23 @@ mod tests {
         );
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn entered_code_answers_a_word_of_its_block_on_aarch64() {
+        let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
+        // ldr x0, [x0, #32]; ret
+        let code = instructions(&[0xF940_1000, RETURN]);
+        zone.write(CodeOffset(0), &code).expect("written");
+        let block = EntryBlock::new();
+        block.set(4, 42);
+        let mut context = ();
+        assert_eq!(
+            zone.zone().enter(CodeOffset(0), &block, &mut context, &[]),
+            42
+        );
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[test]
     fn the_entry_writes_the_context_and_the_shim_into_the_block() {
         let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
@@ -751,6 +839,20 @@ mod tests {
         assert_eq!(clone.get(5), 42, "the code's write, read through a clone");
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn entered_code_writes_the_entry_block_rust_reads_on_aarch64() {
+        let mut zone = CodeZone::reserve(1 << 16).expect("a zone");
+        // mov x1, #42; str x1, [x0, #40]; ret
+        let code = instructions(&[0xD280_0541, 0xF900_1401, RETURN]);
+        zone.write(CodeOffset(0), &code).expect("written");
+        let block = EntryBlock::new();
+        let clone = block.clone();
+        let mut context = ();
+        zone.zone().enter(CodeOffset(0), &block, &mut context, &[]);
+        assert_eq!(clone.get(5), 42, "the code's write, read through a clone");
+    }
+
     #[test]
     fn the_shim_calls_the_indexed_leaf_with_the_context() {
         // Called from Rust with a block laid out as `enter` lays it out, so
@@ -778,7 +880,7 @@ mod tests {
         assert_eq!(context, 22);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[test]
     fn the_entry_writes_the_leaf_table_and_its_count_into_the_block() {
         fn add_one(context: &mut u64, arguments: [u64; 3]) -> u64 {
