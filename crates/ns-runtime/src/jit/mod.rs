@@ -3151,7 +3151,8 @@ pub(crate) fn resumed(
 /// counts the jump, and at its `JitState::compile_at_back_jump`th is
 /// compiled as an entry compiles it; one compiled into another zone is
 /// compiled into this one at once, as `note_entry` compiles it at its next
-/// entry. A body with machine code switches
+/// entry, unless the exhausted zone would hold the compile, when it counts
+/// its jumps as a body not yet compiled does. A body with machine code switches
 /// when the frame can enter it at `target` -- its feedback base the
 /// body's, the twin compiled for a reified frame, room on the native
 /// stack (`entry_of_frame`); when it cannot, the body waits as many back
@@ -3193,8 +3194,11 @@ pub(crate) fn back_edge_ready(
         }
         // A body compiled into another zone is compiled into this one at
         // once, as `note_entry` compiles it at its next entry: it came due
-        // already, where it was compiled first.
-        if slot.state.get() == COMPILED {
+        // already, where it was compiled first. Only when the zone has
+        // room: a compile the exhausted zone holds waits its back jumps,
+        // so that a held body costs a try, and a held compile towards
+        // the next compaction, once per wait and not every turn.
+        if slot.state.get() == COMPILED && mutator.jit.may_compile_now(slot) {
             slot.back_jumps.set(0);
         } else if !slot.count_back_jump(mutator.jit.compile_at_back_jump) {
             return false;
