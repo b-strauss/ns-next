@@ -3467,13 +3467,13 @@ expected answer for every source first;
 `ns-next bench <source> --iterations 30` over the seven sources, five rounds,
 the order of the binaries rotating from round to round; two whole sittings,
 nothing else running. The import check and the inlining checks below used
-`dumpbin` from the Visual Studio Build Tools, which is installed but not on
-`PATH` — on this machine, found through `vswhere.exe` in
-`C:\Program Files (x86)\Microsoft Visual Studio\Installer\`, at
-`C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\dumpbin.exe`.
+`dumpbin` from the Visual Studio Build Tools, which Visual Studio never puts
+on `PATH`; `vswhere.exe`, which always lies in the installer's directory,
+finds it whatever the toolset's version:
+`& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe"`.
 From Git Bash it must be invoked as `dumpbin -disasm`, not `/disasm`: MSYS
 rewrites a `/option` argument into a Windows path, and the tool then silently
-tries to dump a file called `C:\Program Files\Git\disasm`. `/dependents` on
+tries to dump a file called `disasm` under Git's installation directory. `/dependents` on
 every binary, and `/disasm` (or `-disasm`, from Git Bash) on a release copy
 built with debug information to see which functions the optimizer kept whole.
 That copy is built with the same `RUSTFLAGS` as the timed binary, plus
@@ -4163,13 +4163,12 @@ each checked to print the expected answer for all eight sources first;
 `ns-next bench <source> --iterations 30`, five rounds per sitting, the order
 of the three binaries rotating by one position from round to round, two whole
 sittings, nothing else running. Two facts that cost real time and are recorded
-here for the next measurement to skip past them: `dumpbin` lives at
-`C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\dumpbin.exe`
-on this machine, found via `vswhere.exe` in
-`C:\Program Files (x86)\Microsoft Visual Studio\Installer\`, and is not on
-`PATH`; and from Git Bash it must be invoked as `dumpbin -disasm`, not
-`/disasm` — MSYS rewrites a `/option` argument into a Windows path, and the
-tool then silently tries to dump a file called `C:\Program Files\Git\disasm`.
+here for the next measurement to skip past them: `dumpbin` is not on
+`PATH`, and `vswhere.exe` finds it (the command in "What the inline caches
+moved"'s protocol above); and from Git Bash it must be invoked as
+`dumpbin -disasm`, not `/disasm` — MSYS rewrites a `/option` argument into a
+Windows path, and the tool then silently tries to dump a file called `disasm`
+under Git's installation directory.
 
 **`vm::run`'s step is still one function.** A release build with debug
 information, `dumpbin -disasm`: one function label matching `vm::run`
