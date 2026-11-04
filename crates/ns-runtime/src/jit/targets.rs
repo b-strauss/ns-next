@@ -134,6 +134,7 @@ pub(crate) fn assemble_polymorphic_stub(abi: Abi) -> Assembled {
         displacement,
     };
     let assembler = macro_assembler.assembler();
+    assembler.enter_called();
     let (miss, scan, hit) = (assembler.label(), assembler.label(), assembler.label());
     assembler.load(Width::Word64, entry, word(CELL_GUARD));
     assembler.compare_immediate(entry, VACANT_GUARD_IMMEDIATE);
@@ -143,7 +144,7 @@ pub(crate) fn assemble_polymorphic_stub(abi: Abi) -> Assembled {
     assembler.jump_if(Condition::Equal, miss);
     assembler.compare_memory(entry, polymorphic_stub);
     assembler.jump_if(Condition::Equal, scan);
-    assembler.jump_register(entry);
+    assembler.jump_into_called(entry);
     assembler.bind(scan);
     assembler.load(Width::Word64, cell, word(CELL_LEVEL));
     assembler.shift_left(cell, BLOCK_SHIFT);
@@ -213,6 +214,7 @@ pub(crate) fn assemble_megamorphic_stub(abi: Abi) -> Assembled {
         assembler.label(),
         assembler.label(),
     );
+    assembler.enter_called();
     split_rule_tag(&mut macro_assembler);
     let assembler = macro_assembler.assembler();
     assembler.shift_right_arithmetic(key, RULE_TAG_BITS);
@@ -317,7 +319,7 @@ fn emit_hit(
     if chain_start_displacement != CELL_CHAIN_START {
         assembler.add_immediate(cell, chain_start_displacement - CELL_CHAIN_START);
     }
-    assembler.jump_register(entry);
+    assembler.jump_into_called(entry);
 }
 
 /// `lookup_hash :=` the index of the group `GlobalCache::group` answers
@@ -531,10 +533,14 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         assembler.label(),
     );
     let (guarded_getter, guarded_setter) = (assembler.label(), assembler.label());
+    // The leaf stub as a cell names it, and `act`, past its entry, where
+    // the guarded accessors go on with the return address already saved.
+    let act_entry = assembler.label();
     let getters: Vec<Label> = (0..GETTER_STUBS)
         .map(|index| {
             let entry = assembler.label();
             assembler.bind(entry);
+            assembler.enter_called();
             assembler.move_immediate(field, u64::from(index));
             assembler.jump(getter);
             entry
@@ -544,6 +550,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         .map(|index| {
             let entry = assembler.label();
             assembler.bind(entry);
+            assembler.enter_called();
             assembler.move_immediate(field, u64::from(index));
             assembler.jump(setter);
             entry
@@ -554,6 +561,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
             .map(|index| {
                 let entry = assembler.label();
                 assembler.bind(entry);
+                assembler.enter_called();
                 assembler.move_immediate(field, u64::from(index));
                 assembler.jump(target);
                 entry
@@ -567,6 +575,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         .map(|index| {
             let entry = assembler.label();
             assembler.bind(entry);
+            assembler.enter_called();
             assembler.move_immediate(field, u64::from(index));
             assembler.jump(nested_class);
             entry
@@ -578,6 +587,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         .map(|row| {
             let entry = assembler.label();
             assembler.bind(entry);
+            assembler.enter_called();
             assembler.move_immediate(field, u64::from(row));
             assembler.jump(mirror_method);
             entry
@@ -587,6 +597,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         .map(|position| {
             let entry = assembler.label();
             assembler.bind(entry);
+            assembler.enter_called();
             assembler.load(
                 Width::Word64,
                 answer,
@@ -602,6 +613,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     let mut constant = |word: u64| {
         let entry = assembler.label();
         assembler.bind(entry);
+        assembler.enter_called();
         assembler.move_immediate(answer, word);
         assembler.return_();
         entry
@@ -611,6 +623,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     let false_constant = constant(crate::heap::Immediate::boolean(false).bits());
     let receiver_entry = assembler.label();
     assembler.bind(receiver_entry);
+    assembler.enter_called();
     assembler.move_register(answer, receiver);
     assembler.return_();
     // The getter: `instance_field`'s checks, then the load; and a nested
@@ -780,6 +793,8 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
     // The leaf stub: the receiver handed over in the machine words, the
     // cell the send hit in `send_cells` -- its site's own on a direct hit,
     // a block's cell or a global row from a stub, 0 after the miss leaf.
+    assembler.bind(act_entry);
+    assembler.enter_called();
     assembler.bind(act);
     macro_assembler.load_machine_words(address);
     let handed = MacroAssembler::machine_word(address, MachineWord::CalleeReceiver);
@@ -822,7 +837,7 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         true_constant: offset(true_constant),
         false_constant: offset(false_constant),
         receiver: offset(receiver_entry),
-        act: offset(act),
+        act: offset(act_entry),
         guarded_getters: guarded_getters.into_iter().map(offset).collect(),
         guarded_setters: guarded_setters.into_iter().map(offset).collect(),
         nested_classes: nested_classes.into_iter().map(offset).collect(),
@@ -863,6 +878,7 @@ fn emit_closure_stub_entry(
     let assembler = macro_assembler.assembler();
     let start = assembler.label();
     assembler.bind(start);
+    assembler.enter_called();
     let (slots, takes) = match stub {
         ClosureStub::ClosureValue { arity } => {
             assembler.move_register(closure, roles.callee_receiver());
@@ -1079,7 +1095,7 @@ fn emit_closure_stub_body(macro_assembler: &mut MacroAssembler, shared: Label, d
     assembler.move_register(roles.frame, address);
     assembler.shift_left(counted, crate::heap::Heap::machine_call_shift_shift());
     assembler.add_immediate(counted, counted_word);
-    assembler.jump_register(entry);
+    assembler.jump_into_called(entry);
 }
 
 /// A demand as the immediate it is compared with.
@@ -1225,6 +1241,7 @@ fn emit_row_stub(
     let assembler = macro_assembler.assembler();
     let (entry, fallback) = (assembler.label(), assembler.label());
     assembler.bind(entry);
+    assembler.enter_called();
     assembler.load(Width::Word64, index, argument_slot(roles, 0));
     match stub {
         RowStub::ArrayAt => {
@@ -1313,8 +1330,9 @@ const NO_VALUE_IMMEDIATE: i32 = crate::heap::Word::NO_VALUE_BITS as i32;
 
 const _: () = assert!(crate::heap::Word::NO_VALUE_BITS < 8);
 
-/// These run machine code, so they are x64's whatever `cfg(ns_jit)` says.
-#[cfg(all(test, target_arch = "x86_64"))]
+/// These run machine code, on every architecture with an encoder: the
+/// registers they name are roles.
+#[cfg(all(test, ns_jit))]
 mod tests {
     use ns_assembler::Memory;
 

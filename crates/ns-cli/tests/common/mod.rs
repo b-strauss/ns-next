@@ -12,7 +12,15 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+#[path = "../../src/target_runner.rs"]
+pub mod target_runner;
+
+/// A command that starts `binary`, one of the workspace's executables, as
+/// cargo starts a test binary (`target_runner.rs`).
+pub fn target_command(binary: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    target_runner::target_command(binary)
+}
 
 /// The repository's root, two levels above this crate.
 pub fn repository_root() -> PathBuf {
@@ -517,7 +525,7 @@ pub fn ns_next(arguments: &[&std::ffi::OsStr]) -> (bool, String, String) {
     let Some(binary) = option_env!("CARGO_BIN_EXE_ns-next") else {
         panic!("cargo hands the ns-next binary only to ns-cli's own tests");
     };
-    let output = Command::new(binary)
+    let output = target_command(binary)
         .args(arguments)
         .output()
         .expect("run ns-next");

@@ -289,7 +289,7 @@ ns_runtime::for_each_lowering! {
         assert_eq!(suspended, plain);
         assert!(suspensions > 0, "the suspend stress mode never suspended");
         // Where machine code ran at all: not without the JIT, nor in a
-        // build without an encoder.
+        // build without a JIT.
         if jit.compiled_bodies > 0 {
             assert!(
                 jit.materialized_frames > 0,

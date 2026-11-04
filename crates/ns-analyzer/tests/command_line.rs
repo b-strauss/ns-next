@@ -1,10 +1,10 @@
 mod common;
 use common::ScratchDirectory;
 
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn run(arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .args(arguments)
         .output()
         .expect("run ns-next-analyzer")

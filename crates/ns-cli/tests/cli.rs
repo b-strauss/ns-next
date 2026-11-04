@@ -5,7 +5,7 @@ use indoc::indoc;
 use std::process::Command;
 
 fn ns_next() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    common::target_command(env!("CARGO_BIN_EXE_ns-next"))
 }
 
 /// The repository root, so a test can name the real vendored corpus

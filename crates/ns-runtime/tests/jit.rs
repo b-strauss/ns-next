@@ -241,11 +241,11 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A program with more bodies than a zone of three pages holds, each
-    /// starting with a template and installed by the stress setting, fills
-    /// the zone, which is compacted rather than any body refused, with the
-    /// output unchanged.
-    fn a_zone_of_three_pages_leaves_the_output_right(lowering) {
+    /// A program with more bodies than a zone holds that has room for only
+    /// a few past its stubs, each starting with a template and installed
+    /// by the stress setting, fills the zone, which is compacted rather
+    /// than any body refused, with the output unchanged.
+    fn a_zone_with_room_for_a_few_bodies_leaves_the_output_right(lowering) {
         let count: i64 = 300;
         let methods: String = (0..count)
             .map(|index| format!("  m{index} = (\n    ^{index}\n  )\n"))
@@ -263,7 +263,12 @@ ns_runtime::for_each_lowering! {
             ) : ()
         "};
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(12_288);
+        // The room past the stubs, not the zone's size, is what the test
+        // fixes, since the stubs' size is the architecture's: 1,344 bytes,
+        // which on x64 makes a zone of three pages.
+        interpreter.set_jit_zone_bytes(1 << 20);
+        let stubs = interpreter.table_sizes().zone_used_bytes;
+        interpreter.set_jit_zone_bytes(stubs + 1_344);
         interpreter.set_jit_stress(true);
         let before = interpreter.jit_statistics();
         assert_eq!(run(&mut interpreter, &class), count * (count - 1));

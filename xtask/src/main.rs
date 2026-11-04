@@ -32,10 +32,12 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   memory               ns-memory's clippy for Linux and macOS
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
   stress               the suite under the nine stress modes and without the JIT, then run-corpus plain and under each mode
-  release-checks       the suite without debug assertions (cargo profile release-checks), and ns-runtime's clippy for aarch64-apple-darwin, a target without an encoder
+  release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without a JIT, and for aarch64-apple-darwin, Apple's JIT
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
-  end-of-batch         images, caches, benchmarks, release-checks, codegen and stress, for a batch that changed the runtime";
+  linux                in Docker: clippy, the suite, the doctests and the benchmark programs for x86_64-unknown-linux-gnu
+  aarch64              in Docker: clippy for aarch64-unknown-linux-gnu, and the suite under the image's qemu-aarch64
+  end-of-batch         images, caches, benchmarks, release-checks, codegen, stress, linux and aarch64, for a batch that changed the runtime";
 
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
@@ -63,12 +65,178 @@ fn stress_suite_runs() -> Vec<(String, String)> {
 /// mixins, relative to the repository root.
 const SHIPPED_CODE: &str = "crates/ns-runtime/core-library/shipped-code.bin";
 
+/// The image the groups `linux` and `aarch64` run in, built from
+/// `DOCKER_CONTEXT`'s `Dockerfile`, so that the environment they check
+/// against is the repository's code.
+const DOCKER_IMAGE: &str = "ns-next-gates";
+
+/// The Dockerfile's directory, relative to the repository root: the build
+/// context holds nothing else, so a build sends Docker no sources.
+const DOCKER_CONTEXT: &str = "xtask/docker";
+
+/// Where a container sees the checkout the gate runs from, read-only.
+const CHECKOUT_MOUNT: &str = "/checkout";
+
+/// The platform the image is built for and its containers run on: x86_64,
+/// so that rustc runs natively and only the AArch64 binaries are emulated,
+/// and so that an arm64 Docker host builds and runs the image the
+/// Dockerfile describes -- emulated -- or fails clearly, rather than
+/// building an arm64 image the Dockerfile does not describe.
+const DOCKER_PLATFORM: &str = "linux/amd64";
+
+/// Where a container sees the working copy it builds in.
+const WORKING_COPY: &str = "/work";
+
+/// The named volumes a container mounts, by the suffix of their name and
+/// where it sees them: the working copy, so that it and the build directory
+/// outlive the container and a second run builds incrementally, and the
+/// build never writes into the checkout; its build directory, a volume of
+/// its own, which the copy leaves alone; and cargo's registry, so that a
+/// run downloads no crate an earlier one did. Each checkout has volumes of
+/// its own (`volume_name`).
+const VOLUMES: [(&str, &str); 3] = [
+    ("work", WORKING_COPY),
+    ("target", "/work/target"),
+    ("registry", "/usr/local/cargo/registry"),
+];
+
+/// The name of a checkout's volume `suffix`, `ns-next-gates-<id>-<suffix>`,
+/// the id a hash of the checkout's path, so that two checkouts' gates, even
+/// run at once, never share a working copy, a build directory or the
+/// registry, which cargo locks only within one container. FNV-1a, written
+/// out, so that a checkout keeps its volumes across toolchains.
+fn volume_name(root: &Path, suffix: &str) -> String {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let hash = root
+        .to_string_lossy()
+        .bytes()
+        .fold(OFFSET_BASIS, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(PRIME)
+        });
+    format!("ns-next-gates-{:012x}-{suffix}", hash >> 16)
+}
+
+/// Where a container sees a linked worktree's git metadata, read-only.
+const GIT_MOUNT: &str = "/checkout-git";
+
+/// A linked worktree's git metadata: the repository's common directory,
+/// and the worktree's own directory relative to it. A linked worktree's
+/// `.git` is a file naming that directory by a path on the host, which the
+/// copy takes along but a container cannot follow, so the common directory
+/// is mounted and git pointed at it (`git_arguments`). `None` for a
+/// checkout whose `.git` is the directory itself, which the copy takes
+/// along.
+fn linked_worktree_git(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    if !root.join(".git").is_file() {
+        return None;
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ])
+        .output()
+        .expect("a linked worktree's gates run git to find its metadata");
+    assert!(
+        output.status.success(),
+        "git rev-parse failed in the linked worktree {}: {}",
+        root.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = text.lines().map(PathBuf::from);
+    let (Some(git_directory), Some(common_directory)) = (lines.next(), lines.next()) else {
+        panic!(
+            "git rev-parse named no git directory for {}",
+            root.display()
+        );
+    };
+    let relative = git_directory
+        .strip_prefix(&common_directory)
+        .unwrap_or_else(|_| {
+            panic!(
+                "the worktree's git directory {} lies outside the repository's {}",
+                git_directory.display(),
+                common_directory.display()
+            )
+        })
+        .to_path_buf();
+    Some((common_directory, relative))
+}
+
+/// The `docker run` arguments that give a linked worktree's container its
+/// git metadata: the repository's common directory mounted read-only, and
+/// `GIT_DIR` and `GIT_WORK_TREE` naming the worktree's directory in it and
+/// the working copy, which is all `git ls-files` reads. None for a
+/// checkout whose `.git` is a directory.
+fn git_arguments(worktree: Option<(PathBuf, PathBuf)>) -> Vec<String> {
+    let Some((common_directory, relative)) = worktree else {
+        return Vec::new();
+    };
+    let relative: Vec<String> = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    vec![
+        "--mount".to_string(),
+        format!(
+            "type=bind,source={},target={GIT_MOUNT},readonly",
+            common_directory.display()
+        ),
+        "--env".to_string(),
+        format!("GIT_DIR={GIT_MOUNT}/{}", relative.join("/")),
+        "--env".to_string(),
+        format!("GIT_WORK_TREE={WORKING_COPY}"),
+    ]
+}
+
+/// The first step of each Docker group after the image: the checkout
+/// copied into the working copy, so that uncommitted work is checked too.
+/// `.git` is copied, since a test lists the tracked sources with it (a
+/// linked worktree's is mounted instead, `linked_worktree_git`). What
+/// a `.gitignore` names is not -- the build directories, among them the
+/// plugin's Gradle caches of nearly two gigabytes, and `.temp/` -- nor is
+/// `prior-art/`, which holds nothing the gates build; an excluded file is
+/// also kept from `--delete`, so the working copy's own build directory and
+/// shipped code survive. `/target` is excluded by name as well: on a fresh
+/// volume the working copy has no `.gitignore` yet when `--delete` runs,
+/// and `target` is the mount point of the build directory's volume, which
+/// rsync would try to remove.
+fn copy_into_working_copy() -> String {
+    format!(
+        "rsync -a --delete --filter=':- .gitignore' --exclude /target --exclude /prior-art \
+         {CHECKOUT_MOUNT}/ {WORKING_COPY}/"
+    )
+}
+
+/// What the `aarch64` group's cargo runs with: the cross linker; the
+/// image's own `qemu-aarch64` as the target's runner, which cargo and
+/// nextest start every test binary through, the tests every `ns-next`
+/// and `ns-next-analyzer` they start, and `run-corpus` its children of
+/// itself (`ns-cli`'s `src/target_runner.rs`), so that what runs the
+/// machine code is the QEMU the image pins, never a binfmt handler of the
+/// engine's; the target's libraries for it; and a test
+/// thread's stack as large as a main thread's, since an emulated test's
+/// deep recursion needs more than the default.
+const AARCH64_ENVIRONMENT: &str = "export \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64 \
+    QEMU_LD_PREFIX=/usr/aarch64-linux-gnu RUST_MIN_STACK=8388608";
+
 /// What runs a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Program {
     Cargo,
     /// The plugin's Gradle wrapper, `editors/jetbrains/gradlew`.
     Gradle,
+    /// `docker`: the gate image's build, or a bash script in a container
+    /// of it.
+    Docker,
 }
 
 /// One command of a gate.
@@ -98,6 +266,63 @@ impl Step {
         Step {
             program: Program::Gradle,
             ..Step::cargo(label, arguments)
+        }
+    }
+
+    /// The gate image built, or taken from Docker's cache when the
+    /// Dockerfile is unchanged.
+    fn docker_image(label: &str) -> Step {
+        Step {
+            program: Program::Docker,
+            ..Step::cargo(
+                label,
+                &[
+                    "build",
+                    "--platform",
+                    DOCKER_PLATFORM,
+                    "--tag",
+                    DOCKER_IMAGE,
+                    DOCKER_CONTEXT,
+                ],
+            )
+        }
+    }
+
+    /// `script` run by bash in a fresh x86_64 container of the gate image,
+    /// the checkout the gate runs from mounted read-only beside its
+    /// volumes. The container's exit status is the script's, so a failing
+    /// command fails the step.
+    fn docker(label: &str, script: &str) -> Step {
+        let root = repository_root();
+        let checkout = format!(
+            "type=bind,source={},target={CHECKOUT_MOUNT},readonly",
+            root.display()
+        );
+        let mut arguments: Vec<String> = ["run", "--rm", "--platform", DOCKER_PLATFORM]
+            .iter()
+            .map(|argument| argument.to_string())
+            .collect();
+        arguments.extend(["--mount".to_string(), checkout]);
+        for (suffix, target) in VOLUMES {
+            arguments.extend([
+                "--mount".to_string(),
+                format!(
+                    "type=volume,source={},target={target}",
+                    volume_name(&root, suffix)
+                ),
+            ]);
+        }
+        arguments.extend(git_arguments(linked_worktree_git(&root)));
+        arguments.extend(
+            [DOCKER_IMAGE, "bash", "-c", script]
+                .iter()
+                .map(|argument| argument.to_string()),
+        );
+        Step {
+            label: label.to_string(),
+            program: Program::Docker,
+            arguments,
+            environment: Vec::new(),
         }
     }
 
@@ -242,8 +467,9 @@ fn group(name: &str) -> Option<Vec<Part>> {
         // The size tests are `cfg(not(debug_assertions))`, so only a build
         // without debug assertions runs them; the profile skips the release
         // profile's fat LTO, which a test run does not need. Beside them,
-        // `ns-runtime`'s lint for a target without an encoder, where no
-        // `cfg(ns_jit)` code is compiled, which no other gate builds.
+        // `ns-runtime`'s lint for a target without a JIT, where no
+        // `cfg(ns_jit)` code is compiled, and for Apple's JIT, whose code
+        // zone no other gate builds.
         "release-checks" => steps(vec![
             Step::cargo(
                 "release checks",
@@ -255,26 +481,52 @@ fn group(name: &str) -> Option<Vec<Part>> {
                     "release-checks",
                 ],
             ),
-            Step::cargo(
-                "lint without an encoder",
-                &[
-                    "clippy",
-                    "-p",
-                    "ns-runtime",
-                    "--all-targets",
-                    "--target",
-                    "aarch64-apple-darwin",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            ),
+            runtime_lint("lint without a JIT", "aarch64-pc-windows-msvc"),
+            runtime_lint("lint for Apple's JIT", "aarch64-apple-darwin"),
         ]),
         "codegen" => vec![Part::Codegen],
         "plugin-verification" => steps(vec![Step::gradle(
             "plugin verification",
             &["-p", "editors/jetbrains", "verifyPlugin", "buildPlugin"],
         )]),
+        "linux" => steps(in_docker(
+            "linux",
+            "",
+            &[
+                ("shipped code", "cargo xtask shipped-code"),
+                (
+                    "lint",
+                    "cargo clippy --workspace --all-targets -- -D warnings",
+                ),
+                (
+                    "suite",
+                    "cargo nextest run --workspace --test-threads $(nproc)",
+                ),
+                ("doctests", "cargo test --workspace --doc"),
+                (
+                    "benchmark programs",
+                    "cargo nextest run --workspace --profile benchmarks-verify",
+                ),
+            ],
+        )),
+        // No doctests: `cargo test --doc` would build them for the host.
+        "aarch64" => steps(in_docker(
+            "aarch64",
+            AARCH64_ENVIRONMENT,
+            &[
+                ("shipped code", "cargo xtask shipped-code"),
+                (
+                    "lint",
+                    "cargo clippy --workspace --all-targets \
+                     --target aarch64-unknown-linux-gnu -- -D warnings",
+                ),
+                (
+                    "suite",
+                    "cargo nextest run --workspace \
+                     --target aarch64-unknown-linux-gnu --test-threads $(nproc)",
+                ),
+            ],
+        )),
         "end-of-batch" => [
             "images",
             "caches",
@@ -282,12 +534,52 @@ fn group(name: &str) -> Option<Vec<Part>> {
             "release-checks",
             "codegen",
             "stress",
+            "linux",
+            "aarch64",
         ]
         .iter()
         .flat_map(|name| group(name).expect("a group"))
         .collect(),
         _ => return None,
     })
+}
+
+/// `ns-runtime`'s clippy for `target`, warning-free.
+fn runtime_lint(label: &str, target: &str) -> Step {
+    Step::cargo(
+        label,
+        &[
+            "clippy",
+            "-p",
+            "ns-runtime",
+            "--all-targets",
+            "--target",
+            target,
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )
+}
+
+/// A Docker group: the image, the checkout copied into the working copy,
+/// then each of `commands` run there after `environment`, each step
+/// labelled `<name> <label>`. The suites take as many test threads as the
+/// container has CPUs, where the profiles' fixed count is the host's.
+fn in_docker(name: &str, environment: &str, commands: &[(&str, &str)]) -> Vec<Step> {
+    let prefix = if environment.is_empty() {
+        String::new()
+    } else {
+        format!("{environment} && ")
+    };
+    let mut steps = vec![
+        Step::docker_image(&format!("{name} image")),
+        Step::docker(&format!("{name} copy"), &copy_into_working_copy()),
+    ];
+    steps.extend(commands.iter().map(|(label, command)| {
+        Step::docker(&format!("{name} {label}"), &format!("{prefix}{command}"))
+    }));
+    steps
 }
 
 fn main() -> ExitCode {
@@ -434,6 +726,7 @@ fn command_of(step: &Step, root: &Path) -> Command {
             command.arg("--no-daemon");
             command
         }
+        Program::Docker => Command::new("docker"),
     };
     command.args(&step.arguments).current_dir(root);
     for (name, value) in &step.environment {
@@ -627,7 +920,186 @@ mod tests {
     fn the_codegen_group_runs_the_budgets() {
         assert_eq!(group("codegen"), Some(vec![Part::Codegen]));
         let labels = labels_of(&group("end-of-batch").expect("a group")).join(",");
-        assert!(labels.contains("release checks,lint without an encoder,codegen,stress suites"));
+        assert!(labels.contains(
+            "release checks,lint without a JIT,lint for Apple's JIT,codegen,stress suites"
+        ));
+    }
+
+    /// The Docker groups run after everything that runs on the host,
+    /// `aarch64` last, since the suite under emulation is the longest step
+    /// of all.
+    #[test]
+    fn the_end_of_batch_runs_linux_and_aarch64_last() {
+        let mut expected = group("stress").expect("a group");
+        expected.extend(group("linux").expect("a group"));
+        expected.extend(group("aarch64").expect("a group"));
+        let parts = group("end-of-batch").expect("a group");
+        assert!(parts.ends_with(&expected));
+    }
+
+    /// The script a Docker step runs, its last argument.
+    fn script_of(step: &Step) -> &str {
+        step.arguments.last().expect("a script")
+    }
+
+    /// Each Docker group first builds the image, then copies the working
+    /// tree into the working copy, so that what it checks is the tree on
+    /// the host, uncommitted work included; every later step runs in a
+    /// container of the image, the checkout read-only beside the volumes.
+    #[test]
+    fn the_docker_groups_build_the_image_and_copy_the_tree_first() {
+        for name in ["linux", "aarch64"] {
+            let parts = group(name).expect("a group");
+            let [Part::Steps(steps)] = parts.as_slice() else {
+                panic!("{name} is one run of steps");
+            };
+            assert_eq!(steps[0].program, Program::Docker);
+            assert_eq!(
+                steps[0].arguments,
+                [
+                    "build",
+                    "--platform",
+                    "linux/amd64",
+                    "--tag",
+                    "ns-next-gates",
+                    "xtask/docker"
+                ]
+            );
+            assert_eq!(script_of(&steps[1]), copy_into_working_copy());
+            for step in &steps[1..] {
+                assert_eq!(step.program, Program::Docker);
+                assert_eq!(
+                    step.arguments[..4],
+                    ["run", "--rm", "--platform", "linux/amd64"]
+                );
+                let root = repository_root();
+                let mounts = [
+                    format!(
+                        "type=bind,source={},target=/checkout,readonly",
+                        root.display()
+                    ),
+                    format!(
+                        "type=volume,source={},target=/work",
+                        volume_name(&root, "work")
+                    ),
+                    format!(
+                        "type=volume,source={},target=/work/target",
+                        volume_name(&root, "target")
+                    ),
+                    format!(
+                        "type=volume,source={},target=/usr/local/cargo/registry",
+                        volume_name(&root, "registry")
+                    ),
+                ];
+                for mount in &mounts {
+                    assert!(
+                        step.arguments
+                            .windows(2)
+                            .any(|pair| pair == ["--mount", mount]),
+                        "{}: {mount}",
+                        step.label
+                    );
+                }
+                let length = step.arguments.len();
+                assert_eq!(
+                    step.arguments[length - 4..length - 1],
+                    ["ns-next-gates", "bash", "-c"]
+                );
+            }
+            assert!(steps[2..]
+                .iter()
+                .all(|step| script_of(step).contains("cargo ")));
+        }
+    }
+
+    /// Each checkout has volumes of its own, named the same on every run.
+    #[test]
+    fn a_volume_is_named_after_its_checkout() {
+        let first = Path::new("/checkouts/first");
+        let name = volume_name(first, "work");
+        assert_eq!(name, volume_name(first, "work"));
+        assert!(name.starts_with("ns-next-gates-") && name.ends_with("-work"));
+        assert_eq!(name.len(), "ns-next-gates-".len() + 12 + "-work".len());
+        assert_ne!(name, volume_name(Path::new("/checkouts/second"), "work"));
+        assert_ne!(name, volume_name(first, "target"));
+    }
+
+    /// A linked worktree's container reads the repository's git metadata
+    /// from a mount, through `GIT_DIR`; a checkout whose `.git` is a
+    /// directory needs nothing, since the copy takes it along.
+    #[test]
+    fn a_linked_worktree_mounts_the_repositorys_git_metadata() {
+        assert!(git_arguments(None).is_empty());
+        let arguments = git_arguments(Some((
+            PathBuf::from("/repository/.git"),
+            Path::new("worktrees").join("feature"),
+        )));
+        assert_eq!(
+            arguments,
+            [
+                "--mount",
+                "type=bind,source=/repository/.git,target=/checkout-git,readonly",
+                "--env",
+                "GIT_DIR=/checkout-git/worktrees/feature",
+                "--env",
+                "GIT_WORK_TREE=/work",
+            ]
+        );
+        if !repository_root().join(".git").is_file() {
+            assert_eq!(linked_worktree_git(&repository_root()), None);
+        }
+    }
+
+    /// The copy keeps the working copy's build directory, and copies `.git`.
+    #[test]
+    fn the_copy_leaves_the_build_directory_alone() {
+        let copy = copy_into_working_copy();
+        assert!(copy.starts_with("rsync -a --delete "));
+        assert!(copy.contains("--filter=':- .gitignore' "));
+        assert!(
+            copy.contains("--exclude /target "),
+            "the build directory's mount point"
+        );
+        assert!(!copy.contains("--exclude /.git "));
+        assert!(copy.ends_with("/checkout/ /work/"));
+    }
+
+    /// `linux` also verifies the benchmark programs, as the host's
+    /// `benchmarks` group does, its image having a JDK; `aarch64` does not.
+    #[test]
+    fn only_linux_runs_the_benchmark_programs() {
+        let runs_benchmarks = |name: &str| {
+            let parts = group(name).expect("a group");
+            let [Part::Steps(steps)] = parts.as_slice() else {
+                panic!("{name} is one run of steps");
+            };
+            steps.iter().any(|step| {
+                script_of(step) == "cargo nextest run --workspace --profile benchmarks-verify"
+            })
+        };
+        assert!(runs_benchmarks("linux"));
+        assert!(!runs_benchmarks("aarch64"));
+    }
+
+    /// The `aarch64` suite runs for its target, through the cross linker
+    /// and the emulator's library prefix.
+    #[test]
+    fn the_aarch64_suite_runs_for_its_target() {
+        let parts = group("aarch64").expect("a group");
+        let [Part::Steps(steps)] = parts.as_slice() else {
+            panic!("aarch64 is one run of steps");
+        };
+        let suite = script_of(steps.last().expect("a step"));
+        assert!(suite.contains("--target aarch64-unknown-linux-gnu"));
+        assert!(suite.contains("--test-threads $(nproc)"));
+        for variable in [
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64",
+            "QEMU_LD_PREFIX=/usr/aarch64-linux-gnu",
+            "RUST_MIN_STACK=8388608",
+        ] {
+            assert!(suite.contains(variable), "{variable}");
+        }
     }
 
     #[test]

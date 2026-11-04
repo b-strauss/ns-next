@@ -1117,7 +1117,7 @@ pub(crate) fn compile(
     let assembled = body
         .macro_assembler
         .finish()
-        .map_err(|_| Refusal::Unassembled)?;
+        .map_err(|error| Refusal::Unassembled(Some(error)))?;
     let words = words
         .and_then(|label| assembled.label_offsets[label.index()])
         .map(|start| start..start + word_bytes);
@@ -1542,25 +1542,54 @@ mod tests {
     const CALL_RAX: [u8; 2] = [0xFF, 0xD0];
     const CALL_RCX: [u8; 2] = [0xFF, 0xD1];
 
+    /// The bytes of `blr x9` and `blr x10`, little-endian: `0xD63F0000`
+    /// with the register in bits 5 to 9
+    /// (https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BLR--Branch-with-link-to-register-).
+    const BLR_X9: [u8; 4] = [0x20, 0x01, 0x3F, 0xD6];
+    const BLR_X10: [u8; 4] = [0x40, 0x01, 0x3F, 0xD6];
+
     /// Where a call whose encoding is `call` ends in `bytes`, the one place
     /// it occurs.
-    fn end_of_the_one(bytes: &[u8], call: [u8; 2]) -> u32 {
+    fn end_of_the_one(bytes: &[u8], call: &[u8]) -> u32 {
         let ends: Vec<usize> = bytes
-            .windows(2)
+            .windows(call.len())
             .enumerate()
             .filter(|(_, window)| *window == call)
-            .map(|(start, _)| start + 2)
+            .map(|(start, _)| start + call.len())
             .collect();
         assert_eq!(ends.len(), 1, "the call occurs once");
         u32::try_from(ends[0]).expect("small")
     }
 
+    /// Under each encoding, whatever the host: the test assembles and
+    /// runs nothing.
     #[test]
     fn a_sends_call_maps_its_return_address_to_the_send() {
-        use crate::jit::stubs::ExitKind;
+        use ns_assembler::aarch64::{X10, X9};
         use ns_assembler::x64::{RAX, RCX};
 
-        let mut macro_assembler = MacroAssembler::new(Abi::host());
+        a_sends_call_maps_its_return_address_under(
+            Abi::SystemV,
+            [RAX, RCX],
+            [&CALL_RAX, &CALL_RCX],
+        );
+        a_sends_call_maps_its_return_address_under(
+            Abi::Windows64,
+            [RAX, RCX],
+            [&CALL_RAX, &CALL_RCX],
+        );
+        a_sends_call_maps_its_return_address_under(Abi::Aapcs64, [X9, X10], [&BLR_X9, &BLR_X10]);
+    }
+
+    /// Two sends calling through `targets`, whose calls encode as `calls`.
+    fn a_sends_call_maps_its_return_address_under(
+        abi: Abi,
+        targets: [ns_assembler::Register; 2],
+        calls: [&[u8]; 2],
+    ) {
+        use crate::jit::stubs::ExitKind;
+
+        let mut macro_assembler = MacroAssembler::new(abi);
         let starts = (0..2)
             .map(|_| macro_assembler.assembler().label())
             .collect();
@@ -1583,7 +1612,7 @@ mod tests {
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.
-        for (program_counter, target) in [(0u32, RAX), (1, RCX)] {
+        for (program_counter, target) in [(0u32, targets[0]), (1, targets[1])] {
             body.program_counter = program_counter;
             let start = body.starts[program_counter as usize];
             body.macro_assembler.assembler().bind(start);
@@ -1593,8 +1622,8 @@ mod tests {
         body.macro_assembler.exit(ExitKind::Reexecute, 1);
         let assembled = body.macro_assembler.finish().expect("assembled");
         let map = super::program_counter_map(&assembled, &body.starts, &body.call_returns);
-        let first = end_of_the_one(&assembled.bytes, CALL_RAX);
-        let second = end_of_the_one(&assembled.bytes, CALL_RCX);
+        let first = end_of_the_one(&assembled.bytes, calls[0]);
+        let second = end_of_the_one(&assembled.bytes, calls[1]);
         assert_eq!(map.program_counter_of_return(first), Some(0));
         assert_eq!(map.program_counter_of_return(second), Some(1));
         assert_eq!(map.program_counter_of_return(first + 1), None, "past it");

@@ -4,7 +4,8 @@
 
 use iced_x86::{Code, Decoder, DecoderOptions, Formatter, Instruction, IntelFormatter, Mnemonic};
 use ns_assembler::{
-    x64, Assembled, Assembler, AssemblyError, Condition, Label, Memory, Register, Width, X64,
+    x64, Assembled, Assembler, AssemblyError, Condition, Encoder, Label, Memory, Register, Width,
+    X64,
 };
 
 const QUADWORD_NAMES: [&str; 16] = [
@@ -753,4 +754,44 @@ fn every_byte_of_a_fill_with_stops_is_a_breakpoint() {
             .all(|instruction| instruction.mnemonic() == Mnemonic::Int3));
         assert_eq!(instructions.len(), code.len() - start);
     }
+}
+
+fn assemble(build: impl FnOnce(&mut Assembler<X64>)) -> Assembled {
+    let mut assembler = Assembler::<X64>::new();
+    build(&mut assembler);
+    assembler.finish().expect("the code assembles")
+}
+
+#[test]
+fn entering_a_called_address_emits_nothing() {
+    let assembled = assemble(|assembler| {
+        assembler.enter_called();
+        assembler.return_();
+    });
+    assert_eq!(assembled.bytes, [0xC3]);
+}
+
+#[test]
+fn a_jump_into_a_called_address_is_a_register_jump() {
+    for register in registers() {
+        let into = assemble(|assembler| assembler.jump_into_called(register));
+        let plain = assemble(|assembler| assembler.jump_register(register));
+        assert_eq!(into.bytes, plain.bytes);
+    }
+}
+
+#[test]
+fn a_call_into_a_body_is_a_register_call() {
+    for register in registers() {
+        let unentered = assemble(|assembler| assembler.call_unentered(register));
+        let plain = assemble(|assembler| assembler.call_register(register));
+        assert_eq!(unentered.bytes, plain.bytes);
+    }
+}
+
+#[test]
+fn x64_has_eight_byte_slots_and_no_instruction_alignment() {
+    assert_eq!(X64.stack_slot_bytes(), 8);
+    assert_eq!(X64.instruction_alignment(), 1);
+    assert_eq!(assemble(|assembler| assembler.return_()).alignment, 1);
 }

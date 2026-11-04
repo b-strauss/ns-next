@@ -1038,8 +1038,8 @@ impl Interpreter {
     }
 
     /// Why the JIT is off though it was wanted, `None` while it runs or
-    /// when nothing asked for it (`NS_NEXT_NO_JIT=1`, or a build without an
-    /// encoder): its code zone could not be reserved -- on a Windows before
+    /// when nothing asked for it (`NS_NEXT_NO_JIT=1`, or a build without a
+    /// JIT): its code zone could not be reserved -- on a Windows before
     /// 10 version 1803 among others, which the reason names. A host reports
     /// it, since the program then runs interpreted, several times slower,
     /// and a measurement must refuse it rather than time the interpreter.

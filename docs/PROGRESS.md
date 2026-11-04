@@ -57,7 +57,7 @@ first.
 | Road step 7c — the deoptimization contract and the protocol between interpreted and compiled frames, written into `execution.md` for road steps 8 and 9 to build to | Complete | 2026-10-27 | — |
 | The handler search as a leaf: `activationNextHandler:` walks the frames and reifies only the `on:do:` activation it answers | Complete | 2026-10-27 | [handler-search-leaf](superpowers/plans/2026-10-27-0126-handler-search-leaf.md) |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `Array>>do:`, and a loop in the reference lowering | Complete | 2026-10-27 | [loop-bodies](superpowers/plans/2026-10-27-1529-loop-bodies.md) |
-| Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows; stage 5, on-stack replacement at an interpreted backward jump, the return into machine code after a poll's safepoint, one compare at a compiled push for the depth and a safepoint request, the compile time counted (`--jit-statistics`), and the depth count measured in `rbp` and left in its machine word; a register cache measured before it was built and left to road step 9 | In progress | 2026-11-03 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md), [jit-osr](superpowers/plans/2026-11-02-2051-jit-osr.md) |
+| Road step 8 (M5) — a baseline JIT: its foundation, stages 1 and 2 -- the doubly mapped code zone and the entry into machine code, `ns-assembler` and its x64 encoder, the macro assembler and the stubs, the baseline compiler's one exhaustive `match` with templates for moves, literals, jumps and `SmallInteger` arithmetic, two stress modes; stage 3, sends and the caches in machine code; the entry into machine code at its cost; stage 4, closures, non-local return, allocation and the write barrier in machine code, and the reclamation of everything that grows; stage 5, on-stack replacement at an interpreted backward jump, the return into machine code after a poll's safepoint, one compare at a compiled push for the depth and a safepoint request, the compile time counted (`--jit-statistics`), and the depth count measured in `rbp` and left in its machine word; a register cache measured before it was built and left to road step 9; stage 6, the AArch64 encoder, the JIT on AArch64 Linux and Apple, its suite under QEMU, and the gate groups `linux` and `aarch64` | Complete | 2026-11-04 | [baseline-jit-foundation](superpowers/plans/2026-10-27-2047-baseline-jit-foundation.md), [jit-sends](superpowers/plans/2026-10-28-1928-jit-sends.md), [jit-entry-cost](superpowers/plans/2026-10-29-2030-jit-entry-cost.md), [jit-closures](superpowers/plans/2026-10-30-0103-jit-closures.md), [jit-osr](superpowers/plans/2026-11-02-2051-jit-osr.md), [jit-aarch64](superpowers/plans/2026-11-03-2047-jit-aarch64.md) |
 | A one-line method in the JetBrains plugin folded as Java's one-liners: brackets and their spaces in the folds, the server's method fold containing them | Complete | 2026-11-01 | — |
 | Doc comments: a block of `///` lines coloured and rendered in place as Markdown, a hover with a declaration's signature and doc comment, Java-style tags (`@param`, `@answers`, `@signals`, `@see`, `@factory`, `{@summary}`) as sections with the server's warnings, and the whole core library documented with them | Complete | 2026-11-01 | [doc-comment-tags](superpowers/plans/2026-11-01-1608-doc-comment-tags.md) |
 | Identity and equality documented: the contract of `==`, `=`, `hash` and `identityHash` at `Object`, what a value's identity is, and every class's own | Complete | 2026-11-01 | — |
@@ -6795,9 +6795,8 @@ golden, `run-corpus` output or benchmark outcome changed.
 - `869d7043` -- Cog's backward jump count cited from one tree.
 - The documents' commit after them.
 
-What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
-8's next stage; a caller compiled by on-stack
-replacement that its abandoned callee abandons too; and whether the
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a caller
+compiled by on-stack replacement that its abandoned callee abandons too; and whether the
 baseline compiler joins road step 9's compiler thread.
 
 ## No register cache in the baseline, measured (2026-11-03)
@@ -6813,8 +6812,70 @@ the geometric mean +1.8%, and adding a store-to-load forwarding to every
 load +2.4%. A cache would therefore move it by about 1%, inside the noise.
 Decided with the user: the baseline keeps reading and writing the
 slots, as V8's Sparkplug does, and register allocation, with the fused
-comparison, goes to road step 9. The AArch64 encoder is the baseline's
-last stage and next. Neither measurement was committed; no code changed
+comparison, goes to road step 9, which made the AArch64 encoder the
+baseline's last stage. Neither measurement was committed; no code changed
 but two comments.
 
 - The documents' commit.
+
+## The AArch64 encoder, road step 8's sixth stage (2026-11-04)
+
+Road step 8 is complete ([its plan](superpowers/plans/2026-11-03-2047-jit-aarch64.md);
+[execution.md](design/execution.md), "The foundation and the one
+extension point", "The native stack carries the return addresses",
+"Fixed registers and the calling convention", "Tests", "Stages"). The
+baseline JIT is compiled for AArch64 on Linux and Apple's platforms
+(`cfg(ns_jit)`, `crates/ns-runtime/build.rs`); Windows on ARM stays
+interpreted. `ns-assembler` gained a second encoder, `Aarch64`, every
+encoding checked against `yaxpeax-arm`, a dev-dependency only, and
+every constant citing its developer.arm.com page; it keeps `x16` and
+`x17` as its scratch registers, never uses `x18`, leaves `x30` to the
+call convention, and lays a conditional branch out as one `b.cond`,
+a body whose branch reaches farther staying interpreted. Decided with
+the user on 2026-11-03: a compiled frame's return address lies in a
+16-byte slot on `sp`, as V8's and HotSpot's do, rather than on a second
+stack pointer, as Cog's; three operations of the call convention carry
+it -- `enter_called` at every address a call reaches, `jump_into_called`
+for a stub's tail jump into one, and `call_unentered` for a call into a
+body's middle, the entry at a push -- which encode on x64 as nothing,
+`jmp` and `call`. The macro assembler assembles through one `Encoding`
+the `Abi` chooses (`Windows64`, `SystemV`, `Aapcs64`), its stack slot
+from the encoder, and `Roles::of(Abi::Aapcs64)` maps every role one to
+one from x64's; the native stack an entry needs is about 1.68 MB on
+AArch64. Every stub and every golden body is assembled for AAPCS64 on
+every host, and the tests that run machine code take the host's roles.
+
+Two gate groups run in Docker at the end of a batch, never at a commit:
+`linux`, the suite, clippy, the doctests and the benchmark programs
+for `x86_64-unknown-linux-gnu`, and `aarch64`, the suite cross-compiled
+for `aarch64-unknown-linux-gnu` and run through the image's own
+`qemu-aarch64` as the target's runner, about 8.5 minutes, which needs
+QEMU 8.1 or newer; the image, pinned, is the repository's,
+`xtask/docker/Dockerfile`. `release-checks` lints `ns-runtime`
+for `aarch64-pc-windows-msvc`, the build without a JIT, and for
+`aarch64-apple-darwin`, Apple's JIT. Both groups passed, 4,603 tests
+each, and `linux` the 139 benchmark programs. x64's machine code is byte for byte what it was, an FNV hash of
+every stub and of every body compiled over the benchmarks, the corpus
+and the goldens identical before and after, so x64 was not measured
+again; AArch64 is unmeasured, since QEMU times nothing. No golden,
+`run-corpus` output or benchmark outcome changed.
+
+- `0e3f52d5` -- the plan.
+- `695f17c8` -- the call convention's operations and the encoder's
+  stack slot and instruction alignment.
+- `f288a217`, `c391ed0e` -- the AArch64 encoder.
+- `9e092397` -- the stack model and the encoder from the ABI.
+- `025b0b14` -- a call into a body's middle saves its own return
+  address.
+- `4b9c278d` -- the AAPCS64 roles, the JIT switched on for AArch64 Linux
+  and Apple.
+- `e5cc8582` -- the machine-code tests on every architecture with an
+  encoder.
+- `7544c5f8`, `f5ea9565` -- the tests that assumed x64's stub sizes and
+  its empty call prologue.
+- `ad3918d4` -- the gate groups `linux` and `aarch64`.
+- The documents' commit after them.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): AArch64's
+speed, unmeasured; Windows on ARM's JIT; the paths no gate runs; and
+road step 9, the optimizing JIT, next.

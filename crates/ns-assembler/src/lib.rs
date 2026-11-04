@@ -38,12 +38,15 @@
 
 use std::fmt;
 
+pub mod aarch64;
 pub mod x64;
 
+pub use aarch64::Aarch64;
 pub use x64::X64;
 
 /// A machine register, numbered as the target architecture numbers it in
-/// its encodings ([`x64::RAX`] … [`x64::R15`]).
+/// its encodings ([`x64::RAX`] … [`x64::R15`], [`aarch64::X0`] …
+/// [`aarch64::X30`] and [`aarch64::SP`]).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Register(pub u8);
 
@@ -101,12 +104,12 @@ pub struct Memory {
 ///   `shift_right_logical` -- x64's
 ///   instructions set the flags, AArch64's plain `and`, `orr`, `lsl` and
 ///   `asr` keep them, so neither may be relied on -- `divide_signed`,
-///   whose flags x64 leaves undefined, and `call_register`, whose callee
-///   may do anything.
+///   whose flags x64 leaves undefined, and `call_register` and
+///   `call_unentered`, whose callee may do anything.
 /// - **Keeps**: every other operation -- `move_register`, `move_if`,
 ///   `move_immediate`, `load`, `store`, `store_immediate32`, `push`, `pop`,
 ///   `add_stack`, `load_code_address`, `load_labelled`, `load_label_address`, `jump`, `jump_if`,
-///   `jump_register`, `return_` and `trap` -- so a compare
+///   `jump_register`, `enter_called`, `jump_into_called`, `return_` and `trap` -- so a compare
 ///   may be separated from its branch by moves, loads and stores.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Condition {
@@ -226,8 +229,23 @@ pub enum Operation {
     },
     /// Calls the address in `target`.
     CallRegister { target: Register },
+    /// Calls the address in `target`, which does not begin with
+    /// [`Operation::EnterCalled`] -- a position inside a body -- saving the
+    /// return address where that operation would, so that the callee's
+    /// [`Operation::Return`] returns to the operation after this one.
+    CallUnentered { target: Register },
     /// Jumps to the address in `target`.
     JumpRegister { target: Register },
+    /// The first operation of every address a call reaches: after it the
+    /// return address the call left lies at `[stack pointer + 0]`, where
+    /// [`Operation::Return`] expects it. An architecture whose call already
+    /// leaves it there encodes nothing.
+    EnterCalled,
+    /// Jumps to the address in `target`, which begins with
+    /// [`Operation::EnterCalled`], past that operation: the return address
+    /// is already saved where the callee expects it. A stub's tail jump
+    /// into a callee.
+    JumpIntoCalled { target: Register },
     /// Pushes `source` on the machine stack.
     Push { source: Register },
     /// Pops the machine stack into `target`.
@@ -280,8 +298,8 @@ pub enum BranchForm {
 /// The encoding of the operations for one architecture.
 ///
 /// An encoder may emit several instructions for one operation, and may
-/// keep registers of its own out of the operands it is given (configured
-/// per target, as AArch64's x18 on Apple and Windows), but it honours
+/// keep registers of its own out of the operands it is given (AArch64's
+/// x16 and x17, its scratch registers, x18 and x30), but it honours
 /// [`Condition`]'s contract on the flags exactly: an operation that keeps
 /// them emits nothing that changes them, one that sets them defines every
 /// condition the contract names for it.
@@ -325,6 +343,14 @@ pub trait Encoder {
     /// moved or freed body left -- traps at once rather than running what
     /// lay there before.
     fn fill_with_stops(&self, length: usize, code: &mut Vec<u8>);
+
+    /// The bytes one return address, or one pushed register, takes on the
+    /// machine stack: the stack pointer moves by multiples of it.
+    fn stack_slot_bytes(&self) -> i32;
+
+    /// The alignment, in bytes, every instruction of the code must have in
+    /// memory: 1 where instructions have any address.
+    fn instruction_alignment(&self) -> u32;
 }
 
 /// The code an [`Assembler`] produced.
@@ -336,7 +362,8 @@ pub struct Assembled {
     /// bound at, `None` for one never bound.
     pub label_offsets: Vec<Option<u32>>,
     /// The alignment the code's first byte must have in memory for every
-    /// [`Assembler::align_data`] to align there too: the largest asked
+    /// [`Assembler::align_data`] to align there too, and the encoder's
+    /// [`Encoder::instruction_alignment`] to hold: the largest asked
     /// for, 1 when none was.
     pub alignment: u32,
 }
@@ -439,6 +466,13 @@ impl<E: Encoder> Assembler<E> {
             bound: Vec::new(),
             alignment: 1,
         }
+    }
+
+    /// The encoder, for what depends on the target: its stack slot, its
+    /// instruction alignment.
+    #[must_use]
+    pub fn encoder(&self) -> &E {
+        &self.encoder
     }
 
     /// A new label, not yet bound.
@@ -669,11 +703,36 @@ impl<E: Encoder> Assembler<E> {
         self.emit(Operation::CallRegister { target });
     }
 
+    /// Calls the address in `target`, which does not begin with
+    /// [`Assembler::enter_called`] -- a position inside a body, reached by
+    /// fall-through and branches too -- saving the return address where
+    /// `enter_called` would, so that the callee's [`Assembler::return_`]
+    /// returns to the operation after this one. Clobbers the flags: the
+    /// callee may do anything with them.
+    pub fn call_unentered(&mut self, target: Register) {
+        self.emit(Operation::CallUnentered { target });
+    }
+
     /// Jumps to the address in `target`, pushing nothing: a jump that
     /// never comes back, which a `call_register` would leave unbalanced on
     /// the processor's return-address predictor. Keeps the flags.
     pub fn jump_register(&mut self, target: Register) {
         self.emit(Operation::JumpRegister { target });
+    }
+
+    /// The first operation of every address a call reaches: afterwards the
+    /// return address the call left lies at `[stack pointer + 0]`, where
+    /// [`Assembler::return_`] expects it. Keeps the flags.
+    pub fn enter_called(&mut self) {
+        self.emit(Operation::EnterCalled);
+    }
+
+    /// Jumps to the address in `target`, which begins with
+    /// [`Assembler::enter_called`], past that operation: the return address
+    /// is already saved where it expects it. A stub's tail jump into a
+    /// callee. Keeps the flags.
+    pub fn jump_into_called(&mut self, target: Register) {
+        self.emit(Operation::JumpIntoCalled { target });
     }
 
     /// Pushes `source` on the machine stack. Keeps the flags.
@@ -893,7 +952,7 @@ impl<E: Encoder> Assembler<E> {
         Ok(Assembled {
             bytes,
             label_offsets,
-            alignment: self.alignment,
+            alignment: self.alignment.max(self.encoder.instruction_alignment()),
         })
     }
 }

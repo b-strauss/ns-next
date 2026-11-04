@@ -13,6 +13,7 @@ mod commands;
 mod entry;
 mod program;
 mod project;
+mod target_runner;
 
 /// Runs Newspeak: a program from source (`run`), a corpus against its
 /// recorded outcomes (`run-corpus`), an image (`load`), a timed entry send

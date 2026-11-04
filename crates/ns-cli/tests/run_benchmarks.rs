@@ -123,7 +123,7 @@ fn main() {
 /// exactly under `lowering`, and no table beside the object space reached
 /// its growth limit (`common::no_program_reaches_a_table_limit`).
 fn matches_under_one_lowering(run: &common::BenchmarkRun, lowering: &str) -> Result<(), Failed> {
-    let mut output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let mut output = common::target_command(env!("CARGO_BIN_EXE_ns-next"))
         .arg("run")
         .arg(&run.program)
         .arg("--lowering")
@@ -146,7 +146,7 @@ fn matches_under_one_lowering(run: &common::BenchmarkRun, lowering: &str) -> Res
 
 /// The ns-next harness at `harness` run with `arguments`.
 fn ns_next_harness(harness: &Path, arguments: &[&str]) -> Result<std::process::Output, String> {
-    Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    common::target_command(env!("CARGO_BIN_EXE_ns-next"))
         .arg("run")
         .arg(harness)
         .arg("--")

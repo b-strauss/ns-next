@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 fn ns_next() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    common::target_command(env!("CARGO_BIN_EXE_ns-next"))
 }
 
 fn run(file: &Path) -> Output {

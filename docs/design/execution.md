@@ -16,8 +16,9 @@
 > which are the callee's first registers (road step 7a′, "Overlapping
 > register windows"). The contract compiled frames will keep with
 > interpreted ones is written (road step 7c, "Planned: the
-> deoptimization contract"), and the baseline JIT's first five stages
-> are built on x64 (road step 8, "The baseline JIT's foundation"): a body
+> deoptimization contract"), and the baseline JIT is built, road step 8's
+> six stages, on x64 and on AArch64 Linux and Apple, the AArch64 port run
+> under QEMU and not yet measured ("The baseline JIT's foundation"): a body
 > is compiled at its second entry, or at its fortieth interpreted backward
 > jump, and entered wherever it runs -- a frame
 > switching into its machine code at a loop's head, on-stack replacement,
@@ -63,8 +64,10 @@
 > exit's walk in `jit/materialize.rs`, the leaves in `jit/leaves.rs`, and
 > the code zone's compaction and freeing in `jit/zone.rs`),
 > `heap/machine_entries.rs` (the machine entry table the closure stubs
-> read), `crates/ns-assembler` (the operations and the x64
-> encoder), `crates/ns-memory/src/code_zone.rs` (the code zone and the
+> read), `crates/ns-assembler` (the operations, the x64 encoder in
+> `x64.rs` and the AArch64 encoder in `aarch64.rs`),
+> `crates/ns-runtime/build.rs` (which targets set `cfg(ns_jit)`),
+> `crates/ns-memory/src/code_zone.rs` (the code zone and the
 > entry into machine code), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack), `crates/ns-cli/src/commands/bench.rs` and
 > `benchmarks/are-we-fast-yet/` (what "Measurements" times).
@@ -8913,8 +8916,9 @@ lowerings and in every tier, which the depth-limit goldens that count
 alike pin; a byte bound would give that up and need machine code to
 check the native stack pointer instead. A program that needs a deeper
 recursion than L has L raised, not the model changed; what bounds L is
-the native stack an entry into machine code needs, eight bytes an
-activation (`jit::NATIVE_STACK_NEED`).
+the native stack an entry into machine code needs, a return address's
+slot an activation, eight bytes on x64 and sixteen on AArch64
+(`jit::NATIVE_STACK_NEED`).
 
 ### No re-entry from Rust
 
@@ -10363,8 +10367,9 @@ Each step gets its own design when it comes up.
   the code, values kept in registers, for x64 and arm64, since images are
   portable across architectures. Executable memory comes from `ns-memory`
   ([memory.md](memory.md), "The memory layer"). Designed on 2026-10-27:
-  "Planned: the baseline JIT" below; its first two stages, the
-  foundation, are built ("The baseline JIT's foundation").
+  "Planned: the baseline JIT" below; all six of its stages are built,
+  the AArch64 encoder the last ("The baseline JIT's foundation",
+  "Stages").
 - **Step 9, an optimizing JIT with type feedback, inlining and deoptimization**,
   Strongtalk's and HotSpot's class: recompiling hot code along the receiver
   types the caches recorded, inlining the sends that make Newspeak slow when
@@ -10742,7 +10747,7 @@ activation" above); one it inlines creates neither.
 
 ## The baseline JIT's foundation
 
-Road step 8's first five stages are built ("Planned: the baseline JIT",
+Road step 8's six stages are built ("Planned: the baseline JIT",
 "Stages" below): the code zone and the x64 encoder; the entry, the exit
 and the instructions without a send; sends and the inline caches in
 machine code -- with the entry at an interpreter's send, which calls a
@@ -10754,8 +10759,11 @@ barrier", "The code zone" below); and on-stack replacement at an
 interpreted backward jump, the return into machine code after a poll's
 safepoint and the one compare at a compiled push ("When a body is
 compiled", "Polls and the depth check" below; "Between the tiers" and
-"Safepoints and the depth limit" above).
-On x64 a body is compiled at its second entry, or at the 40th backward
+"Safepoints and the depth limit" above); and the AArch64 encoder, the
+whole JIT assembled for AAPCS64 from the same templates, stubs and
+idioms and its suite run under QEMU ("Fixed registers and the calling
+convention", "Tests" below).
+A body is compiled at its second entry, or at the 40th backward
 jump the interpreter runs in it, where its frame switches into the
 code at the loop's head, and every compiled body is entered wherever it
 runs: at a send, a push, a frame returned to and an interpreted
@@ -10767,11 +10775,18 @@ cut -- where it exits and the interpreter runs that instruction and the
 rest of the body; a cached send calls through its site's cell into the callee's
 machine code or a stub, the callee returns by `ret`, and an exit at any
 depth of compiled frames materializes all of them before the interpreter
-runs. Only x64 has an encoder: the JIT is compiled where
-`crates/ns-runtime/build.rs` sets `cfg(ns_jit)`, on x64 alone, the one
-line the AArch64 port changes; elsewhere `jit::available` answers `false`
-and every body stays interpreted. What the design names beyond the five
-stages, the AArch64 encoder, is still planned.
+runs. The JIT is compiled where `crates/ns-runtime/build.rs` sets
+`cfg(ns_jit)`: on x64 everywhere, and on AArch64 on Linux and Apple's
+platforms (decided with the user on 2026-11-03). Windows on ARM stays
+interpreted, its calling convention and unwinding ones no stub crosses
+yet ([OPEN-WORK.md](../OPEN-WORK.md)); there, and on every other target,
+`jit::available` answers `false` and every body stays interpreted. x64's
+machine code is the same as that of the tree the AArch64 stage started
+from, by an FNV comparison of every stub and of every body the JIT
+compiles over the benchmarks, the runnable corpus and every golden, each
+assembled under both x64 conventions, lean and twin -- about 21,700
+hashes -- so x64 needed no new measurement; AArch64 has none, since QEMU
+times nothing ("Stages" below).
 "What on-stack replacement moved" has the measurement of stage 5, the
 depth count kept in a register among it, "What allocation and the
 barrier in machine code moved", "What closures in machine code moved",
@@ -10821,30 +10836,45 @@ the baseline JIT's foundation moved" that of the first two.
   `pthread_attr_get_np` on FreeBSD and NetBSD,
   `pthread_get_stackaddr_np` and `pthread_get_stacksize_np` on Apple --
   asked once per thread; `None` elsewhere. Every entry into machine code
-  compares it with `jit::NATIVE_STACK_NEED`, a return address of eight
-  bytes per activation the depth limit and its reserve count plus 64 KiB
-  for the deepest leaf, about 0.86 MB, and a thread with less runs the
-  body interpreted ("The native stack carries the return addresses"
-  below).
+  compares it with `jit::NATIVE_STACK_NEED`, a return address's slot per
+  activation the depth limit and its reserve count plus 64 KiB for the
+  deepest leaf -- eight bytes a slot on x64, about 0.87 MB, sixteen on
+  AArch64, about 1.68 MB -- and a thread with less runs the body
+  interpreted ("The native stack carries the return addresses" below).
 - **`ns-assembler`** (`crates/ns-assembler`): the abstract operations and
-  the x64 encoder (`X64`), branches sized in one pass, among them
+  two encoders, x64's (`X64`, `x64.rs`) and AArch64's (`Aarch64`,
+  `aarch64.rs`), branches sized in one pass, among them
   `jump_register`, `add_immediate`, `move_if` (a conditional move) and
   `divide_signed`; `Assembler::with_encoder` assembles with a configured
-  encoder. The flag contract is stated per operation: each sets, keeps or
-  clobbers the condition flags, and `Condition::Overflow` is defined only
-  after an add, a subtract or `multiply_checked` -- which AArch64 is to
-  honour with `smulh`, `mul`, a compare of the high word with the low
-  word's sign and one `ccmp` that sets V alone. Every constant of an
+  encoder. An encoder answers its stack slot (`Encoder::stack_slot_bytes`,
+  8 on x64, 16 on AArch64) and its instruction alignment
+  (`instruction_alignment`, 1 and 4), and `finish` aligns the assembled
+  code to at least the latter. The flag contract is stated per operation:
+  each sets, keeps or clobbers the condition flags, and
+  `Condition::Overflow` is defined only after an add, a subtract or
+  `multiply_checked` -- which AArch64 honours with `smulh`, `mul`, a
+  compare of the high word with the low word's sign and one `ccmp` that
+  sets V alone. Three operations are the call convention's
+  ("Fixed registers and the calling convention" below): `enter_called`,
+  `jump_into_called` and `call_unentered`. Every constant of an
   encoder is a named `const` citing its official source -- the Intel SDM's
   volume and section for x64, the instruction's developer.arm.com page
   for AArch64 -- and no integer literal but 0 and 1 stands outside one,
   which `tests/encoding_sources.rs` holds every encoder file to; every
-  encoding is checked against `iced-x86`'s disassembly
-  (`tests/x64_encodings.rs`).
-- **The macro assembler** (`jit/macro_assembler.rs`) decides which machine
+  encoding is checked against a disassembler, `iced-x86`'s for x64
+  (`tests/x64_encodings.rs`) and `yaxpeax-arm`'s for AArch64
+  (`tests/aarch64_encodings.rs`, decided with the user on 2026-11-03),
+  both dev-dependencies of `ns-assembler` alone.
+- **The macro assembler** (`jit/macro_assembler.rs`) assembles through
+  `Encoding`, one type over both encoders, which the `Abi` chooses
+  (`Abi::Windows64`, `Abi::SystemV`, `Abi::Aapcs64`; `Abi::host()` the
+  build's), so the idioms, the templates and the stubs are written once.
+  It decides which machine
   register plays which role (`Roles`), the same under both x64
   conventions, since the pinned ones are registers both have a callee
-  preserve: `rbx` the address of the frame's register 0, `r14` the entry
+  preserve, and under AAPCS64 mapped one to one from x64's ("Fixed
+  registers and the calling convention" below). On x64 `rbx` is the
+  address of the frame's register 0, `r14` the entry
   block, `r15` the object space's base, `r11` the idioms' own scratch,
   `rax` a leaf's answer, and nine scratch registers for the templates;
   the sends' and the stubs' registers are roles of their own -- the
@@ -10855,12 +10885,13 @@ the baseline JIT's foundation moved" that of the first two.
   return address read off the native stack, and the stack pointer itself
   -- each documented with what it holds and across which idioms. **No
   file under `jit/` but `macro_assembler.rs` names an architecture's
-  register** outside a test module: a template, a send or a stub is
-  written against the idioms and the roles, never against an encoder, so
-  that the AArch64 port writes one `Roles::of` and its idioms and nothing
-  above them (decided with the user on 2026-10-29: the split is held by
-  a source scan, `crates/ns-runtime/tests/jit_architecture_split.rs`,
-  rather than a crate of its own). Two registers play no role, `r13`
+  register or its encoder** (`x64`, `aarch64`) outside a test module: a
+  template, a send or a stub is written against the idioms and the
+  roles, never against an encoder, so that an architecture adds an
+  encoder, an arm of `Roles::of`, its convention's facts on `Abi` and
+  nothing above them (decided with the user on 2026-10-29: the split is
+  held by a source scan, `crates/ns-runtime/tests/jit_architecture_split.rs`,
+  rather than a crate of its own). On x64 two registers play no role, `r13`
   and `rbp`: preserved by both conventions and saved by the entry stub,
   they are the free registers a value survives a leaf call in, `r13`
   left for road step 9's register allocation ("The register cache"
@@ -10877,11 +10908,14 @@ the baseline JIT's foundation moved" that of the first two.
   the register's index in block word `ExitRegister`, 30), after which Rust
   panics with `heap.rs`'s message for it.
 - **The stubs** (`jit/stubs.rs`), at the zone's base: the entry stub saves
-  every general-purpose register either convention has its callee
-  preserve (no vector register: a template that uses `xmm6`-`xmm15` on
-  Win64 must have the stub save them first), loads the pinned roles from
-  the block, saves the stack pointer in block word `SavedStackPointer`
-  (10) and calls the body. A body never returns to it: an exit **jumps**
+  every general-purpose register either x64 convention has its callee
+  preserve, and under AAPCS64 `x19` to `x29` (`Abi::callee_saved`; no
+  vector register: a template that uses `xmm6`-`xmm15` on
+  Win64, or `d8`-`d15` under AAPCS64, must have the stub save them
+  first), loads the pinned roles from the block, saves the stack pointer in block word `SavedStackPointer`
+  (10) and calls the body -- at a push through `call_unentered`, since
+  it enters a body's middle ("Fixed registers and the calling
+  convention" below). A body never returns to it: an exit **jumps**
   to the exit stub through block word `ExitStub` (12), so no `call` that
   never returns unbalances the processor's return-address predictor and
   no body holds an absolute address; the exit stub writes the program
@@ -10890,7 +10924,8 @@ the baseline JIT's foundation moved" that of the first two.
   ("Sends, returns and the exit that materializes" below), resets the
   stack pointer to the saved one and returns to `enter`'s caller. A body
   names itself to an exit or a leaf by the address of the instruction
-  after a `lea` (`Assembler::load_code_address`, `Operand::CodeAddress`),
+  after a `lea`, or an `adr` on AArch64 (`Assembler::load_code_address`,
+  `Operand::CodeAddress`),
   never by an absolute address. A body that returns from the entry's
   frame returns into the entry stub, which stores the value and the kind
   `Returned`. The call stub (`assemble_call_stub`) is the entry stub for
@@ -11712,8 +11747,25 @@ lowering of one instruction:
   JIT embeds are small (tagged integers, 22-bit dispatch ids, offsets),
   so a pool would rarely save an instruction, and without one each
   operation's bytes are self-contained and the encoder trait admits
-  AArch64 unchanged. It forbids `unsafe` and is tested on its own against
-  a disassembler.
+  AArch64 unchanged. AArch64's encoder keeps four registers for itself
+  and refuses them as an operand by a panic: `x16` and `x17`, its
+  scratch registers, through which it synthesizes what one instruction
+  cannot say -- a displacement or an immediate out of an instruction's
+  reach, `sp` where the encoding would read register 31 as `xzr`, `sp`
+  as a store's source or a load's target (through `x17`) -- `x18`, the
+  platform register Apple and Windows reserve, never used on any target,
+  so that there is one `Roles::of`, and `x30`, the link register, which
+  the call convention owns. **A conditional branch's long form is one
+  `b.cond`** (±1 MiB): past that reach `finish` answers
+  `BranchOutOfReach` and the body stays interpreted, as any other
+  assembly failure leaves it (decided with the user on 2026-11-03),
+  since an inverted `b.cond` over a `b` would make every forward check
+  on the hot path a taken branch, and HotSpot's AArch64 back end assumes
+  the same reach inside a method; an unconditional `b` reaches
+  ±128 MiB, the zone's bound. A label reference reaches ±1 MiB: `adr`
+  any byte, a `ldr` literal a multiple of 4. A stop is `udf #0`, and
+  `Trap` the same. It forbids `unsafe` and is tested on its own against
+  a disassembler per encoder.
 - **The macro assembler**, `crates/ns-runtime/src/jit/`, which writes the
   VM's idioms once in the abstract operations: load an object's guard,
   check a cache cell, bump-allocate in eden, the write barrier, the depth
@@ -11806,13 +11858,56 @@ the stack they expect -- Cog abandoned `longjmp` because MSVC's unwinder
   there, at the interpreter's positions; the native stack holds only the
   return addresses of compiled frames above the latest entry, and leaf
   calls while they run.
+- **On AArch64 the return address lies in a 16-byte slot on `sp`**
+  (decided with the user on 2026-11-03). A call is `blr`, which leaves
+  the return address in `x30` alone, so every address a call reaches
+  begins with `enter_called`, `str x30, [sp, #-16]!`, and a return is
+  `ldr x30, [sp], #16` then `ret`; `sp` stays 16-byte aligned at all
+  times, as the architecture requires of every access through it, and a
+  compiled frame's return address lies where x64's `call` leaves it, one
+  slot at `[sp]`, so the exit's walk, the cut and the lookup of a body by
+  a return address read the same layout, a slot's size apart
+  (`Abi::stack_slot_bytes`). V8 (`EnterFrame`,
+  `src/codegen/arm64/macro-assembler-arm64.cc:3109`) and HotSpot
+  (`build_frame`, `cpu/aarch64/macroAssembler_aarch64.cpp:5965-5973`)
+  keep it so. Rejected: Cog's second stack pointer, `x16`, which its
+  frames are pushed on in 8-byte words and from which it aligns `sp`
+  before each call into C (`cogitARMv8.c:345`, `:6359`) -- a register
+  taken, and a native stack laid out unlike x64's. Three operations of
+  `ns-assembler` carry it, each nothing or the plain instruction on x64, whose machine code they leave byte for byte
+  as it was:
+  - `enter_called` begins every address a call reaches: a body's
+    prologue, the entry, call and closure call stubs, the cut, miss and
+    refusing stubs, the polymorphic, megamorphic, accessor, leaf and
+    closure stubs and the machine entry table's row stubs -- never the
+    exit stub, which is only jumped to, nor a twin, which is entered by
+    the transfer's jump. x64 encodes it as nothing.
+  - `jump_into_called` is a stub's tail jump into such an address, past
+    its `enter_called`, the return address already saved (the miss stub
+    into what the leaf answered, the polymorphic stub into a megamorphic
+    cell's entry, a hit into its cell's or row's entry, a closure stub
+    into the block's machine entry): `add x16, target, #4; br x16`, a
+    `jmp` on x64.
+  - `call_unentered` calls an address in a body's middle -- the entry at
+    a push, which is an instruction past the prologue, an on-stack
+    replacement's loop head, a resumption after a send, the instruction
+    after a served safepoint -- that fall-through and branches reach too,
+    so it cannot begin with `enter_called`, and saves the return address
+    itself where `enter_called` would: `bl +8; b +12; str x30, [sp,
+    #-16]!; br target`, 16 bytes, the `bl` keeping the return-address
+    predictor balanced and the body's `ret` landing on the `b`, which
+    skips to the next operation; x64's `call`.
 - **The entry checks the native stack's room.** A counted activation
-  costs eight bytes of it, so the depth limit with its reserve bounds the
-  compiled frames at about 0.8 MB; the entry compares what is left of
-  the thread's stack (`ns-memory` reads its bounds) against that bound
-  plus the deepest leaf, and a thread with too little runs interpreted.
+  costs one slot of it, eight bytes on x64 and sixteen on AArch64, so the
+  depth limit with its reserve bounds the compiled frames at about 0.8 MB
+  and 1.6 MB; the entry compares what is left of the thread's stack
+  (`ns-memory` reads its bounds) against that bound plus 64 KiB for the
+  deepest leaf (`jit::NATIVE_STACK_NEED`, about 0.87 MB and 1.68 MB), and
+  a thread with too little runs interpreted.
   `ns-next` runs programs on a thread of 8 MiB
-  (`INTERPRETER_STACK_BYTES`, `crates/ns-cli/src/main.rs:160`).
+  (`INTERPRETER_STACK_BYTES`, `crates/ns-cli/src/main.rs:160`); a test
+  thread's default 2 MiB is close to AArch64's bound, so the `aarch64`
+  gate runs the suite with `RUST_MIN_STACK=8388608` ("Tests" below).
 - **The exit resets the stack pointer in the entry stub** to the value
   the entry saved, after the walk over the return addresses "The exit
   materializes" above describes, and returns to the run loop. No Rust
@@ -11833,7 +11928,33 @@ every field access is base plus offset (HotSpot's `r12_heapbase`, V8's
 A send passes the receiver and up to two arguments in machine registers
 as well as in their slots' places, the callee storing them only where it
 needs them (Cog's `numRegArgs`, `:2761`). Which machine register plays
-which role is the macro assembler's, per architecture.
+which role is the macro assembler's, per convention: `Abi` names three,
+`Windows64`, `SystemV` and `Aapcs64` -- the last Linux's and Apple's
+alike, which differ in nothing the JIT relies on -- and each answers its
+encoder, its stack slot, the registers its callee preserves and its
+first argument register; `LeafCallLayout::of` places a leaf call's
+operands for it.
+
+Under AAPCS64 every role takes the register x64's takes, one to one
+(`Roles::of`): `rax` `x0`, `rcx` `x1`, `rdx` `x2`, `rsi` `x3`, `rdi` `x4`,
+`r8` to `r10` `x5` to `x7`, `r12` `x8`, `r11`, the idioms' scratch, `x9`;
+the pinned frame base, context and object space's base, `rbx`, `r14` and
+`r15`, the preserved `x19` to `x21`; and the two free survivors, `r13`
+and `rbp`, `x22` and `x23`. So every register two roles share under x64
+they share under AAPCS64, and no other, which
+`the_aapcs64_roles_alias_as_x64_s_do` holds, and every argument of the
+internal convention, the registers a stub or a callee is entered with
+among them, lies where x64's does in its role. `x24` to `x29` take no
+role: the entry stub saves them with the other preserved registers, and
+`x29`, the frame pointer, is never written, since Apple requires it to
+address a valid frame record at all times. `x16` and `x17` are the
+encoder's, `x18` is never used on any target, and `x30` is the call
+convention's ("The foundation and the one extension point" above, "The
+native stack carries the return addresses" above). The whole JIT --
+every stub and every body of the core library and of the goldens, lean
+and twin, under both lowerings -- is assembled for AAPCS64 on every
+host by `jit::cross_assembly_tests`, and runs on AArch64 under QEMU
+("Tests" below).
 
 ### Inline caches
 
@@ -12232,7 +12353,8 @@ that make everything that grows reclaimable (plan
      order, through a buffer the writer reads back (`compactCompiledCode`,
      `:12740-12824`), and fill every byte the survivors no longer cover --
      the gaps their alignment leaves and the room freed past the last --
-     with stops (`macro_assembler::stop_bytes`, `int3` on x64), as Cog
+     with stops (`macro_assembler::stop_bytes(Abi::host(), length)`, `int3` on
+     x64, `udf #0` on AArch64), as Cog
      fills the freed end of its zone (`stopsFromto`, `:5738`), so that an
      address a holder failed to remap traps rather than running stale
      code;
@@ -12735,11 +12857,83 @@ lookup's remembered answers ("The code zone").
   activation runs, so every golden runs through the compaction's remap
   ("The code zone").
 - **The encoders are tested against disassemblers**, dev-dependencies of
-  `ns-assembler` only: `iced-x86` for x64 and one for AArch64.
-- **AArch64 runs under QEMU**: the suite cross-compiled for
-  `aarch64-unknown-linux-gnu`, run by `qemu-aarch64` in WSL2. QEMU does
-  not model an incoherent instruction cache, so a missing flush passes
-  there; Apple's `MAP_JIT` path is checked by clippy only.
+  `ns-assembler` only: `iced-x86` for x64 (`tests/x64_encodings.rs`) and
+  `yaxpeax-arm` for AArch64 (`tests/aarch64_encodings.rs`), each
+  operation over every register it allows and over the boundaries of
+  each form's reach, with literal expected texts at the boundaries the
+  manual puts; `the_disassembler_writes_the_text_these_tests_expect`
+  pins `yaxpeax-arm`'s text against hand-assembled words, and
+  `every_bitmask_pattern_round_trips_through_its_logical_immediate` every
+  one of the 5,334 logical-immediate patterns.
+- **The whole JIT is assembled for AAPCS64 on every host**
+  (`jit::cross_assembly_tests`, `cfg(all(test, ns_jit))`): every stub, and
+  every body of the core library and of `goldens/language/` under both
+  lowerings, counting off and on, lean and twin, must compile, so that
+  the Windows suite catches a template AArch64 cannot assemble. The tests
+  that run machine code (`jit/stubs.rs`', `jit/targets.rs`' and
+  `jit/macro_assembler.rs`' `tests`, `cfg(all(test, ns_jit))`) take their
+  registers from the host's roles and so run on either architecture;
+  `ns-memory`'s code zone tests have AArch64 twins of the x64 words they
+  run.
+- **AArch64 runs under QEMU**, in the gate group `aarch64` (decided with
+  the user on 2026-11-03; `CLAUDE.md`, "The gates"): in Docker, in a
+  working copy the checkout is rsynced into, the suite cross-compiled for
+  `aarch64-unknown-linux-gnu` and run through the image's own
+  `qemu-aarch64` as the target's runner,
+  `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER`, which cargo and nextest
+  start every test binary through, and which the tests start every
+  `ns-next` and `ns-next-analyzer` through as well, and `ns-next`'s
+  `run-corpus` the children it starts of itself, since a child an
+  emulated program started directly the kernel would hand to whatever
+  binfmt handler the engine has (`crates/ns-cli/src/target_runner.rs`,
+  the one place that reads the variable, the triple from each crate's
+  build script) -- the convention cargo has for a test binary, so no
+  test names QEMU. `RUST_MIN_STACK=8388608` is set, since a test thread's default
+  2 MiB is too little for AArch64's native-stack bound and a test would
+  silently run interpreted (`the_jit_is_available_on_its_architectures`
+  asserts the build has the JIT, and the tests of `tests/jit.rs` that
+  count machine entries fail where nothing entered machine code). The
+  doctests are not run there, since `cargo test --doc` would build them
+  for the host; about 8.5 minutes. The gate group `linux` runs clippy,
+  the suite, the doctests and the benchmark programs with their Java
+  counterparts (profile `benchmarks-verify`) for
+  `x86_64-unknown-linux-gnu` in the same working copy, System V's path.
+  Both run at the end of a batch that changed the runtime, never at a
+  commit, and under no stress mode. QEMU does not model an incoherent
+  instruction cache, so a missing flush passes there; Apple's `MAP_JIT`
+  path is checked by clippy only (`release-checks`' lint for
+  `aarch64-apple-darwin`).
+- **The image** is the repository's code, pinned, so that no setup of the
+  machine decides what the two groups check (decided with the user on
+  2026-11-04): an x86_64 image (`xtask/docker/Dockerfile`), so that rustc
+  runs natively and only the AArch64 binaries are emulated; the base
+  image by its digest, every Ubuntu package from the archive's snapshot
+  at one moment (`APT::Snapshot`), Rust 1.98.0 with both targets,
+  rustup-init, `cargo-nextest` and QEMU by their versions, a headless
+  OpenJDK 25 for the benchmarks' Java counterparts. QEMU is built in a
+  stage of its own from the newest stable release's tarball, checked
+  against its SHA-256, `qemu-aarch64` alone and static. **QEMU 8.1 or
+  newer** is what the suite needs: the code zone writes through its
+  second mapping, which QEMU's user mode cannot see as a write to code it
+  translated, and only from 8.1 on does `ic ivau` invalidate those
+  translations -- 6.2 runs stale code -- while before 8.0 QEMU's page
+  tracking runs out of memory on the heap's reservations, 64 GiB of
+  object space and 16 GiB of stack an interpreter. Each step is a
+  `docker run --rm --platform linux/amd64` of the image, built for that
+  platform too, so that an arm64 host runs the image the Dockerfile
+  describes or fails (`xtask/src/main.rs`, `Step::docker`), the checkout
+  the gate runs from bind-mounted read-only and rsynced, `.git`
+  included, since `source_formatting` lists the tracked sources with
+  `git ls-files`, and what a `.gitignore` names left out, into a volume
+  of the checkout's own, `ns-next-gates-<id>-work`, the id a hash of the
+  checkout's path, with `target` and cargo's registry volumes of their
+  own, so a second run builds incrementally and the gates of two
+  checkouts, even run at once, never share one. A linked worktree's
+  `.git` is a file naming a directory on the host, which a container
+  cannot follow, so its repository's git directory is mounted read-only
+  and `GIT_DIR` names the worktree's part of it. A WSL distribution
+  is not used, since its setup would live on the machine instead of in
+  the repository.
 
 ### Stages
 
@@ -12748,29 +12942,33 @@ encoder; entry, exit and the instructions without a send, every body
 compilable since an instruction without a template exits; sends and the
 caches; closures, non-local return, allocation and the barrier;
 on-stack replacement, the polls and the depth count's measurement; the
-AArch64 encoder under QEMU. A register cache was measured before it
-would have been the sixth and is not one ("The register cache" above).
-The first four are
-built: the first three, and the entry into machine code at its cost
-after them -- an interpreter's send calling a compiled callee, every
-compiled body entered ("The baseline JIT's foundation" above, "What
-sends in machine code moved", "What the entry at a send moved"); and the
-fourth, closures, non-local return, allocation and the write barrier in
-machine code, with the reclamation of everything that grows ("Stage 4:
-closures, non-local return, allocation and the barrier", "The code zone"
-above; "What allocation and the barrier in machine code moved", "What
-closures in machine code moved", "What non-local return in machine code
-moved", "What reclamation moved"), which made a closure's activation a
-compiled call and so removed the bridge's cost from every block a
-compiled send or an interpreted `value` send activates. The fifth is
-built too: on-stack replacement at an interpreted backward jump, the
-return into machine code after a poll's safepoint, the one compare at
-a compiled push, and the depth count measured in `rbp` and left in its
+AArch64 encoder under QEMU. A register cache is no stage: it was
+measured and left to road step 9 ("The register cache" above).
+All six are built: the first three, and the entry into machine code at
+its cost after them -- an interpreter's send calling a compiled callee,
+every compiled body entered ("The baseline JIT's foundation" above,
+"What sends in machine code moved", "What the entry at a send moved");
+the fourth, closures, non-local return, allocation and the write barrier
+in machine code, with the reclamation of everything that grows ("Stage
+4: closures, non-local return, allocation and the barrier", "The code
+zone" above; "What allocation and the barrier in machine code moved",
+"What closures in machine code moved", "What non-local return in
+machine code moved", "What reclamation moved"), which made a closure's
+activation a compiled call and so removed the bridge's cost from every
+block a compiled send or an interpreted `value` send activates; the
+fifth, on-stack replacement at an interpreted backward jump, the return
+into machine code after a poll's safepoint, the one compare at a
+compiled push, and the depth count measured in `rbp` and left in its
 machine word ("When a body is compiled", "Polls and the depth check"
 above, "Between the tiers" and "Safepoints and the depth limit" in
 "Planned: the deoptimization contract"; "What on-stack replacement
-moved"). The AArch64 encoder is next ([OPEN-WORK.md](../OPEN-WORK.md),
-"Next").
+moved"); and the sixth, the AArch64 encoder, its suite passing under
+QEMU ("Fixed registers and the calling convention", "Tests" above). The
+sixth alone is not measured: QEMU times nothing, so AArch64's speed is
+unknown until it runs on hardware ([OPEN-WORK.md](../OPEN-WORK.md)), and
+x64 needed no new measurement, since its machine code is the same as
+that of the tree the stage started from, by an FNV comparison ("The
+baseline JIT's foundation" above).
 
 ## Decisions
 

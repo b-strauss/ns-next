@@ -101,6 +101,9 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
         + register_number(code.registers_above_header()))
         * REGISTER_BYTES;
     let stack_base = macro_assembler.block_word(BlockWord::StackBase);
+    // The machine entry is what a compiled call, a stub's tail jump and
+    // the call stubs reach.
+    macro_assembler.assembler().enter_called();
     macro_assembler.load_machine_words(machine_words);
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, depth, word(MachineWord::DepthCount));

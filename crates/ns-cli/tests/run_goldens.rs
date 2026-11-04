@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 use libtest_mimic::{Arguments, Failed, Trial};
 
@@ -70,7 +69,7 @@ fn main() {
 /// growth limit, checked without a run of its own.
 fn matches_under_one_lowering(source: &Path, lowering: &str) -> Result<(), Failed> {
     let expectation = common::expectation_of(source);
-    let mut output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let mut output = common::target_command(env!("CARGO_BIN_EXE_ns-next"))
         .arg("run")
         .arg(source)
         .arg("--lowering")
@@ -98,7 +97,7 @@ fn matches_under_one_lowering(source: &Path, lowering: &str) -> Result<(), Faile
 /// the caches and at the end of a batch.
 fn matches_with_a_two_entry_global_cache(source: &Path) -> Result<(), Failed> {
     let expectation = common::expectation_of(source);
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let output = common::target_command(env!("CARGO_BIN_EXE_ns-next"))
         .arg("run")
         .arg(source)
         .args(common::program_arguments(source))

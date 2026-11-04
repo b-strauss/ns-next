@@ -54,15 +54,21 @@ fn main() {
 
     // `ns_jit`: this target has a JIT back end, so the JIT's machinery
     // and the heap's accessors for machine code are compiled; elsewhere
-    // every body stays interpreted (`jit::available`). The one switch the
-    // AArch64 port turns on. It says nothing about which encoder: the x64
-    // encoder is named only inside the JIT's own modules (the macro
-    // assembler's roles and calling conventions, the stubs), which a port
-    // gives its own counterparts, and by the tests that write x64
-    // registers by name, which keep a `target_arch = "x86_64"` gate of
-    // their own, since they are x64 code on any target the JIT runs on.
+    // every body stays interpreted (`jit::available`). x64 has one on
+    // every system, AArch64 on Linux and Apple's platforms; Windows on
+    // ARM stays interpreted, its calling convention and unwinding being
+    // ones no stub crosses. It says nothing about which encoder: the
+    // encoders are named only in the macro assembler, whose ABI decides
+    // the roles and calling conventions, and by the tests that write an
+    // architecture's registers by name, which keep a `target_arch` gate
+    // of their own, since they are that architecture's code on any
+    // target the JIT runs on.
     println!("cargo::rustc-check-cfg=cfg(ns_jit)");
-    if std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|architecture| architecture == "x86_64") {
+    let architecture = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let system = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let has_a_back_end = architecture == "x86_64"
+        || (architecture == "aarch64" && (system == "linux" || system == "macos"));
+    if has_a_back_end {
         println!("cargo::rustc-cfg=ns_jit");
     }
 
