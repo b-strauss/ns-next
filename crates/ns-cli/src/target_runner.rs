@@ -2,10 +2,14 @@
 //! through the runner of the target it was built for, when one is set.
 //! Built for another architecture, a binary runs only through its
 //! emulator, and cargo names the emulator in
-//! `CARGO_TARGET_<TRIPLE>_RUNNER`; a test that started the binary directly
-//! would leave it to whatever the kernel happens to have registered.
-//! Included by both crates' `common` modules, so that `ns-next` and
-//! `ns-next-analyzer` are started alike.
+//! `CARGO_TARGET_<TRIPLE>_RUNNER`. A process that started the binary
+//! directly would leave it to whatever the kernel happens to have
+//! registered -- on a Docker engine, a binfmt handler of the host's, not
+//! the emulator the run chose -- so `ns-next` reads the variable too, for
+//! the children `run-corpus` starts of itself; where it is unset, every
+//! ordinary run, a child is started directly. Both crates' tests include
+//! this file (`tests/common/mod.rs`), so that they start `ns-next` and
+//! `ns-next-analyzer` the same way.
 
 use std::ffi::OsStr;
 use std::process::Command;

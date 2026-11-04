@@ -12882,13 +12882,13 @@ lookup's remembered answers ("The code zone").
   `qemu-aarch64` as the target's runner,
   `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER`, which cargo and nextest
   start every test binary through, and which the tests start every
-  `ns-next` and `ns-next-analyzer` through as well (`ns-cli`'s
-  `tests/common/target_runner.rs`, the triple from each crate's build
-  script) -- the convention cargo has for a test binary, so no test names
-  QEMU. One process no runner reaches: `run-corpus` re-runs its own
-  executable for each module, and that `execve`, made by the emulated
-  program, the kernel hands to the engine's binfmt handler for AArch64
-  (`OPEN-WORK.md`). `RUST_MIN_STACK=8388608` is set, since a test thread's default
+  `ns-next` and `ns-next-analyzer` through as well, and `ns-next`'s
+  `run-corpus` the children it starts of itself, since a child an
+  emulated program started directly the kernel would hand to whatever
+  binfmt handler the engine has (`crates/ns-cli/src/target_runner.rs`,
+  the one place that reads the variable, the triple from each crate's
+  build script) -- the convention cargo has for a test binary, so no
+  test names QEMU. `RUST_MIN_STACK=8388608` is set, since a test thread's default
   2 MiB is too little for AArch64's native-stack bound and a test would
   silently run interpreted (`the_jit_is_available_on_its_architectures`
   asserts the build has the JIT, and the tests of `tests/jit.rs` that

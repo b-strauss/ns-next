@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "../../src/target_runner.rs"]
 pub mod target_runner;
 
 /// A command that starts `binary`, one of the workspace's executables, as

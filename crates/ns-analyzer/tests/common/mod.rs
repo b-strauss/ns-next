@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-#[path = "../../../ns-cli/tests/common/target_runner.rs"]
+#[path = "../../../ns-cli/src/target_runner.rs"]
 mod target_runner;
 
 /// A command that starts `binary`, one of the workspace's executables, as

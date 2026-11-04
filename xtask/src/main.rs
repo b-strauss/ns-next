@@ -107,13 +107,11 @@ fn copy_into_working_copy() -> String {
 
 /// What the `aarch64` group's cargo runs with: the cross linker; the
 /// image's own `qemu-aarch64` as the target's runner, which cargo and
-/// nextest start every test binary through, and the tests every
-/// `ns-next` and `ns-next-analyzer` they start (`ns-cli`'s
-/// `tests/common/target_runner.rs`), so that what runs the machine code is
-/// the QEMU the image pins -- but for a process an emulated program starts
-/// itself, `run-corpus`'s re-run of its own executable, whose `execve`
-/// the kernel hands to the engine's binfmt handler, the one runner no test
-/// can reach; the target's libraries for it; and a test
+/// nextest start every test binary through, the tests every `ns-next`
+/// and `ns-next-analyzer` they start, and `run-corpus` its children of
+/// itself (`ns-cli`'s `src/target_runner.rs`), so that what runs the
+/// machine code is the QEMU the image pins, never a binfmt handler of the
+/// engine's; the target's libraries for it; and a test
 /// thread's stack as large as a main thread's, since an emulated test's
 /// deep recursion needs more than the default.
 const AARCH64_ENVIRONMENT: &str = "export \

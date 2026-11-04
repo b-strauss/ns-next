@@ -1,8 +1,8 @@
 //! Hands the package's tests the target triple they are compiled for, as
-//! `NS_NEXT_TARGET`: a test that starts one of the workspace's binaries
-//! runs it through that target's runner, `CARGO_TARGET_<TRIPLE>_RUNNER`,
-//! as cargo runs the test binary itself (`ns-cli`'s
-//! `tests/common/target_runner.rs`), and only a build script learns the
+//! `NS_NEXT_TARGET`: a test that starts one of the workspace's binaries,
+//! and `ns-next` when it starts itself, run it through that target's
+//! runner, `CARGO_TARGET_<TRIPLE>_RUNNER`, as cargo runs the test binary
+//! (`ns-cli`'s `src/target_runner.rs`), and only a build script learns the
 //! triple from cargo.
 
 fn main() {

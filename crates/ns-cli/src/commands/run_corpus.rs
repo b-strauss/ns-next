@@ -240,7 +240,7 @@ fn without_jit_warning(stderr: String) -> String {
 /// through `platform transcript`, is what gets compared, and running it in
 /// this process would interleave it with the gate's own output.
 fn run_one(executable: &Path, project: &Path, lowering: &str) -> Result<RunOutcome, String> {
-    let out = std::process::Command::new(executable)
+    let out = crate::target_runner::target_command(executable)
         .arg("run")
         .arg(project)
         .arg("--lowering")
@@ -306,7 +306,7 @@ fn run_one_binary(
     artifact: &Path,
     lowering: &str,
 ) -> Result<RunOutcome, String> {
-    let build = std::process::Command::new(executable)
+    let build = crate::target_runner::target_command(executable)
         .arg("build")
         .arg(project)
         .arg(artifact)
@@ -321,7 +321,7 @@ fn run_one_binary(
         ));
     }
 
-    let out = std::process::Command::new(executable)
+    let out = crate::target_runner::target_command(executable)
         .arg("load")
         .arg(artifact)
         .output()

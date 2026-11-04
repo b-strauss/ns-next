@@ -1,6 +1,6 @@
 //! The tests start the workspace's binaries as cargo starts a test binary:
 //! through the target's runner when one is set, directly otherwise
-//! (`common/target_runner.rs`).
+//! (`src/target_runner.rs`).
 
 mod common;
 

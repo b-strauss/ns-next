@@ -605,16 +605,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     paths, and Apple's JIT, are checked by clippy alone (`memory`,
     `release-checks`) and never ran; QEMU models no incoherent
     instruction cache, so a missing flush would pass the `aarch64` group.
-  - **`run-corpus` under the `aarch64` group reaches the engine's
-    binfmt** (2026-11-04). Every test binary and every `ns-next` or
-    `ns-next-analyzer` a test starts runs under the image's pinned QEMU
-    (the target's runner), but `run-corpus` re-runs its own executable
-    for each module, and that `execve`, made inside the emulated
-    program, the kernel hands to whatever handler the Docker engine has
-    registered for AArch64 -- on the development machine a QEMU 10.2,
-    and with none the three `run-corpus` tests of `ns-cli`'s `cli.rs`
-    fail. Not yet decided: accept it, have `run-corpus` re-run itself
-    another way, or register the image's QEMU with binfmt.
   - **AArch64's speed is unmeasured** (2026-11-04). QEMU checks
     correctness only and times nothing, so whether the port's code is
     fast -- the 16-byte return-address slot, the `movz`/`movk`
