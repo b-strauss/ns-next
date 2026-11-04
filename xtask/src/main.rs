@@ -77,31 +77,140 @@ const DOCKER_CONTEXT: &str = "xtask/docker";
 /// Where a container sees the checkout the gate runs from, read-only.
 const CHECKOUT_MOUNT: &str = "/checkout";
 
-/// The working copy a container builds in: a named volume, so that it and
-/// the build directory below it outlive the container and a second run
-/// builds incrementally, and the build never writes into the checkout.
-const WORKING_COPY: (&str, &str) = ("ns-next-gates-work", "/work");
+/// The platform the image is built for and its containers run on: x86_64,
+/// so that rustc runs natively and only the AArch64 binaries are emulated,
+/// and so that an arm64 Docker host builds and runs the image the
+/// Dockerfile describes -- emulated -- or fails clearly, rather than
+/// building an arm64 image the Dockerfile does not describe.
+const DOCKER_PLATFORM: &str = "linux/amd64";
 
-/// The working copy's build directory, a volume of its own, which the copy
-/// leaves alone.
-const TARGET_VOLUME: (&str, &str) = ("ns-next-gates-target", "/work/target");
+/// Where a container sees the working copy it builds in.
+const WORKING_COPY: &str = "/work";
 
-/// Cargo's registry, so that a run downloads no crate an earlier one did.
-const REGISTRY_VOLUME: (&str, &str) = ("ns-next-gates-registry", "/usr/local/cargo/registry");
+/// The named volumes a container mounts, by the suffix of their name and
+/// where it sees them: the working copy, so that it and the build directory
+/// outlive the container and a second run builds incrementally, and the
+/// build never writes into the checkout; its build directory, a volume of
+/// its own, which the copy leaves alone; and cargo's registry, so that a
+/// run downloads no crate an earlier one did. Each checkout has volumes of
+/// its own (`volume_name`).
+const VOLUMES: [(&str, &str); 3] = [
+    ("work", WORKING_COPY),
+    ("target", "/work/target"),
+    ("registry", "/usr/local/cargo/registry"),
+];
+
+/// The name of a checkout's volume `suffix`, `ns-next-gates-<id>-<suffix>`,
+/// the id a hash of the checkout's path, so that two checkouts' gates, even
+/// run at once, never share a working copy, a build directory or the
+/// registry, which cargo locks only within one container. FNV-1a, written
+/// out, so that a checkout keeps its volumes across toolchains.
+fn volume_name(root: &Path, suffix: &str) -> String {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let hash = root
+        .to_string_lossy()
+        .bytes()
+        .fold(OFFSET_BASIS, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(PRIME)
+        });
+    format!("ns-next-gates-{:012x}-{suffix}", hash >> 16)
+}
+
+/// Where a container sees a linked worktree's git metadata, read-only.
+const GIT_MOUNT: &str = "/checkout-git";
+
+/// A linked worktree's git metadata: the repository's common directory,
+/// and the worktree's own directory relative to it. A linked worktree's
+/// `.git` is a file naming that directory by a path on the host, which the
+/// copy takes along but a container cannot follow, so the common directory
+/// is mounted and git pointed at it (`git_arguments`). `None` for a
+/// checkout whose `.git` is the directory itself, which the copy takes
+/// along.
+fn linked_worktree_git(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    if !root.join(".git").is_file() {
+        return None;
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ])
+        .output()
+        .expect("a linked worktree's gates run git to find its metadata");
+    assert!(
+        output.status.success(),
+        "git rev-parse failed in the linked worktree {}: {}",
+        root.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut lines = text.lines().map(PathBuf::from);
+    let (Some(git_directory), Some(common_directory)) = (lines.next(), lines.next()) else {
+        panic!(
+            "git rev-parse named no git directory for {}",
+            root.display()
+        );
+    };
+    let relative = git_directory
+        .strip_prefix(&common_directory)
+        .unwrap_or_else(|_| {
+            panic!(
+                "the worktree's git directory {} lies outside the repository's {}",
+                git_directory.display(),
+                common_directory.display()
+            )
+        })
+        .to_path_buf();
+    Some((common_directory, relative))
+}
+
+/// The `docker run` arguments that give a linked worktree's container its
+/// git metadata: the repository's common directory mounted read-only, and
+/// `GIT_DIR` and `GIT_WORK_TREE` naming the worktree's directory in it and
+/// the working copy, which is all `git ls-files` reads. None for a
+/// checkout whose `.git` is a directory.
+fn git_arguments(worktree: Option<(PathBuf, PathBuf)>) -> Vec<String> {
+    let Some((common_directory, relative)) = worktree else {
+        return Vec::new();
+    };
+    let relative: Vec<String> = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    vec![
+        "--mount".to_string(),
+        format!(
+            "type=bind,source={},target={GIT_MOUNT},readonly",
+            common_directory.display()
+        ),
+        "--env".to_string(),
+        format!("GIT_DIR={GIT_MOUNT}/{}", relative.join("/")),
+        "--env".to_string(),
+        format!("GIT_WORK_TREE={WORKING_COPY}"),
+    ]
+}
 
 /// The first step of each Docker group after the image: the checkout
 /// copied into the working copy, so that uncommitted work is checked too.
-/// `.git` is copied, since a test lists the tracked sources with it. What
+/// `.git` is copied, since a test lists the tracked sources with it (a
+/// linked worktree's is mounted instead, `linked_worktree_git`). What
 /// a `.gitignore` names is not -- the build directories, among them the
 /// plugin's Gradle caches of nearly two gigabytes, and `.temp/` -- nor is
 /// `prior-art/`, which holds nothing the gates build; an excluded file is
 /// also kept from `--delete`, so the working copy's own build directory and
-/// shipped code survive.
+/// shipped code survive. `/target` is excluded by name as well: on a fresh
+/// volume the working copy has no `.gitignore` yet when `--delete` runs,
+/// and `target` is the mount point of the build directory's volume, which
+/// rsync would try to remove.
 fn copy_into_working_copy() -> String {
     format!(
-        "rsync -a --delete --filter=':- .gitignore' --exclude /prior-art \
-         {CHECKOUT_MOUNT}/ {}/",
-        WORKING_COPY.1
+        "rsync -a --delete --filter=':- .gitignore' --exclude /target --exclude /prior-art \
+         {CHECKOUT_MOUNT}/ {WORKING_COPY}/"
     )
 }
 
@@ -165,27 +274,45 @@ impl Step {
     fn docker_image(label: &str) -> Step {
         Step {
             program: Program::Docker,
-            ..Step::cargo(label, &["build", "--tag", DOCKER_IMAGE, DOCKER_CONTEXT])
+            ..Step::cargo(
+                label,
+                &[
+                    "build",
+                    "--platform",
+                    DOCKER_PLATFORM,
+                    "--tag",
+                    DOCKER_IMAGE,
+                    DOCKER_CONTEXT,
+                ],
+            )
         }
     }
 
-    /// `script` run by bash in a fresh container of the gate image, the
-    /// checkout the gate runs from mounted read-only beside the volumes.
-    /// The container's exit status is the script's, so a failing command
-    /// fails the step.
+    /// `script` run by bash in a fresh x86_64 container of the gate image,
+    /// the checkout the gate runs from mounted read-only beside its
+    /// volumes. The container's exit status is the script's, so a failing
+    /// command fails the step.
     fn docker(label: &str, script: &str) -> Step {
+        let root = repository_root();
         let checkout = format!(
             "type=bind,source={},target={CHECKOUT_MOUNT},readonly",
-            repository_root().display()
+            root.display()
         );
-        let mut arguments = vec!["run".to_string(), "--rm".to_string()];
+        let mut arguments: Vec<String> = ["run", "--rm", "--platform", DOCKER_PLATFORM]
+            .iter()
+            .map(|argument| argument.to_string())
+            .collect();
         arguments.extend(["--mount".to_string(), checkout]);
-        for (volume, target) in [WORKING_COPY, TARGET_VOLUME, REGISTRY_VOLUME] {
+        for (suffix, target) in VOLUMES {
             arguments.extend([
                 "--mount".to_string(),
-                format!("type=volume,source={volume},target={target}"),
+                format!(
+                    "type=volume,source={},target={target}",
+                    volume_name(&root, suffix)
+                ),
             ]);
         }
+        arguments.extend(git_arguments(linked_worktree_git(&root)));
         arguments.extend(
             [DOCKER_IMAGE, "bash", "-c", script]
                 .iter()
@@ -829,22 +956,42 @@ mod tests {
             assert_eq!(steps[0].program, Program::Docker);
             assert_eq!(
                 steps[0].arguments,
-                ["build", "--tag", "ns-next-gates", "xtask/docker"]
+                [
+                    "build",
+                    "--platform",
+                    "linux/amd64",
+                    "--tag",
+                    "ns-next-gates",
+                    "xtask/docker"
+                ]
             );
             assert_eq!(script_of(&steps[1]), copy_into_working_copy());
             for step in &steps[1..] {
                 assert_eq!(step.program, Program::Docker);
-                assert_eq!(step.arguments[..2], ["run", "--rm"]);
-                let checkout = format!(
-                    "type=bind,source={},target=/checkout,readonly",
-                    repository_root().display()
+                assert_eq!(
+                    step.arguments[..4],
+                    ["run", "--rm", "--platform", "linux/amd64"]
                 );
-                for mount in [
-                    checkout.as_str(),
-                    "type=volume,source=ns-next-gates-work,target=/work",
-                    "type=volume,source=ns-next-gates-target,target=/work/target",
-                    "type=volume,source=ns-next-gates-registry,target=/usr/local/cargo/registry",
-                ] {
+                let root = repository_root();
+                let mounts = [
+                    format!(
+                        "type=bind,source={},target=/checkout,readonly",
+                        root.display()
+                    ),
+                    format!(
+                        "type=volume,source={},target=/work",
+                        volume_name(&root, "work")
+                    ),
+                    format!(
+                        "type=volume,source={},target=/work/target",
+                        volume_name(&root, "target")
+                    ),
+                    format!(
+                        "type=volume,source={},target=/usr/local/cargo/registry",
+                        volume_name(&root, "registry")
+                    ),
+                ];
+                for mount in &mounts {
                     assert!(
                         step.arguments
                             .windows(2)
@@ -865,12 +1012,54 @@ mod tests {
         }
     }
 
+    /// Each checkout has volumes of its own, named the same on every run.
+    #[test]
+    fn a_volume_is_named_after_its_checkout() {
+        let first = Path::new("/checkouts/first");
+        let name = volume_name(first, "work");
+        assert_eq!(name, volume_name(first, "work"));
+        assert!(name.starts_with("ns-next-gates-") && name.ends_with("-work"));
+        assert_eq!(name.len(), "ns-next-gates-".len() + 12 + "-work".len());
+        assert_ne!(name, volume_name(Path::new("/checkouts/second"), "work"));
+        assert_ne!(name, volume_name(first, "target"));
+    }
+
+    /// A linked worktree's container reads the repository's git metadata
+    /// from a mount, through `GIT_DIR`; a checkout whose `.git` is a
+    /// directory needs nothing, since the copy takes it along.
+    #[test]
+    fn a_linked_worktree_mounts_the_repositorys_git_metadata() {
+        assert!(git_arguments(None).is_empty());
+        let arguments = git_arguments(Some((
+            PathBuf::from("/repository/.git"),
+            Path::new("worktrees").join("feature"),
+        )));
+        assert_eq!(
+            arguments,
+            [
+                "--mount",
+                "type=bind,source=/repository/.git,target=/checkout-git,readonly",
+                "--env",
+                "GIT_DIR=/checkout-git/worktrees/feature",
+                "--env",
+                "GIT_WORK_TREE=/work",
+            ]
+        );
+        if !repository_root().join(".git").is_file() {
+            assert_eq!(linked_worktree_git(&repository_root()), None);
+        }
+    }
+
     /// The copy keeps the working copy's build directory, and copies `.git`.
     #[test]
     fn the_copy_leaves_the_build_directory_alone() {
         let copy = copy_into_working_copy();
         assert!(copy.starts_with("rsync -a --delete "));
         assert!(copy.contains("--filter=':- .gitignore' "));
+        assert!(
+            copy.contains("--exclude /target "),
+            "the build directory's mount point"
+        );
         assert!(!copy.contains("--exclude /.git "));
         assert!(copy.ends_with("/checkout/ /work/"));
     }

@@ -12919,12 +12919,19 @@ lookup's remembered answers ("The code zone").
   translations -- 6.2 runs stale code -- while before 8.0 QEMU's page
   tracking runs out of memory on the heap's reservations, 64 GiB of
   object space and 16 GiB of stack an interpreter. Each step is a
-  `docker run --rm` of the image (`xtask/src/main.rs`, `Step::docker`),
-  the checkout the gate runs from bind-mounted read-only and rsynced,
-  `.git` included, since `source_formatting` lists the tracked sources
-  with `git ls-files`, and what a `.gitignore` names left out, into the
-  volume `ns-next-gates-work`, its `target` and cargo's registry volumes
-  of their own, so a second run builds incrementally. A WSL distribution
+  `docker run --rm --platform linux/amd64` of the image, built for that
+  platform too, so that an arm64 host runs the image the Dockerfile
+  describes or fails (`xtask/src/main.rs`, `Step::docker`), the checkout
+  the gate runs from bind-mounted read-only and rsynced, `.git`
+  included, since `source_formatting` lists the tracked sources with
+  `git ls-files`, and what a `.gitignore` names left out, into a volume
+  of the checkout's own, `ns-next-gates-<id>-work`, the id a hash of the
+  checkout's path, with `target` and cargo's registry volumes of their
+  own, so a second run builds incrementally and the gates of two
+  checkouts, even run at once, never share one. A linked worktree's
+  `.git` is a file naming a directory on the host, which a container
+  cannot follow, so its repository's git directory is mounted read-only
+  and `GIT_DIR` names the worktree's part of it. A WSL distribution
   is not used, since its setup would live on the machine instead of in
   the repository.
 

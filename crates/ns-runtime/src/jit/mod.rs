@@ -9,8 +9,8 @@
 //! machine code and back (`entered`).
 //!
 //! Everything that emits or runs machine code is compiled only where the
-//! build script sets `cfg(ns_jit)` -- a target with an encoder, x64 today
-//! (`build.rs`); elsewhere `available` answers `false` and every body
+//! build script sets `cfg(ns_jit)` -- x64, and AArch64 on Linux and
+//! Apple's platforms (`build.rs`); elsewhere `available` answers `false` and every body
 //! stays interpreted.
 #![cfg_attr(
     not(ns_jit),

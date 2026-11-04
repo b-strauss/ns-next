@@ -14,8 +14,8 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
-/// The target triple this test binary was compiled for, from the package's
-/// build script.
+/// The target triple the binary this file is compiled into -- `ns-next`
+/// or a test -- was built for, from the package's build script.
 const TARGET: &str = env!("NS_NEXT_TARGET");
 
 /// The variable that names `target`'s runner, as cargo spells it: the

@@ -3,8 +3,11 @@
 # cargo run natively; only the AArch64 test binaries, and the `ns-next` they
 # start, run emulated, by the QEMU this image builds (`docs/design/
 # execution.md`, "Tests"). Everything it installs is pinned: the base image
-# by its digest, the Ubuntu packages by the archive's snapshot, Rust,
-# cargo-nextest and QEMU by their versions.
+# by its digest, the Ubuntu packages by the archive's snapshot, whose
+# signature apt checks; QEMU, rustup-init and cargo-nextest by their
+# versions and the SHA-256 of what is downloaded; and Rust by its version,
+# installed by that rustup-init, which checks every component it downloads
+# against the release's signed manifest.
 
 # The base image and the moment of the Ubuntu archive every package comes
 # from. An update changes the digest and the snapshot together, deliberately,
@@ -36,6 +39,8 @@ RUN apt-get --option Acquire::https::Verify-Peer=false update \
 # oldest that runs the suite: 6.2 ran stale code written through the code
 # zone's second mapping and ran out of memory on the heap's reservations.
 FROM base AS qemu
+# An ARG does not carry into a derived stage.
+ARG DEBIAN_FRONTEND=noninteractive
 # An update changes the version and the checksum together. The checksum is
 # that of the tarball whose `.sig` verifies against the QEMU release key
 # CEACC9E15534EBABB82D3FA03353C9CEF108B584.
@@ -105,11 +110,16 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 
 # The workspace's toolchain (`rust-toolchain.toml`) with the components it
 # names, so that rustup downloads nothing at run time, and both targets the
-# groups build for; rustup-init itself a fixed release.
+# groups build for; rustup-init itself a fixed release. An update changes
+# the version and the checksum together; the checksum is the one the
+# release publishes beside the binary, `rustup-init.sha256` under
+# static.rust-lang.org/rustup/archive/<version>/x86_64-unknown-linux-gnu/.
 ARG RUSTUP_VERSION=1.29.3
+ARG RUSTUP_SHA256=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
 RUN curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
         --output /tmp/rustup-init \
         https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init \
+    && echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum --check --strict \
     && chmod +x /tmp/rustup-init \
     && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.98.0 \
         --component rustfmt,clippy \
@@ -117,10 +127,17 @@ RUN curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
     && rm /tmp/rustup-init
 
 # cargo-nextest runs the suites; a pinned release, prebuilt, so that the image
-# does not compile it.
+# does not compile it. An update changes the version and the checksum
+# together; the checksum is the one the GitHub release publishes beside the
+# tarball, `cargo-nextest-<version>-x86_64-unknown-linux-gnu.sha256`.
+ARG NEXTEST_VERSION=0.9.150
+ARG NEXTEST_SHA256=b0959bc64232974224cf9fb22c915845398c0e8668fa7831eb5b43fb1eef781f
 RUN curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location \
-        https://get.nexte.st/0.9.150/linux \
-        | tar --extract --gzip --directory /usr/local/cargo/bin
+        --output /tmp/nextest.tar.gz \
+        https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz \
+    && echo "${NEXTEST_SHA256}  /tmp/nextest.tar.gz" | sha256sum --check --strict \
+    && tar --extract --gzip --file /tmp/nextest.tar.gz --directory /usr/local/cargo/bin \
+    && rm /tmp/nextest.tar.gz
 
 # The working copy is rsynced from a checkout owned by another user; git
 # would otherwise refuse to read its repository.
