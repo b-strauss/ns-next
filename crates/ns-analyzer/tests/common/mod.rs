@@ -13,8 +13,16 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::rc::Rc;
+
+#[path = "../../../ns-cli/tests/common/target_runner.rs"]
+mod target_runner;
+
+/// A command that starts `binary`, one of the workspace's executables, as
+/// cargo starts a test binary (`target_runner.rs`).
+pub fn target_command(binary: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    target_runner::target_command(binary)
+}
 
 /// The `goldens/` directory: every recorded program outcome lives in a
 /// category directory below it.
@@ -97,7 +105,7 @@ impl Drop for ScratchDirectory {
 /// stderr)`, with line endings normalized so an assertion reads the same on
 /// every platform.
 pub fn ns_next_analyzer(arguments: &[&std::ffi::OsStr]) -> (bool, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let output = target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .args(arguments)
         .output()
         .expect("run ns-next-analyzer");

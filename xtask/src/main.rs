@@ -35,8 +35,8 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without a JIT, and for aarch64-apple-darwin, Apple's JIT
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
-  linux                in WSL: clippy, the suite and the doctests for x86_64-unknown-linux-gnu
-  aarch64              in WSL: clippy for aarch64-unknown-linux-gnu, and the suite under qemu-aarch64
+  linux                in Docker: clippy, the suite, the doctests and the benchmark programs for x86_64-unknown-linux-gnu
+  aarch64              in Docker: clippy for aarch64-unknown-linux-gnu, and the suite under the image's qemu-aarch64
   end-of-batch         images, caches, benchmarks, release-checks, codegen, stress, linux and aarch64, for a batch that changed the runtime";
 
 /// The stress switches the runtime reads in a debug build
@@ -65,35 +65,60 @@ fn stress_suite_runs() -> Vec<(String, String)> {
 /// mixins, relative to the repository root.
 const SHIPPED_CODE: &str = "crates/ns-runtime/core-library/shipped-code.bin";
 
-/// The first step of each WSL group: the working tree copied into the WSL
-/// directory, so that uncommitted work is checked too. `.git` is copied,
-/// since a test lists the tracked sources with it; the directory keeps its
-/// own build directory, and `prior-art/` and `.temp/` hold nothing the
-/// gates build. The source is the checkout the gate runs from, so a
-/// gate run from another checkout tests that one.
-fn copy_into_wsl() -> String {
-    // Forward slashes survive the quoting of `wsl -e bash -lc` where
-    // backslashes would depend on how the arguments are re-split;
-    // `wslpath -u` takes either spelling.
-    let root = repository_root().to_string_lossy().replace('\\', "/");
+/// The image the groups `linux` and `aarch64` run in, built from
+/// `DOCKER_CONTEXT`'s `Dockerfile`, so that the environment they check
+/// against is the repository's code.
+const DOCKER_IMAGE: &str = "ns-next-gates";
+
+/// The Dockerfile's directory, relative to the repository root: the build
+/// context holds nothing else, so a build sends Docker no sources.
+const DOCKER_CONTEXT: &str = "xtask/docker";
+
+/// Where a container sees the checkout the gate runs from, read-only.
+const CHECKOUT_MOUNT: &str = "/checkout";
+
+/// The working copy a container builds in: a named volume, so that it and
+/// the build directory below it outlive the container and a second run
+/// builds incrementally, and the build never writes into the checkout.
+const WORKING_COPY: (&str, &str) = ("ns-next-gates-work", "/work");
+
+/// The working copy's build directory, a volume of its own, which the copy
+/// leaves alone.
+const TARGET_VOLUME: (&str, &str) = ("ns-next-gates-target", "/work/target");
+
+/// Cargo's registry, so that a run downloads no crate an earlier one did.
+const REGISTRY_VOLUME: (&str, &str) = ("ns-next-gates-registry", "/usr/local/cargo/registry");
+
+/// The first step of each Docker group after the image: the checkout
+/// copied into the working copy, so that uncommitted work is checked too.
+/// `.git` is copied, since a test lists the tracked sources with it. What
+/// a `.gitignore` names is not -- the build directories, among them the
+/// plugin's Gradle caches of nearly two gigabytes, and `.temp/` -- nor is
+/// `prior-art/`, which holds nothing the gates build; an excluded file is
+/// also kept from `--delete`, so the working copy's own build directory and
+/// shipped code survive.
+fn copy_into_working_copy() -> String {
     format!(
-        "mkdir -p {WSL_CLONE} && rsync -a --delete --exclude target --exclude prior-art \
-         --exclude .temp \"$(wslpath -u '{root}')/\" {WSL_CLONE}/"
+        "rsync -a --delete --filter=':- .gitignore' --exclude /prior-art \
+         {CHECKOUT_MOUNT}/ {}/",
+        WORKING_COPY.1
     )
 }
 
-/// The directory the groups `linux` and `aarch64` copy the checkout into and
-/// run in: the gates' own, so that `rsync --delete` never touches a clone
-/// of the user's.
-const WSL_CLONE: &str = "~/.cache/ns-next-gates";
-
-/// What the `aarch64` group's cargo runs with: the cross linker, the
-/// target's libraries for `qemu-aarch64`, which binfmt hands every AArch64
-/// executable to -- the test binaries and the `ns-next` the `ns-cli` tests
-/// spawn -- and a test thread's stack as large as a main thread's, since
-/// an emulated test's deep recursion needs more than the default.
+/// What the `aarch64` group's cargo runs with: the cross linker; the
+/// image's own `qemu-aarch64` as the target's runner, which cargo and
+/// nextest start every test binary through, and the tests every
+/// `ns-next` and `ns-next-analyzer` they start (`ns-cli`'s
+/// `tests/common/target_runner.rs`), so that what runs the machine code is
+/// the QEMU the image pins -- but for a process an emulated program starts
+/// itself, `run-corpus`'s re-run of its own executable, whose `execve`
+/// the kernel hands to the engine's binfmt handler, the one runner no test
+/// can reach; the target's libraries for it; and a test
+/// thread's stack as large as a main thread's, since an emulated test's
+/// deep recursion needs more than the default.
 const AARCH64_ENVIRONMENT: &str = "export \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64 \
     QEMU_LD_PREFIX=/usr/aarch64-linux-gnu RUST_MIN_STACK=8388608";
 
 /// What runs a step.
@@ -102,8 +127,9 @@ enum Program {
     Cargo,
     /// The plugin's Gradle wrapper, `editors/jetbrains/gradlew`.
     Gradle,
-    /// A bash script in the default WSL distribution, `wsl -e bash -lc`.
-    Wsl,
+    /// `docker`: the gate image's build, or a bash script in a container
+    /// of it.
+    Docker,
 }
 
 /// One command of a gate.
@@ -136,10 +162,42 @@ impl Step {
         }
     }
 
-    fn wsl(label: &str, script: &str) -> Step {
+    /// The gate image built, or taken from Docker's cache when the
+    /// Dockerfile is unchanged.
+    fn docker_image(label: &str) -> Step {
         Step {
-            program: Program::Wsl,
-            ..Step::cargo(label, &["-e", "bash", "-lc", script])
+            program: Program::Docker,
+            ..Step::cargo(label, &["build", "--tag", DOCKER_IMAGE, DOCKER_CONTEXT])
+        }
+    }
+
+    /// `script` run by bash in a fresh container of the gate image, the
+    /// checkout the gate runs from mounted read-only beside the volumes.
+    /// The container's exit status is the script's, so a failing command
+    /// fails the step.
+    fn docker(label: &str, script: &str) -> Step {
+        let checkout = format!(
+            "type=bind,source={},target={CHECKOUT_MOUNT},readonly",
+            repository_root().display()
+        );
+        let mut arguments = vec!["run".to_string(), "--rm".to_string()];
+        arguments.extend(["--mount".to_string(), checkout]);
+        for (volume, target) in [WORKING_COPY, TARGET_VOLUME, REGISTRY_VOLUME] {
+            arguments.extend([
+                "--mount".to_string(),
+                format!("type=volume,source={volume},target={target}"),
+            ]);
+        }
+        arguments.extend(
+            [DOCKER_IMAGE, "bash", "-c", script]
+                .iter()
+                .map(|argument| argument.to_string()),
+        );
+        Step {
+            label: label.to_string(),
+            program: Program::Docker,
+            arguments,
+            environment: Vec::new(),
         }
     }
 
@@ -306,7 +364,7 @@ fn group(name: &str) -> Option<Vec<Part>> {
             "plugin verification",
             &["-p", "editors/jetbrains", "verifyPlugin", "buildPlugin"],
         )]),
-        "linux" => steps(in_wsl(
+        "linux" => steps(in_docker(
             "linux",
             "",
             &[
@@ -315,12 +373,19 @@ fn group(name: &str) -> Option<Vec<Part>> {
                     "lint",
                     "cargo clippy --workspace --all-targets -- -D warnings",
                 ),
-                ("suite", "cargo nextest run --workspace --test-threads 8"),
+                (
+                    "suite",
+                    "cargo nextest run --workspace --test-threads $(nproc)",
+                ),
                 ("doctests", "cargo test --workspace --doc"),
+                (
+                    "benchmark programs",
+                    "cargo nextest run --workspace --profile benchmarks-verify",
+                ),
             ],
         )),
         // No doctests: `cargo test --doc` would build them for the host.
-        "aarch64" => steps(in_wsl(
+        "aarch64" => steps(in_docker(
             "aarch64",
             AARCH64_ENVIRONMENT,
             &[
@@ -333,7 +398,7 @@ fn group(name: &str) -> Option<Vec<Part>> {
                 (
                     "suite",
                     "cargo nextest run --workspace \
-                     --target aarch64-unknown-linux-gnu --test-threads 8",
+                     --target aarch64-unknown-linux-gnu --test-threads $(nproc)",
                 ),
             ],
         )),
@@ -372,20 +437,22 @@ fn runtime_lint(label: &str, target: &str) -> Step {
     )
 }
 
-/// A WSL group: the tree copied into the clone, then each of `commands`
-/// run there after `environment`, each step labelled `<name> <label>`.
-fn in_wsl(name: &str, environment: &str, commands: &[(&str, &str)]) -> Vec<Step> {
+/// A Docker group: the image, the checkout copied into the working copy,
+/// then each of `commands` run there after `environment`, each step
+/// labelled `<name> <label>`. The suites take as many test threads as the
+/// container has CPUs, where the profiles' fixed count is the host's.
+fn in_docker(name: &str, environment: &str, commands: &[(&str, &str)]) -> Vec<Step> {
     let prefix = if environment.is_empty() {
         String::new()
     } else {
         format!("{environment} && ")
     };
-    let mut steps = vec![Step::wsl(&format!("{name} copy"), &copy_into_wsl())];
+    let mut steps = vec![
+        Step::docker_image(&format!("{name} image")),
+        Step::docker(&format!("{name} copy"), &copy_into_working_copy()),
+    ];
     steps.extend(commands.iter().map(|(label, command)| {
-        Step::wsl(
-            &format!("{name} {label}"),
-            &format!("{prefix}cd {WSL_CLONE} && {command}"),
-        )
+        Step::docker(&format!("{name} {label}"), &format!("{prefix}{command}"))
     }));
     steps
 }
@@ -534,7 +601,7 @@ fn command_of(step: &Step, root: &Path) -> Command {
             command.arg("--no-daemon");
             command
         }
-        Program::Wsl => Command::new("wsl"),
+        Program::Docker => Command::new("docker"),
     };
     command.args(&step.arguments).current_dir(root);
     for (name, value) in &step.environment {
@@ -733,8 +800,9 @@ mod tests {
         ));
     }
 
-    /// The WSL groups run after everything that runs on the host, `aarch64`
-    /// last, since the suite under emulation is the longest step of all.
+    /// The Docker groups run after everything that runs on the host,
+    /// `aarch64` last, since the suite under emulation is the longest step
+    /// of all.
     #[test]
     fn the_end_of_batch_runs_linux_and_aarch64_last() {
         let mut expected = group("stress").expect("a group");
@@ -744,23 +812,86 @@ mod tests {
         assert!(parts.ends_with(&expected));
     }
 
-    /// Each WSL group first copies the working tree into the clone, so that
-    /// what it checks is the tree on the host, uncommitted work included.
+    /// The script a Docker step runs, its last argument.
+    fn script_of(step: &Step) -> &str {
+        step.arguments.last().expect("a script")
+    }
+
+    /// Each Docker group first builds the image, then copies the working
+    /// tree into the working copy, so that what it checks is the tree on
+    /// the host, uncommitted work included; every later step runs in a
+    /// container of the image, the checkout read-only beside the volumes.
     #[test]
-    fn the_wsl_groups_copy_the_tree_first() {
+    fn the_docker_groups_build_the_image_and_copy_the_tree_first() {
         for name in ["linux", "aarch64"] {
             let parts = group(name).expect("a group");
             let [Part::Steps(steps)] = parts.as_slice() else {
                 panic!("{name} is one run of steps");
             };
-            assert_eq!(steps[0].program, Program::Wsl);
+            assert_eq!(steps[0].program, Program::Docker);
             assert_eq!(
                 steps[0].arguments,
-                ["-e", "bash", "-lc", copy_into_wsl().as_str()]
+                ["build", "--tag", "ns-next-gates", "xtask/docker"]
             );
-            assert!(steps[1..].iter().all(|step| step.program == Program::Wsl
-                && step.arguments[3].contains("cd ~/.cache/ns-next-gates && cargo")));
+            assert_eq!(script_of(&steps[1]), copy_into_working_copy());
+            for step in &steps[1..] {
+                assert_eq!(step.program, Program::Docker);
+                assert_eq!(step.arguments[..2], ["run", "--rm"]);
+                let checkout = format!(
+                    "type=bind,source={},target=/checkout,readonly",
+                    repository_root().display()
+                );
+                for mount in [
+                    checkout.as_str(),
+                    "type=volume,source=ns-next-gates-work,target=/work",
+                    "type=volume,source=ns-next-gates-target,target=/work/target",
+                    "type=volume,source=ns-next-gates-registry,target=/usr/local/cargo/registry",
+                ] {
+                    assert!(
+                        step.arguments
+                            .windows(2)
+                            .any(|pair| pair == ["--mount", mount]),
+                        "{}: {mount}",
+                        step.label
+                    );
+                }
+                let length = step.arguments.len();
+                assert_eq!(
+                    step.arguments[length - 4..length - 1],
+                    ["ns-next-gates", "bash", "-c"]
+                );
+            }
+            assert!(steps[2..]
+                .iter()
+                .all(|step| script_of(step).contains("cargo ")));
         }
+    }
+
+    /// The copy keeps the working copy's build directory, and copies `.git`.
+    #[test]
+    fn the_copy_leaves_the_build_directory_alone() {
+        let copy = copy_into_working_copy();
+        assert!(copy.starts_with("rsync -a --delete "));
+        assert!(copy.contains("--filter=':- .gitignore' "));
+        assert!(!copy.contains("--exclude /.git "));
+        assert!(copy.ends_with("/checkout/ /work/"));
+    }
+
+    /// `linux` also verifies the benchmark programs, as the host's
+    /// `benchmarks` group does, its image having a JDK; `aarch64` does not.
+    #[test]
+    fn only_linux_runs_the_benchmark_programs() {
+        let runs_benchmarks = |name: &str| {
+            let parts = group(name).expect("a group");
+            let [Part::Steps(steps)] = parts.as_slice() else {
+                panic!("{name} is one run of steps");
+            };
+            steps.iter().any(|step| {
+                script_of(step) == "cargo nextest run --workspace --profile benchmarks-verify"
+            })
+        };
+        assert!(runs_benchmarks("linux"));
+        assert!(!runs_benchmarks("aarch64"));
     }
 
     /// The `aarch64` suite runs for its target, through the cross linker
@@ -771,10 +902,12 @@ mod tests {
         let [Part::Steps(steps)] = parts.as_slice() else {
             panic!("aarch64 is one run of steps");
         };
-        let suite = &steps.last().expect("a step").arguments[3];
+        let suite = script_of(steps.last().expect("a step"));
         assert!(suite.contains("--target aarch64-unknown-linux-gnu"));
+        assert!(suite.contains("--test-threads $(nproc)"));
         for variable in [
             "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64",
             "QEMU_LD_PREFIX=/usr/aarch64-linux-gnu",
             "RUST_MIN_STACK=8388608",
         ] {

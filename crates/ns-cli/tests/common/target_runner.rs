@@ -1,0 +1,47 @@
+//! Starting one of the workspace's binaries as cargo starts a test binary:
+//! through the runner of the target it was built for, when one is set.
+//! Built for another architecture, a binary runs only through its
+//! emulator, and cargo names the emulator in
+//! `CARGO_TARGET_<TRIPLE>_RUNNER`; a test that started the binary directly
+//! would leave it to whatever the kernel happens to have registered.
+//! Included by both crates' `common` modules, so that `ns-next` and
+//! `ns-next-analyzer` are started alike.
+
+use std::ffi::OsStr;
+use std::process::Command;
+
+/// The target triple this test binary was compiled for, from the package's
+/// build script.
+const TARGET: &str = env!("NS_NEXT_TARGET");
+
+/// The variable that names `target`'s runner, as cargo spells it: the
+/// triple in upper case, `-` and `.` as `_`.
+pub fn runner_variable(target: &str) -> String {
+    format!(
+        "CARGO_TARGET_{}_RUNNER",
+        target.to_uppercase().replace(['-', '.'], "_")
+    )
+}
+
+/// A command that starts `binary`, one of the workspace's executables
+/// built for the tests' own target, through that target's runner when its
+/// variable is set.
+pub fn target_command(binary: impl AsRef<OsStr>) -> Command {
+    command_through(
+        std::env::var(runner_variable(TARGET)).ok().as_deref(),
+        binary,
+    )
+}
+
+/// `binary` started through `runner` -- its words split on whitespace, the
+/// first the program and the rest its leading arguments, as cargo splits
+/// the variable -- or directly when there is none.
+pub fn command_through(runner: Option<&str>, binary: impl AsRef<OsStr>) -> Command {
+    let mut words = runner.unwrap_or_default().split_whitespace();
+    let Some(program) = words.next() else {
+        return Command::new(binary);
+    };
+    let mut command = Command::new(program);
+    command.args(words).arg(binary);
+    command
+}

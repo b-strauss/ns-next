@@ -7,7 +7,7 @@ use indoc::indoc;
 use std::process::Command;
 
 fn ns_next_analyzer() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
 }
 
 #[test]

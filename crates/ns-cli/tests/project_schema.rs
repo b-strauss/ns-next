@@ -20,7 +20,6 @@ mod common;
 
 use common::ScratchDirectory;
 use serde_json::Value;
-use std::process::Command;
 
 fn schema() -> Value {
     let path = common::goldens_root().join("../schemas/newspeak.schema.json");
@@ -193,7 +192,7 @@ const FILES: &[(&str, bool)] = &[
 fn reader_accepts(contents: &str, index: usize) -> bool {
     let directory = ScratchDirectory::new(&format!("project-schema-{index}"));
     std::fs::write(directory.join("newspeak.json"), contents).expect("write the file");
-    let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let out = common::target_command(env!("CARGO_BIN_EXE_ns-next"))
         .arg("run")
         .arg(directory.path())
         .output()

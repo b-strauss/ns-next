@@ -1,8 +1,10 @@
 //! `ns-next-analyzer fmt`, run as the binary over temporary directories
 //! under the system's own, never over the repository's files.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::{Duration, SystemTime};
 
 const UNFORMATTED: &str = "class Sample = Object new ( ) ( public run = ( 1+2 ) ) : ( )\n";
@@ -43,7 +45,7 @@ impl Drop for TemporaryDirectory {
 }
 
 fn run(directory: &Path, arguments: &[&Path], check: bool) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"));
+    let mut command = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"));
     command.current_dir(directory).arg("fmt");
     if check {
         command.arg("--check");

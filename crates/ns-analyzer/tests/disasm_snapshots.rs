@@ -9,11 +9,9 @@ use indoc::indoc;
 mod common;
 use common::ScratchDirectory;
 
-use std::process::Command;
-
 fn disasm(golden: &str, arguments: &[&str]) -> String {
     let path = common::golden(golden);
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let output = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .args(arguments)
@@ -85,7 +83,7 @@ fn disasm_control_flow_fallback_main_under_the_reference_lowering() {
 #[test]
 fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
     let path = common::golden("library/platform/hello");
-    let missing = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let missing = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("nope")
@@ -93,7 +91,7 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
         .unwrap();
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("no method `nope`"));
-    let both = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let both = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("main:args:")
@@ -121,7 +119,7 @@ fn disasm_reads_a_module_whose_language_id_is_the_image_magic_as_source() {
         "},
     )
     .expect("write temp source");
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let output = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("value")
@@ -158,7 +156,7 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     )
     .expect("write temp source");
 
-    let inner = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let inner = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("value")
@@ -173,7 +171,7 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     );
     assert!(String::from_utf8_lossy(&inner.stdout).contains("method value"));
 
-    let class_side = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let class_side = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("marker")
@@ -188,7 +186,7 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     );
     assert!(String::from_utf8_lossy(&class_side.stdout).contains("method marker"));
 
-    let unknown = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let unknown = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("value")
@@ -217,7 +215,7 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
     )
     .expect("write the image");
 
-    let from_image = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let from_image = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&image)
         .arg("main:args:")
@@ -295,7 +293,7 @@ fn disasm_leaves_out_an_own_part_an_artifact_does_not_carry() {
     let image = directory.join("bare.nsi");
     std::fs::write(&image, bytes).expect("write artifact");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let out = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&image)
         .arg("--initializer")
@@ -326,7 +324,7 @@ fn disasm_refuses_an_artifact_without_an_instance_initializer() {
     std::fs::write(&image, bytes).expect("write artifact");
 
     for arguments in [&["--initializer"][..], &["main:args:"][..]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+        let out = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
             .arg("disasm")
             .arg(&image)
             .args(arguments)
@@ -355,7 +353,7 @@ fn disasm_rejects_a_corrupt_artifact_with_a_message() {
     truncated.push(ns_runtime::image::encode::FORMAT_VERSION.to_le_bytes()[0]);
     std::fs::write(&bad, truncated).expect("write");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+    let out = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&bad)
         .arg("main:args:")
