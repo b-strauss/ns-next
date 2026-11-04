@@ -6816,7 +6816,7 @@ impl<'gc> Heap<'gc> {
             .is_some_and(|row| self.machine_entries.names_entry(row))
     }
 
-    /// No body has machine code without an encoder.
+    /// No body has machine code without a JIT.
     #[cfg(not(ns_jit))]
     pub(crate) fn closure_has_machine_entry(&self, _object: ObjectReference<'gc>) -> bool {
         false

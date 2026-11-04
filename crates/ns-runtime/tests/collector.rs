@@ -1011,7 +1011,7 @@ fn a_recurring_peak_beyond_a_doubling_does_not_thrash() {
         "a body abandoned"
     );
     // Where machine code ran at all: not without the JIT, nor in a build
-    // without an encoder.
+    // without a JIT.
     if jit_after.compiled_bodies > jit_before.compiled_bodies {
         assert!(
             jit_after.stack_growths > jit_before.stack_growths,

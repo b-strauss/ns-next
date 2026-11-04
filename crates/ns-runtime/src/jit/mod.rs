@@ -16,7 +16,7 @@
     not(ns_jit),
     expect(
         dead_code,
-        reason = "without an encoder no body is compiled, so nothing installs code or maps it"
+        reason = "without a JIT no body is compiled, so nothing installs code or maps it"
     )
 )]
 
@@ -808,7 +808,7 @@ pub(crate) enum Refusal {
     /// More instructions than a program counter of the map holds.
     TooManyInstructions,
     /// The assembler could not lay the body out, for the reason it
-    /// names; `None` in a build without an encoder (`cfg(ns_jit)` unset),
+    /// names; `None` in a build without a JIT (`cfg(ns_jit)` unset),
     /// where nothing is assembled.
     Unassembled(Option<ns_assembler::AssemblyError>),
     /// No room left in the zone, or its memory could not be committed:
@@ -963,7 +963,7 @@ impl InstalledBody {
 /// zone and its stubs, the bodies installed in it, whether the JIT is on,
 /// and its statistics.
 pub(crate) struct JitState {
-    /// `None` when this build has no encoder, the JIT is turned off by
+    /// `None` when this build has no JIT (`cfg(ns_jit)` unset), the JIT is turned off by
     /// `NS_NEXT_NO_JIT=1`, or the zone could not be reserved.
     zone: Option<Zone>,
     /// Why the JIT is off though it was wanted: the zone could not be
@@ -3558,7 +3558,7 @@ pub(crate) fn called<'gc>(
     _code: &Rc<CompiledCode>,
     _feedback_base: FeedbackBase,
 ) -> Called {
-    unreachable!("internal: no body has machine code without an encoder")
+    unreachable!("internal: no body has machine code without a JIT")
 }
 
 #[cfg(not(ns_jit))]
@@ -3576,7 +3576,7 @@ pub(crate) fn called_closure<'gc>(
     _feedback_base: FeedbackBase,
     _counted: bool,
 ) -> Called {
-    unreachable!("internal: no body has machine code without an encoder")
+    unreachable!("internal: no body has machine code without a JIT")
 }
 
 /// Records where the block body `code`, whose id is `id`, enters machine
@@ -3898,7 +3898,7 @@ fn run_machine_code(
     _register_base: RegisterBase,
     _entry: CodeOffset,
 ) -> Resumption {
-    unreachable!("internal: no body has machine code without an encoder")
+    unreachable!("internal: no body has machine code without a JIT")
 }
 
 #[cfg(test)]
