@@ -78,7 +78,7 @@ platforms, Windows on ARM staying interpreted: the AAPCS64 roles mapped
 one to one from x64's, the return address in a 16-byte slot on `sp`
 behind three operations of the call convention that encode on x64 as
 nothing, `jmp` and `call`, and the suite run under `qemu-aarch64` in
-WSL2 in the gate group `aarch64`, beside `linux`, both at the end of a
+Docker in the gate group `aarch64`, beside `linux`, both at the end of a
 batch ("Fixed registers and the calling convention", "The native stack
 carries the return addresses", "Tests"); AArch64 is unmeasured, since
 QEMU times nothing. Road step 8 as a whole, Cog's class, for x64 and
@@ -598,13 +598,23 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     one test. A leaf that is to report such a defect returns it as a
     value, as a template's read does (`ExitKind::DeadRegister`).
   - **Paths no gate runs** (2026-11-04): the gate groups `linux` and
-    `aarch64` run the suite on Linux x64 and, under QEMU, on Linux
-    AArch64, at the end of a batch, but neither runs `images`, `caches`,
-    `stress` or the benchmarks there -- the WSL clone has no JDK -- so
-    those run on Windows x64 alone. The code zone's BSD and Apple AArch64
+    `aarch64` run the suite on Linux x64, with the benchmark programs,
+    and, under QEMU, on Linux AArch64, at the end of a batch, but
+    neither runs `images`, `caches` or `stress` there, so those run on
+    Windows x64 alone, and AArch64 runs no benchmark program. The code zone's BSD and Apple AArch64
     paths, and Apple's JIT, are checked by clippy alone (`memory`,
     `release-checks`) and never ran; QEMU models no incoherent
     instruction cache, so a missing flush would pass the `aarch64` group.
+  - **`run-corpus` under the `aarch64` group reaches the engine's
+    binfmt** (2026-11-04). Every test binary and every `ns-next` or
+    `ns-next-analyzer` a test starts runs under the image's pinned QEMU
+    (the target's runner), but `run-corpus` re-runs its own executable
+    for each module, and that `execve`, made inside the emulated
+    program, the kernel hands to whatever handler the Docker engine has
+    registered for AArch64 -- on the development machine a QEMU 10.2,
+    and with none the three `run-corpus` tests of `ns-cli`'s `cli.rs`
+    fail. Not yet decided: accept it, have `run-corpus` re-run itself
+    another way, or register the image's QEMU with binfmt.
   - **AArch64's speed is unmeasured** (2026-11-04). QEMU checks
     correctness only and times nothing, so whether the port's code is
     fast -- the 16-byte return-address slot, the `movz`/`movk`

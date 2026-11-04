@@ -560,16 +560,10 @@ The suites run under `cargo-nextest` (`cargo install cargo-nextest --locked`).
 The gates need, beyond that, the rustup targets of `memory`
 (`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`) and `release-checks`
 (`aarch64-pc-windows-msvc`, `aarch64-apple-darwin`), `cargo-show-asm` for
-`codegen` and a JDK for `benchmarks`. `linux` and `aarch64` need WSL2 with a
-default distribution that has QEMU 8.1 or newer (it runs Ubuntu 26.04.1); in
-it Rust 1.98.0 through rustup with the target `aarch64-unknown-linux-gnu`,
-`cargo-nextest`, and the packages `qemu-user-binfmt`, `gcc-aarch64-linux-gnu`
-and `rsync`. WSL masks `systemd-binfmt`, so `qemu-aarch64` is registered at
-every boot by `/etc/wsl.conf`; the gates copy the checkout into
-`~/.cache/ns-next-gates` themselves, nothing to set up there:
-
-    [boot]
-    command = "sh -c 'grep -hv ^# /usr/lib/binfmt.d/qemu-aarch64.conf > /proc/sys/fs/binfmt_misc/register'"
+`codegen` and a JDK for `benchmarks`. `linux` and `aarch64` need Docker
+(Docker Desktop, or a Docker engine on x86_64); everything else they need,
+QEMU included, is the pinned image `xtask/docker/Dockerfile` describes,
+which the groups build themselves, so nothing is set up by hand.
 
 ### The gates
 
@@ -600,12 +594,12 @@ every one runs on 18 threads.
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy, warning-free, for `aarch64-pc-windows-msvc`, a target without a JIT, where no `cfg(ns_jit)` code is compiled, and for `aarch64-apple-darwin`, Apple's JIT (`rustup target add` both) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
 | `stress` | the suite under the nine stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
-| `linux` | in WSL, in `~/.cache/ns-next-gates`, which the working tree is first rsynced into (`target`, `prior-art` and `.temp` excluded): `cargo xtask shipped-code`, `cargo clippy --workspace --all-targets` warning-free, the default suite on 8 threads and the doctests, all for `x86_64-unknown-linux-gnu` | the end of a batch that changed the runtime |
-| `aarch64` | in WSL, the same copy, then the shipped code, clippy for `aarch64-unknown-linux-gnu` warning-free, and the suite cross-compiled for it on 8 threads, run through binfmt's `qemu-aarch64` (`aarch64-linux-gnu-gcc` the linker, `QEMU_LD_PREFIX=/usr/aarch64-linux-gnu`, `RUST_MIN_STACK=8388608`), no doctests; needs QEMU 8.1 or newer (above; `docs/design/execution.md`, "Tests"); about 8.5 minutes | the end of a batch that changed the runtime |
+| `linux` | in Docker, in an x86_64 container of the image `ns-next-gates` (`xtask/docker/Dockerfile`, built first, cached by Docker), the checkout mounted read-only and rsynced into the volume `ns-next-gates-work` (`target`, `prior-art` and `.temp` excluded; `target` and cargo's registry volumes of their own, so a second run builds incrementally): `cargo xtask shipped-code`, `cargo clippy --workspace --all-targets` warning-free, the default suite on as many threads as the container has CPUs, the doctests, and the benchmark programs with their Java counterparts (profile `benchmarks-verify`, as `benchmarks` runs them; the image has a JDK), all for `x86_64-unknown-linux-gnu` | the end of a batch that changed the runtime |
+| `aarch64` | in Docker, the same image and copy, then the shipped code, clippy for `aarch64-unknown-linux-gnu` warning-free, and the suite cross-compiled for it, run through the image's own `qemu-aarch64`, a pinned QEMU release, as the target's runner, which also starts every `ns-next` and `ns-next-analyzer` a test starts (`aarch64-linux-gnu-gcc` the linker, `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64`, `QEMU_LD_PREFIX=/usr/aarch64-linux-gnu`, `RUST_MIN_STACK=8388608`), no doctests (`docs/design/execution.md`, "Tests"); about 8.5 minutes | the end of a batch that changed the runtime |
 | `plugin-verification` | `gradlew --no-daemon verifyPlugin buildPlugin`, which downloads several IDEs | the end of a batch that changed `editors/jetbrains/` |
 
 `end-of-batch` is `images`, `caches`, `benchmarks`, `release-checks`, `codegen`,
-`stress`, `linux` and `aarch64` together, the two WSL groups last; neither runs
+`stress`, `linux` and `aarch64` together, the two Docker groups last; neither runs
 at a commit, nor under a stress mode.
 "The runtime" is `crates/ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or
 `ns-memory`; a batch that changed only `crates/ns-analyzer`, the plugin or

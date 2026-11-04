@@ -12876,33 +12876,57 @@ lookup's remembered answers ("The code zone").
   `ns-memory`'s code zone tests have AArch64 twins of the x64 words they
   run.
 - **AArch64 runs under QEMU**, in the gate group `aarch64` (decided with
-  the user on 2026-11-03; `CLAUDE.md`, "The gates"): in WSL2, in a clone
-  the working tree is rsynced into, the suite cross-compiled for
-  `aarch64-unknown-linux-gnu` and run through binfmt's `qemu-aarch64`,
-  which also runs the `ns-next` the `ns-cli` tests spawn, with
-  `RUST_MIN_STACK=8388608`, since a test thread's default 2 MiB is too
-  little for AArch64's native-stack bound and a test would silently run
-  interpreted (`the_jit_is_available_on_its_architectures` asserts the
-  build has the JIT, and the tests of `tests/jit.rs` that count machine
-  entries fail where nothing entered machine code). The doctests are not run there, since `cargo test --doc`
-  would build them for the host; about 8.5 minutes. The gate group
-  `linux` runs clippy, the suite and the doctests for
-  `x86_64-unknown-linux-gnu` in the same clone, System V's path. Both
-  run at the end of a batch that changed the runtime, never at a
-  commit, and under no stress mode. **QEMU 8.1 or newer** is required:
-  the code zone writes through its second mapping, which QEMU's
-  user mode cannot see as a write to code it translated, and only from
-  8.1 on does `ic ivau` invalidate those translations -- 6.2 runs stale
-  code -- while before 8.0 QEMU's page tracking runs out of memory on
-  the heap's reservations, 64 GiB of object space and 16 GiB of stack an
-  interpreter. QEMU does not model an incoherent instruction cache, so a
-  missing flush passes there; Apple's `MAP_JIT` path is checked by
-  clippy only (`release-checks`' lint for `aarch64-apple-darwin`).
-- **The WSL setup** the two groups need is listed in `CLAUDE.md`,
-  "Working in this repository" (QEMU is 10.2.1 today); the gates copy the
-  checkout into `~/.cache/ns-next-gates`, which they create. The rsync's source is the checkout the gate
-  runs from, translated by
-  `wslpath -u` (`xtask/src/main.rs`, `copy_into_wsl`).
+  the user on 2026-11-03; `CLAUDE.md`, "The gates"): in Docker, in a
+  working copy the checkout is rsynced into, the suite cross-compiled for
+  `aarch64-unknown-linux-gnu` and run through the image's own
+  `qemu-aarch64` as the target's runner,
+  `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER`, which cargo and nextest
+  start every test binary through, and which the tests start every
+  `ns-next` and `ns-next-analyzer` through as well (`ns-cli`'s
+  `tests/common/target_runner.rs`, the triple from each crate's build
+  script) -- the convention cargo has for a test binary, so no test names
+  QEMU. One process no runner reaches: `run-corpus` re-runs its own
+  executable for each module, and that `execve`, made by the emulated
+  program, the kernel hands to the engine's binfmt handler for AArch64
+  (`OPEN-WORK.md`). `RUST_MIN_STACK=8388608` is set, since a test thread's default
+  2 MiB is too little for AArch64's native-stack bound and a test would
+  silently run interpreted (`the_jit_is_available_on_its_architectures`
+  asserts the build has the JIT, and the tests of `tests/jit.rs` that
+  count machine entries fail where nothing entered machine code). The
+  doctests are not run there, since `cargo test --doc` would build them
+  for the host; about 8.5 minutes. The gate group `linux` runs clippy,
+  the suite, the doctests and the benchmark programs with their Java
+  counterparts (profile `benchmarks-verify`) for
+  `x86_64-unknown-linux-gnu` in the same working copy, System V's path.
+  Both run at the end of a batch that changed the runtime, never at a
+  commit, and under no stress mode. QEMU does not model an incoherent
+  instruction cache, so a missing flush passes there; Apple's `MAP_JIT`
+  path is checked by clippy only (`release-checks`' lint for
+  `aarch64-apple-darwin`).
+- **The image** is the repository's code, pinned, so that no setup of the
+  machine decides what the two groups check (decided with the user on
+  2026-11-04): an x86_64 image (`xtask/docker/Dockerfile`), so that rustc
+  runs natively and only the AArch64 binaries are emulated; the base
+  image by its digest, every Ubuntu package from the archive's snapshot
+  at one moment (`APT::Snapshot`), Rust 1.98.0 with both targets,
+  rustup-init, `cargo-nextest` and QEMU by their versions, a headless
+  OpenJDK 25 for the benchmarks' Java counterparts. QEMU is built in a
+  stage of its own from the newest stable release's tarball, checked
+  against its SHA-256, `qemu-aarch64` alone and static. **QEMU 8.1 or
+  newer** is what the suite needs: the code zone writes through its
+  second mapping, which QEMU's user mode cannot see as a write to code it
+  translated, and only from 8.1 on does `ic ivau` invalidate those
+  translations -- 6.2 runs stale code -- while before 8.0 QEMU's page
+  tracking runs out of memory on the heap's reservations, 64 GiB of
+  object space and 16 GiB of stack an interpreter. Each step is a
+  `docker run --rm` of the image (`xtask/src/main.rs`, `Step::docker`),
+  the checkout the gate runs from bind-mounted read-only and rsynced,
+  `.git` included, since `source_formatting` lists the tracked sources
+  with `git ls-files`, and what a `.gitignore` names left out, into the
+  volume `ns-next-gates-work`, its `target` and cargo's registry volumes
+  of their own, so a second run builds incrementally. A WSL distribution
+  is not used, since its setup would live on the machine instead of in
+  the repository.
 
 ### Stages
 

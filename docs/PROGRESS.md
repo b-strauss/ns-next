@@ -6845,15 +6845,16 @@ one from x64's; the native stack an entry needs is about 1.68 MB on
 AArch64. Every stub and every golden body is assembled for AAPCS64 on
 every host, and the tests that run machine code take the host's roles.
 
-Two gate groups run in WSL2 at the end of a batch, never at a commit:
-`linux`, the suite, clippy and the doctests for
-`x86_64-unknown-linux-gnu`, and `aarch64`, the suite cross-compiled
-for `aarch64-unknown-linux-gnu` and run through binfmt's `qemu-aarch64`,
-about 8.5 minutes, which needs QEMU 8.1 or newer; the WSL distribution
-is Ubuntu 26.04.1 with QEMU 10.2.1. `release-checks` lints `ns-runtime`
+Two gate groups run in Docker at the end of a batch, never at a commit:
+`linux`, the suite, clippy, the doctests and the benchmark programs
+for `x86_64-unknown-linux-gnu`, and `aarch64`, the suite cross-compiled
+for `aarch64-unknown-linux-gnu` and run through the image's own
+`qemu-aarch64` as the target's runner, about 8.5 minutes, which needs
+QEMU 8.1 or newer; the image, pinned, is the repository's,
+`xtask/docker/Dockerfile`. `release-checks` lints `ns-runtime`
 for `aarch64-pc-windows-msvc`, the build without a JIT, and for
-`aarch64-apple-darwin`, Apple's JIT. Both groups passed, 4,595 tests
-each. x64's machine code is byte for byte what it was, an FNV hash of
+`aarch64-apple-darwin`, Apple's JIT. Both groups passed, 4,603 tests
+each, and `linux` the 139 benchmark programs. x64's machine code is byte for byte what it was, an FNV hash of
 every stub and of every body compiled over the benchmarks, the corpus
 and the goldens identical before and after, so x64 was not measured
 again; AArch64 is unmeasured, since QEMU times nothing. No golden,
