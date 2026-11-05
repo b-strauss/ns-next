@@ -20,6 +20,7 @@ use ns_assembler::{
 };
 
 use super::stubs::{BlockWord, ExitKind};
+use crate::bytecode::IntegerOperation;
 use crate::heap::machine_words::{MachineWord, MachineWords};
 
 /// The platform calling convention the stubs and leaf calls cross.
@@ -473,6 +474,33 @@ impl Roles {
         ]
     }
 
+    /// The registers optimized code computes a `SmallInteger` fast path in
+    /// (`MacroAssembler::small_integer_operation`): the four that no value
+    /// is allocated to and no pinned role takes -- the division's two, the
+    /// one scratch register besides them that is not allocatable, and the
+    /// idioms' own -- so that the operands, which stay in their allocated
+    /// registers for the fallback, are copied in and nothing a value is
+    /// held in is written before the fast path is sure to apply.
+    pub(crate) fn integer_temporaries(self) -> IntegerRegisters {
+        let third = self
+            .scratch
+            .iter()
+            .copied()
+            .find(|register| {
+                !self.allocatable.contains(register)
+                    && *register != self.dividend
+                    && *register != self.remainder
+            })
+            .expect("internal: a scratch register besides the division's is not allocatable");
+        IntegerRegisters {
+            left: self.dividend,
+            right: third,
+            remainder: self.remainder,
+            first_spare: self.idiom_scratch,
+            second_spare: self.remainder,
+        }
+    }
+
     /// The two registers under `abi` that play no role and are no scratch
     /// registers (`of`): preserved by the convention and saved by the
     /// entry stub, the free registers a value survives a leaf call in,
@@ -868,6 +896,185 @@ impl MacroAssembler {
     /// `target := word`. Keeps the flags.
     pub(crate) fn load_immediate_word(&mut self, target: Register, word: u64) {
         self.assembler.move_immediate(target, word);
+    }
+
+    /// `target := source`. Keeps the flags.
+    pub(crate) fn move_register(&mut self, target: Register, source: Register) {
+        self.assembler.move_register(target, source);
+    }
+
+    /// `register :=` the integer the `SmallInteger` in it holds, its tag
+    /// shifted out.
+    pub(crate) fn untag_small_integer(&mut self, register: Register) {
+        self.assembler
+            .shift_right_arithmetic(register, small_integer_tag_bits());
+    }
+
+    /// `register :=` the `SmallInteger` of an integer already shifted into
+    /// place above its tag: the tag set.
+    pub(crate) fn tag_small_integer(&mut self, register: Register) {
+        self.assembler
+            .or_immediate(register, small_integer_tag_word());
+    }
+
+    /// `decline`s with `Condition::Equal` unless `left` holds a
+    /// `SmallInteger`, then likewise for `right`: `integer_into`'s decline
+    /// of any other operand. Each decline is its own branch, so that a
+    /// baseline body's backward one polls on its own way.
+    pub(crate) fn test_small_integer_tags(
+        &mut self,
+        left: Register,
+        right: Register,
+        decline: &mut dyn FnMut(&mut MacroAssembler, Condition),
+    ) {
+        let tag = small_integer_tag_word();
+        self.assembler.test_immediate(left, tag);
+        decline(self, Condition::Equal);
+        self.assembler.test_immediate(right, tag);
+        decline(self, Condition::Equal);
+    }
+
+    /// `IntegerBinary`'s `SmallInteger` fast path, `integer_into`'s, on the
+    /// words in `registers.left` and `registers.right`, answering the
+    /// register the result is left in: every case it does not compute --
+    /// an operand that is no `SmallInteger`, an overflow, a zero divisor --
+    /// calls `decline` with the condition under which the code branches
+    /// away, before any register but `registers`' own is written. The
+    /// baseline and optimized code both emit it, each with its own
+    /// registers and its own way to decline, so the two make the same
+    /// choice of instructions. Clobbers the flags and every register of
+    /// `registers`, the operands' included.
+    pub(crate) fn small_integer_operation(
+        &mut self,
+        operation: IntegerOperation,
+        registers: IntegerRegisters,
+        decline: &mut dyn FnMut(&mut MacroAssembler, Condition),
+    ) -> Register {
+        debug_assert!(
+            distinct(&[
+                registers.left,
+                registers.right,
+                registers.remainder,
+                registers.first_spare
+            ]) && distinct(&[
+                registers.left,
+                registers.right,
+                registers.first_spare,
+                registers.second_spare
+            ]),
+            "internal: a fast path's registers are distinct"
+        );
+        self.test_small_integer_tags(registers.left, registers.right, decline);
+        let tag = small_integer_tag_word();
+        let (left, right) = (registers.left, registers.right);
+        match operation {
+            // `(a << 3 | 1) + ((b << 3 | 1) - 1)` is `(a + b) << 3 | 1`,
+            // and overflows exactly when `a + b` leaves 61 bits:
+            // `Value::small_integer_sum`. The difference likewise.
+            IntegerOperation::Add | IntegerOperation::Subtract => {
+                let untagged = registers.first_spare;
+                let assembler = &mut self.assembler;
+                assembler.move_register(untagged, right);
+                assembler.add_immediate(untagged, -tag);
+                if operation == IntegerOperation::Add {
+                    assembler.add(left, untagged);
+                } else {
+                    assembler.subtract(left, untagged);
+                }
+                decline(self, Condition::Overflow);
+                left
+            }
+            // `a * (b << 3)` is `(a * b) << 3`, overflowing exactly when
+            // `a * b` leaves 61 bits: `Value::small_integer_product`.
+            IntegerOperation::Multiply => {
+                let untagged = registers.first_spare;
+                self.untag_small_integer(left);
+                let assembler = &mut self.assembler;
+                assembler.move_register(untagged, right);
+                assembler.add_immediate(untagged, -tag);
+                assembler.multiply_checked(left, untagged);
+                decline(self, Condition::Overflow);
+                self.tag_small_integer(left);
+                left
+            }
+            IntegerOperation::FloorDivide => self.small_integer_floor_quotient(registers, decline),
+            // Tagging keeps the order, so the words compare as the
+            // integers do: `Value::small_integer_order`.
+            IntegerOperation::Less => self.small_integer_compare(registers, Condition::Less),
+            IntegerOperation::Greater => self.small_integer_compare(registers, Condition::Greater),
+            IntegerOperation::LessOrEqual => {
+                self.small_integer_compare(registers, Condition::LessOrEqual)
+            }
+            IntegerOperation::GreaterOrEqual => {
+                self.small_integer_compare(registers, Condition::GreaterOrEqual)
+            }
+            IntegerOperation::Equal => self.small_integer_compare(registers, Condition::Equal),
+        }
+    }
+
+    /// The Boolean of comparing the `SmallInteger`s in `registers.left`
+    /// and `registers.right` by `condition`, in the register it answers.
+    fn small_integer_compare(
+        &mut self,
+        registers: IntegerRegisters,
+        condition: Condition,
+    ) -> Register {
+        let (answer, truth) = (registers.first_spare, registers.second_spare);
+        let assembler = &mut self.assembler;
+        assembler.move_immediate(answer, crate::heap::Immediate::boolean(false).bits());
+        assembler.move_immediate(truth, crate::heap::Immediate::boolean(true).bits());
+        assembler.compare(registers.left, registers.right);
+        assembler.move_if(condition, answer, truth);
+        answer
+    }
+
+    /// The floor quotient of the `SmallInteger`s in `registers.left` and
+    /// `registers.right`, tagged, in the register it answers:
+    /// `Value::small_integer_floor_quotient`, declining for a zero divisor
+    /// and for the one quotient that leaves 61 bits, the smallest
+    /// `SmallInteger` over -1. `registers.left` is the division's dividend
+    /// and `registers.remainder` its remainder, where the encoder fixes
+    /// them.
+    fn small_integer_floor_quotient(
+        &mut self,
+        registers: IntegerRegisters,
+        decline: &mut dyn FnMut(&mut MacroAssembler, Condition),
+    ) -> Register {
+        let (dividend, divisor) = (registers.left, registers.right);
+        self.untag_small_integer(dividend);
+        self.untag_small_integer(divisor);
+        self.assembler.compare_immediate(divisor, 0);
+        decline(self, Condition::Equal);
+        // Both are 61-bit integers, so the division cannot fault.
+        let assembler = &mut self.assembler;
+        assembler.divide_signed(dividend, registers.remainder, divisor);
+        // `checked_floor_divide`: no remainder, or one of the divisor's
+        // sign, leaves the truncated quotient; any other rounds it down.
+        // The second spare may be the remainder's register, which is read
+        // before it is written.
+        let (remainder_sign, divisor_sign) = (registers.first_spare, registers.second_spare);
+        let floored = assembler.label();
+        assembler.compare_immediate(registers.remainder, 0);
+        assembler.jump_if(Condition::Equal, floored);
+        assembler.move_register(remainder_sign, registers.remainder);
+        assembler.shift_right_arithmetic(remainder_sign, SIGN_SHIFT);
+        assembler.move_register(divisor_sign, divisor);
+        assembler.shift_right_arithmetic(divisor_sign, SIGN_SHIFT);
+        assembler.compare(remainder_sign, divisor_sign);
+        assembler.jump_if(Condition::Equal, floored);
+        assembler.add_immediate(dividend, -1);
+        assembler.bind(floored);
+        // Tagged, the quotient comes back unchanged from its shift unless
+        // it leaves 61 bits.
+        let (tagged, untagged) = (registers.first_spare, registers.second_spare);
+        assembler.move_register(tagged, dividend);
+        assembler.shift_left(tagged, small_integer_tag_bits());
+        assembler.move_register(untagged, tagged);
+        self.untag_small_integer(untagged);
+        self.assembler.compare(untagged, dividend);
+        decline(self, Condition::NotEqual);
+        self.tag_small_integer(tagged);
+        tagged
     }
 
     /// Calls `leaf` through the shim with `arguments`, leaving its answer
@@ -2562,6 +2769,31 @@ impl MacroAssembler {
             return;
         }
         let label = self.assembler.label();
+        self.jump_if_safepoint_requested(label);
+        self.push_cold_path(ColdPath::Exit {
+            label,
+            kind: ExitKind::Safepoint,
+            program_counter,
+        });
+    }
+
+    /// A poll whose exit is the caller's: jumps to `requested` when the
+    /// heap's safepoint request is set -- always under the exit stress
+    /// mode, as `poll` exits -- and falls through otherwise, so that
+    /// optimized code writes back the values it holds on that way alone
+    /// before its exit ("A poll writes nothing back", `execution.md`).
+    /// Clobbers the flags and the idiom scratch register.
+    pub(crate) fn poll_to(&mut self, requested: Label) {
+        if self.exit_at_every_poll {
+            self.assembler.jump(requested);
+            return;
+        }
+        self.jump_if_safepoint_requested(requested);
+    }
+
+    /// The poll's test: a jump to `label` when the safepoint request is
+    /// set. Clobbers the flags and the idiom scratch register.
+    fn jump_if_safepoint_requested(&mut self, label: Label) {
         let scratch = self.roles.idiom_scratch;
         let machine_words = self.block_word(BlockWord::MachineWords);
         self.assembler.load(Width::Word64, scratch, machine_words);
@@ -2572,11 +2804,6 @@ impl MacroAssembler {
         self.assembler.load(Width::Word64, scratch, requested);
         self.assembler.compare_immediate(scratch, 0);
         self.assembler.jump_if(Condition::NotEqual, label);
-        self.push_cold_path(ColdPath::Exit {
-            label,
-            kind: ExitKind::Safepoint,
-            program_counter,
-        });
     }
 
     /// Lays the code out, the cold paths after the straight line, so a
@@ -2706,6 +2933,42 @@ const WORD_SHIFT: u8 = 3;
 
 /// A word's bytes, as an immediate operand.
 const WORD_BYTES: i32 = 8;
+
+/// The sign of a 64-bit word spread over all of it by an arithmetic
+/// shift: 0 for a word of zero or more, -1 for a negative one.
+const SIGN_SHIFT: u8 = 63;
+
+/// The `SmallInteger` tag, as an immediate operand.
+fn small_integer_tag_word() -> i32 {
+    i32::try_from(crate::heap::value_bits::SMALL_INTEGER_TAG)
+        .expect("internal: the tag is a low bit")
+}
+
+/// How far a `SmallInteger`'s payload lies above its tag, as a shift
+/// count.
+fn small_integer_tag_bits() -> u8 {
+    u8::try_from(crate::heap::value_bits::TAG_BITS).expect("internal: the tag takes a few bits")
+}
+
+/// The registers a `SmallInteger` fast path computes in
+/// (`MacroAssembler::small_integer_operation`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct IntegerRegisters {
+    /// The left operand; the result of a sum, a difference or a product;
+    /// a division's dividend, where the encoder fixes it.
+    pub(crate) left: Register,
+    /// The right operand; a division's divisor.
+    pub(crate) right: Register,
+    /// A division's remainder, where the encoder fixes it.
+    pub(crate) remainder: Register,
+    /// Every operation's first spare register, and the result of a
+    /// comparison and of a division.
+    pub(crate) first_spare: Register,
+    /// A comparison's and a division's second spare register, which may
+    /// be `remainder`: the division reads its remainder before it writes
+    /// it.
+    pub(crate) second_spare: Register,
+}
 
 // `check_own_slot_guard` takes a header's guard bits of 0 for `NONE`.
 const _: () = assert!(crate::mixin::DispatchId::NONE.bits() == 0);
@@ -3008,6 +3271,45 @@ mod encoding_tests {
         assert_eq!(Roles::of(Abi::Aapcs64).survive_leaf_calls, 7);
         assert_eq!(Roles::of(Abi::Windows64).allocatable.len(), 8);
         assert_eq!(Roles::of(Abi::Aapcs64).allocatable.len(), 13);
+    }
+
+    /// Optimized code's fast path computes in registers no value is
+    /// allocated to and no pinned role holds, the division's where the
+    /// encoder fixes them.
+    #[test]
+    fn the_integer_temporaries_hold_no_value_and_no_pinned_role() {
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let roles = Roles::of(abi);
+            let temporaries = roles.integer_temporaries();
+            let registers = [
+                temporaries.left,
+                temporaries.right,
+                temporaries.remainder,
+                temporaries.first_spare,
+                temporaries.second_spare,
+            ];
+            for register in registers {
+                assert!(
+                    !roles.allocatable.contains(&register),
+                    "{abi:?} {register:?}"
+                );
+                assert!(
+                    ![
+                        roles.frame,
+                        roles.context,
+                        roles.object_space,
+                        roles.stack_pointer
+                    ]
+                    .contains(&register),
+                    "{abi:?} {register:?}"
+                );
+            }
+            assert_eq!(
+                (temporaries.left, temporaries.remainder),
+                (roles.dividend, roles.remainder)
+            );
+            assert!(super::distinct(&registers[..4]), "{abi:?}");
+        }
     }
 
     #[cfg(debug_assertions)]

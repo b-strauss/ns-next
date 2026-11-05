@@ -284,7 +284,7 @@ impl SnapshotInstruction {
             reason = "the optimizing compiler's liveness, built on it, is its first reader"
         )
     )]
-    fn unsnapshot(&self) -> Option<Instruction> {
+    pub(crate) fn unsnapshot(&self) -> Option<Instruction> {
         Some(match self {
             SnapshotInstruction::MakeClosure { .. } => return None,
             SnapshotInstruction::LoadLiteral {

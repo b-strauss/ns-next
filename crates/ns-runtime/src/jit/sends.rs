@@ -503,16 +503,25 @@ pub(super) fn return_from(body: &mut BodyAssembler, register: u16) -> Lowering {
     if body.reifies {
         divorce_if_reified(body);
     }
+    let leaf_result = body.macro_assembler.roles().leaf_result;
+    body.macro_assembler
+        .load_frame_register(leaf_result, register);
+    return_loaded(body);
+    Lowering::Transfer
+}
+
+/// The rest of `return_from` once the value is in the value register
+/// (`Roles::leaf_result`): a block's frame moved back down, the count
+/// taken back and `ret`. Optimized code, which never reifies its frame,
+/// returns a value it holds in a machine register through it.
+pub(super) fn return_loaded(body: &mut BodyAssembler) {
     let argument_count = body.argument_count;
     let block = body.role == BodyRole::Block;
     let macro_assembler = &mut body.macro_assembler;
-    let roles = macro_assembler.roles();
-    macro_assembler.load_frame_register(roles.leaf_result, register);
     if block {
         unshift_block_frame(macro_assembler, argument_count);
     }
     return_value(macro_assembler);
-    Lowering::Transfer
 }
 
 /// The frame register of a block's frame taking `argument_count`

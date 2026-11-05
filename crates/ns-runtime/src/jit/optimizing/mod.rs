@@ -6,6 +6,8 @@
 #[cfg(ns_jit)]
 pub(crate) mod allocate;
 pub(crate) mod build;
+#[cfg(ns_jit)]
+pub(crate) mod emit;
 pub(crate) mod graph;
 pub(crate) mod liveness;
 #[cfg(ns_jit)]
@@ -13,15 +15,80 @@ pub(crate) mod metadata;
 pub(crate) mod snapshot;
 pub(crate) mod verify;
 
+/// The optimized code of `snapshot`'s body, compiled as `role` with
+/// `macro_assembler` (`docs/design/execution.md`, "Planned: the
+/// optimizing JIT"): its graph built (and, in a debug build, verified),
+/// its values allocated to registers and its interrupt points described
+/// (the allocation verified in a debug build), then emitted. A refusal is
+/// one the baseline makes of the same body: too many instructions, or
+/// code the assembler cannot lay out.
+#[cfg(ns_jit)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the JIT's installation of optimized code, Task 6's, is the compiler's first caller"
+    )
+)]
+pub(crate) fn compile(
+    snapshot: &snapshot::Snapshot,
+    macro_assembler: crate::jit::macro_assembler::MacroAssembler,
+    role: crate::jit::baseline::BodyRole,
+) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
+    use crate::jit::Refusal;
+
+    let roles = macro_assembler.roles();
+    let mut body = crate::jit::baseline::BodyAssembler::for_optimized(
+        macro_assembler,
+        &snapshot.facts,
+        snapshot.feedback_base,
+        role,
+    )?;
+    let graph = build::build(snapshot);
+    let (allocation, metadata) = metadata::allocate_and_describe(snapshot, &graph, &roles);
+    let push_entry = emit::emit(snapshot, &graph, &allocation, &mut body)?;
+    let returns = body.take_call_returns();
+    let words = body.macro_assembler.body_words_label();
+    let word_bytes =
+        u32::try_from(body.macro_assembler.body_word_count() * 8).map_err(|_| Refusal::ZoneFull)?;
+    let twin_transfers = std::mem::take(&mut body.twin_transfers);
+    let code = body
+        .macro_assembler
+        .finish()
+        .map_err(|error| Refusal::Unassembled(Some(error)))?;
+    let words = words
+        .and_then(|label| code.label_offsets[label.index()])
+        .map(|start| start..start + word_bytes);
+    let push_entry =
+        code.label_offsets[push_entry.index()].expect("internal: the first block is bound");
+    Ok(emit::OptimizedBody {
+        code,
+        returns,
+        words,
+        twin_transfers,
+        metadata,
+        push_entry,
+    })
+}
+
 /// The snapshot of a method of `instructions`, none of which makes a
 /// closure, with registers to spare: the hand-written bodies the passes'
 /// tests compile.
 #[cfg(test)]
 pub(crate) fn test_snapshot(instructions: Vec<crate::bytecode::Instruction>) -> snapshot::Snapshot {
+    test_snapshot_with_arguments(instructions, 0)
+}
+
+/// `test_snapshot` of a method taking `argument_count` arguments.
+#[cfg(test)]
+pub(crate) fn test_snapshot_with_arguments(
+    instructions: Vec<crate::bytecode::Instruction>,
+    argument_count: u16,
+) -> snapshot::Snapshot {
     let code = crate::bytecode::CompiledCode::new(
         crate::bytecode::CodeKind::Method,
         instructions,
-        0,
+        argument_count,
         30,
         0,
         Vec::new(),
@@ -109,10 +176,30 @@ pub(crate) fn shipped_bodies() -> Vec<snapshot::Snapshot> {
 /// lowering, closures' blocks included.
 #[cfg(test)]
 fn snapshots_of(modules: &[std::rc::Rc<crate::ResolvedModule>]) -> Vec<snapshot::Snapshot> {
+    use crate::interpreter::inline_cache::FeedbackBase;
+
+    let mut interpreter = crate::Interpreter::bootstrap_with(crate::Lowering::Optimized);
+    let bodies = bodies_of(&mut interpreter, modules);
+    interpreter.enter(|mutator| {
+        bodies
+            .iter()
+            .map(|code| {
+                snapshot::Snapshot::take(code, &mut mutator.heap, FeedbackBase::NOT_ASSIGNED)
+            })
+            .collect()
+    })
+}
+
+/// Every body `modules` compile to in `interpreter`, closures' blocks
+/// included, each block before the body that makes it.
+#[cfg(test)]
+fn bodies_of(
+    interpreter: &mut crate::Interpreter,
+    modules: &[std::rc::Rc<crate::ResolvedModule>],
+) -> Vec<std::rc::Rc<crate::bytecode::CompiledCode>> {
     use std::rc::Rc;
 
     use crate::bytecode::{CompiledCode, Instruction};
-    use crate::interpreter::inline_cache::FeedbackBase;
     use crate::mixin::{MethodEntry, Mixin};
 
     fn collect(code: &Rc<CompiledCode>, into: &mut Vec<Rc<CompiledCode>>) {
@@ -151,17 +238,9 @@ fn snapshots_of(modules: &[std::rc::Rc<crate::ResolvedModule>]) -> Vec<snapshot:
         }
     }
 
-    let mut interpreter = crate::Interpreter::bootstrap_with(crate::Lowering::Optimized);
     let mut bodies = Vec::new();
     for module in modules {
         collect_mixin(&interpreter.compile_module(module), &mut bodies);
     }
-    interpreter.enter(|mutator| {
-        bodies
-            .iter()
-            .map(|code| {
-                snapshot::Snapshot::take(code, &mut mutator.heap, FeedbackBase::NOT_ASSIGNED)
-            })
-            .collect()
-    })
+    bodies
 }

@@ -166,6 +166,28 @@ impl Allocation {
             .count()
     }
 
+    /// The allocatable registers that hold a value live at `position`,
+    /// where the code emitted for it runs: those a debug build holds
+    /// against a temporary (`MacroAssembler::hold_values`).
+    pub(crate) fn registers_held_at(&self, position: u32) -> Vec<Register> {
+        self.ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, ranges)| {
+                ranges
+                    .iter()
+                    .any(|(start, end)| *start <= position && position < *end)
+            })
+            .filter_map(|(index, _)| {
+                let value = ValueId(u32::try_from(index).expect("internal: a value id fits a u32"));
+                match self.location_of(value, position) {
+                    Location::Register(register) => Some(register),
+                    Location::FrameWord => None,
+                }
+            })
+            .collect()
+    }
+
     /// The moves at `position`.
     pub(crate) fn moves_at(&self, position: u32) -> &[Move] {
         self.moves.get(&position).map_or(&[], Vec::as_slice)
