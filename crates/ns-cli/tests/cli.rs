@@ -428,8 +428,8 @@ fn benchmark_rejects_zero_iterations() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("iterations"));
 }
 
-/// `--jit-statistics` prints one `jit: ` line to stderr after the run and
-/// leaves stdout as it was.
+/// `--jit-statistics` prints one `jit: ` line to stderr after the run, the
+/// baseline's counts and the optimizing tier's, and leaves stdout as it was.
 #[test]
 fn jit_statistics_print_one_line_to_stderr() {
     let program = common::golden("language/control-flow/while_loop");
@@ -465,7 +465,8 @@ fn jit_statistics_print_one_line_to_stderr() {
     assert_eq!(
         shape,
         "jit: # bodies, # twins compiled in # ms; # back-edge switches, \
-         # resumptions after a safepoint, # exits"
+         # resumptions after a safepoint, # exits; optimizer: # requests, \
+         # bodies optimized in # ms, # optimized exits (# forced), # abandoned"
     );
 }
 
