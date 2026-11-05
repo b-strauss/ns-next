@@ -513,3 +513,62 @@ fn the_frame_word_rule_leaves_a_write_back_left_out_refused() {
         })
     );
 }
+
+/// `t := r1. r1 := 0. <nine literals>. r12 := r1. r1 := t. <branch>.
+/// ^r1`: under the pressure of the literals the `0` is spilled into r1's
+/// frame word, and r1 is then bound again to the read of its frame word
+/// made before; where the branch's ways meet, both bring that read, which
+/// no longer is what the frame word holds.
+fn a_register_bound_again_to_its_earlier_read() -> Snapshot {
+    let mut instructions = vec![
+        Instruction::Move {
+            destination: 20,
+            source: 1,
+        },
+        Instruction::LoadLiteral {
+            destination: 1,
+            literal: Literal::SmallInteger(0),
+        },
+    ];
+    for index in 0..9 {
+        instructions.push(Instruction::LoadLiteral {
+            destination: 2 + index,
+            literal: Literal::SmallInteger(i64::from(index) + 10),
+        });
+    }
+    for index in 0..9 {
+        instructions.push(Instruction::Move {
+            destination: 21 + index,
+            source: 2 + index,
+        });
+    }
+    instructions.extend([
+        Instruction::Move {
+            destination: 12,
+            source: 1,
+        },
+        Instruction::Move {
+            destination: 1,
+            source: 20,
+        },
+        Instruction::BranchIfTrue {
+            register: 12,
+            target: 24,
+        },
+        Instruction::Move {
+            destination: 13,
+            source: 12,
+        },
+        Instruction::Return { register: 1 },
+    ]);
+    test_snapshot(instructions)
+}
+
+#[test]
+fn a_register_bound_again_to_its_earlier_read_is_written_back() {
+    let snapshot = a_register_bound_again_to_its_earlier_read();
+    for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+        let (graph, allocation) = allocated(&snapshot, abi);
+        assert_eq!(verified(&graph, &allocation, &snapshot), Ok(()), "{abi:?}");
+    }
+}

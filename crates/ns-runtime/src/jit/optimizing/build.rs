@@ -291,8 +291,13 @@ struct Builder<'snapshot> {
     /// A loop head's state at its top, against which its back edges are
     /// checked.
     head_entries: Vec<Option<State>>,
-    /// For each value, the register it is a frame read of.
+    /// For each value, the register it is a frame read of while it still
+    /// says what that register's frame word holds (`is_frame_word`).
     frame_read_of: Vec<Option<u16>>,
+    /// For each register, the frame reads of it `frame_read_of` still
+    /// names, which a simple node's write of the register retires
+    /// (`bind`).
+    frame_reads_by_register: Vec<Vec<ValueId>>,
     /// For each loop head, the live registers it takes a phi for though
     /// the rule of `build` would leave them their frame words: those a back
     /// edge of an earlier build brought otherwise.
@@ -362,6 +367,7 @@ impl<'snapshot> Builder<'snapshot> {
             fallback_exits: vec![None; block_count],
             head_entries: vec![None; block_count],
             frame_read_of: Vec::new(),
+            frame_reads_by_register: vec![Vec::new(); register_count],
             forced_phis: vec![RegisterSet::empty(register_count); block_count],
             unbound_at_head: vec![RegisterSet::empty(register_count); block_count],
             refuted: Vec::new(),
@@ -562,7 +568,26 @@ impl<'snapshot> Builder<'snapshot> {
                 .expect("internal: a body defines fewer than 2^32 values"),
         );
         self.frame_read_of.push(frame_read);
+        if let Some(register) = frame_read {
+            self.frame_reads_by_register[usize::from(register)].push(value);
+        }
         value
+    }
+
+    /// Binds `destination` to `value`, which a simple node wrote: every
+    /// earlier read of the register's frame word stops saying what the
+    /// word holds. The allocator may store the binding the node made, or
+    /// a later one, into the word -- a spill writes the bound value back
+    /// -- so a register bound again to such a read, `t := x. x := 0. ...
+    /// x := t`, is bound to a value the word may no longer hold, and a
+    /// merge or a loop's head that took it for the word would read the
+    /// word instead of the value.
+    fn bind(&mut self, state: &mut State, destination: u16, value: ValueId) {
+        let register = usize::from(destination);
+        for read in std::mem::take(&mut self.frame_reads_by_register[register]) {
+            self.frame_read_of[read.index()] = None;
+        }
+        state[register] = Some(value);
     }
 
     /// Whether `binding` of `register` says what its frame word holds: no
@@ -822,7 +847,7 @@ impl<'snapshot> Builder<'snapshot> {
                     destination_register: destination,
                     source: value,
                 });
-                state[usize::from(destination)] = Some(value);
+                self.bind(state, destination, value);
                 None
             }
             Kind::Receiver { destination } => {
@@ -833,7 +858,7 @@ impl<'snapshot> Builder<'snapshot> {
                     destination_register: destination,
                     source: value,
                 });
-                state[usize::from(destination)] = Some(value);
+                self.bind(state, destination, value);
                 None
             }
             Kind::Copy {
@@ -845,7 +870,7 @@ impl<'snapshot> Builder<'snapshot> {
                     destination_register: destination,
                     source: value,
                 });
-                state[usize::from(destination)] = Some(value);
+                self.bind(state, destination, value);
                 None
             }
             Kind::IntegerBinary {
@@ -866,7 +891,7 @@ impl<'snapshot> Builder<'snapshot> {
                     right,
                     fallback: target.expect("internal: a fast path has its fallback"),
                 });
-                state[usize::from(destination)] = Some(value);
+                self.bind(state, destination, value);
                 None
             }
             Kind::Return { register } => {
@@ -1356,6 +1381,115 @@ mod tests {
             .map(|phi| phi.register)
             .collect();
         assert_eq!(registers, vec![3]);
+    }
+
+    /// `a_loop_that_writes_a_register_only_by_a_send` with r3 tainted at
+    /// the head: its word may be one no way in writes back, so the head
+    /// takes r3's phi, and leaves r5, untainted, its frame word.
+    #[test]
+    fn a_register_tainted_at_a_loop_head_keeps_its_phi() {
+        let mut snapshot = snapshot_of(a_loop_that_writes_a_register_only_by_a_send());
+        snapshot.tainted_before[2] = std::iter::once(3..4).collect();
+        let graph = build(&snapshot);
+        assert_eq!(verify(&graph), Ok(()));
+        let head = graph.loop_heads().next().expect("the body loops");
+        assert_eq!(graph.block(head).program_counter, 2);
+        let registers: Vec<u16> = graph
+            .block(head)
+            .phis
+            .iter()
+            .map(|phi| phi.register)
+            .collect();
+        assert_eq!(registers, vec![3]);
+    }
+
+    /// `r5 := 1. r4 := r3 + r5. ^r3`, the addition's fallback send laid
+    /// out after the return and jumping back to it: the return's block is
+    /// a loop head that does not dominate its back edge, so the rule that
+    /// leaves a natural head's registers their frame words does not hold
+    /// there, and r3 -- its frame word on both ways in -- keeps its phi.
+    #[test]
+    fn a_head_a_fallback_rejoins_from_behind_keeps_its_phis() {
+        let graph = build(&snapshot_of(vec![
+            Instruction::LoadLiteral {
+                destination: 5,
+                literal: Literal::SmallInteger(1),
+            },
+            Instruction::IntegerBinary {
+                operation: IntegerOperation::Add,
+                destination: 4,
+                left: 3,
+                right: 5,
+                target: 3,
+            },
+            // 2: entered by the fast path and, from behind, the fallback.
+            Instruction::Return { register: 3 },
+            send(3, 5, 4),
+            Instruction::Jump { target: 2 },
+        ]));
+        assert_eq!(verify(&graph), Ok(()));
+        let head = graph
+            .blocks
+            .iter()
+            .position(|block| block.program_counter == 2 && block.loop_head)
+            .map(BlockId::of_index)
+            .expect("the return's block heads a loop");
+        let registers: Vec<u16> = graph
+            .block(head)
+            .phis
+            .iter()
+            .map(|phi| phi.register)
+            .collect();
+        assert_eq!(registers, vec![3]);
+    }
+
+    /// `t := r1. r1 := 0. r1 := t. r2 ifTrue: [...]. ^r1`: r1 is bound
+    /// again to the read of its frame word made before the `0` was
+    /// written, which the allocator may have stored into the word since,
+    /// so where the ways meet r1 is that read's value, not its frame word.
+    #[test]
+    fn a_register_bound_again_to_a_read_made_before_its_write_is_not_its_frame_word() {
+        let graph = build(&snapshot_of(vec![
+            Instruction::Move {
+                destination: 20,
+                source: 1,
+            },
+            Instruction::LoadLiteral {
+                destination: 1,
+                literal: Literal::SmallInteger(0),
+            },
+            Instruction::Move {
+                destination: 1,
+                source: 20,
+            },
+            Instruction::BranchIfTrue {
+                register: 2,
+                target: 5,
+            },
+            Instruction::Move {
+                destination: 6,
+                source: 2,
+            },
+            Instruction::Return { register: 1 },
+        ]));
+        assert_eq!(verify(&graph), Ok(()));
+        let merge = graph
+            .blocks
+            .iter()
+            .find(|block| matches!(block.end, End::Return { .. }))
+            .expect("the merge returns");
+        assert_eq!(merge.predecessors.len(), 2, "the ways meet at the return");
+        let End::Return { value } = merge.end else {
+            unreachable!("the merge returns");
+        };
+        assert!(
+            matches!(
+                graph.definition(value),
+                Definition::Node(Node::FrameRead { register: 1, .. })
+            ),
+            "the read made at the start"
+        );
+        assert!(merge.nodes.is_empty(), "r1's word is not read again");
     }
 
     #[test]
