@@ -6793,8 +6793,10 @@ impl<'gc> Heap<'gc> {
     /// Clears the machine entry row `code`'s id names, if it names one,
     /// answering the id for the row to be written afresh
     /// (`jit::note_block_entry`): the body's optimized code was installed,
-    /// which the row names from now on. Its budget row is left as it is,
-    /// parked by the request the optimization answered.
+    /// which the row names from now on, or abandoned, so that the row
+    /// names its baseline code again. Its budget row is left as it is:
+    /// parked by the request the optimization answered, or armed by the
+    /// abandonment.
     #[cfg(ns_jit)]
     pub(crate) fn clear_machine_entry_row(&mut self, code: &Rc<CompiledCode>) -> Option<CodeId> {
         let key = Rc::as_ptr(code) as usize;

@@ -220,6 +220,8 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
     if installed.optimized {
         mutator.jit.statistics.optimized_frames_materialized += 1;
     }
+    // The last frame's, which a refused push leaves the innermost.
+    mutator.jit.walked_optimized = installed.optimized;
     let code = &installed.code;
     let (offset, register_base) = match walk.callee {
         None => {
@@ -290,6 +292,7 @@ pub(crate) fn materialize_innermost(
         if installed.optimized {
             mutator.jit.statistics.optimized_frames_materialized += 1;
         }
+        mutator.jit.walked_optimized = installed.optimized;
         let offset = callee.offset(&installed.code);
         let frame = machine_frame(
             &mut mutator.heap,

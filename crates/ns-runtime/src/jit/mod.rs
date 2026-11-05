@@ -481,6 +481,10 @@ pub(crate) struct JitSlot {
     /// this zone, beside which it lives (`optimize_requested`), so that
     /// every change of the baseline code's state forgets it.
     optimized: Cell<u32>,
+    /// How many times the JIT abandoned the body's optimized code
+    /// (`abandon_optimized`), which doubles the budget its next
+    /// optimization waits for (`optimization_budget_after`).
+    optimized_abandonments: Cell<u32>,
 }
 
 /// What `JitSlot::optimized` holds for a body without optimized code.
@@ -500,6 +504,7 @@ impl Default for JitSlot {
             twin_refused: Cell::new(false),
             back_jumps: Cell::new(0),
             optimized: Cell::new(NO_BODY),
+            optimized_abandonments: Cell::new(0),
         }
     }
 }
@@ -624,6 +629,8 @@ impl JitSlot {
         let exits = self.exits.get() / 2;
         self.exits.set(exits);
         self.abandonments.set(self.abandonments.get() / 2);
+        self.optimized_abandonments
+            .set(self.optimized_abandonments.get() / 2);
         exits
     }
 
@@ -1002,6 +1009,16 @@ struct InstalledBody {
     /// The offset from the body's start where the run loop's push enters
     /// it, past the prologue a compiled call enters at.
     push_entry: u32,
+    /// How many times optimized code handed its frame to the interpreter
+    /// (`EXIT_BUDGET`): its own count, so that its exits abandon it alone
+    /// and never its baseline code, whose slot counts the baseline's
+    /// (`count_exit`). Unused for baseline code.
+    exits: Cell<u32>,
+    /// The bytes a compile of the body's optimized code needed, its
+    /// alignment's slack included, when it last found no room; 0 if none
+    /// did, as `JitSlot::needed` is the lean body's own and `twin_needed`
+    /// its twin's. Unused but for a lean body.
+    optimized_needed: u32,
 }
 
 /// Which of the JIT's two compilers made a body's machine code
@@ -1114,6 +1131,12 @@ pub(crate) struct JitState {
     /// The innermost frame the last walk materialized, for the run loop to
     /// go on with (`take_walked`).
     pub(crate) walked: Option<ActivationReference>,
+    /// Whether the innermost frame the last walk materialized stood in
+    /// optimized code, whose exits count against its own budget, never
+    /// its baseline code's (`count_exit`): the code of the exit's
+    /// instruction, or, for a refused push, the code the caller's call
+    /// returns into. Cleared with `walked` before every entry.
+    pub(crate) walked_optimized: bool,
     /// The block every entry hands machine code (`stubs::BlockWord`), kept
     /// from one entry to the next: an entry writes only the words that
     /// name its frame and its code, the others when `block_stale` says
@@ -1286,6 +1309,7 @@ impl JitState {
             #[cfg(ns_jit)]
             cut: cut::CutWalk::default(),
             walked: None,
+            walked_optimized: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -1773,9 +1797,11 @@ impl JitState {
         (optimized != NO_BODY && self.live_body(optimized).is_some()).then_some(optimized)
     }
 
-    /// The innermost frame the last exit's walk materialized, taken.
-    pub(crate) fn take_walked(&mut self) -> Option<ActivationReference> {
-        self.walked.take()
+    /// The innermost frame the last exit's walk materialized, taken, and
+    /// whether it stood in optimized code.
+    pub(crate) fn take_walked(&mut self) -> Option<(ActivationReference, bool)> {
+        let walked = self.walked.take()?;
+        Some((walked, std::mem::take(&mut self.walked_optimized)))
     }
 
     /// The installed body holding the byte before `return_address`.
@@ -1848,6 +1874,7 @@ impl JitState {
             #[cfg(ns_jit)]
             cut: cut::CutWalk::default(),
             walked: None,
+            walked_optimized: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -2700,6 +2727,12 @@ impl JitState {
                     code.jit.decay_exits();
                 }
             }
+            // Optimized code's own count, halved as its baseline code's
+            // is, so that a rare exit of it does not add up to its
+            // abandonment over a long run either.
+            if body.tier == Tier::Optimized && !body.free {
+                body.exits.set(body.exits.get() / 2);
+            }
         }
         let mut revived = 0;
         self.abandoned.retain(|body| {
@@ -3127,6 +3160,8 @@ fn install_body(
         },
         baseline,
         push_entry,
+        exits: Cell::new(0),
+        optimized_needed: 0,
     });
     // Until it is pointed at its row the code spends from the unpointed
     // budget, whose first spend calls the leaf: the word is never one the
@@ -3165,13 +3200,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
     if installed.code.jit.twin_refused.get() {
         return Err(Refusal::TooLarge);
     }
-    if state.zone_exhausted
-        && needed > 0
-        && state
-            .zone
-            .as_ref()
-            .is_none_or(|zone| zone.limit.saturating_sub(zone.next_offset) < needed)
-    {
+    if !state.may_compile_needing(needed) {
         state.hold_compile();
         return Err(Refusal::ZoneFull);
     }
@@ -3442,12 +3471,21 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
         return;
     };
     // A twin is never named by its slot: `installed` answers the lean body.
-    let (lean, start, feedback_base, settings) = (
+    let (lean, start, feedback_base, settings, needed) = (
         code.jit.map.get(),
         body.start,
         body.feedback_base,
         body.settings,
+        body.optimized_needed,
     );
+    // While the zone is exhausted, optimized code known not to fit the
+    // room left is not snapshotted, compiled and emitted in vain once per
+    // budget: the request is held, as a baseline compile's is.
+    if !mutator.jit.may_compile_needing(needed) {
+        mutator.jit.hold_compile();
+        defer_optimization(mutator, code);
+        return;
+    }
     let method = match &body.method {
         Some(method) => match method.upgrade() {
             Some(method) => Some(method),
@@ -3486,17 +3524,12 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
                 mutator.jit.compaction_requested = true;
                 mutator.jit.zone_exhausted = true;
             }
-            if mutator.jit.compaction_requested {
-                mutator.heap.request_safepoint();
-            }
-            let budget = mutator.heap.optimization_budget_of(code);
-            mutator
-                .heap
-                .arm_optimization_budget(budget.id, mutator.jit.optimization_budget);
+            defer_optimization(mutator, code);
             return;
         }
         Err(_) => return,
     };
+    mutator.jit.bodies[lean as usize].optimized_needed = 0;
     code.jit.optimized.set(index);
     mutator.jit.statistics.optimized_bodies += 1;
     // Its transfers go into the twin, which the baseline body may have.
@@ -3513,6 +3546,21 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
         note_block_entry(mutator, id, code);
     }
+}
+
+/// Puts off `code`'s optimization, which found no room or knows it would
+/// not: a compaction asked for is passed on to the heap, and the body's
+/// budget armed afresh, so that it is requested again once it has run as
+/// long.
+#[cfg(ns_jit)]
+fn defer_optimization(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    if mutator.jit.compaction_requested {
+        mutator.heap.request_safepoint();
+    }
+    let budget = mutator.heap.optimization_budget_of(code);
+    mutator
+        .heap
+        .arm_optimization_budget(budget.id, mutator.jit.optimization_budget);
 }
 
 /// Installs `optimized`, the optimized code of `code` -- `method`'s body
@@ -3570,9 +3618,11 @@ fn install_optimized(
         Some(lean),
     )
     .inspect_err(|refusal| {
-        // What a compaction must free, as for a baseline compile.
+        // What a compaction must free, and what the body waits for while
+        // the zone stays exhausted, as for a baseline compile.
         if *refusal == Refusal::ZoneFull {
             state.wanted_bytes = state.wanted_bytes.max(needed);
+            state.bodies[lean as usize].optimized_needed = needed;
         }
     })?;
     state.bodies[index as usize].push_entry = push_entry;
@@ -3950,6 +4000,7 @@ fn run_machine_code(
     );
     mutator.jit.statistics.machine_entries += 1;
     mutator.jit.walked = None;
+    mutator.jit.walked_optimized = false;
     let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
     // was materialized, none goes on interpreted and nothing exited.
@@ -3960,8 +4011,12 @@ fn run_machine_code(
     }
     // The innermost frame the exit materialized, or the entry's when no
     // compiled frame lay above it.
-    let innermost = mutator.jit.take_walked().unwrap_or(activation);
-    resumption_after_exit(mutator, &block, kind, innermost)
+    let (innermost, optimized) = match mutator.jit.take_walked() {
+        Some(walked) => walked,
+        // The entry's own frame exited, in the code the exit names.
+        None => (activation, mutator.jit.exited_optimized(&block)),
+    };
+    resumption_after_exit(mutator, &block, kind, innermost, optimized)
 }
 
 /// What an interpreter's send answers once it called a compiled
@@ -4140,6 +4195,7 @@ fn call_through(
     );
     mutator.jit.statistics.called_entries += 1;
     mutator.jit.walked = None;
+    mutator.jit.walked_optimized = false;
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
         // No exit took the seed.
@@ -4148,7 +4204,7 @@ fn call_through(
             value: block.get(BlockWord::ExitProgramCounter.index()),
         };
     }
-    let Some(innermost) = mutator.jit.take_walked() else {
+    let Some((innermost, optimized)) = mutator.jit.take_walked() else {
         unreachable!("internal: an exit of a called body materializes its innermost frame");
     };
     // A refused call that left the sender the innermost was refused by the
@@ -4163,7 +4219,9 @@ fn call_through(
         mutator.jit.statistics.pushes_refused += 1;
         return Called::Refused;
     }
-    Called::Stopped(resumption_after_exit(mutator, &block, kind, innermost))
+    Called::Stopped(resumption_after_exit(
+        mutator, &block, kind, innermost, optimized,
+    ))
 }
 
 #[cfg(not(ns_jit))]
@@ -4329,20 +4387,24 @@ fn enter_block(
 
 /// Where the run loop goes on after machine code exited with `kind`, no
 /// return, as `block` describes the exit, `innermost` the innermost frame
-/// the exit materialized or the entry's: the exit counted, a body that
-/// has spent its budget abandoned, and the innermost frame interpreted
-/// from here.
+/// the exit materialized or the entry's, `optimized` whether it stood in
+/// optimized code: the exit counted, a body that has spent its budget
+/// abandoned, and the innermost frame interpreted from here.
 #[cfg(ns_jit)]
 fn resumption_after_exit(
     mutator: &mut Mutator<'_>,
     block: &EntryBlock,
     kind: u64,
     innermost: ActivationReference,
+    optimized: bool,
 ) -> Resumption {
     use stubs::MachineExit;
 
     let exit = stubs::decode_exit(block, kind);
     mutator.jit.statistics.exits += 1;
+    if optimized {
+        mutator.jit.statistics.optimized_exits += 1;
+    }
     // Counted on every exit, not only while counting, since the abandonment
     // and the tests read it: a match on the exit's slot, which decodes
     // nothing (`CompiledCode::is_send`), on a path that has just left
@@ -4366,11 +4428,7 @@ fn resumption_after_exit(
     ) && !mutator.jit.install_bodies_exiting_at_once
     {
         let code = mutator.heap.activation_code(innermost);
-        if code.jit.twin_refused.get() {
-            refuse_for_its_twin(mutator, &code);
-        } else if code.jit.note_exit() {
-            abandon(mutator, &code);
-        }
+        count_exit(mutator, &code, optimized);
     }
     // The innermost frame goes on interpreted from here: it no longer
     // stands in machine code, which only the frames below it still do.
@@ -4462,7 +4520,8 @@ fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockW
 /// (`JitState::note_abandoned_entry`) -- and
 /// every cell that names its machine entry is written afresh from its
 /// entry, which now names the stub that refuses the call. Its machine code
-/// is freed at once (`JitState::free_body`), and its bytes reclaimed by the
+/// -- baseline and optimized code alike -- is freed at once
+/// (`JitState::free_body`), and its bytes reclaimed by the
 /// next compaction, so that a revived body is compiled anew: abandonment
 /// runs only between entries (`resumption_after_exit`), where no return
 /// address into the zone exists, and a frame an exit left stopped in the
@@ -4481,7 +4540,116 @@ fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
         .refresh_cells_entering_any(&entries, &mutator.jit);
 }
 
+/// Counts an exit that handed `code`'s frame to the interpreter, which
+/// stood in `code`'s optimized code if `optimized`, and gives up what
+/// keeps exiting: a body whose twin the compiler refused is refused for
+/// good, whichever code exited, since every copy exits where it makes a
+/// closure; an exit of optimized code counts against the optimized
+/// code's own `EXIT_BUDGET`, which, spent, abandons it alone
+/// (`abandon_optimized`), its baseline code staying installed; an exit of
+/// baseline code against the slot's, which, spent, abandons the body --
+/// baseline and optimized code alike (`abandon`). Between entries only.
+#[cfg(ns_jit)]
+fn count_exit(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, optimized: bool) {
+    if code.jit.twin_refused.get() {
+        refuse_for_its_twin(mutator, code);
+        return;
+    }
+    if optimized {
+        if mutator.jit.note_optimized_exit(code) {
+            abandon_optimized(mutator, code);
+        }
+        return;
+    }
+    if code.jit.note_exit() {
+        abandon(mutator, code);
+    }
+}
+
+/// Abandons `code`'s optimized code, which has spent its `EXIT_BUDGET`:
+/// it alone is freed (`JitState::free_optimized`), and the body goes on
+/// in its baseline code, which every cell and the machine entry row that
+/// entered the optimized code are written afresh to enter -- as the
+/// optimized code's install wrote them to enter it -- while its exits and
+/// its usage stay what they were. Its optimization budget is armed again
+/// at the budget doubled for each of its abandonments
+/// (`optimization_budget_after`), so that a body whose optimized code
+/// keeps exiting is optimized again ever more rarely, as Strongtalk backs
+/// off a recompilation after uncommon traps
+/// (`docs/design/execution.md`, "Speculation and its failure"). Between
+/// entries only,
+/// where no return address into the zone exists; a frame an exit left
+/// stopped in optimized code goes on in baseline code, as every frame
+/// returned to does.
+#[cfg(ns_jit)]
+fn abandon_optimized(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    let Some(start) = mutator.jit.free_optimized(code) else {
+        return;
+    };
+    let abandonments = code.jit.optimized_abandonments.get().saturating_add(1);
+    code.jit.optimized_abandonments.set(abandonments);
+    mutator.jit.statistics.abandoned_optimized_bodies += 1;
+    if let Some(zone) = mutator.jit.zone.as_ref() {
+        let entry = zone.writer.zone().executable_address(CodeOffset(start)) as u64;
+        mutator.caches.refresh_cells_entering(entry, &mutator.jit);
+    }
+    if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
+        note_block_entry(mutator, id, code);
+    }
+    let budget = mutator.heap.optimization_budget_of(code);
+    let armed = optimization_budget_after(mutator.jit.optimization_budget, abandonments);
+    mutator.heap.arm_optimization_budget(budget.id, armed);
+}
+
+/// The budget a body whose optimized code was abandoned `abandonments`
+/// times is armed with: `budget` doubled at each abandonment, at most
+/// `MAXIMUM_REVIVAL_DOUBLINGS` times, as an abandoned body's revival
+/// backs off (`revival_entries`), so that a body whose optimized code
+/// always exits is compiled at most once per sixteen budgets once the cap
+/// is reached; and decay halves the abandonments (`JitSlot::decay_exits`),
+/// so that the wait shrinks again in a run that allocates.
+#[cfg(ns_jit)]
+fn optimization_budget_after(budget: i64, abandonments: u32) -> i64 {
+    budget.saturating_mul(1 << abandonments.min(MAXIMUM_REVIVAL_DOUBLINGS))
+}
+
 impl JitState {
+    /// Whether the innermost frame of an exit that walked no frame -- the
+    /// entry's own -- stood in optimized code: the code the exit names
+    /// (`stubs::BlockWord::ExitCodeAddress`).
+    #[cfg(ns_jit)]
+    fn exited_optimized(&self, block: &EntryBlock) -> bool {
+        let address = block.get(stubs::BlockWord::ExitCodeAddress.index());
+        usize::try_from(address)
+            .ok()
+            .and_then(|address| self.body_of(address))
+            .is_some_and(|installed| installed.optimized)
+    }
+
+    /// Counts an exit of `code`'s optimized code against its own budget,
+    /// answering whether it has just spent its `EXIT_BUDGET`.
+    #[cfg(ns_jit)]
+    fn note_optimized_exit(&self, code: &CompiledCode) -> bool {
+        let Some(body) = self.optimized(code) else {
+            return false;
+        };
+        let exits = body.exits.get().saturating_add(1);
+        body.exits.set(exits);
+        exits >= EXIT_BUDGET
+    }
+
+    /// Frees `code`'s optimized code alone, if it has some here, and
+    /// forgets it in the slot, answering its start for the cells that
+    /// named it: its baseline code, its twin and their exits stay.
+    #[cfg(ns_jit)]
+    fn free_optimized(&mut self, code: &CompiledCode) -> Option<u32> {
+        let index = code.jit.optimized.get();
+        let start = self.optimized(code)?.start;
+        self.free_one(index);
+        code.jit.optimized.set(NO_BODY);
+        Some(start)
+    }
+
     /// Frees `code`'s baseline code and the optimized code beside it, if it
     /// has machine code here (`JitState::free_body`), answering the
     /// addresses a cell may name of them -- each copy's start, sorted --
@@ -5294,6 +5462,136 @@ mod tests {
                     Some(crate::jit::OPTIMIZATION_BUDGET),
                     "armed afresh"
                 );
+            });
+        }
+
+        /// While the zone stays exhausted, a body whose optimized code
+        /// found no room is not snapshotted, compiled and emitted again
+        /// until the room left holds what it needed: the request is held,
+        /// counting towards the next compaction, and its budget armed
+        /// afresh, as the baseline and twin compiles hold theirs.
+        #[test]
+        fn an_exhausted_zone_holds_an_optimization_known_not_to_fit() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.enter(|mutator| {
+                let hot = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &hot);
+                crate::jit::after_compile_trigger(mutator);
+                let zone = mutator.jit.zone.as_mut().expect("a zone");
+                zone.limit = zone.next_offset;
+                let lean = hot.jit.map.get();
+                mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+                crate::jit::optimize_requested(mutator);
+                let needed = mutator.jit.bodies[lean as usize].optimized_needed;
+                assert!(needed > 0, "what it needed is recorded");
+                assert!(mutator.jit.zone_exhausted);
+                let (held, spent) = (
+                    mutator.jit.held_compiles,
+                    mutator.jit.statistics.optimize_nanoseconds,
+                );
+                let budget = mutator.heap.optimization_budget_of(&hot);
+                mutator.heap.park_optimization_budget(budget.id);
+                mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+                crate::jit::optimize_requested(mutator);
+                assert_eq!(mutator.jit.held_compiles, held + 1, "held");
+                assert_eq!(
+                    mutator.jit.statistics.optimize_nanoseconds, spent,
+                    "nothing compiled"
+                );
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&hot),
+                    Some(crate::jit::OPTIMIZATION_BUDGET),
+                    "armed afresh"
+                );
+                // With the room it needed, it is compiled.
+                let zone = mutator.jit.zone.as_mut().expect("a zone");
+                zone.limit = zone.next_offset + needed;
+                mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+                crate::jit::optimize_requested(mutator);
+                assert!(mutator.jit.optimized(&hot).is_some());
+                assert_eq!(mutator.jit.bodies[lean as usize].optimized_needed, 0);
+            });
+        }
+
+        /// Optimized code that spends its exit budget is abandoned alone:
+        /// its exits are its own, never the baseline code's, its baseline
+        /// code stays installed and entered at its start again, and its
+        /// budget is armed at twice the last for each abandonment, up to
+        /// the cap.
+        #[test]
+        fn optimized_code_that_keeps_exiting_is_abandoned_alone_and_backs_off() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                let base = FeedbackBase::NOT_ASSIGNED;
+                let lean = code.jit.map.get();
+                let baseline_start = mutator.jit.bodies[lean as usize].start;
+                let budget = crate::jit::OPTIMIZATION_BUDGET;
+                for abandonments in 1..=crate::jit::MAXIMUM_REVIVAL_DOUBLINGS + 1 {
+                    mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                    crate::jit::optimize_requested(mutator);
+                    let optimized = code.jit.optimized.get();
+                    assert_ne!(optimized, crate::jit::NO_BODY, "optimized again");
+                    for _ in 0..crate::jit::EXIT_BUDGET - 1 {
+                        crate::jit::count_exit(mutator, &code, true);
+                    }
+                    assert!(mutator.jit.optimized(&code).is_some(), "not yet");
+                    crate::jit::count_exit(mutator, &code, true);
+                    assert!(mutator.jit.bodies[optimized as usize].free);
+                    assert!(mutator.jit.optimized(&code).is_none());
+                    assert_eq!(code.jit.optimized.get(), crate::jit::NO_BODY);
+                    assert!(!mutator.jit.bodies[lean as usize].free, "baseline stays");
+                    assert_eq!(code.jit.exits.get(), 0, "the baseline's exits untouched");
+                    assert_eq!(
+                        mutator.jit.machine_entry_of(&code, base),
+                        Some(CodeOffset(baseline_start)),
+                        "a compiled call enters the baseline code again"
+                    );
+                    let doublings = abandonments.min(crate::jit::MAXIMUM_REVIVAL_DOUBLINGS);
+                    assert_eq!(
+                        mutator.heap.armed_optimization_budget(&code),
+                        Some(budget << doublings),
+                        "abandonment {abandonments}"
+                    );
+                    assert_eq!(
+                        mutator.jit.statistics.abandoned_optimized_bodies,
+                        u64::from(abandonments)
+                    );
+                }
+                assert_eq!(mutator.jit.statistics.abandoned_bodies, 0);
+            });
+        }
+
+        /// Baseline code that spends its exit budget is abandoned, and
+        /// its optimized code is freed with it: the pair goes, and no
+        /// lookup finds either.
+        #[test]
+        fn an_abandoned_baseline_body_frees_its_optimized_code_too() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                let lean = code.jit.map.get();
+                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                crate::jit::optimize_requested(mutator);
+                let optimized = code.jit.optimized.get();
+                assert_ne!(optimized, crate::jit::NO_BODY);
+                for _ in 0..crate::jit::EXIT_BUDGET {
+                    crate::jit::count_exit(mutator, &code, false);
+                }
+                assert!(mutator.jit.bodies[lean as usize].free);
+                assert!(mutator.jit.bodies[optimized as usize].free);
+                assert!(code.jit.is_abandoned());
+                assert!(mutator.jit.installed(&code).is_none());
+                assert!(mutator.jit.optimized(&code).is_none());
+                assert_eq!(mutator.jit.statistics.abandoned_bodies, 1);
+                assert_eq!(mutator.jit.statistics.abandoned_optimized_bodies, 0);
             });
         }
 

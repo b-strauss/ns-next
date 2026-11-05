@@ -1111,6 +1111,21 @@ impl Interpreter {
         })
     }
 
+    /// The zone offset at which `method`'s body has optimized code in this
+    /// interpreter's zone, if it has some. A test hook.
+    #[doc(hidden)]
+    pub fn jit_optimized_offset(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<u32> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.optimized_offset(&code)
+        })
+    }
+
     /// The data words of `method`'s body's machine code -- its transfer
     /// words, which name its twin's code -- as the zone holds them. A test
     /// hook.

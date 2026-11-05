@@ -828,8 +828,26 @@ ns_runtime::for_each_lowering! {
             Lowering::Optimized => 1,
             Lowering::Reference => 2,
         };
-        assert_eq!(statistics.optimization_requests, requested);
+        if spends_no_budget_in_a_loop(lowering) {
+            assert!(statistics.optimization_requests <= requested);
+        } else {
+            assert_eq!(statistics.optimization_requests, requested);
+        }
     }
+}
+
+/// Whether a stress mode keeps a hot loop's bodies from spending their
+/// budgets: only machine code spends one. The suspend stress mode
+/// suspends the loop's frame at its first poll, and a frame resumed from
+/// its frame object never switches back into lean code, so that the loop
+/// runs interpreted; and under the zone stress mode the reference
+/// lowering's `run` has every compiled push refused -- the held safepoint
+/// request sets the depth limit to 0 -- until it is abandoned, while its
+/// blocks are freed at every compaction, which clears their budgets.
+fn spends_no_budget_in_a_loop(lowering: Lowering) -> bool {
+    let suspending = std::env::var_os("NS_NEXT_STRESS_SUSPEND")
+        .is_some_and(|value| !value.is_empty() && value != "0");
+    suspending || (lowering == Lowering::Reference && the_zone_stress_mode_is_on())
 }
 
 /// A loop whose every turn sends a method without a loop of its own,
@@ -886,17 +904,20 @@ fn run_stepping(interpreter: &mut Interpreter, instance: &Root, before: JitStati
 fn a_full_collection_keeps_what_is_left_of_a_budget() {
     let lowering = Lowering::Optimized;
     {
+        if the_zone_stress_mode_is_on() {
+            // No budget runs out: the held safepoint request refuses every
+            // compiled push of `run` until it is abandoned, and the
+            // compactions free `step:` between two of its calls, which
+            // clears its budget, so that it is compiled again with a fresh
+            // one.
+            return;
+        }
         let (mut interpreter, instance) = stepping(lowering);
         let before = interpreter.jit_statistics();
         let runs_to_request = (1..=10_000)
             .find(|_| run_stepping(&mut interpreter, &instance, before))
             .expect("the budget runs out");
         assert!(runs_to_request >= 10, "{runs_to_request} runs");
-        if the_zone_stress_mode_is_on() {
-            // Its compactions free and compile again the bodies between
-            // two runs, which arms their budgets afresh.
-            return;
-        }
         let (mut interpreter, instance) = stepping(lowering);
         let before = interpreter.jit_statistics();
         let half = runs_to_request * 6 / 10 + 1;
@@ -1007,17 +1028,11 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// Holds `statistics` to some body optimized -- but under the zone stress
-/// mode with the reference lowering, whose compactions free every body no
-/// activation runs at its safepoints, which arms each budget afresh when
-/// the body is compiled again, so that the reference lowering's small
-/// bodies, a few instructions each, never run one out; and under the
-/// suspend stress mode, under which no budget runs out in a loop either
-/// (`a_hot_loop_requests_its_body_s_optimization`).
+/// Holds `statistics` to some body optimized -- but under a stress mode
+/// that keeps a loop's bodies from spending their budgets
+/// (`spends_no_budget_in_a_loop`).
 fn assert_some_optimized(statistics: &JitStatistics, lowering: Lowering) {
-    let suspending = std::env::var_os("NS_NEXT_STRESS_SUSPEND")
-        .is_some_and(|value| !value.is_empty() && value != "0");
-    if suspending || (lowering == Lowering::Reference && the_zone_stress_mode_is_on()) {
+    if spends_no_budget_in_a_loop(lowering) {
         return;
     }
     assert!(statistics.optimized_bodies >= 1, "a body is optimized");
@@ -1120,6 +1135,68 @@ ns_runtime::for_each_lowering! {
             assert_eq!(statistics.optimized_twin_requests, 1);
             assert_eq!(last.optimized_twin_requests, 0);
             assert_eq!(last.compiled_twins, 0, "the twin is compiled once");
+        }
+    }
+}
+
+/// A loop calling `step:` 3,100 times, whose budget runs out after a few
+/// hundred calls, so that the loop's calls enter its optimized code; from
+/// the 3,001st call on `step:` sends a message its class answers in its
+/// own `doesNotUnderstand:`, whose handler machine code leaves to the
+/// interpreter: an exit of the optimized code at every call.
+const EXITING_HOT_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      step: value = (
+        value < 3000 ifTrue: [^value].
+        ^self missing
+      )
+      public doesNotUnderstand: message = (
+        ^1
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 3100] whileTrue: [
+          sum:: sum + (self step: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// `source`'s `run` with the JIT on and every body's budget
+/// `OPTIMIZING_BUDGET`, outside the JIT stress mode, which never abandons
+/// a body; and what the JIT did meanwhile.
+fn run_abandoning(source: &str, lowering: Lowering) -> (i64, JitStatistics) {
+    let (mut interpreter, class) = load_spending_with(source, lowering);
+    interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
+    interpreter.set_jit_counting(true);
+    let before = interpreter.jit_statistics();
+    let answer = run(&mut interpreter, &class);
+    if let Err(message) = interpreter.verify_cells() {
+        panic!("after the run: {message}");
+    }
+    (answer, since(interpreter.jit_statistics(), before))
+}
+
+ns_runtime::for_each_lowering! {
+    /// `step:`'s optimized code exits at each of the last hundred calls:
+    /// the exits count against its own budget, never its baseline code's,
+    /// so that at the sixty-fourth its optimized code alone is abandoned
+    /// and the rest of the calls run its baseline code, whose thirty-six
+    /// exits abandon nothing. The reference lowering's sends are uncached
+    /// and exit, so that its bodies are never compiled.
+    fn an_optimized_body_that_keeps_exiting_is_abandoned_and_baseline_stays(lowering) {
+        let (answer, statistics) = run_abandoning(EXITING_HOT_LOOP, lowering);
+        assert_eq!(answer, 2999 * 3000 / 2 + 100);
+        if pins_the_tiers(lowering) {
+            assert!(statistics.optimized_bodies >= 1, "{statistics:?}");
+            assert_eq!(statistics.optimized_exits, 64, "{statistics:?}");
+            assert_eq!(statistics.abandoned_optimized_bodies, 1, "{statistics:?}");
+            assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
         }
     }
 }
@@ -5798,6 +5875,49 @@ ns_runtime::for_each_lowering! {
             assert_eq!(done.miss_leaf_calls, 0, "the cell names `b`'s new place");
             assert!(done.compiled_calls >= 1, "`callB` calls `b` through its cell");
         }
+    }
+}
+
+/// A compaction slides a body's optimized code down with its baseline
+/// code over a body freed below both, and the next run pushes it at its
+/// new place: no optimization again, the same answer. `a`, compiled
+/// first, is abandoned for its exits; `spin`, compiled after it, is
+/// optimized after it is abandoned, its budget armed only then.
+#[test]
+fn a_compaction_slides_optimized_code() {
+    let (mut interpreter, class) = load_with(MOVING, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for _ in 0..2 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "a"), 1);
+    }
+    assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1_999_000);
+    abandon_a(&mut interpreter, &subject);
+    interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
+    for _ in 0..2 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1_999_000);
+    }
+    let spin = Symbol::intern("spin");
+    let optimized_before = interpreter.jit_optimized_offset(&class, MethodSide::Instance, spin);
+    let before = interpreter.jit_statistics();
+    interpreter.compact_jit_zone();
+    let optimized_after = interpreter.jit_optimized_offset(&class, MethodSide::Instance, spin);
+    if let Err(message) = interpreter.verify_cells() {
+        panic!("after the compaction: {message}");
+    }
+    assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1_999_000);
+    let done = since(interpreter.jit_statistics(), before);
+    if !a_stress_mode_is_on() {
+        let (Some(optimized_before), Some(optimized_after)) = (optimized_before, optimized_after)
+        else {
+            panic!("`spin` is optimized, and its optimized code survives the compaction");
+        };
+        assert!(
+            optimized_after < optimized_before,
+            "the optimized code moved down: {optimized_before:#x} to {optimized_after:#x}"
+        );
+        assert!(done.moved_bytes > 0);
+        assert_eq!(done.optimized_bodies, 0, "not optimized again");
+        assert_eq!(done.exits, 0, "nothing left machine code");
     }
 }
 

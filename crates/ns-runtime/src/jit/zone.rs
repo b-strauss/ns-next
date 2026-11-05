@@ -312,9 +312,17 @@ impl JitState {
         // Optimized code goes with its baseline body, as the twin does.
         let optimized = self.optimized_of(index);
         for copy in std::iter::once(index).chain(twin).chain(optimized) {
-            if self.mark_free(copy, FreedBy::BetweenCompactions) {
-                self.returns.retain(|_, site| site.body != copy);
-            }
+            self.free_one(copy);
+        }
+    }
+
+    /// Marks the body at `index` alone freed and removes its returns, as
+    /// `free_body` does each copy: optimized code abandoned while its
+    /// baseline code stays (`jit::abandon_optimized`). Only between
+    /// entries.
+    pub(super) fn free_one(&mut self, index: u32) {
+        if self.mark_free(index, FreedBy::BetweenCompactions) {
+            self.returns.retain(|_, site| site.body != index);
         }
     }
 
@@ -492,10 +500,17 @@ impl JitState {
     /// but counts as a held compile (`hold_compile`): no livelock between
     /// compiles and compactions is possible.
     pub(super) fn may_compile_now(&self, slot: &super::JitSlot) -> bool {
+        self.may_compile_needing(slot.needed.get())
+    }
+
+    /// `may_compile_now` for a copy that needed `needed` bytes when a
+    /// compile last found no room for it, 0 if none did: a lean body's
+    /// slot records them, the lean body its twin's and its optimized
+    /// code's.
+    pub(super) fn may_compile_needing(&self, needed: u32) -> bool {
         if !self.zone_exhausted {
             return true;
         }
-        let needed = slot.needed.get();
         needed == 0
             || self
                 .zone
@@ -600,6 +615,12 @@ impl JitState {
     pub(crate) fn body_offset(&self, code: &CompiledCode) -> Option<u32> {
         let index = self.named_body(code)?;
         Some(self.bodies[index].start)
+    }
+
+    /// The zone offset of `code`'s optimized code, if it has some here.
+    /// For tests.
+    pub(crate) fn optimized_offset(&self, code: &CompiledCode) -> Option<u32> {
+        Some(self.optimized(code)?.start)
     }
 
     /// The data words of the machine code `code`'s slot names -- its
