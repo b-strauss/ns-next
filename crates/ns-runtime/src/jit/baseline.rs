@@ -47,6 +47,10 @@ pub(crate) struct BaselineBody {
     /// address of its code in the twin (`closures::transfer_to_twin`). None in a
     /// twin.
     pub(crate) twin_transfers: Vec<TwinTransfer>,
+    /// The index of the data word holding the address the code spends its
+    /// optimization budget from (`MacroAssembler::spend_budget`), if it
+    /// spends any: 0 until the JIT points it at the body's row.
+    pub(crate) budget_word: Option<usize>,
 }
 
 /// A lean body's `MakeClosure`, which goes on in the twin at the same
@@ -163,9 +167,10 @@ pub(super) struct BodyAssembler {
     /// its declaration's scope.
     pub(super) declaration_code: bool,
     /// The backward jumps taken out of a conditional, each a label bound
-    /// after the last instruction and the target it polls before and
-    /// jumps to, so that the branch not taken falls straight through.
-    backward_branches: Vec<(Label, u32)>,
+    /// after the last instruction, the target it polls before and jumps
+    /// to, and the budget it spends, so that the branch not taken falls
+    /// straight through.
+    backward_branches: Vec<(Label, u32, u32)>,
     /// Each call's return address, a label bound right after the call,
     /// and the program counter of the send it is the call of, in the order
     /// the calls are emitted (`call_send`).
@@ -191,6 +196,9 @@ pub(super) struct BodyAssembler {
     /// Whether `MakeFuture` lowers to an exit, as it does only for a test
     /// that needs a body exiting at once (`JitState::set_futures_exit`).
     futures_exit: bool,
+    /// The data word the body's budget is spent through, taken at the
+    /// first spend (`spend_budget`).
+    budget_word: Option<usize>,
 }
 
 /// The scratch registers a template uses, by role.
@@ -204,6 +212,29 @@ struct TemplateRegisters {
 }
 
 impl BodyAssembler {
+    /// Spends `amount` instructions of the body's optimization budget
+    /// (`MacroAssembler::spend_budget`), through the one data word every
+    /// spend of this copy shares. Clobbers the flags and the idiom scratch
+    /// register.
+    pub(super) fn spend_budget(&mut self, amount: u32) {
+        let word = match self.budget_word {
+            Some(word) => word,
+            None => {
+                let word = self.macro_assembler.take_body_words(1);
+                self.budget_word = Some(word);
+                word
+            }
+        };
+        self.macro_assembler
+            .spend_budget(word, amount, self.program_counter);
+    }
+
+    /// The instructions a backward jump from the instruction being lowered
+    /// to `target` spends: the loop's, the jump's own included.
+    fn back_jump_distance(&self, target: u32) -> u32 {
+        self.program_counter + 1 - target
+    }
+
     /// A jump to the instruction at `target`. A backward one closes a
     /// loop, so it polls first, as the interpreter's backward jump tests
     /// the safepoint, so that a loop that makes no send still reaches one;
@@ -212,6 +243,7 @@ impl BodyAssembler {
     fn jump_to(&mut self, target: u32) {
         if target <= self.program_counter {
             self.macro_assembler.count_back_edge();
+            self.spend_budget(self.back_jump_distance(target));
             self.macro_assembler.poll(target);
         }
         let label = self.starts[target as usize];
@@ -227,7 +259,8 @@ impl BodyAssembler {
         if target <= self.program_counter {
             let label = self.macro_assembler.assembler().label();
             self.macro_assembler.assembler().jump_if(condition, label);
-            self.backward_branches.push((label, target));
+            self.backward_branches
+                .push((label, target, self.back_jump_distance(target)));
         } else {
             let label = self.starts[target as usize];
             self.macro_assembler.assembler().jump_if(condition, label);
@@ -236,9 +269,12 @@ impl BodyAssembler {
 
     /// The backward jumps `jump_to_if` set aside, each bound and taken.
     fn emit_backward_branches(&mut self) {
-        for (label, target) in std::mem::take(&mut self.backward_branches) {
+        for (label, target, distance) in std::mem::take(&mut self.backward_branches) {
             self.macro_assembler.assembler().bind(label);
             self.macro_assembler.count_back_edge();
+            // The jump's own instruction, which the spend names.
+            self.program_counter = target + distance - 1;
+            self.spend_budget(distance);
             self.macro_assembler.poll(target);
             let start = self.starts[target as usize];
             self.macro_assembler.assembler().jump(start);
@@ -1078,6 +1114,7 @@ pub(crate) fn compile(
         twin_transfers: Vec::new(),
         frame_register_count: code.frame_register_count(),
         futures_exit,
+        budget_word: None,
     };
     if copy == BodyCopy::Lean {
         sends::prologue(&mut body, &BodyFacts::of(code));
@@ -1130,6 +1167,7 @@ pub(crate) fn compile(
         reifies: body.reifies,
         words,
         twin_transfers: body.twin_transfers,
+        budget_word: body.budget_word,
     })
 }
 
@@ -1505,14 +1543,43 @@ mod tests {
     /// whatever `NS_NEXT_STRESS_EXIT` says, and runs it on `frame` with
     /// `safepoint_requested`.
     fn run(code: &CompiledCode, frame: &mut [u64], safepoint_requested: bool) -> MachineExit {
+        run_spending(code, frame, safepoint_requested).0
+    }
+
+    /// The budget `run_spending` points a body's spends at: more than any
+    /// test spends, so that no spend calls the budget leaf.
+    const TEST_BUDGET: i64 = 1 << 40;
+
+    /// `run`, and what is left of `TEST_BUDGET` once the code spent from
+    /// it.
+    fn run_spending(
+        code: &CompiledCode,
+        frame: &mut [u64],
+        safepoint_requested: bool,
+    ) -> (MachineExit, i64) {
         let mut macro_assembler = MacroAssembler::new(Abi::host());
         macro_assembler.set_exit_at_every_poll(false);
-        let body = compiled(code, macro_assembler);
+        let mut body = compiled(code, macro_assembler);
+        let mut budget = [TEST_BUDGET];
+        point_budget(&mut body, &mut budget);
         let mut machine = Machine::new();
         let entry = interpreter_entry(&body, machine.install(&body.code));
-        machine
+        let exit = machine
             .run(entry, frame, 0, safepoint_requested, &mut (), &[])
-            .0
+            .0;
+        (exit, budget[0])
+    }
+
+    /// Points `body`'s budget word at `budget`, which its spends subtract
+    /// from, as the JIT points it at the body's row
+    /// (`jit::point_budget_words`).
+    fn point_budget(body: &mut super::BaselineBody, budget: &mut [i64; 1]) {
+        let (Some(word), Some(words)) = (body.budget_word, body.words.clone()) else {
+            return;
+        };
+        let offset = words.start as usize + word * 8;
+        let address = budget.as_mut_ptr().expose_provenance() as u64;
+        body.code.bytes[offset..offset + 8].copy_from_slice(&address.to_le_bytes());
     }
 
     /// `code` compiled with `macro_assembler`, its sends uncached.
@@ -1610,6 +1677,7 @@ mod tests {
             twin_transfers: Vec::new(),
             frame_register_count: 0,
             futures_exit: false,
+            budget_word: None,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.
@@ -1817,15 +1885,85 @@ mod tests {
             0,
         );
         let mut frame = [0u64; 24];
-        assert_eq!(
-            run(&code, &mut frame, true),
-            MachineExit::Safepoint { program_counter: 0 }
-        );
+        let (exit, budget) = run_spending(&code, &mut frame, true);
+        assert_eq!(exit, MachineExit::Safepoint { program_counter: 0 });
         assert_eq!(
             frame[1],
             integer(7),
             "the loop's body ran before its back edge"
         );
+        assert_eq!(
+            budget,
+            TEST_BUDGET - 2,
+            "the back jump spent the loop's two instructions before its poll"
+        );
+    }
+
+    /// On x64 a spend of a body's budget costs the hot path a memory
+    /// subtract and one branch, after the load of its row's address from
+    /// the body's data word and the test for none: the prologue's spend of
+    /// the body's length and the back jump's of the loop's, both branching
+    /// to the one cold path that calls the leaf.
+    #[test]
+    fn a_spend_on_x64_is_a_subtract_from_memory_and_one_branch() {
+        use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind};
+
+        let code = method(
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 1,
+                    literal: Literal::SmallInteger(7),
+                },
+                Instruction::Jump { target: 0 },
+            ],
+            0,
+        );
+        for abi in [Abi::Windows64, Abi::SystemV] {
+            let body = compiled(&code, MacroAssembler::new(abi));
+            let words = body.words.clone().expect("the budget word");
+            let instructions: Vec<iced_x86::Instruction> = Decoder::with_ip(
+                64,
+                &body.code.bytes[..words.start as usize],
+                0,
+                DecoderOptions::NONE,
+            )
+            .into_iter()
+            .collect();
+            let spends: Vec<usize> = (0..instructions.len())
+                .filter(|index| {
+                    let instruction = &instructions[*index];
+                    instruction.mnemonic() == Mnemonic::Sub
+                        && instruction.op0_kind() == OpKind::Memory
+                })
+                .collect();
+            assert_eq!(spends.len(), 2, "the prologue's spend and the back jump's");
+            for index in spends {
+                let [load, compare, none, subtract, ran_out] =
+                    std::array::from_fn(|offset| instructions[index + offset - 3]);
+                assert_eq!(subtract.immediate(1), 2, "both spend two instructions");
+                assert_eq!(subtract.memory_displacement64(), 0);
+                assert!(load.mnemonic() == Mnemonic::Mov && load.is_ip_rel_memory_operand());
+                let row = load.op0_register();
+                assert_eq!(subtract.memory_base(), row, "the row the data word names");
+                assert!(compare.mnemonic() == Mnemonic::Cmp && compare.op0_register() == row);
+                assert_eq!(compare.immediate(1), 0);
+                assert_eq!(none.mnemonic(), Mnemonic::Je);
+                assert_eq!(
+                    ran_out.mnemonic(),
+                    Mnemonic::Jl,
+                    "the hot path's one branch"
+                );
+                assert_eq!(
+                    none.near_branch_target(),
+                    ran_out.near_branch_target(),
+                    "one cold path"
+                );
+                assert!(
+                    ran_out.near_branch_target() > ran_out.ip(),
+                    "out of line, past the straight line"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1844,7 +1982,9 @@ mod tests {
         let compiled = |word: u64| {
             let mut macro_assembler = MacroAssembler::new(Abi::host());
             macro_assembler.set_exit_at_every_poll(false);
-            let body = compiled(&code, macro_assembler);
+            let mut body = compiled(&code, macro_assembler);
+            let mut budget = [TEST_BUDGET];
+            point_budget(&mut body, &mut budget);
             let start = body.map.machine_offset(1).expect("mapped");
             let mut machine = Machine::new();
             let entry = machine.install(&body.code);

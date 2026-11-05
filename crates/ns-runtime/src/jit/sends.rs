@@ -74,7 +74,10 @@ const _: () = assert!(
 /// handed over to the flags word (`MacroAssembler::record_frame_kind`);
 /// and for a block's what `Step::Block`'s push writes besides
 /// (`block_frame_words`): its closure, its copied values and whether it
-/// counts, the named locals past the copied values nil.
+/// counts, the named locals past the copied values nil; last, the spend
+/// of the body's length from its optimization budget
+/// (`BodyAssembler::spend_budget`), which the run loop's push, entering
+/// past the prologue, does not make.
 /// A factory's current class is the class object it runs on, its
 /// receiver. The run
 /// loop's push writes all of it itself and enters the body past the
@@ -183,6 +186,10 @@ pub(super) fn prologue(body: &mut BodyAssembler, facts: &BodyFacts) {
         BodyRole::Block => block_frame_words(&mut body.macro_assembler, facts),
         BodyRole::Method | BodyRole::Factory | BodyRole::EnteredOnly => {}
     }
+    // After every word of the frame is written, where the call holds
+    // nothing in a scratch register that the budget leaf's call could
+    // clobber.
+    body.spend_budget(facts.instruction_count);
 }
 
 /// What `Step::Block`'s push writes into a block's frame besides what

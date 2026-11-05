@@ -1236,6 +1236,21 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.set_counting(counting));
     }
 
+    /// Sets the budget of instructions a body runs in baseline machine
+    /// code before its optimization is requested
+    /// (`jit::OPTIMIZATION_BUDGET` otherwise), for every body armed from
+    /// now on and every one armed already, so that a test that pins what
+    /// a long loop does in baseline code parks it (`i64::MAX`), and one of
+    /// the budget's reaches its end in a few turns. A test hook.
+    #[doc(hidden)]
+    pub fn set_optimization_budget(&mut self, budget: i64) {
+        self.enter(|mutator| {
+            mutator.jit.set_optimization_budget(budget);
+            #[cfg(ns_jit)]
+            mutator.heap.rearm_optimization_budgets(budget);
+        });
+    }
+
     /// Sets the interpreted backward jump at which a body without machine
     /// code is compiled and its frame switched into the code
     /// (`jit::COMPILE_AT_BACK_JUMP`, 40, otherwise), so that a test reaches

@@ -565,7 +565,14 @@ impl Heap<'_> {
                 // The id may name another body next: no machine code is
                 // entered through it until the JIT records that body's.
                 #[cfg(ns_jit)]
-                self.machine_entries.clear(row);
+                {
+                    self.machine_entries.clear(row);
+                    // Nor is a budget spent from its row: the collection
+                    // points every body's data word afresh
+                    // (`jit::point_budget_words_after_collection`).
+                    self.optimization_budgets
+                        .clear(super::CodeId::from_raw(number));
+                }
                 freed = true;
             }
         }

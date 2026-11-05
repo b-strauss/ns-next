@@ -2768,6 +2768,13 @@ fn fill<'gc>(
         mutator
             .caches
             .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+        // The sender's feedback changed: its optimization waits for it to
+        // settle. The sender is the innermost activation, the interpreter's
+        // and the miss leaf's alike (`materialize::leaf_frame`).
+        #[cfg(ns_jit)]
+        mutator
+            .heap
+            .raise_running_optimization_budget(jit::BUDGET_AFTER_CACHE_CHANGE);
     }
 }
 

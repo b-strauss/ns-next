@@ -11,7 +11,20 @@ use ns_runtime::{
     SourceOrigin, Symbol, Value, ValueKind,
 };
 
+/// `source` loaded under `lowering`, with every body's optimization
+/// budget parked: these pin what baseline code does, which a request for
+/// an optimization -- the leaf's call and the safepoint's exit -- would
+/// change in every long loop. The budget's own tests load with
+/// `load_spending_with`.
 fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let (mut interpreter, class) = load_spending_with(source, lowering);
+    interpreter.set_optimization_budget(i64::MAX);
+    (interpreter, class)
+}
+
+/// `source` loaded under `lowering`, every body's optimization budget the
+/// JIT's own.
+fn load_spending_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
         .expect("resolve");
@@ -112,6 +125,12 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         back_edge_compiles: after.back_edge_compiles - before.back_edge_compiles,
         safepoint_resumptions: after.safepoint_resumptions - before.safepoint_resumptions,
         compile_nanoseconds: after.compile_nanoseconds - before.compile_nanoseconds,
+        optimization_requests: after.optimization_requests - before.optimization_requests,
+        optimized_bodies: after.optimized_bodies - before.optimized_bodies,
+        optimized_exits: after.optimized_exits - before.optimized_exits,
+        abandoned_optimized_bodies: after.abandoned_optimized_bodies
+            - before.abandoned_optimized_bodies,
+        optimize_nanoseconds: after.optimize_nanoseconds - before.optimize_nanoseconds,
     }
 }
 
@@ -752,6 +771,71 @@ const COUNTING_LOOP: &str = indoc! {"
       )
     ) : ()
 "};
+
+/// `source`'s `run` as `run_compiled` runs it with the JIT on, every
+/// body's optimization budget the JIT's own.
+fn run_spending(source: &str, lowering: Lowering) -> (i64, JitStatistics) {
+    let (mut interpreter, class) = load_spending_with(source, lowering);
+    interpreter.set_jit_stress(true);
+    interpreter.set_jit_counting(true);
+    let before = interpreter.jit_statistics();
+    let answer = run(&mut interpreter, &class);
+    (answer, since(interpreter.jit_statistics(), before))
+}
+
+/// A loop of 200,000 turns, which spends far more than a body's budget
+/// at its back jumps.
+const HOT_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 200000] whileTrue: [
+          sum:: sum + index.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// A body that runs once and returns.
+const RETURN_THREE: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        ^3
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The loop's back jumps spend `run`'s budget until it runs out: its
+    /// optimization is requested, once, and its row parked, so that the
+    /// rest of the loop requests nothing more. The reference lowering
+    /// inlines neither block: each turn sends `value` to both, whose
+    /// bodies are hot as well.
+    fn a_hot_loop_requests_its_body_s_optimization(lowering) {
+        let (answer, statistics) = run_spending(HOT_LOOP, lowering);
+        assert_eq!(answer, 20_000_100_000);
+        if lowering == Lowering::Optimized {
+            assert_eq!(statistics.optimization_requests, 1);
+        } else {
+            assert!(statistics.optimization_requests >= 1);
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A body run once spends a few instructions of its budget, which
+    /// requests nothing.
+    fn a_body_run_once_requests_nothing(lowering) {
+        let (answer, statistics) = run_spending(RETURN_THREE, lowering);
+        assert_eq!(answer, 3);
+        assert_eq!(statistics.optimization_requests, 0);
+    }
+}
 
 /// Runs `COUNTING_LOOP` twice on a thread of `stack_bytes`, answering the
 /// second run's answer and its entries into machine code.

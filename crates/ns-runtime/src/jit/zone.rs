@@ -30,6 +30,9 @@
 //! copy moves on its own, and the lean body's transfer words, which name
 //! the twin's code, are written afresh once the copies moved.
 
+#[cfg(ns_jit)]
+use std::rc::Rc;
+
 use ns_memory::CodeOffset;
 
 use crate::bytecode::CompiledCode;
@@ -276,6 +279,17 @@ impl CompactionPlan {
 }
 
 impl JitState {
+    /// The bodies of the freed installed bodies that still live, before a
+    /// compaction's slide drops them.
+    #[cfg(ns_jit)]
+    fn freed_codes(&self) -> Vec<Rc<CompiledCode>> {
+        self.bodies
+            .iter()
+            .filter(|body| body.free)
+            .filter_map(|body| body.code.upgrade())
+            .collect()
+    }
+
     /// Marks the body at `index` freed: no lookup finds it from now on,
     /// its returns are removed, and the next compaction reclaims its
     /// bytes, which count towards the quarter a full collection asks for a
@@ -1019,6 +1033,15 @@ impl Mutator<'_> {
         self.caches.remap_cell_entries(&plan);
         #[cfg(ns_jit)]
         self.heap.remap_machine_entries(&plan);
+        // A freed body's next compile arms its budget afresh, as its
+        // machine entry row is written afresh; and the slide renumbers the
+        // bodies a word still to be pointed names, which its first spend
+        // points instead.
+        #[cfg(ns_jit)]
+        for code in self.jit.freed_codes() {
+            self.heap.forget_optimization_budget(&code);
+        }
+        self.jit.budget_words_to_point.clear();
         self.jit.slide(&plan);
         // After the slide, which lowered the zone's next offset: what the
         // freed bodies left past it is given back by the code zone's pair.

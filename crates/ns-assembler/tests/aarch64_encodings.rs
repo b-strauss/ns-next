@@ -759,6 +759,30 @@ fn a_compare_with_memory_loads_into_x17() {
     }
 }
 
+#[test]
+fn a_subtract_from_memory_goes_through_x17() {
+    for memory in memories(allowed_or_stack()) {
+        for value in IMMEDIATES {
+            let magnitude = i64::from(value).unsigned_abs();
+            let mnemonic = if value < 0 { "adds" } else { "subs" };
+            let mut expected = access_lines(Width::Word64, true, "x17", memory);
+            match arithmetic_operand(magnitude) {
+                Some(operand) => expected.push(format!("{mnemonic} x17, x17, {operand}")),
+                None => {
+                    expected.extend(move_lines("x16", sign_extended(value)));
+                    expected.push("subs x17, x17, x16".to_owned());
+                }
+            }
+            expected.extend(access_lines(Width::Word64, false, "x17", memory));
+            assert_eq!(
+                text(|assembler| assembler.subtract_from_memory(memory, value)),
+                joined(&expected),
+                "{memory:?} {value}"
+            );
+        }
+    }
+}
+
 /// The instructions of a test of `left`'s `width` bits with `right`.
 fn test_lines(width: Width, left: Register, right: i32) -> Vec<String> {
     let mut lines = Vec::new();

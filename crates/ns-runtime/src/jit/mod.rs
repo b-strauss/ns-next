@@ -76,6 +76,17 @@ const COMPILE_AT_BACK_JUMP: u32 = 40;
 /// processor's instruction fetch block.
 const BODY_ALIGNMENT: u32 = 16;
 
+/// The instructions a body runs in baseline machine code -- its length at
+/// each entry, a loop's at each back jump -- before its optimization is
+/// requested (`heap/optimization_budgets.rs`): a first guess, chosen by
+/// measurement once optimized code runs.
+pub(crate) const OPTIMIZATION_BUDGET: i64 = 120_000;
+
+/// The least budget a body is left with when a send of it filled its
+/// site's cache after a miss, so that its optimization waits for its
+/// feedback to settle: a first guess, chosen with `OPTIMIZATION_BUDGET`.
+pub(crate) const BUDGET_AFTER_CACHE_CHANGE: i64 = 20_000;
+
 /// The native stack an entry into machine code needs left: a return
 /// address's stack slot for every activation the depth limit and its
 /// reserve count, since compiled frames keep theirs on the native stack,
@@ -250,6 +261,19 @@ pub struct JitStatistics {
     /// installation included, refused ones too, in nanoseconds: what a
     /// compiler thread of its own would take off the mutator.
     pub compile_nanoseconds: u64,
+    /// Bodies whose optimization budget ran out in baseline machine code,
+    /// each requested once while its request is pending
+    /// (`JitState::optimization_requests`).
+    pub optimization_requests: u64,
+    /// Bodies compiled to optimized machine code.
+    pub optimized_bodies: u64,
+    /// Exits of optimized machine code.
+    pub optimized_exits: u64,
+    /// Bodies whose optimized machine code was abandoned for its exits.
+    pub abandoned_optimized_bodies: u64,
+    /// Wall time of every optimizing compile, in nanoseconds, as
+    /// `compile_nanoseconds` counts the baseline's.
+    pub optimize_nanoseconds: u64,
 }
 
 impl JitStatistics {
@@ -918,6 +942,11 @@ struct InstalledBody {
     /// Whether the body is freed: no lookup finds it, its returns are gone,
     /// and the next compaction reclaims its bytes.
     free: bool,
+    /// The offset from the body's start of the data word its spends of
+    /// the optimization budget read the row's address from
+    /// (`MacroAssembler::spend_budget`), which a compaction keeps; `None`
+    /// for code that spends none.
+    budget_word: Option<u32>,
 }
 
 /// The settings of the JIT's state a body was compiled under, which its
@@ -1089,6 +1118,19 @@ pub(crate) struct JitState {
     /// revival: `REVIVAL_ENTRIES`, but in a test that lowers it
     /// (`set_revival_entries`).
     revival_base: u32,
+    /// The bodies whose optimization budget ran out, each once, held
+    /// weakly as the installed bodies are: what the optimizing compile at
+    /// the next safepoint takes up.
+    pub(crate) optimization_requests: Vec<Weak<CompiledCode>>,
+    /// The installed bodies, by index in `bodies`, whose budget word is
+    /// still to be pointed at their row, which only a caller holding the
+    /// heap can do (`after_compile_trigger`). Emptied by a compaction,
+    /// which renumbers the bodies: a word left 0 is pointed at its first
+    /// spend.
+    budget_words_to_point: Vec<u32>,
+    /// The budget a body's row is armed with: `OPTIMIZATION_BUDGET`, but
+    /// in a test that sets another (`set_optimization_budget`).
+    optimization_budget: i64,
 }
 
 /// Whether `NS_NEXT_STRESS_JIT` asks for the JIT stress mode: set, and
@@ -1184,6 +1226,9 @@ impl JitState {
             abandoned: Vec::new(),
             revived_by_entries: false,
             revival_base: REVIVAL_ENTRIES,
+            optimization_requests: Vec::new(),
+            budget_words_to_point: Vec::new(),
+            optimization_budget: OPTIMIZATION_BUDGET,
         }
     }
 
@@ -1305,6 +1350,7 @@ impl JitState {
     pub(crate) fn replace_zone(&mut self, bytes: usize) {
         self.bodies.clear();
         self.returns.clear();
+        self.budget_words_to_point.clear();
         self.compaction_requested = false;
         self.zone_exhausted = false;
         self.wanted_bytes = 0;
@@ -1320,6 +1366,12 @@ impl JitState {
             self.refuse_abandoned();
         }
         self.mark_block_stale();
+    }
+
+    /// Sets the budget every body's row is armed with from now on
+    /// (`OPTIMIZATION_BUDGET` otherwise).
+    pub(crate) fn set_optimization_budget(&mut self, budget: i64) {
+        self.optimization_budget = budget;
     }
 
     /// Turns the JIT stress mode on or off for this state, as
@@ -1542,6 +1594,30 @@ impl JitState {
         }
     }
 
+    /// Writes `address` into the budget word of the body at `index` in
+    /// `bodies`, through the zone's one writer, as every data word is
+    /// written.
+    #[cfg(ns_jit)]
+    fn write_budget_word(&mut self, index: u32, address: u64) {
+        let Some(body) = self.live_body(index) else {
+            return;
+        };
+        let Some(word) = body.budget_word else {
+            return;
+        };
+        let offset = body.start + word;
+        let Some(zone) = self.zone.as_mut() else {
+            unreachable!("internal: an installed body lies in a zone");
+        };
+        if zone
+            .writer
+            .write(CodeOffset(offset), &address.to_le_bytes())
+            .is_err()
+        {
+            unreachable!("internal: an installed body's words lie in the committed zone");
+        }
+    }
+
     /// Writes the transfer words of the lean body at `lean` in `bodies`
     /// through the zone's one writer: each the address of its
     /// `MakeClosure`'s code in the twin, or 0 while the body has none, so
@@ -1666,6 +1742,9 @@ impl JitState {
             abandoned: Vec::new(),
             revived_by_entries: false,
             revival_base: REVIVAL_ENTRIES,
+            optimization_requests: Vec::new(),
+            budget_words_to_point: Vec::new(),
+            optimization_budget: OPTIMIZATION_BUDGET,
         }
     }
 }
@@ -2673,7 +2752,12 @@ fn compile_into_slot(
 ///   entry (`InlineCaches::refresh_all_cells`), so that every caller's cell
 ///   of it names the miss stub again, not only the site that counted. A
 ///   leaf may write cells, as the miss leaf writes its own site's.
+/// - Each body the trigger installed has its budget word pointed at its
+///   row, armed with `OPTIMIZATION_BUDGET` unless it is armed already
+///   (`point_budget_words`), before its code first runs.
 pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
+    #[cfg(ns_jit)]
+    point_budget_words(mutator);
     if mutator.jit.compaction_requested {
         mutator.heap.request_safepoint();
     }
@@ -2836,6 +2920,19 @@ fn install_body(
             }
         })
         .collect();
+    let budget_word = body.budget_word.map(|word| {
+        let Some(offset) = u32::try_from(word)
+            .ok()
+            .and_then(|word| word.checked_mul(8))
+            .and_then(|bytes| bytes.checked_add(words))
+        else {
+            unreachable!("internal: a body's data words lie within its bytes");
+        };
+        offset
+    });
+    if budget_word.is_some() {
+        state.budget_words_to_point.push(map);
+    }
     state.bodies.push(InstalledBody {
         code: Rc::downgrade(code),
         method: method.map(Rc::downgrade),
@@ -2854,6 +2951,7 @@ fn install_body(
         alignment: body.code.alignment.max(BODY_ALIGNMENT),
         usage: Cell::new(zone::INITIAL_USAGE),
         free: false,
+        budget_word,
     });
     Ok(map)
 }
@@ -2965,6 +3063,105 @@ pub(crate) fn compile_twin_at(state: &mut JitState, code_address: usize) -> bool
         unreachable!("internal: a transfer lies in an installed body");
     };
     compile_twin(state, lean).is_ok()
+}
+
+/// Points the budget word of every body installed since the last trigger
+/// at its body's row (`point_budget_word`), before its code first runs
+/// (`after_compile_trigger`).
+#[cfg(ns_jit)]
+fn point_budget_words(mutator: &mut Mutator<'_>) {
+    for index in std::mem::take(&mut mutator.jit.budget_words_to_point) {
+        point_budget_word(mutator, index, 0);
+    }
+}
+
+/// Points the budget word of every installed body afresh after a full
+/// collection's `reclaim_ids`, which may have freed the code ids the rows
+/// are indexed by, and before the table gives the rows past the code
+/// table back (`World::collect`): the id of a body that lives is asked of
+/// the heap again -- minted afresh for one whose id was freed, which only
+/// what holds the body keeps alive, so that no body outlives its holders
+/// for its machine code's sake -- and a dead body's word is set to 0.
+#[cfg(ns_jit)]
+pub(crate) fn point_budget_words_after_collection(mutator: &mut Mutator<'_>) {
+    mutator.jit.budget_words_to_point.clear();
+    for index in 0..mutator.jit.bodies.len() {
+        let index = u32::try_from(index).expect("internal: a body's index fits a u32");
+        if !point_budget_word(mutator, index, u64::MAX) {
+            mutator.jit.write_budget_word(index, 0);
+        }
+    }
+}
+
+/// Without a JIT no body spends a budget.
+#[cfg(not(ns_jit))]
+pub(crate) fn point_budget_words_after_collection(_mutator: &mut Mutator<'_>) {}
+
+/// Points the budget word of the body at `index` in `bodies`, which holds
+/// `spent_from`, at the row of the id its body has now -- the sink for an
+/// id past the table -- armed with the state's budget unless it is armed
+/// already, and answers whether the body lives to have one. The word is
+/// written only when it names another address.
+#[cfg(ns_jit)]
+fn point_budget_word(mutator: &mut Mutator<'_>, index: u32, spent_from: u64) -> bool {
+    let Some(code) = mutator
+        .jit
+        .live_body(index)
+        .and_then(|body| body.code.upgrade())
+    else {
+        return false;
+    };
+    let budget = mutator.heap.optimization_budget_of(&code);
+    if !budget.armed && !budget.sink {
+        mutator
+            .heap
+            .arm_optimization_budget(budget.id, mutator.jit.optimization_budget);
+    }
+    if spent_from != budget.address {
+        mutator.jit.write_budget_word(index, budget.address);
+    }
+    true
+}
+
+/// The budget leaf's work (`leaves::budget`): a spend of the body the
+/// address inside the code `code_address` lies in left the word at
+/// `spent_from` below zero, or found its data word 0. A row that ran out
+/// -- the one the body's id names now, and armed -- requests the body's
+/// optimization, once while the request is pending, parks the row and
+/// requests a safepoint, at which the request is taken up. Anything else
+/// spent from a word that names no budget of this body's: a data word
+/// not pointed yet, or a row cleared since, is pointed at the body's
+/// row, armed afresh; the sink an id past the table spends from is parked
+/// again.
+#[cfg(ns_jit)]
+pub(crate) fn budget_spent(mutator: &mut Mutator<'_>, spent_from: u64, code_address: usize) {
+    let Some(index) = mutator.jit.installed_index_at(code_address) else {
+        unreachable!("internal: a budget is spent by an installed body");
+    };
+    let Some(code) = mutator
+        .jit
+        .live_body(index)
+        .and_then(|body| body.code.upgrade())
+    else {
+        unreachable!("internal: a body running machine code lives");
+    };
+    let budget = mutator.heap.optimization_budget_of(&code);
+    if budget.sink {
+        mutator.heap.park_optimization_budget_sink();
+    }
+    if budget.sink || spent_from != budget.address || !budget.armed {
+        point_budget_word(mutator, index, spent_from);
+        return;
+    }
+    mutator.heap.park_optimization_budget(budget.id);
+    let requested = Rc::as_ptr(&code);
+    let requests = &mut mutator.jit.optimization_requests;
+    requests.retain(|request| request.strong_count() > 0);
+    if !requests.iter().any(|request| request.as_ptr() == requested) {
+        requests.push(Rc::downgrade(&code));
+        mutator.jit.statistics.optimization_requests += 1;
+        mutator.heap.request_safepoint();
+    }
 }
 
 #[cfg(not(ns_jit))]
@@ -4500,6 +4697,69 @@ mod tests {
             assert!(state.body_at(second_start + 1, heap).is_some());
         }
 
+        /// A body's row is armed with the budget when its baseline code is
+        /// installed, before the code runs, and its data word names the
+        /// row; a spend that ran the armed row out requests the body's
+        /// optimization once and parks the row, while a spend through a
+        /// word not pointed at the row, or from a row cleared since,
+        /// points and arms it and requests nothing.
+        #[test]
+        fn a_budget_that_runs_out_requests_its_body_once() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::jit::OPTIMIZATION_BUDGET)
+                );
+                let index = code.jit.map.get();
+                let word = |mutator: &crate::interpreter::Mutator<'_>| {
+                    let body = &mutator.jit.bodies[index as usize];
+                    let offset = body.start + body.budget_word.expect("a budget word");
+                    let zone = mutator.jit.zone.as_ref().expect("a zone");
+                    let bytes = zone
+                        .writer
+                        .bytes(offset..offset + 8)
+                        .expect("committed")
+                        .to_vec();
+                    u64::from_le_bytes(bytes.try_into().expect("a word"))
+                };
+                let row = mutator.heap.optimization_budget_of(&code).address;
+                assert_eq!(word(mutator), row, "pointed at install");
+                let inside = {
+                    let body = &mutator.jit.bodies[index as usize];
+                    let zone = mutator.jit.zone.as_ref().expect("a zone");
+                    zone.writer
+                        .zone()
+                        .executable_address(CodeOffset(body.start + 1))
+                };
+                crate::jit::budget_spent(mutator, 0, inside);
+                assert!(
+                    mutator.jit.optimization_requests.is_empty(),
+                    "a word set to 0"
+                );
+                crate::jit::budget_spent(mutator, row, inside);
+                crate::jit::budget_spent(mutator, row, inside);
+                assert_eq!(mutator.jit.optimization_requests.len(), 1);
+                assert_eq!(mutator.jit.statistics.optimization_requests, 1, "once");
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
+                );
+                mutator.heap.forget_optimization_budget(&code);
+                crate::jit::budget_spent(mutator, row, inside);
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::jit::OPTIMIZATION_BUDGET),
+                    "a cleared row is armed afresh, requesting nothing"
+                );
+                assert_eq!(mutator.jit.statistics.optimization_requests, 1);
+            });
+        }
+
         /// A body that makes a closure, so that its lean code transfers its
         /// frame into its twin, but returns 7 from its first named local
         /// before it does.
@@ -4724,7 +4984,8 @@ mod tests {
         /// A body's data words lie in the zone past its last instruction,
         /// on a cache line no instruction shares, before the next body's
         /// code, and zeroed at install, so that their first run fills
-        /// them: the lean body's transfer word, until the twin is compiled,
+        /// them: the lean body's budget word, which its prologue spends
+        /// through, and its transfer word, until the twin is compiled,
         /// and the twin's closure site. The compile of the twin writes the
         /// transfer word with the twin's address of the `MakeClosure`.
         #[test]
@@ -4752,7 +5013,7 @@ mod tests {
             assert_eq!(twin, 2, "installed after the bodies before it");
             assert_eq!(compile_twin(&mut state, 0), Ok(twin), "compiled once");
             assert_eq!(state.statistics().compiled_twins, 1);
-            for (index, word_bytes) in [(0, 8), (2, 24)] {
+            for (index, word_bytes) in [(0, 16), (1, 8), (2, 24)] {
                 let body = &state.bodies[index];
                 assert!(body.words < body.end, "the body has data words");
                 assert_eq!(body.words_end - body.words, word_bytes);
@@ -4771,8 +5032,9 @@ mod tests {
             assert!(first.end <= second.start, "before the next body's");
             assert!(second.end <= twin.start, "the twin after both");
             assert_eq!(
-                second.words, second.end,
-                "a body without transfers has no words"
+                second.budget_word,
+                Some(second.words - second.start),
+                "a body without transfers has its budget word alone"
             );
             assert!(!first.reifies && twin.reifies);
             assert_eq!((first.twin, twin.lean), (Some(2), Some(0)), "paired");
@@ -4784,10 +5046,12 @@ mod tests {
             let expected = zone.writer.zone().executable_address(CodeOffset(
                 twin.start + twin.map.machine_offset(2).expect("mapped"),
             )) as u64;
+            let mut lean_words = vec![0; 8];
+            lean_words.extend_from_slice(&expected.to_le_bytes());
             assert_eq!(
                 words(&state, 0),
-                expected.to_le_bytes(),
-                "the transfer names the twin's `MakeClosure`"
+                lean_words,
+                "the budget word not pointed by a state without a heap, and                  the transfer naming the twin's `MakeClosure`"
             );
         }
 

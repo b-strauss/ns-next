@@ -376,6 +376,11 @@ impl World {
         // After the prune, whose survivors keep their mixins, and before
         // the compaction, while the mark bits still say what lives.
         self.mutator.reclaim_ids(gathered);
+        // After `reclaim_ids`, which may have freed the code ids budget
+        // rows are indexed by, and before `shrink_committed_memory` gives
+        // the rows past the code table back: every body's machine code
+        // spends from the row its id names after the collection.
+        crate::jit::point_budget_words_after_collection(&mut self.mutator);
         // After `forget_families`, which freed the ranges of the families
         // nothing runs any more: once enough of the table is free, the
         // live ranges slide down, and every holder of a base is rewritten

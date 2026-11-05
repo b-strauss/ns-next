@@ -44,6 +44,8 @@ mod machine_entries;
 pub(crate) mod machine_words;
 pub(crate) mod mark;
 mod object;
+#[cfg(ns_jit)]
+mod optimization_budgets;
 mod pending;
 pub(crate) mod reclaim;
 mod records;
@@ -954,6 +956,26 @@ pub(crate) struct MachineEntryLayout {
     pub(crate) feedback_base_displacement: i32,
     /// Its parameter count.
     pub(crate) parameters_displacement: i32,
+}
+
+/// What a parked optimization budget row holds
+/// (`optimization_budgets.rs`).
+#[cfg(all(ns_jit, test))]
+pub(crate) const OPTIMIZATION_BUDGET_PARKED: i64 = optimization_budgets::PARKED;
+
+/// A body's optimization budget as the budget leaf finds it
+/// (`Heap::optimization_budget_of`).
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct OptimizationBudget {
+    /// The body's code id, the row's index.
+    pub(crate) id: CodeId,
+    /// The address its baseline code spends from: the row's, or the sink's.
+    pub(crate) address: u64,
+    /// Whether the row is armed (`optimization_budgets.rs`).
+    pub(crate) armed: bool,
+    /// Whether the address is the sink's, for an id past the table.
+    pub(crate) sink: bool,
 }
 
 /// Where machine code finds what the divorce of a reified frame at its
@@ -2228,6 +2250,11 @@ pub struct Heap<'gc> {
     /// id clears. Only where machine code runs.
     #[cfg(ns_jit)]
     machine_entries: machine_entries::MachineEntries,
+    /// Each body's optimization budget by code id, which baseline machine
+    /// code spends (`optimization_budgets.rs`), and the free of a code id
+    /// clears. Only where machine code runs.
+    #[cfg(ns_jit)]
+    optimization_budgets: optimization_budgets::OptimizationBudgets,
     /// What a body's `CodeIdCache` must carry for its id to name a row of
     /// `tables` (`next_code_table_epoch`).
     code_table_epoch: u64,
@@ -2656,6 +2683,8 @@ impl<'gc> Heap<'gc> {
             application_ids,
             #[cfg(ns_jit)]
             machine_entries: machine_entries::MachineEntries::new(),
+            #[cfg(ns_jit)]
+            optimization_budgets: optimization_budgets::OptimizationBudgets::new(),
             code_table_epoch: next_code_table_epoch(),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
@@ -6756,6 +6785,85 @@ impl<'gc> Heap<'gc> {
         let key = Rc::as_ptr(code) as usize;
         if let Some(id) = self.tables.code_ids.get(&key).copied() {
             self.machine_entries.clear(id.index());
+            // Its next compile arms the row afresh.
+            self.optimization_budgets.clear(id);
+        }
+    }
+
+    /// The optimization budget of `code` (`optimization_budgets.rs`): its
+    /// code id, registered if it has none, and the address its baseline
+    /// code spends from -- its row, committed, or the sink for an id past
+    /// the table -- and whether the row is armed.
+    #[cfg(ns_jit)]
+    pub(crate) fn optimization_budget_of(&mut self, code: &Rc<CompiledCode>) -> OptimizationBudget {
+        let id = self.code_id(code);
+        let address = self.optimization_budgets.spending_address(id);
+        OptimizationBudget {
+            id,
+            address,
+            armed: self.optimization_budgets.is_armed(id),
+            sink: self.optimization_budgets.is_sink(address),
+        }
+    }
+
+    /// Arms the optimization budget row of code id `id` with `budget`.
+    #[cfg(ns_jit)]
+    pub(crate) fn arm_optimization_budget(&mut self, id: CodeId, budget: i64) {
+        self.optimization_budgets.arm(id, budget);
+    }
+
+    /// Parks the optimization budget row of code id `id`: its body's
+    /// optimization is requested.
+    #[cfg(ns_jit)]
+    pub(crate) fn park_optimization_budget(&mut self, id: CodeId) {
+        self.optimization_budgets.park(id);
+    }
+
+    /// Arms every armed optimization budget row afresh with `budget`
+    /// (`Interpreter::set_optimization_budget`).
+    #[cfg(ns_jit)]
+    pub(crate) fn rearm_optimization_budgets(&mut self, budget: i64) {
+        self.optimization_budgets.rearm_all(budget);
+    }
+
+    /// Parks the sink the bodies past the table spend from again.
+    #[cfg(ns_jit)]
+    pub(crate) fn park_optimization_budget_sink(&mut self) {
+        self.optimization_budgets.park_sink();
+    }
+
+    /// Raises the optimization budget of the body the innermost activation
+    /// runs to `at_least`, if its row is armed: a send of it filled its
+    /// site's cache after a miss, so that its compile waits for the
+    /// feedback to settle (`interpreter::inline_cache`'s `fill`). The
+    /// activation's code id names its body: a running activation's row is
+    /// never freed.
+    #[cfg(ns_jit)]
+    pub(crate) fn raise_running_optimization_budget(&mut self, at_least: i64) {
+        if let Some(activation) = self.top_activation() {
+            let id = self.activation_code_id(activation);
+            self.optimization_budgets.raise(id, at_least);
+        }
+    }
+
+    /// The optimization budget row of `code`, if it has a code id and the
+    /// row is armed. For tests.
+    #[cfg(all(ns_jit, test))]
+    pub(crate) fn armed_optimization_budget(&self, code: &Rc<CompiledCode>) -> Option<i64> {
+        let id = self.tables.code_ids.get(&(Rc::as_ptr(code) as usize))?;
+        self.optimization_budgets
+            .is_armed(*id)
+            .then(|| self.optimization_budgets.budget(*id))
+    }
+
+    /// Clears the optimization budget row of `code`'s id, if it has one:
+    /// a compaction of the code zone freed its machine code (`jit::zone`),
+    /// and its next compile arms the row afresh.
+    #[cfg(ns_jit)]
+    pub(crate) fn forget_optimization_budget(&mut self, code: &Rc<CompiledCode>) {
+        let key = Rc::as_ptr(code) as usize;
+        if let Some(id) = self.tables.code_ids.get(&key).copied() {
+            self.optimization_budgets.clear(id);
         }
     }
 
@@ -6796,7 +6904,11 @@ impl<'gc> Heap<'gc> {
     /// (`Interpreter::set_jit_zone_bytes`).
     pub(crate) fn forget_machine_entries(&mut self) {
         #[cfg(ns_jit)]
-        self.machine_entries.clear_all();
+        {
+            self.machine_entries.clear_all();
+            // Every row is armed afresh at its body's next spend.
+            self.optimization_budgets.clear_all();
+        }
     }
 
     /// Whether closure `object`'s body has a row of the machine entry
@@ -10847,6 +10959,14 @@ impl<'gc> Heap<'gc> {
                 pairs.machine_entries,
                 pairs.damped,
                 |rows| machine_words.set(MachineWord::MachineEntryRows, rows as u64),
+            );
+            self.count_decommit(bytes);
+            // Its pages are of the size the machine entry table's are
+            // measured in, so it shrinks by the same pair.
+            let bytes = self.optimization_budgets.shrink(
+                self.tables.codes.len(),
+                pairs.machine_entries,
+                pairs.damped,
             );
             self.count_decommit(bytes);
         }
