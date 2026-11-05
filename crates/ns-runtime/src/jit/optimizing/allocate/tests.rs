@@ -438,3 +438,77 @@ fn every_built_graph_allocates_and_verifies_on_both_abis() {
     assert!(spilled, "some value is in its frame word somewhere");
     assert!(points > 0);
 }
+
+/// `r5 := 1. r6 := r3 new: r5. [r3 := r3 new: r5. r3 < r5] whileTrue.
+/// ^r3`: every way into the loop's head, and into the merge of the
+/// comparison's fast path and its fallback, brings r3 as its frame word,
+/// so r3 is never reloaded on a way in nor stored back -- only the
+/// literal and the comparison's result, which the branch reads, are.
+fn a_loop_that_writes_a_register_only_by_a_send() -> Snapshot {
+    test_snapshot(vec![
+        Instruction::LoadLiteral {
+            destination: 5,
+            literal: Literal::SmallInteger(1),
+        },
+        test_send(3, 5, 6),
+        test_send(3, 5, 3),
+        Instruction::IntegerBinary {
+            operation: IntegerOperation::Less,
+            destination: 4,
+            left: 3,
+            right: 5,
+            target: 6,
+        },
+        Instruction::BranchIfTrue {
+            register: 4,
+            target: 2,
+        },
+        Instruction::Return { register: 3 },
+        test_send(3, 5, 4),
+        Instruction::Jump { target: 4 },
+    ])
+}
+
+#[test]
+fn a_register_every_way_brings_as_its_frame_word_is_neither_reloaded_nor_stored() {
+    let snapshot = a_loop_that_writes_a_register_only_by_a_send();
+    for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+        let (graph, allocation) = allocated(&snapshot, abi);
+        assert_eq!(verified(&graph, &allocation, &snapshot), Ok(()));
+        let moves = || allocation.moves.values().flatten();
+        assert!(
+            moves().all(|each| !matches!(each, Move::Load { register: 3, .. })),
+            "no way in reloads r3"
+        );
+        let stored: Vec<u16> = allocation
+            .dirty_at
+            .iter()
+            .flat_map(|point| point.stores.iter().map(|(register, _, _)| *register))
+            .chain(moves().filter_map(|each| match each {
+                Move::Store { register, .. } => Some(*register),
+                _ => None,
+            }))
+            .collect();
+        assert!(stored.contains(&5), "the literal is written back");
+        assert!(!stored.contains(&3), "r3 is never stored: {stored:?}");
+    }
+}
+
+#[test]
+fn the_frame_word_rule_leaves_a_write_back_left_out_refused() {
+    let snapshot = a_loop_that_writes_a_register_only_by_a_send();
+    let (graph, mut allocation) = allocated(&snapshot, Abi::SystemV);
+    let first = allocation
+        .dirty_at
+        .iter_mut()
+        .find(|point| !point.stores.is_empty())
+        .expect("the literal's write-back");
+    first.stores.retain(|(register, _, _)| *register != 5);
+    assert_eq!(
+        verified(&graph, &allocation, &snapshot),
+        Err(VerifyError::NotWrittenBack {
+            register: 5,
+            program_counter: 1
+        })
+    );
+}

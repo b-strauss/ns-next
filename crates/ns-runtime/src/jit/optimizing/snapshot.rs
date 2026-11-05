@@ -20,7 +20,7 @@ use crate::bytecode::{
     HEADER_REGISTERS,
 };
 use crate::heap::{CodeId, Heap};
-use crate::interpreter::inline_cache::FeedbackBase;
+use crate::interpreter::inline_cache::{FeedbackBase, InlineCaches};
 use crate::Symbol;
 
 /// What a body says of itself apart from its instructions: the numbers
@@ -923,6 +923,13 @@ pub(crate) struct Snapshot {
     /// pre-pass nils. An interrupt point owes the frame word of every
     /// other register its value (`metadata::verify_allocation`).
     pub(crate) tainted_before: Vec<Vec<Range<u16>>>,
+    /// For each instruction, whether it is an `IntegerBinary` whose
+    /// fallback send's site has cached a receiver other than a
+    /// `SmallInteger` (`InlineCaches::saw_receiver_other_than`): the
+    /// program's numbers fail its fast path, so the graph lowers it to its
+    /// fallback alone (`build`). Feedback read as layout only: the send
+    /// answers a `SmallInteger`'s operation too.
+    pub(crate) fallback_taken: Vec<bool>,
 }
 
 /// The registers tainted before each instruction of `code`, as
@@ -965,18 +972,39 @@ impl Snapshot {
     pub(crate) fn take(
         code: &Rc<CompiledCode>,
         heap: &mut Heap,
+        caches: &InlineCaches,
         feedback_base: FeedbackBase,
     ) -> Snapshot {
+        let instructions = code.instructions();
+        let small_integer = heap.small_integer_dispatch_id();
+        let fallback_taken = instructions
+            .iter()
+            .map(|instruction| match instruction {
+                Instruction::IntegerBinary { target, .. } => usize::try_from(*target)
+                    .ok()
+                    .and_then(|target| instructions.get(target))
+                    .and_then(Instruction::call_site)
+                    .is_some_and(|site| {
+                        caches.saw_receiver_other_than(
+                            feedback_base,
+                            code.family_size,
+                            site,
+                            small_integer,
+                        )
+                    }),
+                _ => false,
+            })
+            .collect();
         Snapshot {
             code_id: heap.code_id(code),
             facts: BodyFacts::of(code),
             feedback_base,
-            instructions: code
-                .instructions()
+            instructions: instructions
                 .iter()
                 .map(|instruction| SnapshotInstruction::of(instruction, heap))
                 .collect(),
             tainted_before: tainted_before_each(code),
+            fallback_taken,
         }
     }
 }
@@ -1031,7 +1059,7 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
         interpreter.enter(|mutator| {
             let heap = &mut mutator.heap;
-            let snapshot = Snapshot::take(&code, heap, FeedbackBase::NOT_ASSIGNED);
+            let snapshot = Snapshot::take(&code, heap, &mutator.caches, FeedbackBase::NOT_ASSIGNED);
             assert_eq!(snapshot.instructions.len(), code.instruction_count());
             assert!(matches!(
                 snapshot.instructions[1],
@@ -1070,7 +1098,7 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
         interpreter.enter(|mutator| {
             let heap = &mut mutator.heap;
-            let snapshot = Snapshot::take(&code, heap, FeedbackBase::NOT_ASSIGNED);
+            let snapshot = Snapshot::take(&code, heap, &mutator.caches, FeedbackBase::NOT_ASSIGNED);
             let SnapshotInstruction::MakeClosure {
                 block: block_id,
                 parameter_count,

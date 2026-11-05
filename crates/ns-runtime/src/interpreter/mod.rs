@@ -3596,7 +3596,7 @@ fn build_self_referential_object_class<'gc>(
 /// side: what the cache test hooks (`Interpreter::call_site_states`,
 /// `Interpreter::call_site_cells`) read the sites of. `None` when `class`
 /// is no class object or has no such method.
-fn method_code(
+pub(crate) fn method_code(
     mutator: &Mutator<'_>,
     class: &Root,
     side: MethodSide,

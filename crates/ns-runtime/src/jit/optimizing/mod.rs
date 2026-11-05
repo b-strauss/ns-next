@@ -103,6 +103,7 @@ pub(crate) fn test_snapshot_with_arguments(
             })
             .collect(),
         tainted_before: snapshot::tainted_before_each(&code),
+        fallback_taken: vec![false; code.instructions().len()],
     }
 }
 
@@ -181,7 +182,12 @@ fn snapshots_of(modules: &[std::rc::Rc<crate::ResolvedModule>]) -> Vec<snapshot:
         bodies
             .iter()
             .map(|code| {
-                snapshot::Snapshot::take(code, &mut mutator.heap, FeedbackBase::NOT_ASSIGNED)
+                snapshot::Snapshot::take(
+                    code,
+                    &mut mutator.heap,
+                    &mutator.caches,
+                    FeedbackBase::NOT_ASSIGNED,
+                )
             })
             .collect()
     })
@@ -240,4 +246,143 @@ fn bodies_of(
         collect_mixin(&interpreter.compile_module(module), &mut bodies);
     }
     bodies
+}
+
+#[cfg(all(test, ns_jit))]
+mod tests {
+    use indoc::indoc;
+
+    use super::allocate::Move;
+    use super::graph::Node;
+    use crate::interpreter::inline_cache::MethodSide;
+    use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
+
+    fn expect_ok(result: HostResult, what: &str) -> Root {
+        match result {
+            Ok(root) => root,
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => {
+                panic!("{what}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    /// Mandelbrot's escape loop: every operation but the counter's is on
+    /// `Float`s, whose `IntegerBinary` fast path fails at every pass.
+    const ESCAPE: &str = indoc! {"
+        class Escape = () (
+          public run = (
+            |
+              real
+              imaginary
+              realSquared
+              imaginarySquared
+              iteration
+              notDone
+            |
+            real:: 0.0.
+            imaginary:: 0.0.
+            realSquared:: 0.0.
+            imaginarySquared:: 0.0.
+            iteration:: 0.
+            notDone:: true.
+            [notDone and: [iteration < 50]] whileTrue: [
+              real:: realSquared - imaginarySquared + 0.25.
+              imaginary:: 2.0 * real * imaginary + 0.5.
+              realSquared:: real * real.
+              imaginarySquared:: imaginary * imaginary.
+              realSquared + imaginarySquared > 4.0 ifTrue: [notDone:: false].
+              iteration:: iteration + 1.
+            ].
+            ^iteration
+          )
+        )
+    "};
+
+    /// With the caches' feedback of a run, every float operation of the
+    /// escape loop is its send alone, and the loop's locals are never
+    /// reloaded on a way into a block nor written back but where the
+    /// interpreter's instructions write them: each operation costs its
+    /// send and nothing around it, where before each send stored and
+    /// reloaded every local the loop carries.
+    #[test]
+    fn the_escape_loop_sends_its_float_operations_with_nothing_stored_or_reloaded_around_them() {
+        let module = ns_syntax::parse(ESCAPE).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            ESCAPE.into(),
+            SourceOrigin::File("escape.ns".into()),
+        )
+        .unwrap_or_else(|_| panic!("the escape loop resolves"));
+        let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+        let class = interpreter.load_module(&resolved);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run",
+        );
+        let snapshot = interpreter.enter(|mutator| {
+            let code = crate::interpreter::method_code(
+                mutator,
+                &class,
+                MethodSide::Instance,
+                Symbol::intern("run"),
+            )
+            .expect("the method");
+            let base = mutator.caches.known_base(&code).expect("it ran");
+            super::snapshot::Snapshot::take(&code, &mut mutator.heap, &mutator.caches, base)
+        });
+        let taken = snapshot
+            .fallback_taken
+            .iter()
+            .filter(|taken| **taken)
+            .count();
+        assert_eq!(taken, 9, "the nine float operations, not the counter's two");
+        let graph = super::build::build(&snapshot);
+        let integer_paths = graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .filter(|node| matches!(node, Node::IntegerBinary { .. }))
+            .count();
+        assert_eq!(integer_paths, 2, "`iteration < 50` and `iteration + 1`");
+        let roles =
+            crate::jit::macro_assembler::Roles::of(crate::jit::macro_assembler::Abi::host());
+        let (allocation, _) = super::metadata::allocate_and_describe(&snapshot, &graph, &roles);
+        // The four locals the float operations write: each is stored once
+        // before the loop, on its way in, and once in the loop, right where
+        // the interpreter's `StoreLocal` writes it, and never reloaded.
+        let floats = 13..=16;
+        let before_the_loop = allocation
+            .positions
+            .end_definition(super::graph::BlockId::of_index(0));
+        for (position, moves) in &allocation.moves {
+            for each in moves {
+                match each {
+                    Move::Load { register, .. } => assert!(
+                        !floats.contains(register),
+                        "a float local is reloaded at {position}: {each:?}"
+                    ),
+                    Move::Store { register, .. } => assert!(
+                        !floats.contains(register) || *position == before_the_loop,
+                        "a float local is stored on a way in at {position}: {each:?}"
+                    ),
+                    Move::Transfer { .. } => {}
+                }
+            }
+        }
+        for register in floats {
+            let write_backs = allocation
+                .dirty_at
+                .iter()
+                .filter(|point| {
+                    point
+                        .stores
+                        .iter()
+                        .any(|(stored, _, _)| *stored == register)
+                })
+                .count();
+            assert_eq!(write_backs, 1, "r{register} is written back once a pass");
+        }
+    }
 }

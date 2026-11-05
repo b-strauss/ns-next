@@ -3684,7 +3684,12 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
         None => None,
     };
     let started = std::time::Instant::now();
-    let snapshot = optimizing::snapshot::Snapshot::take(code, &mut mutator.heap, feedback_base);
+    let snapshot = optimizing::snapshot::Snapshot::take(
+        code,
+        &mut mutator.heap,
+        &mutator.caches,
+        feedback_base,
+    );
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
     macro_assembler.set_deoptimize_by_countdown(mutator.jit.deopt_stress);

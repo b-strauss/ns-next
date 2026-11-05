@@ -604,6 +604,40 @@ mod tests {
         assert_eq!(frame[14], 0x5A5A, "the fast path wrote nothing");
     }
 
+    /// An operation whose fallback is the way the program takes is its
+    /// send alone: on operands its fast path would answer, the code goes
+    /// to the send at the fallback's own program counter, the operand
+    /// written back and the destination untouched, as the interpreter's
+    /// failing instruction leaves the frame there.
+    #[test]
+    fn a_taken_fallback_is_sent_at_its_own_program_counter_without_the_fast_path() {
+        let mut snapshot = test_snapshot_with_arguments(
+            vec![
+                literal(13, 1),
+                Instruction::IntegerBinary {
+                    operation: IntegerOperation::Add,
+                    destination: 14,
+                    left: 13,
+                    right: 13,
+                    target: 3,
+                },
+                Instruction::Return { register: 14 },
+                test_send(13, 13, 14),
+                Instruction::Return { register: 14 },
+            ],
+            0,
+        );
+        snapshot.fallback_taken[1] = true;
+        let mut frame = [0u64; 64];
+        frame[14] = 0x5A5A;
+        assert_eq!(
+            run(&snapshot, &mut frame, false),
+            MachineExit::Reexecute { program_counter: 3 }
+        );
+        assert_eq!(frame[13], small_integer(1), "written back for the send");
+        assert_eq!(frame[14], 0x5A5A, "no fast path wrote it");
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     fn an_optimized_body_refuses_a_dead_register() {

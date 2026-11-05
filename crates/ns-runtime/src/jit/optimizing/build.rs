@@ -30,8 +30,26 @@ const UNFILLED: ValueId = ValueId(u32::MAX);
 /// never runs, so keeping it would mean inventing one. A body whose first
 /// instruction heads a loop is given an entry block of its own, with no
 /// instruction, so that the head's phis have an input for the entry.
+///
+/// A loop head leaves a register its frame word, with no phi, wherever
+/// every way in from before the loop brings a value that frame word holds,
+/// or, at the head of a loop of the program's, the loop may change it; the back edges, built later, must bring one, and
+/// a head one refutes is built again with the phi (`Builder::forced_phis`),
+/// until none does. The rule decides what the code loads and stores, never
+/// what it computes: a way that brings a value its frame word does not hold
+/// writes it back on its way in (`liveness::join`).
 pub(crate) fn build(snapshot: &Snapshot) -> Graph {
-    let graph = Builder::new(snapshot).build();
+    let mut forced = None;
+    let graph = loop {
+        let mut builder = Builder::new(snapshot);
+        if let Some(forced) = forced.take() {
+            builder.forced_phis = forced;
+        }
+        match builder.build() {
+            Ok(graph) => break graph,
+            Err(more) => forced = Some(more),
+        }
+    };
     debug_assert!(
         super::verify::verify(&graph).is_ok(),
         "internal: the built graph is refused: {:?}",
@@ -84,8 +102,15 @@ enum Outcome {
 /// not named is a frame node, emitted by the baseline's template for it,
 /// which is right for any instruction; a simple node is a choice made
 /// here, one instruction at a time.
-fn kind_of(instruction: &SnapshotInstruction, program_counter: usize) -> Kind {
+///
+/// An `IntegerBinary` whose fallback is the way taken (`send_only`,
+/// `Snapshot::fallback_taken`) is a jump to its fallback: the interpreter's
+/// instruction, failing, writes nothing and goes there, so the frame at the
+/// fallback send is the one the interpreter has there, and no fast path,
+/// diamond or merge is built for a test the program's numbers fail.
+fn kind_of(instruction: &SnapshotInstruction, program_counter: usize, send_only: bool) -> Kind {
     match instruction {
+        SnapshotInstruction::IntegerBinary { .. } if send_only => Kind::Jump,
         SnapshotInstruction::LoadLiteral {
             destination,
             literal,
@@ -208,6 +233,10 @@ struct LoopFacts {
     /// Whether a frame node lies in a loop, which leaves every register to
     /// its frame word.
     frame_node: bool,
+    /// Whether the head dominates every block a back edge leaves: a loop
+    /// of the program's, not the way back from a fallback laid out after
+    /// the fast path it rejoins.
+    natural: bool,
 }
 
 /// A block before its nodes are built: the instructions it holds, empty
@@ -240,6 +269,11 @@ type State = Vec<Option<ValueId>>;
 
 struct Builder<'snapshot> {
     instructions: &'snapshot [SnapshotInstruction],
+    /// Each instruction lowered to a jump to its fallback (`kind_of`).
+    send_only: Vec<bool>,
+    /// The registers the leftover analysis taints before each instruction
+    /// (`Snapshot::tainted_before`).
+    tainted_before: &'snapshot [Vec<Range<u16>>],
     reads: Vec<Vec<u16>>,
     written: Vec<Option<u16>>,
     register_count: usize,
@@ -259,6 +293,16 @@ struct Builder<'snapshot> {
     head_entries: Vec<Option<State>>,
     /// For each value, the register it is a frame read of.
     frame_read_of: Vec<Option<u16>>,
+    /// For each loop head, the live registers it takes a phi for though
+    /// the rule of `build` would leave them their frame words: those a back
+    /// edge of an earlier build brought otherwise.
+    forced_phis: Vec<RegisterSet>,
+    /// For each loop head, the registers it left their frame words on
+    /// that rule, which its back edges must bring as such.
+    unbound_at_head: Vec<RegisterSet>,
+    /// The loop heads' registers a back edge brought as a value its frame
+    /// word does not hold, though the head left them their frame words.
+    refuted: Vec<(usize, usize)>,
 }
 
 impl<'snapshot> Builder<'snapshot> {
@@ -268,19 +312,45 @@ impl<'snapshot> Builder<'snapshot> {
             !instructions.is_empty(),
             "internal: a body holds at least one instruction"
         );
+        let send_only: Vec<bool> = instructions
+            .iter()
+            .enumerate()
+            .map(|(index, instruction)| {
+                matches!(instruction, SnapshotInstruction::IntegerBinary { .. })
+                    && snapshot.fallback_taken.get(index).copied().unwrap_or(false)
+            })
+            .collect();
+        // A jump to the fallback reads nothing and writes nothing: the
+        // fallback send reads the operands.
         let reads: Vec<Vec<u16>> = instructions
             .iter()
-            .map(SnapshotInstruction::registers_read)
+            .zip(&send_only)
+            .map(|(instruction, send_only)| {
+                if *send_only {
+                    Vec::new()
+                } else {
+                    instruction.registers_read()
+                }
+            })
             .collect();
         let written: Vec<Option<u16>> = instructions
             .iter()
-            .map(SnapshotInstruction::register_written)
+            .zip(&send_only)
+            .map(|(instruction, send_only)| {
+                if *send_only {
+                    None
+                } else {
+                    instruction.register_written()
+                }
+            })
             .collect();
         let register_count = snapshot.register_count();
-        let shapes = shapes_of(instructions);
+        let shapes = shapes_of(instructions, &send_only);
         let block_count = shapes.len();
         let mut builder = Builder {
             instructions,
+            send_only,
+            tainted_before: &snapshot.tainted_before,
             reads,
             written,
             register_count,
@@ -292,6 +362,9 @@ impl<'snapshot> Builder<'snapshot> {
             fallback_exits: vec![None; block_count],
             head_entries: vec![None; block_count],
             frame_read_of: Vec::new(),
+            forced_phis: vec![RegisterSet::empty(register_count); block_count],
+            unbound_at_head: vec![RegisterSet::empty(register_count); block_count],
+            refuted: Vec::new(),
         };
         builder.lay_out_blocks();
         builder.live_in = builder.liveness();
@@ -299,9 +372,18 @@ impl<'snapshot> Builder<'snapshot> {
         builder
     }
 
-    fn build(mut self) -> Graph {
+    /// The graph, or, when a back edge refuted a register its loop head
+    /// left its frame word, the phis to force in the next build.
+    fn build(mut self) -> Result<Graph, Vec<RegisterSet>> {
         for block in 0..self.blocks.len() {
             self.build_block(block);
+        }
+        if !self.refuted.is_empty() {
+            let mut forced = self.forced_phis;
+            for (head, register) in self.refuted {
+                forced[head].insert(register);
+            }
+            return Err(forced);
         }
         debug_assert!(
             self.blocks
@@ -309,7 +391,7 @@ impl<'snapshot> Builder<'snapshot> {
                 .all(|block| block.phis.iter().all(|phi| !phi.inputs.contains(&UNFILLED))),
             "internal: every back edge filled its head's phis"
         );
-        Graph::from_blocks(self.blocks)
+        Ok(Graph::from_blocks(self.blocks))
     }
 
     /// The blocks, each with its predecessors and whether it heads a
@@ -423,14 +505,15 @@ impl<'snapshot> Builder<'snapshot> {
                 .map(|predecessor| predecessor.index())
                 .filter(|predecessor| *predecessor >= head)
                 .collect();
+            let natural = back_edges
+                .iter()
+                .all(|predecessor| dominates(head, *predecessor));
             let mut facts = LoopFacts {
                 written: RegisterSet::empty(self.register_count),
                 frame_node: false,
+                natural,
             };
-            if back_edges
-                .iter()
-                .all(|predecessor| dominates(head, *predecessor))
-            {
+            if natural {
                 // The loop's body: the head, every block a back edge
                 // leaves from, and every block that reaches one without
                 // passing the head.
@@ -453,7 +536,10 @@ impl<'snapshot> Builder<'snapshot> {
                         continue;
                     }
                     for index in self.shapes[member].instructions.clone() {
-                        if matches!(kind_of(&self.instructions[index], index), Kind::Frame) {
+                        if matches!(
+                            kind_of(&self.instructions[index], index, self.send_only[index]),
+                            Kind::Frame
+                        ) {
                             facts.frame_node = true;
                         }
                         if let Some(written) = self.written[index] {
@@ -540,34 +626,62 @@ impl<'snapshot> Builder<'snapshot> {
             .filter(|predecessor| *predecessor < block)
             .collect();
         let live: Vec<usize> = self.live_in[block].registers().collect();
+        let loop_head = self.loops[block].is_some();
         for register in live {
             let bindings: Vec<Option<ValueId>> = forward
                 .iter()
                 .map(|predecessor| self.edge_binding(*predecessor, block, register))
                 .collect();
+            let frame_words = !bindings.is_empty()
+                && bindings
+                    .iter()
+                    .all(|binding| self.is_frame_word(*binding, register));
+            // A register that is its frame word on every way in is read
+            // again at its next use, with no phi and nothing reloaded or
+            // stored on the way in: a read made before the block does not
+            // survive a frame node on a later pass around a loop through
+            // it, nor any other way that reaches its use through one.
+            if frame_words && !loop_head {
+                continue;
+            }
             // Around a loop, a register changes if the loop writes it, or
             // if a frame node in it leaves the register to its frame word
             // and the register came in bound to anything else.
             let loop_changes = self.loops[block].as_ref().is_some_and(|facts| {
-                facts.written.contains(register)
-                    || (facts.frame_node
-                        && !bindings
-                            .iter()
-                            .all(|binding| self.is_frame_word(*binding, register)))
+                facts.written.contains(register) || (facts.frame_node && !frame_words)
             });
+            // A loop head leaves such a register its frame word too, and so,
+            // at the head of a loop of the program's, one the loop changes,
+            // which a way in from before the loop may bring bound to a value
+            // the frame word does not hold yet: that way writes it back
+            // once, on its way in (`liveness::join`), rather than every pass
+            // around the loop storing and reloading a phi. Where a fallback
+            // rejoins its fast path from behind, the way in is the fast
+            // path, whose result is kept in a phi. The back edges must bring
+            // the frame word's value, which `fill_back_edge` checks; a head
+            // one refutes takes its phi in the next build.
+            let natural = self.loops[block]
+                .as_ref()
+                .is_some_and(|facts| facts.natural);
+            // A register the leftover analysis taints at the head may hold
+            // a word no way in writes back (`Binding::STALE`), so it keeps
+            // its phi.
+            let tainted = self
+                .tainted_before
+                .get(self.blocks[block].program_counter as usize)
+                .is_some_and(|ranges| {
+                    u16::try_from(register)
+                        .is_ok_and(|register| ranges.iter().any(|range| range.contains(&register)))
+                });
+            if loop_head
+                && (frame_words || (natural && loop_changes))
+                && !tainted
+                && !self.forced_phis[block].contains(register)
+            {
+                self.unbound_at_head[block].insert(register);
+                continue;
+            }
             if !loop_changes {
-                // A register that is its frame word on every way in is
-                // read again at its next use: a read made before the
-                // block does not survive a frame node on a later pass
-                // around a loop through it, nor any other way that reaches
-                // its use through one.
-                if !bindings.is_empty()
-                    && bindings
-                        .iter()
-                        .all(|binding| self.is_frame_word(*binding, register))
-                {
-                    continue;
-                }
                 if let Some(first) = bindings.first() {
                     if bindings.iter().all(|binding| binding == first) {
                         state[register] = *first;
@@ -609,12 +723,20 @@ impl<'snapshot> Builder<'snapshot> {
             let value = self.edge_value(predecessor, head, register);
             self.blocks[head].phis[phi].inputs[position] = value;
         }
+        // A register the head left its frame word must come back as its
+        // frame word's value, or the head is built again with its phi.
+        let unbound: Vec<usize> = self.unbound_at_head[head].registers().collect();
+        for register in unbound {
+            let binding = self.edge_binding(predecessor, head, register);
+            if !self.is_frame_word(binding, register) {
+                self.refuted.push((head, register));
+            }
+        }
         if cfg!(debug_assertions) {
-            // A live register the head took no phi for is one no pass
-            // around the loop changes: it entered bound to a value no
-            // frame node in the loop can reach, which the back edge
-            // brings again, or it entered as its frame word, which the
-            // back edge may bring as a read of that word.
+            // Any other live register the head took no phi for is one no
+            // pass around the loop changes: it entered bound to a value no
+            // frame node in the loop can reach, which the back edge brings
+            // again.
             let entry = self.head_entries[head]
                 .as_ref()
                 .expect("internal: a loop head records its state");
@@ -626,7 +748,7 @@ impl<'snapshot> Builder<'snapshot> {
                 let binding = self.edge_binding(predecessor, head, register);
                 debug_assert!(
                     has_phi
-                        || (entry[register].is_none() && self.is_frame_word(binding, register))
+                        || self.unbound_at_head[head].contains(register)
                         || (entry[register].is_some() && binding == entry[register]),
                     "internal: register {register} changes around a loop without a phi"
                 );
@@ -688,7 +810,7 @@ impl<'snapshot> Builder<'snapshot> {
         target: Option<BlockId>,
     ) -> Option<End> {
         let instruction = &self.instructions[index];
-        match kind_of(instruction, index) {
+        match kind_of(instruction, index, self.send_only[index]) {
             Kind::Constant { destination, word } => {
                 let value = self.new_value(None);
                 let nodes = &mut self.blocks[block].nodes;
@@ -810,13 +932,15 @@ impl<'snapshot> Builder<'snapshot> {
 /// of a frame word placed on its way alone: on the other way the register
 /// may be dead, its word one a callee left, and a mirror send's template
 /// jumps for its failure itself, leaving no room after it on one way only.
-fn shapes_of(instructions: &[SnapshotInstruction]) -> Vec<Shape> {
+fn shapes_of(instructions: &[SnapshotInstruction], send_only: &[bool]) -> Vec<Shape> {
     let count = instructions.len();
     let index_of = |target: u32| {
         let target = usize::try_from(target).expect("internal: a jump target fits a usize");
         assert!(target < count, "internal: a jump target lies in its body");
         target
     };
+    // A jump to the fallback does not fall through (`kind_of`).
+    let falls_through = |index: usize| !send_only[index] && instructions[index].falls_through();
     let mut starts = vec![false; count];
     starts[0] = true;
     for (index, instruction) in instructions.iter().enumerate() {
@@ -824,7 +948,7 @@ fn shapes_of(instructions: &[SnapshotInstruction]) -> Vec<Shape> {
         if let Some(target) = target {
             starts[index_of(target)] = true;
         }
-        if (target.is_some() || !instruction.falls_through()) && index + 1 < count {
+        if (target.is_some() || !falls_through(index)) && index + 1 < count {
             starts[index + 1] = true;
         }
     }
@@ -848,7 +972,7 @@ fn shapes_of(instructions: &[SnapshotInstruction]) -> Vec<Shape> {
         let target = instruction
             .jump_target()
             .map(|target| run_of[index_of(target)]);
-        let next = if instruction.falls_through() {
+        let next = if falls_through(last) {
             assert!(
                 last + 1 < count,
                 "internal: a body does not run off its end"
@@ -999,6 +1123,7 @@ mod tests {
                 })
                 .collect(),
             tainted_before: tainted_before_each(&code),
+            fallback_taken: vec![false; code.instructions().len()],
         }
     }
 
@@ -1087,6 +1212,147 @@ mod tests {
         assert_eq!(graph.block(head).program_counter, 1);
         assert_eq!(graph.block(head).phis.len(), 1);
         assert_eq!(graph.block(head).phis[0].register, 3);
+    }
+
+    /// `counting_loop` with each fast path's fallback the way the program
+    /// takes: each operation is its fallback send alone, entered by a jump
+    /// from where the operation stood, and the fast paths' jumps over their
+    /// sends are never built.
+    #[test]
+    fn a_fast_path_whose_fallback_is_taken_is_its_fallback_send_alone() {
+        let mut snapshot = snapshot_of(counting_loop());
+        snapshot.fallback_taken[2] = true;
+        snapshot.fallback_taken[7] = true;
+        let graph = build(&snapshot);
+        assert_eq!(verify(&graph), Ok(()));
+        let nodes = || graph.blocks.iter().flat_map(|block| &block.nodes);
+        assert!(nodes().all(|node| !matches!(node, Node::IntegerBinary { .. })));
+        let frames: Vec<u32> = nodes()
+            .filter_map(|node| match node {
+                Node::Frame {
+                    program_counter, ..
+                } => Some(*program_counter),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            frames,
+            vec![4, 9],
+            "the two fallback sends, at their own counters"
+        );
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .all(|block| block.program_counter != 3 && block.program_counter != 8),
+            "no fast path's jump over its send"
+        );
+        // Nothing merges after a send: every block has one way in but the
+        // loop's head.
+        assert!(graph
+            .blocks
+            .iter()
+            .filter(|block| !block.loop_head)
+            .all(|block| block.predecessors.len() <= 1));
+    }
+
+    /// `r5 := 1. r6 := r3 new: r5. [r3 := r3 new: r5. r3 < r5] whileTrue.
+    /// ^r3`: the send before the loop and the one in it leave r3 and r5
+    /// their frame words on every way into the head, the back edge
+    /// included, so the head takes no phi for either, though the loop
+    /// writes r3.
+    fn a_loop_that_writes_a_register_only_by_a_send() -> Vec<Instruction> {
+        vec![
+            Instruction::LoadLiteral {
+                destination: 5,
+                literal: Literal::SmallInteger(1),
+            },
+            send(3, 5, 6),
+            // 2: the loop's head.
+            send(3, 5, 3),
+            Instruction::IntegerBinary {
+                operation: IntegerOperation::Less,
+                destination: 4,
+                left: 3,
+                right: 5,
+                target: 6,
+            },
+            Instruction::BranchIfTrue {
+                register: 4,
+                target: 2,
+            },
+            Instruction::Return { register: 3 },
+            send(3, 5, 4),
+            Instruction::Jump { target: 4 },
+        ]
+    }
+
+    #[test]
+    fn a_loop_head_takes_no_phi_for_a_register_every_way_brings_as_its_frame_word() {
+        let graph = build(&snapshot_of(a_loop_that_writes_a_register_only_by_a_send()));
+        assert_eq!(verify(&graph), Ok(()));
+        let head = graph.loop_heads().next().expect("the body loops");
+        assert_eq!(graph.block(head).program_counter, 2);
+        assert!(graph.block(head).phis.is_empty());
+        // Where the fast path and its fallback meet, only the destination
+        // the branch reads takes a phi: r3 and r5 are frame words there.
+        let merge = graph
+            .blocks
+            .iter()
+            .find(|block| block.program_counter == 4 && block.predecessors.len() == 2)
+            .expect("the merge");
+        assert_eq!(merge.phis.len(), 1);
+        assert_eq!(merge.phis[0].register, 4);
+    }
+
+    /// `r5 := 1. r6 := r3 new: r5. [r3 := r3 + r5. r3 < r5] whileTrue.
+    /// ^r3`: every way into the head seen before the loop brings r3 and r5
+    /// as their frame words, so the first build leaves both so; the back
+    /// edge brings r3 bound to the fast path's result, which refutes it,
+    /// and the second build forces r3's phi alone.
+    #[test]
+    fn a_back_edge_bringing_another_value_forces_the_head_s_phi() {
+        let graph = build(&snapshot_of(vec![
+            Instruction::LoadLiteral {
+                destination: 5,
+                literal: Literal::SmallInteger(1),
+            },
+            send(3, 5, 6),
+            // 2: the loop's head.
+            Instruction::IntegerBinary {
+                operation: IntegerOperation::Add,
+                destination: 3,
+                left: 3,
+                right: 5,
+                target: 6,
+            },
+            Instruction::IntegerBinary {
+                operation: IntegerOperation::Less,
+                destination: 4,
+                left: 3,
+                right: 5,
+                target: 8,
+            },
+            Instruction::BranchIfTrue {
+                register: 4,
+                target: 2,
+            },
+            Instruction::Return { register: 3 },
+            send(3, 5, 3),
+            Instruction::Jump { target: 3 },
+            send(3, 5, 4),
+            Instruction::Jump { target: 4 },
+        ]));
+        assert_eq!(verify(&graph), Ok(()));
+        let head = graph.loop_heads().next().expect("the body loops");
+        assert_eq!(graph.block(head).program_counter, 2);
+        let registers: Vec<u16> = graph
+            .block(head)
+            .phis
+            .iter()
+            .map(|phi| phi.register)
+            .collect();
+        assert_eq!(registers, vec![3]);
     }
 
     #[test]

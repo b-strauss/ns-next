@@ -365,6 +365,41 @@ impl InlineCaches {
             .map(|family| family.base)
     }
 
+    /// Whether `site`, in the range at `feedback_base` of a family of
+    /// `family_size`, has cached a receiver whose dispatch id is not
+    /// `small_integer`: an entry of another guard, at the site or in its
+    /// polymorphic block, or a megamorphic site, which only receivers of
+    /// several ids make. The optimizing compiler reads it as the feedback
+    /// of an integer fast path whose fallback the site is, so that a fast
+    /// path the program's numbers fail is not compiled
+    /// (`optimizing::snapshot::Snapshot::take`); it decides nothing a send
+    /// runs.
+    pub(crate) fn saw_receiver_other_than(
+        &self,
+        feedback_base: FeedbackBase,
+        family_size: u32,
+        site: CallSite,
+        small_integer: DispatchId,
+    ) -> bool {
+        let Some(entry) =
+            site_index(feedback_base, family_size, site).and_then(|index| self.sites.get(index))
+        else {
+            return false;
+        };
+        match entry.target {
+            Target::Vacant => false,
+            Target::Megamorphic { .. } => true,
+            Target::Polymorphic { block, .. } => {
+                self.pool.get(block as usize).is_some_and(|slots| {
+                    slots.iter().any(|slot| {
+                        !matches!(slot.target, Target::Vacant) && slot.guard != small_integer
+                    })
+                })
+            }
+            _ => entry.guard != small_integer,
+        }
+    }
+
     /// Whether a new range has grown the sites to their growth limit since
     /// the last collection: the caches have no heap, so the mutator that
     /// minted the range requests the collection (`Mutator::feedback_base_for`,
