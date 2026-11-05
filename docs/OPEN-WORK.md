@@ -798,7 +798,8 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     depth count, not the optimized code's own work: every prologue and
     return loads, changes and stores its machine word, one serial chain
     through all calls, which the leaner optimized copy can no longer
-    hide behind other work. Two ways remain: fusing a `SmallInteger`
+    hide behind other work. Stage 1 accepts the cost (decided
+    2026-11-05). Two ways remain: fusing a `SmallInteger`
     comparison with its branch in optimized code, part of road step 9's
     register allocation (the item above), which shortens the call but
     leaves the chain; and measuring the count kept in a machine register

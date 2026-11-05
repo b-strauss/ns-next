@@ -263,9 +263,52 @@ impl Shape {
     }
 }
 
-/// The register state a block leaves with: `None` for a register whose
-/// value is its frame word.
-type State = Vec<Option<ValueId>>;
+/// The register state at a point of a path: each register's binding,
+/// `None` for a register whose value is its frame word, and the
+/// generation of its frame word on that path.
+#[derive(Clone, Default)]
+struct State {
+    bindings: Vec<Option<ValueId>>,
+    /// A simple node's write of a register begins a new generation of its
+    /// word on its own path alone, and so does a merge of paths that
+    /// disagree: a read of the word says what the word holds only where
+    /// the path's generation is the one it was made in (`is_frame_word`).
+    /// A write on another path -- an exit arm a loop never passes through
+    /// -- leaves the read the word, so the loop takes no phi for it.
+    generations: Vec<u32>,
+}
+
+impl State {
+    /// Every register its frame word, in the first generation.
+    fn unbound(register_count: usize) -> State {
+        State {
+            bindings: vec![None; register_count],
+            generations: vec![0; register_count],
+        }
+    }
+
+    /// Leaves every register to its frame word, for a frame node. It
+    /// begins no generation: no binding made before the node survives it,
+    /// so no read made before it is taken for the word after it, and a
+    /// read made after it reads what the node left.
+    fn unbind_all(&mut self) {
+        self.bindings.fill(None);
+    }
+}
+
+impl std::ops::Index<usize> for State {
+    type Output = Option<ValueId>;
+
+    fn index(&self, register: usize) -> &Option<ValueId> {
+        &self.bindings[register]
+    }
+}
+
+impl std::ops::IndexMut<usize> for State {
+    fn index_mut(&mut self, register: usize) -> &mut Option<ValueId> {
+        &mut self.bindings[register]
+    }
+}
 
 struct Builder<'snapshot> {
     instructions: &'snapshot [SnapshotInstruction],
@@ -291,13 +334,11 @@ struct Builder<'snapshot> {
     /// A loop head's state at its top, against which its back edges are
     /// checked.
     head_entries: Vec<Option<State>>,
-    /// For each value, the register it is a frame read of while it still
-    /// says what that register's frame word holds (`is_frame_word`).
-    frame_read_of: Vec<Option<u16>>,
-    /// For each register, the frame reads of it `frame_read_of` still
-    /// names, which a simple node's write of the register retires
-    /// (`bind`).
-    frame_reads_by_register: Vec<Vec<ValueId>>,
+    /// For each value that is a frame read, the register it reads and the
+    /// generation of the register's word it was made in (`State`).
+    frame_read_of: Vec<Option<(u16, u32)>>,
+    /// The last generation begun.
+    last_generation: u32,
     /// For each loop head, the live registers it takes a phi for though
     /// the rule of `build` would leave them their frame words: those a back
     /// edge of an earlier build brought otherwise.
@@ -363,11 +404,11 @@ impl<'snapshot> Builder<'snapshot> {
             blocks: Vec::with_capacity(block_count),
             live_in: Vec::new(),
             loops: Vec::new(),
-            exits: vec![Vec::new(); block_count],
+            exits: vec![State::default(); block_count],
             fallback_exits: vec![None; block_count],
             head_entries: vec![None; block_count],
             frame_read_of: Vec::new(),
-            frame_reads_by_register: vec![Vec::new(); register_count],
+            last_generation: 0,
             forced_phis: vec![RegisterSet::empty(register_count); block_count],
             unbound_at_head: vec![RegisterSet::empty(register_count); block_count],
             refuted: Vec::new(),
@@ -562,51 +603,73 @@ impl<'snapshot> Builder<'snapshot> {
         loops
     }
 
-    fn new_value(&mut self, frame_read: Option<u16>) -> ValueId {
+    /// A value, a read of `frame_read`'s register's word in its generation
+    /// if it is one.
+    fn new_value(&mut self, frame_read: Option<(u16, u32)>) -> ValueId {
         let value = ValueId(
             u32::try_from(self.frame_read_of.len())
                 .expect("internal: a body defines fewer than 2^32 values"),
         );
         self.frame_read_of.push(frame_read);
-        if let Some(register) = frame_read {
-            self.frame_reads_by_register[usize::from(register)].push(value);
-        }
         value
     }
 
-    /// Binds `destination` to `value`, which a simple node wrote: every
-    /// earlier read of the register's frame word stops saying what the
-    /// word holds. The allocator may store the binding the node made, or
-    /// a later one, into the word -- a spill writes the bound value back
-    /// -- so a register bound again to such a read, `t := x. x := 0. ...
+    fn new_generation(&mut self) -> u32 {
+        self.last_generation = self
+            .last_generation
+            .checked_add(1)
+            .expect("internal: a body begins fewer than 2^32 generations");
+        self.last_generation
+    }
+
+    /// Binds `destination` to `value`, which a simple node wrote, and
+    /// begins a new generation of the register's word on this path: every
+    /// read of the word made earlier on it stops saying what the word
+    /// holds. The allocator may store the binding the node made, or a
+    /// later one, into the word -- a spill writes the bound value back --
+    /// so a register bound again to such a read, `t := x. x := 0. ...
     /// x := t`, is bound to a value the word may no longer hold, and a
     /// merge or a loop's head that took it for the word would read the
-    /// word instead of the value.
+    /// word instead of the value. A path that never passes the write
+    /// keeps its generation, and its reads stay the word's.
     fn bind(&mut self, state: &mut State, destination: u16, value: ValueId) {
         let register = usize::from(destination);
-        for read in std::mem::take(&mut self.frame_reads_by_register[register]) {
-            self.frame_read_of[read.index()] = None;
-        }
+        state.generations[register] = self.new_generation();
         state[register] = Some(value);
     }
 
-    /// Whether `binding` of `register` says what its frame word holds: no
-    /// value, or a read of that very word, which nothing has written
-    /// since -- a frame node would have unbound the register, and a write
-    /// back stores the value it is bound to.
-    fn is_frame_word(&self, binding: Option<ValueId>, register: usize) -> bool {
+    /// Whether `binding` of `register`, on a path in `generation` of the
+    /// register's word, says what that word holds: no value, or a read of
+    /// that very word made in that generation, which nothing on the path
+    /// has written since -- a frame node would have unbound the register,
+    /// and a write back stores the value it is bound to.
+    fn is_frame_word(&self, binding: Option<ValueId>, register: usize, generation: u32) -> bool {
         binding.is_none_or(|value| {
-            self.frame_read_of[value.index()].map(usize::from) == Some(register)
+            self.frame_read_of[value.index()].is_some_and(|(read, made_in)| {
+                usize::from(read) == register && made_in == generation
+            })
         })
+    }
+
+    /// The state control leaves `predecessor` for `block` with.
+    fn edge_state(&self, predecessor: usize, block: usize) -> &State {
+        match &self.fallback_exits[predecessor] {
+            Some(fallback) if self.shapes[predecessor].target == Some(block) => fallback,
+            _ => &self.exits[predecessor],
+        }
     }
 
     /// What `register` is bound to where control leaves `predecessor`
     /// for `block`.
     fn edge_binding(&self, predecessor: usize, block: usize, register: usize) -> Option<ValueId> {
-        match &self.fallback_exits[predecessor] {
-            Some(fallback) if self.shapes[predecessor].target == Some(block) => fallback[register],
-            _ => self.exits[predecessor][register],
-        }
+        self.edge_state(predecessor, block)[register]
+    }
+
+    /// Whether `register` is its frame word where control leaves
+    /// `predecessor` for `block`.
+    fn edge_is_frame_word(&self, predecessor: usize, block: usize, register: usize) -> bool {
+        let state = self.edge_state(predecessor, block);
+        self.is_frame_word(state[register], register, state.generations[register])
     }
 
     /// A value for `register` where control leaves `predecessor` for
@@ -626,7 +689,8 @@ impl<'snapshot> Builder<'snapshot> {
         );
         let register_number =
             u16::try_from(register).expect("internal: a register number fits a u16");
-        let value = self.new_value(Some(register_number));
+        let generation = self.edge_state(predecessor, block).generations[register];
+        let value = self.new_value(Some((register_number, generation)));
         self.blocks[predecessor].nodes.push(Node::FrameRead {
             register: register_number,
             value,
@@ -639,7 +703,7 @@ impl<'snapshot> Builder<'snapshot> {
     /// with a phi for each live register they disagree on and for each a
     /// loop through the block may change.
     fn merge(&mut self, block: usize) -> State {
-        let mut state: State = vec![None; self.register_count];
+        let mut state = State::unbound(self.register_count);
         let predecessors: Vec<usize> = self.blocks[block]
             .predecessors
             .iter()
@@ -650,6 +714,23 @@ impl<'snapshot> Builder<'snapshot> {
             .copied()
             .filter(|predecessor| *predecessor < block)
             .collect();
+        // A register's word keeps its generation where every way in agrees
+        // on it and no pass around a loop through the block writes it;
+        // elsewhere a read made before the block is not the word after it.
+        for register in 0..self.register_count {
+            let mut generations = forward
+                .iter()
+                .map(|predecessor| self.edge_state(*predecessor, block).generations[register]);
+            let first = generations.next();
+            let agreed = first.filter(|first| generations.all(|generation| generation == *first));
+            let written_around = self.loops[block]
+                .as_ref()
+                .is_some_and(|facts| facts.written.contains(register));
+            state.generations[register] = match agreed {
+                Some(generation) if !written_around => generation,
+                _ => self.new_generation(),
+            };
+        }
         let live: Vec<usize> = self.live_in[block].registers().collect();
         let loop_head = self.loops[block].is_some();
         for register in live {
@@ -658,9 +739,9 @@ impl<'snapshot> Builder<'snapshot> {
                 .map(|predecessor| self.edge_binding(*predecessor, block, register))
                 .collect();
             let frame_words = !bindings.is_empty()
-                && bindings
+                && forward
                     .iter()
-                    .all(|binding| self.is_frame_word(*binding, register));
+                    .all(|predecessor| self.edge_is_frame_word(*predecessor, block, register));
             // A register that is its frame word on every way in is read
             // again at its next use, with no phi and nothing reloaded or
             // stored on the way in: a read made before the block does not
@@ -707,7 +788,10 @@ impl<'snapshot> Builder<'snapshot> {
                 self.unbound_at_head[block].insert(register);
                 continue;
             }
-            if !loop_changes {
+            // A register a back edge of an earlier build refuted takes its
+            // phi though every way in agrees: the back edge brings another
+            // value.
+            if !loop_changes && !self.forced_phis[block].contains(register) {
                 if let Some(first) = bindings.first() {
                     if bindings.iter().all(|binding| binding == first) {
                         state[register] = *first;
@@ -753,8 +837,7 @@ impl<'snapshot> Builder<'snapshot> {
         // frame word's value, or the head is built again with its phi.
         let unbound: Vec<usize> = self.unbound_at_head[head].registers().collect();
         for register in unbound {
-            let binding = self.edge_binding(predecessor, head, register);
-            if !self.is_frame_word(binding, register) {
+            if !self.edge_is_frame_word(predecessor, head, register) {
                 self.refuted.push((head, register));
             }
         }
@@ -776,7 +859,8 @@ impl<'snapshot> Builder<'snapshot> {
                 debug_assert!(
                     has_phi
                         || self.unbound_at_head[head].contains(register)
-                        || (entry[register].is_none() && self.is_frame_word(binding, register))
+                        || (entry[register].is_none()
+                            && self.edge_is_frame_word(predecessor, head, register))
                         || (entry[register].is_some() && binding == entry[register]),
                     "internal: register {register} changes around a loop without a phi"
                 );
@@ -791,7 +875,7 @@ impl<'snapshot> Builder<'snapshot> {
         if let Some(value) = state[index] {
             return value;
         }
-        let value = self.new_value(Some(register));
+        let value = self.new_value(Some((register, state.generations[index])));
         self.blocks[block]
             .nodes
             .push(Node::FrameRead { register, value });
@@ -801,7 +885,7 @@ impl<'snapshot> Builder<'snapshot> {
 
     fn build_block(&mut self, block: usize) {
         let mut state = if block == 0 {
-            vec![None; self.register_count]
+            State::unbound(self.register_count)
         } else {
             self.merge(block)
         };
@@ -936,7 +1020,7 @@ impl<'snapshot> Builder<'snapshot> {
                 // What the instruction ran may have written any of the
                 // frame's registers by reference, or moved what a value
                 // names: every register is its frame word again.
-                state.fill(None);
+                state.unbind_all();
                 match (falls_through, next, target) {
                     (false, _, _) => Some(End::Frame),
                     (true, Some(next), Some(target)) if next != target => {
@@ -1490,6 +1574,92 @@ mod tests {
             "the read made at the start"
         );
         assert!(merge.nodes.is_empty(), "r1's word is not read again");
+    }
+
+    /// `r6 := r3 new. [r1 ifTrue: [r1 := 0. ^r1]. r2 := r1. r2] whileTrue.
+    /// ^r2`: the loop reads r1 from its frame word, and only the exit arm,
+    /// laid out before the back edge, writes it. The arm's write is on no
+    /// path around the loop, so the back edge brings r1 as its frame word
+    /// and the head takes no phi for it.
+    #[test]
+    fn a_write_in_a_loop_s_exit_arm_leaves_the_loop_s_read_its_frame_word() {
+        let graph = build(&snapshot_of(vec![
+            unary_send(3, 6),
+            // 1: the loop's head.
+            Instruction::BranchIfFalse {
+                register: 1,
+                target: 4,
+            },
+            Instruction::LoadLiteral {
+                destination: 1,
+                literal: Literal::SmallInteger(0),
+            },
+            Instruction::Return { register: 1 },
+            Instruction::Move {
+                destination: 2,
+                source: 1,
+            },
+            Instruction::BranchIfTrue {
+                register: 2,
+                target: 1,
+            },
+            Instruction::Return { register: 2 },
+        ]));
+        assert_eq!(verify(&graph), Ok(()));
+        let head = graph.loop_heads().next().expect("the body loops");
+        assert_eq!(graph.block(head).program_counter, 1);
+        assert!(graph.block(head).phis.is_empty());
+    }
+
+    /// `r6 := r3 new. [r5 := 1. r4 := r3 + r5. r7 := r3. r7] whileTrue.
+    /// ^r3`, the addition's fallback send laid out after the return and
+    /// jumping back into the loop: the block it rejoins does not dominate
+    /// its back edge, so it takes r3's phi, which the loop's back edge
+    /// brings. The loop's head, refuted, takes r3's phi in the next build,
+    /// though every way into it brings r3 as its frame word.
+    #[test]
+    fn a_head_a_back_edge_refuted_takes_its_phi_though_every_way_in_agrees() {
+        let graph = build(&snapshot_of(vec![
+            unary_send(3, 6),
+            // 1: the loop's head.
+            Instruction::LoadLiteral {
+                destination: 5,
+                literal: Literal::SmallInteger(1),
+            },
+            Instruction::IntegerBinary {
+                operation: IntegerOperation::Add,
+                destination: 4,
+                left: 3,
+                right: 5,
+                target: 6,
+            },
+            // 3: entered by the fast path and, from behind, the fallback.
+            Instruction::Move {
+                destination: 7,
+                source: 3,
+            },
+            Instruction::BranchIfTrue {
+                register: 7,
+                target: 1,
+            },
+            Instruction::Return { register: 3 },
+            send(3, 5, 4),
+            Instruction::Jump { target: 3 },
+        ]));
+        assert_eq!(verify(&graph), Ok(()));
+        let head = graph
+            .blocks
+            .iter()
+            .position(|block| block.program_counter == 1 && block.loop_head)
+            .map(BlockId::of_index)
+            .expect("the loop's head");
+        let registers: Vec<u16> = graph
+            .block(head)
+            .phis
+            .iter()
+            .map(|phi| phi.register)
+            .collect();
+        assert_eq!(registers, vec![3]);
     }
 
     #[test]

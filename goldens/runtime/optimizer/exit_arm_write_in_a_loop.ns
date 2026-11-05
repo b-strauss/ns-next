@@ -1,0 +1,45 @@
+/// A flag written only in the arm of a hot loop that returns from the
+/// method: the loop reads the flag on every pass, after a send before the
+/// loop left it to its frame word, and only the arm that leaves writes it,
+/// so no pass around the loop changes the word and the optimized loop's
+/// head takes no phi for it. Called 20000 times; the flag is true on every
+/// fifth call, which answers 0 at once, and every other call counts to 3.
+class ExitArmWriteInALoop = Object new () (
+  countFrom: flag = (
+    |
+      raised
+      steps
+    |
+    raised:: flag.
+    steps:: 0.
+    flag printString.
+    [steps < 3] whileTrue: [
+      raised ifTrue: [
+        raised:: false.
+        ^0.
+      ].
+      steps:: steps + 1.
+    ].
+    ^steps.
+  )
+
+  run: count = (
+    |
+      total ::= 0.
+    |
+    1 to: count do: [:index | total:: total + (self countFrom: index \\ 5 = 0)].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self run: 20000) printString;
+        newLine.
+    transcript
+        show: (self run: 14) printString;
+        newLine.
+  )
+)
