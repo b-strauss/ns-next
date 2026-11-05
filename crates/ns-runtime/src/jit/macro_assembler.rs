@@ -254,6 +254,26 @@ pub(crate) struct Roles {
     /// which the entry stub saves and the exit stub resets, and through
     /// which a stub reads the return address on top of the stack.
     pub(crate) stack_pointer: Register,
+    /// The registers optimized code keeps its values in between two
+    /// interrupt points (`jit::optimizing::allocate`), those a leaf call
+    /// preserves first. Every one but the first two is a scratch register
+    /// some role above takes, which is sound because a role is played
+    /// only inside a frame node's template, and every frame node clobbers
+    /// every allocatable register: what optimized code holds there it has
+    /// written back before, and it reads every register from its frame
+    /// word after. So nothing optimized code emits between two frame
+    /// nodes -- a simple node's code, a write-back, a reload, a phi's move
+    /// -- may take one of them as a temporary: only `idiom_scratch`,
+    /// `dividend`, `remainder`, `leaf_result` and the other registers no
+    /// value is allocated to. `MacroAssembler::hold_values` lets a debug
+    /// build refuse a temporary or a leaf call that breaks it.
+    pub(crate) allocatable: &'static [Register],
+    /// How many of `allocatable`'s first registers keep their values
+    /// across a leaf call (`MacroAssembler::call_leaf`): those the
+    /// convention has its callee preserve and the call passes no argument
+    /// in. Windows64 preserves `rsi` and `rdi` and SystemV passes the
+    /// shim's block and leaf index in them, so the count differs.
+    pub(crate) survive_leaf_calls: usize,
     /// The registers a stub or a call is entered with, which the methods
     /// below name.
     entered_with: EnteredWith,
@@ -322,6 +342,8 @@ impl Roles {
                 poison: RDX,
                 return_address: RSI,
                 stack_pointer: RSP,
+                allocatable: &[R13, RBP, R12, RSI, RDI, R8, R9, R10],
+                survive_leaf_calls: if abi == Abi::Windows64 { 5 } else { 3 },
                 entered_with: EnteredWith {
                     exit_program_counter: RCX,
                     exit_code_address: RDX,
@@ -356,6 +378,8 @@ impl Roles {
                 poison: X2,
                 return_address: X3,
                 stack_pointer: SP,
+                allocatable: &[X22, X23, X24, X25, X26, X27, X28, X3, X4, X5, X6, X7, X8],
+                survive_leaf_calls: 7,
                 entered_with: EnteredWith {
                     exit_program_counter: X1,
                     exit_code_address: X2,
@@ -571,6 +595,11 @@ pub(crate) struct MacroAssembler {
     /// the label they start at (`take_body_words`).
     body_words: usize,
     body_words_label: Option<Label>,
+    /// The allocatable registers optimized code holds values in where the
+    /// code being emitted runs (`hold_values`), which a debug build
+    /// refuses as a temporary and across a leaf call that clobbers them.
+    #[cfg(debug_assertions)]
+    values_held: Vec<Register>,
 }
 
 /// The alignment of a body's data words, a cache line's, which they share
@@ -592,7 +621,55 @@ impl MacroAssembler {
             count_back_edges: false,
             body_words: 0,
             body_words_label: None,
+            #[cfg(debug_assertions)]
+            values_held: Vec::new(),
         }
+    }
+
+    /// Records that optimized code holds values in `registers`, all of
+    /// them `Roles::allocatable`, where the code emitted next runs, until
+    /// the next call; the baseline holds none. Only a debug build keeps
+    /// it, to refuse what would clobber one of them: a `temporary` among
+    /// them, or a leaf call while one lies past
+    /// `Roles::survive_leaf_calls`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the optimizing compiler's emitter, Task 5's, holds values"
+        )
+    )]
+    pub(crate) fn hold_values(&mut self, registers: &[Register]) {
+        debug_assert!(
+            registers
+                .iter()
+                .all(|register| self.roles.allocatable.contains(register)),
+            "internal: values are held only in allocatable registers"
+        );
+        #[cfg(debug_assertions)]
+        {
+            self.values_held = registers.to_vec();
+        }
+    }
+
+    /// `register`, which the code about to be emitted writes as a
+    /// temporary: every idiom optimized code emits between two frame
+    /// nodes takes its temporaries through here, so that a debug build
+    /// refuses one that holds a value (`Roles::allocatable`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the optimizing compiler's emitter, Task 5's, takes temporaries"
+        )
+    )]
+    pub(crate) fn temporary(&self, register: Register) -> Register {
+        #[cfg(debug_assertions)]
+        assert!(
+            !self.values_held.contains(&register),
+            "internal: {register:?} holds a value and cannot be a temporary"
+        );
+        register
     }
 
     /// Takes `count` more of the body's data words -- words the body reads
@@ -800,6 +877,16 @@ impl MacroAssembler {
     /// before the operand is read.
     pub(crate) fn call_leaf(&mut self, leaf: LeafIndex, arguments: [Operand; 3]) {
         let roles = self.roles;
+        // A value held past the survivors would be clobbered by the call
+        // or by its arguments' placement.
+        #[cfg(debug_assertions)]
+        if let Some(register) = self
+            .values_held
+            .iter()
+            .find(|register| !roles.allocatable[..roles.survive_leaf_calls].contains(register))
+        {
+            panic!("internal: a leaf call clobbers {register:?}, which holds a value");
+        }
         let stack_pointer = roles.stack_pointer;
         let layout = LeafCallLayout::of(self.abi);
         for argument in arguments {
@@ -2837,6 +2924,93 @@ mod encoding_tests {
     fn an_abi_s_stack_slot_is_its_encoder_s() {
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
             assert_eq!(abi.stack_slot_bytes(), abi.encoding().stack_slot_bytes());
+        }
+    }
+
+    /// No register a value is allocated to is one an idiom between two
+    /// frame nodes needs as it is -- a pinned role, the idioms' scratch,
+    /// a leaf's answer, a division's, the exit's or the encoder's own --
+    /// and the survivors are exactly the first registers a leaf call
+    /// leaves alone: preserved by the convention, and no argument of the
+    /// call's.
+    #[test]
+    fn the_allocatable_registers_take_no_fixed_role_and_the_survivors_come_first() {
+        use ns_assembler::aarch64::{X16, X17, X18, X29, X30};
+
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let roles = Roles::of(abi);
+            let fixed = [
+                roles.frame,
+                roles.context,
+                roles.object_space,
+                roles.idiom_scratch,
+                roles.leaf_result,
+                roles.dividend,
+                roles.remainder,
+                roles.stack_pointer,
+                roles.exit_kind(),
+                roles.exit_program_counter(),
+                roles.exit_code_address(),
+            ];
+            let arguments = super::leaf_call_argument_registers(abi);
+            for (index, register) in roles.allocatable.iter().enumerate() {
+                assert!(!fixed.contains(register), "{abi:?} {register:?}");
+                assert!(
+                    !roles.allocatable[..index].contains(register),
+                    "{abi:?} {register:?} twice"
+                );
+                if abi == Abi::Aapcs64 {
+                    assert!(
+                        ![X16, X17, X18, X29, X30].contains(register),
+                        "{abi:?} {register:?}"
+                    );
+                }
+                let survives =
+                    abi.callee_saved().contains(register) && !arguments.contains(register);
+                assert_eq!(
+                    survives,
+                    index < roles.survive_leaf_calls,
+                    "{abi:?} {register:?}"
+                );
+            }
+            assert_eq!(roles.allocatable[..2], Roles::free_survivors(abi));
+        }
+        assert_eq!(Roles::of(Abi::Windows64).survive_leaf_calls, 5);
+        assert_eq!(Roles::of(Abi::SystemV).survive_leaf_calls, 3);
+        assert_eq!(Roles::of(Abi::Aapcs64).survive_leaf_calls, 7);
+        assert_eq!(Roles::of(Abi::Windows64).allocatable.len(), 8);
+        assert_eq!(Roles::of(Abi::Aapcs64).allocatable.len(), 13);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "cannot be a temporary")]
+    fn a_debug_build_refuses_a_held_register_as_a_temporary() {
+        let mut macro_assembler = super::MacroAssembler::new(Abi::Windows64);
+        let held = Roles::of(Abi::Windows64).allocatable[3];
+        macro_assembler.hold_values(&[held]);
+        macro_assembler.temporary(held);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "clobbers")]
+    fn a_debug_build_refuses_a_leaf_call_over_a_value_past_the_survivors() {
+        let roles = Roles::of(Abi::SystemV);
+        let mut macro_assembler = super::MacroAssembler::new(Abi::SystemV);
+        macro_assembler.hold_values(&roles.allocatable[..=roles.survive_leaf_calls]);
+        macro_assembler.call_leaf(super::LeafIndex(0), [super::Operand::Immediate(0); 3]);
+    }
+
+    #[test]
+    fn a_leaf_call_keeps_the_values_the_survivors_hold() {
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let roles = Roles::of(abi);
+            let mut macro_assembler = super::MacroAssembler::new(abi);
+            macro_assembler.hold_values(&roles.allocatable[..roles.survive_leaf_calls]);
+            macro_assembler.call_leaf(super::LeafIndex(0), [super::Operand::Immediate(0); 3]);
+            let unheld = roles.allocatable[roles.survive_leaf_calls];
+            assert_eq!(macro_assembler.temporary(unheld), unheld);
         }
     }
 }

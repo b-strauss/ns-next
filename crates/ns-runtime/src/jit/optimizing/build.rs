@@ -283,14 +283,7 @@ impl<'snapshot> Builder<'snapshot> {
             .iter()
             .map(SnapshotInstruction::register_written)
             .collect();
-        let named = reads
-            .iter()
-            .flatten()
-            .chain(written.iter().flatten())
-            .map(|register| usize::from(*register) + 1)
-            .max()
-            .unwrap_or(0);
-        let register_count = named.max(usize::from(snapshot.facts.window_end()));
+        let register_count = snapshot.register_count();
         let shapes = shapes_of(instructions);
         let block_count = shapes.len();
         let mut builder = Builder {
@@ -982,7 +975,9 @@ mod tests {
     use crate::heap::CodeId;
     use crate::interpreter::inline_cache::FeedbackBase;
     use crate::jit::optimizing::graph::{BlockId, Definition, End, Node};
-    use crate::jit::optimizing::snapshot::{BodyFacts, Snapshot, SnapshotInstruction};
+    use crate::jit::optimizing::snapshot::{
+        tainted_before_each, BodyFacts, Snapshot, SnapshotInstruction,
+    };
     use crate::jit::optimizing::verify::verify;
     use crate::jit::optimizing::{corpus_of_bodies, shipped_bodies};
     use crate::Symbol;
@@ -1010,6 +1005,7 @@ mod tests {
                     SnapshotInstruction::of_unclosed(instruction).expect("no closure")
                 })
                 .collect(),
+            tainted_before: tainted_before_each(&code),
         }
     }
 

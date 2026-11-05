@@ -3,10 +3,62 @@
 //! run loop's safepoint, so that its work reads nothing the interpreter can
 //! change.
 
+#[cfg(ns_jit)]
+pub(crate) mod allocate;
 pub(crate) mod build;
 pub(crate) mod graph;
+pub(crate) mod liveness;
+#[cfg(ns_jit)]
+pub(crate) mod metadata;
 pub(crate) mod snapshot;
 pub(crate) mod verify;
+
+/// The snapshot of a method of `instructions`, none of which makes a
+/// closure, with registers to spare: the hand-written bodies the passes'
+/// tests compile.
+#[cfg(test)]
+pub(crate) fn test_snapshot(instructions: Vec<crate::bytecode::Instruction>) -> snapshot::Snapshot {
+    let code = crate::bytecode::CompiledCode::new(
+        crate::bytecode::CodeKind::Method,
+        instructions,
+        0,
+        30,
+        0,
+        Vec::new(),
+        ns_syntax::Span::new(0, 0),
+    );
+    snapshot::Snapshot {
+        code_id: crate::heap::CodeId::from_raw(0),
+        facts: snapshot::BodyFacts::of(&code),
+        feedback_base: crate::interpreter::inline_cache::FeedbackBase::NOT_ASSIGNED,
+        instructions: code
+            .instructions()
+            .iter()
+            .map(|instruction| {
+                snapshot::SnapshotInstruction::of_unclosed(instruction).expect("no closure")
+            })
+            .collect(),
+        tainted_before: snapshot::tainted_before_each(&code),
+    }
+}
+
+/// `receiver new: argument` into `destination`, a send for the passes'
+/// tests.
+#[cfg(test)]
+pub(crate) fn test_send(
+    receiver: u16,
+    argument: u16,
+    destination: u16,
+) -> crate::bytecode::Instruction {
+    crate::bytecode::Instruction::SendPublic {
+        selector: crate::Symbol::NEW,
+        receiver_register: receiver,
+        argument_base: argument,
+        argument_sources: vec![argument],
+        destination,
+        call_site: crate::bytecode::CallSite { number: 0 },
+    }
+}
 
 /// The snapshot of every method and block body of the modules under
 /// `goldens/runtime/jit/`, compiled with the optimized lowering: the

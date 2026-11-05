@@ -192,6 +192,21 @@ impl Node {
         }
     }
 
+    /// Whether the node is a simple node whose code calls a Rust leaf,
+    /// across which only the registers `Roles::survive_leaf_calls` counts
+    /// keep their values. No simple node does yet; a frame node is an
+    /// interrupt point, not a leaf call, after which no value holds.
+    pub(crate) fn calls_leaf(&self) -> bool {
+        match self {
+            Node::FrameRead { .. }
+            | Node::Constant { .. }
+            | Node::Receiver { .. }
+            | Node::Copy { .. }
+            | Node::IntegerBinary { .. }
+            | Node::Frame { .. } => false,
+        }
+    }
+
     /// The values the node reads, in operand order.
     pub(crate) fn uses(&self) -> Vec<ValueId> {
         match self {

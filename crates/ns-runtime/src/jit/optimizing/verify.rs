@@ -41,6 +41,34 @@ pub(crate) enum VerifyError {
     /// frame node may have run code that wrote the register by reference
     /// or moved the object the value names.
     AcrossFrame { value: ValueId, block: BlockId },
+    /// A use, a move or a store at `position` does not find `value` where
+    /// the allocation says it is (`metadata::verify_allocation`).
+    Misplaced { value: ValueId, position: u32 },
+    /// A frame read or a reload at `position` reads `register`'s frame
+    /// word where it does not hold the value it is taken for.
+    StaleFrameWord { register: u16, position: u32 },
+    /// At the interrupt point at `program_counter`, `register`, which the
+    /// leftover analysis does not taint, does not hold in its frame word
+    /// what the interpreter's frame would, after the write-back.
+    NotWrittenBack { register: u16, program_counter: u32 },
+    /// The metadata of the interrupt point at `program_counter` is not
+    /// what the allocation leaves there.
+    MetadataDisagrees { program_counter: u32 },
+    /// Control from `predecessor` enters `successor` with a value, a
+    /// binding or a frame word other than `successor`'s entry assumes.
+    EdgeDisagrees {
+        predecessor: BlockId,
+        successor: BlockId,
+    },
+    /// `value`, live past the leaf call at `position`, is kept in a
+    /// register the call clobbers.
+    LeafClobbered { value: ValueId, position: u32 },
+    /// A move or a definition at `position` names a register no value may
+    /// be allocated to.
+    NotAllocatable { position: u32 },
+    /// The allocation's positions, blocks or interrupt points are not the
+    /// graph's, or not the metadata's.
+    Unaligned,
 }
 
 /// Checks that every value is defined once, every use is dominated by its

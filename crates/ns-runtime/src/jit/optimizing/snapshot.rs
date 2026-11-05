@@ -11,11 +11,13 @@
 //! snapshot form (`sends::call_slots_of`) only for the instructions that
 //! are not one, a test holding the two paths to the same answer.
 
+use std::ops::Range;
 use std::rc::Rc;
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
-    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal, HEADER_REGISTERS,
+    leftovers, CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
+    HEADER_REGISTERS,
 };
 use crate::heap::{CodeId, Heap};
 use crate::interpreter::inline_cache::FeedbackBase;
@@ -950,9 +952,48 @@ pub(crate) struct Snapshot {
     pub(crate) facts: BodyFacts,
     pub(crate) feedback_base: FeedbackBase,
     pub(crate) instructions: Vec<SnapshotInstruction>,
+    /// For each instruction, the registers the leftover analysis taints
+    /// before it (`CompiledCode::tainted_before`): those a frame stopped
+    /// there does not read before it writes, which the collector's
+    /// pre-pass nils. An interrupt point owes the frame word of every
+    /// other register its value (`metadata::verify_allocation`).
+    pub(crate) tainted_before: Vec<Vec<Range<u16>>>,
+}
+
+/// The registers tainted before each instruction of `code`, as
+/// `CompiledCode::tainted_before` answers them, from one pass and without
+/// keeping them on the body: a snapshot owns its copy.
+pub(crate) fn tainted_before_each(code: &CompiledCode) -> Vec<Vec<Range<u16>>> {
+    let instructions = code.instructions();
+    let program_counters: Vec<u32> = (0..instructions.len())
+        .map(|index| u32::try_from(index).expect("internal: an instruction index fits a u32"))
+        .collect();
+    leftovers::tainted_at(
+        &instructions,
+        code.local_count,
+        code.register_count,
+        &program_counters,
+    )
 }
 
 impl Snapshot {
+    /// How many registers the body names: one past the highest an
+    /// instruction reads or writes, and at least its window.
+    pub(crate) fn register_count(&self) -> usize {
+        let named = self
+            .instructions
+            .iter()
+            .flat_map(|instruction| {
+                let mut registers = instruction.registers_read();
+                registers.extend(instruction.register_written());
+                registers
+            })
+            .map(|register| usize::from(register) + 1)
+            .max()
+            .unwrap_or(0);
+        named.max(usize::from(self.facts.window_end()))
+    }
+
     /// The snapshot of `code`, its sends' cells found from
     /// `feedback_base`; the body and its blocks are registered with `heap`
     /// if they were not yet.
@@ -977,6 +1018,7 @@ impl Snapshot {
                 .iter()
                 .map(|instruction| SnapshotInstruction::of(instruction, heap))
                 .collect(),
+            tainted_before: tainted_before_each(code),
         }
     }
 }
