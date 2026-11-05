@@ -442,8 +442,8 @@ fn every_built_graph_allocates_and_verifies_on_both_abis() {
 /// `r5 := 1. r6 := r3 new: r5. [r3 := r3 new: r5. r3 < r5] whileTrue.
 /// ^r3`: every way into the loop's head, and into the merge of the
 /// comparison's fast path and its fallback, brings r3 as its frame word,
-/// so r3 is never reloaded on a way in nor stored back -- only the
-/// literal and the comparison's result, which the branch reads, are.
+/// so r3 is never reloaded on a way in nor stored back -- only the literal
+/// and the comparison's result, which the branch reads, are.
 fn a_loop_that_writes_a_register_only_by_a_send() -> Snapshot {
     test_snapshot(vec![
         Instruction::LoadLiteral {
@@ -451,21 +451,22 @@ fn a_loop_that_writes_a_register_only_by_a_send() -> Snapshot {
             literal: Literal::SmallInteger(1),
         },
         test_send(3, 5, 6),
+        // 2: the loop's head.
         test_send(3, 5, 3),
         Instruction::IntegerBinary {
             operation: IntegerOperation::Less,
             destination: 4,
             left: 3,
             right: 5,
-            target: 6,
+            target: 5,
         },
+        Instruction::Jump { target: 6 },
+        test_send(3, 5, 4),
         Instruction::BranchIfTrue {
             register: 4,
             target: 2,
         },
         Instruction::Return { register: 3 },
-        test_send(3, 5, 4),
-        Instruction::Jump { target: 4 },
     ])
 }
 

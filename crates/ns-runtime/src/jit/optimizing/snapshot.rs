@@ -924,11 +924,15 @@ pub(crate) struct Snapshot {
     /// other register its value (`metadata::verify_allocation`).
     pub(crate) tainted_before: Vec<Vec<Range<u16>>>,
     /// For each instruction, whether it is an `IntegerBinary` whose
-    /// fallback send's site has cached a receiver other than a
-    /// `SmallInteger` (`InlineCaches::saw_receiver_other_than`): the
-    /// program's numbers fail its fast path, so the graph lowers it to its
-    /// fallback alone (`build`). Feedback read as layout only: the send
-    /// answers a `SmallInteger`'s operation too.
+    /// fallback send's site has cached `Float` receivers and no other
+    /// (`InlineCaches::saw_only_receivers_of`): float arithmetic, which
+    /// fails the fast path at every pass, so the graph lowers it to its
+    /// fallback alone (`build`). A site that saw another receiver -- a
+    /// `nil` at the end of an input, beside the `SmallInteger`s the fast
+    /// path answers without reaching the site -- keeps its fast path:
+    /// without counts the site cannot say which way the program takes.
+    /// Feedback read as layout only: the send answers a `SmallInteger`'s
+    /// operation too.
     pub(crate) fallback_taken: Vec<bool>,
 }
 
@@ -976,7 +980,7 @@ impl Snapshot {
         feedback_base: FeedbackBase,
     ) -> Snapshot {
         let instructions = code.instructions();
-        let small_integer = heap.small_integer_dispatch_id();
+        let float = heap.float_dispatch_id();
         let fallback_taken = instructions
             .iter()
             .map(|instruction| match instruction {
@@ -985,12 +989,7 @@ impl Snapshot {
                     .and_then(|target| instructions.get(target))
                     .and_then(Instruction::call_site)
                     .is_some_and(|site| {
-                        caches.saw_receiver_other_than(
-                            feedback_base,
-                            code.family_size,
-                            site,
-                            small_integer,
-                        )
+                        caches.saw_only_receivers_of(feedback_base, code.family_size, site, float)
                     }),
                 _ => false,
             })

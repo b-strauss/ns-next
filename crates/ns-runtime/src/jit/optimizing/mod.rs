@@ -351,16 +351,28 @@ mod tests {
         let (allocation, _) = super::metadata::allocate_and_describe(&snapshot, &graph, &roles);
         // The four locals the float operations write: each is stored once
         // before the loop, on its way in, and once in the loop, right where
-        // the interpreter's `StoreLocal` writes it, and never reloaded.
+        // the interpreter's `StoreLocal` writes it, and reloaded only on
+        // the way back from the counter's two fallbacks.
         let floats = 13..=16;
         let before_the_loop = allocation
             .positions
             .end_definition(super::graph::BlockId::of_index(0));
+        let fallback_ways: Vec<u32> = graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .filter_map(|node| match node {
+                Node::IntegerBinary { fallback, .. } => {
+                    Some(allocation.positions.end_definition(*fallback))
+                }
+                _ => None,
+            })
+            .collect();
         for (position, moves) in &allocation.moves {
             for each in moves {
                 match each {
                     Move::Load { register, .. } => assert!(
-                        !floats.contains(register),
+                        !floats.contains(register) || fallback_ways.contains(position),
                         "a float local is reloaded at {position}: {each:?}"
                     ),
                     Move::Store { register, .. } => assert!(

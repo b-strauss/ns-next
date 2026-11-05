@@ -31,9 +31,9 @@ const UNFILLED: ValueId = ValueId(u32::MAX);
 /// instruction heads a loop is given an entry block of its own, with no
 /// instruction, so that the head's phis have an input for the entry.
 ///
-/// A loop head leaves a register its frame word, with no phi, wherever
-/// every way in from before the loop brings a value that frame word holds,
-/// or, at the head of a loop of the program's, the loop may change it; the back edges, built later, must bring one, and
+/// The head of a loop of the program's leaves a register its frame word,
+/// with no phi, wherever every way in from before the loop brings a value
+/// that frame word holds, or the loop may change it; the back edges, built later, must bring one, and
 /// a head one refutes is built again with the phi (`Builder::forced_phis`),
 /// until none does. The rule decides what the code loads and stores, never
 /// what it computes: a way that brings a value its frame word does not hold
@@ -650,16 +650,17 @@ impl<'snapshot> Builder<'snapshot> {
             let loop_changes = self.loops[block].as_ref().is_some_and(|facts| {
                 facts.written.contains(register) || (facts.frame_node && !frame_words)
             });
-            // A loop head leaves such a register its frame word too, and so,
-            // at the head of a loop of the program's, one the loop changes,
-            // which a way in from before the loop may bring bound to a value
-            // the frame word does not hold yet: that way writes it back
-            // once, on its way in (`liveness::join`), rather than every pass
-            // around the loop storing and reloading a phi. Where a fallback
-            // rejoins its fast path from behind, the way in is the fast
-            // path, whose result is kept in a phi. The back edges must bring
+            // The head of a loop of the program's leaves such a register
+            // its frame word too, and so one the loop changes, which a way
+            // in from before the loop may bring bound to a value the frame
+            // word does not hold yet: that way writes it back once, on its
+            // way in (`liveness::join`), rather than every pass around the
+            // loop storing and reloading a phi. The back edges must bring
             // the frame word's value, which `fill_back_edge` checks; a head
-            // one refutes takes its phi in the next build.
+            // one refutes takes its phi in the next build. Where a fallback
+            // rejoins its fast path from behind, the way in is the fast
+            // path, the one the program takes, and every live register
+            // keeps its phi, which only the fallback's way loads.
             let natural = self.loops[block]
                 .as_ref()
                 .is_some_and(|facts| facts.natural);
@@ -673,8 +674,8 @@ impl<'snapshot> Builder<'snapshot> {
                     u16::try_from(register)
                         .is_ok_and(|register| ranges.iter().any(|range| range.contains(&register)))
                 });
-            if loop_head
-                && (frame_words || (natural && loop_changes))
+            if natural
+                && (frame_words || loop_changes)
                 && !tainted
                 && !self.forced_phis[block].contains(register)
             {
@@ -736,7 +737,8 @@ impl<'snapshot> Builder<'snapshot> {
             // Any other live register the head took no phi for is one no
             // pass around the loop changes: it entered bound to a value no
             // frame node in the loop can reach, which the back edge brings
-            // again.
+            // again, or it entered as its frame word, which the back edge
+            // may bring as a read of that word.
             let entry = self.head_entries[head]
                 .as_ref()
                 .expect("internal: a loop head records its state");
@@ -749,6 +751,7 @@ impl<'snapshot> Builder<'snapshot> {
                 debug_assert!(
                     has_phi
                         || self.unbound_at_head[head].contains(register)
+                        || (entry[register].is_none() && self.is_frame_word(binding, register))
                         || (entry[register].is_some() && binding == entry[register]),
                     "internal: register {register} changes around a loop without a phi"
                 );
@@ -1275,15 +1278,15 @@ mod tests {
                 destination: 4,
                 left: 3,
                 right: 5,
-                target: 6,
+                target: 5,
             },
+            Instruction::Jump { target: 6 },
+            send(3, 5, 4),
             Instruction::BranchIfTrue {
                 register: 4,
                 target: 2,
             },
             Instruction::Return { register: 3 },
-            send(3, 5, 4),
-            Instruction::Jump { target: 4 },
         ]
     }
 
@@ -1299,10 +1302,10 @@ mod tests {
         let merge = graph
             .blocks
             .iter()
-            .find(|block| block.program_counter == 4 && block.predecessors.len() == 2)
+            .find(|block| block.program_counter == 6 && block.predecessors.len() == 2)
             .expect("the merge");
-        assert_eq!(merge.phis.len(), 1);
-        assert_eq!(merge.phis[0].register, 4);
+        let registers: Vec<u16> = merge.phis.iter().map(|phi| phi.register).collect();
+        assert_eq!(registers, vec![4]);
     }
 
     /// `r5 := 1. r6 := r3 new: r5. [r3 := r3 + r5. r3 < r5] whileTrue.
@@ -1324,24 +1327,24 @@ mod tests {
                 destination: 3,
                 left: 3,
                 right: 5,
-                target: 6,
+                target: 4,
             },
+            Instruction::Jump { target: 5 },
+            send(3, 5, 3),
             Instruction::IntegerBinary {
                 operation: IntegerOperation::Less,
                 destination: 4,
                 left: 3,
                 right: 5,
-                target: 8,
+                target: 7,
             },
+            Instruction::Jump { target: 8 },
+            send(3, 5, 4),
             Instruction::BranchIfTrue {
                 register: 4,
                 target: 2,
             },
             Instruction::Return { register: 3 },
-            send(3, 5, 3),
-            Instruction::Jump { target: 3 },
-            send(3, 5, 4),
-            Instruction::Jump { target: 4 },
         ]));
         assert_eq!(verify(&graph), Ok(()));
         let head = graph.loop_heads().next().expect("the body loops");

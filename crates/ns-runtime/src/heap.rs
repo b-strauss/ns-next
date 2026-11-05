@@ -6574,9 +6574,10 @@ impl<'gc> Heap<'gc> {
         header.guard()
     }
 
-    /// The dispatch id an inline cache guards a `SmallInteger`'s send on.
-    pub(crate) fn small_integer_dispatch_id(&self) -> DispatchId {
-        self.dispatch_id(Value::small_integer(0))
+    /// The dispatch id an inline cache guards a `Float`'s send on, a
+    /// boxed one's and an immediate one's alike.
+    pub(crate) fn float_dispatch_id(&self) -> DispatchId {
+        self.immediate_dispatch_ids[FLOAT_DISPATCH_INDEX]
     }
 
     /// `dispatch_id` of an object, read from its header word alone, without
