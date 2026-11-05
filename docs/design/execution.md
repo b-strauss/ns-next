@@ -8564,6 +8564,207 @@ writes the slots, and register allocation is road step 9's ("The
 register cache" in "Planned: the baseline JIT"). Decided with the user
 on 2026-11-03.
 
+### What the optimizing tier's foundation moved
+
+**Measured 2026-11-05, `917e5928` against `master` (`76f6001c`)**, by
+the protocol of "What on-stack replacement moved": three pinned release
+builds a side with debug information, a, b and c laid out as there, the
+code zones at the same three paddings on both sides; `vm::run` spans
+44.1, 47.5 and 51.1 KB on both sides with 451 calls, and no build has a
+`run_stretch` or a `vm::run` closure of its own. Three rounds in one
+sitting, the order of the six binaries rotated each round;
+`--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue and
+`--iterations 8` for the rest. Each cell is a side's medians per build
+pooled by geometric mean, in milliseconds. Between the two trees lies
+road step 9's first stage ("Planned: the optimizing JIT"): the graph,
+linear scan, the emitters, the metadata, the budget baseline code
+spends, the synchronous compile installed at a safepoint, and the
+optimize and deopt stress modes.
+
+| Program | master (ms) | master's builds | `917e5928` (ms) | builds | vs master | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.205 | 0.201–0.208 | 0.207 | 0.204–0.209 | +0.9% | no |
+| `CD` | 3124.002 | 3117.185–3129.384 | 3108.904 | 3099.471–3121.533 | -0.5% | no |
+| `DeltaBlue` | 240.636 | 239.889–241.051 | 224.770 | 222.851–226.513 | -6.6% | faster |
+| `DeltaBlueTon80` | 1.967 | 1.926–2.027 | 2.033 | 2.012–2.046 | +3.4% | no |
+| `Havlak` | 1185.904 | 1178.195–1198.550 | 1135.200 | 1132.313–1137.591 | -4.3% | faster |
+| `Json` | 3.580 | 3.566–3.594 | 3.684 | 3.622–3.739 | +2.9% | slower (compile time) |
+| `List` | 0.192 | 0.188–0.198 | 0.193 | 0.189–0.195 | +0.5% | no |
+| `Mandelbrot` | 1876.262 | 1829.924–1968.571 | 1816.602 | 1804.706–1827.846 | -3.2% | faster |
+| `NBody` | 1125.225 | 1121.460–1129.363 | 1086.559 | 1077.809–1093.179 | -3.4% | faster |
+| `Permute` | 0.431 | 0.401–0.454 | 0.454 | 0.451–0.458 | +5.4% | no |
+| `Queens` | 0.327 | 0.326–0.329 | 0.331 | 0.327–0.334 | +1.2% | no |
+| `Richards` | 17.604 | 17.398–17.800 | 17.415 | 17.221–17.545 | -1.1% | no |
+| `RichardsTon80` | 1.787 | 1.764–1.806 | 1.842 | 1.830–1.857 | +3.1% | slower (compile time) |
+| `Sieve` | 0.423 | 0.415–0.429 | 0.441 | 0.416–0.454 | +4.3% | no |
+| `Storage` | 0.701 | 0.692–0.709 | 0.697 | 0.695–0.699 | -0.5% | no |
+| `Towers` | 0.523 | 0.513–0.531 | 0.532 | 0.525–0.535 | +1.6% | no |
+| `bench_block` | 0.863 | 0.856–0.871 | 0.856 | 0.851–0.864 | -0.8% | no |
+| `bench_loop` | 0.538 | 0.514–0.578 | 0.528 | 0.522–0.532 | -1.7% | no |
+| `bench_megamorphic` | 0.703 | 0.701–0.705 | 0.709 | 0.693–0.727 | +0.9% | no |
+| `bench_send` | 0.508 | 0.504–0.513 | 0.513 | 0.512–0.513 | +1.0% | no |
+| `bench_signal` | 19.190 | 19.075–19.256 | 19.075 | 18.842–19.516 | -0.6% | no |
+| `bench_while` | 6.281 | 5.993–6.442 | 6.229 | 6.067–6.388 | -0.8% | no |
+| `bench_recursion` | 0.665 | 0.663–0.666 | 0.671 | 0.667–0.674 | +0.9% | slower |
+| `bench_new` | 1.909 | 1.901–1.920 | 1.716 | 1.692–1.750 | -10.1% | faster |
+| `bench_new2` | 3.327 | 3.319–3.341 | 2.912 | 2.896–2.929 | -12.5% | faster |
+| `bench_newarg` | 3.419 | 3.405–3.433 | 2.965 | 2.943–3.006 | -13.3% | faster |
+| `bench_do` | 0.732 | 0.725–0.738 | 0.711 | 0.700–0.724 | -2.8% | faster |
+
+The geometric mean over the twenty-seven sources is -1.45%, and each of
+`917e5928`'s three builds lies below each of `master`'s: 4.171, 4.141
+and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
+
+- **Instantiation, and the leaves that find a compiled frame's body.**
+  `bench_new`, `bench_new2` and `bench_newarg` are 10% to 13% faster and
+  DeltaBlue 6.6%, and baseline code shares the gain: an interim build of
+  the same tree that optimizes nothing (a budget of 2^50) runs DeltaBlue
+  at 226 ms like the branch, against `master`'s 240, and Havlak at 1,150
+  ms, against the branch's 1,134 and `master`'s 1,176. Every leaf called
+  from a frame machine code pushed asks `materialize::leaf_frame` for
+  the frame, which asked `JitState::body_of` for its body and read the
+  answer back from the stack: the callee stored its narrow fields -- the
+  feedback base, `reifies` and `optimized` -- one by one and the caller
+  loaded them as one word, which no store forwards. On `master` a tenth
+  of `bench_new2`'s samples lay on the instruction after that load. The
+  tier made it worse twice, which is why the instantiation sources
+  measured 3% to 5% slower before: the `optimized` byte made the load
+  wait on a third store (843 more samples over three builds a side), and
+  the compile trigger every initializer invocation passes through
+  (`jit::after_compile_trigger`) called the budget's pointing of newly
+  installed bodies unconditionally, out of line with a frame of its own
+  -- 0.7% of the samples, 1.2% more instructions. `body_of` is now
+  inline into every caller, so the answer never goes through memory, and
+  the trigger tests for a body to point first. Measured by the processor's
+  counters over runs of two million instantiations, the three builds a
+  side: `bench_new2` takes 17,085 to 17,316 million cycles against
+  `master`'s 20,004 to 20,945, `bench_new` 10,112 to 10,304 against
+  11,395 to 11,504. The tier's own cost there is the spend, three
+  instructions at each entry of a baseline body; with the copy gone the
+  branch retires 1.2% to 1.5% fewer instructions than `master`.
+- **Float arithmetic.** Mandelbrot is 3.2% and NBody 3.4% faster: their
+  loops keep the float locals in machine registers, every float operation
+  is sent alone, since its fallback site saw `Float` receivers and no
+  other, and a natural loop's head leaves a register its frame word
+  where every way in brings it so -- with no write-back before each send
+  and no reload after it ("Planned: the optimizing JIT").
+- **Integer loops and sends: what register allocation alone moves.**
+  `bench_loop` -1.7%, `bench_send` +1.0%, `bench_while` -0.8%,
+  `bench_block` -0.8%, `bench_megamorphic` +0.9% and `bench_recursion`
+  +0.9% all lie within about 1.7%, as "What a register cache would move"
+  forecast for keeping frame registers in machine registers: about 1%,
+  inside the noise. `bench_recursion`'s builds lie apart by 0.001 ms.
+- **The short programs pay the synchronous compile inside their timed
+  runs.** Json's +2.9% and RichardsTon80's +3.1% separate, and
+  DeltaBlueTon80, Permute and Sieve are slower without separating. The
+  optimizing compile runs at a safepoint of the run it was requested in,
+  and a short program goes on requesting bodies for several runs: Json
+  optimizes 17 bodies in 1.75 ms over its nine runs, 5 of them, 0.39 ms,
+  between the fifth run and the ninth, about 0.1 ms a run, its whole
+  difference at the median of eight. At 200 iterations, where the runs
+  timed come after the compiles, the same builds measure:
+
+  | Program | master (ms) | master's builds | `917e5928` (ms) | builds | vs master | separated |
+  |---|---|---|---|---|---|---|
+  | `Bounce` | 0.219 | 0.216–0.221 | 0.220 | 0.217–0.223 | +0.5% | no |
+  | `DeltaBlueTon80` | 1.738 | 1.725–1.755 | 1.713 | 1.706–1.717 | -1.4% | faster |
+  | `Json` | 3.327 | 3.322–3.332 | 3.232 | 3.215–3.251 | -2.9% | faster |
+  | `List` | 0.189 | 0.188–0.189 | 0.193 | 0.191–0.194 | +2.1% | slower |
+  | `Permute` | 0.253 | 0.249–0.260 | 0.254 | 0.253–0.256 | +0.4% | no |
+  | `Queens` | 0.275 | 0.274–0.277 | 0.283 | 0.275–0.292 | +2.7% | no |
+  | `RichardsTon80` | 1.515 | 1.501–1.530 | 1.518 | 1.506–1.524 | +0.2% | no |
+  | `Sieve` | 0.143 | 0.141–0.146 | 0.145 | 0.143–0.148 | +1.3% | no |
+  | `Storage` | 0.535 | 0.533–0.537 | 0.498 | 0.495–0.501 | -6.9% | faster |
+  | `Towers` | 0.437 | 0.432–0.442 | 0.444 | 0.437–0.451 | +1.6% | no |
+  | `bench_recursion` | 0.661 | 0.660–0.662 | 0.663 | 0.646–0.672 | +0.4% | no |
+
+  RichardsTon80 and Queens are moreover the code's placement: at the
+  tree before the two fixes, over four more zone paddings at 30
+  iterations, RichardsTon80 measured +0.1% and Queens +1.8%, each faster
+  at two paddings of the four. List's +2.1%, 0.004 ms, is not explained:
+  it retires fewer instructions than `master` and about 1% more cycles,
+  and the eight-iteration table above has it level.
+- **DeltaBlueTon80's optimized code runs level with its baseline code.**
+  A profile of 3,000 runs with every body and stub of the zone mapped,
+  against a build of the same code that optimizes nothing: its optimized
+  bodies take 3.3% fewer samples than their baseline code did, but the
+  shared stubs they call take 6.8% more, the polymorphic stub and the
+  row stubs most, whose type tests mispredict more often when the caller
+  is optimized code (5% more branch mispredictions over the run); 0.8%
+  more samples in all, and the same cycles to 0.1%. Sends that test the
+  receiver's class at their own site -- stage 2's speculation, with a
+  guard and a trap in the optimized code -- would take the tests out of
+  the shared stubs
+  (`OPEN-WORK.md`, "Optimized code's sends mispredict in the shared
+  stubs").
+- **CD churns**: 159 bodies optimized and 136 of them abandoned, with
+  8,762 optimized exits, the same pattern as its baseline code's
+  ("What reclamation moved"; `OPEN-WORK.md`, "A nested class's accessor
+  on a private or `super` chain exits machine code"); the compiles take 13.8
+  ms against four runs of 3.1 s, 0.1%.
+
+**The optimizer's counters**, `--jit-statistics` on build a with the
+iterations above (every process runs one more, discarded, run):
+
+| Program | bodies optimized | in (ms) | optimized exits | abandoned |
+|---|---|---|---|---|
+| `Bounce` | 3 | 0.370 | 0 | 0 |
+| `CD` | 159 | 13.808 | 8,762 | 136 |
+| `DeltaBlue` | 64 | 3.261 | 136 | 0 |
+| `DeltaBlueTon80` | 10 | 0.971 | 9 | 0 |
+| `Havlak` | 78 | 5.040 | 1,408 | 0 |
+| `Json` | 17 | 1.752 | 5 | 0 |
+| `List` | 2 | 0.152 | 0 | 0 |
+| `Mandelbrot` | 3 | 0.490 | 0 | 0 |
+| `NBody` | 7 | 0.545 | 2 | 0 |
+| `Permute` | 4 | 0.308 | 0 | 0 |
+| `Queens` | 4 | 0.309 | 5 | 0 |
+| `Richards` | 26 | 1.165 | 5 | 0 |
+| `RichardsTon80` | 11 | 0.798 | 3 | 0 |
+| `Sieve` | 3 | 0.240 | 1 | 0 |
+| `Storage` | 4 | 0.263 | 1 | 0 |
+| `Towers` | 5 | 0.279 | 0 | 0 |
+| `bench_block` | 3 | 0.162 | 0 | 0 |
+| `bench_loop` | 1 | 0.134 | 8 | 0 |
+| `bench_megamorphic` | 1 | 0.192 | 8 | 0 |
+| `bench_send` | 2 | 0.137 | 8 | 0 |
+| `bench_signal` | 0 | 0.000 | 0 | 0 |
+| `bench_while` | 5 | 0.175 | 0 | 0 |
+| `bench_recursion` | 1 | 0.129 | 0 | 0 |
+| `bench_new` | 4 | 0.172 | 8 | 0 |
+| `bench_new2` | 5 | 0.179 | 8 | 0 |
+| `bench_newarg` | 5 | 0.181 | 8 | 0 |
+| `bench_do` | 3 | 0.232 | 1 | 0 |
+
+No optimized exit is forced outside the deopt stress mode. The compile
+time is small against every long program -- CD's 13.8 ms is the largest,
+0.1% -- and is what Json and RichardsTon80 pay at eight iterations.
+
+**The two constants.** `OPTIMIZATION_BUDGET` is 240,000 instructions and
+`BUDGET_AFTER_CACHE_CHANGE` a sixth of it, 40,000. A sweep over 30,000,
+60,000, 120,000 and 240,000 at the code before the two fixes -- one
+pinned build a side at layout a, three rounds, `--iterations 15`, the
+long programs at 3 -- separated no budget from another: the geometric
+means against `master` were +0.58%, +0.31%, +1.05% and -0.36%, and
+240,000 left DeltaBlueTon80 closest to `master` (+0.7% against +2.5% to
++8.9%), since a larger budget compiles fewer of a short program's bodies
+inside its first runs. The two fixes changed only cost outside the
+spend, so a reduced sweep at `917e5928` checked the choice: 60,000,
+120,000 and 240,000, one build each, the twenty-two short sources, the
+same rounds and iterations; the geometric means are -1.91%, -2.42% and
+-1.91%, no budget separates, and DeltaBlueTon80 is again closest at
+240,000 (+2.8% against +3.9% and +8.1%). The cache change's sixth is the
+ratio of the first guesses, not swept on its own: stage 1 speculates on
+no feedback, so the wait decides only when a body is compiled, never
+what it is compiled to.
+
+**Not covered**: AArch64, which runs under QEMU only; on-stack
+replacement into optimized code, which stage 1 does not have, so
+Mandelbrot's one long activation runs its optimized code from the
+second `bench` send on; the compiler thread, stage 8's, which takes the
+compile time out of the timed runs; and the stress and end-of-batch
+gates, which the batch's end runs.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -10836,7 +11037,9 @@ its design documents, under `prior-art/v8/docs/`.
   a pending compile parks it at its maximum. The budget is a row per
   `CodeId` in a reservation of its own, since machine code writes it.
   It is not fused with the back edge's poll, which would delay a
-  safepoint by up to a budget of back jumps. The thresholds are measured.
+  safepoint by up to a budget of back jumps. The thresholds are measured:
+  240,000 instructions, and a sixth of it after a cache change ("What
+  the optimizing tier's foundation moved").
 - **The recompilee is found by walking up the stack**, Strongtalk's
   `findTopInlinableFrame` (`recompiler/recompiler.cpp:56-121`): the
   budget's cold path exits to the run loop, since a leaf reads no other

@@ -82,8 +82,9 @@ const BODY_ALIGNMENT: u32 = 16;
 /// 30,000, 60,000, 120,000 and 240,000 (`docs/design/execution.md`, "What
 /// the optimizing tier's foundation moved"): no budget moved a program
 /// beyond the spread of one build, and the largest left DeltaBlueTon80,
-/// whose optimized bodies run no faster than their baseline code, the
-/// closest to `master` and compiles the fewest bodies.
+/// whose optimized code runs level with its baseline code, the closest
+/// to `master` and compiles the fewest bodies; a reduced sweep at the
+/// final code kept it so.
 pub(crate) const OPTIMIZATION_BUDGET: i64 = 240_000;
 
 /// The least budget a body is left with when a send of it filled its

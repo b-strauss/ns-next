@@ -786,6 +786,17 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     Its allocator is the optimizing tier's linear scan, built in the
     first stage. [execution.md](design/execution.md), "The register
     cache", "What a register cache would move".
+  - **Optimized code's sends mispredict in the shared stubs**
+    (2026-11-05). DeltaBlueTon80's optimized bodies take 3.3% fewer
+    samples than their baseline code, but the polymorphic stub and the
+    row stubs they call take 6.8% more, their type tests mispredicting
+    more often behind an optimized caller, so the program runs level
+    with a build that optimizes nothing. The first stage speculates on
+    nothing and sends through the same cells as baseline code; the
+    second stage's guard at the site is what would take the test out of
+    the shared stub. To be measured again when it is built.
+    [execution.md](design/execution.md), "What the optimizing tier's
+    foundation moved".
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any
@@ -874,6 +885,16 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   pass them. Whether lending them, or answering them in two scalars,
   removes a measurable cost is unmeasured. [execution.md](design/execution.md),
   "Keeping the hot path in registers".
+- **The initializer leaf copies its decided `Step` through memory**
+  (2026-11-05). `Mutator::decide_superclass_initializer` answers a
+  `Result<Step, Signal>` through a stack slot it writes field by field,
+  which the initializer leaf (`jit::leaves`) copies out with 16-byte
+  loads, a load no store forwards: the instruction after the first of
+  them holds about 4% of `bench_new2`'s samples. Inline, or an answer
+  in two scalars, would remove it, as inlining `JitState::body_of`
+  removed the same stall from `materialize::leaf_frame`.
+  [execution.md](design/execution.md), "What the optimizing tier's
+  foundation moved".
 - **`bench_megamorphic.ns` since road step 5b1** (2026-10-18): +1.3-2.1%
   against master after the private and super slot accessor check, on all
   three pinned builds a side, where every other program measured within
