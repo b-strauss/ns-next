@@ -279,14 +279,26 @@ impl CompactionPlan {
 }
 
 impl JitState {
-    /// The bodies of the freed installed bodies that still live, before a
-    /// compaction's slide drops them.
+    /// Whether each installed body is unfreed and what its code's slot
+    /// names, by index.
     #[cfg(ns_jit)]
-    fn freed_codes(&self) -> Vec<Rc<CompiledCode>> {
+    fn named_bodies(&self) -> Vec<bool> {
+        (0..self.bodies.len())
+            .map(|index| !self.bodies[index].free && self.still_named(index))
+            .collect()
+    }
+
+    /// The bodies whose machine code a compaction freed, those `named`
+    /// said were what their slots named before it and that are freed now,
+    /// which still live: a copy freed before, whose body may have been
+    /// compiled again, is none of them.
+    #[cfg(ns_jit)]
+    fn freed_codes(&self, named: &[bool]) -> Vec<Rc<CompiledCode>> {
         self.bodies
             .iter()
-            .filter(|body| body.free)
-            .filter_map(|body| body.code.upgrade())
+            .zip(named)
+            .filter(|(body, named)| body.free && **named)
+            .filter_map(|(body, _)| body.code.upgrade())
             .collect()
     }
 
@@ -1023,6 +1035,11 @@ impl Mutator<'_> {
             self.jit.zone_exhausted = false;
             return;
         };
+        // The bodies still what their slots name before this compaction
+        // frees any: only their rows are cleared below, never that of a
+        // body compiled again since an older copy of it was freed.
+        #[cfg(ns_jit)]
+        let named_before = self.jit.named_bodies();
         let active = self.heap.active_codes();
         self.jit.mark_active(&active);
         drop(active);
@@ -1038,7 +1055,7 @@ impl Mutator<'_> {
         // bodies a word still to be pointed names, which its first spend
         // points instead.
         #[cfg(ns_jit)]
-        for code in self.jit.freed_codes() {
+        for code in self.jit.freed_codes(&named_before) {
             self.heap.forget_optimization_budget(&code);
         }
         self.jit.budget_words_to_point.clear();

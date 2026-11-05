@@ -1131,6 +1131,12 @@ pub(crate) struct JitState {
     /// The budget a body's row is armed with: `OPTIMIZATION_BUDGET`, but
     /// in a test that sets another (`set_optimization_budget`).
     optimization_budget: i64,
+    /// The machine words the unpointed budget lies in
+    /// (`MachineWord::UnpointedBudget`), which every budget word names
+    /// until it is pointed at its row: the heap's, shared when the world
+    /// is made (`share_machine_words`), or a state's own in a test that
+    /// has no heap.
+    machine_words: crate::heap::machine_words::MachineWords,
 }
 
 /// Whether `NS_NEXT_STRESS_JIT` asks for the JIT stress mode: set, and
@@ -1229,6 +1235,7 @@ impl JitState {
             optimization_requests: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: OPTIMIZATION_BUDGET,
+            machine_words: crate::heap::machine_words::MachineWords::new(),
         }
     }
 
@@ -1366,6 +1373,26 @@ impl JitState {
             self.refuse_abandoned();
         }
         self.mark_block_stale();
+    }
+
+    /// Makes the unpointed budget the one among `words`, the heap's, so
+    /// that the JIT's every word machine code spends from lies in the
+    /// heap's machine words or its budget table. Before any body is
+    /// compiled.
+    pub(crate) fn share_machine_words(&mut self, words: crate::heap::machine_words::MachineWords) {
+        debug_assert!(
+            self.bodies.is_empty(),
+            "internal: the machine words are shared before any compile"
+        );
+        self.machine_words = words;
+    }
+
+    /// The unpointed budget's address (`MachineWord::UnpointedBudget`).
+    #[cfg(ns_jit)]
+    fn unpointed_budget_address(&self) -> u64 {
+        use crate::heap::machine_words::{MachineWord, MachineWords};
+        let offset = MachineWords::offset(MachineWord::UnpointedBudget).unsigned_abs();
+        self.machine_words.address() as u64 + u64::from(offset)
     }
 
     /// Sets the budget every body's row is armed with from now on
@@ -1745,6 +1772,7 @@ impl JitState {
             optimization_requests: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: OPTIMIZATION_BUDGET,
+            machine_words: crate::heap::machine_words::MachineWords::new(),
         }
     }
 }
@@ -2930,9 +2958,7 @@ fn install_body(
         };
         offset
     });
-    if budget_word.is_some() {
-        state.budget_words_to_point.push(map);
-    }
+    let unpointed = budget_word.map(|_| state.unpointed_budget_address());
     state.bodies.push(InstalledBody {
         code: Rc::downgrade(code),
         method: method.map(Rc::downgrade),
@@ -2953,6 +2979,13 @@ fn install_body(
         free: false,
         budget_word,
     });
+    // Until it is pointed at its row the code spends from the unpointed
+    // budget, whose first spend calls the leaf: the word is never one the
+    // spend must test for.
+    if let Some(unpointed) = unpointed {
+        state.write_budget_word(map, unpointed);
+        state.budget_words_to_point.push(map);
+    }
     Ok(map)
 }
 
@@ -3071,8 +3104,34 @@ pub(crate) fn compile_twin_at(state: &mut JitState, code_address: usize) -> bool
 #[cfg(ns_jit)]
 fn point_budget_words(mutator: &mut Mutator<'_>) {
     for index in std::mem::take(&mut mutator.jit.budget_words_to_point) {
-        point_budget_word(mutator, index, 0);
+        point_budget_word(mutator, index, None);
     }
+}
+
+/// What is left of each installed body's armed budget, by the body's
+/// address, read before a full collection's `reclaim_ids` frees the ids
+/// the rows are indexed by and clears their rows: the after-collection
+/// pass arms each body's row of the id it has then with it
+/// (`point_budget_words_after_collection`), so that a body whose id was
+/// freed -- every method no activation runs -- keeps the budget it spent
+/// rather than starting afresh at every collection.
+#[cfg(ns_jit)]
+pub(crate) fn budgets_before_collection(mutator: &Mutator<'_>) -> IdentityMap<usize, i64> {
+    let mut budgets = IdentityMap::default();
+    for body in mutator.jit.bodies.iter().filter(|body| !body.free) {
+        if let Some(code) = body.code.upgrade() {
+            if let Some(budget) = mutator.heap.armed_optimization_budget(&code) {
+                budgets.insert(Rc::as_ptr(&code) as usize, budget);
+            }
+        }
+    }
+    budgets
+}
+
+/// Without a JIT no body has a budget.
+#[cfg(not(ns_jit))]
+pub(crate) fn budgets_before_collection(_mutator: &Mutator<'_>) -> IdentityMap<usize, i64> {
+    IdentityMap::default()
 }
 
 /// Points the budget word of every installed body afresh after a full
@@ -3081,29 +3140,43 @@ fn point_budget_words(mutator: &mut Mutator<'_>) {
 /// table back (`World::collect`): the id of a body that lives is asked of
 /// the heap again -- minted afresh for one whose id was freed, which only
 /// what holds the body keeps alive, so that no body outlives its holders
-/// for its machine code's sake -- and a dead body's word is set to 0.
+/// for its machine code's sake -- and its row armed with what was left of
+/// its budget, `carried` (`budgets_before_collection`); a dead body's
+/// word names the unpointed budget.
 #[cfg(ns_jit)]
-pub(crate) fn point_budget_words_after_collection(mutator: &mut Mutator<'_>) {
+pub(crate) fn point_budget_words_after_collection(
+    mutator: &mut Mutator<'_>,
+    carried: &IdentityMap<usize, i64>,
+) {
     mutator.jit.budget_words_to_point.clear();
+    let unpointed = mutator.jit.unpointed_budget_address();
     for index in 0..mutator.jit.bodies.len() {
         let index = u32::try_from(index).expect("internal: a body's index fits a u32");
-        if !point_budget_word(mutator, index, u64::MAX) {
-            mutator.jit.write_budget_word(index, 0);
+        if !point_budget_word(mutator, index, Some(carried)) {
+            mutator.jit.write_budget_word(index, unpointed);
         }
     }
 }
 
 /// Without a JIT no body spends a budget.
 #[cfg(not(ns_jit))]
-pub(crate) fn point_budget_words_after_collection(_mutator: &mut Mutator<'_>) {}
+pub(crate) fn point_budget_words_after_collection(
+    _mutator: &mut Mutator<'_>,
+    _carried: &IdentityMap<usize, i64>,
+) {
+}
 
-/// Points the budget word of the body at `index` in `bodies`, which holds
-/// `spent_from`, at the row of the id its body has now -- the sink for an
-/// id past the table -- armed with the state's budget unless it is armed
-/// already, and answers whether the body lives to have one. The word is
-/// written only when it names another address.
+/// Points the budget word of the body at `index` in `bodies` at the row
+/// of the id its body has now -- the sink for an id past the table --
+/// arming the row unless it is armed already: with what `carried` keeps
+/// for the body across a collection, or else the state's budget. Answers
+/// whether the body lives to have a row.
 #[cfg(ns_jit)]
-fn point_budget_word(mutator: &mut Mutator<'_>, index: u32, spent_from: u64) -> bool {
+fn point_budget_word(
+    mutator: &mut Mutator<'_>,
+    index: u32,
+    carried: Option<&IdentityMap<usize, i64>>,
+) -> bool {
     let Some(code) = mutator
         .jit
         .live_body(index)
@@ -3113,26 +3186,26 @@ fn point_budget_word(mutator: &mut Mutator<'_>, index: u32, spent_from: u64) -> 
     };
     let budget = mutator.heap.optimization_budget_of(&code);
     if !budget.armed && !budget.sink {
-        mutator
-            .heap
-            .arm_optimization_budget(budget.id, mutator.jit.optimization_budget);
+        let left = carried
+            .and_then(|carried| carried.get(&(Rc::as_ptr(&code) as usize)))
+            .copied()
+            .unwrap_or(mutator.jit.optimization_budget);
+        mutator.heap.arm_optimization_budget(budget.id, left);
     }
-    if spent_from != budget.address {
-        mutator.jit.write_budget_word(index, budget.address);
-    }
+    mutator.jit.write_budget_word(index, budget.address);
     true
 }
 
 /// The budget leaf's work (`leaves::budget`): a spend of the body the
 /// address inside the code `code_address` lies in left the word at
-/// `spent_from` below zero, or found its data word 0. A row that ran out
-/// -- the one the body's id names now, and armed -- requests the body's
-/// optimization, once while the request is pending, parks the row and
-/// requests a safepoint, at which the request is taken up. Anything else
-/// spent from a word that names no budget of this body's: a data word
-/// not pointed yet, or a row cleared since, is pointed at the body's
-/// row, armed afresh; the sink an id past the table spends from is parked
-/// again.
+/// `spent_from` below zero. A row that ran out -- the one the body's id
+/// names now, and armed -- requests the body's optimization, once while
+/// the request is pending, parks the row and requests a safepoint, at
+/// which the request is taken up. Anything else spent from a word that
+/// names no budget of this body's: the unpointed budget, written back
+/// negative, or a row cleared since, and the word is pointed at the
+/// body's row, armed afresh; the sink an id past the table spends from is
+/// parked again.
 #[cfg(ns_jit)]
 pub(crate) fn budget_spent(mutator: &mut Mutator<'_>, spent_from: u64, code_address: usize) {
     let Some(index) = mutator.jit.installed_index_at(code_address) else {
@@ -3145,12 +3218,19 @@ pub(crate) fn budget_spent(mutator: &mut Mutator<'_>, spent_from: u64, code_addr
     else {
         unreachable!("internal: a body running machine code lives");
     };
+    if spent_from == mutator.jit.unpointed_budget_address() {
+        use crate::heap::machine_words::{MachineWord, UNPOINTED_BUDGET};
+        mutator.jit.machine_words.set(
+            MachineWord::UnpointedBudget,
+            UNPOINTED_BUDGET.cast_unsigned(),
+        );
+    }
     let budget = mutator.heap.optimization_budget_of(&code);
     if budget.sink {
         mutator.heap.park_optimization_budget_sink();
     }
     if budget.sink || spent_from != budget.address || !budget.armed {
-        point_budget_word(mutator, index, spent_from);
+        point_budget_word(mutator, index, None);
         return;
     }
     mutator.heap.park_optimization_budget(budget.id);
@@ -4700,9 +4780,9 @@ mod tests {
         /// A body's row is armed with the budget when its baseline code is
         /// installed, before the code runs, and its data word names the
         /// row; a spend that ran the armed row out requests the body's
-        /// optimization once and parks the row, while a spend through a
-        /// word not pointed at the row, or from a row cleared since,
-        /// points and arms it and requests nothing.
+        /// optimization once and parks the row, while a spend from the
+        /// unpointed budget, or from a row cleared since, points the word
+        /// and arms the row and requests nothing.
         #[test]
         fn a_budget_that_runs_out_requests_its_body_once() {
             let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
@@ -4736,11 +4816,13 @@ mod tests {
                         .zone()
                         .executable_address(CodeOffset(body.start + 1))
                 };
-                crate::jit::budget_spent(mutator, 0, inside);
+                let unpointed = mutator.jit.unpointed_budget_address();
+                crate::jit::budget_spent(mutator, unpointed, inside);
                 assert!(
                     mutator.jit.optimization_requests.is_empty(),
-                    "a word set to 0"
+                    "a spend from the unpointed budget"
                 );
+                assert_eq!(word(mutator), row, "pointed again");
                 crate::jit::budget_spent(mutator, row, inside);
                 crate::jit::budget_spent(mutator, row, inside);
                 assert_eq!(mutator.jit.optimization_requests.len(), 1);
@@ -4984,9 +5066,10 @@ mod tests {
         /// A body's data words lie in the zone past its last instruction,
         /// on a cache line no instruction shares, before the next body's
         /// code, and zeroed at install, so that their first run fills
-        /// them: the lean body's budget word, which its prologue spends
-        /// through, and its transfer word, until the twin is compiled,
-        /// and the twin's closure site. The compile of the twin writes the
+        /// them -- the lean body's transfer word, until the twin is
+        /// compiled, and the twin's closure site -- but for the lean body's
+        /// budget word, which names the unpointed budget until a state
+        /// with a heap points it. The compile of the twin writes the
         /// transfer word with the twin's address of the `MakeClosure`.
         #[test]
         fn data_words_live_with_their_body() {
@@ -5006,8 +5089,8 @@ mod tests {
                     .to_vec()
             };
             assert!(
-                words(&state, 0).iter().all(|byte| *byte == 0),
-                "zeroed at install"
+                words(&state, 0)[8..].iter().all(|byte| *byte == 0),
+                "the transfer word zeroed at install"
             );
             let twin = compile_twin(&mut state, 0).expect("the twin fits");
             assert_eq!(twin, 2, "installed after the bodies before it");
@@ -5046,12 +5129,12 @@ mod tests {
             let expected = zone.writer.zone().executable_address(CodeOffset(
                 twin.start + twin.map.machine_offset(2).expect("mapped"),
             )) as u64;
-            let mut lean_words = vec![0; 8];
+            let mut lean_words = state.unpointed_budget_address().to_le_bytes().to_vec();
             lean_words.extend_from_slice(&expected.to_le_bytes());
             assert_eq!(
                 words(&state, 0),
                 lean_words,
-                "the budget word not pointed by a state without a heap, and                  the transfer naming the twin's `MakeClosure`"
+                "the budget word naming the unpointed budget, and the transfer the twin's"
             );
         }
 

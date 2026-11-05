@@ -1759,16 +1759,18 @@ impl MacroAssembler {
     /// (`heap/optimization_budgets.rs`) at the instruction at
     /// `program_counter`: subtracts it from the word whose address the
     /// body's data word `word` holds, and out of line, when the word fell
-    /// below zero or the data word holds 0, calls `Leaf::Budget` with the
-    /// address, the program counter and the code's own address, then
-    /// goes on where the spend ends, since the leaf changes nothing the
-    /// code reads. Clobbers the flags and the idiom scratch register.
+    /// below zero, calls `Leaf::Budget` with the address, the program
+    /// counter and the code's own address, then goes on where the spend
+    /// ends, since the leaf changes nothing the code reads. Clobbers the
+    /// flags and the idiom scratch register.
     ///
     /// The data word names the row rather than the code holding a code
     /// id, since a full collection may free a code id and mint it again
-    /// for another body: the JIT points the word at the body's row and
-    /// sets it to 0 whenever an id may have been freed, so that the next
-    /// spend asks the leaf to point it afresh.
+    /// for another body: the JIT points the word at the body's row, and
+    /// afresh after every full collection. Until it is pointed the word
+    /// names the unpointed budget (`MachineWord::UnpointedBudget`), which
+    /// is negative, so that the hot path is the load of the address, the
+    /// subtract and one branch, with no test for a word naming none.
     ///
     /// # Panics
     ///
@@ -1779,8 +1781,6 @@ impl MacroAssembler {
         let amount = i32::try_from(amount).expect("internal: a body's length fits an immediate");
         let (cold, rejoin) = (self.assembler.label(), self.assembler.label());
         self.load_body_word(scratch, word);
-        self.assembler.compare_immediate(scratch, 0);
-        self.assembler.jump_if(Condition::Equal, cold);
         self.assembler.subtract_from_memory(
             Memory {
                 base: scratch,

@@ -54,8 +54,8 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// 21, the callee's kind 22, a closure's class word and header 23 and 24,
 /// a frame object's 25 and 26, the code table's epoch 27, the machine
 /// entry table's bound 28, the callee closure and whether it counts 29
-/// and 30, a future's class word and header 31 and 32, the rest free for
-/// the later stages.
+/// and 30, a future's class word and header 31 and 32, the unpointed
+/// budget 33, the rest free for the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -171,7 +171,20 @@ pub(crate) enum MachineWord {
     /// code's `MakeFuture` leaves the first one to the generic leaf, which
     /// sets it, and never makes a future the runtime would not look for.
     FutureHeader,
+    /// The budget a body's baseline code spends from until the JIT points
+    /// its budget word at the body's row (`heap/optimization_budgets.rs`):
+    /// always negative (`UNPOINTED_BUDGET`), so that the first spend from
+    /// it calls the budget leaf, which points the word and writes this one
+    /// back. What every budget word holds at install and wherever its row
+    /// is not known, so that the spend needs no test for a word naming
+    /// none.
+    UnpointedBudget,
 }
+
+/// What `MachineWord::UnpointedBudget` holds: negative, and far enough
+/// from `i64::MIN` that no run of spends between two of the budget leaf's
+/// calls, which writes it back, wraps it.
+pub(crate) const UNPOINTED_BUDGET: i64 = -(1 << 62);
 
 impl MachineWord {
     /// The word's index in the area.
@@ -209,6 +222,7 @@ impl MachineWord {
             MachineWord::CalleeCounted => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 16,
             MachineWord::FutureClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 17,
             MachineWord::FutureHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 18,
+            MachineWord::UnpointedBudget => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 19,
         }
     }
 }
@@ -217,7 +231,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 40;
 
-const _: () = assert!(MachineWord::FutureHeader.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::UnpointedBudget.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -229,9 +243,14 @@ pub(crate) struct MachineWords {
 
 impl MachineWords {
     pub(crate) fn new() -> MachineWords {
-        MachineWords {
+        let words = MachineWords {
             words: Rc::new(std::array::from_fn(|_| Cell::new(0))),
-        }
+        };
+        words.set(
+            MachineWord::UnpointedBudget,
+            UNPOINTED_BUDGET.cast_unsigned(),
+        );
+        words
     }
 
     #[inline(always)]
@@ -302,9 +321,10 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::CalleeCounted));
         offsets.push(MachineWords::offset(MachineWord::FutureClass));
         offsets.push(MachineWords::offset(MachineWord::FutureHeader));
+        offsets.push(MachineWords::offset(MachineWord::UnpointedBudget));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 23 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 24 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

@@ -158,13 +158,6 @@ impl OptimizationBudgets {
     }
 
     /// What `row` holds; 0 for a row not committed.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by tests until the optimizing compile reads a budget"
-        )
-    )]
     pub(crate) fn budget(&self, row: CodeId) -> i64 {
         self.read(row.index())
     }

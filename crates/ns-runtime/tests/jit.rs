@@ -815,15 +815,99 @@ ns_runtime::for_each_lowering! {
     /// optimization is requested, once, and its row parked, so that the
     /// rest of the loop requests nothing more. The reference lowering
     /// inlines neither block: each turn sends `value` to both, whose
-    /// bodies are hot as well.
+    /// bodies are requested as well -- the condition's and the loop's,
+    /// `run`'s own back jump spending less than either.
     fn a_hot_loop_requests_its_body_s_optimization(lowering) {
         let (answer, statistics) = run_spending(HOT_LOOP, lowering);
         assert_eq!(answer, 20_000_100_000);
-        if lowering == Lowering::Optimized {
-            assert_eq!(statistics.optimization_requests, 1);
-        } else {
-            assert!(statistics.optimization_requests >= 1);
+        let requested = match lowering {
+            Lowering::Optimized => 1,
+            Lowering::Reference => 2,
+        };
+        assert_eq!(statistics.optimization_requests, requested);
+    }
+}
+
+/// A loop whose every turn sends a method without a loop of its own,
+/// which spends its budget only at its entries.
+const STEPPING: &str = indoc! {"
+    class Subject = Object new () (
+      step: value = (
+        ^value + 1
+      )
+      public run = (
+        |
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          index:: self step: index.
+        ].
+        ^index.
+      )
+    ) : ()
+"};
+
+/// The budget `STEPPING`'s test arms every body with: a few dozen runs'
+/// worth.
+const STEPPING_BUDGET: i64 = 50_000;
+
+/// An interpreter with `STEPPING` loaded under `lowering`, every body's
+/// budget `STEPPING_BUDGET`, and an instance to send `run` to.
+fn stepping(lowering: Lowering) -> (Interpreter, Root) {
+    let (mut interpreter, class) = load_spending_with(STEPPING, lowering);
+    interpreter.set_optimization_budget(STEPPING_BUDGET);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    (interpreter, instance)
+}
+
+/// Sends `instance` `run` once, answering whether the JIT has requested
+/// an optimization since `before`.
+fn run_stepping(interpreter: &mut Interpreter, instance: &Root, before: JitStatistics) -> bool {
+    expect_ok(
+        interpreter.send(instance, Symbol::intern("run"), &[]),
+        "run",
+    );
+    since(interpreter.jit_statistics(), before).optimization_requests > 0
+}
+
+/// A full collection frees the code ids of the bodies no activation runs
+/// -- `run` and `step:` between two runs -- and mints new ones for them,
+/// whose rows are armed with what was left of the old: a budget spent
+/// across the collection runs out at the same total as one spent without
+/// it, so that a body called a little between every two collections is
+/// still requested. The optimized lowering's: under the reference
+/// lowering every body `STEPPING` runs would exit at once, so that none
+/// is compiled and none spends.
+#[test]
+fn a_full_collection_keeps_what_is_left_of_a_budget() {
+    let lowering = Lowering::Optimized;
+    {
+        let (mut interpreter, instance) = stepping(lowering);
+        let before = interpreter.jit_statistics();
+        let runs_to_request = (1..=10_000)
+            .find(|_| run_stepping(&mut interpreter, &instance, before))
+            .expect("the budget runs out");
+        assert!(runs_to_request >= 10, "{runs_to_request} runs");
+        if the_zone_stress_mode_is_on() {
+            // Its compactions free and compile again the bodies between
+            // two runs, which arms their budgets afresh.
+            return;
         }
+        let (mut interpreter, instance) = stepping(lowering);
+        let before = interpreter.jit_statistics();
+        let half = runs_to_request * 6 / 10 + 1;
+        for _ in 0..half {
+            assert!(
+                !run_stepping(&mut interpreter, &instance, before),
+                "requested before the collection"
+            );
+        }
+        interpreter.collect_now();
+        let requested = (0..half).any(|_| run_stepping(&mut interpreter, &instance, before));
+        assert!(
+            requested,
+            "{half} runs on either side of the collection, {runs_to_request} running out"
+        );
     }
 }
 

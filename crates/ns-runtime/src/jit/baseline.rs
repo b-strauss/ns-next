@@ -1901,9 +1901,9 @@ mod tests {
 
     /// On x64 a spend of a body's budget costs the hot path a memory
     /// subtract and one branch, after the load of its row's address from
-    /// the body's data word and the test for none: the prologue's spend of
-    /// the body's length and the back jump's of the loop's, both branching
-    /// to the one cold path that calls the leaf.
+    /// the body's data word: the prologue's spend of the body's length and
+    /// the back jump's of the loop's, each branching out of line to the
+    /// leaf's call.
     #[test]
     fn a_spend_on_x64_is_a_subtract_from_memory_and_one_branch() {
         use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind};
@@ -1938,25 +1938,20 @@ mod tests {
                 .collect();
             assert_eq!(spends.len(), 2, "the prologue's spend and the back jump's");
             for index in spends {
-                let [load, compare, none, subtract, ran_out] =
-                    std::array::from_fn(|offset| instructions[index + offset - 3]);
+                let [load, subtract, ran_out] =
+                    std::array::from_fn(|offset| instructions[index + offset - 1]);
                 assert_eq!(subtract.immediate(1), 2, "both spend two instructions");
                 assert_eq!(subtract.memory_displacement64(), 0);
                 assert!(load.mnemonic() == Mnemonic::Mov && load.is_ip_rel_memory_operand());
-                let row = load.op0_register();
-                assert_eq!(subtract.memory_base(), row, "the row the data word names");
-                assert!(compare.mnemonic() == Mnemonic::Cmp && compare.op0_register() == row);
-                assert_eq!(compare.immediate(1), 0);
-                assert_eq!(none.mnemonic(), Mnemonic::Je);
+                assert_eq!(
+                    subtract.memory_base(),
+                    load.op0_register(),
+                    "the row the data word names, right after its load"
+                );
                 assert_eq!(
                     ran_out.mnemonic(),
                     Mnemonic::Jl,
                     "the hot path's one branch"
-                );
-                assert_eq!(
-                    none.near_branch_target(),
-                    ran_out.near_branch_target(),
-                    "one cold path"
                 );
                 assert!(
                     ran_out.near_branch_target() > ran_out.ip(),

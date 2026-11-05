@@ -6846,9 +6846,10 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// The optimization budget row of `code`, if it has a code id and the
-    /// row is armed. For tests.
-    #[cfg(all(ns_jit, test))]
+    /// What is left of `code`'s optimization budget, if it has a code id
+    /// and its row is armed: what a full collection carries over to the
+    /// row of the id the body has after it (`jit::budgets_before_collection`).
+    #[cfg(ns_jit)]
     pub(crate) fn armed_optimization_budget(&self, code: &Rc<CompiledCode>) -> Option<i64> {
         let id = self.tables.code_ids.get(&(Rc::as_ptr(code) as usize))?;
         self.optimization_budgets
@@ -9540,6 +9541,13 @@ impl<'gc> Heap<'gc> {
     #[cfg(ns_jit)]
     pub(crate) fn machine_words_address(&self) -> usize {
         self.machine_words.address()
+    }
+
+    /// Another handle to the machine words, for the JIT, whose budget
+    /// words name the unpointed budget among them before they name a row
+    /// (`JitState::share_machine_words`).
+    pub(crate) fn machine_words_handle(&self) -> MachineWords {
+        self.machine_words.clone()
     }
 
     /// The address of eden's bump cursor, its top word then its limit
