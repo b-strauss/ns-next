@@ -1041,23 +1041,6 @@ fn boolean_word(boolean: bool) -> i32 {
         .expect("internal: a Boolean's word is a small constant")
 }
 
-/// The word a literal is when `make_value` makes it without allocating:
-/// `nil`, a Boolean, a `SmallInteger` and an immediate float. `None` for
-/// every other literal.
-fn immediate_literal(literal: &Literal) -> Option<Immediate> {
-    match literal {
-        Literal::Nil => Some(Immediate::NIL),
-        Literal::Boolean(boolean) => Some(Immediate::boolean(*boolean)),
-        Literal::SmallInteger(integer) => Immediate::small_integer(*integer),
-        Literal::Float(float) => Immediate::small_float(*float),
-        Literal::String(_)
-        | Literal::Symbol(_)
-        | Literal::LargeInteger(_)
-        | Literal::UnresolvedIdentifier(_)
-        | Literal::BodyTooLarge(_) => None,
-    }
-}
-
 /// Whether the generic leaf may load `literal`, one `make_value`
 /// allocates and that cannot fail. A literal that raises an error, and a
 /// `SmallInteger` literal outside 61 bits, which no lowering makes and
@@ -1264,7 +1247,7 @@ fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowering {
         Instruction::LoadLiteral {
             destination,
             literal,
-        } => match immediate_literal(literal) {
+        } => match super::immediate_literal(literal) {
             Some(immediate) => {
                 body.load_immediate(*destination, immediate);
                 Lowering::Template

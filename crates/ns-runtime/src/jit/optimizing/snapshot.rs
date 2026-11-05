@@ -600,6 +600,20 @@ impl SnapshotInstruction {
         crate::bytecode::jump_target(&self.unsnapshot()?)
     }
 
+    /// Whether control can pass to the next instruction
+    /// (`bytecode::falls_through`); a closure is made and control goes on.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the optimizing compiler's graph builder, built on it, is its first reader"
+        )
+    )]
+    pub(crate) fn falls_through(&self) -> bool {
+        self.unsnapshot()
+            .is_none_or(|instruction| crate::bytecode::falls_through(&instruction))
+    }
+
     /// The slots the instruction lays a callee's arguments on, as
     /// `Instruction::argument_slots` answers them.
     pub(crate) fn argument_slots(&self) -> Option<(u16, &[u16])> {
@@ -1279,6 +1293,11 @@ mod tests {
                     "{instruction:?}"
                 );
                 assert_eq!(
+                    snapshot.falls_through(),
+                    crate::bytecode::falls_through(&instruction),
+                    "{instruction:?}"
+                );
+                assert_eq!(
                     snapshot.argument_slots(),
                     instruction.argument_slots(),
                     "{instruction:?}"
@@ -1293,6 +1312,9 @@ mod tests {
         });
     }
 
+    // The baseline's `sends`, whose two paths this holds together, is
+    // built only where a JIT is.
+    #[cfg(ns_jit)]
     #[test]
     fn the_two_ways_to_a_call_s_slots_agree() {
         use crate::bytecode::CallSite;

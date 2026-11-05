@@ -120,6 +120,29 @@ pub(crate) fn available() -> bool {
     cfg!(ns_jit)
 }
 
+/// The word a literal is when `make_value` makes it without allocating:
+/// `nil`, a Boolean, a `SmallInteger` and an immediate float. `None` for
+/// every other literal. The baseline's load and the optimizing compiler's
+/// constants both ask it, so the two tiers agree on which literal is a
+/// word known at compile time.
+pub(crate) fn immediate_literal(
+    literal: &crate::bytecode::Literal,
+) -> Option<crate::heap::Immediate> {
+    use crate::bytecode::Literal;
+    use crate::heap::Immediate;
+    match literal {
+        Literal::Nil => Some(Immediate::NIL),
+        Literal::Boolean(boolean) => Some(Immediate::boolean(*boolean)),
+        Literal::SmallInteger(integer) => Immediate::small_integer(*integer),
+        Literal::Float(float) => Immediate::small_float(*float),
+        Literal::String(_)
+        | Literal::Symbol(_)
+        | Literal::LargeInteger(_)
+        | Literal::UnresolvedIdentifier(_)
+        | Literal::BodyTooLarge(_) => None,
+    }
+}
+
 /// What the JIT has done in one interpreter, counted in every build
 /// (`Interpreter::jit_statistics`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

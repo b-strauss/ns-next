@@ -211,8 +211,15 @@ impl Immediate {
 
     /// The word itself, which machine code writes into a register as it
     /// is: an immediate names no object, so it means the same in every
-    /// heap and across every move.
-    #[cfg(ns_jit)]
+    /// heap and across every move. The optimizing compiler's constants
+    /// read it too, and its graph is built in every build.
+    #[cfg_attr(
+        not(any(ns_jit, test)),
+        expect(
+            dead_code,
+            reason = "without a JIT only the optimizing compiler's tests build a graph"
+        )
+    )]
     pub(crate) const fn bits(self) -> u64 {
         self.0
     }
