@@ -22,13 +22,19 @@ deoptimization contract road step 7c wrote and on the feedback, frames,
 assembler and code zone road step 8 left for it
 ([execution.md](design/execution.md), "Planned: JIT tiers", "Planned:
 the deoptimization contract"; the entry in "The road to a
-high-performance VM" below). It is not designed yet: like every step of
-the road it gets its own design when it comes up, grounded in
-`prior-art/`. What it is already known to have to decide is in its entry
-below -- register allocation over a body, the home of a closure created
-in an inlined scope, scalar replacement of value objects -- beside what
-the baseline's stages left to the steps after them (the items under
-step 8).
+high-performance VM" below). Designed with the user on 2026-11-04 and
+2026-11-05 in fourteen decisions ([execution.md](design/execution.md),
+"Planned: the optimizing JIT"): one tier, an SSA control-flow graph in
+Maglev's shape, the repository's own backend, a compiler thread fed a
+snapshot, customization per receiver application, traps by default,
+inlining planned by frequency, unboxed numbers, frame objects for
+inlined activations, partial escape analysis and invalidation per
+application, in ten stages. Next is its **first stage, the foundation
+without speculation** -- the graph, linear scan, the emitters, the
+metadata and raw area, a synchronous compile on a snapshot installed at
+a safepoint, the budget, the verifiers and two stress modes -- which
+gets its plan next. Beside it stand what the baseline's stages left to
+the steps after them (the items under step 8).
 
 Road step 8 is complete (2026-11-04): the baseline JIT, Cog's class,
 in six stages ("The baseline JIT's foundation", "Sends, returns and the
@@ -751,7 +757,20 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       no gate; the global mirror reserves 64 MiB of address space for
       2^20 rows where 1,024 is the default.
 - **Step 9, an optimizing JIT** with type feedback, inlining and
-  deoptimization, Strongtalk's and HotSpot's class.
+  deoptimization, Strongtalk's and HotSpot's class, designed with the user
+  on 2026-11-04 and 2026-11-05 ([execution.md](design/execution.md),
+  "Planned: the optimizing JIT"), in ten stages, none built: the
+  foundation without speculation; speculation with customization, traps
+  and invalidation; inlining; frame objects for inlined activations;
+  numbers; on-stack replacement into optimized code; counting at
+  polymorphic and megamorphic sites; the compiler thread; escape
+  analysis with late inlining; range analysis. Left by the design to
+  measurement, each in the stage that builds it: every threshold and
+  limit (the budget's, the inlining plan's, the trap limit, the last
+  version), what the budget costs baseline code at each entry and back
+  jump, the share of polymorphic and megamorphic sends in the benchmarks
+  before their counting is built, and the counting window's size and
+  rhythm.
   - **Register allocation over a body** (decided with the user on
     2026-11-03): a frame register's value kept in a machine register
     across instructions and the merges of the inlined forms, an
@@ -764,16 +783,9 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     may be left out, and only once the collector's pre-pass nils what
     the frame did not write, or the leftover analysis is broken.
     `r13` is left free for it, `x22` under AAPCS64 (`Roles::of`).
-    [execution.md](design/execution.md), "The register cache", "What a
-    register cache would move".
-  - **The home of a closure created in an inlined scope** (noted with the
-    user on 2026-10-27): a frame object is married only to a frame that
-    stands for one activation, so a block the optimizer does not inline,
-    created in a scope it did inline, has no frame to take as its home
-    without deoptimizing. Strongtalk gives such blocks a compiled context
-    that a deoptimization forwards (`prior-art/strongtalk/vm/runtime/vframe.cpp:595-695`).
-    [execution.md](design/execution.md), "Planned: the deoptimization
-    contract", "Open".
+    Its allocator is the optimizing tier's linear scan, built in the
+    first stage. [execution.md](design/execution.md), "The register
+    cache", "What a register cache would move".
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any
@@ -781,7 +793,9 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     since its `==` is its `=` and its `identityHash` its `hash`
     (`Kernel.ns`, `newspeak-spec.pdf` §3.1.1). `new` as compiled code is
     what makes it possible: allocation and initialization are code the JIT
-    can inline. Four questions are open: a value's lazy slot (§6.3.3),
+    can inline. The partial escape analysis of the ninth stage does it;
+    four questions are decided one by one when that stage begins (decided
+    with the user on 2026-11-05): a value's lazy slot (§6.3.3),
     which each copy would compute again; `self` escaping a value's
     initializer before its slots are filled; whether the bulk forward
     (`become:`) may take a value; and flattening values into other objects
@@ -1758,23 +1772,6 @@ classes and a class from source with no predecessor are not edited
   that cannot switch delays another frame of the same body by up to 39
   jumps; unmeasured ([execution.md](design/execution.md), "When a body
   is compiled").
-- **Whether the baseline compiler joins road step 9's compiler thread is
-  undecided** (2026-11-02). Road step 9's optimizing compiler runs on a
-  thread of its own, and V8 compiles even its baseline code there;
-  ns-next's baseline compiler would take its time off the mutator, at the
-  cost of a body left interpreted until its code is installed and of a
-  miss leaf that can no longer compile a callee. The share it takes is
-  measured ([execution.md](design/execution.md), "What on-stack
-  replacement moved"): a body or twin compiles in about 12 to 25 µs, and
-  of a whole `run` the compiler takes 0.01% (Mandelbrot) to 4.2%
-  (DeltaBlueTon80), 1.6% or less for every microbenchmark and every
-  program of a second or longer but CD, whose churn of abandoned and
-  revived bodies costs 2.2-2.3%; against `bench`'s sends alone, a program
-  whose send takes under a millisecond spends one or two sends' worth on
-  compiling (Bounce 24% of nine sends, List 20%, Queens 14%), nearly all
-  of it in the warm-up. `run-corpus` takes no `--jit-statistics`, so the
-  corpus's share is not measured. Road step 9 decides
-  ([execution.md](design/execution.md), "When a body is compiled").
 - **A program in machine code measures where its bodies land in the code
   zone** (2026-10-30). `bench_loop.ns` measured 5% slower after the
   closures in machine code on machine code identical to the tree before,
