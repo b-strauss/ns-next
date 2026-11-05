@@ -315,6 +315,10 @@ mod tests {
         )
         .unwrap_or_else(|_| panic!("the escape loop resolves"));
         let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+        // The run's feedback is what the snapshot reads: the cache stress
+        // mode would vacate it at the run's safepoints.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_caches(false);
         let class = interpreter.load_module(&resolved);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         expect_ok(

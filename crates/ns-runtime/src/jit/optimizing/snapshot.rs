@@ -1374,12 +1374,18 @@ mod tests {
         });
         let (mut seen_wide, mut seen_narrow) = (false, false);
         for instruction in instructions {
-            let code = CompiledCode::new(
+            // Built as the instruction's own form asks, whatever
+            // `NS_NEXT_STRESS_WIDE` says, which would make every send wide
+            // and leave the narrow form's path untested.
+            let mut builder = crate::bytecode::CodeBuilder::never_wide_by_stress();
+            builder.emit(instruction.clone());
+            let code = CompiledCode::from_builder(
                 CodeKind::Method,
-                vec![instruction.clone()],
+                builder,
                 2,
                 500,
                 0,
+                2 + crate::bytecode::HEADER_REGISTERS,
                 Vec::new(),
                 Span::new(0, 0),
             );
