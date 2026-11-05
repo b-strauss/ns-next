@@ -6,9 +6,10 @@
 //! compile that runs beside the interpreter reads nothing the interpreter
 //! can change.
 //!
-//! The baseline reads the same two forms where it asks what the body
-//! lays on the stack (`sends::prologue`, `sends::call_slots`), so that
-//! both compilers answer those questions from one place.
+//! The baseline reads `BodyFacts` in `sends::prologue`; its
+//! `sends::call_slots` reads the encoded body's cached send first and the
+//! snapshot form (`sends::call_slots_of`) only for the instructions that
+//! are not one, a test holding the two paths to the same answer.
 
 use std::rc::Rc;
 
@@ -53,7 +54,7 @@ impl BodyFacts {
             // A body past `INSTRUCTION_LIMIT` compiles to a single
             // instruction, so the count always fits.
             instruction_count: u32::try_from(code.instruction_count())
-                .expect("internal: a body holds at most 2^20 instructions"),
+                .expect("internal: a body holds at most INSTRUCTION_LIMIT instructions"),
         }
     }
 
@@ -269,6 +270,334 @@ impl SnapshotInstruction {
     /// for a `MakeClosure`, which calls nothing.
     pub(crate) fn of_unclosed(instruction: &Instruction) -> Option<SnapshotInstruction> {
         convert(instruction, &mut |_| None)
+    }
+
+    /// The instruction as the interpreter's own form, which the register
+    /// queries of `bytecode.rs` answer for; `None` for a `MakeClosure`,
+    /// whose block the snapshot holds by id only.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the optimizing compiler's liveness, built on it, is its first reader"
+        )
+    )]
+    fn unsnapshot(&self) -> Option<Instruction> {
+        Some(match self {
+            SnapshotInstruction::MakeClosure { .. } => return None,
+            SnapshotInstruction::LoadLiteral {
+                destination,
+                literal,
+            } => Instruction::LoadLiteral {
+                destination: *destination,
+                literal: literal.clone(),
+            },
+            SnapshotInstruction::LoadSelf { destination } => Instruction::LoadSelf {
+                destination: *destination,
+            },
+            SnapshotInstruction::LoadEnclosingObject { destination, depth } => {
+                Instruction::LoadEnclosingObject {
+                    destination: *destination,
+                    depth: *depth,
+                }
+            }
+            SnapshotInstruction::Move {
+                destination,
+                source,
+            } => Instruction::Move {
+                destination: *destination,
+                source: *source,
+            },
+            SnapshotInstruction::StoreLocal { source, slot } => Instruction::StoreLocal {
+                source: *source,
+                slot: *slot,
+            },
+            SnapshotInstruction::LoadOuterLocal {
+                destination,
+                depth,
+                index,
+            } => Instruction::LoadOuterLocal {
+                destination: *destination,
+                depth: *depth,
+                index: *index,
+            },
+            SnapshotInstruction::StoreOuterLocal {
+                source,
+                depth,
+                index,
+            } => Instruction::StoreOuterLocal {
+                source: *source,
+                depth: *depth,
+                index: *index,
+            },
+            SnapshotInstruction::SendLexical {
+                depth,
+                selector,
+                argument_base,
+                argument_sources,
+                destination,
+                call_site,
+            } => Instruction::SendLexical {
+                depth: *depth,
+                selector: *selector,
+                argument_base: *argument_base,
+                argument_sources: argument_sources.clone(),
+                destination: *destination,
+                call_site: *call_site,
+            },
+            SnapshotInstruction::SendPublic {
+                selector,
+                receiver_register,
+                argument_base,
+                argument_sources,
+                destination,
+                call_site,
+            } => Instruction::SendPublic {
+                selector: *selector,
+                receiver_register: *receiver_register,
+                argument_base: *argument_base,
+                argument_sources: argument_sources.clone(),
+                destination: *destination,
+                call_site: *call_site,
+            },
+            SnapshotInstruction::SendInlinable {
+                selector,
+                receiver_register,
+                argument_base,
+                argument_sources,
+                destination,
+                call_site,
+            } => Instruction::SendInlinable {
+                selector: *selector,
+                receiver_register: *receiver_register,
+                argument_base: *argument_base,
+                argument_sources: argument_sources.clone(),
+                destination: *destination,
+                call_site: *call_site,
+            },
+            SnapshotInstruction::SendSuper {
+                selector,
+                argument_base,
+                argument_sources,
+                destination,
+                call_site,
+            } => Instruction::SendSuper {
+                selector: *selector,
+                argument_base: *argument_base,
+                argument_sources: argument_sources.clone(),
+                destination: *destination,
+                call_site: *call_site,
+            },
+            SnapshotInstruction::SendMirror {
+                primitive,
+                mirror_register,
+                subject_register,
+                argument_base,
+                argument_sources,
+                destination,
+                failure,
+            } => Instruction::SendMirror {
+                primitive: *primitive,
+                mirror_register: *mirror_register,
+                subject_register: *subject_register,
+                argument_base: *argument_base,
+                argument_sources: argument_sources.clone(),
+                destination: *destination,
+                failure: *failure,
+            },
+            SnapshotInstruction::MakeArray {
+                destination,
+                element_registers,
+            } => Instruction::MakeArray {
+                destination: *destination,
+                element_registers: element_registers.clone(),
+            },
+            SnapshotInstruction::MakeVector { destination, size } => Instruction::MakeVector {
+                destination: *destination,
+                size: *size,
+            },
+            SnapshotInstruction::LoadVector {
+                destination,
+                vector,
+                index,
+            } => Instruction::LoadVector {
+                destination: *destination,
+                vector: *vector,
+                index: *index,
+            },
+            SnapshotInstruction::StoreVector {
+                vector,
+                index,
+                source,
+            } => Instruction::StoreVector {
+                vector: *vector,
+                index: *index,
+                source: *source,
+            },
+            SnapshotInstruction::InitializeSlot { source, own_index } => {
+                Instruction::InitializeSlot {
+                    source: *source,
+                    own_index: *own_index,
+                }
+            }
+            SnapshotInstruction::ReturnSlotIfFilled { own_index } => {
+                Instruction::ReturnSlotIfFilled {
+                    own_index: *own_index,
+                }
+            }
+            SnapshotInstruction::MakeFuture {
+                destination,
+                closure,
+            } => Instruction::MakeFuture {
+                destination: *destination,
+                closure: *closure,
+            },
+            SnapshotInstruction::ResolveFuture {
+                destination,
+                source,
+            } => Instruction::ResolveFuture {
+                destination: *destination,
+                source: *source,
+            },
+            SnapshotInstruction::LoadOwnSlot {
+                destination,
+                own_index,
+            } => Instruction::LoadOwnSlot {
+                destination: *destination,
+                own_index: *own_index,
+            },
+            SnapshotInstruction::InitializeSlotProvisionally { source, own_index } => {
+                Instruction::InitializeSlotProvisionally {
+                    source: *source,
+                    own_index: *own_index,
+                }
+            }
+            SnapshotInstruction::Return { register } => Instruction::Return {
+                register: *register,
+            },
+            SnapshotInstruction::ImplicitReturn { register } => Instruction::ImplicitReturn {
+                register: *register,
+            },
+            SnapshotInstruction::NonLocalReturn { register } => Instruction::NonLocalReturn {
+                register: *register,
+            },
+            SnapshotInstruction::SignalNonBoolean { register } => Instruction::SignalNonBoolean {
+                register: *register,
+            },
+            SnapshotInstruction::Jump { target } => Instruction::Jump { target: *target },
+            SnapshotInstruction::JumpIfNotBoolean { register, target } => {
+                Instruction::JumpIfNotBoolean {
+                    register: *register,
+                    target: *target,
+                }
+            }
+            SnapshotInstruction::BranchIfFalse { register, target } => Instruction::BranchIfFalse {
+                register: *register,
+                target: *target,
+            },
+            SnapshotInstruction::BranchIfTrue { register, target } => Instruction::BranchIfTrue {
+                register: *register,
+                target: *target,
+            },
+            SnapshotInstruction::IntegerBinary {
+                operation,
+                destination,
+                left,
+                right,
+                target,
+            } => Instruction::IntegerBinary {
+                operation: *operation,
+                destination: *destination,
+                left: *left,
+                right: *right,
+                target: *target,
+            },
+            SnapshotInstruction::AllocateInstance { destination } => {
+                Instruction::AllocateInstance {
+                    destination: *destination,
+                }
+            }
+            SnapshotInstruction::InitializeInstance {
+                instance,
+                destination,
+            } => Instruction::InitializeInstance {
+                instance: *instance,
+                destination: *destination,
+            },
+            SnapshotInstruction::CheckAppliedClause { steps, selector } => {
+                Instruction::CheckAppliedClause {
+                    steps: *steps,
+                    selector: *selector,
+                }
+            }
+            SnapshotInstruction::InitializeSuperclass {
+                steps,
+                selector,
+                argument_base,
+                argument_sources,
+                destination,
+            } => Instruction::InitializeSuperclass {
+                steps: *steps,
+                selector: *selector,
+                argument_base: *argument_base,
+                argument_sources: argument_sources.clone(),
+                destination: *destination,
+            },
+            SnapshotInstruction::InitializeAppliedLevel {
+                steps,
+                argument_base,
+                argument_sources,
+                destination,
+            } => Instruction::InitializeAppliedLevel {
+                steps: *steps,
+                argument_base: *argument_base,
+                argument_sources: argument_sources.clone(),
+                destination: *destination,
+            },
+        })
+    }
+
+    /// The registers the instruction reads (`bytecode::registers_read`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the optimizing compiler's liveness, built on it, is its first reader"
+        )
+    )]
+    pub(crate) fn registers_read(&self) -> Vec<u16> {
+        match self {
+            SnapshotInstruction::MakeClosure { copied, .. } => copied.clone(),
+            _ => crate::bytecode::registers_read(&self.unsnapshot().expect("not a closure"))
+                .collect(),
+        }
+    }
+
+    /// The register the instruction writes (`bytecode::register_written`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the optimizing compiler's liveness, built on it, is its first reader"
+        )
+    )]
+    pub(crate) fn register_written(&self) -> Option<u16> {
+        match self {
+            SnapshotInstruction::MakeClosure { destination, .. } => Some(*destination),
+            _ => crate::bytecode::register_written(&self.unsnapshot().expect("not a closure")),
+        }
+    }
+
+    /// Where the instruction jumps to, if it jumps (`bytecode::jump_target`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the optimizing compiler's liveness, built on it, is its first reader"
+        )
+    )]
+    pub(crate) fn jump_target(&self) -> Option<u32> {
+        crate::bytecode::jump_target(&self.unsnapshot()?)
     }
 
     /// The slots the instruction lays a callee's arguments on, as
@@ -741,5 +1070,290 @@ mod tests {
             assert_eq!(*parameter_count, 1);
             assert_eq!(copied, &vec![14]);
         });
+    }
+
+    /// One of every `Instruction`, each field a distinct number, so that a
+    /// swap of two same-typed fields shows.
+    fn every_instruction() -> Vec<Instruction> {
+        use crate::builtins::primitive::MirrorPrimitive;
+        use crate::bytecode::{CallSite, Literal};
+        let site = CallSite { number: 3 };
+        vec![
+            Instruction::LoadLiteral {
+                destination: 21,
+                literal: Literal::SmallInteger(7),
+            },
+            Instruction::LoadSelf { destination: 22 },
+            Instruction::LoadEnclosingObject {
+                destination: 23,
+                depth: 2,
+            },
+            Instruction::Move {
+                destination: 24,
+                source: 25,
+            },
+            Instruction::StoreLocal {
+                source: 26,
+                slot: 27,
+            },
+            Instruction::LoadOuterLocal {
+                destination: 28,
+                depth: 1,
+                index: 29,
+            },
+            Instruction::StoreOuterLocal {
+                source: 30,
+                depth: 1,
+                index: 31,
+            },
+            Instruction::SendLexical {
+                depth: 2,
+                selector: Symbol::NEW,
+                argument_base: 32,
+                argument_sources: vec![33, 34],
+                destination: 35,
+                call_site: site,
+            },
+            Instruction::SendPublic {
+                selector: Symbol::RESOLVE,
+                receiver_register: 36,
+                argument_base: 37,
+                argument_sources: vec![38],
+                destination: 39,
+                call_site: site,
+            },
+            Instruction::SendInlinable {
+                selector: Symbol::NEW,
+                receiver_register: 40,
+                argument_base: 41,
+                argument_sources: vec![42],
+                destination: 43,
+                call_site: site,
+            },
+            Instruction::SendSuper {
+                selector: Symbol::RESOLVE,
+                argument_base: 44,
+                argument_sources: vec![45, 46],
+                destination: 47,
+                call_site: site,
+            },
+            Instruction::SendMirror {
+                primitive: MirrorPrimitive::from_index(0),
+                mirror_register: 48,
+                subject_register: 49,
+                argument_base: 50,
+                argument_sources: vec![51],
+                destination: 52,
+                failure: 9,
+            },
+            Instruction::MakeArray {
+                destination: 53,
+                element_registers: vec![54, 55],
+            },
+            Instruction::MakeVector {
+                destination: 56,
+                size: 4,
+            },
+            Instruction::LoadVector {
+                destination: 57,
+                vector: 58,
+                index: 59,
+            },
+            Instruction::StoreVector {
+                vector: 60,
+                index: 61,
+                source: 62,
+            },
+            Instruction::InitializeSlot {
+                source: 63,
+                own_index: 5,
+            },
+            Instruction::ReturnSlotIfFilled { own_index: 6 },
+            Instruction::MakeFuture {
+                destination: 64,
+                closure: 65,
+            },
+            Instruction::ResolveFuture {
+                destination: 66,
+                source: 67,
+            },
+            Instruction::LoadOwnSlot {
+                destination: 68,
+                own_index: 7,
+            },
+            Instruction::InitializeSlotProvisionally {
+                source: 69,
+                own_index: 8,
+            },
+            Instruction::Return { register: 70 },
+            Instruction::ImplicitReturn { register: 71 },
+            Instruction::NonLocalReturn { register: 72 },
+            Instruction::SignalNonBoolean { register: 73 },
+            Instruction::Jump { target: 10 },
+            Instruction::JumpIfNotBoolean {
+                register: 74,
+                target: 11,
+            },
+            Instruction::BranchIfFalse {
+                register: 75,
+                target: 12,
+            },
+            Instruction::BranchIfTrue {
+                register: 76,
+                target: 13,
+            },
+            Instruction::IntegerBinary {
+                operation: IntegerOperation::Subtract,
+                destination: 77,
+                left: 78,
+                right: 79,
+                target: 14,
+            },
+            Instruction::AllocateInstance { destination: 80 },
+            Instruction::InitializeInstance {
+                instance: 81,
+                destination: 82,
+            },
+            Instruction::CheckAppliedClause {
+                steps: 3,
+                selector: Symbol::NEW,
+            },
+            Instruction::InitializeSuperclass {
+                steps: 2,
+                selector: Symbol::RESOLVE,
+                argument_base: 83,
+                argument_sources: vec![84, 85],
+                destination: 86,
+            },
+            Instruction::InitializeAppliedLevel {
+                steps: 1,
+                argument_base: 87,
+                argument_sources: vec![88],
+                destination: 89,
+            },
+            Instruction::MakeClosure {
+                destination: 90,
+                parameters: Rc::new(vec![Symbol::NEW, Symbol::RESOLVE]),
+                code: body(
+                    CodeKind::Block,
+                    vec![Instruction::ImplicitReturn { register: 0 }],
+                    2,
+                ),
+                copied: vec![91, 92],
+            },
+        ]
+    }
+
+    #[test]
+    fn the_list_holds_every_instruction_once() {
+        let kinds: std::collections::HashSet<_> = every_instruction()
+            .iter()
+            .map(std::mem::discriminant)
+            .collect();
+        assert_eq!(
+            kinds.len(),
+            37,
+            "the list names each variant of Instruction"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_instruction_answers_what_its_instruction_does() {
+        let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+        interpreter.enter(|mutator| {
+            for instruction in every_instruction() {
+                let snapshot = SnapshotInstruction::of(&instruction, &mut mutator.heap);
+                assert_eq!(
+                    snapshot.registers_read(),
+                    crate::bytecode::registers_read(&instruction).collect::<Vec<_>>(),
+                    "{instruction:?}"
+                );
+                assert_eq!(
+                    snapshot.register_written(),
+                    crate::bytecode::register_written(&instruction),
+                    "{instruction:?}"
+                );
+                assert_eq!(
+                    snapshot.jump_target(),
+                    crate::bytecode::jump_target(&instruction),
+                    "{instruction:?}"
+                );
+                assert_eq!(
+                    snapshot.argument_slots(),
+                    instruction.argument_slots(),
+                    "{instruction:?}"
+                );
+                // The conversion loses nothing: back in the interpreter's
+                // form it is the instruction, but for a closure's block.
+                match snapshot.unsnapshot() {
+                    Some(back) => assert_eq!(back, instruction),
+                    None => assert!(matches!(instruction, Instruction::MakeClosure { .. })),
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn the_two_ways_to_a_call_s_slots_agree() {
+        use crate::bytecode::CallSite;
+        use crate::jit::sends::{call_slots, call_slots_of};
+        // A register past a byte takes the wide form of a send.
+        let wide = |register: u16| register + 300;
+        let mut instructions = every_instruction();
+        instructions.push(Instruction::SendPublic {
+            selector: Symbol::NEW,
+            receiver_register: wide(1),
+            argument_base: wide(2),
+            argument_sources: vec![wide(3), wide(4)],
+            destination: wide(5),
+            call_site: CallSite { number: 4 },
+        });
+        instructions.push(Instruction::SendLexical {
+            depth: 1,
+            selector: Symbol::RESOLVE,
+            argument_base: wide(6),
+            argument_sources: Vec::new(),
+            destination: wide(7),
+            call_site: CallSite { number: 5 },
+        });
+        instructions.push(Instruction::SendSuper {
+            selector: Symbol::NEW,
+            argument_base: wide(8),
+            argument_sources: vec![wide(9)],
+            destination: wide(10),
+            call_site: CallSite { number: 6 },
+        });
+        let (mut seen_wide, mut seen_narrow) = (false, false);
+        for instruction in instructions {
+            let code = CompiledCode::new(
+                CodeKind::Method,
+                vec![instruction.clone()],
+                2,
+                500,
+                0,
+                Vec::new(),
+                Span::new(0, 0),
+            );
+            if code.cached_send(0).is_some() {
+                if code.is_wide(0) {
+                    seen_wide = true;
+                } else {
+                    seen_narrow = true;
+                }
+            }
+            // `call_slots` reads a cached send off its slot and decodes
+            // anything else; the snapshot form must name the same call.
+            let encoded = call_slots(&code, 0)
+                .map(|slots| (slots.argument_base, slots.argument_count, slots.selector));
+            let snapshot = SnapshotInstruction::of_unclosed(&instruction).and_then(|snapshot| {
+                call_slots_of(&super::BodyFacts::of(&code), &snapshot)
+                    .map(|slots| (slots.argument_base, slots.argument_count, slots.selector))
+            });
+            assert_eq!(encoded, snapshot, "{instruction:?}");
+        }
+        assert!(
+            seen_wide && seen_narrow,
+            "a send of each form is among them"
+        );
     }
 }
