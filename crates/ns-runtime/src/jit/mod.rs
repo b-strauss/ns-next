@@ -32,6 +32,7 @@ pub(crate) mod leaves;
 pub(crate) mod macro_assembler;
 #[cfg(ns_jit)]
 pub(crate) mod materialize;
+pub(crate) mod optimizing;
 #[cfg(ns_jit)]
 pub(crate) mod sends;
 #[cfg(ns_jit)]

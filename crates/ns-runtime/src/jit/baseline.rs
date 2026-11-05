@@ -17,6 +17,7 @@ use crate::interpreter::FeedbackBase;
 use super::closures;
 use super::leaves::Leaf;
 use super::macro_assembler::{LeafIndex, MacroAssembler, ObjectSize, Operand};
+use super::optimizing::snapshot::BodyFacts;
 use super::sends;
 use super::stubs::ExitKind;
 use super::{CallReturn, ProgramCounterMap, Refusal};
@@ -1079,7 +1080,7 @@ pub(crate) fn compile(
         futures_exit,
     };
     if copy == BodyCopy::Lean {
-        sends::prologue(&mut body, code);
+        sends::prologue(&mut body, &BodyFacts::of(code));
     }
     let mut exits = Vec::with_capacity(usize::from(count));
     let mut transfers = Vec::with_capacity(usize::from(count));
