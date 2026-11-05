@@ -436,6 +436,10 @@ impl Allocator<'_> {
             bindings: self.state.bindings.clone(),
         });
         for (_, predecessor) in taken {
+            assert!(
+                graph.block(predecessor).successors().len() == 1,
+                "internal: a way into a merge leaves a block with that way alone"
+            );
             let exit = self
                 .exits
                 .remove(&(predecessor, merge))

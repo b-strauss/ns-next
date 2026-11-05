@@ -29,7 +29,12 @@ use crate::jit::macro_assembler::Roles;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Resumes {
     /// The value of the send at the point is delivered to its
-    /// destination: a frame below a callee.
+    /// destination: the resumption of a frame below its callee. It is not
+    /// the only one at a send: a template that exits before its call --
+    /// a call refused, a stub that hands the send to the interpreter --
+    /// leaves the frame to re-execute the instruction at the same program
+    /// counter, with the same frame words, so the point's locations hold
+    /// for either way.
     Deliver,
     /// The instruction at the point runs again: a poll's loop head, and
     /// every other frame node, whose template hands its instruction to

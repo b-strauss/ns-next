@@ -600,6 +600,11 @@ pub(crate) struct MacroAssembler {
     /// refuses as a temporary and across a leaf call that clobbers them.
     #[cfg(debug_assertions)]
     values_held: Vec<Register>,
+    /// For each cold path, by its index, the registers values were held
+    /// in where the straight line branches off to it, which its code is
+    /// checked against when `finish` emits it after the straight line.
+    #[cfg(debug_assertions)]
+    cold_path_holds: Vec<Vec<Register>>,
 }
 
 /// The alignment of a body's data words, a cache line's, which they share
@@ -623,15 +628,34 @@ impl MacroAssembler {
             body_words_label: None,
             #[cfg(debug_assertions)]
             values_held: Vec::new(),
+            #[cfg(debug_assertions)]
+            cold_path_holds: Vec::new(),
         }
+    }
+
+    /// Queues `cold_path` for `finish`, with the registers values are
+    /// held in here, where the straight line branches off to it.
+    fn push_cold_path(&mut self, cold_path: ColdPath) {
+        #[cfg(debug_assertions)]
+        self.cold_path_holds.push(self.values_held.clone());
+        self.cold_paths.push(cold_path);
     }
 
     /// Records that optimized code holds values in `registers`, all of
     /// them `Roles::allocatable`, where the code emitted next runs, until
-    /// the next call; the baseline holds none. Only a debug build keeps
-    /// it, to refuse what would clobber one of them: a `temporary` among
-    /// them, or a leaf call while one lies past
-    /// `Roles::survive_leaf_calls`.
+    /// the next `hold_values`; the baseline holds none, and a frame node's
+    /// template is emitted after `hold_values(&[])`, since every value is
+    /// written back before it. A cold path queued meanwhile keeps the set
+    /// held where it was queued. Only a debug build keeps it, to refuse
+    /// what would clobber one of them -- and only at the entry points that
+    /// check it: `temporary`, `call_leaf`, and the out-of-line leaf calls
+    /// (`call_leaf_out_of_line`, `call_leaf_out_of_line_or_exit`), whose
+    /// result register is taken as a temporary. An idiom that writes a
+    /// register through `assembler()`, or a scratch register a template
+    /// names through its roles, is not checked: every idiom optimized code
+    /// emits between two frame nodes takes each register it writes,
+    /// other than the one its own value is allocated to, through
+    /// `temporary`.
     #[cfg_attr(
         not(test),
         expect(
@@ -656,13 +680,6 @@ impl MacroAssembler {
     /// temporary: every idiom optimized code emits between two frame
     /// nodes takes its temporaries through here, so that a debug build
     /// refuses one that holds a value (`Roles::allocatable`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the optimizing compiler's emitter, Task 5's, takes temporaries"
-        )
-    )]
     pub(crate) fn temporary(&self, register: Register) -> Register {
         #[cfg(debug_assertions)]
         assert!(
@@ -826,7 +843,7 @@ impl MacroAssembler {
                 .move_immediate(scratch, crate::heap::Word::DEAD_REGISTER_BITS);
             self.assembler.compare(target, scratch);
             self.assembler.jump_if(Condition::Equal, label);
-            self.cold_paths.push(ColdPath::DeadRegister {
+            self.push_cold_path(ColdPath::DeadRegister {
                 label,
                 register,
                 program_counter: self.program_counter,
@@ -1030,7 +1047,7 @@ impl MacroAssembler {
     pub(crate) fn exit_if(&mut self, condition: Condition, kind: ExitKind, program_counter: u32) {
         let label = self.assembler.label();
         self.assembler.jump_if(condition, label);
-        self.cold_paths.push(ColdPath::Exit {
+        self.push_cold_path(ColdPath::Exit {
             label,
             kind,
             program_counter,
@@ -1052,7 +1069,7 @@ impl MacroAssembler {
         result: Register,
         rejoin: Label,
     ) {
-        self.cold_paths.push(ColdPath::LeafCall {
+        self.push_cold_path(ColdPath::LeafCall {
             label,
             leaf,
             arguments,
@@ -1076,7 +1093,7 @@ impl MacroAssembler {
         program_counter: u32,
         rejoin: Label,
     ) {
-        self.cold_paths.push(ColdPath::CheckedLeafCall {
+        self.push_cold_path(ColdPath::CheckedLeafCall {
             label,
             leaf,
             arguments,
@@ -1104,7 +1121,7 @@ impl MacroAssembler {
         let rejoin = self.assembler.label();
         self.assembler.jump_if(condition, label);
         self.assembler.bind(rejoin);
-        self.cold_paths.push(ColdPath::StackGrowth {
+        self.push_cold_path(ColdPath::StackGrowth {
             label,
             leaf,
             extent,
@@ -1828,7 +1845,7 @@ impl MacroAssembler {
     /// Takes `exit(kind, program_counter)` at `label`, out of line: the
     /// target of a check's jump to `failed`.
     pub(crate) fn exit_at(&mut self, label: Label, kind: ExitKind, program_counter: u32) {
-        self.cold_paths.push(ColdPath::Exit {
+        self.push_cold_path(ColdPath::Exit {
             label,
             kind,
             program_counter,
@@ -2555,7 +2572,7 @@ impl MacroAssembler {
         self.assembler.load(Width::Word64, scratch, requested);
         self.assembler.compare_immediate(scratch, 0);
         self.assembler.jump_if(Condition::NotEqual, label);
-        self.cold_paths.push(ColdPath::Exit {
+        self.push_cold_path(ColdPath::Exit {
             label,
             kind: ExitKind::Safepoint,
             program_counter,
@@ -2566,7 +2583,17 @@ impl MacroAssembler {
     /// check that passes falls through rather than jumping over its
     /// failure.
     pub(crate) fn finish(mut self) -> Result<Assembled, AssemblyError> {
+        #[cfg(debug_assertions)]
+        let mut holds = std::mem::take(&mut self.cold_path_holds).into_iter();
         for cold_path in std::mem::take(&mut self.cold_paths) {
+            // A cold path runs where the straight line branched off to it,
+            // so it is checked against the values held there.
+            #[cfg(debug_assertions)]
+            {
+                self.values_held = holds
+                    .next()
+                    .expect("internal: every cold path records what was held");
+            }
             match cold_path {
                 ColdPath::Exit {
                     label,
@@ -2585,6 +2612,7 @@ impl MacroAssembler {
                 } => {
                     self.assembler.bind(label);
                     self.call_leaf(leaf, arguments);
+                    let result = self.temporary(result);
                     self.assembler.move_register(result, self.roles.leaf_result);
                     self.assembler.jump(rejoin);
                 }
@@ -3000,6 +3028,71 @@ mod encoding_tests {
         let mut macro_assembler = super::MacroAssembler::new(Abi::SystemV);
         macro_assembler.hold_values(&roles.allocatable[..=roles.survive_leaf_calls]);
         macro_assembler.call_leaf(super::LeafIndex(0), [super::Operand::Immediate(0); 3]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "clobbers")]
+    fn a_debug_build_refuses_an_out_of_line_leaf_call_over_a_value_held_where_it_branches_off() {
+        let roles = Roles::of(Abi::Windows64);
+        let mut macro_assembler = super::MacroAssembler::new(Abi::Windows64);
+        let label = macro_assembler.assembler().label();
+        let rejoin = macro_assembler.assembler().label();
+        // r8, not a survivor, holds a value where the slow path branches
+        // off; nothing is held by the time `finish` emits it.
+        macro_assembler.hold_values(&[roles.allocatable[roles.survive_leaf_calls]]);
+        macro_assembler.call_leaf_out_of_line(
+            label,
+            super::LeafIndex(0),
+            [super::Operand::Immediate(0); 3],
+            roles.leaf_result,
+            rejoin,
+        );
+        macro_assembler.hold_values(&[]);
+        macro_assembler.assembler().bind(rejoin);
+        let _ = macro_assembler.finish();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "cannot be a temporary")]
+    fn a_debug_build_refuses_an_out_of_line_leaf_call_s_result_in_a_held_register() {
+        let roles = Roles::of(Abi::Windows64);
+        let mut macro_assembler = super::MacroAssembler::new(Abi::Windows64);
+        let label = macro_assembler.assembler().label();
+        let rejoin = macro_assembler.assembler().label();
+        let held = roles.allocatable[0];
+        macro_assembler.hold_values(&[held]);
+        macro_assembler.call_leaf_out_of_line(
+            label,
+            super::LeafIndex(0),
+            [super::Operand::Immediate(0); 3],
+            held,
+            rejoin,
+        );
+        macro_assembler.hold_values(&[]);
+        macro_assembler.assembler().bind(rejoin);
+        let _ = macro_assembler.finish();
+    }
+
+    #[test]
+    fn an_out_of_line_leaf_call_keeps_the_values_the_survivors_hold() {
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let roles = Roles::of(abi);
+            let mut macro_assembler = super::MacroAssembler::new(abi);
+            let label = macro_assembler.assembler().label();
+            let rejoin = macro_assembler.assembler().label();
+            macro_assembler.hold_values(&roles.allocatable[..roles.survive_leaf_calls]);
+            macro_assembler.call_leaf_out_of_line(
+                label,
+                super::LeafIndex(0),
+                [super::Operand::Immediate(0); 3],
+                roles.leaf_result,
+                rejoin,
+            );
+            macro_assembler.assembler().bind(rejoin);
+            assert!(macro_assembler.finish().is_ok(), "{abi:?}");
+        }
     }
 
     #[test]
