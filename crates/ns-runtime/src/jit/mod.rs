@@ -78,14 +78,21 @@ const BODY_ALIGNMENT: u32 = 16;
 
 /// The instructions a body runs in baseline machine code -- its length at
 /// each entry, a loop's at each back jump -- before its optimization is
-/// requested (`heap/optimization_budgets.rs`): a first guess, chosen by
-/// measurement once optimized code runs.
-pub(crate) const OPTIMIZATION_BUDGET: i64 = 120_000;
+/// requested (`heap/optimization_budgets.rs`). Chosen from a sweep over
+/// 30,000, 60,000, 120,000 and 240,000 (`docs/design/execution.md`, "What
+/// the optimizing tier's foundation moved"): no budget moved a program
+/// beyond the spread of one build, and the largest left DeltaBlueTon80,
+/// whose optimized bodies run no faster than their baseline code, the
+/// closest to `master` and compiles the fewest bodies.
+pub(crate) const OPTIMIZATION_BUDGET: i64 = 240_000;
 
 /// The least budget a body is left with when a send of it filled its
 /// site's cache after a miss, so that its optimization waits for its
-/// feedback to settle: a first guess, chosen with `OPTIMIZATION_BUDGET`.
-pub(crate) const BUDGET_AFTER_CACHE_CHANGE: i64 = 20_000;
+/// feedback to settle: a sixth of `OPTIMIZATION_BUDGET`, the ratio of the
+/// first guesses, kept as the budget doubled. Not swept on its own: stage
+/// 1 speculates on no feedback, so the wait decides only when a body is
+/// compiled, never what it is compiled to.
+pub(crate) const BUDGET_AFTER_CACHE_CHANGE: i64 = OPTIMIZATION_BUDGET / 6;
 
 /// The native stack an entry into machine code needs left: a return
 /// address's stack slot for every activation the depth limit and its
