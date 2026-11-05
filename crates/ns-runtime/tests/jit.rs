@@ -135,6 +135,8 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
             - before.optimized_frames_materialized,
         optimized_bodies_resumed: after.optimized_bodies_resumed - before.optimized_bodies_resumed,
         optimized_twin_requests: after.optimized_twin_requests - before.optimized_twin_requests,
+        forced_exits: after.forced_exits - before.forced_exits,
+        deepest_forced_exit: after.deepest_forced_exit,
     }
 }
 
@@ -1117,9 +1119,9 @@ ns_runtime::for_each_lowering! {
         assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
         let statistics = interpreter.jit_statistics();
         assert!(
-            statistics.optimized_exits > 100,
-            "{} exits of optimized code",
-            statistics.optimized_exits
+            statistics.forced_exits > 100,
+            "{} forced exits of optimized code",
+            statistics.forced_exits
         );
     }
 }
@@ -1137,13 +1139,75 @@ fn the_deopt_stress_s_forced_exits_abandon_nothing() {
     assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
     let statistics = interpreter.jit_statistics();
     assert!(
-        statistics.optimized_exits > 100,
-        "{} exits of optimized code",
-        statistics.optimized_exits
+        statistics.forced_exits > 100,
+        "{} forced exits of optimized code",
+        statistics.forced_exits
     );
     if !a_stress_mode_is_on() {
         assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
     }
+}
+
+/// `sweep:` runs a loop of `turns` turns whose every turn sends `step:`
+/// three times -- three interrupt points of its optimized code, and its
+/// back edge's poll a fourth -- while `step:`, which only answers its
+/// argument, has none: `run` calls it a hundred times, each call one
+/// long activation of `sweep:`'s optimized code, so that the points it
+/// passes are the only ones counted down between two safepoints.
+const LONG_OPTIMIZED_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      step: value = (
+        ^value
+      )
+      sweep: turns = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < turns] whileTrue: [
+          sum:: sum + (self step: index) + (self step: 1) + (self step: 2).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public run = (
+        |
+          total ::= 0.
+          call ::= 0.
+        |
+        [call < 100] whileTrue: [
+          total:: total + (self sweep: 300).
+          call:: call + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+/// The deopt stress mode forces exits deep in one long activation of
+/// optimized code, not only within its first few points: a forced exit
+/// leaves the activation's optimized code for good, so that its n-th
+/// point is forced only by a countdown of n, and the rotation reaches
+/// 987 -- the 247th turn of `sweep:`'s loop, past many a write-back of the
+/// values its back edge carries. The optimized lowering's, which inlines
+/// the loop's blocks into `sweep:`.
+#[test]
+fn the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation() {
+    let (mut interpreter, class) = load_with(LONG_OPTIMIZED_LOOP, Lowering::Optimized);
+    interpreter.set_deopt_stress(true);
+    let turn = (0..300).sum::<i64>() + 3 * 300;
+    assert_eq!(run(&mut interpreter, &class), 100 * turn);
+    let statistics = interpreter.jit_statistics();
+    assert!(
+        statistics.forced_exits >= 50,
+        "{} forced exits",
+        statistics.forced_exits
+    );
+    assert!(
+        statistics.deepest_forced_exit >= 610,
+        "the deepest forced exit at point {}",
+        statistics.deepest_forced_exit
+    );
 }
 
 /// Holds `statistics` to some body optimized -- but under a stress mode

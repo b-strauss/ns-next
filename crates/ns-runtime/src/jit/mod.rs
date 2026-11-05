@@ -307,6 +307,13 @@ pub struct JitStatistics {
     /// The twin leaf's calls from optimized code's `MakeClosure`, whose
     /// transfer found its baseline body's twin not compiled yet.
     pub optimized_twin_requests: u64,
+    /// Exits of optimized code the deopt stress mode forced at an
+    /// interrupt point: of `optimized_exits`.
+    pub forced_exits: u64,
+    /// The largest countdown a forced exit came at: how many interrupt
+    /// points optimized code had passed since the safepoint that set it,
+    /// the exiting one included.
+    pub deepest_forced_exit: u64,
 }
 
 impl JitStatistics {
@@ -1241,6 +1248,9 @@ pub(crate) struct JitState {
     deopt_stress: bool,
     /// Where the next safepoint's countdown lies in `DEOPTIMIZATION_ROTATION`.
     deoptimization_rotation: usize,
+    /// The countdown the last safepoint set, which a forced exit came at
+    /// (`JitStatistics::deepest_forced_exit`).
+    deoptimization_countdown: u64,
     /// The machine words the unpointed budget lies in
     /// (`MachineWord::UnpointedBudget`), which every budget word names
     /// until it is pointed at its row: the heap's, shared when the world
@@ -1329,10 +1339,17 @@ pub(crate) fn stress_deopt_from_env() -> bool {
 }
 
 /// The countdowns the deopt stress mode's safepoints set in turn
-/// (`MachineWord::DeoptCountdown`): small and of no common period, so
-/// that over a run of safepoints the exit falls on every interrupt point
-/// of a short stretch of optimized code rather than on the same few.
-const DEOPTIMIZATION_ROTATION: [u64; 6] = [1, 2, 3, 5, 8, 13];
+/// (`MachineWord::DeoptCountdown`), the Fibonacci numbers up to 987:
+/// small ones, so that the exit falls on every point of a short stretch
+/// of optimized code, and large ones, so that it falls deep in a long
+/// one too. A forced exit leaves its activation's optimized code for
+/// good, since a frame goes back into it only at a push, and holds the
+/// safepoint that sets the next countdown, so that an activation's n-th
+/// point is forced only by a countdown of at least n: a rotation that
+/// stopped at 13 would never force an exit past a loop's first few turns,
+/// where the values its back edge carries are written back.
+const DEOPTIMIZATION_ROTATION: [u64; 15] =
+    [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987];
 
 impl JitState {
     /// The state of a new interpreter: a zone of `DEFAULT_ZONE_BYTES`,
@@ -1404,6 +1421,7 @@ impl JitState {
             optimize_stress,
             deopt_stress: stress_deopt_from_env(),
             deoptimization_rotation: 0,
+            deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
         }
     }
@@ -1627,6 +1645,7 @@ impl JitState {
         let countdown = DEOPTIMIZATION_ROTATION[self.deoptimization_rotation];
         self.deoptimization_rotation =
             (self.deoptimization_rotation + 1) % DEOPTIMIZATION_ROTATION.len();
+        self.deoptimization_countdown = countdown;
         self.machine_words
             .set(MachineWord::DeoptCountdown, countdown);
     }
@@ -1647,6 +1666,11 @@ impl JitState {
         self.machine_words
             .set(MachineWord::DeoptCountdown, u64::MAX);
         heap.hold_safepoint_request();
+        self.statistics.forced_exits += 1;
+        self.statistics.deepest_forced_exit = self
+            .statistics
+            .deepest_forced_exit
+            .max(self.deoptimization_countdown);
         true
     }
 
@@ -2057,6 +2081,7 @@ impl JitState {
             optimize_stress: false,
             deopt_stress: false,
             deoptimization_rotation: 0,
+            deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
         }
     }

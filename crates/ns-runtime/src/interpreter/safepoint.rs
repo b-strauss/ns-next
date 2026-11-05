@@ -87,10 +87,11 @@ impl Interpreter {
         if self.world.optimization_requested() {
             self.enter(crate::jit::optimize_requested);
         }
-        // Under the deopt stress mode, the next of the points optimized
-        // code passes from here on leaves: one, two, three, five, eight
-        // or thirteen on, in turn at successive safepoints, so that every
-        // point of a short stretch is met.
+        // Under the deopt stress mode, one of the points optimized code
+        // passes from here on leaves: the first, second, third, fifth and
+        // so on up to the 987th, in turn at successive safepoints, so that
+        // every point of a short stretch is met and deep points of a long
+        // one too (`jit::DEOPTIMIZATION_ROTATION`).
         self.world.rotate_deoptimization_countdown();
         #[cfg(debug_assertions)]
         {

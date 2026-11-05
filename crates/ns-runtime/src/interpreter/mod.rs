@@ -1254,8 +1254,9 @@ impl Interpreter {
     /// Turns the deopt stress mode (`NS_NEXT_STRESS_DEOPT`) on or off for
     /// this interpreter: on, with the optimize stress mode, the optimized
     /// code compiled from now on leaving at every n-th interrupt point it
-    /// passes, n set afresh at every safepoint, rotating over 1, 2, 3, 5,
-    /// 8 and 13; off, the optimize stress mode left on. A test hook, set
+    /// passes, n set afresh at every safepoint, rotating over the
+    /// Fibonacci numbers from 1 to 987; off, the optimize stress mode left
+    /// on. A test hook, set
     /// before the code it is meant for runs.
     #[doc(hidden)]
     pub fn set_deopt_stress(&mut self, stress: bool) {
