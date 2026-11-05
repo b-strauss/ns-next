@@ -2558,6 +2558,19 @@ program's subclass of `String` as an argument, the error of a
   `a_rare_exit_without_allocation_does_not_end_a_long_run_interpreted`,
   shows it (`run:exitEvery:`).
   [execution.md](design/execution.md), "When a body is compiled".
+- **A compaction that frees a live body forgets the optimization budget
+  it spent** (2026-11-05): a compaction's freeing by usage -- and the
+  zone stress mode's, which frees every body no activation runs -- frees
+  bodies that still live, and clears their budget rows
+  (`Heap::forget_optimization_budget`, `jit::zone`), so that the next
+  compile arms a full budget. A body called a little between every two
+  compactions so never runs its budget out, where a full collection
+  carries what was left of it over (`jit::budgets_before_collection`).
+  Carrying the budget over a compaction as a full collection does would
+  close it; `a_full_collection_keeps_what_is_left_of_a_budget` and
+  `a_hot_loop_requests_its_body_s_optimization`
+  (`crates/ns-runtime/tests/jit.rs`) are exempt under
+  `NS_NEXT_STRESS_ZONE` for it, an exemption to remove with the fix.
 
 ## Missing tests
 

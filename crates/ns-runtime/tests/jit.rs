@@ -836,14 +836,19 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// Whether a stress mode keeps a hot loop's bodies from spending their
-/// budgets: only machine code spends one. The suspend stress mode
-/// suspends the loop's frame at its first poll, and a frame resumed from
-/// its frame object never switches back into lean code, so that the loop
-/// runs interpreted; and under the zone stress mode the reference
-/// lowering's `run` has every compiled push refused -- the held safepoint
-/// request sets the depth limit to 0 -- until it is abandoned, while its
-/// blocks are freed at every compaction, which clears their budgets.
+/// Whether a stress mode keeps a hot loop's bodies from running a budget
+/// out: only machine code spends one. The suspend stress mode's held
+/// request stops the loop at every backward jump, and the safepoint
+/// suspends its frame and resumes it, a frame that goes on interpreted
+/// rather than switch back into machine code at the loop's head
+/// (`vm::run`), so that after its first poll the loop never runs in
+/// machine code again. Under the zone stress mode the reference
+/// lowering's `run` runs each turn in machine code only up to its first
+/// send, uncached, which exits, so that it never reaches its backward
+/// jump there, while its blocks, which no activation runs at a
+/// safepoint, are freed at every compaction, which clears their budgets
+/// (`docs/OPEN-WORK.md`, "A compaction that frees a live body forgets
+/// the optimization budget it spent").
 fn spends_no_budget_in_a_loop(lowering: Lowering) -> bool {
     let suspending = std::env::var_os("NS_NEXT_STRESS_SUSPEND")
         .is_some_and(|value| !value.is_empty() && value != "0");
@@ -905,11 +910,17 @@ fn a_full_collection_keeps_what_is_left_of_a_budget() {
     let lowering = Lowering::Optimized;
     {
         if the_zone_stress_mode_is_on() {
-            // No budget runs out: the held safepoint request refuses every
-            // compiled push of `run` until it is abandoned, and the
-            // compactions free `step:` between two of its calls, which
-            // clears its budget, so that it is compiled again with a fresh
-            // one.
+            // No budget runs out: the compactions free `step:`, which no
+            // activation runs between two of its calls, and clear its
+            // budget, so that its next compile arms a full one
+            // (`docs/OPEN-WORK.md`, "A compaction that frees a live body
+            // forgets the optimization budget it spent"); the exemption
+            // goes with that item. `run` spends nothing either: its first
+            // call of `step:` after each compaction misses and finds it
+            // uncompiled, counting its entries afresh, so that the miss
+            // refuses the call (`jit::note_entry_by_call`) and `run`
+            // exits at the send, and is abandoned at its sixty-fourth
+            // such exit.
             return;
         }
         let (mut interpreter, instance) = stepping(lowering);

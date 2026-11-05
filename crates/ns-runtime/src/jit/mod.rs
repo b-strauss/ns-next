@@ -1003,8 +1003,10 @@ struct InstalledBody {
     tier: Tier,
     /// Optimized code's baseline body, the lean one, by its index in
     /// `bodies`; `None` for baseline code. Optimized code has no twin of
-    /// its own: its transfers go into its baseline body's twin, and it is
-    /// freed with its baseline body, never alone.
+    /// its own: its transfers go into its baseline body's twin. It is
+    /// freed whenever its baseline body is, and alone only when its own
+    /// exits abandon it (`abandon_optimized`), the baseline body staying;
+    /// a compaction's freeing by usage judges the pair as one.
     baseline: Option<u32>,
     /// The offset from the body's start where the run loop's push enters
     /// it, past the prologue a compiled call enters at.
@@ -3551,16 +3553,19 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
 /// Puts off `code`'s optimization, which found no room or knows it would
 /// not: a compaction asked for is passed on to the heap, and the body's
 /// budget armed afresh, so that it is requested again once it has run as
-/// long.
+/// long -- as long as its abandoned optimized code's back-off says
+/// (`optimization_budget_after`), which a full zone does not reset.
 #[cfg(ns_jit)]
 fn defer_optimization(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     if mutator.jit.compaction_requested {
         mutator.heap.request_safepoint();
     }
     let budget = mutator.heap.optimization_budget_of(code);
-    mutator
-        .heap
-        .arm_optimization_budget(budget.id, mutator.jit.optimization_budget);
+    let armed = optimization_budget_after(
+        mutator.jit.optimization_budget,
+        code.jit.optimized_abandonments.get(),
+    );
+    mutator.heap.arm_optimization_budget(budget.id, armed);
 }
 
 /// Installs `optimized`, the optimized code of `code` -- `method`'s body
@@ -4602,7 +4607,7 @@ fn abandon_optimized(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
 }
 
 /// The budget a body whose optimized code was abandoned `abandonments`
-/// times is armed with: `budget` doubled at each abandonment, at most
+/// times -- none for one never abandoned -- is armed with: `budget` doubled at each abandonment, at most
 /// `MAXIMUM_REVIVAL_DOUBLINGS` times, as an abandoned body's revival
 /// backs off (`revival_entries`), so that a body whose optimized code
 /// always exits is compiled at most once per sixteen budgets once the cap
@@ -5420,7 +5425,7 @@ mod tests {
                 mutator.jit.optimization_requests.push(Rc::downgrade(&code));
                 crate::jit::optimize_requested(mutator);
                 assert_eq!(mutator.jit.statistics.optimized_bodies, 1);
-                // Freed with its baseline body, never alone.
+                // Freed whenever its baseline body is.
                 mutator.jit.free_body(lean);
                 assert!(mutator.jit.bodies[optimized as usize].free);
                 code.jit.forget();
@@ -5563,6 +5568,42 @@ mod tests {
                     );
                 }
                 assert_eq!(mutator.jit.statistics.abandoned_bodies, 0);
+            });
+        }
+
+        /// An optimization put off for want of room keeps the back-off
+        /// its body's abandoned optimized code earned: the budget is armed
+        /// afresh at twice the plain one after one abandonment, both when
+        /// the install finds no room and when the exhausted zone holds it.
+        #[test]
+        fn a_deferred_optimization_keeps_its_back_off() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                crate::jit::optimize_requested(mutator);
+                for _ in 0..crate::jit::EXIT_BUDGET {
+                    crate::jit::count_exit(mutator, &code, true);
+                }
+                assert_eq!(code.jit.optimized_abandonments.get(), 1);
+                let backed_off = Some(crate::jit::OPTIMIZATION_BUDGET << 1);
+                let zone = mutator.jit.zone.as_mut().expect("a zone");
+                zone.limit = zone.next_offset;
+                for held in [false, true] {
+                    let budget = mutator.heap.optimization_budget_of(&code);
+                    mutator.heap.park_optimization_budget(budget.id);
+                    mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                    crate::jit::optimize_requested(mutator);
+                    assert!(mutator.jit.optimized(&code).is_none());
+                    assert_eq!(
+                        mutator.heap.armed_optimization_budget(&code),
+                        backed_off,
+                        "held: {held}"
+                    );
+                }
             });
         }
 

@@ -28,7 +28,10 @@
 //! freed whenever its lean body is, by death, abandonment, a moved base or
 //! usage, and never alone, so that it takes the lean body's usage; each
 //! copy moves on its own, and the lean body's transfer words, which name
-//! the twin's code, are written afresh once the copies moved.
+//! the twin's code, are written afresh once the copies moved. Optimized
+//! code is freed whenever its baseline body is, and here with it, the
+//! pair judged by its more used copy; only its own exits free it alone
+//! (`jit::abandon_optimized`).
 
 #[cfg(ns_jit)]
 use std::rc::Rc;
@@ -815,8 +818,8 @@ impl JitState {
                     return (freed_any, free_bytes);
                 }
                 let body = &self.bodies[index];
-                // A twin, and optimized code, go with their lean body,
-                // never alone.
+                // A twin, and optimized code, are freed here with their
+                // lean body, never alone.
                 if body.free || body.lean.is_some() || body.baseline.is_some() {
                     continue;
                 }
