@@ -1,0 +1,38 @@
+/// SmallInteger arithmetic that overflows into LargeInteger in the middle
+/// of a hot loop: a product that doubles every turn leaves the
+/// SmallIntegers at its 60th turn, and the rest of the period runs on
+/// LargeIntegers. The loop runs 20000 turns and restarts its product every
+/// 100 turns, so the optimized body crosses the boundary 200 times: 41
+/// turns of every period (60 to 100) have a large product, and each
+/// period adds 2^100 to the sum.
+class OverflowInALoop = Object new () (
+  run: count = (
+    |
+      product ::= 1.
+      large ::= 0.
+      sum ::= 0.
+    |
+    1 to: count do: [:index |
+      product:: product * 2.
+      product > 1152921504606846975 ifTrue: [large:: large + 1].
+      index \\ 100 = 0 ifTrue: [
+        sum:: sum + product.
+        product:: 1.
+      ].
+    ].
+    ^{large. sum}.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      result = self run: 20000.
+    |
+    transcript
+        show: (result at: 1) printString;
+        newLine.
+    transcript
+        show: (result at: 2) printString;
+        newLine.
+  )
+)

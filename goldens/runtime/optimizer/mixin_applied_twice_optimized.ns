@@ -1,0 +1,67 @@
+/// One mixin applied to two superclasses, its hot method run on instances
+/// of both applications: the compiled body is shared, so each application's
+/// slot layout and `self bonus` send must be reached through the receiver.
+/// `Counter` adds its own `step` to what the superclass's `bonus` answers;
+/// `Wide` has one slot more than `Narrow`, so the mixin's own slot sits at a
+/// different index in the two. A turn adds 3 + 1 for a `Narrow` counter and
+/// 3 + 15 for a `Wide` one.
+class MixinAppliedTwiceOptimized = Object new () (
+  class Narrow = Object new (
+    |
+      base = 1.
+    |
+  ) (
+    public bonus = (
+      ^base.
+    )
+  )
+
+  class Wide = Object new (
+    |
+      filler = 5.
+      base = 10.
+    |
+  ) (
+    public bonus = (
+      ^base + filler.
+    )
+  )
+
+  class Counter = Object new (
+    |
+      step = 3.
+    |
+  ) (
+    public advance: count = (
+      |
+        total ::= 0.
+      |
+      1 to: count do: [:index | total:: total + step + self bonus].
+      ^total.
+    )
+  )
+
+  class NarrowCounter = Narrow new <: Counter () ()
+
+  class WideCounter = Wide new <: Counter () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      narrow = NarrowCounter new.
+      wide = WideCounter new.
+    |
+    transcript
+        show: (narrow advance: 20000) printString;
+        newLine.
+    transcript
+        show: (wide advance: 20000) printString;
+        newLine.
+    transcript
+        show: (narrow advance: 3) printString;
+        newLine.
+    transcript
+        show: (wide advance: 3) printString;
+        newLine.
+  )
+)

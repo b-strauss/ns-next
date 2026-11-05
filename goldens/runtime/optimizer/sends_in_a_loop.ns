@@ -1,0 +1,37 @@
+/// A loop whose every turn sends to other methods, one of which sends
+/// again: the optimized body keeps its arguments and its counter across
+/// sends. The result folds the turn into a running value, so a send that
+/// lost an argument or clobbered the counter changes the sum.
+class SendsInALoop = Object new () (
+  step: value by: delta = (
+    ^value + (self twice: delta).
+  )
+
+  twice: value = (
+    ^value * 2.
+  )
+
+  run: count = (
+    |
+      total ::= 0.
+      index ::= 0.
+    |
+    [index < count] whileTrue: [
+      total:: self step: total by: index \\ 7.
+      index:: index + 1.
+    ].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self run: 50000) printString;
+        newLine.
+    transcript
+        show: (self run: 20) printString;
+        newLine.
+  )
+)

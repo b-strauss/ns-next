@@ -288,6 +288,16 @@ runs the full-size benchmarks too, so it has a nextest profile of its own,
 `hints`, which the default profile leaves out; its runs of the benchmarks
 are in the profile `benchmarks-verify`.
 
+Every golden under `goldens/runtime/optimizer/` is a program whose hot body
+the optimizing compiler compiles in a plain run (a loop of tens of
+thousands of turns, a method called thousands of times), covering what a
+value in an optimized frame must survive: sends, closures, a non-local
+return, an overflow into `LargeInteger`, scavenges, an exception through
+the frame, the depth limit and one mixin applied twice. Its outcome is
+recorded from the interpreter like any other, and a debug build also runs
+it as `golden::optimizer::<name>` with `NS_NEXT_STRESS_OPTIMIZE=1`, which
+requests every body for optimization at its first spend.
+
 A golden's root class is instantiated with `new`, and a project golden's
 root with `packageUsing:` its manifest; either reaches the platform only as
 `main:args:`'s first argument (§8.4), as every program does

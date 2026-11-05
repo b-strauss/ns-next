@@ -1,0 +1,46 @@
+/// Counting loops long enough that the optimizer compiles their bodies
+/// (`docs/design/execution.md`, "Planned: the optimizing JIT"): a
+/// `whileTrue:` summing the integers up to 100000, and a `to:do:` summing
+/// the squares up to 30000 and counting the even numbers among them. A lost
+/// counter or accumulator changes every figure.
+class CountingLoop = Object new () (
+  sumTo: limit = (
+    |
+      sum ::= 0.
+      index ::= 1.
+    |
+    [index <= limit] whileTrue: [
+      sum:: sum + index.
+      index:: index + 1.
+    ].
+    ^sum.
+  )
+
+  squaresTo: limit = (
+    |
+      sum ::= 0.
+      evens ::= 0.
+    |
+    1 to: limit do: [:index |
+      sum:: sum + (index * index).
+      index \\ 2 = 0 ifTrue: [evens:: evens + 1].
+    ].
+    ^{sum. evens}.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      squares = self squaresTo: 30000.
+    |
+    transcript
+        show: (self sumTo: 100000) printString;
+        newLine.
+    transcript
+        show: (squares at: 1) printString;
+        newLine.
+    transcript
+        show: (squares at: 2) printString;
+        newLine.
+  )
+)
