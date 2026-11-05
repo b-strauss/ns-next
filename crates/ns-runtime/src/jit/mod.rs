@@ -1222,8 +1222,25 @@ pub(crate) struct JitState {
     /// spend.
     budget_words_to_point: Vec<u32>,
     /// The budget a body's row is armed with: `OPTIMIZATION_BUDGET`, but
-    /// in a test that sets another (`set_optimization_budget`).
+    /// in a test that sets another (`set_optimization_budget`), and 0
+    /// under the optimize stress mode, whatever was set.
     optimization_budget: i64,
+    /// The budget set for a body's row, which `optimization_budget` arms
+    /// with but under the optimize stress mode.
+    budget_set: i64,
+    /// Whether the optimize stress mode is on (`NS_NEXT_STRESS_OPTIMIZE`,
+    /// `set_optimize_stress`): every body's budget armed at 0, so that
+    /// its first spend requests its optimization, and every body compiled
+    /// to baseline code at its first entry and its first interpreted
+    /// backward jump.
+    optimize_stress: bool,
+    /// Whether the deopt stress mode is on (`NS_NEXT_STRESS_DEOPT`,
+    /// `set_deopt_stress`), which implies the optimize stress mode:
+    /// optimized code compiled meanwhile counts its interrupt points down
+    /// to a forced exit (`MachineWord::DeoptCountdown`).
+    deopt_stress: bool,
+    /// Where the next safepoint's countdown lies in `DEOPTIMIZATION_ROTATION`.
+    deoptimization_rotation: usize,
     /// The machine words the unpointed budget lies in
     /// (`MachineWord::UnpointedBudget`), which every budget word names
     /// until it is pointed at its row: the heap's, shared when the world
@@ -1277,12 +1294,54 @@ pub(crate) fn stress_zone_from_env() -> bool {
         })
 }
 
+/// Whether `NS_NEXT_STRESS_OPTIMIZE` asks for the optimize stress mode:
+/// set, and neither empty nor `0`, or the deopt stress mode, which implies
+/// it. Debug builds only; read once per process. Every body is then
+/// optimized as early as it can be: compiled to baseline code at its first
+/// entry or interpreted backward jump, its budget armed at 0, so that its
+/// first spend requests its optimization, which the next safepoint
+/// compiles -- V8's `stress_maglev` (`docs/design/execution.md`,
+/// "Verification"). It forces the JIT on where it is available.
+pub(crate) fn stress_optimize_from_env() -> bool {
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    stress_deopt_from_env()
+        || (cfg!(debug_assertions)
+            && *REQUESTED.get_or_init(|| {
+                std::env::var_os("NS_NEXT_STRESS_OPTIMIZE")
+                    .is_some_and(|value| !value.is_empty() && value != "0")
+            }))
+}
+
+/// Whether `NS_NEXT_STRESS_DEOPT` asks for the deopt stress mode: set, and
+/// neither empty nor `0`. Debug builds only; read once per process. It
+/// implies the optimize stress mode, and optimized code leaves at every
+/// n-th interrupt point it passes, n rotating over
+/// `DEOPTIMIZATION_ROTATION` at successive safepoints, so that every point
+/// is met -- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`
+/// (`docs/design/execution.md`, "Verification").
+pub(crate) fn stress_deopt_from_env() -> bool {
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(debug_assertions)
+        && *REQUESTED.get_or_init(|| {
+            std::env::var_os("NS_NEXT_STRESS_DEOPT")
+                .is_some_and(|value| !value.is_empty() && value != "0")
+        })
+}
+
+/// The countdowns the deopt stress mode's safepoints set in turn
+/// (`MachineWord::DeoptCountdown`): small and of no common period, so
+/// that over a run of safepoints the exit falls on every interrupt point
+/// of a short stretch of optimized code rather than on the same few.
+const DEOPTIMIZATION_ROTATION: [u64; 6] = [1, 2, 3, 5, 8, 13];
+
 impl JitState {
     /// The state of a new interpreter: a zone of `DEFAULT_ZONE_BYTES`,
     /// unless `NS_NEXT_NO_JIT=1` turns the JIT off.
     pub(crate) fn new() -> JitState {
         let stress_jit = stress_jit_from_env();
-        let stress = stress_jit || stress_exit_from_env() || stress_zone_from_env();
+        let optimize_stress = stress_optimize_from_env();
+        let stress =
+            stress_jit || stress_exit_from_env() || stress_zone_from_env() || optimize_stress;
         let wanted = available()
             && (stress || std::env::var_os("NS_NEXT_NO_JIT").is_none_or(|value| value != "1"));
         let (zone, unavailable) = if wanted {
@@ -1304,8 +1363,16 @@ impl JitState {
             statistics: JitStatistics::default(),
             install_bodies_exiting_at_once: stress_jit,
             futures_exit: false,
-            compile_at_entry: if stress_jit { 1 } else { COMPILE_AT_ENTRY },
-            compile_at_back_jump: COMPILE_AT_BACK_JUMP,
+            compile_at_entry: if stress_jit || optimize_stress {
+                1
+            } else {
+                COMPILE_AT_ENTRY
+            },
+            compile_at_back_jump: if optimize_stress {
+                1
+            } else {
+                COMPILE_AT_BACK_JUMP
+            },
             #[cfg(ns_jit)]
             walk: materialize::Walk::default(),
             #[cfg(ns_jit)]
@@ -1328,7 +1395,15 @@ impl JitState {
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
             budget_words_to_point: Vec::new(),
-            optimization_budget: OPTIMIZATION_BUDGET,
+            optimization_budget: if optimize_stress {
+                0
+            } else {
+                OPTIMIZATION_BUDGET
+            },
+            budget_set: OPTIMIZATION_BUDGET,
+            optimize_stress,
+            deopt_stress: stress_deopt_from_env(),
+            deoptimization_rotation: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
         }
     }
@@ -1479,6 +1554,7 @@ impl JitState {
             "internal: the machine words are shared before any compile"
         );
         self.machine_words = words;
+        self.rotate_deoptimization_countdown();
     }
 
     /// The unpointed budget's address (`MachineWord::UnpointedBudget`).
@@ -1490,9 +1566,88 @@ impl JitState {
     }
 
     /// Sets the budget every body's row is armed with from now on
-    /// (`OPTIMIZATION_BUDGET` otherwise).
-    pub(crate) fn set_optimization_budget(&mut self, budget: i64) {
-        self.optimization_budget = budget;
+    /// (`OPTIMIZATION_BUDGET` otherwise) -- but 0 while the optimize
+    /// stress mode is on -- and answers the budget armed.
+    pub(crate) fn set_optimization_budget(&mut self, budget: i64) -> i64 {
+        self.budget_set = budget;
+        self.optimization_budget = if self.optimize_stress { 0 } else { budget };
+        self.optimization_budget
+    }
+
+    /// Turns the optimize stress mode on or off for this state, as
+    /// `NS_NEXT_STRESS_OPTIMIZE` does at its creation, answering the
+    /// budget every row is armed with from now on; turning it off turns
+    /// the deopt stress mode off too, which implies it. Set before the
+    /// code it is meant for runs.
+    pub(crate) fn set_optimize_stress(&mut self, stress: bool) -> i64 {
+        self.optimize_stress = stress;
+        self.deopt_stress = self.deopt_stress && stress;
+        self.compile_at_entry = if stress || self.install_bodies_exiting_at_once {
+            1
+        } else {
+            COMPILE_AT_ENTRY
+        };
+        self.compile_at_back_jump = if stress { 1 } else { COMPILE_AT_BACK_JUMP };
+        self.set_optimization_budget(self.budget_set)
+    }
+
+    /// Turns the deopt stress mode on or off for this state, as
+    /// `NS_NEXT_STRESS_DEOPT` does at its creation: on, with the optimize
+    /// stress mode and the countdown at the rotation's start; off, the
+    /// optimize stress mode left as it is. Optimized code compiled before
+    /// keeps its points uncounted. Answers the budget every row is armed
+    /// with from now on.
+    pub(crate) fn set_deopt_stress(&mut self, stress: bool) -> i64 {
+        let budget = if stress {
+            self.set_optimize_stress(true)
+        } else {
+            self.optimization_budget
+        };
+        self.deopt_stress = stress;
+        self.deoptimization_rotation = 0;
+        self.rotate_deoptimization_countdown();
+        budget
+    }
+
+    /// Whether the optimize stress mode is on, under which a body's budget
+    /// is never raised for its feedback to settle: it runs out at once.
+    pub(crate) fn optimize_stress(&self) -> bool {
+        self.optimize_stress
+    }
+
+    /// Under the deopt stress mode, sets the countdown to the rotation's
+    /// next (`DEOPTIMIZATION_ROTATION`): what the run loop's safepoint
+    /// does, so that of the points passed until the next safepoint the
+    /// one the countdown names leaves. Nothing outside the mode.
+    pub(crate) fn rotate_deoptimization_countdown(&mut self) {
+        use crate::heap::machine_words::MachineWord;
+        if !self.deopt_stress {
+            return;
+        }
+        let countdown = DEOPTIMIZATION_ROTATION[self.deoptimization_rotation];
+        self.deoptimization_rotation =
+            (self.deoptimization_rotation + 1) % DEOPTIMIZATION_ROTATION.len();
+        self.machine_words
+            .set(MachineWord::DeoptCountdown, countdown);
+    }
+
+    /// Whether the exit just taken was the deopt stress mode's own: the
+    /// countdown at zero, which only the point that brought it there, and
+    /// exited at once, leaves it at, since the safepoint sets it afresh
+    /// to at least 1. The countdown is then spent past zero, so that no
+    /// later exit is taken for one, and the safepoint request held, so
+    /// that the stretch the exit goes on in leaves for the safepoint that
+    /// sets the next countdown.
+    #[cfg(ns_jit)]
+    fn take_forced_exit(&mut self, heap: &mut crate::heap::Heap) -> bool {
+        use crate::heap::machine_words::MachineWord;
+        if !self.deopt_stress || self.machine_words.get(MachineWord::DeoptCountdown) != 0 {
+            return false;
+        }
+        self.machine_words
+            .set(MachineWord::DeoptCountdown, u64::MAX);
+        heap.hold_safepoint_request();
+        true
     }
 
     /// Turns the JIT stress mode on or off for this state, as
@@ -1502,7 +1657,11 @@ impl JitState {
     /// for runs.
     pub(crate) fn set_stress(&mut self, stress: bool) {
         self.install_bodies_exiting_at_once = stress;
-        self.compile_at_entry = if stress { 1 } else { COMPILE_AT_ENTRY };
+        self.compile_at_entry = if stress || self.optimize_stress {
+            1
+        } else {
+            COMPILE_AT_ENTRY
+        };
     }
 
     /// Makes `MakeFuture` lower to an exit in the bodies compiled from now
@@ -1894,6 +2053,10 @@ impl JitState {
             optimization_requests: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: OPTIMIZATION_BUDGET,
+            budget_set: OPTIMIZATION_BUDGET,
+            optimize_stress: false,
+            deopt_stress: false,
+            deoptimization_rotation: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
         }
     }
@@ -3499,6 +3662,7 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     let snapshot = optimizing::snapshot::Snapshot::take(code, &mut mutator.heap, feedback_base);
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
+    macro_assembler.set_deoptimize_by_countdown(mutator.jit.deopt_stress);
     let role = baseline::BodyRole::of(code, method.is_some());
     let installation = optimizing::compile(&snapshot, macro_assembler, role, settings.futures_exit)
         .and_then(|optimized| {
@@ -4407,6 +4571,12 @@ fn resumption_after_exit(
 
     let exit = stubs::decode_exit(block, kind);
     mutator.jit.statistics.exits += 1;
+    // The deopt stress mode's forced exits count against no budget, as
+    // the exit stress mode's forced polls do not: they say nothing of the
+    // code, and counted they would abandon every optimized body within a
+    // few dozen of its points, under a mode that optimizes it again at
+    // once.
+    let forced = optimized && mutator.jit.take_forced_exit(&mut mutator.heap);
     if optimized {
         mutator.jit.statistics.optimized_exits += 1;
     }
@@ -4431,6 +4601,7 @@ fn resumption_after_exit(
         exit,
         MachineExit::Reexecute { .. } | MachineExit::PushRefused
     ) && !mutator.jit.install_bodies_exiting_at_once
+        && !forced
     {
         let code = mutator.heap.activation_code(innermost);
         count_exit(mutator, &code, optimized);
@@ -4921,6 +5092,23 @@ mod tests {
             ))
         }
 
+        /// An interpreter with the JIT on and the optimize stress mode off,
+        /// whatever the environment says, for the tests that pin the
+        /// budget's own arithmetic and the second entry's compile, both of
+        /// which the mode overrides by design: what the boot did under it
+        /// -- its requests and their optimizations -- forgotten, so that
+        /// the counts are the test's own.
+        fn pinning_the_budget() -> Interpreter {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.set_optimize_stress(false);
+            interpreter.enter(|mutator| {
+                mutator.jit.optimization_requests.clear();
+                mutator.jit.statistics = super::super::JitStatistics::default();
+            });
+            interpreter
+        }
+
         /// A body whose templates jump back before its return: a loop that
         /// runs while its register holds `true`, which it never does.
         pub(in crate::jit) fn body_with_a_loop() -> Rc<CompiledCode> {
@@ -5318,8 +5506,7 @@ mod tests {
         /// and arms the row and requests nothing.
         #[test]
         fn a_budget_that_runs_out_requests_its_body_once() {
-            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            interpreter.set_jit_enabled(true);
+            let mut interpreter = pinning_the_budget();
             interpreter.enter(|mutator| {
                 let code = body_with_a_loop();
                 enter_twice(&mut mutator.jit, &code);
@@ -5382,8 +5569,7 @@ mod tests {
         /// optimized code with it, so that no lookup finds it.
         #[test]
         fn optimized_code_is_entered_at_the_start_and_baseline_code_mid_body() {
-            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            interpreter.set_jit_enabled(true);
+            let mut interpreter = pinning_the_budget();
             interpreter.enter(|mutator| {
                 let code = body_with_a_loop();
                 enter_twice(&mut mutator.jit, &code);
@@ -5440,8 +5626,7 @@ mod tests {
         /// parked budget is armed afresh, so that it is requested again.
         #[test]
         fn a_full_zone_at_the_optimizing_install_compacts_and_rearms_the_budget() {
-            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            interpreter.set_jit_enabled(true);
+            let mut interpreter = pinning_the_budget();
             interpreter.enter(|mutator| {
                 // Bodies before the hot one, so that a zone without room
                 // left would still hold its optimized code once compacted.
@@ -5477,8 +5662,7 @@ mod tests {
         /// afresh, as the baseline and twin compiles hold theirs.
         #[test]
         fn an_exhausted_zone_holds_an_optimization_known_not_to_fit() {
-            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            interpreter.set_jit_enabled(true);
+            let mut interpreter = pinning_the_budget();
             interpreter.enter(|mutator| {
                 let hot = body_with_a_loop();
                 enter_twice(&mut mutator.jit, &hot);
@@ -5526,8 +5710,7 @@ mod tests {
         /// the cap.
         #[test]
         fn optimized_code_that_keeps_exiting_is_abandoned_alone_and_backs_off() {
-            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            interpreter.set_jit_enabled(true);
+            let mut interpreter = pinning_the_budget();
             interpreter.enter(|mutator| {
                 let code = body_with_a_loop();
                 enter_twice(&mut mutator.jit, &code);
@@ -5577,8 +5760,7 @@ mod tests {
         /// the install finds no room and when the exhausted zone holds it.
         #[test]
         fn a_deferred_optimization_keeps_its_back_off() {
-            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
-            interpreter.set_jit_enabled(true);
+            let mut interpreter = pinning_the_budget();
             interpreter.enter(|mutator| {
                 let code = body_with_a_loop();
                 enter_twice(&mut mutator.jit, &code);

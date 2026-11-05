@@ -879,9 +879,12 @@ const STEPPING: &str = indoc! {"
 const STEPPING_BUDGET: i64 = 50_000;
 
 /// An interpreter with `STEPPING` loaded under `lowering`, every body's
-/// budget `STEPPING_BUDGET`, and an instance to send `run` to.
+/// budget `STEPPING_BUDGET`, and an instance to send `run` to: the
+/// optimize stress mode off, whatever the environment says, since it arms
+/// every budget at 0 by design, and these pin what a budget carries.
 fn stepping(lowering: Lowering) -> (Interpreter, Root) {
     let (mut interpreter, class) = load_spending_with(STEPPING, lowering);
+    interpreter.set_optimize_stress(false);
     interpreter.set_optimization_budget(STEPPING_BUDGET);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     (interpreter, instance)
@@ -1036,6 +1039,105 @@ ns_runtime::for_each_lowering! {
         } else {
             assert_some_optimized(&statistics, lowering);
         }
+    }
+}
+
+/// `run` calling `three` twice: under the optimize stress mode `three` is
+/// compiled at its first entry, a push, which spends nothing, and its
+/// second, a call through its prologue, spends its budget, armed at 0.
+const RETURN_THREE_TWICE: &str = indoc! {"
+    class Subject = Object new () (
+      three = (
+        ^3
+      )
+      public run = (
+        ^self three + self three
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The optimize stress mode arms every budget at 0 whatever the test
+    /// parked it at, so that a body run twice is optimized: at the
+    /// safepoint its request asks for, which the reference lowering's
+    /// `run`, interpreted and with no loop, first reaches in its second
+    /// run, at its push.
+    fn under_the_optimize_stress_a_body_run_twice_is_optimized(lowering) {
+        let (mut interpreter, class) = load_with(RETURN_THREE_TWICE, lowering);
+        interpreter.set_optimize_stress(true);
+        assert_eq!(run(&mut interpreter, &class), 6);
+        assert_eq!(run(&mut interpreter, &class), 6);
+        let statistics = interpreter.jit_statistics();
+        assert!(statistics.optimized_bodies >= 1, "{statistics:?}");
+    }
+}
+
+/// The squares of 1 to 100,000 summed by a loop that sends `square:` for
+/// each, whose send is an interrupt point of its optimized code: every
+/// call pushes `square:` into its optimized code afresh, so that the
+/// deopt stress mode's countdown meets its point at every turn.
+const SUM_OF_SQUARES_BY_SENDS: &str = indoc! {"
+    class Subject = Object new () (
+      square: value = (
+        ^self times: value with: value
+      )
+      times: left with: right = (
+        ^left * right
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 100000] whileTrue: [
+          sum:: sum + (self square: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Under the deopt stress mode optimized code leaves at every n-th
+    /// interrupt point it passes, writing its frame back and handing the
+    /// instruction to the interpreter, and the answer is the
+    /// interpreter's. With the JIT stress mode, as `run_optimizing`, so
+    /// that the reference lowering's bodies, which exit at once at their
+    /// uncached sends, are compiled and optimized too.
+    fn under_the_deopt_stress_every_point_leaves_and_the_answer_holds(lowering) {
+        let (mut interpreter, class) = load_with(SUM_OF_SQUARES_BY_SENDS, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_deopt_stress(true);
+        assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
+        let statistics = interpreter.jit_statistics();
+        assert!(
+            statistics.optimized_exits > 100,
+            "{} exits of optimized code",
+            statistics.optimized_exits
+        );
+    }
+}
+
+/// The deopt stress mode's forced exits never count against the optimized
+/// code's `EXIT_BUDGET`, as the exit stress mode's forced poll exits never
+/// do: outside the JIT stress mode, which abandons nothing, `square:`'s
+/// optimized code leaves thousands of times and stays installed. The
+/// optimized lowering's: the reference lowering's uncached sends exit at
+/// once, so that no body of it is compiled outside the JIT stress mode.
+#[test]
+fn the_deopt_stress_s_forced_exits_abandon_nothing() {
+    let (mut interpreter, class) = load_with(SUM_OF_SQUARES_BY_SENDS, Lowering::Optimized);
+    interpreter.set_deopt_stress(true);
+    assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
+    let statistics = interpreter.jit_statistics();
+    assert!(
+        statistics.optimized_exits > 100,
+        "{} exits of optimized code",
+        statistics.optimized_exits
+    );
+    if !a_stress_mode_is_on() {
+        assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
     }
 }
 
@@ -1456,11 +1558,13 @@ fn the_zone_stress_mode_is_on() -> bool {
 /// Whether the environment turns on a stress mode under which every poll
 /// leaves machine code: the exit stress mode, whose polls exit
 /// unconditionally, and every mode that holds the safepoint request,
-/// which a poll takes (`Interpreter::hold_safepoints_for_stress`). The
-/// JIT's and the wide encoding's stress modes leave the polls alone.
+/// which a poll takes (`Interpreter::hold_safepoints_for_stress`), and the
+/// deopt stress mode, whose every forced exit holds it until the next
+/// safepoint resets the countdown. The JIT's, the optimize and the wide
+/// encoding's stress modes leave the polls alone.
 fn a_stress_mode_polls_out() -> bool {
     [
-        "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE",
+        "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE", "DEOPT",
     ]
     .iter()
     .any(|mode| {

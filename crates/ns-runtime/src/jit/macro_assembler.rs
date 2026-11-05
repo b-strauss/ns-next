@@ -617,6 +617,10 @@ pub(crate) struct MacroAssembler {
     /// Whether a poll takes its exit unconditionally, as under
     /// `NS_NEXT_STRESS_EXIT`: a safepoint is always requested.
     exit_at_every_poll: bool,
+    /// Whether optimized code counts its interrupt points down to a
+    /// forced exit (`count_down_to_deoptimize`), as under
+    /// `NS_NEXT_STRESS_DEOPT`.
+    deoptimize_by_countdown: bool,
     /// Whether a back edge counts itself (`count_back_edge`).
     count_back_edges: bool,
     /// The body's data words, which `finish` places after its code, and
@@ -651,6 +655,7 @@ impl MacroAssembler {
             program_counter: 0,
             cold_paths: Vec::new(),
             exit_at_every_poll: super::stress_exit_from_env(),
+            deoptimize_by_countdown: false,
             count_back_edges: false,
             body_words: 0,
             body_words_label: None,
@@ -770,6 +775,13 @@ impl MacroAssembler {
     #[cfg(test)]
     pub(crate) fn set_exit_at_every_poll(&mut self, exit_at_every_poll: bool) {
         self.exit_at_every_poll = exit_at_every_poll;
+    }
+
+    /// Makes every interrupt point of the optimized code emitted from now
+    /// on count down to a forced exit (`true`), as under the deopt stress
+    /// mode, or emits nothing for the count (`count_down_to_deoptimize`).
+    pub(crate) fn set_deoptimize_by_countdown(&mut self, deoptimize_by_countdown: bool) {
+        self.deoptimize_by_countdown = deoptimize_by_countdown;
     }
 
     pub(crate) fn roles(&self) -> Roles {
@@ -2782,6 +2794,46 @@ impl MacroAssembler {
             return;
         }
         self.jump_if_safepoint_requested(requested);
+    }
+
+    /// Under the deopt stress mode, an interrupt point's countdown: one
+    /// taken off `MachineWord::DeoptCountdown`, and the exit that
+    /// re-executes the instruction at `program_counter`, out of line, when
+    /// that brought it to zero, so that the frame -- written back, as at
+    /// every interrupt point -- goes on interpreted there as at any of the
+    /// point's own exits. Emits nothing outside the mode. Clobbers the
+    /// flags and the idiom scratch register.
+    pub(crate) fn count_down_to_deoptimize(&mut self, program_counter: u32) {
+        if !self.deoptimize_by_countdown {
+            return;
+        }
+        let label = self.assembler.label();
+        self.count_down_to(label);
+        self.push_cold_path(ColdPath::Exit {
+            label,
+            kind: ExitKind::Reexecute,
+            program_counter,
+        });
+    }
+
+    /// Under the deopt stress mode, an interrupt point's countdown whose
+    /// exit is the caller's: a jump to `exhausted` when the count reached
+    /// zero, as `count_down_to_deoptimize` exits; nothing outside the
+    /// mode. A back edge's poll goes to its own exit, the one way out of
+    /// it. Clobbers the flags and the idiom scratch register.
+    pub(crate) fn count_down_to(&mut self, exhausted: Label) {
+        if !self.deoptimize_by_countdown {
+            return;
+        }
+        let scratch = self.roles.idiom_scratch;
+        self.load_machine_words(scratch);
+        // The flags compare the word before the subtraction with 1: equal
+        // exactly when this point brought it to zero, so that a countdown
+        // already spent, negative until the safepoint sets it afresh,
+        // never exits again.
+        self.assembler
+            .subtract_from_memory(Self::machine_word(scratch, MachineWord::DeoptCountdown), 1);
+        self.assembler.jump_if(Condition::Equal, exhausted);
     }
 
     /// The poll's test: a jump to `label` when the safepoint request is

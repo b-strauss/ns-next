@@ -1233,6 +1233,41 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.set_stress(stress));
     }
 
+    /// Turns the optimize stress mode (`NS_NEXT_STRESS_OPTIMIZE`) on or
+    /// off for this interpreter: every body compiled at its first entry or
+    /// interpreted backward jump, and every budget armed at 0 -- the ones
+    /// armed already, whatever `set_optimization_budget` set, among them
+    /// -- so that a body's first spend requests its optimization; off,
+    /// the budget set before, and the deopt stress mode off with it. A
+    /// test hook, set before the code it is meant for runs.
+    #[doc(hidden)]
+    pub fn set_optimize_stress(&mut self, stress: bool) {
+        self.enter(|mutator| {
+            let budget = mutator.jit.set_optimize_stress(stress);
+            #[cfg(ns_jit)]
+            mutator.heap.rearm_optimization_budgets(budget);
+            #[cfg(not(ns_jit))]
+            let _ = budget;
+        });
+    }
+
+    /// Turns the deopt stress mode (`NS_NEXT_STRESS_DEOPT`) on or off for
+    /// this interpreter: on, with the optimize stress mode, the optimized
+    /// code compiled from now on leaving at every n-th interrupt point it
+    /// passes, n set afresh at every safepoint, rotating over 1, 2, 3, 5,
+    /// 8 and 13; off, the optimize stress mode left on. A test hook, set
+    /// before the code it is meant for runs.
+    #[doc(hidden)]
+    pub fn set_deopt_stress(&mut self, stress: bool) {
+        self.enter(|mutator| {
+            let budget = mutator.jit.set_deopt_stress(stress);
+            #[cfg(ns_jit)]
+            mutator.heap.rearm_optimization_budgets(budget);
+            #[cfg(not(ns_jit))]
+            let _ = budget;
+        });
+    }
+
     /// Makes the JIT lower `MakeFuture` to an exit in the bodies it
     /// compiles from now on, so that a body that makes a future at once
     /// exits at once and is never compiled, while it still returns as
@@ -1260,9 +1295,11 @@ impl Interpreter {
     #[doc(hidden)]
     pub fn set_optimization_budget(&mut self, budget: i64) {
         self.enter(|mutator| {
-            mutator.jit.set_optimization_budget(budget);
+            let armed = mutator.jit.set_optimization_budget(budget);
             #[cfg(ns_jit)]
-            mutator.heap.rearm_optimization_budgets(budget);
+            mutator.heap.rearm_optimization_budgets(armed);
+            #[cfg(not(ns_jit))]
+            let _ = armed;
         });
     }
 

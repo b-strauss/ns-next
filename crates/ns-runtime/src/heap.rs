@@ -397,9 +397,8 @@ impl BuiltinGuards {
 const FLOAT_DISPATCH_INDEX: usize = 4;
 
 /// What `MachineWord::SafepointRequested` reads while only a stress mode
-/// holds the request (`Heap::set_safepoint_requested`); a real request
-/// writes 1 over it.
-#[cfg(debug_assertions)]
+/// holds the request (`Heap::set_safepoint_requested`,
+/// `Heap::hold_safepoint_request`); a real request writes 1 over it.
 pub(crate) const STRESS_HOLD: u64 = 2;
 
 /// `Value::immediate_index`'s for a `SmallInteger`, which machine code's
@@ -9541,6 +9540,19 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn set_safepoint_requested(&mut self, requested: bool) {
         let word = if requested { STRESS_HOLD } else { 0 };
         self.write_safepoint_request(word);
+    }
+
+    /// Holds the request for the deopt stress mode's next safepoint, as a
+    /// stress mode holds it (`STRESS_HOLD`), unless a request stands
+    /// already, a real one above all, whose lowered depth limit this must
+    /// not raise: the safepoint sets the countdown a forced exit spent
+    /// (`jit::JitState::take_forced_exit`). In every build, as the mode's
+    /// hook is.
+    #[cfg(ns_jit)]
+    pub(crate) fn hold_safepoint_request(&mut self) {
+        if !self.safepoint_requested() {
+            self.write_safepoint_request(STRESS_HOLD);
+        }
     }
 
     /// Asks the run loop's next safepoint to take its slow path: an

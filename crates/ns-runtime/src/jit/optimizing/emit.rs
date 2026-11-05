@@ -309,6 +309,11 @@ impl Emitter<'_> {
         body.macro_assembler.hold_values(&[]);
         body.program_counter = program_counter;
         body.macro_assembler.set_program_counter(program_counter);
+        // Under the deopt stress mode the point may hand its instruction
+        // to the interpreter here, after the write-back and before the
+        // template, exactly where the template's own exits leave.
+        body.macro_assembler
+            .count_down_to_deoptimize(program_counter);
         // A template's own jump goes where the graph says: a mirror send's
         // failure to the block its edge enters, and a jump to the next
         // instruction -- a fast path declining into the send that follows
@@ -440,6 +445,9 @@ impl Emitter<'_> {
             .collect();
         let label = body.macro_assembler.assembler().label();
         body.macro_assembler.count_back_edge();
+        // The deopt stress mode's exit at a back edge is the poll's own,
+        // whose write-back lies on its way alone.
+        body.macro_assembler.count_down_to(label);
         body.macro_assembler.poll_to(label);
         self.polls.push(Poll {
             label,

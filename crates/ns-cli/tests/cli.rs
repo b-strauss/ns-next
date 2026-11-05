@@ -237,7 +237,9 @@ fn ns_next_without_a_code_zone() -> Command {
         .env_remove("NS_NEXT_NO_JIT")
         .env_remove("NS_NEXT_STRESS_JIT")
         .env_remove("NS_NEXT_STRESS_EXIT")
-        .env_remove("NS_NEXT_STRESS_ZONE");
+        .env_remove("NS_NEXT_STRESS_ZONE")
+        .env_remove("NS_NEXT_STRESS_OPTIMIZE")
+        .env_remove("NS_NEXT_STRESS_DEOPT");
     command
 }
 
@@ -494,6 +496,9 @@ fn benchmark_collector_statistics_reports_to_stderr() {
         .env_remove("NS_NEXT_STRESS_SUSPEND")
         .env_remove("NS_NEXT_STRESS_JIT")
         .env_remove("NS_NEXT_STRESS_EXIT")
+        .env_remove("NS_NEXT_STRESS_ZONE")
+        .env_remove("NS_NEXT_STRESS_OPTIMIZE")
+        .env_remove("NS_NEXT_STRESS_DEOPT")
         .output()
         .unwrap();
     assert_eq!(

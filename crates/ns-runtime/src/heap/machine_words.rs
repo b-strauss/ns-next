@@ -55,7 +55,8 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// a frame object's 25 and 26, the code table's epoch 27, the machine
 /// entry table's bound 28, the callee closure and whether it counts 29
 /// and 30, a future's class word and header 31 and 32, the unpointed
-/// budget 33, the rest free for the later stages.
+/// budget 33, the deopt stress mode's countdown 34, the rest free for the
+/// later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -179,6 +180,13 @@ pub(crate) enum MachineWord {
     /// is not known, so that the spend needs no test for a word naming
     /// none.
     UnpointedBudget,
+    /// Under the deopt stress mode, how many interrupt points optimized
+    /// code passes before the next leaves it: each point subtracts one,
+    /// and the one that brings it to zero exits there
+    /// (`MacroAssembler::count_down_to_deoptimize`); the run loop's
+    /// safepoint sets it afresh (`JitState::rotate_deoptimization_countdown`).
+    /// Unread outside the mode.
+    DeoptCountdown,
 }
 
 /// What `MachineWord::UnpointedBudget` holds: negative, and far enough
@@ -223,6 +231,7 @@ impl MachineWord {
             MachineWord::FutureClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 17,
             MachineWord::FutureHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 18,
             MachineWord::UnpointedBudget => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 19,
+            MachineWord::DeoptCountdown => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 20,
         }
     }
 }
@@ -231,7 +240,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 40;
 
-const _: () = assert!(MachineWord::UnpointedBudget.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::DeoptCountdown.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -322,9 +331,10 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::FutureClass));
         offsets.push(MachineWords::offset(MachineWord::FutureHeader));
         offsets.push(MachineWords::offset(MachineWord::UnpointedBudget));
+        offsets.push(MachineWords::offset(MachineWord::DeoptCountdown));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 24 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 25 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]
