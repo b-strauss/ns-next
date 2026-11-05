@@ -169,6 +169,7 @@ impl Allocation {
     /// The allocatable registers that hold a value live at `position`,
     /// where the code emitted for it runs: those a debug build holds
     /// against a temporary (`MacroAssembler::hold_values`).
+    #[cfg(debug_assertions)]
     pub(crate) fn registers_held_at(&self, position: u32) -> Vec<Register> {
         self.ranges
             .iter()

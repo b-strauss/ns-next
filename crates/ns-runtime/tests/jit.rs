@@ -857,6 +857,7 @@ fn spends_no_budget_in_a_loop(lowering: Lowering) -> bool {
 
 /// A loop whose every turn sends a method without a loop of its own,
 /// which spends its budget only at its entries.
+#[cfg(debug_assertions)]
 const STEPPING: &str = indoc! {"
     class Subject = Object new () (
       step: value = (
@@ -876,12 +877,14 @@ const STEPPING: &str = indoc! {"
 
 /// The budget `STEPPING`'s test arms every body with: a few dozen runs'
 /// worth.
+#[cfg(debug_assertions)]
 const STEPPING_BUDGET: i64 = 50_000;
 
 /// An interpreter with `STEPPING` loaded under `lowering`, every body's
 /// budget `STEPPING_BUDGET`, and an instance to send `run` to: the
 /// optimize stress mode off, whatever the environment says, since it arms
 /// every budget at 0 by design, and these pin what a budget carries.
+#[cfg(debug_assertions)]
 fn stepping(lowering: Lowering) -> (Interpreter, Root) {
     let (mut interpreter, class) = load_spending_with(STEPPING, lowering);
     interpreter.set_optimize_stress(false);
@@ -892,6 +895,7 @@ fn stepping(lowering: Lowering) -> (Interpreter, Root) {
 
 /// Sends `instance` `run` once, answering whether the JIT has requested
 /// an optimization since `before`.
+#[cfg(debug_assertions)]
 fn run_stepping(interpreter: &mut Interpreter, instance: &Root, before: JitStatistics) -> bool {
     expect_ok(
         interpreter.send(instance, Symbol::intern("run"), &[]),
@@ -907,7 +911,8 @@ fn run_stepping(interpreter: &mut Interpreter, instance: &Root, before: JitStati
 /// it, so that a body called a little between every two collections is
 /// still requested. The optimized lowering's: under the reference
 /// lowering every body `STEPPING` runs would exit at once, so that none
-/// is compiled and none spends.
+/// is compiled and none spends. A debug build's, as `collect_now` is.
+#[cfg(debug_assertions)]
 #[test]
 fn a_full_collection_keeps_what_is_left_of_a_budget() {
     let lowering = Lowering::Optimized;
