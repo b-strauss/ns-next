@@ -297,6 +297,16 @@ pub struct JitStatistics {
     /// Wall time of every optimizing compile, in nanoseconds, as
     /// `compile_nanoseconds` counts the baseline's.
     pub optimize_nanoseconds: u64,
+    /// Frames the exit's walk materialized that stood in optimized code:
+    /// a frame whose call returns into optimized code, or the innermost
+    /// one, which left it.
+    pub optimized_frames_materialized: u64,
+    /// Frames returned to (`resumed`) of a body with optimized code, which
+    /// go on in its baseline code: one of `resumed_entries`.
+    pub optimized_bodies_resumed: u64,
+    /// The twin leaf's calls from optimized code's `MakeClosure`, whose
+    /// transfer found its baseline body's twin not compiled yet.
+    pub optimized_twin_requests: u64,
 }
 
 impl JitStatistics {
@@ -1870,6 +1880,8 @@ pub(crate) struct Installed {
     /// Whether the body is a twin, which reifies its frame
     /// (`InstalledBody::reifies`).
     pub(crate) reifies: bool,
+    /// Whether the code is the body's optimized code (`Tier::Optimized`).
+    pub(crate) optimized: bool,
 }
 
 /// How many bodies `BodyLookup` remembers: a power of two.
@@ -1932,6 +1944,7 @@ fn upgraded(body: &InstalledBody) -> Option<Installed> {
         method,
         feedback_base: body.feedback_base,
         reifies: body.reifies,
+        optimized: body.tier == Tier::Optimized,
     })
 }
 
@@ -3234,12 +3247,13 @@ pub(crate) fn compile_twin_at(state: &mut JitState, code_address: usize) -> bool
     };
     // Optimized code transfers into its baseline body's twin, whose
     // address its own words hold as the lean body's do.
-    let lean = state.bodies[index as usize].baseline.unwrap_or(index);
-    let compiled = compile_twin(state, lean).is_ok();
-    if compiled {
-        state.write_pair_transfer_words(lean);
+    // Its words name the twin from the twin's compile on, as the lean
+    // body's do (`write_pair_transfer_words`).
+    let optimized = state.bodies[index as usize].baseline;
+    if optimized.is_some() {
+        state.statistics.optimized_twin_requests += 1;
     }
-    compiled
+    compile_twin(state, optimized.unwrap_or(index)).is_ok()
 }
 
 /// Points the budget word of every body installed since the last trigger
@@ -3415,9 +3429,10 @@ pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
 /// push, every cell of a method it is the body of and its machine entry
 /// row enter the optimized code, its prologue the baseline's, while a
 /// frame that goes on mid-body goes on in the baseline code. A body the
-/// optimizing compiler refuses -- or whose code the zone has no room for
-/// -- stays in baseline code, its budget parked for good, as its request
-/// left it, so that it is not requested again.
+/// optimizing compiler refuses stays in baseline code, its budget parked
+/// for good, as its request left it, so that it is not requested again;
+/// one whose code the zone has no room for asks for a compaction and has
+/// its budget armed afresh.
 #[cfg(ns_jit)]
 fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     if mutator.jit.optimized(code).is_some() {
@@ -3445,8 +3460,8 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
     let role = baseline::BodyRole::of(code, method.is_some());
-    let installation =
-        optimizing::compile(&snapshot, macro_assembler, role).and_then(|optimized| {
+    let installation = optimizing::compile(&snapshot, macro_assembler, role, settings.futures_exit)
+        .and_then(|optimized| {
             install_optimized(
                 &mut mutator.jit,
                 code,
@@ -3458,8 +3473,29 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let statistics = &mut mutator.jit.statistics;
     statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
-    let Ok(index) = installation else {
-        return;
+    let index = match installation {
+        Ok(index) => index,
+        // No room is no reason to give the body up: as for a baseline
+        // compile, the zone is compacted -- at this same safepoint, which
+        // serves the compaction next -- and the body's budget armed
+        // afresh, so that it is requested again once it has run as long.
+        Err(Refusal::ZoneFull) => {
+            if mutator.jit.zone_exhausted {
+                mutator.jit.hold_compile();
+            } else {
+                mutator.jit.compaction_requested = true;
+                mutator.jit.zone_exhausted = true;
+            }
+            if mutator.jit.compaction_requested {
+                mutator.heap.request_safepoint();
+            }
+            let budget = mutator.heap.optimization_budget_of(code);
+            mutator
+                .heap
+                .arm_optimization_budget(budget.id, mutator.jit.optimization_budget);
+            return;
+        }
+        Err(_) => return,
     };
     code.jit.optimized.set(index);
     mutator.jit.statistics.optimized_bodies += 1;
@@ -3523,6 +3559,7 @@ fn install_optimized(
         twin_transfers,
         budget_word: None,
     };
+    let needed = needed_bytes(&body);
     let index = install_body(
         state,
         code,
@@ -3531,7 +3568,13 @@ fn install_optimized(
         body,
         settings,
         Some(lean),
-    )?;
+    )
+    .inspect_err(|refusal| {
+        // What a compaction must free, as for a baseline compile.
+        if *refusal == Refusal::ZoneFull {
+            state.wanted_bytes = state.wanted_bytes.max(needed);
+        }
+    })?;
     state.bodies[index as usize].push_entry = push_entry;
     Ok(index)
 }
@@ -3727,6 +3770,9 @@ pub(crate) fn resumed(
     match entry_of_frame(mutator, activation, code, feedback_base, program_counter) {
         Some(entry) if native_stack_has_room() => {
             mutator.jit.statistics.resumed_entries += 1;
+            if mutator.jit.optimized(code).is_some() {
+                mutator.jit.statistics.optimized_bodies_resumed += 1;
+            }
             run_machine_code(mutator, activation, register_base, entry)
         }
         _ => {
@@ -5212,6 +5258,42 @@ mod tests {
                 code.jit.forget();
                 assert!(mutator.jit.optimized(&code).is_none());
                 assert_eq!(code.jit.optimized.get(), crate::jit::NO_BODY);
+            });
+        }
+
+        /// No room for the optimized code is no refusal of the body: as a
+        /// baseline compile that finds the zone full, the optimizing one
+        /// asks for a compaction and records what it needed, and the body's
+        /// parked budget is armed afresh, so that it is requested again.
+        #[test]
+        fn a_full_zone_at_the_optimizing_install_compacts_and_rearms_the_budget() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.enter(|mutator| {
+                // Bodies before the hot one, so that a zone without room
+                // left would still hold its optimized code once compacted.
+                let fillers: Vec<_> = (0..4).map(|_| body_with_a_loop()).collect();
+                let hot = body_with_a_loop();
+                for code in fillers.iter().chain([&hot]) {
+                    enter_twice(&mut mutator.jit, code);
+                }
+                crate::jit::after_compile_trigger(mutator);
+                let zone = mutator.jit.zone.as_mut().expect("a zone");
+                zone.limit = zone.next_offset;
+                let budget = mutator.heap.optimization_budget_of(&hot);
+                mutator.heap.park_optimization_budget(budget.id);
+                mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+                crate::jit::optimize_requested(mutator);
+                assert_eq!(mutator.jit.statistics.optimized_bodies, 0);
+                assert!(mutator.jit.optimized(&hot).is_none());
+                assert!(mutator.jit.compaction_requested());
+                assert!(mutator.jit.zone_exhausted);
+                assert!(mutator.jit.wanted_bytes > 0);
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&hot),
+                    Some(crate::jit::OPTIMIZATION_BUDGET),
+                    "armed afresh"
+                );
             });
         }
 

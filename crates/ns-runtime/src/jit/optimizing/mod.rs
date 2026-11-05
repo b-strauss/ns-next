@@ -21,12 +21,15 @@ pub(crate) mod verify;
 /// its values allocated to registers and its interrupt points described
 /// (the allocation verified in a debug build), then emitted. A refusal is
 /// one the baseline makes of the same body: too many instructions, or
-/// code the assembler cannot lay out.
+/// code the assembler cannot lay out. `futures_exit` is the setting its
+/// baseline code was compiled under (`JitState::set_futures_exit`), so
+/// that both tiers are the same lowering.
 #[cfg(ns_jit)]
 pub(crate) fn compile(
     snapshot: &snapshot::Snapshot,
     macro_assembler: crate::jit::macro_assembler::MacroAssembler,
     role: crate::jit::baseline::BodyRole,
+    futures_exit: bool,
 ) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
     use crate::jit::Refusal;
 
@@ -36,6 +39,7 @@ pub(crate) fn compile(
         &snapshot.facts,
         snapshot.feedback_base,
         role,
+        futures_exit,
     )?;
     let graph = build::build(snapshot);
     let (allocation, metadata) = metadata::allocate_and_describe(snapshot, &graph, &roles);

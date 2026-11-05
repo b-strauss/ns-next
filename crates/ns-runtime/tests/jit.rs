@@ -131,6 +131,10 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         abandoned_optimized_bodies: after.abandoned_optimized_bodies
             - before.abandoned_optimized_bodies,
         optimize_nanoseconds: after.optimize_nanoseconds - before.optimize_nanoseconds,
+        optimized_frames_materialized: after.optimized_frames_materialized
+            - before.optimized_frames_materialized,
+        optimized_bodies_resumed: after.optimized_bodies_resumed - before.optimized_bodies_resumed,
+        optimized_twin_requests: after.optimized_twin_requests - before.optimized_twin_requests,
     }
 }
 
@@ -930,19 +934,35 @@ const OPTIMIZING_BUDGET: i64 = 5_000;
 /// that the reference lowering's, which mostly exit at once, are too --
 /// and every body's budget `OPTIMIZING_BUDGET`: a body whose budget runs
 /// out is optimized at the safepoint its request asks for, and the pushes
-/// and calls after it enter its optimized code. Answers each run's answer
-/// and what the JIT did over all of them.
-fn run_optimizing(source: &str, lowering: Lowering, runs: usize) -> (Vec<i64>, JitStatistics) {
+/// and calls after it enter its optimized code. Answers each run's answer,
+/// what the JIT did over all of them, and what it did in the last, which
+/// runs after the first run's optimizations.
+fn run_optimizing(
+    source: &str,
+    lowering: Lowering,
+    runs: usize,
+) -> (Vec<i64>, JitStatistics, JitStatistics) {
     let (mut interpreter, class) = load_spending_with(source, lowering);
     interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
     interpreter.set_jit_stress(true);
     interpreter.set_jit_counting(true);
     let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let before = interpreter.jit_statistics();
-    let answers = (0..runs)
-        .map(|_| send_unary(&mut interpreter, &subject, "run"))
-        .collect();
-    (answers, since(interpreter.jit_statistics(), before))
+    let mut last = before;
+    let mut answers = Vec::new();
+    for _ in 0..runs {
+        last = interpreter.jit_statistics();
+        answers.push(send_unary(&mut interpreter, &subject, "run"));
+    }
+    let after = interpreter.jit_statistics();
+    (answers, since(after, before), since(after, last))
+}
+
+/// Whether the decisions about optimized code are pinned here: under the
+/// optimized lowering with no stress mode, whose compactions, collections,
+/// suspensions and moves change which copy of a body runs when.
+fn pins_the_tiers(lowering: Lowering) -> bool {
+    lowering == Lowering::Optimized && !a_stress_mode_is_on()
 }
 
 /// The squares of 1 to 100,000 summed in one loop: `run`'s back jumps
@@ -977,7 +997,7 @@ ns_runtime::for_each_lowering! {
     /// loop's blocks, so that `run` is the only body optimized; the
     /// reference lowering's blocks are optimized as well.
     fn a_hot_body_runs_optimized_and_answers_the_same(lowering) {
-        let (answers, statistics) = run_optimizing(SUM_OF_SQUARES_LOOP, lowering, 3);
+        let (answers, statistics, _) = run_optimizing(SUM_OF_SQUARES_LOOP, lowering, 3);
         assert_eq!(answers, vec![expected_sum_of_squares(); 3]);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
             assert_eq!(statistics.optimized_bodies, 1);
@@ -1033,28 +1053,42 @@ const SIGNAL_IN_A_HOT_LOOP: &str = indoc! {"
 ns_runtime::for_each_lowering! {
     /// A frame of optimized code that an exit materialized is returned to
     /// in its baseline code, the only code with an entry at every
-    /// instruction, and the answer is the interpreter's.
+    /// instruction, and the answer is the interpreter's: in the second
+    /// run, after the first optimized `guarded` and `warn`, every signal
+    /// materializes frames that stood in optimized code, and the frames
+    /// returned to are those of bodies with optimized code, which go on in
+    /// their baseline code.
     fn a_frame_returned_to_resumes_in_baseline_code(lowering) {
-        let (answers, statistics) = run_optimizing(SIGNAL_IN_A_HOT_LOOP, lowering, 1);
-        assert_eq!(answers, vec![10_000]);
+        let (answers, statistics, last) = run_optimizing(SIGNAL_IN_A_HOT_LOOP, lowering, 2);
+        assert_eq!(answers, vec![10_000; 2]);
         assert_some_optimized(&statistics, lowering);
-        // The reference lowering's frames, its blocks' among them, are
-        // returned to interpreted in baseline code as well.
-        if lowering == Lowering::Optimized {
-            assert!(statistics.resumed_entries > 0);
+        if pins_the_tiers(lowering) {
+            assert!(
+                last.optimized_frames_materialized >= 10_000,
+                "{} frames of optimized code materialized",
+                last.optimized_frames_materialized
+            );
+            assert!(
+                last.optimized_bodies_resumed >= 10_000,
+                "{} frames of optimized bodies resumed in baseline code",
+                last.optimized_bodies_resumed
+            );
         }
     }
 }
 
-/// A loop whose every turn calls `add:to:`, which makes a block capturing
-/// its arguments and has `evaluate:` evaluate it.
+/// A loop whose every turn calls `add:to:`, which adds, and from its
+/// 9,001st call on makes a block capturing its arguments and has
+/// `evaluate:` evaluate it: by then its budget has run out and it is
+/// optimized, so that its optimized code makes the first of its closures.
 const CLOSURE_IN_A_HOT_LOOP: &str = indoc! {"
     class Subject = Object new () (
       evaluate: block = (
         ^block value
       )
       add: index to: total = (
-        ^self evaluate: [total + index]
+        index > 9000 ifTrue: [^self evaluate: [total + index]].
+        ^total + index
       )
       public run = (
         |
@@ -1073,13 +1107,20 @@ const CLOSURE_IN_A_HOT_LOOP: &str = indoc! {"
 ns_runtime::for_each_lowering! {
     /// `add:to:`'s optimized code makes its block as its lean baseline
     /// code does, by transferring its frame into the body's twin, which
-    /// makes the closure: the twin is compiled, and the answer is the
+    /// makes the closure: its first transfer finds no twin and calls the
+    /// twin leaf, which compiles the baseline body's twin -- once, the
+    /// second run's transfers finding it -- and the answer is the
     /// interpreter's.
     fn a_closure_made_in_optimized_code_transfers_into_the_twin(lowering) {
-        let (answers, statistics) = run_optimizing(CLOSURE_IN_A_HOT_LOOP, lowering, 2);
+        let (answers, statistics, last) = run_optimizing(CLOSURE_IN_A_HOT_LOOP, lowering, 2);
         assert_eq!(answers, vec![50_005_000; 2]);
         assert_some_optimized(&statistics, lowering);
         assert!(statistics.compiled_twins >= 1);
+        if pins_the_tiers(lowering) {
+            assert_eq!(statistics.optimized_twin_requests, 1);
+            assert_eq!(last.optimized_twin_requests, 0);
+            assert_eq!(last.compiled_twins, 0, "the twin is compiled once");
+        }
     }
 }
 

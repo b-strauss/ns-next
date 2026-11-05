@@ -256,12 +256,14 @@ impl BodyAssembler {
     /// (`optimizing::emit`): the lean copy's, which never reifies its
     /// frame, spends no budget and takes no backward jump of its own. A
     /// body past the program counters a map holds is refused as the
-    /// baseline refuses it.
+    /// baseline refuses it. `MakeFuture` lowers as `futures_exit` says,
+    /// the setting the body's baseline code was compiled under.
     pub(super) fn for_optimized(
         mut macro_assembler: MacroAssembler,
         facts: &BodyFacts,
         feedback_base: FeedbackBase,
         role: BodyRole,
+        futures_exit: bool,
     ) -> Result<BodyAssembler, Refusal> {
         let count =
             u16::try_from(facts.instruction_count).map_err(|_| Refusal::TooManyInstructions)?;
@@ -283,7 +285,7 @@ impl BodyAssembler {
             reifies: false,
             twin_transfers: Vec::new(),
             frame_register_count: facts.frame_register_count,
-            futures_exit: false,
+            futures_exit,
             budget_word: None,
             optimized: true,
         })

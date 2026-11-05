@@ -14,13 +14,6 @@
 //! no value is allocated to (`Roles::integer_temporaries`) and takes each
 //! through `MacroAssembler::temporary`, which a debug build checks against
 //! the registers `hold_values` names.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the JIT's installation of optimized code, Task 6's, is the emitter's first caller"
-    )
-)]
 
 use std::collections::HashMap;
 
@@ -49,6 +42,16 @@ pub(crate) struct OptimizedBody {
     /// The transfers into the baseline twin, one per `MakeClosure`
     /// (`closures::transfer_to_twin`).
     pub(crate) twin_transfers: Vec<TwinTransfer>,
+    /// Each interrupt point's description, which the install drops: no
+    /// frame is rebuilt from it until optimized code holds a value outside
+    /// its frame word.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the deoptimization of frames whose values live outside their words"
+        )
+    )]
     pub(crate) metadata: Metadata,
     /// The offset in the code where the run loop's push enters, past the
     /// prologue a compiled call enters at: the body's first block.
@@ -496,7 +499,7 @@ mod tests {
     fn run(snapshot: &Snapshot, frame: &mut [u64], exit_at_every_poll: bool) -> MachineExit {
         let mut macro_assembler = MacroAssembler::new(Abi::host());
         macro_assembler.set_exit_at_every_poll(exit_at_every_poll);
-        let optimized = match compile(snapshot, macro_assembler, BodyRole::Method) {
+        let optimized = match compile(snapshot, macro_assembler, BodyRole::Method, false) {
             Ok(optimized) => optimized,
             Err(refusal) => panic!("refused: {refusal:?}"),
         };
@@ -730,7 +733,7 @@ mod tests {
                 .count();
             for abi in [Abi::Aapcs64, Abi::Windows64, Abi::SystemV] {
                 let role = role_of(&snapshot);
-                let optimized = compile(&snapshot, MacroAssembler::new(abi), role)
+                let optimized = compile(&snapshot, MacroAssembler::new(abi), role, false)
                     .unwrap_or_else(|refusal| panic!("refused under {abi:?}: {refusal:?}"));
                 let length = u32::try_from(optimized.code.bytes.len()).expect("small");
                 for (label, program_counter) in &optimized.returns {

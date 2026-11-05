@@ -796,18 +796,27 @@ impl JitState {
                 let body = &self.bodies[index];
                 // A twin, and optimized code, go with their lean body,
                 // never alone.
-                if body.free
-                    || body.lean.is_some()
-                    || body.baseline.is_some()
-                    || body.usage.get() > freeable
-                {
+                if body.free || body.lean.is_some() || body.baseline.is_some() {
                     continue;
                 }
-                let (size, code, twin) = (body.size(), body.code.upgrade(), body.twin);
                 let Ok(number) = u32::try_from(index) else {
                     unreachable!("internal: a body's index fits its slot's map");
                 };
+                // The pair is as used as its more used copy: once a body
+                // is optimized, its cells and its row name the optimized
+                // code, whose links raise that copy's usage alone, so that
+                // the lean body's would make a hot optimized body the
+                // first a compaction frees.
                 let optimized = self.optimized_of(number);
+                let usage = optimized.map_or(body.usage.get(), |optimized| {
+                    body.usage
+                        .get()
+                        .max(self.bodies[optimized as usize].usage.get())
+                });
+                if usage > freeable {
+                    continue;
+                }
+                let (size, code, twin) = (body.size(), body.code.upgrade(), body.twin);
                 self.mark_free(number, FreedBy::TheCompaction);
                 freed_any = true;
                 free_bytes += size;
@@ -1171,8 +1180,9 @@ impl Mutator<'_> {
     /// site ranges, that every holder of an address into the zone was
     /// remapped: every cell agrees with its entry, which names a live
     /// body's start, a stub, or the miss stub (`InlineCaches::verify_cells`),
-    /// and every machine entry row names the start of a lean body the zone
-    /// holds and has not freed; no cell names a twin's start. The zone and collect stress modes so check every
+    /// and every machine entry row names the start of a lean body or of
+    /// optimized code the zone holds and has not freed; no cell names a
+    /// twin's start. The zone and collect stress modes so check every
     /// compaction and every slide they make.
     #[cfg(all(ns_jit, debug_assertions))]
     fn verify_code_zone_holders(&self) {
@@ -1187,8 +1197,9 @@ impl Mutator<'_> {
                 .zone()
                 .executable_address(CodeOffset(body.start)) as u64
         };
-        // Only a lean body is ever named: a twin is entered by its lean
-        // body's transfers and by a resumption alone.
+        // Only a lean body or the optimized code beside it is ever named:
+        // a twin is entered by its lean body's and its optimized code's
+        // transfers and by a resumption alone.
         let starts: Vec<u64> = self
             .jit
             .bodies
@@ -1347,6 +1358,53 @@ mod tests {
                 code.registers_above_header(),
             )
             .unwrap_or_else(|_| panic!("the stack holds the frame"))
+    }
+
+    /// A hot optimized body's pair is judged by its more used copy: its
+    /// cells and row link its optimized code, whose usage they raise,
+    /// while its lean body's is halved by every slide, so that a freeing
+    /// by usage frees a colder body first.
+    #[cfg(ns_jit)]
+    #[test]
+    fn a_hot_optimized_body_outlives_a_colder_one_at_a_usage_compaction() {
+        use crate::jit::tests::machine::{body_with_a_loop, enter_twice};
+        use std::rc::Rc;
+        let mut interpreter =
+            crate::interpreter::Interpreter::bootstrap_with(crate::Lowering::Optimized);
+        interpreter.set_jit_enabled(true);
+        interpreter.enter(|mutator| {
+            let cold = body_with_a_loop();
+            let hot = body_with_a_loop();
+            for code in [&cold, &hot] {
+                enter_twice(&mut mutator.jit, code);
+            }
+            crate::jit::after_compile_trigger(mutator);
+            mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+            crate::jit::optimize_requested(mutator);
+            let (cold_lean, hot_lean) = (cold.jit.map.get(), hot.jit.map.get());
+            let optimized = hot.jit.optimized.get();
+            assert_ne!(optimized, crate::jit::NO_BODY, "the hot body is optimized");
+            // Linked since its optimization, its optimized code is the
+            // copy whose usage went up, while slides halved its lean
+            // body's; the cold body is used, a little.
+            mutator.jit.bodies[hot_lean as usize].usage.set(0);
+            mutator.jit.bodies[optimized as usize]
+                .usage
+                .set(super::LINKED_USAGE_CEILING);
+            mutator.jit.bodies[cold_lean as usize].usage.set(1);
+            let (_, free) = mutator.jit.free_by_usage(super::Freeing::ToAQuarter, 0);
+            let (freed_any, _) = mutator
+                .jit
+                .free_by_usage(super::Freeing::ToAQuarter, free + 1);
+            assert!(freed_any);
+            assert!(
+                mutator.jit.bodies[cold_lean as usize].free,
+                "the colder body is freed"
+            );
+            assert!(!mutator.jit.bodies[hot_lean as usize].free);
+            assert!(!mutator.jit.bodies[optimized as usize].free);
+            assert!(mutator.jit.optimized(&hot).is_some());
+        });
     }
 
     /// A frame an exit left stopped in machine code a compaction freed --
