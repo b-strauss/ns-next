@@ -1851,6 +1851,13 @@ impl JitState {
     /// as `body_at` looks it up -- an address `MacroAssembler::exit` or a
     /// leaf call's `Operand::CodeAddress` handed over -- its method and its
     /// feedback base.
+    ///
+    /// Inline into every caller, `upgraded` with it: answered through
+    /// memory, the answer's narrow fields -- the feedback base, `reifies`,
+    /// `optimized` -- are stored one by one and read back as one word, a
+    /// load no store forwards, which stalled `materialize::leaf_frame` on
+    /// every leaf's way into a frame machine code pushed.
+    #[inline(always)]
     pub(crate) fn body_of(&self, address: usize) -> Option<Installed> {
         // A call's return address, which every leaf a callee calls hands
         // over, is found without a search.
@@ -2156,7 +2163,9 @@ impl BodyLookup {
     }
 }
 
-/// `body` as `Installed`, while its code and method live.
+/// `body` as `Installed`, while its code and method live. Inline, as
+/// `JitState::body_of` is.
+#[inline(always)]
 fn upgraded(body: &InstalledBody) -> Option<Installed> {
     let code = body.code.upgrade()?;
     let method = match &body.method {
