@@ -47,6 +47,11 @@ struct Budget {
     /// The most 16- or 32-byte loads from the stack over an earlier,
     /// narrower store to the same bytes (`wide_loads_over_narrower_stores`).
     wide_loads: usize,
+    /// Names no `call` of its code may name, each a part of the callee's
+    /// symbol: a callee whose answer, returned through memory, the
+    /// function reads back as wider loads than the callee's stores, a stall
+    /// the wide-load count cannot see across the call.
+    never_calls: &'static [&'static str],
 }
 
 /// The out-of-line functions of the send, push and return path, with their
@@ -81,30 +86,35 @@ const BUDGETS: &[Budget] = &[
         function: "ns_runtime::vm::run",
         instructions: 9_320,
         wide_loads: 54,
+        never_calls: &[],
     },
     // Measured 1,087 and 8.
     Budget {
         function: "ns_runtime::vm::run_wide",
         instructions: 1_200,
         wide_loads: 10,
+        never_calls: &[],
     },
     // Measured 4,898 and 12.
     Budget {
         function: "<ns_runtime::interpreter::Mutator>::push_sent",
         instructions: 5_390,
         wide_loads: 14,
+        never_calls: &[],
     },
     // Measured 3,071 and 8.
     Budget {
         function: "<ns_runtime::interpreter::Mutator>::push_step",
         instructions: 3_380,
         wide_loads: 10,
+        never_calls: &[],
     },
     // Measured 1,007 and 0, once a push stopped filling its scratch.
     Budget {
         function: "<ns_runtime::interpreter::Mutator>::push_initializer_placed",
         instructions: 1_110,
         wide_loads: 2,
+        never_calls: &[],
     },
     // Measured 386 and 0, once a pop stopped filling the registers it
     // gives back.
@@ -112,48 +122,68 @@ const BUDGETS: &[Budget] = &[
         function: "<ns_runtime::heap::Heap>::pop_activation",
         instructions: 430,
         wide_loads: 2,
+        never_calls: &[],
     },
     // Measured 519 and 0.
     Budget {
         function: "ns_runtime::vm::finish",
         instructions: 580,
         wide_loads: 2,
+        never_calls: &[],
     },
     // Measured 271 and 0.
     Budget {
         function: "ns_runtime::vm::resume_caller",
         instructions: 300,
         wide_loads: 2,
+        never_calls: &[],
     },
     // A native loop's return: measured 312 and 1.
     Budget {
         function: "<ns_runtime::interpreter::Mutator>::resume",
         instructions: 350,
         wide_loads: 3,
+        never_calls: &[],
     },
     // Measured 55 and 0.
     Budget {
         function: "ns_runtime::vm::place_arguments",
         instructions: 70,
         wide_loads: 2,
+        never_calls: &[],
     },
     // Measured 1,685 and 3.
     Budget {
         function: "ns_runtime::vm::unwind",
         instructions: 1_860,
         wide_loads: 5,
+        never_calls: &[],
     },
     // Measured 157 and 0.
     Budget {
         function: "core::ptr::drop_glue::<ns_runtime::interpreter::Step>",
         instructions: 180,
         wide_loads: 2,
+        never_calls: &[],
     },
     // Measured 16,985 and 96.
     Budget {
         function: "ns_runtime::builtins::execute",
         instructions: 18_690,
         wide_loads: 106,
+        never_calls: &[],
+    },
+    // Every leaf called from a frame machine code pushed finds the frame
+    // here. Measured 350 and 0, with `body_of` inline:
+    // called, its `Option<Installed>`, written field by field, was read
+    // back as one word, a tenth of `bench_new2`'s samples
+    // (`docs/design/execution.md`, "What the optimizing tier's foundation
+    // moved").
+    Budget {
+        function: "ns_runtime::jit::materialize::leaf_frame",
+        instructions: 390,
+        wide_loads: 2,
+        never_calls: &["body_of", "upgraded"],
     },
 ];
 
@@ -162,6 +192,8 @@ const BUDGETS: &[Budget] = &[
 struct Measured {
     instructions: usize,
     wide_loads: usize,
+    /// The operand of every `call` of its code.
+    calls: Vec<String>,
     /// The `unique` numbers of the sections the function's code lies in:
     /// one, unless two functions share the demangled name.
     sections: HashSet<u32>,
@@ -271,6 +303,14 @@ fn judge(measured: &HashMap<String, Measured>) -> Vec<String> {
                 budget.function, function.wide_loads, budget.wide_loads
             ));
         }
+        for callee in budget.never_calls {
+            if function.calls.iter().any(|call| call.contains(callee)) {
+                failures.push(format!(
+                    "{} calls {callee}, which it must inline",
+                    budget.function
+                ));
+            }
+        }
     }
     failures
 }
@@ -329,6 +369,11 @@ fn measure(listing: impl BufRead, names: &[&str]) -> std::io::Result<HashMap<Str
                     .map(|stretch| wide_loads_over_narrower_stores(stretch))
                     .sum(),
                 sections: sections.remove(&function).unwrap_or_default(),
+                calls: stretches
+                    .iter()
+                    .flatten()
+                    .filter_map(|line| called(line))
+                    .collect(),
             };
             (function, measured)
         })
@@ -342,6 +387,14 @@ fn comdat_of(line: &str) -> Option<(&str, u32)> {
     let (_, rest) = line.split_once(",one_only,")?;
     let (symbol, unique) = rest.rsplit_once(",unique,")?;
     Some((symbol, unique.trim().parse().ok()?))
+}
+
+/// The operand of a listing line that is a `call`, as in
+/// `\tcall\t<ns_runtime::jit::JitState>::body_of`.
+fn called(line: &str) -> Option<String> {
+    let rest = line.strip_prefix('\t')?;
+    let (mnemonic, operand) = rest.split_once(char::is_whitespace)?;
+    (mnemonic == "call").then(|| operand.trim().to_string())
 }
 
 /// Whether a listing line is an instruction: indented, and neither a
@@ -548,6 +601,18 @@ mod tests {
 
     fn lines(listing: &str) -> Vec<String> {
         listing.lines().map(str::to_string).collect()
+    }
+
+    /// A `call` line answers its callee, which `never_calls` is matched
+    /// against; any other instruction answers none.
+    #[test]
+    fn a_call_names_its_callee() {
+        assert_eq!(
+            called("\tcall <ns_runtime::jit::JitState>::body_of").as_deref(),
+            Some("<ns_runtime::jit::JitState>::body_of")
+        );
+        assert_eq!(called("\tmov rax, qword ptr [rbp - 80]"), None);
+        assert_eq!(called("ns_runtime::jit::materialize::leaf_frame:"), None);
     }
 
     /// The header of stage 2's push: built on the stack by a qword, a byte

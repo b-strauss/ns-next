@@ -10282,7 +10282,14 @@ Four rules keep the path in registers, and a gate holds them.
   of 5,390 and 14, `push_step` and `push_initializer_placed` likewise.
   The count is static, over the listing's order rather than the control
   flow, so it counts candidate sites, cold ones among them; what it
-  catches is a jump in their number.
+  catches is a jump in their number. A stall whose narrow stores lie in
+  a callee it cannot see, so a function may also be held to never
+  calling a named callee: `materialize::leaf_frame`, which every leaf a
+  compiled frame calls passes through, calls neither `JitState::body_of`
+  nor `upgraded`, both `#[inline(always)]`, since through memory their
+  `Option<Installed>` -- written field by field, read back as one word
+  -- stalled a tenth of `bench_new2`'s samples ("What the optimizing
+  tier's foundation moved").
 
 ## Planned: tail calls, skipped but kept
 
