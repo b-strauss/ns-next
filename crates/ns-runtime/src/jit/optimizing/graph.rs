@@ -133,10 +133,16 @@ pub(crate) enum Node {
         right: ValueId,
         fallback: BlockId,
     },
-    /// Every other instruction: its operands written back, the baseline's
-    /// template, its result in its frame word. `reads` pairs each register
-    /// `registers_read` names with the value it holds; `written` is the
-    /// register `register_written` names.
+    /// Every other instruction, emitted by the baseline's template, its
+    /// result in its frame word. Before it, every register binding not yet
+    /// stored -- each `Copy`, fast path and phi whose value its register's
+    /// frame word does not hold yet, the operands' and every other
+    /// register's alike -- is written back, since the instruction may run
+    /// code that reads any of the frame's registers by reference, and the
+    /// collector traces the frame as the interpreter left it. After it, no
+    /// value is read again: every register is its frame word. `reads`
+    /// pairs each register `registers_read` names with the value it holds;
+    /// `written` is the register `register_written` names.
     Frame {
         program_counter: u32,
         instruction: SnapshotInstruction,

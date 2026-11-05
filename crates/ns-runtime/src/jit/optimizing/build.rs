@@ -513,42 +513,28 @@ impl<'snapshot> Builder<'snapshot> {
     }
 
     /// A value for `register` where control leaves `predecessor` for
-    /// `block`: its binding, or a read of its frame word placed where the
-    /// edge leaves.
+    /// `block`: its binding, or a read of its frame word at the end of
+    /// `predecessor`. Every edge that may need such a read leaves a block
+    /// with that one way out (`shapes_of` gives the others a block of
+    /// their own), so the read runs only on its way to `block`, where the
+    /// register is live: a word the interpreter would not read -- one a
+    /// callee left, or a debug build's poison -- is never read.
     fn edge_value(&mut self, predecessor: usize, block: usize, register: usize) -> ValueId {
         if let Some(value) = self.edge_binding(predecessor, block, register) {
             return value;
         }
+        assert!(
+            self.shapes[predecessor].successors().len() == 1,
+            "internal: a frame read for one way out is placed in a block with that way alone"
+        );
         let register_number =
             u16::try_from(register).expect("internal: a register number fits a u16");
         let value = self.new_value(Some(register_number));
-        let read = Node::FrameRead {
+        self.blocks[predecessor].nodes.push(Node::FrameRead {
             register: register_number,
             value,
-        };
-        debug_assert!(
-            !matches!(self.blocks[predecessor].end, End::FrameJump { .. }),
-            "internal: a mirror send's way into a merge has a block of its own"
-        );
-        let nodes = &mut self.blocks[predecessor].nodes;
-        if let Some(fallback) = self.fallback_exits[predecessor].as_mut() {
-            // A read on the fallback's way lies before the fast path, so
-            // that it is on both ways out.
-            let fast_path = nodes
-                .iter()
-                .rposition(|node| matches!(node, Node::IntegerBinary { .. }))
-                .expect("internal: a block with a fallback ends in its fast path");
-            nodes.insert(fast_path, read);
-            if fallback[register].is_none() {
-                fallback[register] = Some(value);
-            }
-            if self.exits[predecessor][register].is_none() {
-                self.exits[predecessor][register] = Some(value);
-            }
-        } else {
-            nodes.push(read);
-            self.exits[predecessor][register] = Some(value);
-        }
+        });
+        self.exits[predecessor][register] = Some(value);
         value
     }
 
@@ -584,15 +570,21 @@ impl<'snapshot> Builder<'snapshot> {
                             .all(|binding| self.is_frame_word(*binding, register)))
             });
             if !loop_changes {
+                // A register that is its frame word on every way in is
+                // read again at its next use: a read made before the
+                // block does not survive a frame node on a later pass
+                // around a loop through it, nor any other way that reaches
+                // its use through one.
+                if !bindings.is_empty()
+                    && bindings
+                        .iter()
+                        .all(|binding| self.is_frame_word(*binding, register))
+                {
+                    continue;
+                }
                 if let Some(first) = bindings.first() {
                     if bindings.iter().all(|binding| binding == first) {
                         state[register] = *first;
-                        continue;
-                    }
-                    if bindings
-                        .iter()
-                        .all(|binding| self.is_frame_word(*binding, register))
-                    {
                         continue;
                     }
                 }
@@ -633,8 +625,10 @@ impl<'snapshot> Builder<'snapshot> {
         }
         if cfg!(debug_assertions) {
             // A live register the head took no phi for is one no pass
-            // around the loop changes, so the back edge brings what the
-            // head started with, or its frame word where that was it.
+            // around the loop changes: it entered bound to a value no
+            // frame node in the loop can reach, which the back edge
+            // brings again, or it entered as its frame word, which the
+            // back edge may bring as a read of that word.
             let entry = self.head_entries[head]
                 .as_ref()
                 .expect("internal: a loop head records its state");
@@ -646,9 +640,8 @@ impl<'snapshot> Builder<'snapshot> {
                 let binding = self.edge_binding(predecessor, head, register);
                 debug_assert!(
                     has_phi
-                        || binding == entry[register]
-                        || (self.is_frame_word(entry[register], register)
-                            && self.is_frame_word(binding, register)),
+                        || (entry[register].is_none() && self.is_frame_word(binding, register))
+                        || (entry[register].is_some() && binding == entry[register]),
                     "internal: register {register} changes around a loop without a phi"
                 );
             }
@@ -823,10 +816,14 @@ impl<'snapshot> Builder<'snapshot> {
 /// The blocks of `instructions`: one for every run that starts at the
 /// first instruction, a jump target or after an instruction that jumps or
 /// stops and is reachable from the first, in order; an entry block of
-/// its own before them when the first instruction heads a loop; and a
-/// block of its own for a mirror send's way into a block other ways
-/// enter too, since the send's template jumps for its failure itself and
-/// so leaves no room for a read of a frame word on that way alone.
+/// its own before them when the first instruction heads a loop; and an
+/// edge block, with no instruction, for each way out of a block with two
+/// ways out -- a branch, an integer fast path, a mirror send -- into a
+/// block other ways enter too, or back to a block at or before it. Only
+/// such a block's top can take a phi, and a phi's input may need a read
+/// of a frame word placed on its way alone: on the other way the register
+/// may be dead, its word one a callee left, and a mirror send's template
+/// jumps for its failure itself, leaving no room after it on one way only.
 fn shapes_of(instructions: &[SnapshotInstruction]) -> Vec<Shape> {
     let count = instructions.len();
     let index_of = |target: u32| {
@@ -897,24 +894,23 @@ fn shapes_of(instructions: &[SnapshotInstruction]) -> Vec<Shape> {
         }
     }
     let entry_block = entered[0] > 0;
-    // Each reachable run's block, and the edge blocks a mirror send needs.
+    if entry_block {
+        // The body's entry is a way into the first run too.
+        entered[0] += 1;
+    }
+    // Each reachable run's block, and the edge blocks its ways out need.
     let mut block_of_run = vec![usize::MAX; runs.len()];
     let mut block_count = usize::from(entry_block);
     let mut edge_blocks: Vec<(usize, [bool; 2])> = Vec::new();
-    for (run, (range, next, target)) in runs.iter().enumerate() {
+    for (run, (_, next, target)) in runs.iter().enumerate() {
         if !reachable[run] {
             continue;
         }
         block_of_run[run] = block_count;
         block_count += 1;
-        let mirror_send = target.is_some()
-            && next.is_some()
-            && matches!(
-                kind_of(&instructions[range.end - 1], range.end - 1),
-                Kind::Frame
-            );
+        let forks = target.is_some() && next.is_some();
         let needs_edge = |successor: Option<usize>| {
-            mirror_send && successor.is_some_and(|successor| entered[successor] > 1)
+            forks && successor.is_some_and(|successor| entered[successor] > 1 || successor <= run)
         };
         let split = [needs_edge(*next), needs_edge(*target)];
         if split.iter().any(|split| *split) {
@@ -1196,7 +1192,10 @@ mod tests {
         assert_eq!(graph.blocks[0].end, End::Jump(BlockId(1)));
         assert!(graph.blocks[1].loop_head);
         assert_eq!(graph.blocks[1].program_counter, 0);
-        assert_eq!(graph.blocks[1].predecessors, vec![BlockId(0), BlockId(1)]);
+        // The branch's way back has a block of its own, right after it.
+        assert_eq!(graph.blocks[1].predecessors, vec![BlockId(0), BlockId(2)]);
+        assert!(graph.blocks[2].nodes.is_empty());
+        assert_eq!(graph.blocks[2].end, End::Jump(BlockId(1)));
     }
 
     #[test]
@@ -1250,6 +1249,129 @@ mod tests {
             [Node::FrameRead { register: 6, .. }]
         ));
         assert!(matches!(edge.end, End::Jump(merge) if graph.block(merge).phis.len() == 1));
+    }
+
+    /// A send with no argument.
+    fn unary_send(receiver: u16, destination: u16) -> Instruction {
+        Instruction::SendPublic {
+            selector: Symbol::NEW,
+            receiver_register: receiver,
+            argument_base: destination,
+            argument_sources: vec![],
+            destination,
+            call_site: CallSite { number: 0 },
+        }
+    }
+
+    #[test]
+    fn a_read_before_a_loop_is_not_reused_after_the_loop_s_frame_node() {
+        let graph = build(&snapshot_of(vec![
+            unary_send(2, 3),
+            Instruction::Move {
+                destination: 4,
+                source: 3,
+            },
+            // 2: the loop's head, whose send runs on every pass.
+            unary_send(3, 5),
+            Instruction::BranchIfTrue {
+                register: 5,
+                target: 2,
+            },
+            Instruction::Return { register: 4 },
+        ]));
+        verify(&graph).expect("the graph verifies");
+        let head = graph.loop_heads().next().expect("the body loops");
+        let Some(Node::Frame { reads, .. }) = graph
+            .block(head)
+            .nodes
+            .iter()
+            .find(|node| matches!(node, Node::Frame { .. }))
+        else {
+            panic!("the head sends");
+        };
+        // The receiver is read from its frame word on each pass, after
+        // the previous pass's send.
+        let (register, receiver) = reads[0];
+        assert_eq!(register, 3);
+        assert_eq!(graph.values[receiver.index()].block, head);
+        assert!(matches!(
+            graph.definition(receiver),
+            Definition::Node(Node::FrameRead { register: 3, .. })
+        ));
+    }
+
+    #[test]
+    fn a_frame_read_for_one_way_out_runs_on_that_way_alone() {
+        // On the way to 1 the register 4 is dead: 1 writes it before
+        // anything reads it. Only the way to 3 reads it from its frame
+        // word, for the phi at 3.
+        let graph = build(&snapshot_of(vec![
+            Instruction::BranchIfTrue {
+                register: 3,
+                target: 3,
+            },
+            Instruction::LoadLiteral {
+                destination: 4,
+                literal: Literal::SmallInteger(1),
+            },
+            Instruction::Jump { target: 3 },
+            Instruction::Return { register: 4 },
+        ]));
+        verify(&graph).expect("the graph verifies");
+        let frame_reads_of_4 = |block: &crate::jit::optimizing::graph::Block| {
+            block
+                .nodes
+                .iter()
+                .filter(|node| matches!(node, Node::FrameRead { register: 4, .. }))
+                .count()
+        };
+        assert_eq!(frame_reads_of_4(&graph.blocks[0]), 0);
+        let End::Branch { if_true, .. } = graph.blocks[0].end else {
+            panic!("the body branches");
+        };
+        let edge = graph.block(if_true);
+        assert_eq!(edge.program_counter, 3);
+        assert_eq!(frame_reads_of_4(edge), 1);
+        assert!(matches!(edge.end, End::Jump(_)));
+    }
+
+    #[test]
+    fn a_mirror_send_s_way_back_to_a_block_only_it_enters_gets_a_block_of_its_own() {
+        use crate::builtins::primitive::MirrorPrimitive;
+        let mut snapshot = snapshot_of(vec![Instruction::Return { register: 3 }]);
+        snapshot.instructions = vec![
+            SnapshotInstruction::Jump { target: 2 },
+            // 1: entered only by the failure of the send at 2.
+            SnapshotInstruction::Return { register: 4 },
+            SnapshotInstruction::SendMirror {
+                primitive: MirrorPrimitive::from_index(0),
+                mirror_register: 3,
+                subject_register: 5,
+                argument_base: 6,
+                argument_sources: vec![],
+                destination: 4,
+                failure: 1,
+            },
+            SnapshotInstruction::Return { register: 4 },
+        ];
+        let graph = build(&snapshot);
+        verify(&graph).expect("the graph verifies");
+        let mirror_send = graph
+            .blocks
+            .iter()
+            .find(|block| matches!(block.end, End::FrameJump { .. }))
+            .expect("the mirror send ends its block");
+        let End::FrameJump { target, .. } = mirror_send.end else {
+            unreachable!("matched above");
+        };
+        let edge = graph.block(target);
+        assert!(edge
+            .nodes
+            .iter()
+            .all(|node| matches!(node, Node::FrameRead { .. })));
+        assert!(
+            matches!(edge.end, End::Jump(failure) if graph.block(failure).program_counter == 1)
+        );
     }
 
     #[test]

@@ -36,12 +36,18 @@ pub(crate) enum VerifyError {
     /// The phi defining `value` in `block` has not one input per
     /// predecessor.
     PhiInputs { block: BlockId, value: ValueId },
+    /// `value`, read in `block`, may be reached from its definition
+    /// through a frame node, after which the value no longer holds: the
+    /// frame node may have run code that wrote the register by reference
+    /// or moved the object the value names.
+    AcrossFrame { value: ValueId, block: BlockId },
 }
 
 /// Checks that every value is defined once, every use is dominated by its
-/// definition, every phi has one input per predecessor and every block
-/// reachable from block 0 ends as its nodes allow, its edges naming blocks
-/// that exist and its predecessors those with an edge to it.
+/// definition and reached from it through no frame node, every phi has one
+/// input per predecessor and every block reachable from block 0 ends as its
+/// nodes allow, its edges naming blocks that exist and its predecessors
+/// those with an edge to it.
 pub(crate) fn verify(graph: &Graph) -> Result<(), VerifyError> {
     let block_count = graph.blocks.len();
     if block_count == 0 {
@@ -143,7 +149,156 @@ pub(crate) fn verify(graph: &Graph) -> Result<(), VerifyError> {
             available(value, index, block.nodes.len())?;
         }
     }
+    check_frame_lifetimes(graph, &reachable)
+}
+
+/// A set of values, one bit each.
+type ValueSet = Vec<u64>;
+
+fn contains(set: &ValueSet, value: ValueId) -> bool {
+    set.get(value.index() / 64)
+        .is_some_and(|word| word & (1 << (value.index() % 64)) != 0)
+}
+
+fn insert(set: &mut ValueSet, value: ValueId) {
+    if let Some(word) = set.get_mut(value.index() / 64) {
+        *word |= 1 << (value.index() % 64);
+    }
+}
+
+/// A value lives in a machine register only between two frame nodes
+/// (`graph.rs`): every use, a phi's input included, is reached from its
+/// definition on every way through no frame node. The values that are so
+/// at each block's top are found as a must-set, met over the ways in; a
+/// frame node empties the set, a definition adds to it. The uses are known
+/// to be dominated by their definitions when this runs.
+fn check_frame_lifetimes(
+    graph: &Graph,
+    reachable: &dyn Fn(usize) -> bool,
+) -> Result<(), VerifyError> {
+    let words = graph.values.len().div_ceil(64);
+    let count = graph.blocks.len();
+    // `None` for a block no way into has been met yet.
+    let mut tops: Vec<Option<ValueSet>> = vec![None; count];
+    tops[0] = Some(vec![0; words]);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for index in 0..count {
+            if !reachable(index) {
+                continue;
+            }
+            let Some(top) = tops[index].clone() else {
+                continue;
+            };
+            for (successor, out) in leaving_sets(&graph.blocks[index], top) {
+                let successor = successor.index();
+                match &mut tops[successor] {
+                    None => {
+                        tops[successor] = Some(out);
+                        changed = true;
+                    }
+                    Some(existing) => {
+                        for (word, other) in existing.iter_mut().zip(&out) {
+                            let met = *word & other;
+                            if met != *word {
+                                *word = met;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (index, block) in graph.blocks.iter().enumerate() {
+        if !reachable(index) {
+            continue;
+        }
+        let block_id = BlockId::of_index(index);
+        let across = |value: ValueId| VerifyError::AcrossFrame {
+            value,
+            block: block_id,
+        };
+        let mut set = tops[index]
+            .clone()
+            .expect("internal: a reachable block is entered");
+        for phi in &block.phis {
+            insert(&mut set, phi.value);
+        }
+        // A phi's input is read where its way leaves this block.
+        let check_inputs = |set: &ValueSet, successor: BlockId| -> Result<(), VerifyError> {
+            let entered = graph.block(successor);
+            let position = entered
+                .predecessors
+                .iter()
+                .position(|predecessor| *predecessor == block_id)
+                .expect("internal: the predecessors were checked against the edges");
+            for phi in &entered.phis {
+                if !contains(set, phi.inputs[position]) {
+                    return Err(across(phi.inputs[position]));
+                }
+            }
+            Ok(())
+        };
+        let ends = block.end.successors();
+        for node in &block.nodes {
+            if let Node::IntegerBinary { fallback, .. } = node {
+                if !ends.contains(fallback) {
+                    check_inputs(&set, *fallback)?;
+                }
+            }
+            for value in node.uses() {
+                if !contains(&set, value) {
+                    return Err(across(value));
+                }
+            }
+            apply(node, &mut set);
+        }
+        if let Some(value) = block.end.uses() {
+            if !contains(&set, value) {
+                return Err(across(value));
+            }
+        }
+        for successor in ends {
+            check_inputs(&set, successor)?;
+        }
+    }
     Ok(())
+}
+
+/// What a node does to the set of values that hold: a frame node ends
+/// them all, a definition adds its value.
+fn apply(node: &Node, set: &mut ValueSet) {
+    if matches!(node, Node::Frame { .. }) {
+        set.fill(0);
+    } else if let Some(value) = node.defined() {
+        insert(set, value);
+    }
+}
+
+/// The set of values that hold on each way out of `block`, from `top`,
+/// the set at its top: an integer fast path's fallback is left before the
+/// fast path.
+fn leaving_sets(block: &Block, top: ValueSet) -> Vec<(BlockId, ValueSet)> {
+    let mut set = top;
+    for phi in &block.phis {
+        insert(&mut set, phi.value);
+    }
+    let ends = block.end.successors();
+    let mut leaving = Vec::new();
+    for node in &block.nodes {
+        if let Node::IntegerBinary { fallback, .. } = node {
+            if !ends.contains(fallback) {
+                leaving.push((*fallback, set.clone()));
+            }
+        }
+        apply(node, &mut set);
+    }
+    for successor in ends {
+        leaving.push((successor, set.clone()));
+    }
+    leaving
 }
 
 /// Each reachable block's predecessors are exactly the reachable blocks
@@ -437,5 +592,100 @@ mod tests {
             immediate_dominators(&successors),
             vec![Some(0), Some(0), Some(1), Some(1), Some(0), None]
         );
+    }
+
+    #[test]
+    fn a_value_read_after_a_frame_node_is_refused() {
+        use crate::jit::optimizing::snapshot::SnapshotInstruction;
+        let graph = Graph::from_blocks(vec![block(
+            0,
+            vec![
+                Node::Constant {
+                    value: ValueId(0),
+                    word: 0,
+                },
+                Node::Frame {
+                    program_counter: 0,
+                    instruction: SnapshotInstruction::LoadOwnSlot {
+                        destination: 3,
+                        own_index: 0,
+                    },
+                    reads: vec![],
+                    written: Some(3),
+                },
+            ],
+            End::Return { value: ValueId(0) },
+            vec![],
+        )]);
+        assert!(matches!(
+            verify(&graph),
+            Err(VerifyError::AcrossFrame { .. })
+        ));
+    }
+
+    #[test]
+    fn a_phi_input_defined_after_its_way_out_is_refused() {
+        // Block 0's fallback way to block 2 leaves before the fast path,
+        // so the fast path's own value is no input for that way.
+        let mut join = block(2, vec![], End::Return { value: ValueId(3) }, vec![0, 1]);
+        join.phis.push(Phi {
+            register: 3,
+            value: ValueId(3),
+            inputs: vec![ValueId(2), ValueId(2)],
+        });
+        let graph = Graph::from_blocks(vec![
+            block(
+                0,
+                vec![
+                    Node::Constant {
+                        value: ValueId(0),
+                        word: 0,
+                    },
+                    Node::Constant {
+                        value: ValueId(1),
+                        word: 0,
+                    },
+                    Node::IntegerBinary {
+                        operation: crate::bytecode::IntegerOperation::Add,
+                        destination_register: 3,
+                        value: ValueId(2),
+                        left: ValueId(0),
+                        right: ValueId(1),
+                        fallback: BlockId(2),
+                    },
+                ],
+                End::Jump(BlockId(1)),
+                vec![],
+            ),
+            block(1, vec![], End::Jump(BlockId(2)), vec![0]),
+            join,
+        ]);
+        assert!(matches!(
+            verify(&graph),
+            Err(VerifyError::NotDominated { .. })
+        ));
+    }
+
+    #[test]
+    fn a_use_before_its_definition_in_its_block_is_refused() {
+        let graph = Graph::from_blocks(vec![block(
+            0,
+            vec![
+                Node::Copy {
+                    destination_register: 3,
+                    source: ValueId(0),
+                },
+                Node::Constant {
+                    value: ValueId(0),
+                    word: 0,
+                },
+            ],
+            End::Return { value: ValueId(0) },
+            vec![],
+        )]);
+        assert!(matches!(
+            verify(&graph),
+            Err(VerifyError::NotDominated { .. })
+        ));
     }
 }
