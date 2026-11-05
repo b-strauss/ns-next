@@ -8665,10 +8665,21 @@ and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
   optimizes nothing retires 24.43 million -- three more instructions per
   call, the spend at each entry -- in 3.64 million cycles, fewer than
   `master`'s. A profile of both copies puts 3.2% more samples in the
-  optimized `fib:`, most after the second recursive call returns, on a
-  reload sequence the baseline code runs too; the cause is not found
-  ([OPEN-WORK.md](../OPEN-WORK.md), "Optimized `fib:` runs slower than
-  its baseline code").
+  optimized `fib:`. The two copies' listings, the profile annotated on
+  both, show the cause is not the optimized code's own work: it has no
+  write-back, reload, frame read or spill the baseline copy lacks, its
+  leaf path is shorter (26 instructions against 28 and the spend's 3),
+  and the one extra instruction is a register copy on the `count - 1`
+  fast path. The cycles go to the depth count: every prologue and every
+  return loads, changes and stores its one machine word, so all calls
+  form one serial chain through it, and the optimized copy, with less
+  other work to overlap it, makes that chain its critical path -- the
+  prologue's compare after the load, the return's decrement and `ret`
+  take 1,612, 3,654 and 2,198 samples against the baseline copy's 969,
+  2,066 and 1,315. The count stays in its machine word, as "The depth
+  count in a machine register, measured and not kept" decided; stage 1
+  accepts the cost ([OPEN-WORK.md](../OPEN-WORK.md), "Optimized `fib:`
+  runs slower than its baseline code").
 - **The short programs pay the synchronous compile inside their timed
   runs.** Json's +2.9% and RichardsTon80's +3.1% separate, and
   DeltaBlueTon80, Permute and Sieve are slower without separating. The

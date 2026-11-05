@@ -794,14 +794,19 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     more zone paddings each side, more at every one, while a build that
     optimizes nothing takes fewer cycles than `master` despite its three
     instructions of spend per call. A profile of the two copies of
-    `fib:` puts 3.2% more samples in the optimized one, most after its
-    second recursive call returns, on a reload sequence the baseline
-    copy runs too. Not found: whether the emitter's order of stores and
-    reloads around the two calls, or the branch on the comparison's
-    materialized Boolean, costs the cycles. To be diagnosed instruction
-    by instruction against the baseline copy, the processor's counters
-    per run deciding. [execution.md](design/execution.md), "What the
-    optimizing tier's foundation moved".
+    `fib:` puts 3.2% more samples in the optimized one. The cause is the
+    depth count, not the optimized code's own work: every prologue and
+    return loads, changes and stores its machine word, one serial chain
+    through all calls, which the leaner optimized copy can no longer
+    hide behind other work. Two ways remain: fusing a `SmallInteger`
+    comparison with its branch in optimized code, part of road step 9's
+    register allocation (the item above), which shortens the call but
+    leaves the chain; and measuring the count kept in a machine register
+    again once optimized code runs, since the 2026-11-03 measurement
+    ("The depth count in a machine register, measured and not kept") saw
+    baseline code only and rejected it for `bench_megamorphic`'s +3.7%.
+    [execution.md](design/execution.md), "What the optimizing tier's
+    foundation moved".
   - **Optimized code's sends mispredict in the shared stubs**
     (2026-11-05). DeltaBlueTon80's optimized bodies take 3.3% fewer
     samples than their baseline code, but the polymorphic stub and the
