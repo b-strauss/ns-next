@@ -3151,9 +3151,16 @@ fn compile_into_slot(
 /// - Each body the trigger installed has its budget word pointed at its
 ///   row, armed with `OPTIMIZATION_BUDGET` unless it is armed already
 ///   (`point_budget_words`), before its code first runs.
+///
+/// Every initializer invocation a leaf decides passes through here,
+/// nearly always with nothing installed: only the test for an installed
+/// body stays inline, so that the trigger inlines into its callers and
+/// writes nothing into the JIT's state when nothing was installed.
 pub(crate) fn after_compile_trigger(mutator: &mut Mutator<'_>) {
     #[cfg(ns_jit)]
-    point_budget_words(mutator);
+    if !mutator.jit.budget_words_to_point.is_empty() {
+        point_budget_words(mutator);
+    }
     if mutator.jit.compaction_requested {
         mutator.heap.request_safepoint();
     }
@@ -3486,6 +3493,8 @@ pub(crate) fn compile_twin_at(state: &mut JitState, code_address: usize) -> bool
 /// at its body's row (`point_budget_word`), before its code first runs
 /// (`after_compile_trigger`).
 #[cfg(ns_jit)]
+#[cold]
+#[inline(never)]
 fn point_budget_words(mutator: &mut Mutator<'_>) {
     for index in std::mem::take(&mut mutator.jit.budget_words_to_point) {
         point_budget_word(mutator, index, None);
