@@ -10802,7 +10802,8 @@ its design documents, under `prior-art/v8/docs/`.
   could take -- the bodies' instructions, each site's feedback as
   application ids and resolved targets, each application's layout and
   chain, an epoch per application -- and no handle, since machine code
-  loads literals through the heap's tables. The thread compiles from it
+  loads literals through the heap's tables; a body's instructions become
+  shareable across threads for it, or are copied. The thread compiles from it
   alone and writes the code through the zone's writable view. A finished
   compile requests a safepoint; there the mutator checks the epoch of
   every application the code rests on and installs it, or discards it
@@ -10858,7 +10859,10 @@ its design documents, under `prior-art/v8/docs/`.
   which are already the interpreter's -- the buffer HotSpot first copies
   (`runtime/sharedRuntime.cpp:3803-3815`) -- and checks each
   specialization once, as C2's `load_interpreter_state` does
-  (`opto/parse1.cpp:209-355`). A compile of its own per loop head, as
+  (`opto/parse1.cpp:209-355`); the frame enters at a later back jump,
+  whose budget's cold path finds the code installed, and a
+  specialization that does not hold leaves the frame in its baseline
+  code and counts as a trap. A compile of its own per loop head, as
   HotSpot's OSR nmethods and V8's are. Without it a long activation --
   Mandelbrot's whole run is one -- never runs optimized; Strongtalk had
   none (`interpreter/interpreter.cpp:2183-2190`).
@@ -11006,8 +11010,13 @@ copies exist only for hot pairs.
   debugger, a mirror, a sender, a variable -- deoptimizes the physical
   frame first, and the deoptimization marries the object to the
   activation it rebuilds; a normal return of the physical frame
-  divorces it. It never reaches an image, which is written after a
-  deoptimization. Strongtalk's compiled contexts are the model: real
+  divorces it. Every reader of frame objects -- the unwinder, the leaves
+  that read activations, the collector, the mirrors, the image encoder
+  -- knows the state; it never reaches an image, which is written after
+  a deoptimization. A block compiled on its own reads its home only
+  through this chain and checks nothing at its entry, since the object
+  is always valid: inlined, married or divorced. Strongtalk's compiled
+  contexts are the model: real
   objects shaped by the compiler, converted on deoptimization
   (`compiler/oldCodeGenerator.cpp:625ff`;
   `runtime/uncommonBranch.cpp:61, 188-218`).
@@ -11071,7 +11080,8 @@ every point is met, V8's `deopt_every_n_times` (`:1382`) and HotSpot's
 deoptimizing and every non-local return into an inlined home taken in
 turn by its continuation and by the unwinder; and
 `NS_NEXT_STRESS_INVALIDATE`, all optimized code marked at every
-safepoint. Debug builds verify after every pass the graph's SSA form,
+safepoint, beside tests that install an edit and compare the optimized
+code's outcome with the interpreter's after it. Debug builds verify after every pass the graph's SSA form,
 dominance and representations, as Maglev's `maglev_assert` (`:679-682,
 757`), the register allocation, as C2's `VerifyRegisterAllocator`
 (`opto/c2_globals.hpp:331`), and each interrupt point's metadata against

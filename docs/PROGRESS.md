@@ -6879,3 +6879,37 @@ again; AArch64 is unmeasured, since QEMU times nothing. No golden,
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): AArch64's
 speed, unmeasured; Windows on ARM's JIT; the paths no gate runs; and
 road step 9, the optimizing JIT, next.
+
+## The optimizing JIT designed, road step 9 (2026-11-05)
+
+Designed with the user on 2026-11-04 and 2026-11-05 in fourteen
+decisions, and written, not built: [execution.md](design/execution.md),
+"Planned: the optimizing JIT". One optimizing tier above the baseline,
+an SSA control-flow graph in Maglev's shape built in one pass over the
+register bytecode, its nodes emitting through the repository's own
+macro assembler, a linear scan that writes the deoptimization metadata
+as it allocates. The compiler runs on a thread of its own from a
+snapshot the mutator builds -- Strongtalk's `RScope` tree, no handle --
+and its code is installed at a safepoint once the epochs of the
+applications it rests on are checked; the baseline compiler stays
+synchronous. A budget per body, weighted by bytecode as V8's, triggers
+it; Strongtalk's walk up the stack picks the body to compile, a block
+going to its home; on-stack replacement enters optimized code at the
+loop's head of the frame that runs the loop. The feedback is the caches'
+entries, sticky bits written on slow paths, and counts at polymorphic
+and megamorphic sites only, gathered in windows by a counting stub the
+cell switches off. Code is customized per receiver application, guards
+trap by default, and Strongtalk's and HotSpot's measures together rule
+out deoptimization loops. Inlining is planned on the snapshot by
+estimated frequency, with a set always inlined and a bonus for a block
+created in the same compile. Numbers live as Int64 and Float64, the
+61-bit range checked only where a value is tagged again. A frame object
+in a new state stands for an activation the optimizer inlined; partial
+escape analysis removes allocations; an install invalidates the code of
+the applications it rebuilds. Four stress modes, verifiers after every
+pass and differential number tests check it, and it is built in ten
+stages. Grounded in Strongtalk, HotSpot, V8, Cog's Sista and SOMns. Only
+Markdown changed.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): its first stage,
+the foundation without speculation, next.
