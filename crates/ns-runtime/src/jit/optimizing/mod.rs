@@ -23,13 +23,6 @@ pub(crate) mod verify;
 /// one the baseline makes of the same body: too many instructions, or
 /// code the assembler cannot lay out.
 #[cfg(ns_jit)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the JIT's installation of optimized code, Task 6's, is the compiler's first caller"
-    )
-)]
 pub(crate) fn compile(
     snapshot: &snapshot::Snapshot,
     macro_assembler: crate::jit::macro_assembler::MacroAssembler,

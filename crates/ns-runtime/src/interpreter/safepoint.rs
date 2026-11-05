@@ -80,6 +80,13 @@ impl Interpreter {
             )
         )]
         let mut rebuilt = false;
+        // A body's budget ran out: its optimized code is compiled and
+        // installed first, here, between two stretches, where no return
+        // address into the zone exists (`jit::optimize_requested`), so
+        // that the stress modes below run with it installed.
+        if self.world.optimization_requested() {
+            self.enter(crate::jit::optimize_requested);
+        }
         #[cfg(debug_assertions)]
         {
             if self.stress_caches {

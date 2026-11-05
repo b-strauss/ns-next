@@ -466,7 +466,15 @@ pub(crate) struct JitSlot {
     /// Once it has machine code, the back jumps since a frame of it could
     /// not switch into it, 0 while none failed.
     back_jumps: Cell<u32>,
+    /// The body's optimized code, by its index in `bodies`, `NO_BODY` for
+    /// none: set only while the slot's baseline code is `COMPILED` in
+    /// this zone, beside which it lives (`optimize_requested`), so that
+    /// every change of the baseline code's state forgets it.
+    optimized: Cell<u32>,
 }
+
+/// What `JitSlot::optimized` holds for a body without optimized code.
+const NO_BODY: u32 = u32::MAX;
 
 impl Default for JitSlot {
     fn default() -> JitSlot {
@@ -481,6 +489,7 @@ impl Default for JitSlot {
             abandonments: Cell::new(0),
             twin_refused: Cell::new(false),
             back_jumps: Cell::new(0),
+            optimized: Cell::new(NO_BODY),
         }
     }
 }
@@ -611,6 +620,7 @@ impl JitSlot {
     fn settle(&self, state: u32) {
         self.state.set(state);
         self.zone.set(0);
+        self.optimized.set(NO_BODY);
     }
 
     /// Puts the body back to counting its entries, from none, its exits
@@ -652,6 +662,7 @@ impl JitSlot {
         self.first_instruction.set(first_instruction.0);
         self.map.set(map);
         self.needed.set(0);
+        self.optimized.set(NO_BODY);
     }
 
     /// Records the body's machine code moved by a compaction's slide
@@ -970,6 +981,30 @@ struct InstalledBody {
     /// (`MacroAssembler::spend_budget`), which a compaction keeps; `None`
     /// for code that spends none.
     budget_word: Option<u32>,
+    /// Whether the code is a body's baseline code -- a lean body or its
+    /// twin -- or its optimized code.
+    tier: Tier,
+    /// Optimized code's baseline body, the lean one, by its index in
+    /// `bodies`; `None` for baseline code. Optimized code has no twin of
+    /// its own: its transfers go into its baseline body's twin, and it is
+    /// freed with its baseline body, never alone.
+    baseline: Option<u32>,
+    /// The offset from the body's start where the run loop's push enters
+    /// it, past the prologue a compiled call enters at.
+    push_entry: u32,
+}
+
+/// Which of the JIT's two compilers made a body's machine code
+/// (`docs/design/execution.md`, "Planned: the optimizing JIT"). Optimized
+/// code lives beside its body's baseline code, never in its place: a push,
+/// a compiled call and a machine entry row enter it, while a frame that
+/// goes on mid-body -- returned to, switched at a back edge, resumed after
+/// a safepoint -- enters the baseline code, the only code with an entry at
+/// every instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tier {
+    Baseline,
+    Optimized,
 }
 
 /// The settings of the JIT's state a body was compiled under, which its
@@ -1668,19 +1703,24 @@ impl JitState {
         }
     }
 
-    /// Writes the transfer words of the lean body at `lean` in `bodies`
-    /// through the zone's one writer: each the address of its
-    /// `MakeClosure`'s code in the twin, or 0 while the body has none, so
-    /// that the next transfer compiles it (`closures::transfer_to_twin`). Written
-    /// when the twin is compiled and after a compaction moved either
+    /// Writes the transfer words of the body at `index` in `bodies` -- a
+    /// lean body or optimized code, whose transfers go into its baseline
+    /// body's twin -- through the zone's one writer: each the address of
+    /// its `MakeClosure`'s code in the twin, or 0 while the body has none,
+    /// so that the next transfer compiles it (`closures::transfer_to_twin`).
+    /// Written when the twin is compiled, when optimized code is installed
+    /// beside a body that has one, and after a compaction moved either
     /// copy, between entries or from the twin leaf, before the transfer
     /// that called it reads its word again.
-    pub(super) fn write_transfer_words(&mut self, lean: u32) {
+    pub(super) fn write_transfer_words(&mut self, index: u32) {
         let Some(zone) = self.zone.as_mut() else {
             return;
         };
-        let body = &self.bodies[lean as usize];
-        let twin = body.twin.map(|twin| &self.bodies[twin as usize]);
+        let body = &self.bodies[index as usize];
+        let owner = body
+            .baseline
+            .map_or(body, |baseline| &self.bodies[baseline as usize]);
+        let twin = owner.twin.map(|twin| &self.bodies[twin as usize]);
         for transfer in &body.twin_transfers {
             let address = twin.map_or(0, |twin| {
                 let Some(offset) = twin.map.machine_offset(transfer.program_counter) else {
@@ -1701,6 +1741,26 @@ impl JitState {
                 unreachable!("internal: an installed body's words lie in the committed zone");
             }
         }
+    }
+
+    /// Writes the transfer words of the lean body at `lean` and of the
+    /// optimized code beside it, if it has some (`write_transfer_words`).
+    pub(super) fn write_pair_transfer_words(&mut self, lean: u32) {
+        self.write_transfer_words(lean);
+        if let Some(optimized) = self.optimized_of(lean) {
+            self.write_transfer_words(optimized);
+        }
+    }
+
+    /// The index in `bodies` of the optimized code beside the lean body at
+    /// `lean`, while its slot names both.
+    pub(super) fn optimized_of(&self, lean: u32) -> Option<u32> {
+        let code = self.bodies.get(lean as usize)?.code.upgrade()?;
+        if self.named_body(&code) != Some(lean as usize) {
+            return None;
+        }
+        let optimized = code.jit.optimized.get();
+        (optimized != NO_BODY && self.live_body(optimized).is_some()).then_some(optimized)
     }
 
     /// The innermost frame the last exit's walk materialized, taken.
@@ -2123,7 +2183,10 @@ fn install_aligned(zone: &mut Zone, bytes: &[u8], alignment: u32) -> Result<Code
 /// one with no fast path, found on any chain but a `doesNotUnderstand:`
 /// handler's, whose body takes the method's arguments -- is reached
 /// through its body's machine entry once its body has machine code in
-/// this zone compiled against the entry's feedback base, and through the
+/// this zone compiled against the entry's feedback base -- its optimized
+/// code's once it has some (`JitState::entered_body`), whose install
+/// writes every cell that named the baseline code afresh
+/// (`optimize_requested`) -- and through the
 /// miss stub while its body may still be compiled, which compiles it and
 /// rewrites the site's cell (`inline_cache::decide_at`). A factory's
 /// body is reached the same way.
@@ -2175,7 +2238,7 @@ fn entry_of_target(
             ..
         } if runs_in_machine_code(method, *chain) => {
             let body = state
-                .installed(&method.code)
+                .entered_body(&method.code)
                 .filter(|body| body.feedback_base == *feedback_base);
             return match body {
                 Some(body) => {
@@ -2217,7 +2280,7 @@ fn entry_of_target(
         // with a cell places that many, since a body numbers its
         // registers, and so its sends' slots, in 16 bits.
         Target::Factory { code, .. } => {
-            return match state.installed(code) {
+            return match state.entered_body(code) {
                 Some(body) => {
                     if noting {
                         body.note_linked();
@@ -2496,22 +2559,61 @@ impl JitState {
         compiled.then(|| self.live_body(slot.map.get())).flatten()
     }
 
+    /// The optimized code installed beside the baseline code `installed`
+    /// answers for `code`, if it has some.
+    fn optimized(&self, code: &CompiledCode) -> Option<&InstalledBody> {
+        self.installed(code)?;
+        let index = code.jit.optimized.get();
+        if index == NO_BODY {
+            return None;
+        }
+        let body = self.live_body(index)?;
+        debug_assert_eq!(
+            body.tier,
+            Tier::Optimized,
+            "internal: a slot's optimized code is optimized"
+        );
+        Some(body)
+    }
+
+    /// The machine code a push, a compiled call and a machine entry row
+    /// enter `code` at: its optimized code once it has some, its baseline
+    /// code otherwise. Both start with the same prologue and take the same
+    /// frame, so that whoever enters at the start needs no other change.
+    fn entered_body(&self, code: &CompiledCode) -> Option<&InstalledBody> {
+        self.optimized(code).or_else(|| self.installed(code))
+    }
+
     /// Where a compiled call enters `code`'s machine code -- its prologue,
-    /// the body's first byte -- when it has machine code in this zone
-    /// compiled against `feedback_base`.
+    /// the body's first byte, its optimized code's once it has some --
+    /// when it has machine code in this zone compiled against
+    /// `feedback_base`.
     fn machine_entry_of(
         &self,
         code: &CompiledCode,
         feedback_base: FeedbackBase,
     ) -> Option<CodeOffset> {
-        let body = self.installed(code)?;
+        let body = self.entered_body(code)?;
         (body.feedback_base == feedback_base).then_some(CodeOffset(body.start))
     }
 
-    /// Where the run loop enters `code`'s machine code at the instruction
-    /// at `program_counter`, for an activation with `feedback_base`.
-    /// Program counter 0, a push's, is read off the slot rather than
-    /// searched for in the map.
+    /// Where the run loop's push enters `code`'s optimized code, past its
+    /// prologue, for an activation with `feedback_base`, when it has some.
+    fn optimized_push_entry(
+        &self,
+        code: &CompiledCode,
+        feedback_base: FeedbackBase,
+    ) -> Option<CodeOffset> {
+        let body = self.optimized(code)?;
+        (body.feedback_base == feedback_base).then_some(CodeOffset(body.start + body.push_entry))
+    }
+
+    /// Where the run loop enters `code`'s baseline code at the instruction
+    /// at `program_counter`, for an activation with `feedback_base`: a
+    /// frame that goes on mid-body enters the only code with an entry at
+    /// every instruction, and a push of a body with optimized code enters
+    /// that instead (`optimized_push_entry`). Program counter 0 is read
+    /// off the slot rather than searched for in the map.
     fn interpreter_entry(
         &self,
         code: &CompiledCode,
@@ -2850,7 +2952,7 @@ fn compile(
         panic!("internal: a compiled body has no code for its first instruction");
     };
     let needed = needed_bytes(&body);
-    let map = match install_body(state, code, method, feedback_base, body, settings) {
+    let map = match install_body(state, code, method, feedback_base, body, settings, None) {
         Ok(map) => map,
         Err(Refusal::ZoneFull) => {
             state.wanted_bytes = state.wanted_bytes.max(needed);
@@ -2905,7 +3007,9 @@ fn needed_bytes(body: &baseline::BaselineBody) -> u32 {
 /// one's -- against `feedback_base`, and records its call returns,
 /// answering its index among the installed bodies: `Refusal::TooLarge`
 /// for a body the zone could not hold even with every other body freed,
-/// and `Refusal::ZoneFull` for one the room left does not hold.
+/// and `Refusal::ZoneFull` for one the room left does not hold. `baseline`
+/// names the lean body whose optimized code `body` is, `None` for baseline
+/// code.
 #[cfg(ns_jit)]
 fn install_body(
     state: &mut JitState,
@@ -2914,6 +3018,7 @@ fn install_body(
     feedback_base: FeedbackBase,
     body: baseline::BaselineBody,
     settings: CompileSettings,
+    baseline: Option<u32>,
 ) -> Result<u32, Refusal> {
     let Some(zone) = state.zone.as_mut() else {
         panic!("internal: the JIT is on without a zone");
@@ -2982,6 +3087,7 @@ fn install_body(
         offset
     });
     let unpointed = budget_word.map(|_| state.unpointed_budget_address());
+    let push_entry = body.map.machine_offset(0).unwrap_or(0);
     state.bodies.push(InstalledBody {
         code: Rc::downgrade(code),
         method: method.map(Rc::downgrade),
@@ -3001,6 +3107,13 @@ fn install_body(
         usage: Cell::new(zone::INITIAL_USAGE),
         free: false,
         budget_word,
+        tier: if baseline.is_some() {
+            Tier::Optimized
+        } else {
+            Tier::Baseline
+        },
+        baseline,
+        push_entry,
     });
     // Until it is pointed at its row the code spends from the unpointed
     // budget, whose first spend calls the leaf: the word is never one the
@@ -3077,6 +3190,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         installed.feedback_base,
         twin,
         settings,
+        None,
     );
     state.statistics.count_compile_time(started);
     let index = match installation {
@@ -3105,7 +3219,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
     let lean_body = &mut state.bodies[lean as usize];
     lean_body.twin = Some(index);
     lean_body.twin_needed = 0;
-    state.write_transfer_words(lean);
+    state.write_pair_transfer_words(lean);
     state.statistics.compiled_twins += 1;
     Ok(index)
 }
@@ -3115,10 +3229,17 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
 /// answering whether it is.
 #[cfg(ns_jit)]
 pub(crate) fn compile_twin_at(state: &mut JitState, code_address: usize) -> bool {
-    let Some(lean) = state.installed_index_at(code_address) else {
+    let Some(index) = state.installed_index_at(code_address) else {
         unreachable!("internal: a transfer lies in an installed body");
     };
-    compile_twin(state, lean).is_ok()
+    // Optimized code transfers into its baseline body's twin, whose
+    // address its own words hold as the lean body's do.
+    let lean = state.bodies[index as usize].baseline.unwrap_or(index);
+    let compiled = compile_twin(state, lean).is_ok();
+    if compiled {
+        state.write_pair_transfer_words(lean);
+    }
+    compiled
 }
 
 /// Points the budget word of every body installed since the last trigger
@@ -3267,6 +3388,154 @@ pub(crate) fn budget_spent(mutator: &mut Mutator<'_>, spent_from: u64, code_addr
     }
 }
 
+/// Compiles the optimized code of every body whose budget ran out since
+/// the last safepoint (`JitState::optimization_requests`) and installs it
+/// beside the body's baseline code (`docs/design/execution.md`, "Planned:
+/// the optimizing JIT"). Run at the run loop's safepoint
+/// (`Interpreter::safepoint`), between two stretches, where no return
+/// address into the zone exists; the compile reads only its snapshot, and
+/// the install only appends, so neither collects nor moves code.
+#[cfg(ns_jit)]
+pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
+    for request in std::mem::take(&mut mutator.jit.optimization_requests) {
+        if let Some(code) = request.upgrade() {
+            optimize(mutator, &code);
+        }
+    }
+}
+
+/// Without a JIT nothing is requested.
+#[cfg(not(ns_jit))]
+pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
+    mutator.jit.optimization_requests.clear();
+}
+
+/// `code`'s optimized code compiled and installed, when its baseline code
+/// is still installed in this zone and has none beside it: from then on a
+/// push, every cell of a method it is the body of and its machine entry
+/// row enter the optimized code, its prologue the baseline's, while a
+/// frame that goes on mid-body goes on in the baseline code. A body the
+/// optimizing compiler refuses -- or whose code the zone has no room for
+/// -- stays in baseline code, its budget parked for good, as its request
+/// left it, so that it is not requested again.
+#[cfg(ns_jit)]
+fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    if mutator.jit.optimized(code).is_some() {
+        return;
+    }
+    let Some(body) = mutator.jit.installed(code) else {
+        return;
+    };
+    // A twin is never named by its slot: `installed` answers the lean body.
+    let (lean, start, feedback_base, settings) = (
+        code.jit.map.get(),
+        body.start,
+        body.feedback_base,
+        body.settings,
+    );
+    let method = match &body.method {
+        Some(method) => match method.upgrade() {
+            Some(method) => Some(method),
+            None => return,
+        },
+        None => None,
+    };
+    let started = std::time::Instant::now();
+    let snapshot = optimizing::snapshot::Snapshot::take(code, &mut mutator.heap, feedback_base);
+    let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
+    macro_assembler.set_count_back_edges(settings.counting);
+    let role = baseline::BodyRole::of(code, method.is_some());
+    let installation =
+        optimizing::compile(&snapshot, macro_assembler, role).and_then(|optimized| {
+            install_optimized(
+                &mut mutator.jit,
+                code,
+                method.as_ref(),
+                (lean, feedback_base, settings),
+                optimized,
+            )
+        });
+    let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    let statistics = &mut mutator.jit.statistics;
+    statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
+    let Ok(index) = installation else {
+        return;
+    };
+    code.jit.optimized.set(index);
+    mutator.jit.statistics.optimized_bodies += 1;
+    // Its transfers go into the twin, which the baseline body may have.
+    mutator.jit.write_transfer_words(index);
+    // Every cell that called the baseline code is written afresh from its
+    // entry, which names the optimized code now; and the row the closure
+    // stubs enter a block through, once one was written.
+    if let Some(zone) = mutator.jit.zone.as_ref() {
+        let baseline_entry = zone.writer.zone().executable_address(CodeOffset(start)) as u64;
+        mutator
+            .caches
+            .refresh_cells_entering(baseline_entry, &mutator.jit);
+    }
+    if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
+        note_block_entry(mutator, id, code);
+    }
+}
+
+/// Installs `optimized`, the optimized code of `code` -- `method`'s body
+/// when it is one's -- beside its lean baseline body at `lean` in
+/// `bodies`, compiled against `feedback_base` under `settings`, answering
+/// its index among the installed bodies. Its call returns are recorded
+/// as the baseline's are, so that a leaf and the exit's walk find the
+/// send each of its calls returns to; its program-counter map has no
+/// instruction's start, since no frame goes on mid-body in optimized code.
+#[cfg(ns_jit)]
+fn install_optimized(
+    state: &mut JitState,
+    code: &Rc<CompiledCode>,
+    method: Option<&Rc<MixinMethod>>,
+    (lean, feedback_base, settings): (u32, FeedbackBase, CompileSettings),
+    optimized: optimizing::emit::OptimizedBody,
+) -> Result<u32, Refusal> {
+    let optimizing::emit::OptimizedBody {
+        code: assembled,
+        returns,
+        words,
+        twin_transfers,
+        metadata: _,
+        push_entry,
+    } = optimized;
+    let mut returns: Vec<CallReturn> = returns
+        .iter()
+        .map(|(label, program_counter)| CallReturn {
+            machine_offset: assembled.label_offsets[label.index()]
+                .expect("internal: every recorded label is bound"),
+            program_counter: *program_counter,
+        })
+        .collect();
+    returns.sort_unstable_by_key(|call| call.machine_offset);
+    let body = baseline::BaselineBody {
+        code: assembled,
+        map: ProgramCounterMap::new(Vec::new(), returns),
+        // Not asked of optimized code: its baseline code was installed,
+        // so it does not exit at once either (or the JIT stress mode
+        // installs every body), and it exits where the baseline does.
+        exits_at_once: false,
+        reifies: false,
+        words,
+        twin_transfers,
+        budget_word: None,
+    };
+    let index = install_body(
+        state,
+        code,
+        method,
+        feedback_base,
+        body,
+        settings,
+        Some(lean),
+    )?;
+    state.bodies[index as usize].push_entry = push_entry;
+    Ok(index)
+}
+
 #[cfg(not(ns_jit))]
 fn compile(
     _state: &mut JitState,
@@ -3302,7 +3571,7 @@ pub(crate) enum Resumption {
 /// A push of `activation`, whose body `code` has an armed slot, at
 /// program counter 0: counts the entry, unless the body is compiled into
 /// this zone already, and runs the body's machine code when it has some
-/// in this interpreter's zone. Out of line, so that the run loop pays only
+/// in this interpreter's zone -- its optimized code once it has some. Out of line, so that the run loop pays only
 /// `JitSlot::push_is_armed` for the JIT on a push.
 #[cold]
 #[inline(never)]
@@ -3362,7 +3631,14 @@ pub(crate) fn entered(
         ),
         "internal: machine code is entered for a top-level activation"
     );
-    match entry_of_frame(mutator, activation, code, feedback_base, 0) {
+    // A push enters the body's optimized code once it has some, unless
+    // the frame is reified already, which only the twin, baseline code,
+    // keeps (`entry_of_frame`).
+    let optimized = mutator
+        .jit
+        .optimized_push_entry(code, feedback_base)
+        .filter(|_| mutator.heap.activation_reified(activation).is_none());
+    match optimized.or_else(|| entry_of_frame(mutator, activation, code, feedback_base, 0)) {
         Some(entry) => run_machine_code(mutator, activation, register_base, entry),
         None => Resumption::Interpreted {
             activation,
@@ -3881,7 +4157,8 @@ pub(crate) fn called_closure<'gc>(
 }
 
 /// Records where the block body `code`, whose id is `id`, enters machine
-/// code in the machine entry table the closure stubs read
+/// code -- its optimized code once it has some (`JitState::entered_body`)
+/// -- in the machine entry table the closure stubs read
 /// (`heap/machine_entries.rs`), when it has machine code in this zone:
 /// asked wherever the interpreter pushes a block -- `entered`, which
 /// compiles it -- so that a body compiled, or a code id minted again after
@@ -3893,7 +4170,8 @@ pub(crate) fn called_closure<'gc>(
 ///
 /// A row once written names its body until something clears it -- the
 /// free of its id, the body's abandonment, the zone's replacement, a
-/// switch of the JIT on or off -- so a row the table records is current, and a push of a block whose row is
+/// switch of the JIT on or off, the install of its optimized code, which
+/// writes it afresh -- so a row the table records is current, and a push of a block whose row is
 /// recorded costs the test of a bit (`Heap::machine_entry_recorded`): the
 /// body's lookup and the row's comparison cost every push of a block in
 /// a run of closures a percent and more. A debug build compares the row
@@ -3904,7 +4182,7 @@ pub(crate) fn note_block_entry(mutator: &mut Mutator<'_>, id: CodeId, code: &Com
     if !cfg!(debug_assertions) && recorded {
         return;
     }
-    let Some(body) = mutator.jit.installed(code) else {
+    let Some(body) = mutator.jit.entered_body(code) else {
         return;
     };
     if body.feedback_base == FeedbackBase::NOT_ASSIGNED {
@@ -4146,22 +4424,42 @@ fn lasting_block_words(mutator: &Mutator<'_>, exit_stub: u64) -> [(stubs::BlockW
 /// code does.
 #[cfg(ns_jit)]
 fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
-    let installed = mutator.jit.installed(code).map(|body| body.start);
-    let entry = installed.map(CodeOffset);
-    if installed.is_some() {
-        mutator.jit.free_body(code.jit.map.get());
-    }
+    let entries = mutator.jit.free_entered_code(code);
     code.jit.abandon(mutator.jit.revival_base);
     mutator.jit.abandoned.push(Rc::downgrade(code));
     mutator.jit.statistics.abandoned_bodies += 1;
     // A block's closure stubs call it no more either.
     mutator.heap.forget_machine_entry(code);
-    let Some(zone) = mutator.jit.zone.as_ref() else {
-        return;
-    };
-    if let Some(entry) = entry {
-        let address = zone.writer.zone().executable_address(entry) as u64;
-        mutator.caches.refresh_cells_entering(address, &mutator.jit);
+    mutator
+        .caches
+        .refresh_cells_entering_any(&entries, &mutator.jit);
+}
+
+impl JitState {
+    /// Frees `code`'s baseline code and the optimized code beside it, if it
+    /// has machine code here (`JitState::free_body`), answering the
+    /// addresses a cell may name of them -- each copy's start, sorted --
+    /// for the caller to write afresh once the slot says what it says now.
+    #[cfg(ns_jit)]
+    fn free_entered_code(&mut self, code: &CompiledCode) -> Vec<u64> {
+        let starts: Vec<u32> = [self.installed(code), self.optimized(code)]
+            .into_iter()
+            .flatten()
+            .map(|body| body.start)
+            .collect();
+        if starts.is_empty() {
+            return Vec::new();
+        }
+        self.free_body(code.jit.map.get());
+        let Some(zone) = self.zone.as_ref() else {
+            return Vec::new();
+        };
+        let mut entries: Vec<u64> = starts
+            .into_iter()
+            .map(|start| zone.writer.zone().executable_address(CodeOffset(start)) as u64)
+            .collect();
+        entries.sort_unstable();
+        entries
     }
 }
 
@@ -4174,22 +4472,15 @@ fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
 /// (`abandon`); between entries only.
 #[cfg(ns_jit)]
 fn refuse_for_its_twin(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
-    let installed = mutator.jit.installed(code).map(|body| body.start);
-    if installed.is_some() {
-        mutator.jit.free_body(code.jit.map.get());
-    }
+    let entries = mutator.jit.free_entered_code(code);
     if code.jit.state.get() != REFUSED {
         code.jit.refuse();
         mutator.jit.statistics.refused_bodies += 1;
     }
     mutator.heap.forget_machine_entry(code);
-    let Some(zone) = mutator.jit.zone.as_ref() else {
-        return;
-    };
-    if let Some(start) = installed {
-        let address = zone.writer.zone().executable_address(CodeOffset(start)) as u64;
-        mutator.caches.refresh_cells_entering(address, &mutator.jit);
-    }
+    mutator
+        .caches
+        .refresh_cells_entering_any(&entries, &mutator.jit);
 }
 
 #[cfg(not(ns_jit))]
@@ -4862,6 +5153,65 @@ mod tests {
                     "a cleared row is armed afresh, requesting nothing"
                 );
                 assert_eq!(mutator.jit.statistics.optimization_requests, 1);
+            });
+        }
+
+        /// A requested body's optimized code is installed beside its
+        /// baseline code at the safepoint: a push and a compiled call
+        /// enter the optimized code, a frame that goes on mid-body the
+        /// baseline code, and freeing the baseline code frees the
+        /// optimized code with it, so that no lookup finds it.
+        #[test]
+        fn optimized_code_is_entered_at_the_start_and_baseline_code_mid_body() {
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                let base = FeedbackBase::NOT_ASSIGNED;
+                let lean = code.jit.map.get();
+                let baseline_start = mutator.jit.bodies[lean as usize].start;
+                let baseline_push = mutator.jit.interpreter_entry(&code, base, 0);
+                assert!(mutator.jit.optimized(&code).is_none());
+                assert_eq!(
+                    mutator.jit.machine_entry_of(&code, base),
+                    Some(CodeOffset(baseline_start))
+                );
+                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                crate::jit::optimize_requested(mutator);
+                assert!(mutator.jit.optimization_requests.is_empty());
+                assert_eq!(mutator.jit.statistics.optimized_bodies, 1);
+                let optimized = code.jit.optimized.get();
+                let body = &mutator.jit.bodies[optimized as usize];
+                assert_eq!(body.tier, crate::jit::Tier::Optimized);
+                assert_eq!(body.baseline, Some(lean));
+                let optimized_start = body.start;
+                assert_eq!(
+                    mutator.jit.machine_entry_of(&code, base),
+                    Some(CodeOffset(optimized_start)),
+                    "a compiled call enters the optimized prologue"
+                );
+                assert_eq!(
+                    mutator.jit.optimized_push_entry(&code, base),
+                    Some(CodeOffset(optimized_start + body.push_entry)),
+                    "a push enters the optimized code past its prologue"
+                );
+                assert_eq!(
+                    mutator.jit.interpreter_entry(&code, base, 0),
+                    baseline_push,
+                    "a frame that goes on mid-body, at the loop's head, enters baseline code"
+                );
+                // A second request finds the optimized code installed.
+                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                crate::jit::optimize_requested(mutator);
+                assert_eq!(mutator.jit.statistics.optimized_bodies, 1);
+                // Freed with its baseline body, never alone.
+                mutator.jit.free_body(lean);
+                assert!(mutator.jit.bodies[optimized as usize].free);
+                code.jit.forget();
+                assert!(mutator.jit.optimized(&code).is_none());
+                assert_eq!(code.jit.optimized.get(), crate::jit::NO_BODY);
             });
         }
 

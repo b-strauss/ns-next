@@ -684,13 +684,6 @@ impl MacroAssembler {
     /// emits between two frame nodes takes each register it writes,
     /// other than the one its own value is allocated to, through
     /// `temporary`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the optimizing compiler's emitter, Task 5's, holds values"
-        )
-    )]
     pub(crate) fn hold_values(&mut self, registers: &[Register]) {
         debug_assert!(
             registers

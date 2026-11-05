@@ -277,13 +277,6 @@ impl SnapshotInstruction {
     /// The instruction as the interpreter's own form, which the register
     /// queries of `bytecode.rs` answer for; `None` for a `MakeClosure`,
     /// whose block the snapshot holds by id only.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the optimizing compiler's liveness, built on it, is its first reader"
-        )
-    )]
     pub(crate) fn unsnapshot(&self) -> Option<Instruction> {
         Some(match self {
             SnapshotInstruction::MakeClosure { .. } => return None,
@@ -560,13 +553,6 @@ impl SnapshotInstruction {
     }
 
     /// The registers the instruction reads (`bytecode::registers_read`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the optimizing compiler's liveness, built on it, is its first reader"
-        )
-    )]
     pub(crate) fn registers_read(&self) -> Vec<u16> {
         match self {
             SnapshotInstruction::MakeClosure { copied, .. } => copied.clone(),
@@ -576,13 +562,6 @@ impl SnapshotInstruction {
     }
 
     /// The register the instruction writes (`bytecode::register_written`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the optimizing compiler's liveness, built on it, is its first reader"
-        )
-    )]
     pub(crate) fn register_written(&self) -> Option<u16> {
         match self {
             SnapshotInstruction::MakeClosure { destination, .. } => Some(*destination),
@@ -591,26 +570,12 @@ impl SnapshotInstruction {
     }
 
     /// Where the instruction jumps to, if it jumps (`bytecode::jump_target`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the optimizing compiler's liveness, built on it, is its first reader"
-        )
-    )]
     pub(crate) fn jump_target(&self) -> Option<u32> {
         crate::bytecode::jump_target(&self.unsnapshot()?)
     }
 
     /// Whether control can pass to the next instruction
     /// (`bytecode::falls_through`); a closure is made and control goes on.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the optimizing compiler's graph builder, built on it, is its first reader"
-        )
-    )]
     pub(crate) fn falls_through(&self) -> bool {
         self.unsnapshot()
             .is_none_or(|instruction| crate::bytecode::falls_through(&instruction))
@@ -997,13 +962,6 @@ impl Snapshot {
     /// The snapshot of `code`, its sends' cells found from
     /// `feedback_base`; the body and its blocks are registered with `heap`
     /// if they were not yet.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the optimizing compiler, whose first caller this is, is built on it"
-        )
-    )]
     pub(crate) fn take(
         code: &Rc<CompiledCode>,
         heap: &mut Heap,

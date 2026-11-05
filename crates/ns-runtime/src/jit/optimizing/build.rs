@@ -12,13 +12,6 @@
 //! dead register's word may be one a callee left -- and which registers a
 //! loop may change, so that its head takes a phi for each of those it
 //! needs before its back edges are seen.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the optimizing compiler's emitter, Task 5's, is the builder's first caller"
-    )
-)]
 
 use std::ops::Range;
 

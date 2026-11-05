@@ -7,13 +7,6 @@
 //! the point's write-back (`allocate::DirtyPoint`) stores every binding
 //! that is not there yet, and `verify_allocation` holds the allocation to
 //! it by replaying every move.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the optimizing compiler's emitter, Task 5's, is the metadata's first caller"
-    )
-)]
 
 use std::collections::HashMap;
 use std::ops::Range;

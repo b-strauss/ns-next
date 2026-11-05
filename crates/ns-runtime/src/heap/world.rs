@@ -204,6 +204,13 @@ impl World {
         self.mutator.jit.compaction_requested()
     }
 
+    /// Whether a body's optimization budget ran out since the last
+    /// safepoint, whose optimizing compile is pending
+    /// (`Interpreter::safepoint`).
+    pub(crate) fn optimization_requested(&self) -> bool {
+        !self.mutator.jit.optimization_requests.is_empty()
+    }
+
     /// Sets the collection floor and the next limit to `floor` bytes of
     /// objects (`Interpreter::set_collection_floor`).
     #[cfg(debug_assertions)]

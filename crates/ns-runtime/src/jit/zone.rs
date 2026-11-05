@@ -309,12 +309,11 @@ impl JitState {
     /// it exists.
     pub(super) fn free_body(&mut self, index: u32) {
         let twin = self.bodies.get(index as usize).and_then(|body| body.twin);
-        if self.mark_free(index, FreedBy::BetweenCompactions) {
-            self.returns.retain(|_, site| site.body != index);
-        }
-        if let Some(twin) = twin {
-            if self.mark_free(twin, FreedBy::BetweenCompactions) {
-                self.returns.retain(|_, site| site.body != twin);
+        // Optimized code goes with its baseline body, as the twin does.
+        let optimized = self.optimized_of(index);
+        for copy in std::iter::once(index).chain(twin).chain(optimized) {
+            if self.mark_free(copy, FreedBy::BetweenCompactions) {
+                self.returns.retain(|_, site| site.body != copy);
             }
         }
     }
@@ -348,8 +347,14 @@ impl JitState {
     /// Whether the body at `index` is still what its code's slot names:
     /// its code lives, and it was neither abandoned nor compiled again; for
     /// a twin, whether its lean body is, unfreed, and still has it as its
-    /// twin.
+    /// twin; for optimized code, whether its baseline body is, and its
+    /// slot names it as the optimized code beside it.
     fn still_named(&self, index: usize) -> bool {
+        if let Some(baseline) = self.bodies[index].baseline {
+            return self
+                .optimized_of(baseline)
+                .is_some_and(|optimized| optimized as usize == index);
+        }
         if let Some(lean) = self.bodies[index].lean {
             let lean_body = &self.bodies[lean as usize];
             return !lean_body.free
@@ -674,8 +679,20 @@ impl JitState {
                 );
                 continue;
             }
-            let twin = body.twin.map(|twin| &self.bodies[twin as usize]);
-            if let Some(twin) = twin {
+            // Optimized code transfers into its baseline body's twin.
+            let owner = match body.baseline {
+                Some(baseline) => {
+                    let owner = &self.bodies[baseline as usize];
+                    assert!(
+                        !owner.free && body.twin.is_none(),
+                        "internal: live optimized code's baseline body is freed, or it has a twin"
+                    );
+                    owner
+                }
+                None => body,
+            };
+            let twin = owner.twin.map(|twin| &self.bodies[twin as usize]);
+            if let Some(twin) = twin.filter(|_| body.baseline.is_none()) {
                 assert!(
                     !twin.free && twin.lean.is_some_and(|lean| lean as usize == index),
                     "internal: a live lean body's twin is freed or names another body"
@@ -716,8 +733,11 @@ impl JitState {
             if let Some(index) = self.named_body(code) {
                 let body = &self.bodies[index];
                 body.usage.set(MAXIMUM_USAGE);
-                if let Some(twin) = body.twin {
-                    self.bodies[twin as usize].usage.set(MAXIMUM_USAGE);
+                let optimized = u32::try_from(index)
+                    .ok()
+                    .and_then(|index| self.optimized_of(index));
+                for copy in body.twin.into_iter().chain(optimized) {
+                    self.bodies[copy as usize].usage.set(MAXIMUM_USAGE);
                 }
             }
         }
@@ -774,14 +794,20 @@ impl JitState {
                     return (freed_any, free_bytes);
                 }
                 let body = &self.bodies[index];
-                // A twin goes with its lean body, never alone.
-                if body.free || body.lean.is_some() || body.usage.get() > freeable {
+                // A twin, and optimized code, go with their lean body,
+                // never alone.
+                if body.free
+                    || body.lean.is_some()
+                    || body.baseline.is_some()
+                    || body.usage.get() > freeable
+                {
                     continue;
                 }
                 let (size, code, twin) = (body.size(), body.code.upgrade(), body.twin);
                 let Ok(number) = u32::try_from(index) else {
                     unreachable!("internal: a body's index fits its slot's map");
                 };
+                let optimized = self.optimized_of(number);
                 self.mark_free(number, FreedBy::TheCompaction);
                 freed_any = true;
                 free_bytes += size;
@@ -789,10 +815,10 @@ impl JitState {
                 if let Some(code) = code {
                     code.jit.forget();
                 }
-                if let Some(twin) = twin {
-                    let twin_size = self.bodies[twin as usize].size();
-                    if self.mark_free(twin, FreedBy::TheCompaction) {
-                        free_bytes += twin_size;
+                for copy in twin.into_iter().chain(optimized) {
+                    let copy_size = self.bodies[copy as usize].size();
+                    if self.mark_free(copy, FreedBy::TheCompaction) {
+                        free_bytes += copy_size;
                     }
                 }
             }
@@ -873,7 +899,7 @@ impl JitState {
         let mut renumbered: Vec<Option<(u32, u32)>> = Vec::with_capacity(old_bodies.len());
         let mut survivors = plan.survivors().iter();
         let mut moved_bytes = 0u64;
-        for mut body in old_bodies {
+        for (old_index, mut body) in old_bodies.into_iter().enumerate() {
             if body.free {
                 renumbered.push(None);
                 continue;
@@ -906,8 +932,17 @@ impl JitState {
             body.words -= delta;
             body.words_end -= delta;
             body.usage.set(body.usage.get() / 2);
-            // A twin's slot is its lean body's, which names the lean body.
-            if let Some(code) = body.code.upgrade().filter(|_| body.lean.is_none()) {
+            // A twin's slot is its lean body's, which names the lean body;
+            // optimized code's slot names it beside the lean body.
+            let code = body.code.upgrade();
+            if let Some(code) = code.as_ref().filter(|_| body.baseline.is_some()) {
+                debug_assert_eq!(
+                    code.jit.optimized.get() as usize,
+                    old_index,
+                    "internal: a compaction moves only optimized code its slot names"
+                );
+                code.jit.optimized.set(index);
+            } else if let Some(code) = code.filter(|_| body.lean.is_none()) {
                 let first_instruction = code.jit.first_instruction.get() - delta;
                 debug_assert_eq!(
                     code.jit.zone.get(),
@@ -945,6 +980,7 @@ impl JitState {
         for body in &mut self.bodies {
             body.twin = renumber(body.twin);
             body.lean = renumber(body.lean);
+            body.baseline = renumber(body.baseline);
         }
         // Every byte the survivors no longer cover -- the gaps their
         // alignment leaves and the room freed past the last -- is filled
@@ -961,14 +997,18 @@ impl JitState {
         self.statistics.zone_compactions += 1;
         self.statistics.moved_bytes += moved_bytes;
         // The transfer words name the twin's code, which may have moved
-        // apart from the lean body: each written afresh at the lean body's
-        // new place.
-        for lean in 0..self.bodies.len() {
-            if self.bodies[lean].twin.is_some() {
-                let Ok(lean) = u32::try_from(lean) else {
+        // apart from the lean body and the optimized code beside it: each
+        // written afresh at its body's new place.
+        for index in 0..self.bodies.len() {
+            let body = &self.bodies[index];
+            let owner = body
+                .baseline
+                .map_or(body, |baseline| &self.bodies[baseline as usize]);
+            if body.lean.is_none() && owner.twin.is_some() {
+                let Ok(index) = u32::try_from(index) else {
                     unreachable!("internal: a body's index fits its slot's map");
                 };
-                self.write_transfer_words(lean);
+                self.write_transfer_words(index);
             }
         }
     }

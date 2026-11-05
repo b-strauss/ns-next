@@ -921,6 +921,168 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// The budget the optimizing tests arm every body with: a few thousand
+/// instructions, so that a body a loop calls a few hundred times runs out.
+const OPTIMIZING_BUDGET: i64 = 5_000;
+
+/// `source`'s `run` sent `runs` times to one instance, as `run_compiled`
+/// runs it with the JIT on -- every body compiled at its first entry, so
+/// that the reference lowering's, which mostly exit at once, are too --
+/// and every body's budget `OPTIMIZING_BUDGET`: a body whose budget runs
+/// out is optimized at the safepoint its request asks for, and the pushes
+/// and calls after it enter its optimized code. Answers each run's answer
+/// and what the JIT did over all of them.
+fn run_optimizing(source: &str, lowering: Lowering, runs: usize) -> (Vec<i64>, JitStatistics) {
+    let (mut interpreter, class) = load_spending_with(source, lowering);
+    interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
+    interpreter.set_jit_stress(true);
+    interpreter.set_jit_counting(true);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let before = interpreter.jit_statistics();
+    let answers = (0..runs)
+        .map(|_| send_unary(&mut interpreter, &subject, "run"))
+        .collect();
+    (answers, since(interpreter.jit_statistics(), before))
+}
+
+/// The squares of 1 to 100,000 summed in one loop: `run`'s back jumps
+/// spend its budget in its first run, so that the second and third push
+/// `run` into its optimized code.
+const SUM_OF_SQUARES_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 100000] whileTrue: [
+          sum:: sum + (index * index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// The sum of the squares of 1 to 100,000.
+fn expected_sum_of_squares() -> i64 {
+    let count: i64 = 100_000;
+    count * (count + 1) * (2 * count + 1) / 6
+}
+
+ns_runtime::for_each_lowering! {
+    /// A body whose budget ran out is optimized at the next safepoint,
+    /// once, and the runs that push it afterwards answer what its first
+    /// run, in baseline code, answered. The optimized lowering inlines the
+    /// loop's blocks, so that `run` is the only body optimized; the
+    /// reference lowering's blocks are optimized as well.
+    fn a_hot_body_runs_optimized_and_answers_the_same(lowering) {
+        let (answers, statistics) = run_optimizing(SUM_OF_SQUARES_LOOP, lowering, 3);
+        assert_eq!(answers, vec![expected_sum_of_squares(); 3]);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.optimized_bodies, 1);
+        } else {
+            assert_some_optimized(&statistics, lowering);
+        }
+    }
+}
+
+/// Holds `statistics` to some body optimized -- but under the zone stress
+/// mode with the reference lowering, whose compactions free every body no
+/// activation runs at its safepoints, which arms each budget afresh when
+/// the body is compiled again, so that the reference lowering's small
+/// bodies, a few instructions each, never run one out; and under the
+/// suspend stress mode, under which no budget runs out in a loop either
+/// (`a_hot_loop_requests_its_body_s_optimization`).
+fn assert_some_optimized(statistics: &JitStatistics, lowering: Lowering) {
+    let suspending = std::env::var_os("NS_NEXT_STRESS_SUSPEND")
+        .is_some_and(|value| !value.is_empty() && value != "0");
+    if suspending || (lowering == Lowering::Reference && the_zone_stress_mode_is_on()) {
+        return;
+    }
+    assert!(statistics.optimized_bodies >= 1, "a body is optimized");
+}
+
+/// A loop calling `guarded` 10,000 times, whose budget runs out after a
+/// few hundred calls: from then on the loop's calls enter its optimized
+/// code, whose `on:do:` send's callee signals a resumable exception, so
+/// that the exit materializes `guarded`'s optimized frame, and the
+/// handler's `resume:` returns into it.
+const SIGNAL_IN_A_HOT_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      warn = (
+        ^(Exception signal) + 1
+      )
+      guarded = (
+        ^[self warn] on: Exception do: [:e | e resume: 0]
+      )
+      public run = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < 10000] whileTrue: [
+          total:: total + self guarded.
+          index:: index + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A frame of optimized code that an exit materialized is returned to
+    /// in its baseline code, the only code with an entry at every
+    /// instruction, and the answer is the interpreter's.
+    fn a_frame_returned_to_resumes_in_baseline_code(lowering) {
+        let (answers, statistics) = run_optimizing(SIGNAL_IN_A_HOT_LOOP, lowering, 1);
+        assert_eq!(answers, vec![10_000]);
+        assert_some_optimized(&statistics, lowering);
+        // The reference lowering's frames, its blocks' among them, are
+        // returned to interpreted in baseline code as well.
+        if lowering == Lowering::Optimized {
+            assert!(statistics.resumed_entries > 0);
+        }
+    }
+}
+
+/// A loop whose every turn calls `add:to:`, which makes a block capturing
+/// its arguments and has `evaluate:` evaluate it.
+const CLOSURE_IN_A_HOT_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      evaluate: block = (
+        ^block value
+      )
+      add: index to: total = (
+        ^self evaluate: [total + index]
+      )
+      public run = (
+        |
+          total ::= 0.
+          index ::= 1.
+        |
+        [index <= 10000] whileTrue: [
+          total:: self add: index to: total.
+          index:: index + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `add:to:`'s optimized code makes its block as its lean baseline
+    /// code does, by transferring its frame into the body's twin, which
+    /// makes the closure: the twin is compiled, and the answer is the
+    /// interpreter's.
+    fn a_closure_made_in_optimized_code_transfers_into_the_twin(lowering) {
+        let (answers, statistics) = run_optimizing(CLOSURE_IN_A_HOT_LOOP, lowering, 2);
+        assert_eq!(answers, vec![50_005_000; 2]);
+        assert_some_optimized(&statistics, lowering);
+        assert!(statistics.compiled_twins >= 1);
+    }
+}
+
 /// Runs `COUNTING_LOOP` twice on a thread of `stack_bytes`, answering the
 /// second run's answer and its entries into machine code.
 fn run_the_loop_on_a_thread_of(stack_bytes: usize) -> (i64, u64) {

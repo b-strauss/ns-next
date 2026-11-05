@@ -6790,6 +6790,22 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Clears the machine entry row `code`'s id names, if it names one,
+    /// answering the id for the row to be written afresh
+    /// (`jit::note_block_entry`): the body's optimized code was installed,
+    /// which the row names from now on. Its budget row is left as it is,
+    /// parked by the request the optimization answered.
+    #[cfg(ns_jit)]
+    pub(crate) fn clear_machine_entry_row(&mut self, code: &Rc<CompiledCode>) -> Option<CodeId> {
+        let key = Rc::as_ptr(code) as usize;
+        let id = self.tables.code_ids.get(&key).copied()?;
+        if !self.machine_entries.names_entry(id.index()) {
+            return None;
+        }
+        self.machine_entries.clear(id.index());
+        Some(id)
+    }
+
     /// The optimization budget of `code` (`optimization_budgets.rs`): its
     /// code id, registered if it has none, and the address its baseline
     /// code spends from -- its row, committed, or the sink for an id past
