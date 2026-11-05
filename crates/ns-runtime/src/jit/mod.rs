@@ -90,9 +90,14 @@ pub(crate) const OPTIMIZATION_BUDGET: i64 = 240_000;
 /// The least budget a body is left with when a send of it filled its
 /// site's cache after a miss, so that its optimization waits for its
 /// feedback to settle: a sixth of `OPTIMIZATION_BUDGET`, the ratio of the
-/// first guesses, kept as the budget doubled. Not swept on its own: stage
-/// 1 speculates on no feedback, so the wait decides only when a body is
-/// compiled, never what it is compiled to.
+/// first guesses, kept as the budget doubled. The wait decides when a body
+/// is compiled, and so which fallback sites have filled when the compile
+/// reads them (`optimizing::snapshot::Snapshot::fallback_taken`): the
+/// code's layout, never its semantics. Swept over 0, 10,000, 40,000,
+/// 120,000 and 240,000 (`docs/design/execution.md`, "What the optimizing
+/// tier's foundation moved"): Mandelbrot, NBody and Json retired the same
+/// instructions to 0.05% at every value -- each compiled the same code --
+/// and no value separated from another.
 pub(crate) const BUDGET_AFTER_CACHE_CHANGE: i64 = OPTIMIZATION_BUDGET / 6;
 
 /// The native stack an entry into machine code needs left: a return

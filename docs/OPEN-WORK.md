@@ -786,6 +786,22 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     Its allocator is the optimizing tier's linear scan, built in the
     first stage. [execution.md](design/execution.md), "The register
     cache", "What a register cache would move".
+  - **Optimized `fib:` runs slower than its baseline code** (2026-11-05).
+    `bench_recursion.ns` is +0.9% against `master` with its three builds
+    apart, and the processor's counters make it cost, not placement:
+    23.95 million instructions a run against `master`'s 23.70, about
+    one more per `fib:` call, and 2.5% more cycles on average over four
+    more zone paddings each side, more at every one, while a build that
+    optimizes nothing takes fewer cycles than `master` despite its three
+    instructions of spend per call. A profile of the two copies of
+    `fib:` puts 3.2% more samples in the optimized one, most after its
+    second recursive call returns, on a reload sequence the baseline
+    copy runs too. Not found: whether the emitter's order of stores and
+    reloads around the two calls, or the branch on the comparison's
+    materialized Boolean, costs the cycles. To be diagnosed instruction
+    by instruction against the baseline copy, the processor's counters
+    per run deciding. [execution.md](design/execution.md), "What the
+    optimizing tier's foundation moved".
   - **Optimized code's sends mispredict in the shared stubs**
     (2026-11-05). DeltaBlueTon80's optimized bodies take 3.3% fewer
     samples than their baseline code, but the polymorphic stub and the
