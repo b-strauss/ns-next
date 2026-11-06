@@ -613,7 +613,7 @@ pub(crate) struct CustomizedCopy {
     /// speculates (`optimizing::Speculation::at_version`). Never decays,
     /// so that a copy that keeps failing reaches its last version.
     pub(crate) version: u8,
-    /// The traps the key's current copy took, from none at each version,
+    /// The traps the key's current copy took, from none at each install,
     /// halved at every decay (`JitSlot::decay_exits`): at `TRAP_LIMIT` the
     /// copy is made not entrant.
     pub(crate) traps: u8,
@@ -915,9 +915,15 @@ impl JitSlot {
         self.with_copy_row(key, |copy| copy.refused = true);
     }
 
-    /// Sets the body of the row for `key`, which exists.
+    /// Sets the body of the row for `key`, which exists; an installed
+    /// one counts its traps from none, however its predecessor was freed.
     fn set_copy_body(&self, key: CustomizationKey, body: u32) {
-        self.with_copy_row(key, |copy| copy.body = body);
+        self.with_copy_row(key, |copy| {
+            copy.body = body;
+            if body != NO_BODY {
+                copy.traps = 0;
+            }
+        });
     }
 
     /// Puts the body back to counting its entries, from none, its exits
@@ -4421,9 +4427,29 @@ pub(crate) fn budget_spent(
         return;
     }
     if code.jit.optimized_refused.get() {
+        rearm_for_other_pairs(mutator, &code);
         return;
     }
     request(mutator, OptimizationRequest::uncustomized(&code));
+}
+
+/// After a run-out by a frame of a pair refused for good -- a key's row,
+/// or the body's one uncustomized copy -- whose budget `budget_spent`
+/// parked: the budget is one per body, so that parked it would starve
+/// every other pair of the body for good -- a key waiting for the
+/// recompile of a copy made not entrant, and a key that has no copy yet.
+/// Armed afresh at the plain wait while the body has a pair not refused,
+/// since the run-out says that what any waiting pair waited for was
+/// spent; left parked once every pair it knows of is refused, so that a
+/// body refused throughout calls no leaf once per budget for the rest of
+/// the run.
+#[cfg(ns_jit)]
+fn rearm_for_other_pairs(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    let any_left = !code.jit.optimized_refused.get()
+        || code.jit.copies.borrow().iter().any(|copy| !copy.refused);
+    if any_left {
+        rearm_optimization_budget(mutator, code, 0);
+    }
 }
 
 /// Records `request` unless one for its body and key is pending, and
@@ -4468,7 +4494,10 @@ fn request_copy(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, frame_addres
         return false;
     };
     match code.jit.copy_row(key) {
-        Some(row) if row.refused => return true,
+        Some(row) if row.refused => {
+            rearm_for_other_pairs(mutator, code);
+            return true;
+        }
         // The next run-out is another key's, which has failed nothing:
         // the plain wait.
         Some(_) if mutator.jit.copy_of(code, key).is_some() => {
@@ -4529,7 +4558,19 @@ fn levels_to<'gc>(
 }
 
 /// Arms `code`'s budget afresh at the wait a copy at `version` earned
-/// (`optimization_budget_after`).
+/// (`optimization_budget_after`). The budget is one per body, shared by
+/// its pairs, and an arming replaces what is left of the last: a re-arm
+/// at the plain wait for another key -- after a keyed install, or a
+/// run-out by a frame of a key with a copy or of a refused pair
+/// (`rearm_for_other_pairs`) -- can cut short a retired key's wait of 4
+/// to its version. Mostly it cuts nothing: a run-out parked the budget,
+/// so the wait it held was spent, by whichever pair's frames. Only an
+/// install of a request still pending when another key's copy retired
+/// shortens a wait, by its arming. Keeping the longer of the two instead
+/// would keep a wait that is no retired key's too -- a cache fill raises a
+/// running body's budget for its feedback to settle
+/// (`Heap::raise_running_optimization_budget`) -- and hold back the next
+/// key's first copy behind it.
 #[cfg(ns_jit)]
 fn rearm_optimization_budget(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, version: u8) {
     let budget = mutator.heap.optimization_budget_of(code);
@@ -4689,7 +4730,12 @@ fn optimize(
     };
     mutator.jit.bodies[lean as usize].optimized_needed = 0;
     match key {
-        None => code.jit.optimized.set(index),
+        // An installed copy counts its traps from none, whether its
+        // predecessor was retired or freed with its baseline code.
+        None => {
+            code.jit.optimized.set(index);
+            code.jit.optimized_traps.set(0);
+        }
         Some(key) => {
             code.jit.set_copy_body(key, index);
             mutator.jit.statistics.customized_copies += 1;
@@ -5853,7 +5899,9 @@ fn count_trap(mutator: &mut Mutator<'_>, innermost: ActivationReference, site: u
 /// compiled again ever more rarely, as Strongtalk backs off a
 /// recompilation, and past `LAST_VERSION` without a trap; one that fails
 /// past it is refused for good, its key never requested again, and the
-/// budget left as it is for the body's other keys. Between entries only,
+/// budget left as it is for the body's other keys -- and re-armed for
+/// them whenever a frame of the refused pair runs it out
+/// (`rearm_for_other_pairs`). Between entries only,
 /// where no return address into the zone exists; a frame an exit left
 /// stopped in the copy goes on in baseline code, as every frame returned
 /// to does.

@@ -8733,3 +8733,149 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+/// `step:with:probing:`, a method of `A`, sums `number` twenty times
+/// and adds what `target` answers `probe: value`: on an `A` it is given a `Stranger`,
+/// which answers in its own `doesNotUnderstand:`, an exit at every call;
+/// on a `B`, a subclass of `A`, a `Prober`, which answers 1 with no
+/// exit, `value` itself: a `Float` sum only where `runBFloat:` gives
+/// one, and a `Float` answer only where `probeB:` gives one. `quietA:`
+/// gives an `A` the `Prober` too, so that its frames run its baseline
+/// code with no exit, spending the body's budget.
+const ONE_KEY_REFUSED: &str = indoc! {"
+    class Subject = Object new (
+      |
+        stranger = Stranger new.
+        prober = Prober new.
+        a = A new.
+        b = B new.
+      |
+    ) (
+      class Stranger = () (
+        public doesNotUnderstand: message = (
+          ^1
+        )
+      )
+      class Prober = () (
+        public probe: value = (
+          ^value
+        )
+      )
+      class A = () (
+        public step: target with: number probing: value = (
+          |
+            sum ::= 0.
+            index ::= 1.
+          |
+          [index <= 20] whileTrue: [
+            sum:: sum + number.
+            index:: index + 1.
+          ].
+          ^(sum asInteger + (target probe: value)) asInteger
+        )
+      )
+      class B = A () ()
+      public runA: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (a step: stranger with: 1 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public runB: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (b step: prober with: 1 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public runBFloat: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (b step: prober with: 0.5 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public probeB: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (b step: prober with: 1 probing: 0.5).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public quietA: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (a step: prober with: 1 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public mixed: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (self quietA: 10) + (b step: prober with: 1 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `step:with:probing:`'s copy for an `A` is refused for good, and
+    /// its copy for a `B`, made not entrant by a trap at its sum
+    /// afterwards, is compiled again while the frames on an `A`, ten for
+    /// each on a `B` and none exiting, spend most of the body's budget: a
+    /// run-out of the refused pair's leaves the budget armed for the
+    /// other key's recompile, never parked. The recompiled copy is there
+    /// to trap at the probe's sum, which it still speculates on.
+    fn a_key_refused_for_good_does_not_starve_another_key(lowering) {
+        let (mut interpreter, class) = load_spending_with(ONE_KEY_REFUSED, lowering);
+        interpreter.set_optimization_budget(100);
+        interpreter.set_jit_revival_entries(64);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let start = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "runA:", 40_000), 40_000 * 21);
+        let refused = since(interpreter.jit_statistics(), start);
+        assert_eq!(send_number(&mut interpreter, &subject, "runB:", 2_000), 2_000 * 21);
+        assert_eq!(send_number(&mut interpreter, &subject, "runBFloat:", 3), 3 * 11);
+        let retired = since(interpreter.jit_statistics(), start);
+        assert_eq!(
+            send_number(&mut interpreter, &subject, "mixed:", 5_000),
+            5_000 * (10 * 21 + 21)
+        );
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "probeB:", 3), 3 * 20);
+        let probed = since(interpreter.jit_statistics(), before);
+        let after = since(interpreter.jit_statistics(), start);
+        if pins_the_tiers(lowering) {
+            assert_eq!(refused.refused_for_good, 1, "{refused:?}");
+            assert_eq!(retired.made_not_entrant, 1, "{retired:?}");
+            assert!(probed.traps >= 1, "the B copy compiled again: {probed:?}");
+            assert_eq!(after.refused_for_good, 1, "{after:?}");
+        }
+    }
+}
