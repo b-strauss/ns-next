@@ -634,7 +634,8 @@ pub(crate) struct MacroAssembler {
     exit_at_every_poll: bool,
     /// Whether optimized code counts its interrupt points down to a
     /// forced exit (`count_down_to_deoptimize`), as under
-    /// `NS_NEXT_STRESS_DEOPT`.
+    /// `NS_NEXT_STRESS_DEOPT` -- and under `NS_NEXT_STRESS_INVALIDATE`,
+    /// whose countdown no run reaches the end of.
     deoptimize_by_countdown: bool,
     /// Whether a back edge counts itself (`count_back_edge`).
     count_back_edges: bool,

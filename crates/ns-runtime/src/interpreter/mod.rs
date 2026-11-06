@@ -1341,6 +1341,22 @@ impl Interpreter {
         });
     }
 
+    /// Turns the invalidate stress mode (`NS_NEXT_STRESS_INVALIDATE`) on
+    /// or off for this interpreter: on, with the optimize stress mode,
+    /// every safepoint frees all optimized code before it installs what
+    /// was requested since the last one; off, the optimize stress mode left
+    /// on. A test hook, set before the code it is meant for runs.
+    #[doc(hidden)]
+    pub fn set_invalidate_stress(&mut self, stress: bool) {
+        self.enter(|mutator| {
+            let budget = mutator.jit.set_invalidate_stress(stress);
+            #[cfg(ns_jit)]
+            mutator.heap.rearm_optimization_budgets(budget);
+            #[cfg(not(ns_jit))]
+            let _ = budget;
+        });
+    }
+
     /// Makes the JIT lower `MakeFuture` to an exit in the bodies it
     /// compiles from now on, so that a body that makes a future at once
     /// exits at once and is never compiled, while it still returns as

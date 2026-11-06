@@ -64,7 +64,7 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
          {} resumptions after a safepoint, {} exits; optimizer: {} requests, \
          {} bodies optimized ({} customized copies) in {:.3} ms, \
          {} optimized exits ({} forced, {} traps), {} abandoned, \
-         {} made not entrant, {} refused for good",
+         {} made not entrant, {} refused for good, {} invalidated copies",
         statistics.compiled_bodies,
         statistics.compiled_twins,
         statistics.compile_nanoseconds as f64 / 1_000_000.0,
@@ -81,6 +81,7 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
         statistics.abandoned_optimized_bodies,
         statistics.made_not_entrant,
         statistics.refused_for_good,
+        statistics.invalidated_copies,
     );
 }
 

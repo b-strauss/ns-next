@@ -8,7 +8,7 @@ use super::edit::{Edit, EditedTexts, PreparedEdit};
 use super::Mutator;
 use crate::hash::IdentityMap;
 use crate::heap::{ClassReference, MixinId, ObjectReference};
-use crate::mixin::{Mixin, MixinApplication};
+use crate::mixin::{DispatchId, Mixin, MixinApplication};
 
 /// What the migration answers: the instances it replaced, their copies in
 /// the new layout at the same positions, and the instances it kept.
@@ -85,6 +85,17 @@ impl<'gc> Mutator<'gc> {
                 unreachable!("internal: each migrated instance is forwarded once, to a new one");
             }
         }
+        // Once the commit is done: the copies keyed on an old application
+        // were compiled against its layout and lookup, and no other copy
+        // was -- the migration forwards only instances of the classes it
+        // rebuilt, so that it frees what the bulk forward's leaf frees
+        // only for them.
+        let rebuilt: Vec<DispatchId> = old_applications
+            .iter()
+            .map(|application| application.dispatch_ids.instances)
+            .filter(|id| *id != DispatchId::NONE)
+            .collect();
+        crate::jit::invalidate_applications(self, &rebuilt);
         Ok(prepared.texts)
     }
 

@@ -92,7 +92,10 @@ fn split<'state, 'gc>(
 /// heap (`StepRoots`), then vacates every inline cache, whose entries were
 /// decided for receivers that are now forwarders. Inside a step: nothing
 /// moves, so no handle a caller holds goes stale but one naming an object
-/// of `old`, and the VM mirror's leaf holds none.
+/// of `old`, and the VM mirror's leaf holds none. The optimized code the
+/// forward makes stale is the caller's to invalidate: the mirror leaf
+/// frees all of it (`jit::invalidate_all_optimized`), an install only the
+/// copies of the classes it rebuilt (`jit::invalidate_applications`).
 pub(crate) fn forward_identity<'gc>(
     mutator: &mut Mutator<'gc>,
     old: &[ObjectReference<'gc>],
@@ -209,6 +212,20 @@ impl World {
     /// nothing outside the mode.
     pub(crate) fn rotate_deoptimization_countdown(&mut self) {
         self.mutator.jit.rotate_deoptimization_countdown();
+    }
+
+    /// Under the invalidate stress mode, invalidates all optimized code
+    /// (`jit::invalidate_all_optimized`) once it ran long enough since the
+    /// last invalidation (`JitState::invalidation_due_for_stress`): at the
+    /// run loop's safepoint, before what was requested since the last one
+    /// is installed, so that every copy is freed after a stretch it could
+    /// run in. Nothing outside the mode.
+    pub(crate) fn invalidate_optimized_for_stress(&mut self) {
+        let jit = &self.mutator.jit;
+        if jit.invalidate_stress() && jit.invalidation_due_for_stress() {
+            crate::jit::invalidate_all_optimized(&mut self.mutator);
+            self.mutator.jit.arm_invalidation_count(true);
+        }
     }
 
     /// Whether a body's optimization budget ran out since the last

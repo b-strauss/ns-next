@@ -106,6 +106,9 @@ impl Mutator<'_> {
                     && superclass.is_none_or(|superclass| !freed.applications.contains(&superclass))
             });
             self.caches.forget_freed(&freed);
+            // The copies keyed on a freed guard go with it, their rows
+            // too: the guard is minted again for another application.
+            crate::jit::forget_freed_copies(self, &freed);
         }
         // No other holder may outlive the scrub: an index freed while an
         // `Rc` still names it would alias the next application minted

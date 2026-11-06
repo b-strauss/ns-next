@@ -185,7 +185,11 @@ pub(crate) enum MachineWord {
     /// and the one that brings it to zero exits there
     /// (`MacroAssembler::count_down_to_deoptimize`); the run loop's
     /// safepoint sets it afresh (`JitState::rotate_deoptimization_countdown`).
-    /// Unread outside the mode.
+    /// Under the invalidate stress mode alone it starts at `u64::MAX` after
+    /// each of the mode's invalidations, which no run brings to zero, so
+    /// that it counts the points passed since
+    /// (`JitState::invalidation_due_for_stress`).
+    /// Unread outside the two modes.
     DeoptCountdown,
 }
 

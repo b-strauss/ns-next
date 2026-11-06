@@ -80,6 +80,10 @@ impl Interpreter {
             )
         )]
         let mut rebuilt = false;
+        // Under the invalidate stress mode, every copy installed at an
+        // earlier safepoint is freed, after the stretch it ran in, before
+        // this one installs the next (`jit::invalidate_all_optimized`).
+        self.world.invalidate_optimized_for_stress();
         // A body's budget ran out: its optimized code is compiled and
         // installed first, here, between two stretches, where no return
         // address into the zone exists (`jit::optimize_requested`), so

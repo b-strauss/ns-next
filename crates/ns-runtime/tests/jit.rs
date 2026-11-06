@@ -142,6 +142,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         traps: after.traps - before.traps,
         made_not_entrant: after.made_not_entrant - before.made_not_entrant,
         refused_for_good: after.refused_for_good - before.refused_for_good,
+        invalidated_copies: after.invalidated_copies - before.invalidated_copies,
     }
 }
 
@@ -1021,9 +1022,21 @@ fn pins_the_tiers(lowering: Lowering) -> bool {
 /// optimizing every body at once, or by leaving machine code at every
 /// poll or interrupt point -- the cache stress mode among them, since it
 /// holds the safepoint request, which every poll takes, and vacates the
-/// caches there. The wide stress mode changes no machine code's decision.
-const MODES_THAT_CHANGE_THE_COPY: [&str; 10] = [
-    "MOVES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE", "JIT", "EXIT", "OPTIMIZE", "DEOPT", "CACHES",
+/// caches there -- and by freeing every copy at every safepoint, the
+/// invalidate stress mode. The wide stress mode changes no machine code's
+/// decision.
+const MODES_THAT_CHANGE_THE_COPY: [&str; 11] = [
+    "MOVES",
+    "COLLECT",
+    "SCAVENGE",
+    "SUSPEND",
+    "ZONE",
+    "JIT",
+    "EXIT",
+    "OPTIMIZE",
+    "DEOPT",
+    "CACHES",
+    "INVALIDATE",
 ];
 
 /// The squares of 1 to 100,000 summed in one loop: `run`'s back jumps
@@ -1341,6 +1354,247 @@ ns_runtime::for_each_lowering! {
             1,
             "the getter runs as a copy"
         );
+    }
+}
+
+/// `A` and an unrelated `D`, each summing its slot in its `total`, and
+/// `edit`, which adds a slot to `A` through a MirrorBuilder and gives
+/// `step` another initial value: `run` sums both totals of fresh
+/// instances, 500 before the edit and 700 after it.
+const AN_EDIT_OF_ONE_OF_TWO_CLASSES: &str = indoc! {"
+    class Subject usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class A = Object new (
+        |
+          public step ::= 2.
+        |
+      ) (
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      class D = Object new (
+        |
+          public step ::= 3.
+        |
+      ) (
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      public aClass = (
+        ^A.
+      )
+
+      public dClass = (
+        ^D.
+      )
+
+      public run = (
+        ^A new total + D new total.
+      )
+
+      public edit = (
+        | builder |
+        builder:: (ClassMirror reflecting: A) mixin declaration asBuilder.
+        builder header source: 'class A = Object new (| public added ::= 5. public step ::= 4. |)'.
+        builder install.
+        ^0.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An install frees the copies keyed on the applications it rebuilds,
+    /// and only those: `A`'s `total` has its copy freed, `D`'s keeps its
+    /// own, and the program answers what the edit says.
+    fn an_edit_frees_the_copies_of_the_applications_it_rebuilds(lowering) {
+        let (mut interpreter, class) = load_customizing(AN_EDIT_OF_ONE_OF_TWO_CLASSES, lowering);
+        let platform = interpreter.platform();
+        let subject = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        }
+        let total = Symbol::intern("total");
+        let d_class = class_answered(&mut interpreter, &subject, "dClass");
+        let counted = counts_the_copies();
+        if counted {
+            let a_class = class_answered(&mut interpreter, &subject, "aClass");
+            assert_eq!(
+                interpreter.jit_customized_copies(&a_class, MethodSide::Instance, total),
+                1
+            );
+            assert_eq!(
+                interpreter.jit_customized_copies(&d_class, MethodSide::Instance, total),
+                1
+            );
+        }
+        let statistics_before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "edit"), 0);
+        let statistics_after = since(interpreter.jit_statistics(), statistics_before);
+        if counted {
+            assert_eq!(statistics_after.invalidated_copies, 1, "{statistics_after:?}");
+            assert_eq!(
+                interpreter.jit_customized_copies(&d_class, MethodSide::Instance, total),
+                1,
+                "`D`'s copy stays"
+            );
+        }
+        let expected_after_edit = 700;
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), expected_after_edit);
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Under the invalidate stress mode every safepoint frees all
+    /// optimized code before it installs what was requested since the
+    /// last, and the bodies are optimized afresh at their next run-out:
+    /// copies are installed and freed run after run, and the answers hold.
+    fn under_the_invalidate_stress_copies_are_freed_and_the_answer_holds(lowering) {
+        let (mut interpreter, class) = load_with(ONE_METHOD_ON_TWO_APPLICATIONS, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_invalidate_stress(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..5 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        }
+        if counts_the_copies() {
+            let statistics = interpreter.jit_statistics();
+            assert!(statistics.customized_copies >= 2, "{statistics:?}");
+            assert!(statistics.invalidated_copies >= 1, "{statistics:?}");
+            assert_eq!(statistics.made_not_entrant, 0, "{statistics:?}");
+        }
+    }
+}
+
+/// `Cell`'s lazy slot `step`, whose getter reads the slot and fills it
+/// with 2 when it is nil, `Cell` applied over whichever class `Box`'s
+/// factory is given: over `Narrow`, which has no slot, the slot is the
+/// instance's first field; over `Wide`, whose three slots hold 100, its
+/// fourth. Every `Box` makes its own class object of `Cell`, and the
+/// application over a base dies with the last of them.
+const ONE_MIXIN_OVER_TWO_BASES: &str = indoc! {"
+    class Subject = Object new () (
+      class Narrow = Object new () ()
+
+      class Wide = Object new (
+        |
+          public first ::= 100.
+          public second ::= 100.
+          public third ::= 100.
+        |
+      ) ()
+
+      class Box on: base = Object new (
+        |
+          base = base.
+        |
+      ) (
+        public class Cell = base new () (
+          lazy public step = 2.
+        )
+      )
+
+      public bases = (
+        ^Narrow == Wide ifTrue: [1] ifFalse: [0].
+      )
+
+      public narrow = (
+        ^(Box on: Narrow) Cell new.
+      )
+
+      public wide = (
+        ^(Box on: Wide) Cell new.
+      )
+
+      public sumOf: cell = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + cell step.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// `subject`'s `sumOf:` of `cell`, a `SmallInteger`.
+#[cfg(debug_assertions)]
+fn sum_of(interpreter: &mut Interpreter, subject: &Root, cell: &Root) -> i64 {
+    let answer = expect_ok(
+        interpreter.send(
+            subject,
+            Symbol::intern("sumOf:"),
+            std::slice::from_ref(cell),
+        ),
+        "sumOf:",
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("sumOf:: expected a small integer"),
+    })
+}
+
+#[cfg(debug_assertions)]
+ns_runtime::for_each_lowering! {
+    /// A full collection that reclaims the id of an application frees
+    /// the copies keyed on it and drops their rows: `Cell` over `Narrow`
+    /// has a copy of `step`'s getter, which reads its slot at the first
+    /// field; the application dies with its last `Box`, the collection
+    /// frees its id, and `Cell` over `Wide` is minted it again -- a copy
+    /// left keyed on it would answer `Wide`'s first slot, 100, for
+    /// `Cell`'s 2.
+    fn a_copy_keyed_on_a_reclaimed_id_is_freed(lowering) {
+        let (mut interpreter, class) = load_customizing(ONE_MIXIN_OVER_TWO_BASES, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        // Both bases' applications minted before either `Cell`'s, and the
+        // ids that died before collected, so that `Cell` over `Narrow`
+        // takes the smallest free id, which its death frees for `Cell`
+        // over `Wide` to take (`DispatchIdAllocator::mint`).
+        assert_eq!(send_unary(&mut interpreter, &subject, "bases"), 0);
+        interpreter.collect_now();
+        for _ in 0..3 {
+            let cell = class_answered(&mut interpreter, &subject, "narrow");
+            assert_eq!(sum_of(&mut interpreter, &subject, &cell), 200);
+        }
+        interpreter.collect_now();
+        let expected_of_the_new_class = 200;
+        for _ in 0..3 {
+            let cell = class_answered(&mut interpreter, &subject, "wide");
+            assert_eq!(
+                sum_of(&mut interpreter, &subject, &cell),
+                expected_of_the_new_class
+            );
+        }
     }
 }
 

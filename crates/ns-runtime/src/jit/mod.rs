@@ -350,6 +350,13 @@ pub struct JitStatistics {
     /// for good, their copy past `LAST_VERSION` made not entrant or
     /// abandoned all the same (`retire_optimized`).
     pub refused_for_good: u64,
+    /// Optimized copies freed because what they were compiled against
+    /// changed: the copies keyed on an application an install rebuilt
+    /// (`invalidate_applications`) or whose id a full collection reclaimed
+    /// (`forget_freed_copies`), and every copy at a bulk forward or under
+    /// the invalidate stress mode (`invalidate_all_optimized`). Neither a
+    /// trap nor an exit: no version is raised for them.
+    pub invalidated_copies: u64,
 }
 
 impl JitStatistics {
@@ -1552,6 +1559,22 @@ pub(crate) struct JitState {
     /// optimized code compiled meanwhile counts its interrupt points down
     /// to a forced exit (`MachineWord::DeoptCountdown`).
     deopt_stress: bool,
+    /// Whether the invalidate stress mode is on (`NS_NEXT_STRESS_INVALIDATE`,
+    /// `set_invalidate_stress`), which implies the optimize stress mode:
+    /// every optimized copy is invalidated at every safepoint
+    /// (`invalidate_all_optimized`).
+    invalidate_stress: bool,
+    /// The interrupt points optimized code passes before the invalidate
+    /// stress mode's next invalidation (`arm_invalidation_count`).
+    stress_invalidation_period: u64,
+    /// The method bodies that have a key's row (`JitSlot::copies`), held
+    /// weakly as the installed bodies are: what an invalidation by
+    /// application (`invalidate_applications`, `forget_freed_copies`)
+    /// walks, since a row outlives its copy's code and its baseline code
+    /// alike, and a row keyed on a reclaimed id must be dropped wherever
+    /// it lies.
+    #[cfg(ns_jit)]
+    customized: Vec<Weak<CompiledCode>>,
     /// Where the next safepoint's countdown lies in `DEOPTIMIZATION_ROTATION`.
     deoptimization_rotation: usize,
     /// The countdown the last safepoint set, which a forced exit came at
@@ -1617,16 +1640,17 @@ pub(crate) fn stress_zone_from_env() -> bool {
 }
 
 /// Whether `NS_NEXT_STRESS_OPTIMIZE` asks for the optimize stress mode:
-/// set, and neither empty nor `0`, or the deopt stress mode, which implies
-/// it. Debug builds only; read once per process. Every body is then
-/// optimized as early as it can be: compiled to baseline code at its first
-/// entry or interpreted backward jump, its budget armed at 0, so that its
-/// first spend requests its optimization, which the next safepoint
-/// compiles -- V8's `stress_maglev` (`docs/design/execution.md`,
+/// set, and neither empty nor `0`, or the deopt or the invalidate stress
+/// mode, which imply it. Debug builds only; read once per process. Every
+/// body is then optimized as early as it can be: compiled to baseline code
+/// at its first entry or interpreted backward jump, its budget armed at 0,
+/// so that its first spend requests its optimization, which the next
+/// safepoint compiles -- V8's `stress_maglev` (`docs/design/execution.md`,
 /// "Verification"). It forces the JIT on where it is available.
 pub(crate) fn stress_optimize_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     stress_deopt_from_env()
+        || stress_invalidate_from_env()
         || (cfg!(debug_assertions)
             && *REQUESTED.get_or_init(|| {
                 std::env::var_os("NS_NEXT_STRESS_OPTIMIZE")
@@ -1649,6 +1673,40 @@ pub(crate) fn stress_deopt_from_env() -> bool {
                 .is_some_and(|value| !value.is_empty() && value != "0")
         })
 }
+
+/// Whether `NS_NEXT_STRESS_INVALIDATE` asks for the invalidate stress
+/// mode: set, and neither empty nor `0`. Debug builds only; read once per
+/// process. It implies the optimize stress mode, and every safepoint
+/// invalidates all optimized code (`invalidate_all_optimized`) before it
+/// installs what was requested since the last one, so that every copy
+/// installed has had a stretch to run before it is freed, and its body
+/// is optimized afresh at its next run-out (`docs/design/execution.md`,
+/// "Verification").
+pub(crate) fn stress_invalidate_from_env() -> bool {
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(debug_assertions)
+        && *REQUESTED.get_or_init(|| {
+            std::env::var_os("NS_NEXT_STRESS_INVALIDATE")
+                .is_some_and(|value| !value.is_empty() && value != "0")
+        })
+}
+
+/// The interrupt points optimized code passes before the invalidate
+/// stress mode's first invalidation, doubled after each
+/// (`JitState::arm_invalidation_count`) up to
+/// `MAXIMUM_STRESS_INVALIDATION_POINTS`: so that the copies compiled since
+/// the last one run a while, a test's short run is invalidated many times,
+/// and a long run whose bodies keep asking for their copies -- a
+/// thousand-send body among them, which a debug build takes seconds to
+/// optimize -- compiles them again a number of times that grows with the
+/// logarithm of its length, not with it, as the revival of an abandoned
+/// body backs off (`revival_entries`).
+const STRESS_INVALIDATION_POINTS: u64 = 100;
+
+/// The most interrupt points the invalidate stress mode waits between two
+/// invalidations (`STRESS_INVALIDATION_POINTS`): sixteen doublings
+/// past the first, so that a long run is still invalidated now and then.
+const MAXIMUM_STRESS_INVALIDATION_POINTS: u64 = STRESS_INVALIDATION_POINTS << 16;
 
 /// The countdowns the deopt stress mode's safepoints set in turn
 /// (`MachineWord::DeoptCountdown`), the Fibonacci numbers up to 987:
@@ -1732,6 +1790,10 @@ impl JitState {
             budget_set: OPTIMIZATION_BUDGET,
             optimize_stress,
             deopt_stress: stress_deopt_from_env(),
+            invalidate_stress: stress_invalidate_from_env(),
+            stress_invalidation_period: STRESS_INVALIDATION_POINTS,
+            #[cfg(ns_jit)]
+            customized: Vec::new(),
             deoptimization_rotation: 0,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
@@ -1892,6 +1954,7 @@ impl JitState {
         );
         self.machine_words = words;
         self.rotate_deoptimization_countdown();
+        self.arm_invalidation_count(false);
     }
 
     /// The unpointed budget's address (`MachineWord::UnpointedBudget`).
@@ -1914,11 +1977,12 @@ impl JitState {
     /// Turns the optimize stress mode on or off for this state, as
     /// `NS_NEXT_STRESS_OPTIMIZE` does at its creation, answering the
     /// budget every row is armed with from now on; turning it off turns
-    /// the deopt stress mode off too, which implies it. Set before the
-    /// code it is meant for runs.
+    /// the deopt and the invalidate stress modes off too, which imply it.
+    /// Set before the code it is meant for runs.
     pub(crate) fn set_optimize_stress(&mut self, stress: bool) -> i64 {
         self.optimize_stress = stress;
         self.deopt_stress = self.deopt_stress && stress;
+        self.invalidate_stress = self.invalidate_stress && stress;
         self.compile_at_entry = if stress || self.install_bodies_exiting_at_once {
             1
         } else {
@@ -1943,7 +2007,81 @@ impl JitState {
         self.deopt_stress = stress;
         self.deoptimization_rotation = 0;
         self.rotate_deoptimization_countdown();
+        self.arm_invalidation_count(false);
         budget
+    }
+
+    /// Turns the invalidate stress mode on or off for this state, as
+    /// `NS_NEXT_STRESS_INVALIDATE` does at its creation: on, with the
+    /// optimize stress mode; off, the optimize stress mode left as it is.
+    /// Answers the budget every row is armed with from now on.
+    pub(crate) fn set_invalidate_stress(&mut self, stress: bool) -> i64 {
+        let budget = if stress {
+            self.set_optimize_stress(true)
+        } else {
+            self.optimization_budget
+        };
+        self.invalidate_stress = stress;
+        self.arm_invalidation_count(false);
+        budget
+    }
+
+    /// Whether the invalidate stress mode is on, under which every
+    /// safepoint invalidates all optimized code.
+    pub(crate) fn invalidate_stress(&self) -> bool {
+        self.invalidate_stress
+    }
+
+    /// Whether the invalidate stress mode's safepoint frees all optimized
+    /// code now: once the code compiled under the mode passed
+    /// `stress_invalidation_period` interrupt points since the last
+    /// invalidation -- or, under the deopt stress mode too, any point since
+    /// the last safepoint -- each point taking one off the countdown
+    /// (`MachineWord::DeoptCountdown`). So every copy freed has had the
+    /// chance to run: a safepoint every run-out requests would otherwise
+    /// free every copy before a frame entered it, and every body would ask
+    /// for its copy again at its next spend, compiling at every safepoint
+    /// for ever.
+    pub(crate) fn invalidation_due_for_stress(&self) -> bool {
+        use crate::heap::machine_words::MachineWord;
+        let countdown = self.machine_words.get(MachineWord::DeoptCountdown);
+        if self.deopt_stress {
+            return countdown != self.deoptimization_countdown;
+        }
+        u64::MAX - countdown >= self.stress_invalidation_period
+    }
+
+    /// Under the invalidate stress mode alone, arms the countdown at
+    /// `u64::MAX`, which no run counts down to its exit, so that it counts
+    /// the interrupt points optimized code passes from now on
+    /// (`invalidation_due_for_stress`): at the mode's start, waiting
+    /// `STRESS_INVALIDATION_POINTS` of them, and after each of its
+    /// invalidations (`after_an_invalidation`), waiting twice as many as
+    /// before, up to `MAXIMUM_STRESS_INVALIDATION_POINTS`. The deopt stress
+    /// mode's safepoints set the countdown themselves
+    /// (`rotate_deoptimization_countdown`).
+    pub(crate) fn arm_invalidation_count(&mut self, after_an_invalidation: bool) {
+        use crate::heap::machine_words::MachineWord;
+        self.stress_invalidation_period = if after_an_invalidation {
+            self.stress_invalidation_period
+                .saturating_mul(2)
+                .min(MAXIMUM_STRESS_INVALIDATION_POINTS)
+        } else {
+            STRESS_INVALIDATION_POINTS
+        };
+        if self.invalidate_stress && !self.deopt_stress {
+            self.deoptimization_countdown = u64::MAX;
+            self.machine_words
+                .set(MachineWord::DeoptCountdown, u64::MAX);
+        }
+    }
+
+    /// The live method bodies that have a key's row, the dead ones
+    /// forgotten (`JitState::customized`).
+    #[cfg(ns_jit)]
+    fn customized_codes(&mut self) -> Vec<Rc<CompiledCode>> {
+        self.customized.retain(|code| code.strong_count() > 0);
+        self.customized.iter().filter_map(Weak::upgrade).collect()
     }
 
     /// Whether the optimize stress mode is on, under which a body's budget
@@ -2611,6 +2749,10 @@ impl JitState {
             budget_set: OPTIMIZATION_BUDGET,
             optimize_stress: false,
             deopt_stress: false,
+            invalidate_stress: false,
+            stress_invalidation_period: STRESS_INVALIDATION_POINTS,
+            #[cfg(ns_jit)]
+            customized: Vec::new(),
             deoptimization_rotation: 0,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
@@ -4440,9 +4582,12 @@ pub(crate) fn budget_spent(
 /// recompile of a copy made not entrant, and a key that has no copy yet.
 /// Armed afresh at the plain wait while the body has a pair not refused,
 /// since the run-out says that what any waiting pair waited for was
-/// spent; left parked once every pair it knows of is refused, so that a
-/// body refused throughout calls no leaf once per budget for the rest of
-/// the run.
+/// spent; left parked only once the body's one uncustomized copy is
+/// refused as well as every key's row, so that a body refused throughout
+/// calls no leaf once per budget for the rest of the run. A method body
+/// whose uncustomized copy was never refused -- a frame without a key
+/// never asked for it -- counts as a pair not refused, and so keeps its
+/// budget armed, however many of its keys are.
 #[cfg(ns_jit)]
 fn rearm_for_other_pairs(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     let any_left = !code.jit.optimized_refused.get()
@@ -4512,6 +4657,9 @@ fn request_copy(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, frame_addres
             let entered_word = current_class
                 .and_then(|class| mutator.heap.class_application_word(class))
                 .unwrap_or(crate::heap::optimized_copies::VACANT);
+            if !code.jit.has_copies() {
+                mutator.jit.customized.push(Rc::downgrade(code));
+            }
             code.jit.copies.borrow_mut().push(CustomizedCopy {
                 key,
                 body: NO_BODY,
@@ -4683,7 +4831,10 @@ fn optimize(
     );
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
-    macro_assembler.set_deoptimize_by_countdown(mutator.jit.deopt_stress);
+    // Under the invalidate stress mode the countdown, armed beyond reach,
+    // only says whether optimized code ran (`optimized_code_ran`).
+    macro_assembler
+        .set_deoptimize_by_countdown(mutator.jit.deopt_stress || mutator.jit.invalidate_stress);
     let role = baseline::BodyRole::of(code, method.is_some());
     let installation = optimizing::compile(
         &snapshot,
@@ -5911,26 +6062,246 @@ fn retire_optimized(
     code: &Rc<CompiledCode>,
     key: Option<CustomizationKey>,
 ) -> bool {
-    let Some((start, copy)) = mutator.jit.free_optimized(code, key) else {
+    let mut entries = Vec::new();
+    let Some(copy) = unlink_optimized(mutator, code, key, &mut entries) else {
         return false;
     };
-    if let Some(zone) = mutator.jit.zone.as_ref() {
-        let entry = zone.writer.zone().executable_address(CodeOffset(start)) as u64;
-        mutator.caches.refresh_cells_entering(entry, &mutator.jit);
-    }
-    // A `super` or private lexical cell names the body's dispatching
-    // entry only while the body has a copy.
-    if let Some(entry) = mutator.jit.dispatching_entry_address(code) {
-        mutator.caches.refresh_cells_entering(entry, &mutator.jit);
-    }
-    if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
-        note_block_entry(mutator, id, code);
-    }
+    refresh_cells_entering(mutator, entries);
     match code.jit.raise_version(copy) {
         Some(version) => rearm_optimization_budget(mutator, code, version),
         None => mutator.jit.statistics.refused_for_good += 1,
     }
     true
+}
+
+/// Frees `code`'s optimized code for `key` (`JitState::free_optimized`)
+/// and writes afresh the machine entry row that named it, answering the
+/// key it was compiled for, `None` for the uncustomized copy, and adding
+/// to `entries` the addresses a cell may name of it -- its start, and the
+/// body's dispatching entry, which a `super` or private lexical cell
+/// names only while the body has a copy -- for the caller to write the
+/// cells naming them afresh, once for every copy it frees
+/// (`refresh_cells_entering`). Its dispatching rows are written afresh by
+/// the free itself. Between entries only.
+#[cfg(ns_jit)]
+fn unlink_optimized(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+    entries: &mut Vec<u64>,
+) -> Option<Option<CustomizationKey>> {
+    let (start, copy) = mutator.jit.free_optimized(code, key)?;
+    if let Some(zone) = mutator.jit.zone.as_ref() {
+        entries.push(zone.writer.zone().executable_address(CodeOffset(start)) as u64);
+    }
+    entries.extend(mutator.jit.dispatching_entry_address(code));
+    if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
+        note_block_entry(mutator, id, code);
+    }
+    Some(copy)
+}
+
+/// Writes afresh from its entry every cell that names one of `entries`
+/// (`InlineCaches::refresh_cells_entering_any`): one walk of the cells for
+/// all the copies an invalidation freed.
+#[cfg(ns_jit)]
+fn refresh_cells_entering(mutator: &mut Mutator<'_>, mut entries: Vec<u64>) {
+    if entries.is_empty() {
+        return;
+    }
+    entries.sort_unstable();
+    entries.dedup();
+    mutator
+        .caches
+        .refresh_cells_entering_any(&entries, &mutator.jit);
+}
+
+/// Frees exactly `code`'s optimized code for `key` -- the key's copy, or
+/// for `None` the body's one uncustomized copy, never the one an
+/// activation of the key would run in its place -- as an invalidation
+/// does, counting it (`JitStatistics::invalidated_copies`), and answers
+/// whether it had some. No version is raised and no trap counted: what
+/// the copy was compiled against changed, which says nothing of its
+/// speculations (`docs/design/execution.md`, "Invalidation").
+#[cfg(ns_jit)]
+fn invalidate_copy(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+    entries: &mut Vec<u64>,
+) -> bool {
+    let exists = match key {
+        Some(key) => mutator.jit.copy_of(code, key).is_some(),
+        None => mutator.jit.optimized(code).is_some(),
+    };
+    if !exists || unlink_optimized(mutator, code, key, entries).is_none() {
+        return false;
+    }
+    mutator.jit.statistics.invalidated_copies += 1;
+    true
+}
+
+/// Frees every customized copy of `code` whose key `stale` says is stale,
+/// and the body's one uncustomized copy too when `uncustomized`, adding
+/// the addresses cells may name of them to `entries`; then, if any was
+/// freed, arms the body's budget afresh at the longest wait the freed
+/// copies' versions earned (`optimization_budget_after`), so that the next
+/// copy waits for feedback gathered since -- as long as a failure of the
+/// freed one would have it wait, no longer, since an invalidation is no
+/// failure.
+#[cfg(ns_jit)]
+fn invalidate_copies_of(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    (stale, uncustomized): (&dyn Fn(CustomizationKey) -> bool, bool),
+    entries: &mut Vec<u64>,
+) {
+    let keys: Vec<(CustomizationKey, u8)> = code
+        .jit
+        .copies
+        .borrow()
+        .iter()
+        .filter(|copy| stale(copy.key))
+        .map(|copy| (copy.key, copy.version))
+        .collect();
+    let mut wait: Option<u8> = None;
+    let mut note = |version: u8| wait = Some(wait.map_or(version, |longest| longest.max(version)));
+    if uncustomized && invalidate_copy(mutator, code, None, entries) {
+        note(code.jit.optimized_version(None));
+    }
+    for (key, version) in keys {
+        if invalidate_copy(mutator, code, Some(key), entries) {
+            note(version);
+        }
+    }
+    if let Some(version) = wait {
+        rearm_optimization_budget(mutator, code, version);
+    }
+}
+
+/// Frees every customized copy whose key names one of `rebuilt` -- the
+/// instances ids of the applications an install replaced
+/// (`Mutator::install_edit`) -- as its receiver's or its entered
+/// application: each was compiled against a layout, a lookup or an outer
+/// structure the install changed. Every other copy stays, and so does
+/// each key's row, whose ids no receiver carries any more once the
+/// install restamped or forwarded every instance; a full collection
+/// drops the rows once it reclaims the ids (`forget_freed_copies`).
+/// Freed at once, with their cells, dispatching rows and machine entry
+/// rows written afresh: an install runs after an exit, where no return
+/// address into the zone exists and every frame goes on in its baseline
+/// code (`docs/design/execution.md`, "No frame is converted in stage
+/// 2"). No version is raised (`invalidate_copy`).
+#[cfg(ns_jit)]
+pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[DispatchId]) {
+    if rebuilt.is_empty() {
+        return;
+    }
+    let rebuilt: std::collections::HashSet<DispatchId, crate::hash::IdentityBuildHasher> =
+        rebuilt.iter().copied().collect();
+    let stale =
+        |key: CustomizationKey| rebuilt.contains(&key.receiver) || rebuilt.contains(&key.entered);
+    // A request still pending would compile a copy for the old layout.
+    mutator
+        .jit
+        .optimization_requests
+        .retain(|request| request.key.is_none_or(|key| !stale(key)));
+    let mut entries = Vec::new();
+    for code in mutator.jit.customized_codes() {
+        invalidate_copies_of(mutator, &code, (&stale, false), &mut entries);
+    }
+    refresh_cells_entering(mutator, entries);
+}
+
+/// Frees every optimized copy there is, customized or not: what a bulk
+/// forward (`elementsOf:forwardIdentityToElementsOf:ifFail:`) does, since
+/// a forwarded object may be the receiver a copy was verified for or
+/// reached through any of its slots, and what the invalidate stress mode
+/// does at every safepoint (`NS_NEXT_STRESS_INVALIDATE`). Freed at once,
+/// as `invalidate_applications` frees: the forward is a mirror leaf run
+/// after an exit, the stress mode's safepoint lies between two stretches.
+/// No version is raised (`invalidate_copy`).
+#[cfg(ns_jit)]
+pub(crate) fn invalidate_all_optimized(mutator: &mut Mutator<'_>) {
+    let mut codes: Vec<Rc<CompiledCode>> = Vec::new();
+    for body in &mutator.jit.bodies {
+        if body.free || body.tier != Tier::Optimized {
+            continue;
+        }
+        if let Some(code) = body.code.upgrade() {
+            if !codes.iter().any(|known| Rc::ptr_eq(known, &code)) {
+                codes.push(code);
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    for code in codes {
+        invalidate_copies_of(mutator, &code, (&|_| true, true), &mut entries);
+    }
+    refresh_cells_entering(mutator, entries);
+}
+
+/// Drops every key's row whose receiver's or entered application's id a
+/// full collection reclaimed (`Mutator::reclaim_ids`), with its copy and
+/// every pending request for it: the id is minted again for another
+/// application, of another layout, which must meet neither the copy nor
+/// what the row says of the dead one -- a refusal that would block the
+/// new key for good, a version that would hold back its first copy, the
+/// level and the application word its cells and dispatching rows would
+/// match it by. Run in the collection, between marking and compaction,
+/// where nothing runs; it allocates nothing and moves nothing. No version
+/// is raised and no budget armed: the row it would be raised in is gone.
+#[cfg(ns_jit)]
+pub(crate) fn forget_freed_copies(
+    mutator: &mut Mutator<'_>,
+    freed: &crate::heap::reclaim::FreedIds,
+) {
+    if freed.guards.is_empty() {
+        return;
+    }
+    let stale = |key: CustomizationKey| {
+        freed.guards.contains(&key.receiver) || freed.guards.contains(&key.entered)
+    };
+    mutator
+        .jit
+        .optimization_requests
+        .retain(|request| request.key.is_none_or(|key| !stale(key)));
+    let mut entries = Vec::new();
+    for code in mutator.jit.customized_codes() {
+        let keys: Vec<CustomizationKey> = code
+            .jit
+            .copies
+            .borrow()
+            .iter()
+            .map(|copy| copy.key)
+            .filter(|key| stale(*key))
+            .collect();
+        for key in keys {
+            invalidate_copy(mutator, &code, Some(key), &mut entries);
+        }
+        code.jit.copies.borrow_mut().retain(|copy| !stale(copy.key));
+    }
+    mutator
+        .jit
+        .customized
+        .retain(|code| code.upgrade().is_some_and(|code| code.jit.has_copies()));
+    refresh_cells_entering(mutator, entries);
+}
+
+/// Without a JIT there is no optimized code to invalidate.
+#[cfg(not(ns_jit))]
+pub(crate) fn invalidate_applications(_mutator: &mut Mutator<'_>, _rebuilt: &[DispatchId]) {}
+
+/// Without a JIT there is no optimized code to invalidate.
+#[cfg(not(ns_jit))]
+pub(crate) fn invalidate_all_optimized(_mutator: &mut Mutator<'_>) {}
+
+/// Without a JIT no body has a key's row.
+#[cfg(not(ns_jit))]
+pub(crate) fn forget_freed_copies(
+    _mutator: &mut Mutator<'_>,
+    _freed: &crate::heap::reclaim::FreedIds,
+) {
 }
 
 /// The budget a body is armed with for a copy at `version`: `budget` times
@@ -7239,7 +7610,14 @@ mod tests {
         /// the copies a run made before the test reads them.
         fn a_stress_mode_frees_copies() -> bool {
             [
-                "ZONE", "COLLECT", "SCAVENGE", "MOVES", "SUSPEND", "EXIT", "CACHES",
+                "ZONE",
+                "COLLECT",
+                "SCAVENGE",
+                "MOVES",
+                "SUSPEND",
+                "EXIT",
+                "CACHES",
+                "INVALIDATE",
             ]
             .iter()
             .any(|mode| {
