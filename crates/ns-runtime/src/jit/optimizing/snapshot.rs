@@ -913,8 +913,13 @@ fn convert(
 
 /// The call site a speculation of one instruction rests on, and what the
 /// caches recorded of it when the snapshot was taken: whether a send ever
-/// filled it (`InlineCaches::site_executed`) and whether a speculation on
-/// it trapped before (`InlineCaches::site_trapped`).
+/// filled its cache (`InlineCaches::site_executed`) and whether a
+/// speculation on it trapped before (`InlineCaches::site_trapped`). The
+/// executed bit records a recorded entry, not every run: a send resolved
+/// to `doesNotUnderstand:` fills no cache -- a non-Boolean's conditional
+/// fallback, `nil + 1` -- so a site that ran so reads as never executed,
+/// and only its trapped bit, which the trap sets, says it ran. A site
+/// speculates only when neither is set (`build::build`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SiteFacts {
     pub(crate) site: u32,
@@ -960,9 +965,11 @@ pub(crate) struct Snapshot {
     /// send's own, an `IntegerBinary`'s fallback send's and a
     /// `JumpIfNotBoolean`'s first send at its not-Boolean target
     /// (`fallback_site`) -- the send that runs where the speculation
-    /// fails, so that the site's executed bit says whether it ever failed
-    /// and its trapped bit whether a speculation on it trapped. `None` for
-    /// every other instruction.
+    /// fails, so that the site's executed bit says whether a send there
+    /// ever filled its cache, which a send that ran unrecorded, resolved
+    /// to `doesNotUnderstand:`, did not, and its trapped bit whether a
+    /// speculation on it trapped (`SiteFacts`). `None` for every other
+    /// instruction.
     pub(crate) sites: Vec<Option<SiteFacts>>,
     /// The copy's key and entered level, for a customized copy; `None`
     /// for a body's one uncustomized copy, whose own-slot instructions

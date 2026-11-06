@@ -139,6 +139,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         dispatched_calls: after.dispatched_calls - before.dispatched_calls,
         forced_exits: after.forced_exits - before.forced_exits,
         deepest_forced_exit: after.deepest_forced_exit,
+        traps: after.traps - before.traps,
     }
 }
 
@@ -1732,11 +1733,19 @@ const LONG_OPTIMIZED_LOOP: &str = indoc! {"
 /// 987 -- the 247th turn of `sweep:`'s loop, past many a write-back of the
 /// values its back edge carries. The optimized lowering's, which inlines
 /// the loop's blocks into `sweep:`.
+/// A first run, with nothing optimized, records every site, so that the
+/// optimized code speculates on none: compiled at its first spend, before
+/// its sends ran, it would trap at the first, and each activation would
+/// leave it at its first turn.
 #[test]
 fn the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation() {
     let (mut interpreter, class) = load_with(LONG_OPTIMIZED_LOOP, Lowering::Optimized);
-    interpreter.set_deopt_stress(true);
+    // Whatever stress mode the environment sets, the first run optimizes
+    // nothing.
+    interpreter.set_optimize_stress(false);
     let turn = (0..300).sum::<i64>() + 3 * 300;
+    assert_eq!(run(&mut interpreter, &class), 100 * turn);
+    interpreter.set_deopt_stress(true);
     assert_eq!(run(&mut interpreter, &class), 100 * turn);
     let statistics = interpreter.jit_statistics();
     assert!(statistics.forced_exits > 0, "no forced exit");
@@ -1960,19 +1969,28 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// A loop calling `step:` 3,100 times, whose budget runs out after a few
-/// hundred calls, so that the loop's calls enter its optimized code; from
-/// the 3,001st call on `step:` sends a message its class answers in its
-/// own `doesNotUnderstand:`, whose handler machine code leaves to the
-/// interpreter: an exit of the optimized code at every call.
+/// A loop calling `step:at:` 3,100 times, whose budget runs out after a
+/// few hundred calls, so that the loop's calls enter its optimized code;
+/// from the 3,001st call on `step:at:` sends `probe:`, a site that ran on
+/// `self` alone, to a `Stranger`, which answers it in its own
+/// `doesNotUnderstand:`, whose handler machine code leaves to the
+/// interpreter: an exit of the optimized code at every call. The site
+/// ran, so its send is no trap: a send never executed is one, which
+/// counts against no budget.
 const EXITING_HOT_LOOP: &str = indoc! {"
-    class Subject = Object new () (
-      step: value = (
-        value < 3000 ifTrue: [^value].
-        ^self missing
+    class Subject = Object new (
+      | stranger = Stranger new. |
+    ) (
+      class Stranger = () (
+        public doesNotUnderstand: message = (
+          ^1
+        )
       )
-      public doesNotUnderstand: message = (
-        ^1
+      step: target at: value = (
+        ^target probe: value
+      )
+      public probe: value = (
+        ^value
       )
       public run = (
         |
@@ -1980,7 +1998,7 @@ const EXITING_HOT_LOOP: &str = indoc! {"
           index ::= 0.
         |
         [index < 3100] whileTrue: [
-          sum:: sum + (self step: index).
+          sum:: sum + (self step: (index < 3000 ifTrue: [self] ifFalse: [stranger]) at: index).
           index:: index + 1.
         ].
         ^sum
@@ -2004,7 +2022,7 @@ fn run_abandoning(source: &str, lowering: Lowering) -> (i64, JitStatistics) {
 }
 
 ns_runtime::for_each_lowering! {
-    /// `step:`'s optimized code exits at each of the last hundred calls:
+    /// `step:at:`'s optimized code exits at each of the last hundred calls:
     /// the exits count against its own budget, never its baseline code's,
     /// so that at the sixty-fourth its optimized code alone is abandoned
     /// and the rest of the calls run its baseline code, whose thirty-six
@@ -2018,6 +2036,7 @@ ns_runtime::for_each_lowering! {
             assert_eq!(statistics.optimized_exits, 64, "{statistics:?}");
             assert_eq!(statistics.abandoned_optimized_bodies, 1, "{statistics:?}");
             assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
+            assert_eq!(statistics.traps, 0, "{statistics:?}");
         }
     }
 }
@@ -6697,7 +6716,11 @@ ns_runtime::for_each_lowering! {
         // among them, so that its bodies exit at their first send and are
         // never compiled.
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            let (Some(freed_offset_before), Some(moved_offset_before), Some(moved_offset_after)) = (freed_offset_before, moved_offset_before, moved_offset_after)
+            let (
+                Some(freed_offset_before),
+                Some(moved_offset_before),
+                Some(moved_offset_after),
+            ) = (freed_offset_before, moved_offset_before, moved_offset_after)
             else {
                 panic!("`a` and `b` were compiled, and `b` survives");
             };
@@ -8437,5 +8460,124 @@ ns_runtime::for_each_lowering! {
                 "not at every turn of the 30,000: {done:?}"
             );
         }
+    }
+}
+
+/// Three methods `warm` runs a thousand times on `SmallInteger`s and
+/// Booleans alone, so that each is optimized with its fast paths'
+/// fallbacks and its conditional's non-Boolean way never run; each of
+/// the others then gives one of them, once, what it never saw.
+const SPECULATED: &str = indoc! {"
+    class Subject = Object new () (
+      class Maybe = () (
+        public ifTrue: trueBlock ifFalse: falseBlock = (
+          ^3
+        )
+      )
+      total: step = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 100] whileTrue: [
+          sum:: sum + step.
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      double: number = (
+        ^number + number
+      )
+      choose: flag = (
+        ^flag ifTrue: [1] ifFalse: [2]
+      )
+      public warm = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 1000] whileTrue: [
+          sum:: sum + (self total: 1) + (self double: index) + (self choose: index < 500).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public withFloat = (
+        ^((self total: 0.5) * 2) asInteger
+      )
+      public withOverflow = (
+        | big |
+        big:: 1152921504606846975.
+        ^(self double: big) - big - big + 7
+      )
+      public withNonBoolean = (
+        ^self choose: Maybe new
+      )
+    ) : ()
+"};
+
+/// The budget `SPECULATED`'s methods are armed with: each runs out
+/// within `warm`'s thousand calls.
+const SPECULATING_BUDGET: i64 = 1_000;
+
+/// `SPECULATED` warmed up under `lowering`, then sent `selector`:
+/// its answer, and what the JIT did while it ran.
+fn after_warm_up(lowering: Lowering, selector: &str) -> (i64, JitStatistics) {
+    let (mut interpreter, class) = load_spending_with(SPECULATED, lowering);
+    interpreter.set_optimization_budget(SPECULATING_BUDGET);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    // 100 for `total: 1`, twice the index for `double:`, and 1 or 2 for
+    // `choose:`, over a thousand indices.
+    assert_eq!(send_unary(&mut interpreter, &subject, "warm"), 1_102_501);
+    let before = interpreter.jit_statistics();
+    let answer = send_unary(&mut interpreter, &subject, selector);
+    (answer, since(interpreter.jit_statistics(), before))
+}
+
+/// That `statistics` counts one trap where the tiers are pinned, and
+/// none under the reference lowering, whose sends run uncached and so
+/// record no site to speculate on.
+fn assert_trapped_once(statistics: &JitStatistics, lowering: Lowering) {
+    if pins_the_tiers(lowering) {
+        assert_eq!(statistics.traps, 1, "{statistics:?}");
+        assert_eq!(
+            statistics.abandoned_optimized_bodies, 0,
+            "a trap counts against no exit budget"
+        );
+    } else if lowering == Lowering::Reference {
+        assert_eq!(statistics.traps, 0, "{statistics:?}");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// `total:`'s sum, optimized on `SmallInteger`s, given a `Float`:
+    /// the fast path's failure traps, and the interpreter, running the
+    /// operation again, sends it, so that the sum is right.
+    fn a_float_after_warm_up_traps_once_and_answers_right(lowering) {
+        let (answer, statistics) = after_warm_up(lowering, "withFloat");
+        assert_eq!(answer, 100);
+        assert_trapped_once(&statistics, lowering);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// `double:`, optimized on `SmallInteger`s that never overflowed,
+    /// given the largest: the overflow traps, and the interpreter's
+    /// send answers the `LargeInteger`.
+    fn an_overflow_after_warm_up_traps_once_and_answers_right(lowering) {
+        let (answer, statistics) = after_warm_up(lowering, "withOverflow");
+        assert_eq!(answer, 7);
+        assert_trapped_once(&statistics, lowering);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// `choose:`, optimized on Booleans, given an object with an
+    /// `ifTrue:ifFalse:` of its own: the conditional traps, and the
+    /// interpreter sends it.
+    fn a_non_boolean_after_warm_up_traps_once_and_answers_right(lowering) {
+        let (answer, statistics) = after_warm_up(lowering, "withNonBoolean");
+        assert_eq!(answer, 3);
+        assert_trapped_once(&statistics, lowering);
     }
 }

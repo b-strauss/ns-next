@@ -24,7 +24,7 @@ use crate::heap::machine_words::MachineWord;
 /// entry to the next, only when the block is stale
 /// (`JitState::mark_block_stale`) -- the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
-/// dead register's exit), a leaf call `LeafStackPointer`, the cut its
+/// dead register's exit, `ExitTrapSite` for a trap's), a leaf call `LeafStackPointer`, the cut its
 /// answer (`CutStackPointer`, `CutFrameRegister`, `CutValue`), and code
 /// that counts its back edges `BackEdges`; the entry and the call stub
 /// each write `EnteredByCall`.
@@ -131,6 +131,10 @@ pub(crate) enum BlockWord {
     /// The backward jumps code compiled to count them took since the entry
     /// (`JitStatistics::machine_back_edges`).
     BackEdges = 31,
+    /// The call site a trap's speculation rested on, which the trap
+    /// writes before its exit (`MacroAssembler::trap`) and the run loop
+    /// reads for an exit of kind `ExitKind::Trap` alone.
+    ExitTrapSite = 32,
 }
 
 impl BlockWord {
@@ -145,7 +149,7 @@ impl BlockWord {
     }
 }
 
-const _: () = assert!((BlockWord::BackEdges as usize) < ENTRY_BLOCK_WORDS);
+const _: () = assert!((BlockWord::ExitTrapSite as usize) < ENTRY_BLOCK_WORDS);
 
 /// Why machine code left, as the exit stub answers it in `ExitKind`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -169,6 +173,11 @@ pub(crate) enum ExitKind {
     /// The frame the entry stub called returned: its value is in the
     /// block's `ExitProgramCounter`.
     Returned = 4,
+    /// A speculation failed (`MacroAssembler::trap`): the interpreter
+    /// re-executes the instruction at the exit's program counter, as for
+    /// `Reexecute`, and the run loop counts the trap of the site in the
+    /// block's `ExitTrapSite` against no exit budget.
+    Trap = 5,
 }
 
 /// An exit, decoded from the block and the kind `enter` answered.
@@ -192,6 +201,10 @@ pub(crate) enum MachineExit {
     },
     Returned {
         value: u64,
+    },
+    Trap {
+        program_counter: u32,
+        site: u32,
     },
 }
 
@@ -225,6 +238,15 @@ pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
     };
     if kind == ExitKind::Reexecute as u64 {
         MachineExit::Reexecute { program_counter }
+    } else if kind == ExitKind::Trap as u64 {
+        let word = block.get(BlockWord::ExitTrapSite.index());
+        let Ok(site) = u32::try_from(word) else {
+            panic!("internal: machine code trapped at site {word}");
+        };
+        MachineExit::Trap {
+            program_counter,
+            site,
+        }
     } else if kind == ExitKind::Safepoint as u64 {
         MachineExit::Safepoint { program_counter }
     } else if kind == ExitKind::DeadRegister as u64 {

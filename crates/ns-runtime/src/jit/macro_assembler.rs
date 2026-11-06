@@ -652,6 +652,10 @@ pub(crate) struct MacroAssembler {
     /// checked against when `finish` emits it after the straight line.
     #[cfg(debug_assertions)]
     cold_path_holds: Vec<Vec<Register>>,
+    /// The `SmallInteger` tag tests emitted, which the optimizing
+    /// compiler's tests count to see a known operand's left out.
+    #[cfg(test)]
+    small_integer_tag_tests: usize,
 }
 
 /// The alignment of a body's data words, a cache line's, which they share
@@ -678,7 +682,15 @@ impl MacroAssembler {
             values_held: Vec::new(),
             #[cfg(debug_assertions)]
             cold_path_holds: Vec::new(),
+            #[cfg(test)]
+            small_integer_tag_tests: 0,
         }
+    }
+
+    /// How many `SmallInteger` tag tests the code emitted so far holds.
+    #[cfg(test)]
+    pub(crate) fn small_integer_tag_tests(&self) -> usize {
+        self.small_integer_tag_tests
     }
 
     /// Queues `cold_path` for `finish`, with the registers values are
@@ -966,18 +978,27 @@ impl MacroAssembler {
     /// `decline`s with `Condition::Equal` unless `left` holds a
     /// `SmallInteger`, then likewise for `right`: `integer_into`'s decline
     /// of any other operand. Each decline is its own branch, so that a
-    /// baseline body's backward one polls on its own way.
+    /// baseline body's backward one polls on its own way. An operand
+    /// `known` to be a `SmallInteger` is not tested.
     pub(crate) fn test_small_integer_tags(
         &mut self,
         left: Register,
         right: Register,
+        known: KnownSmallIntegers,
         decline: &mut dyn FnMut(&mut MacroAssembler, Condition),
     ) {
         let tag = small_integer_tag_word();
-        self.assembler.test_immediate(left, tag);
-        decline(self, Condition::Equal);
-        self.assembler.test_immediate(right, tag);
-        decline(self, Condition::Equal);
+        for (register, known) in [(left, known.left), (right, known.right)] {
+            if known {
+                continue;
+            }
+            self.assembler.test_immediate(register, tag);
+            #[cfg(test)]
+            {
+                self.small_integer_tag_tests += 1;
+            }
+            decline(self, Condition::Equal);
+        }
     }
 
     /// `IntegerBinary`'s `SmallInteger` fast path, `integer_into`'s, on the
@@ -988,12 +1009,14 @@ impl MacroAssembler {
     /// away, before any register but `registers`' own is written. The
     /// baseline and optimized code both emit it, each with its own
     /// registers and its own way to decline, so the two make the same
-    /// choice of instructions. Clobbers the flags and every register of
+    /// choice of instructions. An operand `known` to be a `SmallInteger`
+    /// is not tested. Clobbers the flags and every register of
     /// `registers`, the operands' included.
     pub(crate) fn small_integer_operation(
         &mut self,
         operation: IntegerOperation,
         registers: IntegerRegisters,
+        known: KnownSmallIntegers,
         decline: &mut dyn FnMut(&mut MacroAssembler, Condition),
     ) -> Register {
         debug_assert!(
@@ -1010,7 +1033,7 @@ impl MacroAssembler {
             ]),
             "internal: a fast path's registers are distinct"
         );
-        self.test_small_integer_tags(registers.left, registers.right, decline);
+        self.test_small_integer_tags(registers.left, registers.right, known, decline);
         let tag = small_integer_tag_word();
         let (left, right) = (registers.left, registers.right);
         match operation {
@@ -1292,6 +1315,24 @@ impl MacroAssembler {
         self.assembler
             .load(Width::Word64, roles.idiom_scratch, stub);
         self.assembler.jump_register(roles.idiom_scratch);
+    }
+
+    /// A trap (`docs/design/execution.md`, "Speculation and its failure"):
+    /// the exit that runs the instruction at `program_counter` again in
+    /// the interpreter, as `ExitKind::Reexecute` does, named as a trap of
+    /// a speculation resting on `site`, which it leaves in the block's
+    /// `ExitTrapSite` for the run loop that counts it. The caller has
+    /// written the frame back. Answers the label the trap begins at, bound
+    /// here, which a failed guard jumps to.
+    pub(crate) fn trap(&mut self, program_counter: u32, site: u32) -> Label {
+        let start = self.assembler.label();
+        self.assembler.bind(start);
+        let scratch = self.roles.idiom_scratch;
+        let trap_site = self.block_word(BlockWord::ExitTrapSite);
+        self.assembler.move_immediate(scratch, u64::from(site));
+        self.assembler.store(Width::Word64, trap_site, scratch);
+        self.exit(ExitKind::Trap, program_counter);
+        start
     }
 
     /// Takes `exit(kind, program_counter)` when `condition` holds, out of
@@ -3041,6 +3082,17 @@ fn small_integer_tag_word() -> i32 {
 /// count.
 fn small_integer_tag_bits() -> u8 {
     u8::try_from(crate::heap::value_bits::TAG_BITS).expect("internal: the tag takes a few bits")
+}
+
+/// Which operands of a `SmallInteger` fast path are known to be
+/// `SmallInteger`s, so that their tags are not tested
+/// (`MacroAssembler::small_integer_operation`): optimized code's values
+/// of a known kind (`optimizing::graph::ValueKind`). The baseline knows
+/// none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct KnownSmallIntegers {
+    pub(crate) left: bool,
+    pub(crate) right: bool,
 }
 
 /// The registers a `SmallInteger` fast path computes in

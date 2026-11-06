@@ -17,9 +17,10 @@ use std::ops::Range;
 
 use crate::bytecode::IntegerOperation;
 
-use super::graph::{Block, BlockId, End, Graph, Node, Phi, ValueId};
+use super::graph::{Block, BlockId, End, Graph, Node, Phi, ValueId, ValueKind};
 use super::snapshot::{Snapshot, SnapshotInstruction};
 use super::verify::immediate_dominators;
+use super::Speculation;
 
 /// The input of a loop head's phi whose back edge is not seen yet.
 const UNFILLED: ValueId = ValueId(u32::MAX);
@@ -43,17 +44,60 @@ const FIXED_FIELD_LIMIT: u32 = 1 << 24;
 /// until none does. The rule decides what the code loads and stores, never
 /// what it computes: a way that brings a value its frame word does not hold
 /// writes it back on its way in (`liveness::join`).
-pub(crate) fn build(snapshot: &Snapshot) -> Graph {
+///
+/// Under `Speculation::Traps` a site the feedback says never ran is a
+/// guard (`Guard`): an integer fast path whose fallback never ran has no
+/// fallback, a conditional whose non-Boolean way never ran no third way,
+/// and a send never executed ends its block; each traps where the
+/// speculation fails. A value's kind (`ValueKind`) is tracked, so that a
+/// known `SmallInteger` operand tests no tag and a known Boolean
+/// condition has no third way: `JumpIfNotBoolean`'s, a block of its own,
+/// is dropped by building the graph again without it, until no known
+/// Boolean condition is left with one. Under `Speculation::None` the graph
+/// is stage 1's: every fallback, third way and send kept, and every value
+/// of no known kind.
+pub(crate) fn build(snapshot: &Snapshot, speculation: Speculation) -> Graph {
+    let count = snapshot.instructions.len();
     let mut forced = None;
+    // The conditionals built without their third way, their condition
+    // being a known Boolean; and those a build refuted, which keep it.
+    let mut known_boolean = vec![false; count];
+    let mut refuted_boolean = vec![false; count];
     let graph = loop {
-        let mut builder = Builder::new(snapshot);
+        let mut builder = Builder::new(snapshot, speculation, &known_boolean);
         if let Some(forced) = forced.take() {
             builder.forced_phis = forced;
         }
-        match builder.build() {
-            Ok(graph) => break graph,
-            Err(more) => forced = Some(more),
+        let guards = builder.guards.clone();
+        let mut graph = match builder.build() {
+            Ok(graph) => graph,
+            Err(more) => {
+                forced = Some(more);
+                continue;
+            }
+        };
+        if speculation == Speculation::None {
+            graph.forget_kinds();
+            break graph;
         }
+        let (more, refuted) = drop_boolean_third_ways(&mut graph, &known_boolean, &guards);
+        let more: Vec<usize> = more
+            .into_iter()
+            .filter(|program_counter| !refuted_boolean[*program_counter])
+            .collect();
+        if more.is_empty() && refuted.is_empty() {
+            break graph;
+        }
+        for program_counter in more {
+            known_boolean[program_counter] = true;
+        }
+        for program_counter in refuted {
+            known_boolean[program_counter] = false;
+            refuted_boolean[program_counter] = true;
+        }
+        // The blocks are laid out afresh, so the phis an earlier build
+        // forced name other blocks.
+        forced = None;
     };
     debug_assert!(
         super::verify::verify(&graph).is_ok(),
@@ -61,6 +105,79 @@ pub(crate) fn build(snapshot: &Snapshot) -> Graph {
         super::verify::verify(&graph)
     );
     graph
+}
+
+/// Drops the third way of every branch of `graph` whose condition is a
+/// known Boolean: in place where it is one of the other two ways, which
+/// leaves the edges as they are. Answers the program counters of the
+/// `JumpIfNotBoolean`s whose third way is a block of its own, which the
+/// next build lays out without it, and of those `known_boolean` built
+/// without one whose condition is no known Boolean after all and which no
+/// guard of theirs (`guards`) traps for, which the next build gives it
+/// back: a known Boolean seen in one build may not survive the blocks the
+/// next lays out differently.
+fn drop_boolean_third_ways(
+    graph: &mut Graph,
+    known_boolean: &[bool],
+    guards: &[Guard],
+) -> (Vec<usize>, Vec<usize>) {
+    let kinds: Vec<ValueKind> = graph.values.iter().map(|value| value.kind).collect();
+    let mut more = Vec::new();
+    let mut refuted = Vec::new();
+    for block in &mut graph.blocks {
+        let End::Branch {
+            program_counter,
+            condition,
+            if_true,
+            if_false,
+            not_boolean,
+        } = &mut block.end
+        else {
+            continue;
+        };
+        let index =
+            usize::try_from(*program_counter).expect("internal: a program counter fits a usize");
+        let boolean = kinds[condition.index()] == ValueKind::Boolean;
+        match *not_boolean {
+            Some(third) if boolean => {
+                if third == *if_true || third == *if_false {
+                    *not_boolean = None;
+                } else {
+                    more.push(index);
+                }
+            }
+            None if !boolean && known_boolean[index] && guards[index] != Guard::NotBoolean => {
+                refuted.push(index);
+            }
+            _ => {}
+        }
+    }
+    (more, refuted)
+}
+
+/// `build` under `Speculation::Traps`, as the JIT compiles: the passes'
+/// tests' hand-written snapshots record no site, so that it builds no
+/// guard in them.
+#[cfg(test)]
+pub(crate) fn build_speculating(snapshot: &Snapshot) -> Graph {
+    build(snapshot, Speculation::Traps)
+}
+
+/// What the feedback lets the graph speculate at an instruction
+/// (`docs/design/execution.md`, "Speculation and its failure"): only at a
+/// site that neither ran nor trapped (`SiteFacts`), and only under
+/// `Speculation::Traps`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Guard {
+    /// The instruction keeps every way stage 1 gives it.
+    None,
+    /// An integer fast path whose fallback never ran: its failure traps.
+    Fallback,
+    /// A `JumpIfNotBoolean` whose non-Boolean way never ran: any other
+    /// value traps.
+    NotBoolean,
+    /// A send never executed: the send itself traps.
+    Send { site: u32 },
 }
 
 /// What an instruction becomes in the graph.
@@ -81,6 +198,8 @@ enum Kind {
         destination: u16,
         left: u16,
         right: u16,
+        /// Whether the fast path's failure traps (`Guard::Fallback`).
+        trap: bool,
     },
     Return {
         register: u16,
@@ -100,6 +219,14 @@ enum Kind {
     Branch {
         register: u16,
         taken: Outcome,
+        /// Whether the branch keeps its third way: not where its
+        /// non-Boolean way never ran, nor where the condition is a known
+        /// Boolean (`build`).
+        third_way: bool,
+    },
+    /// A send never executed (`Guard::Send`).
+    Trap {
+        site: u32,
     },
     Frame,
 }
@@ -127,14 +254,23 @@ enum Outcome {
 /// `own_slot_base`, an own-slot read is a load at a fixed field
 /// (`own_slot_index`); `InitializeSlot` and `InitializeSlotProvisionally`
 /// keep their templates, since an initializer runs once per instance.
+///
+/// A guard (`Choice::guard`) makes a send never executed a trap, an
+/// integer fast path's failure a trap rather than a way to its fallback,
+/// and a conditional's non-Boolean value a trap rather than its third way;
+/// a conditional whose condition is a known Boolean has no third way at
+/// all (`Choice::known_boolean`).
 fn kind_of(
     instruction: &SnapshotInstruction,
     program_counter: usize,
-    send_only: bool,
+    choice: Choice,
     own_slot_base: Option<u32>,
 ) -> Kind {
+    if let Guard::Send { site } = choice.guard {
+        return Kind::Trap { site };
+    }
     match instruction {
-        SnapshotInstruction::IntegerBinary { .. } if send_only => Kind::Jump,
+        SnapshotInstruction::IntegerBinary { .. } if choice.send_only => Kind::Jump,
         SnapshotInstruction::LoadOwnSlot {
             destination,
             own_index,
@@ -191,6 +327,7 @@ fn kind_of(
                 destination: *destination,
                 left: *left,
                 right: *right,
+                trap: choice.guard == Guard::Fallback,
             }
         }
         SnapshotInstruction::Return { register }
@@ -201,14 +338,17 @@ fn kind_of(
         SnapshotInstruction::JumpIfNotBoolean { register, .. } => Kind::Branch {
             register: *register,
             taken: Outcome::NotBoolean,
+            third_way: choice.guard != Guard::NotBoolean && !choice.known_boolean,
         },
         SnapshotInstruction::BranchIfFalse { register, .. } => Kind::Branch {
             register: *register,
             taken: Outcome::False,
+            third_way: true,
         },
         SnapshotInstruction::BranchIfTrue { register, .. } => Kind::Branch {
             register: *register,
             taken: Outcome::True,
+            third_way: true,
         },
         _ => Kind::Frame,
     }
@@ -224,14 +364,79 @@ fn own_slot_index(own_slot_base: Option<u32>, own_index: u32) -> Option<u32> {
         .filter(|index| *index < FIXED_FIELD_LIMIT)
 }
 
-/// Whether `instruction` ends its block though it falls through: a
-/// customized copy's `ReturnSlotIfFilled`, whose block ends in the
-/// slot's return (`End::ReturnUnlessNil`).
-fn ends_block(instruction: &SnapshotInstruction, own_slot_base: Option<u32>) -> bool {
+/// Whether `instruction` ends its block though it falls through and has
+/// no jump target the graph keeps: a customized copy's
+/// `ReturnSlotIfFilled`, whose block ends in the slot's return
+/// (`End::ReturnUnlessNil`), and a `JumpIfNotBoolean` built without its
+/// third way, whose block ends in its test.
+fn ends_block(
+    instruction: &SnapshotInstruction,
+    choice: Choice,
+    own_slot_base: Option<u32>,
+) -> bool {
     matches!(
-        kind_of(instruction, 0, false, own_slot_base),
-        Kind::ReturnUnlessNil { .. }
+        kind_of(instruction, 0, choice, own_slot_base),
+        Kind::ReturnUnlessNil { .. } | Kind::Branch { .. }
     )
+}
+
+/// What decides an instruction's kind beside the instruction itself.
+#[derive(Clone, Copy)]
+struct Choice {
+    /// Whether its fast path is lowered to its fallback alone
+    /// (`Snapshot::fallback_taken`).
+    send_only: bool,
+    guard: Guard,
+    /// Whether it is a `JumpIfNotBoolean` whose condition an earlier
+    /// build found to be a known Boolean.
+    known_boolean: bool,
+}
+
+impl Choice {
+    /// Whether the graph keeps the instruction's jump target: not an
+    /// integer fast path's whose failure traps, nor a conditional's third
+    /// way where it has none.
+    fn keeps_target(self) -> bool {
+        self.guard != Guard::Fallback && self.guard != Guard::NotBoolean && !self.known_boolean
+    }
+
+    /// Whether control may go on at the next instruction: not after a
+    /// jump to the fallback alone, nor after a send that traps.
+    fn may_fall_through(self) -> bool {
+        !self.send_only && !matches!(self.guard, Guard::Send { .. })
+    }
+}
+
+/// The guard the feedback lets the instruction at `index` of `snapshot`
+/// be under `speculation` (`Guard`): only at a site that neither ran nor
+/// trapped, since a site a speculation trapped at may have run unrecorded
+/// -- a send resolved to `doesNotUnderstand:` fills no cache -- and
+/// speculating on it again would trap again.
+fn guard_of(snapshot: &Snapshot, index: usize, send_only: bool, speculation: Speculation) -> Guard {
+    if speculation == Speculation::None || send_only {
+        return Guard::None;
+    }
+    let Some(facts) = snapshot.sites.get(index).copied().flatten() else {
+        return Guard::None;
+    };
+    if facts.executed || facts.trapped {
+        return Guard::None;
+    }
+    match &snapshot.instructions[index] {
+        // Only a fast path has a failure to trap: one whose fallback is
+        // the next instruction keeps its template (`kind_of`).
+        SnapshotInstruction::IntegerBinary { target, .. }
+            if usize::try_from(*target).ok() != index.checked_add(1) =>
+        {
+            Guard::Fallback
+        }
+        SnapshotInstruction::JumpIfNotBoolean { .. } => Guard::NotBoolean,
+        SnapshotInstruction::SendLexical { .. }
+        | SnapshotInstruction::SendPublic { .. }
+        | SnapshotInstruction::SendInlinable { .. }
+        | SnapshotInstruction::SendSuper { .. } => Guard::Send { site: facts.site },
+        _ => Guard::None,
+    }
 }
 
 /// A set of registers, one bit each.
@@ -375,8 +580,10 @@ struct Builder<'snapshot> {
     /// The entered application's own slot base of a customized copy
     /// (`Snapshot::customization`).
     own_slot_base: Option<u32>,
-    /// Each instruction lowered to a jump to its fallback (`kind_of`).
-    send_only: Vec<bool>,
+    /// What decides each instruction's kind beside it (`kind_of`).
+    choices: Vec<Choice>,
+    /// Each instruction's guard, as `choices` holds it.
+    guards: Vec<Guard>,
     /// The registers the leftover analysis taints before each instruction
     /// (`Snapshot::tainted_before`).
     tainted_before: &'snapshot [Vec<Range<u16>>],
@@ -415,27 +622,42 @@ struct Builder<'snapshot> {
 }
 
 impl<'snapshot> Builder<'snapshot> {
-    fn new(snapshot: &'snapshot Snapshot) -> Builder<'snapshot> {
+    fn new(
+        snapshot: &'snapshot Snapshot,
+        speculation: Speculation,
+        known_boolean: &[bool],
+    ) -> Builder<'snapshot> {
         let instructions = snapshot.instructions.as_slice();
         assert!(
             !instructions.is_empty(),
             "internal: a body holds at least one instruction"
         );
-        let send_only: Vec<bool> = instructions
+        let choices: Vec<Choice> = instructions
             .iter()
             .enumerate()
             .map(|(index, instruction)| {
-                matches!(instruction, SnapshotInstruction::IntegerBinary { .. })
-                    && snapshot.fallback_taken.get(index).copied().unwrap_or(false)
+                let send_only = matches!(instruction, SnapshotInstruction::IntegerBinary { .. })
+                    && snapshot.fallback_taken.get(index).copied().unwrap_or(false);
+                Choice {
+                    send_only,
+                    guard: guard_of(snapshot, index, send_only, speculation),
+                    // Only a `JumpIfNotBoolean`'s third way is a jump target.
+                    known_boolean: matches!(
+                        instruction,
+                        SnapshotInstruction::JumpIfNotBoolean { .. }
+                    ) && known_boolean.get(index).copied().unwrap_or(false),
+                }
             })
             .collect();
         // A jump to the fallback reads nothing and writes nothing: the
-        // fallback send reads the operands.
+        // fallback send reads the operands. A send that traps writes
+        // nothing either; it reads what the interpreter's send, run again,
+        // reads.
         let reads: Vec<Vec<u16>> = instructions
             .iter()
-            .zip(&send_only)
-            .map(|(instruction, send_only)| {
-                if *send_only {
+            .zip(&choices)
+            .map(|(instruction, choice)| {
+                if choice.send_only {
                     Vec::new()
                 } else {
                     instruction.registers_read()
@@ -444,12 +666,12 @@ impl<'snapshot> Builder<'snapshot> {
             .collect();
         let written: Vec<Option<u16>> = instructions
             .iter()
-            .zip(&send_only)
-            .map(|(instruction, send_only)| {
-                if *send_only {
-                    None
-                } else {
+            .zip(&choices)
+            .map(|(instruction, choice)| {
+                if choice.may_fall_through() {
                     instruction.register_written()
+                } else {
+                    None
                 }
             })
             .collect();
@@ -457,12 +679,13 @@ impl<'snapshot> Builder<'snapshot> {
         let own_slot_base = snapshot
             .customization
             .map(|customization| customization.own_slot_base);
-        let shapes = shapes_of(instructions, &send_only, own_slot_base);
+        let shapes = shapes_of(instructions, &choices, own_slot_base);
         let block_count = shapes.len();
         let mut builder = Builder {
             instructions,
             own_slot_base,
-            send_only,
+            guards: choices.iter().map(|choice| choice.guard).collect(),
+            choices,
             tainted_before: &snapshot.tainted_before,
             reads,
             written,
@@ -654,7 +877,7 @@ impl<'snapshot> Builder<'snapshot> {
                             kind_of(
                                 &self.instructions[index],
                                 index,
-                                self.send_only[index],
+                                self.choices[index],
                                 self.own_slot_base
                             ),
                             Kind::Frame
@@ -1009,12 +1232,9 @@ impl<'snapshot> Builder<'snapshot> {
         target: Option<BlockId>,
     ) -> Option<End> {
         let instruction = &self.instructions[index];
-        match kind_of(
-            instruction,
-            index,
-            self.send_only[index],
-            self.own_slot_base,
-        ) {
+        let program_counter =
+            u32::try_from(index).expect("internal: an instruction index fits a u32");
+        match kind_of(instruction, index, self.choices[index], self.own_slot_base) {
             Kind::Constant { destination, word } => {
                 let value = self.new_value(None);
                 let nodes = &mut self.blocks[block].nodes;
@@ -1054,18 +1274,27 @@ impl<'snapshot> Builder<'snapshot> {
                 destination,
                 left,
                 right,
+                trap,
             } => {
                 let left = self.read(block, state, left);
                 let right = self.read(block, state, right);
-                self.fallback_exits[block] = Some(state.clone());
+                // A fast path whose failure traps has no way to a fallback,
+                // and its block need not end at it.
+                let fallback = if trap {
+                    None
+                } else {
+                    self.fallback_exits[block] = Some(state.clone());
+                    Some(target.expect("internal: a fast path has its fallback"))
+                };
                 let value = self.new_value(None);
                 self.blocks[block].nodes.push(Node::IntegerBinary {
                     operation,
+                    program_counter,
                     destination_register: destination,
                     value,
                     left,
                     right,
-                    fallback: target.expect("internal: a fast path has its fallback"),
+                    fallback,
                 });
                 self.bind(state, destination, value);
                 None
@@ -1094,7 +1323,11 @@ impl<'snapshot> Builder<'snapshot> {
                 })
             }
             Kind::Jump => Some(End::Jump(target.expect("internal: a jump has its target"))),
-            Kind::Branch { register, taken } => {
+            Kind::Branch {
+                register,
+                taken,
+                third_way,
+            } => {
                 let condition = self.read(block, state, register);
                 let other = next.expect("internal: a branch falls through");
                 // A branch to the next instruction goes there either way.
@@ -1107,12 +1340,17 @@ impl<'snapshot> Builder<'snapshot> {
                     }
                 };
                 Some(End::Branch {
+                    program_counter,
                     condition,
                     if_true: pick(Outcome::True),
                     if_false: pick(Outcome::False),
-                    not_boolean: pick(Outcome::NotBoolean),
+                    not_boolean: third_way.then(|| pick(Outcome::NotBoolean)),
                 })
             }
+            Kind::Trap { site } => Some(End::Trap {
+                program_counter,
+                site,
+            }),
             Kind::Frame => {
                 let registers = self.reads[index].clone();
                 let reads = registers
@@ -1122,8 +1360,7 @@ impl<'snapshot> Builder<'snapshot> {
                 let instruction = self.instructions[index].clone();
                 let falls_through = instruction.falls_through();
                 self.blocks[block].nodes.push(Node::Frame {
-                    program_counter: u32::try_from(index)
-                        .expect("internal: an instruction index fits a u32"),
+                    program_counter,
                     instruction,
                     reads,
                     written: self.written[index],
@@ -1159,7 +1396,7 @@ impl<'snapshot> Builder<'snapshot> {
 /// (`ends_block`), its block ending in the slot's return.
 fn shapes_of(
     instructions: &[SnapshotInstruction],
-    send_only: &[bool],
+    choices: &[Choice],
     own_slot_base: Option<u32>,
 ) -> Vec<Shape> {
     let count = instructions.len();
@@ -1168,16 +1405,26 @@ fn shapes_of(
         assert!(target < count, "internal: a jump target lies in its body");
         target
     };
-    // A jump to the fallback does not fall through (`kind_of`).
-    let falls_through = |index: usize| !send_only[index] && instructions[index].falls_through();
+    // A jump to the fallback does not fall through, nor a send that
+    // traps; and a fast path whose failure traps, or a conditional with no
+    // third way, has no jump target (`kind_of`).
+    let falls_through =
+        |index: usize| choices[index].may_fall_through() && instructions[index].falls_through();
+    let jump_target = |index: usize| {
+        instructions[index]
+            .jump_target()
+            .filter(|_| choices[index].keeps_target())
+    };
     let mut starts = vec![false; count];
     starts[0] = true;
     for (index, instruction) in instructions.iter().enumerate() {
-        let target = instruction.jump_target();
+        let target = jump_target(index);
         if let Some(target) = target {
             starts[index_of(target)] = true;
         }
-        if (target.is_some() || !falls_through(index) || ends_block(instruction, own_slot_base))
+        if (target.is_some()
+            || !falls_through(index)
+            || ends_block(instruction, choices[index], own_slot_base))
             && index + 1 < count
         {
             starts[index + 1] = true;
@@ -1199,10 +1446,7 @@ fn shapes_of(
     }
     for run in &mut runs {
         let last = run.0.end - 1;
-        let instruction = &instructions[last];
-        let target = instruction
-            .jump_target()
-            .map(|target| run_of[index_of(target)]);
+        let target = jump_target(last).map(|target| run_of[index_of(target)]);
         let next = if falls_through(last) {
             assert!(
                 last + 1 < count,
@@ -1316,18 +1560,20 @@ fn shapes_of(
 mod tests {
     use ns_syntax::Span;
 
-    use super::build;
+    use super::build_speculating as build;
     use crate::bytecode::{
         CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
     };
     use crate::heap::CodeId;
     use crate::interpreter::inline_cache::FeedbackBase;
-    use crate::jit::optimizing::graph::{BlockId, Definition, End, Graph, Node};
+    use crate::jit::optimizing::graph::{BlockId, Definition, End, Graph, Node, ValueKind};
     use crate::jit::optimizing::snapshot::{
-        tainted_before_each, BodyFacts, Customization, Snapshot, SnapshotInstruction,
+        tainted_before_each, BodyFacts, Customization, SiteFacts, Snapshot, SnapshotInstruction,
     };
     use crate::jit::optimizing::verify::verify;
-    use crate::jit::optimizing::{corpus_of_bodies, shipped_bodies};
+    use crate::jit::optimizing::{
+        corpus_of_bodies, shipped_bodies, unrun_every_site, unrun_site, Speculation,
+    };
     use crate::jit::CustomizationKey;
     use crate::mixin::DispatchId;
     use crate::Symbol;
@@ -1849,7 +2095,7 @@ mod tests {
         };
         assert_eq!(graph.block(if_false).program_counter, 2);
         assert_eq!(graph.block(if_true).program_counter, 1);
-        assert_eq!(not_boolean, if_true);
+        assert_eq!(not_boolean, Some(if_true));
     }
 
     #[test]
@@ -2230,5 +2476,271 @@ mod tests {
                 .count();
         }
         assert!(returns > 0, "the shipped library has lazy slots");
+    }
+
+    /// The nodes of `graph` that are integer fast paths.
+    fn integer_paths(graph: &Graph) -> Vec<&Node> {
+        nodes(graph)
+            .into_iter()
+            .filter(|node| matches!(node, Node::IntegerBinary { .. }))
+            .collect()
+    }
+
+    /// `counting_loop`, each operation's fallback never run: each fast
+    /// path's failure traps, so that neither fallback send is built and
+    /// the loop's counter is the fast path's own result, never a merge
+    /// with the send's.
+    #[test]
+    fn an_integer_operation_whose_fallback_never_ran_has_no_fallback_block() {
+        let mut snapshot = snapshot_of(counting_loop());
+        unrun_site(&mut snapshot, 2, 0);
+        unrun_site(&mut snapshot, 7, 1);
+        let graph = build(&snapshot);
+        assert_eq!(verify(&graph), Ok(()));
+        let paths = integer_paths(&graph);
+        assert_eq!(paths.len(), 2);
+        for integer_node in paths {
+            assert!(matches!(
+                integer_node,
+                Node::IntegerBinary { fallback: None, .. }
+            ));
+        }
+        assert!(
+            nodes(&graph)
+                .iter()
+                .all(|node| !matches!(node, Node::Frame { .. })),
+            "no fallback send is built"
+        );
+    }
+
+    /// A site that ran, or that a speculation trapped at -- it may have
+    /// run unrecorded, as a send resolved to `doesNotUnderstand:` does --
+    /// keeps its fallback.
+    #[test]
+    fn a_fallback_that_ran_or_trapped_is_kept() {
+        for (executed, trapped) in [(true, false), (false, true)] {
+            let mut snapshot = snapshot_of(counting_loop());
+            for index in [2, 7] {
+                snapshot.sites[index] = Some(SiteFacts {
+                    site: 0,
+                    executed,
+                    trapped,
+                });
+            }
+            let graph = build(&snapshot);
+            for integer_node in integer_paths(&graph) {
+                assert!(matches!(
+                    integer_node,
+                    Node::IntegerBinary {
+                        fallback: Some(_),
+                        ..
+                    }
+                ));
+            }
+        }
+    }
+
+    /// `r4 := r1 < r2`, then `r4 ifTrue: [1] ifFalse: [2]`.
+    fn a_comparison_and_its_conditional() -> Vec<Instruction> {
+        vec![
+            Instruction::IntegerBinary {
+                operation: IntegerOperation::Less,
+                destination: 4,
+                left: 1,
+                right: 2,
+                target: 9,
+            },
+            // 1: the conditional.
+            Instruction::JumpIfNotBoolean {
+                register: 4,
+                target: 7,
+            },
+            Instruction::BranchIfFalse {
+                register: 4,
+                target: 5,
+            },
+            Instruction::LoadLiteral {
+                destination: 5,
+                literal: Literal::SmallInteger(1),
+            },
+            Instruction::Return { register: 5 },
+            Instruction::LoadLiteral {
+                destination: 5,
+                literal: Literal::SmallInteger(2),
+            },
+            Instruction::Return { register: 5 },
+            // 7: the non-Boolean way.
+            send(4, 4, 5),
+            Instruction::Return { register: 5 },
+            // 9: the comparison's fallback.
+            send(1, 2, 4),
+            Instruction::Jump { target: 1 },
+        ]
+    }
+
+    /// `a_comparison_and_its_conditional`, the comparison's fallback never
+    /// run and the conditional's non-Boolean way run: the condition is the
+    /// fast path's Boolean, so neither branch has a third way, though the
+    /// feedback alone would keep it, and the non-Boolean way is not built.
+    #[test]
+    fn a_comparison_s_branch_has_no_third_way() {
+        let mut snapshot = snapshot_of(a_comparison_and_its_conditional());
+        unrun_site(&mut snapshot, 0, 1);
+        snapshot.sites[1] = Some(SiteFacts {
+            site: 0,
+            executed: true,
+            trapped: false,
+        });
+        let graph = build(&snapshot);
+        assert_eq!(verify(&graph), Ok(()));
+        let branches: Vec<&End> = graph
+            .blocks
+            .iter()
+            .map(|block| &block.end)
+            .filter(|end| matches!(end, End::Branch { .. }))
+            .collect();
+        assert_eq!(branches.len(), 2, "`JumpIfNotBoolean` and `BranchIfFalse`");
+        for branch_end in branches {
+            assert!(matches!(
+                branch_end,
+                End::Branch {
+                    not_boolean: None,
+                    ..
+                }
+            ));
+            let End::Branch { condition, .. } = branch_end else {
+                unreachable!("filtered");
+            };
+            assert_eq!(graph.kind(*condition), ValueKind::Boolean);
+        }
+        assert!(
+            graph.blocks.iter().all(|block| block.program_counter != 7),
+            "the non-Boolean way is not built"
+        );
+        assert!(
+            (0..graph.blocks.len()).all(|block| graph.end_trap(BlockId::of_index(block)).is_none())
+        );
+    }
+
+    /// The same conditional on a comparison whose fallback ran: its
+    /// condition merges the fast path's Boolean with the send's answer,
+    /// which may be anything, so the conditional keeps its third way.
+    #[test]
+    fn a_condition_of_no_known_kind_keeps_its_third_way() {
+        let graph = build(&snapshot_of(a_comparison_and_its_conditional()));
+        assert!(graph.blocks.iter().any(|block| matches!(
+            block.end,
+            End::Branch {
+                not_boolean: Some(_),
+                ..
+            }
+        )));
+    }
+
+    /// `r1 ifTrue: [1] ifFalse: [2]`, whose non-Boolean way never ran:
+    /// any other value traps, at the conditional, and that way is not
+    /// built.
+    #[test]
+    fn a_non_boolean_way_that_never_ran_traps() {
+        let mut instructions = a_comparison_and_its_conditional();
+        instructions[0] = Instruction::Move {
+            destination: 4,
+            source: 1,
+        };
+        let mut snapshot = snapshot_of(instructions);
+        unrun_site(&mut snapshot, 1, 0);
+        let graph = build(&snapshot);
+        assert_eq!(verify(&graph), Ok(()));
+        let traps: Vec<u32> = (0..graph.blocks.len())
+            .filter_map(|block| graph.end_trap(BlockId::of_index(block)))
+            .collect();
+        assert_eq!(traps, vec![1]);
+        assert!(graph.blocks.iter().all(|block| block.program_counter != 7));
+    }
+
+    /// `r3 := self. r4 := r3 new: r3. ^r4`, the send never executed: it
+    /// ends its block in a trap, and nothing after it is built.
+    #[test]
+    fn a_send_never_executed_ends_its_block_in_a_trap() {
+        let mut snapshot = snapshot_of(vec![
+            Instruction::LoadSelf { destination: 3 },
+            send(3, 3, 4),
+            Instruction::Return { register: 4 },
+        ]);
+        unrun_site(&mut snapshot, 1, 6);
+        let graph = build(&snapshot);
+        assert_eq!(verify(&graph), Ok(()));
+        assert_eq!(graph.blocks.len(), 1);
+        assert_eq!(
+            graph.blocks[0].end,
+            End::Trap {
+                program_counter: 1,
+                site: 6
+            }
+        );
+        assert!(nodes(&graph)
+            .iter()
+            .all(|node| !matches!(node, Node::Frame { .. })));
+    }
+
+    /// `Speculation::None` builds stage 1's graph whatever the feedback
+    /// says: every body of the corpus and of the shipped library, every
+    /// site recorded as never run, is built as with no site recorded at
+    /// all, with every fallback, third way and send, and no value of a
+    /// known kind, so that its code tests every operand and condition.
+    #[test]
+    fn no_speculation_builds_stage_one_s_graph() {
+        let mut built = 0;
+        for snapshot in corpus_of_bodies().into_iter().chain(shipped_bodies()) {
+            let mut unrun = snapshot.clone();
+            unrun_every_site(&mut unrun);
+            let mut unrecorded = snapshot;
+            unrecorded.sites.fill(None);
+            let graph = super::build(&unrun, Speculation::None);
+            assert_eq!(graph, super::build(&unrecorded, Speculation::None));
+            assert!(graph
+                .values
+                .iter()
+                .all(|value| value.kind == ValueKind::Unknown));
+            for block in &graph.blocks {
+                assert!(!matches!(block.end, End::Trap { .. }));
+                assert!(!matches!(
+                    block.end,
+                    End::Branch {
+                        not_boolean: None,
+                        ..
+                    }
+                ));
+                assert!(block
+                    .nodes
+                    .iter()
+                    .all(|node| !matches!(node, Node::IntegerBinary { fallback: None, .. })));
+            }
+            built += 1;
+        }
+        assert!(built > 0);
+    }
+
+    /// Every body of the corpus and of the shipped library, every site
+    /// recorded as never run, verifies with its guards: the graph, and the
+    /// kinds it gives its values.
+    #[test]
+    fn every_speculating_graph_verifies() {
+        let mut traps = 0;
+        for mut snapshot in corpus_of_bodies().into_iter().chain(shipped_bodies()) {
+            unrun_every_site(&mut snapshot);
+            let graph = build(&snapshot);
+            if let Err(error) = verify(&graph) {
+                panic!("{error:?} in {:?}\n{graph:#?}", snapshot.instructions);
+            }
+            traps += (0..graph.blocks.len())
+                .filter(|block| graph.end_trap(BlockId::of_index(*block)).is_some())
+                .count();
+            traps += nodes(&graph)
+                .iter()
+                .filter(|node| node.trap().is_some())
+                .count();
+        }
+        assert!(traps > 0);
     }
 }

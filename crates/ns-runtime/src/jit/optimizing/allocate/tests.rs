@@ -1,7 +1,7 @@
-use super::{allocate, sequence, Location, Move, Spot};
+use super::{allocate, sequence, Location, Move, PointKind, Spot};
 use crate::bytecode::{Instruction, IntegerOperation, Literal};
 use crate::jit::macro_assembler::{Abi, Roles};
-use crate::jit::optimizing::build::build;
+use crate::jit::optimizing::build::build_speculating as build;
 use crate::jit::optimizing::graph::{BlockId, Graph, Node};
 use crate::jit::optimizing::liveness::{block_order, intervals};
 use crate::jit::optimizing::metadata::{
@@ -9,7 +9,9 @@ use crate::jit::optimizing::metadata::{
 };
 use crate::jit::optimizing::snapshot::Snapshot;
 use crate::jit::optimizing::verify::VerifyError;
-use crate::jit::optimizing::{corpus_of_bodies, shipped_bodies, test_send, test_snapshot};
+use crate::jit::optimizing::{
+    corpus_of_bodies, shipped_bodies, test_send, test_snapshot, unrun_every_site, unrun_site,
+};
 
 fn allocated(snapshot: &Snapshot, abi: Abi) -> (Graph, super::Allocation) {
     let graph = build(snapshot);
@@ -608,4 +610,70 @@ fn a_register_bound_again_to_its_earlier_read_is_written_back() {
         let (graph, allocation) = allocated(&snapshot, abi);
         assert_eq!(verified(&graph, &allocation, &snapshot), Ok(()), "{abi:?}");
     }
+}
+
+/// `r13 := 1. r14 := self. r15 := r13 + r13. ^r15`, the sum's fallback
+/// never run: the trap owes the frame both bindings the code holds dirty
+/// there, on its cold path alone.
+#[test]
+fn a_trap_writes_back_every_dirty_binding() {
+    for mut snapshot in corpus_of_bodies().into_iter().chain(shipped_bodies()) {
+        unrun_every_site(&mut snapshot);
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let graph = build(&snapshot);
+            let (allocation, described) = allocate_and_describe(&snapshot, &graph, &Roles::of(abi));
+            assert_eq!(
+                verify_allocation(&graph, &allocation, &described, &snapshot),
+                Ok(())
+            );
+        }
+    }
+    let mut snapshot = test_snapshot(vec![
+        Instruction::LoadLiteral {
+            destination: 13,
+            literal: Literal::SmallInteger(1),
+        },
+        Instruction::LoadSelf { destination: 14 },
+        Instruction::IntegerBinary {
+            operation: IntegerOperation::Add,
+            destination: 15,
+            left: 13,
+            right: 13,
+            target: 4,
+        },
+        Instruction::Return { register: 15 },
+        test_send(13, 13, 15),
+        Instruction::Return { register: 15 },
+    ]);
+    unrun_site(&mut snapshot, 2, 0);
+    let graph = build(&snapshot);
+    let (allocation, described) = allocate_and_describe(&snapshot, &graph, &Roles::of(Abi::host()));
+    assert_eq!(
+        verify_allocation(&graph, &allocation, &described, &snapshot),
+        Ok(())
+    );
+    let traps: Vec<&super::DirtyPoint> = allocation
+        .dirty_at
+        .iter()
+        .filter(|point| matches!(point.kind, PointKind::Trap { node: Some(_) }))
+        .collect();
+    assert_eq!(traps.len(), 1);
+    let mut stored: Vec<u16> = traps[0]
+        .stores
+        .iter()
+        .map(|(register, _, _)| *register)
+        .collect();
+    stored.sort_unstable();
+    assert_eq!(stored, vec![13, 14]);
+    let point = described
+        .points
+        .iter()
+        .zip(&allocation.dirty_at)
+        .find(|(_, dirty)| matches!(dirty.kind, PointKind::Trap { .. }))
+        .map(|(point, _)| point)
+        .expect("the trap is described");
+    assert_eq!(
+        (point.program_counter, point.resumes),
+        (2, Resumes::Reexecute)
+    );
 }

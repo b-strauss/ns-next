@@ -4168,41 +4168,6 @@ fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
         .collect()
 }
 
-/// Every field the format types as a class reference really names a class
-/// object, and a class object's own `class` is its metaclass or, for a
-/// metaclass, `Metaclass`.
-///
-/// A tag-2 class tag names an object-table id, and nothing in the byte
-/// stream forces that record to have been a class record -- which is only
-/// knowable once every record has been read, so it is checked here rather
-/// than where each tag is decoded. These positions, a level's named class
-/// (`Heap::class_named`) and a body-less declaration's declaring class
-/// (`Heap::class_declaration_scope`) among them, are the complete set: a class tag appears nowhere else in the graph section, and a plain
-/// object value pointing at a class object is legitimate (that is what a
-/// cached nested class in a slot *is*).
-///
-/// The extra rule for a class object's *own* `class` is the runtime's
-/// invariant (§3.2), not a limit invented here: a class record's header is
-/// its metaclass record, whose reference back is it, and a metaclass
-/// record's header is the builtin `Metaclass` (`MetaclassPairing`
-/// otherwise), as `Mutator::attach_metaclass` gives every live class
-/// object. So the chain from a class record to a class the graph did not
-/// create is at most two links -- class record, its metaclass record,
-/// `Metaclass` -- and that is what bounds it: no crafted image can build a
-/// chain of class records each the class of the next.
-///
-/// An object that is not a class object may not be an instance of a class
-/// whose chain reaches `Behavior` (`InstanceOfAClassClass`): `Class`,
-/// `Metaclass` and every metaclass refuse instantiation, so only a crafted
-/// image has one. A metaclass record's reference back to its class is a
-/// class object's by the time this runs -- `rebuild_metaclasses` refused
-/// anything else.
-///
-/// It also holds every closure frame to naming a closure object. A closure
-/// frame's kind names an object-table id, and, like a tag-2 class
-/// reference, whether that record was a closure is only knowable once every
-/// record has been read. Everything that reaches a closure activation's
-/// body or captured frames reads through that object.
 /// Every object of a class that is no builtin and whose chain does not
 /// reach `Behavior` -- whose instances are class objects, which
 /// `check_class_references` holds -- is an instance record of exactly its
@@ -4246,6 +4211,41 @@ fn check_program_instances<'gc>(
     Ok(())
 }
 
+/// Every field the format types as a class reference really names a class
+/// object, and a class object's own `class` is its metaclass or, for a
+/// metaclass, `Metaclass`.
+///
+/// A tag-2 class tag names an object-table id, and nothing in the byte
+/// stream forces that record to have been a class record -- which is only
+/// knowable once every record has been read, so it is checked here rather
+/// than where each tag is decoded. These positions, a level's named class
+/// (`Heap::class_named`) and a body-less declaration's declaring class
+/// (`Heap::class_declaration_scope`) among them, are the complete set: a class tag appears nowhere else in the graph section, and a plain
+/// object value pointing at a class object is legitimate (that is what a
+/// cached nested class in a slot *is*).
+///
+/// The extra rule for a class object's *own* `class` is the runtime's
+/// invariant (§3.2), not a limit invented here: a class record's header is
+/// its metaclass record, whose reference back is it, and a metaclass
+/// record's header is the builtin `Metaclass` (`MetaclassPairing`
+/// otherwise), as `Mutator::attach_metaclass` gives every live class
+/// object. So the chain from a class record to a class the graph did not
+/// create is at most two links -- class record, its metaclass record,
+/// `Metaclass` -- and that is what bounds it: no crafted image can build a
+/// chain of class records each the class of the next.
+///
+/// An object that is not a class object may not be an instance of a class
+/// whose chain reaches `Behavior` (`InstanceOfAClassClass`): `Class`,
+/// `Metaclass` and every metaclass refuse instantiation, so only a crafted
+/// image has one. A metaclass record's reference back to its class is a
+/// class object's by the time this runs -- `rebuild_metaclasses` refused
+/// anything else.
+///
+/// It also holds every closure frame to naming a closure object. A closure
+/// frame's kind names an object-table id, and, like a tag-2 class
+/// reference, whether that record was a closure is only knowable once every
+/// record has been read. Everything that reaches a closure activation's
+/// body or captured frames reads through that object.
 fn check_class_references<'gc>(
     heap: &Heap<'gc>,
     objects: &[ObjectReference<'gc>],

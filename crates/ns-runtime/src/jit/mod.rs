@@ -339,6 +339,10 @@ pub struct JitStatistics {
     /// points optimized code had passed since the safepoint that set it,
     /// the exiting one included.
     pub deepest_forced_exit: u64,
+    /// Exits of optimized code at a failed speculation
+    /// (`stubs::ExitKind::Trap`): of `optimized_exits`, counted against no
+    /// exit budget.
+    pub traps: u64,
 }
 
 impl JitStatistics {
@@ -4540,16 +4544,22 @@ fn optimize(
     macro_assembler.set_count_back_edges(settings.counting);
     macro_assembler.set_deoptimize_by_countdown(mutator.jit.deopt_stress);
     let role = baseline::BodyRole::of(code, method.is_some());
-    let installation = optimizing::compile(&snapshot, macro_assembler, role, settings.futures_exit)
-        .and_then(|optimized| {
-            install_optimized(
-                &mut mutator.jit,
-                code,
-                method.as_ref(),
-                (lean, feedback_base, settings, key),
-                optimized,
-            )
-        });
+    let installation = optimizing::compile(
+        &snapshot,
+        macro_assembler,
+        role,
+        settings.futures_exit,
+        optimizing::Speculation::Traps,
+    )
+    .and_then(|optimized| {
+        install_optimized(
+            &mut mutator.jit,
+            code,
+            method.as_ref(),
+            (lean, feedback_base, settings, key),
+            optimized,
+        )
+    });
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let statistics = &mut mutator.jit.statistics;
     statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
@@ -4647,6 +4657,7 @@ fn install_optimized(
         twin_transfers,
         metadata: _,
         push_entry,
+        ..
     } = optimized;
     let mut returns: Vec<CallReturn> = returns
         .iter()
@@ -5531,6 +5542,17 @@ fn resumption_after_exit(
             activation: innermost,
             program_counter,
         },
+        // A trap runs its instruction again, as a template's exit does,
+        // which widens the feedback the speculation failed on.
+        MachineExit::Trap {
+            program_counter, ..
+        } => {
+            mutator.jit.statistics.traps += 1;
+            Resumption::Interpreted {
+                activation: innermost,
+                program_counter,
+            }
+        }
         // The innermost frame is the caller, stopped at the send the walk
         // wrote as its program counter: it runs the send again.
         MachineExit::PushRefused { .. } => {

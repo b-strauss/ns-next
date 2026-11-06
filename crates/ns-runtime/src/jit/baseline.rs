@@ -16,7 +16,9 @@ use crate::interpreter::FeedbackBase;
 
 use super::closures;
 use super::leaves::Leaf;
-use super::macro_assembler::{IntegerRegisters, LeafIndex, MacroAssembler, ObjectSize, Operand};
+use super::macro_assembler::{
+    IntegerRegisters, KnownSmallIntegers, LeafIndex, MacroAssembler, ObjectSize, Operand,
+};
 use super::optimizing::snapshot::BodyFacts;
 use super::sends;
 use super::stubs::ExitKind;
@@ -460,6 +462,7 @@ impl BodyAssembler {
         let result = macro_assembler.small_integer_operation(
             operation,
             integer_registers,
+            KnownSmallIntegers::default(),
             &mut |macro_assembler, condition| branches.jump_if(macro_assembler, condition, target),
         );
         self.macro_assembler

@@ -10,6 +10,7 @@
 //! (`Node::FrameRead`). Every node but a frame node is register
 //! arithmetic that emits no call.
 use crate::bytecode::IntegerOperation;
+use crate::heap::Immediate;
 
 use super::snapshot::SnapshotInstruction;
 
@@ -47,11 +48,58 @@ pub(crate) struct Graph {
 }
 
 /// Where a value is defined: a phi or a node of a block, by its index in
-/// the block's `phis` or `nodes`.
+/// the block's `phis` or `nodes`; and what kind of value it is known to
+/// be wherever it is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ValueDefinition {
     pub(crate) block: BlockId,
     pub(crate) place: Place,
+    pub(crate) kind: ValueKind,
+}
+
+/// What a value is known to be, so that what it is is not tested again
+/// (`docs/design/execution.md`, "Speculation and its failure"): a value
+/// is of a kind only where its definition guarantees it -- an integer
+/// fast path's result, which exists only on the way its tests passed, a
+/// constant's word, or a phi whose every input is of the kind -- and the
+/// graph's values are never written, so the kind holds at every read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValueKind {
+    Unknown,
+    SmallInteger,
+    Boolean,
+}
+
+impl ValueKind {
+    /// The kind of an `IntegerBinary` fast path's result: a
+    /// `SmallInteger` for arithmetic, which declines what leaves 61 bits,
+    /// and a Boolean for a comparison.
+    pub(crate) fn of_operation(operation: IntegerOperation) -> ValueKind {
+        match operation {
+            IntegerOperation::Add
+            | IntegerOperation::Subtract
+            | IntegerOperation::Multiply
+            | IntegerOperation::FloorDivide => ValueKind::SmallInteger,
+            IntegerOperation::Less
+            | IntegerOperation::Greater
+            | IntegerOperation::LessOrEqual
+            | IntegerOperation::GreaterOrEqual
+            | IntegerOperation::Equal => ValueKind::Boolean,
+        }
+    }
+
+    /// The kind of an immediate word.
+    pub(crate) fn of_word(word: u64) -> ValueKind {
+        if Immediate::is_small_integer_word(word) {
+            ValueKind::SmallInteger
+        } else if word == Immediate::boolean(true).bits()
+            || word == Immediate::boolean(false).bits()
+        {
+            ValueKind::Boolean
+        } else {
+            ValueKind::Unknown
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,17 +162,24 @@ pub(crate) enum Node {
         destination_register: u16,
         source: ValueId,
     },
-    /// The `SmallInteger` fast path of `IntegerBinary`, its result bound
-    /// to `destination_register`; `fallback` is the block holding the
-    /// instruction's fallback send, where control goes with the register
-    /// still unwritten when the fast path does not apply.
+    /// The `SmallInteger` fast path of `IntegerBinary`, the instruction
+    /// at `program_counter`, its result bound to `destination_register`;
+    /// `fallback` is the block holding the instruction's fallback send,
+    /// where control goes with the register still unwritten when the fast
+    /// path does not apply -- or `None`, where the feedback says the
+    /// fallback never ran: the fast path's failure is then a trap, which
+    /// writes the frame back and exits to run the instruction again
+    /// (`docs/design/execution.md`, "Speculation and its failure"), so
+    /// that past the node the result is certain and no merge with the
+    /// fallback's way costs a phi.
     IntegerBinary {
         operation: IntegerOperation,
+        program_counter: u32,
         destination_register: u16,
         value: ValueId,
         left: ValueId,
         right: ValueId,
-        fallback: BlockId,
+        fallback: Option<BlockId>,
     },
     /// A customized copy's read of the receiver's field at
     /// `absolute_index` (`LoadOwnSlot`, `ReturnSlotIfFilled`): the
@@ -166,15 +221,21 @@ pub(crate) enum Node {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum End {
     Jump(BlockId),
-    /// A Boolean test: `if_true` for `true`, `if_false` for `false`,
-    /// `not_boolean` for any other value. The interpreter's three branch
-    /// instructions each decide one of them and go on at the next
-    /// instruction otherwise, so two of the three are the same block.
+    /// A Boolean test, the instruction at `program_counter`: `if_true`
+    /// for `true`, `if_false` for `false`, `not_boolean` for any other
+    /// value. The interpreter's three branch instructions each decide one
+    /// of them and go on at the next instruction otherwise, so two of the
+    /// three are the same block. `not_boolean` is `None` where there is no
+    /// third way: the condition is known to be a Boolean
+    /// (`ValueKind::Boolean`), and nothing is tested for it; or else the
+    /// feedback says it never ran, and any other value traps, running the
+    /// instruction again (`Graph::end_trap`).
     Branch {
+        program_counter: u32,
         condition: ValueId,
         if_true: BlockId,
         if_false: BlockId,
-        not_boolean: BlockId,
+        not_boolean: Option<BlockId>,
     },
     Return {
         value: ValueId,
@@ -195,6 +256,14 @@ pub(crate) enum End {
         next: BlockId,
         target: BlockId,
     },
+    /// The send at `program_counter`, whose call site `site` the feedback
+    /// says never ran: the block writes the frame back and exits to run
+    /// it in the interpreter, which fills the site's cache. A trap does
+    /// not fall through, so nothing after the send is built on this way.
+    Trap {
+        program_counter: u32,
+        site: u32,
+    },
 }
 
 impl Node {
@@ -207,6 +276,32 @@ impl Node {
             | Node::IntegerBinary { value, .. }
             | Node::OwnSlotLoad { value, .. } => Some(*value),
             Node::Copy { .. } | Node::Frame { .. } => None,
+        }
+    }
+
+    /// What the value the node defines is known to be, by the node alone.
+    pub(crate) fn kind(&self) -> ValueKind {
+        match self {
+            Node::Constant { word, .. } => ValueKind::of_word(*word),
+            Node::IntegerBinary { operation, .. } => ValueKind::of_operation(*operation),
+            Node::FrameRead { .. }
+            | Node::Receiver { .. }
+            | Node::Copy { .. }
+            | Node::OwnSlotLoad { .. }
+            | Node::Frame { .. } => ValueKind::Unknown,
+        }
+    }
+
+    /// The program counter of the trap the node takes when its fast path
+    /// fails, if it takes one: an integer fast path with no fallback.
+    pub(crate) fn trap(&self) -> Option<u32> {
+        match self {
+            Node::IntegerBinary {
+                program_counter,
+                fallback: None,
+                ..
+            } => Some(*program_counter),
+            _ => None,
         }
     }
 
@@ -248,8 +343,11 @@ impl End {
                 if_false,
                 not_boolean,
                 ..
-            } => vec![*if_true, *if_false, *not_boolean],
-            End::Return { .. } | End::Frame => Vec::new(),
+            } => [Some(*if_true), Some(*if_false), *not_boolean]
+                .into_iter()
+                .flatten()
+                .collect(),
+            End::Return { .. } | End::Frame | End::Trap { .. } => Vec::new(),
             End::FrameJump { next, target } => vec![*next, *target],
         };
         let mut successors = Vec::with_capacity(listed.len());
@@ -266,7 +364,7 @@ impl End {
         match self {
             End::Branch { condition, .. } => Some(*condition),
             End::Return { value } | End::ReturnUnlessNil { value, .. } => Some(*value),
-            End::Jump(_) | End::Frame | End::FrameJump { .. } => None,
+            End::Jump(_) | End::Frame | End::FrameJump { .. } | End::Trap { .. } => None,
         }
     }
 }
@@ -277,7 +375,11 @@ impl Block {
     pub(crate) fn successors(&self) -> Vec<BlockId> {
         let mut successors = self.end.successors();
         for node in &self.nodes {
-            if let Node::IntegerBinary { fallback, .. } = node {
+            if let Node::IntegerBinary {
+                fallback: Some(fallback),
+                ..
+            } = node
+            {
                 if !successors.contains(fallback) {
                     successors.push(*fallback);
                 }
@@ -295,44 +397,32 @@ impl Block {
             return Some(self.nodes.len());
         }
         self.nodes.iter().position(
-            |node| matches!(node, Node::IntegerBinary { fallback, .. } if *fallback == successor),
+            |node| matches!(node, Node::IntegerBinary { fallback: Some(fallback), .. } if *fallback == successor),
         )
     }
 }
 
 impl Graph {
     /// The graph of `blocks`, its value table found from their phis and
-    /// nodes; a value defined twice is recorded at its first definition,
-    /// which `verify` then refuses.
+    /// nodes, with each value's kind (`kinds_of`); a value defined twice is
+    /// recorded at its first definition, which `verify` then refuses.
     pub(crate) fn from_blocks(blocks: Vec<Block>) -> Graph {
         let mut found: Vec<Option<ValueDefinition>> = Vec::new();
-        let mut record = |value: ValueId, definition: ValueDefinition| {
+        let mut record = |value: ValueId, block: BlockId, place: Place, kind: ValueKind| {
             let index = value.index();
             if found.len() <= index {
                 found.resize(index + 1, None);
             }
-            found[index].get_or_insert(definition);
+            found[index].get_or_insert(ValueDefinition { block, place, kind });
         };
         for (block_index, block) in blocks.iter().enumerate() {
             let block_id = BlockId::of_index(block_index);
             for (index, phi) in block.phis.iter().enumerate() {
-                record(
-                    phi.value,
-                    ValueDefinition {
-                        block: block_id,
-                        place: Place::Phi(index),
-                    },
-                );
+                record(phi.value, block_id, Place::Phi(index), ValueKind::Unknown);
             }
             for (index, node) in block.nodes.iter().enumerate() {
                 if let Some(value) = node.defined() {
-                    record(
-                        value,
-                        ValueDefinition {
-                            block: block_id,
-                            place: Place::Node(index),
-                        },
-                    );
+                    record(value, block_id, Place::Node(index), node.kind());
                 }
             }
         }
@@ -342,7 +432,92 @@ impl Graph {
                 definition.expect("internal: every value id up to the last is defined")
             })
             .collect();
-        Graph { blocks, values }
+        let mut graph = Graph { blocks, values };
+        graph.find_phi_kinds();
+        graph
+    }
+
+    /// Each phi's kind: the one its every input has, found optimistically
+    /// -- a phi not yet decided counts as agreeing with any kind -- so
+    /// that a loop's phi whose inputs are its entry's `SmallInteger` and
+    /// the fast path that adds to it is a `SmallInteger` too. A phi's kind
+    /// only falls, from undecided to a kind to `Unknown`, so the search
+    /// ends; one still undecided, whose inputs are only phis like it,
+    /// stays `Unknown`.
+    fn find_phi_kinds(&mut self) {
+        let mut decided: Vec<Option<ValueKind>> = self
+            .values
+            .iter()
+            .map(|definition| match definition.place {
+                Place::Phi(_) => None,
+                Place::Node(_) => Some(definition.kind),
+            })
+            .collect();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block in &self.blocks {
+                for phi in &block.phis {
+                    let mut met: Option<ValueKind> = None;
+                    for input in &phi.inputs {
+                        // An input the table does not hold is one `verify`
+                        // refuses: it says nothing of the phi.
+                        let kind = decided
+                            .get(input.index())
+                            .copied()
+                            .unwrap_or(Some(ValueKind::Unknown));
+                        met = match (met, kind) {
+                            (met, None) => met,
+                            (None, Some(kind)) => Some(kind),
+                            (Some(met), Some(kind)) if met == kind => Some(met),
+                            (Some(_), Some(_)) => Some(ValueKind::Unknown),
+                        };
+                    }
+                    let slot = &mut decided[phi.value.index()];
+                    if met.is_some() && *slot != met {
+                        *slot = met;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        for (definition, decided) in self.values.iter_mut().zip(decided) {
+            if matches!(definition.place, Place::Phi(_)) {
+                definition.kind = decided.unwrap_or(ValueKind::Unknown);
+            }
+        }
+    }
+
+    /// Forgets every value's kind: a compile without speculation builds
+    /// stage 1's code, which tests every operand and every condition.
+    pub(crate) fn forget_kinds(&mut self) {
+        for definition in &mut self.values {
+            definition.kind = ValueKind::Unknown;
+        }
+    }
+
+    /// What `value` is known to be.
+    pub(crate) fn kind(&self, value: ValueId) -> ValueKind {
+        self.values[value.index()].kind
+    }
+
+    /// The program counter of the trap `block`'s end takes, if it takes
+    /// one: a send never executed, or a conditional with no third way
+    /// whose condition is not known to be a Boolean, which any other value
+    /// fails.
+    pub(crate) fn end_trap(&self, block: BlockId) -> Option<u32> {
+        match self.block(block).end {
+            End::Trap {
+                program_counter, ..
+            } => Some(program_counter),
+            End::Branch {
+                program_counter,
+                condition,
+                not_boolean: None,
+                ..
+            } if self.kind(condition) != ValueKind::Boolean => Some(program_counter),
+            _ => None,
+        }
     }
 
     pub(crate) fn block(&self, block: BlockId) -> &Block {
@@ -352,7 +527,7 @@ impl Graph {
     /// The phi or node that defines `value`.
     #[cfg(test)]
     pub(crate) fn definition(&self, value: ValueId) -> Definition<'_> {
-        let ValueDefinition { block, place } = self.values[value.index()];
+        let ValueDefinition { block, place, .. } = self.values[value.index()];
         let block = self.block(block);
         match place {
             Place::Phi(index) => Definition::Phi(&block.phis[index]),

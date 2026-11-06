@@ -26,7 +26,8 @@
 //! does not hold its value yet is stored (`DirtyPoint`), so that the frame
 //! is the interpreter's (decision 2); a back edge's poll records the same
 //! stores for its cold path alone ("A poll writes nothing back",
-//! `execution.md`, "Safepoints and the depth limit"); a way into a merge
+//! `execution.md`, "Safepoints and the depth limit"), and so does a trap,
+//! where a guard fails (`PointKind::Trap`); a way into a merge
 //! stores each binding the merge does not carry on. A store left out would
 //! leave a word the collector traces other than the interpreter's -- an
 //! object kept alive that a `WeakArray` would show gone.
@@ -98,6 +99,11 @@ pub(crate) enum PointKind {
     Frame { node: usize },
     /// The poll of the block's back edge.
     Poll,
+    /// A trap: the failure of the integer fast path at this index of
+    /// the block's nodes, or, for `None`, of the block's end
+    /// (`Graph::end_trap`). Its write-back, like a poll's, lies on its
+    /// way out alone.
+    Trap { node: Option<usize> },
 }
 
 /// The write-back an interrupt point owes the frame: every binding whose
@@ -717,12 +723,26 @@ impl Allocator<'_> {
                 || !intervals.register_uses[value.index()].is_empty();
             loaded.then(|| self.take_register(definition, use_position, &operands, &mut moves))
         });
-        if let Node::IntegerBinary { fallback, .. } = node {
+        if let Node::IntegerBinary {
+            fallback: Some(fallback),
+            ..
+        } = node
+        {
             if graph.block(block).exit_position(*fallback) == Some(index) {
                 // Taken before the fast path writes its result, with every
                 // move before it made.
                 self.exits.insert((block, *fallback), self.state.clone());
             }
+        }
+        // A trap is taken where a fallback would be.
+        if node.trap().is_some() {
+            let stores = self.dirty_stores();
+            self.allocation.dirty_at.push(DirtyPoint {
+                position: use_position,
+                block,
+                kind: PointKind::Trap { node: Some(index) },
+                stores,
+            });
         }
         self.push_moves(use_position, moves);
         if calls_leaf {
@@ -820,6 +840,15 @@ impl Allocator<'_> {
                 position: use_position,
                 block,
                 kind: PointKind::Poll,
+                stores,
+            });
+        }
+        if graph.end_trap(block).is_some() {
+            let stores = self.dirty_stores();
+            self.allocation.dirty_at.push(DirtyPoint {
+                position: use_position,
+                block,
+                kind: PointKind::Trap { node: None },
                 stores,
             });
         }

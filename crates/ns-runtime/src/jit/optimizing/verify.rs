@@ -3,7 +3,7 @@
 //! value only where it is defined, and a phi has an input for each way in.
 //! The rules apply to the blocks reachable from block 0; an unreachable
 //! block never runs.
-use super::graph::{Block, BlockId, End, Graph, Node, Place, ValueId};
+use super::graph::{Block, BlockId, End, Graph, Node, Place, ValueId, ValueKind};
 
 /// What `verify` refuses in a graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +58,9 @@ pub(crate) enum VerifyError {
     /// A move or a definition at `position` names a register no value may
     /// be allocated to.
     NotAllocatable { position: u32 },
+    /// `value` is said to be of a kind (`ValueKind`) its definition does
+    /// not guarantee: a test the code leaves out for it would be wrong.
+    KindUnfounded { value: ValueId },
     /// The allocation's positions, blocks or interrupt points are not the
     /// graph's, or not the metadata's.
     Unaligned,
@@ -169,7 +172,41 @@ pub(crate) fn verify(graph: &Graph) -> Result<(), VerifyError> {
             available(value, index, block.nodes.len())?;
         }
     }
+    check_kinds(graph, &reachable)?;
     check_frame_lifetimes(graph, &reachable)
+}
+
+/// Every value of a known kind is defined by what guarantees it: an
+/// integer fast path or a constant of the kind, or a phi whose every input
+/// is of it -- since the code tests nothing of such a value.
+fn check_kinds(graph: &Graph, reachable: &dyn Fn(usize) -> bool) -> Result<(), VerifyError> {
+    for (index, block) in graph.blocks.iter().enumerate() {
+        if !reachable(index) {
+            continue;
+        }
+        for phi in &block.phis {
+            let kind = graph.kind(phi.value);
+            let founded = kind == ValueKind::Unknown
+                || phi.inputs.iter().all(|input| {
+                    graph
+                        .values
+                        .get(input.index())
+                        .is_some_and(|definition| definition.kind == kind)
+                });
+            if !founded {
+                return Err(VerifyError::KindUnfounded { value: phi.value });
+            }
+        }
+        for node in &block.nodes {
+            if let Some(value) = node.defined() {
+                let kind = graph.kind(value);
+                if kind != ValueKind::Unknown && kind != node.kind() {
+                    return Err(VerifyError::KindUnfounded { value });
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A set of values, one bit each.
@@ -263,7 +300,11 @@ fn check_frame_lifetimes(
         };
         let ends = block.end.successors();
         for node in &block.nodes {
-            if let Node::IntegerBinary { fallback, .. } = node {
+            if let Node::IntegerBinary {
+                fallback: Some(fallback),
+                ..
+            } = node
+            {
                 if !ends.contains(fallback) {
                     check_inputs(&set, *fallback)?;
                 }
@@ -308,7 +349,11 @@ fn leaving_sets(block: &Block, top: ValueSet) -> Vec<(BlockId, ValueSet)> {
     let ends = block.end.successors();
     let mut leaving = Vec::new();
     for node in &block.nodes {
-        if let Node::IntegerBinary { fallback, .. } = node {
+        if let Node::IntegerBinary {
+            fallback: Some(fallback),
+            ..
+        } = node
+        {
             if !ends.contains(fallback) {
                 leaving.push((*fallback, set.clone()));
             }
@@ -371,9 +416,11 @@ fn check_end(block: &Block, block_id: BlockId) -> Result<(), VerifyError> {
     let agrees = match &block.end {
         End::Frame => last.is_some_and(stops),
         End::FrameJump { .. } => last.is_some_and(jumps),
-        End::Jump(_) | End::Branch { .. } | End::Return { .. } | End::ReturnUnlessNil { .. } => {
-            !last.is_some_and(stops)
-        }
+        End::Jump(_)
+        | End::Branch { .. }
+        | End::Return { .. }
+        | End::ReturnUnlessNil { .. }
+        | End::Trap { .. } => !last.is_some_and(stops),
     };
     if agrees && !early_stop {
         Ok(())
@@ -502,7 +549,9 @@ fn intersect(
 #[cfg(test)]
 mod tests {
     use super::{immediate_dominators, verify, VerifyError};
-    use crate::jit::optimizing::graph::{Block, BlockId, End, Graph, Node, Phi, ValueId};
+    use crate::jit::optimizing::graph::{
+        Block, BlockId, End, Graph, Node, Phi, ValueId, ValueKind,
+    };
 
     fn block(program_counter: u32, nodes: Vec<Node>, end: End, predecessors: Vec<u32>) -> Block {
         Block {
@@ -527,10 +576,11 @@ mod tests {
                     word: 0,
                 }],
                 End::Branch {
+                    program_counter: 0,
                     condition: ValueId(1),
                     if_true: BlockId(1),
                     if_false: BlockId(2),
-                    not_boolean: BlockId(2),
+                    not_boolean: Some(BlockId(2)),
                 },
                 vec![],
             ),
@@ -559,10 +609,11 @@ mod tests {
             1,
             vec![],
             End::Branch {
+                program_counter: 0,
                 condition: ValueId(1),
                 if_true: BlockId(1),
                 if_false: BlockId(1),
-                not_boolean: BlockId(1),
+                not_boolean: Some(BlockId(1)),
             },
             vec![0, 1],
         );
@@ -669,11 +720,12 @@ mod tests {
                     },
                     Node::IntegerBinary {
                         operation: crate::bytecode::IntegerOperation::Add,
+                        program_counter: 0,
                         destination_register: 3,
                         value: ValueId(2),
                         left: ValueId(0),
                         right: ValueId(1),
-                        fallback: BlockId(2),
+                        fallback: Some(BlockId(2)),
                     },
                 ],
                 End::Jump(BlockId(1)),
@@ -709,5 +761,36 @@ mod tests {
             verify(&graph),
             Err(VerifyError::NotDominated { .. })
         ));
+    }
+
+    /// A value said to be a `SmallInteger` that its definition does not
+    /// make one is refused, since its code would test nothing of it; the
+    /// constant's own kind, which the graph finds, is accepted.
+    #[test]
+    fn a_kind_the_definition_does_not_guarantee_is_refused() {
+        let constant = |word: u64| {
+            Graph::from_blocks(vec![block(
+                0,
+                vec![Node::Constant {
+                    value: ValueId(0),
+                    word,
+                }],
+                End::Return { value: ValueId(0) },
+                vec![],
+            )])
+        };
+        let one = crate::heap::Immediate::small_integer(1)
+            .expect("a SmallInteger")
+            .bits();
+        let graph = constant(one);
+        assert_eq!(graph.kind(ValueId(0)), ValueKind::SmallInteger);
+        assert_eq!(verify(&graph), Ok(()));
+        let mut graph = constant(crate::heap::Immediate::NIL.bits());
+        assert_eq!(graph.kind(ValueId(0)), ValueKind::Unknown);
+        graph.values[0].kind = ValueKind::SmallInteger;
+        assert_eq!(
+            verify(&graph),
+            Err(VerifyError::KindUnfounded { value: ValueId(0) })
+        );
     }
 }
