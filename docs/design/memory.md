@@ -1954,7 +1954,13 @@ and the stress runs check that each bound is lowered before its pages go:
 Every bound machine code compares against is lowered before a page goes,
 so machine code reads only committed memory: an id past the lowered
 machine entry rows reads as no machine entry, and the interpreter calls
-the block. The stack shrinks between entries, when no frame machine
+the block. The code table's length counts every body with machine code,
+not only the bodies an activation runs: a full collection frees the id
+of a body nothing runs, and the budget words' pointing that follows
+mints one again for each body whose code lives
+(`jit::point_budget_words_after_collection`), so that a compiled body
+keeps a code id, and its rows in the three tables, for as long as its
+code lives. The stack shrinks between entries, when no frame machine
 code pushed lies above its top. A page of a table given back reads zeros
 when it is committed again, and each table writes what it reads there
 first, as it does for a page committed fresh. On Windows the code zone

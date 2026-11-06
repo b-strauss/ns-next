@@ -6883,10 +6883,11 @@ road step 9, the optimizing JIT, next.
 ## The optimizing JIT designed, road step 9 (2026-11-05)
 
 Designed with the user on 2026-11-04 and 2026-11-05 in fourteen
-decisions, and written, not built: [execution.md](design/execution.md),
-"Planned: the optimizing JIT". One optimizing tier above the baseline,
-an SSA control-flow graph in Maglev's shape built in one pass over the
-register bytecode, its nodes emitting through the repository's own
+decisions, and written first, its first stage built the next day
+(below): [execution.md](design/execution.md), "Planned: the optimizing
+JIT". One optimizing tier above the baseline, an SSA control-flow graph
+in Maglev's shape built in one pass over the register bytecode, its
+nodes emitting through the repository's own
 macro assembler, a linear scan that writes the deoptimization metadata
 as it allocates. The compiler runs on a thread of its own from a
 snapshot the mutator builds -- Strongtalk's `RScope` tree, no handle --
@@ -6911,8 +6912,8 @@ pass and differential number tests check it, and it is built in ten
 stages. Grounded in Strongtalk, HotSpot, V8, Cog's Sista and SOMns. Only
 Markdown changed.
 
-What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): its first stage,
-the foundation without speculation, next.
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), its first stage
+built below.
 
 ## The optimizing tier's foundation, road step 9's first stage (2026-11-06)
 
