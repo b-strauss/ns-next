@@ -1846,12 +1846,12 @@ mod tests {
         }
     }
 
+    #[cfg(ns_jit)]
     crate::for_each_lowering! {
         /// The bulk forward frees every optimized copy there is: run under
         /// the optimize stress mode, `swap:` and the `sum`s it sends have
         /// copies by its third run, every one of which its forward frees,
         /// the answers unchanged.
-        #[cfg(ns_jit)]
         fn the_leaf_invalidates_all_optimized_code(lowering) {
             let (mut interpreter, fixture) = a_forward_fixture(lowering);
             interpreter.set_jit_enabled(true);

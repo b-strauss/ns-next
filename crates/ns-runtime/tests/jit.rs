@@ -2081,7 +2081,9 @@ ns_runtime::for_each_lowering! {
     /// dispatching rows name, and the rows move with them: under the zone
     /// stress mode, which compacts at its safepoints, the program's answer
     /// holds at every run, and after a compaction between runs the rows
-    /// still name exactly the copies the zone holds.
+    /// still name exactly the copies the zone holds. Debug builds only,
+    /// where the zone stress mode exists.
+    #[cfg(debug_assertions)]
     fn a_compaction_remaps_the_dispatching_rows(lowering) {
         let (mut interpreter, class) =
             load_customizing(A_PRIVATE_METHOD_ON_TWO_APPLICATIONS, lowering);
@@ -2506,13 +2508,16 @@ fn a_caller_of_a_callee_the_exhausted_zone_holds_is_abandoned() {
     if checked {
         interpreter.set_jit_zone_bytes(stubs + large_bytes + sweep_bytes / 2);
     }
+    // Under `NS_NEXT_NO_JIT=1` the bootstrap ran with the JIT off, which
+    // refused the bodies it entered: the run refuses none.
+    let refused_before = interpreter.jit_statistics().refused_bodies;
     assert_eq!(run(&mut interpreter, &class), expected);
     if !checked {
         return;
     }
     let statistics = interpreter.jit_statistics();
     assert!(statistics.abandoned_bodies >= 1, "{statistics:?}");
-    assert_eq!(statistics.refused_bodies, 0, "{statistics:?}");
+    assert_eq!(statistics.refused_bodies, refused_before, "{statistics:?}");
 }
 
 /// Holds `statistics` to some body optimized -- but under a stress mode
