@@ -1001,11 +1001,25 @@ fn run_optimizing(
 }
 
 /// Whether the decisions about optimized code are pinned here: under the
-/// optimized lowering with no stress mode, whose compactions, collections,
-/// suspensions and moves change which copy of a body runs when.
+/// optimized lowering with no stress mode that changes which copy of a
+/// body runs when (`MODES_THAT_CHANGE_THE_COPY`). The wide stress mode
+/// keeps the pins, so that it holds the tiers' decisions too.
 fn pins_the_tiers(lowering: Lowering) -> bool {
-    lowering == Lowering::Optimized && !a_stress_mode_is_on()
+    lowering == Lowering::Optimized
+        && !MODES_THAT_CHANGE_THE_COPY
+            .iter()
+            .any(|mode| the_stress_mode_is_on(mode))
 }
+
+/// The stress modes that change which copy of a body runs when: by their
+/// compactions, collections, suspensions and moves, by compiling or
+/// optimizing every body at once, or by leaving machine code at every
+/// poll or interrupt point -- the cache stress mode among them, since it
+/// holds the safepoint request, which every poll takes, and vacates the
+/// caches there. The wide stress mode changes no machine code's decision.
+const MODES_THAT_CHANGE_THE_COPY: [&str; 10] = [
+    "MOVES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE", "JIT", "EXIT", "OPTIMIZE", "DEOPT", "CACHES",
+];
 
 /// The squares of 1 to 100,000 summed in one loop: `run`'s back jumps
 /// spend its budget in its first run, so that the second and third push

@@ -1,6 +1,9 @@
 /// Recursion that overflows the depth limit after its method has become
-/// hot: first a shallow recursion run many times, then an unbounded one,
-/// which ends the run with the same Newspeak error the interpreter raises
+/// hot: first a shallow recursion run many times, then an unbounded one
+/// five times over, each overflow caught -- its budget runs out early in
+/// the first descent, so that the limit is met every time through frames
+/// of `unbounded:`'s optimized code -- and once more uncaught, which ends
+/// the run with the same Newspeak error the interpreter raises
 /// (`goldens/runtime/depth-limit/unbounded_recursion_is_a_newspeak_error`).
 class DeepRecursionOptimized = Object new () (
   down: depth = (
@@ -16,12 +19,17 @@ class DeepRecursionOptimized = Object new () (
     |
       transcript = platform transcript.
       total ::= 0.
+      overflows ::= 0.
     |
     1 to: 2000 do: [:index | total:: total + (self down: 10)].
     transcript
         show: total printString;
         newLine.
-    1 to: 5000 do: [:index | self unbounded: 0].
+    1 to: 5 do: [:index | overflows:: overflows + ([self unbounded: 0] on: Error do: [:error | 1])].
+    transcript
+        show: overflows printString;
+        newLine.
+    self unbounded: 0.
     transcript
         show: 'unreachable';
         newLine.

@@ -849,8 +849,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       runs the held path twice and never the full zone's install path
       its comment names; `a_full_collection_keeps_what_is_left_of_a_budget`
       runs in debug builds only, `collect_now` having no release
-      counterpart; `deep_recursion_optimized.ns`'s second loop never
-      passes its first turn, since the recursion overflows in it.
+      counterpart.
     - *Statistics*: `optimized_bodies_resumed` counts the frames returned
       to of every body that has optimized code, not only of frames that
       ran it, and `deepest_forced_exit` counts the points since the last

@@ -1,6 +1,7 @@
 status = 1
 stdout = '''
 20000
+5
 '''
 stderr = '''
 Uncaught Newspeak error: stack overflow: recursion too deep
