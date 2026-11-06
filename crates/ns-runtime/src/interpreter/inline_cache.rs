@@ -365,6 +365,44 @@ impl InlineCaches {
             .map(|family| family.base)
     }
 
+    /// Whether `site`, in the range at `feedback_base` of a family of
+    /// `family_size`, has cached receivers and every one of them has the
+    /// dispatch id `guard`: an entry of that guard alone, at the site or in
+    /// its polymorphic block. A megamorphic site, whose receivers no entry
+    /// records, answers false. The optimizing compiler reads it as the
+    /// feedback of an integer fast path whose fallback the site is
+    /// (`optimizing::snapshot::Snapshot::take`); it decides nothing a send
+    /// runs.
+    pub(crate) fn saw_only_receivers_of(
+        &self,
+        feedback_base: FeedbackBase,
+        family_size: u32,
+        site: CallSite,
+        guard: DispatchId,
+    ) -> bool {
+        let Some(entry) =
+            site_index(feedback_base, family_size, site).and_then(|index| self.sites.get(index))
+        else {
+            return false;
+        };
+        match entry.target {
+            Target::Vacant | Target::Megamorphic { .. } => false,
+            Target::Polymorphic { block, .. } => {
+                // A block whose every slot named a freed id stays
+                // polymorphic, vacant (`forget_freed`): it has cached
+                // nothing, so it answers false as a vacant site does.
+                self.pool.get(block as usize).is_some_and(|slots| {
+                    let mut filled = slots
+                        .iter()
+                        .filter(|slot| !matches!(slot.target, Target::Vacant))
+                        .peekable();
+                    filled.peek().is_some() && filled.all(|slot| slot.guard == guard)
+                })
+            }
+            _ => entry.guard == guard,
+        }
+    }
+
     /// Whether a new range has grown the sites to their growth limit since
     /// the last collection: the caches have no heap, so the mutator that
     /// minted the range requests the collection (`Mutator::feedback_base_for`,
@@ -2768,6 +2806,17 @@ fn fill<'gc>(
         mutator
             .caches
             .advance(index, key.guard, target, key.private(), cell, &mutator.jit);
+        // The sender's feedback changed: its optimization waits for it to
+        // settle -- but under the optimize stress mode, whose budgets run
+        // out at once. The sender is the innermost activation, the
+        // interpreter's and the miss leaf's alike
+        // (`materialize::leaf_frame`).
+        #[cfg(ns_jit)]
+        if !mutator.jit.optimize_stress() {
+            mutator
+                .heap
+                .raise_running_optimization_budget(jit::BUDGET_AFTER_CACHE_CHANGE);
+        }
     }
 }
 
@@ -3857,6 +3906,60 @@ mod tests {
         // Out of range is a no-op, not a panic.
         caches.advance_public(usize::MAX, guard(0), slot(0), false, &jit);
         assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
+    }
+
+    /// A site saw only receivers of a guard while it caches at least one
+    /// and every one it caches has that guard: vacant answers false, one
+    /// entry of the guard true, a polymorphic block with another guard
+    /// beside it false (Json's `nil` beside its `SmallInteger`s), a block
+    /// whose every slot named a freed id false, and megamorphic false.
+    #[test]
+    fn a_site_saw_only_a_guard_while_it_caches_that_guard_alone() {
+        let mut caches = InlineCaches::new();
+        let base = caches.fresh_range(5);
+        let slot = |field| Target::Slot {
+            field,
+            kind: AccessorKind::Getter,
+            chain: Chain::Public,
+            level: ApplicationIndex::UNREGISTERED,
+            recorded_guard: DispatchId::NONE,
+        };
+        let guard = |number: u32| DispatchId::from_counter(DispatchId::FIRST_MINTED + number);
+        let float = guard(0);
+        let jit = JitState::new();
+        let saw_only = |caches: &InlineCaches, number: u32| {
+            caches.saw_only_receivers_of(base, 5, CallSite { number }, float)
+        };
+        let index = |number: usize| base.index() + number;
+        assert!(!saw_only(&caches, 0), "vacant");
+        caches.advance_public(index(1), float, slot(0), false, &jit);
+        assert!(saw_only(&caches, 1), "monomorphic of the guard");
+        caches.advance_public(index(2), float, slot(0), false, &jit);
+        caches.advance_public(index(2), guard(1), slot(1), false, &jit);
+        assert!(
+            matches!(caches.sites[index(2)].target, Target::Polymorphic { .. }),
+            "two guards make a polymorphic site"
+        );
+        assert!(!saw_only(&caches, 2), "another guard beside it");
+        caches.advance_public(index(3), float, slot(0), false, &jit);
+        caches.advance_public(index(3), guard(2), slot(1), false, &jit);
+        let mut freed = FreedIds::default();
+        freed.guards.extend([float, guard(2)]);
+        caches.forget_freed(&freed);
+        assert!(
+            matches!(caches.sites[index(3)].target, Target::Polymorphic { .. }),
+            "a block whose slots are all vacant stays polymorphic"
+        );
+        assert!(!saw_only(&caches, 3), "a block with nothing cached");
+        for number in 0..5 {
+            caches.advance_public(index(4), guard(number), slot(number), false, &jit);
+        }
+        assert_eq!(
+            caches.state_of(&caches.sites[index(4)]),
+            CallSiteState::Megamorphic
+        );
+        assert!(!saw_only(&caches, 4), "megamorphic");
+        assert!(!saw_only(&caches, 5), "outside the family");
     }
 
     /// An entry holds no handle and is the size the pool's blocks are laid

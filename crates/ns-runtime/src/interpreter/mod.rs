@@ -1111,6 +1111,21 @@ impl Interpreter {
         })
     }
 
+    /// The zone offset at which `method`'s body has optimized code in this
+    /// interpreter's zone, if it has some. A test hook.
+    #[doc(hidden)]
+    pub fn jit_optimized_offset(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Option<u32> {
+        self.enter(|mutator| {
+            let code = method_code(mutator, class, side, method)?;
+            mutator.jit.optimized_offset(&code)
+        })
+    }
+
     /// The data words of `method`'s body's machine code -- its transfer
     /// words, which name its twin's code -- as the zone holds them. A test
     /// hook.
@@ -1218,6 +1233,42 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.set_stress(stress));
     }
 
+    /// Turns the optimize stress mode (`NS_NEXT_STRESS_OPTIMIZE`) on or
+    /// off for this interpreter: every body compiled at its first entry or
+    /// interpreted backward jump, and every budget armed at 0 -- the ones
+    /// armed already, whatever `set_optimization_budget` set, among them
+    /// -- so that a body's first spend requests its optimization; off,
+    /// the budget set before, and the deopt stress mode off with it. A
+    /// test hook, set before the code it is meant for runs.
+    #[doc(hidden)]
+    pub fn set_optimize_stress(&mut self, stress: bool) {
+        self.enter(|mutator| {
+            let budget = mutator.jit.set_optimize_stress(stress);
+            #[cfg(ns_jit)]
+            mutator.heap.rearm_optimization_budgets(budget);
+            #[cfg(not(ns_jit))]
+            let _ = budget;
+        });
+    }
+
+    /// Turns the deopt stress mode (`NS_NEXT_STRESS_DEOPT`) on or off for
+    /// this interpreter: on, with the optimize stress mode, the optimized
+    /// code compiled from now on leaving at every n-th interrupt point it
+    /// passes, n set afresh at every safepoint, rotating over the
+    /// Fibonacci numbers from 1 to 987; off, the optimize stress mode left
+    /// on. A test hook, set
+    /// before the code it is meant for runs.
+    #[doc(hidden)]
+    pub fn set_deopt_stress(&mut self, stress: bool) {
+        self.enter(|mutator| {
+            let budget = mutator.jit.set_deopt_stress(stress);
+            #[cfg(ns_jit)]
+            mutator.heap.rearm_optimization_budgets(budget);
+            #[cfg(not(ns_jit))]
+            let _ = budget;
+        });
+    }
+
     /// Makes the JIT lower `MakeFuture` to an exit in the bodies it
     /// compiles from now on, so that a body that makes a future at once
     /// exits at once and is never compiled, while it still returns as
@@ -1234,6 +1285,23 @@ impl Interpreter {
     #[doc(hidden)]
     pub fn set_jit_counting(&mut self, counting: bool) {
         self.enter(|mutator| mutator.jit.set_counting(counting));
+    }
+
+    /// Sets the budget of instructions a body runs in baseline machine
+    /// code before its optimization is requested
+    /// (`jit::OPTIMIZATION_BUDGET` otherwise), for every body armed from
+    /// now on and every one armed already, so that a test that pins what
+    /// a long loop does in baseline code parks it (`i64::MAX`), and one of
+    /// the budget's reaches its end in a few turns. A test hook.
+    #[doc(hidden)]
+    pub fn set_optimization_budget(&mut self, budget: i64) {
+        self.enter(|mutator| {
+            let armed = mutator.jit.set_optimization_budget(budget);
+            #[cfg(ns_jit)]
+            mutator.heap.rearm_optimization_budgets(armed);
+            #[cfg(not(ns_jit))]
+            let _ = armed;
+        });
     }
 
     /// Sets the interpreted backward jump at which a body without machine
@@ -3528,7 +3596,7 @@ fn build_self_referential_object_class<'gc>(
 /// side: what the cache test hooks (`Interpreter::call_site_states`,
 /// `Interpreter::call_site_cells`) read the sites of. `None` when `class`
 /// is no class object or has no such method.
-fn method_code(
+pub(crate) fn method_code(
     mutator: &Mutator<'_>,
     class: &Root,
     side: MethodSide,

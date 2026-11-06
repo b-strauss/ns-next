@@ -237,7 +237,9 @@ fn ns_next_without_a_code_zone() -> Command {
         .env_remove("NS_NEXT_NO_JIT")
         .env_remove("NS_NEXT_STRESS_JIT")
         .env_remove("NS_NEXT_STRESS_EXIT")
-        .env_remove("NS_NEXT_STRESS_ZONE");
+        .env_remove("NS_NEXT_STRESS_ZONE")
+        .env_remove("NS_NEXT_STRESS_OPTIMIZE")
+        .env_remove("NS_NEXT_STRESS_DEOPT");
     command
 }
 
@@ -426,8 +428,8 @@ fn benchmark_rejects_zero_iterations() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("iterations"));
 }
 
-/// `--jit-statistics` prints one `jit: ` line to stderr after the run and
-/// leaves stdout as it was.
+/// `--jit-statistics` prints one `jit: ` line to stderr after the run, the
+/// baseline's counts and the optimizing tier's, and leaves stdout as it was.
 #[test]
 fn jit_statistics_print_one_line_to_stderr() {
     let program = common::golden("language/control-flow/while_loop");
@@ -463,7 +465,8 @@ fn jit_statistics_print_one_line_to_stderr() {
     assert_eq!(
         shape,
         "jit: # bodies, # twins compiled in # ms; # back-edge switches, \
-         # resumptions after a safepoint, # exits"
+         # resumptions after a safepoint, # exits; optimizer: # requests, \
+         # bodies optimized in # ms, # optimized exits (# forced), # abandoned"
     );
 }
 
@@ -494,6 +497,9 @@ fn benchmark_collector_statistics_reports_to_stderr() {
         .env_remove("NS_NEXT_STRESS_SUSPEND")
         .env_remove("NS_NEXT_STRESS_JIT")
         .env_remove("NS_NEXT_STRESS_EXIT")
+        .env_remove("NS_NEXT_STRESS_ZONE")
+        .env_remove("NS_NEXT_STRESS_OPTIMIZE")
+        .env_remove("NS_NEXT_STRESS_DEOPT")
         .output()
         .unwrap();
     assert_eq!(

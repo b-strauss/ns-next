@@ -272,6 +272,18 @@ fn store_immediate32_writes_a_sign_extended_word() {
 }
 
 #[test]
+fn subtract_from_memory_subtracts_a_sign_extended_word_in_place() {
+    for memory in memories() {
+        for value in IMMEDIATES {
+            assert_eq!(
+                text(|assembler| assembler.subtract_from_memory(memory, value)),
+                format!("sub qword ptr {},{}", memory_text(memory), immediate(value))
+            );
+        }
+    }
+}
+
+#[test]
 fn register_arithmetic() {
     for target in registers() {
         for source in registers() {

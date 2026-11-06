@@ -167,6 +167,7 @@ pub(crate) fn machine_frame(
         method,
         feedback_base,
         reifies,
+        optimized: _,
     } = installed;
     let kind = match (method, code.kind) {
         (Some(method), _) => MachineKind::method(method.selector),
@@ -216,6 +217,11 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
     else {
         unreachable!("internal: a compiled frame's return address lies in an installed body");
     };
+    if installed.optimized {
+        mutator.jit.statistics.optimized_frames_materialized += 1;
+    }
+    // The last frame's, which a refused push leaves the innermost.
+    mutator.jit.walked_optimized = installed.optimized;
     let code = &installed.code;
     let (offset, register_base) = match walk.callee {
         None => {
@@ -283,6 +289,10 @@ pub(crate) fn materialize_innermost(
         let Ok(program_counter) = u32::try_from(program_counter) else {
             unreachable!("internal: an exit's program counter fits 32 bits");
         };
+        if installed.optimized {
+            mutator.jit.statistics.optimized_frames_materialized += 1;
+        }
+        mutator.jit.walked_optimized = installed.optimized;
         let offset = callee.offset(&installed.code);
         let frame = machine_frame(
             &mut mutator.heap,

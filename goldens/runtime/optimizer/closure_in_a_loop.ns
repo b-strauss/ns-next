@@ -1,0 +1,35 @@
+/// A loop that makes a block capturing its counter and an accumulated
+/// value on every turn and evaluates it: the block's frame outlives the
+/// turn's registers (`MakeClosure`), and the block writes the
+/// accumulator it captured, so a capture of a stale or copied register
+/// changes the sum. The last block made is evaluated once more after the
+/// loop.
+class ClosureInALoop = Object new () (
+  run: count = (
+    |
+      total ::= 0.
+      last ::= nil.
+    |
+    1 to: count do: [:index |
+      |
+        block = [:extra | total:: total + index + extra].
+      |
+      block value: index \\ 3.
+      last:: block.
+    ].
+    last value: 1000.
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self run: 30000) printString;
+        newLine.
+    transcript
+        show: (self run: 10) printString;
+        newLine.
+  )
+)

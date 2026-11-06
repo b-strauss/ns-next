@@ -28,7 +28,13 @@
 //! freed whenever its lean body is, by death, abandonment, a moved base or
 //! usage, and never alone, so that it takes the lean body's usage; each
 //! copy moves on its own, and the lean body's transfer words, which name
-//! the twin's code, are written afresh once the copies moved.
+//! the twin's code, are written afresh once the copies moved. Optimized
+//! code is freed whenever its baseline body is, and here with it, the
+//! pair judged by its more used copy; only its own exits free it alone
+//! (`jit::abandon_optimized`).
+
+#[cfg(ns_jit)]
+use std::rc::Rc;
 
 use ns_memory::CodeOffset;
 
@@ -276,6 +282,41 @@ impl CompactionPlan {
 }
 
 impl JitState {
+    /// Whether each installed body is unfreed and what its code's slot
+    /// names, by index.
+    #[cfg(ns_jit)]
+    fn named_bodies(&self) -> Vec<bool> {
+        (0..self.bodies.len())
+            .map(|index| !self.bodies[index].free && self.still_named(index))
+            .collect()
+    }
+
+    /// Every live body that has optimized code here: what the zone stress
+    /// mode's sparing compaction keeps (`compact_code_zone_for_stress`).
+    #[cfg(debug_assertions)]
+    fn codes_with_optimized_code(&self) -> Vec<std::rc::Rc<CompiledCode>> {
+        self.bodies
+            .iter()
+            .filter(|body| !body.free)
+            .filter_map(|body| body.code.upgrade())
+            .filter(|code| self.optimized(code).is_some())
+            .collect()
+    }
+
+    /// The bodies whose machine code a compaction freed, those `named`
+    /// said were what their slots named before it and that are freed now,
+    /// which still live: a copy freed before, whose body may have been
+    /// compiled again, is none of them.
+    #[cfg(ns_jit)]
+    fn freed_codes(&self, named: &[bool]) -> Vec<Rc<CompiledCode>> {
+        self.bodies
+            .iter()
+            .zip(named)
+            .filter(|(body, named)| body.free && **named)
+            .filter_map(|(body, _)| body.code.upgrade())
+            .collect()
+    }
+
     /// Marks the body at `index` freed: no lookup finds it from now on,
     /// its returns are removed, and the next compaction reclaims its
     /// bytes, which count towards the quarter a full collection asks for a
@@ -283,13 +324,20 @@ impl JitState {
     /// it exists.
     pub(super) fn free_body(&mut self, index: u32) {
         let twin = self.bodies.get(index as usize).and_then(|body| body.twin);
+        // Optimized code goes with its baseline body, as the twin does.
+        let optimized = self.optimized_of(index);
+        for copy in std::iter::once(index).chain(twin).chain(optimized) {
+            self.free_one(copy);
+        }
+    }
+
+    /// Marks the body at `index` alone freed and removes its returns, as
+    /// `free_body` does each copy: optimized code abandoned while its
+    /// baseline code stays (`jit::abandon_optimized`). Only between
+    /// entries.
+    pub(super) fn free_one(&mut self, index: u32) {
         if self.mark_free(index, FreedBy::BetweenCompactions) {
             self.returns.retain(|_, site| site.body != index);
-        }
-        if let Some(twin) = twin {
-            if self.mark_free(twin, FreedBy::BetweenCompactions) {
-                self.returns.retain(|_, site| site.body != twin);
-            }
         }
     }
 
@@ -322,8 +370,14 @@ impl JitState {
     /// Whether the body at `index` is still what its code's slot names:
     /// its code lives, and it was neither abandoned nor compiled again; for
     /// a twin, whether its lean body is, unfreed, and still has it as its
-    /// twin.
+    /// twin; for optimized code, whether its baseline body is, and its
+    /// slot names it as the optimized code beside it.
     fn still_named(&self, index: usize) -> bool {
+        if let Some(baseline) = self.bodies[index].baseline {
+            return self
+                .optimized_of(baseline)
+                .is_some_and(|optimized| optimized as usize == index);
+        }
         if let Some(lean) = self.bodies[index].lean {
             let lean_body = &self.bodies[lean as usize];
             return !lean_body.free
@@ -461,10 +515,17 @@ impl JitState {
     /// but counts as a held compile (`hold_compile`): no livelock between
     /// compiles and compactions is possible.
     pub(super) fn may_compile_now(&self, slot: &super::JitSlot) -> bool {
+        self.may_compile_needing(slot.needed.get())
+    }
+
+    /// `may_compile_now` for a copy that needed `needed` bytes when a
+    /// compile last found no room for it, 0 if none did: a lean body's
+    /// slot records them, the lean body its twin's and its optimized
+    /// code's.
+    pub(super) fn may_compile_needing(&self, needed: u32) -> bool {
         if !self.zone_exhausted {
             return true;
         }
-        let needed = slot.needed.get();
         needed == 0
             || self
                 .zone
@@ -571,6 +632,12 @@ impl JitState {
         Some(self.bodies[index].start)
     }
 
+    /// The zone offset of `code`'s optimized code, if it has some here.
+    /// For tests.
+    pub(crate) fn optimized_offset(&self, code: &CompiledCode) -> Option<u32> {
+        Some(self.optimized(code)?.start)
+    }
+
     /// The data words of the machine code `code`'s slot names -- its
     /// closure sites among them -- as the zone holds them. For tests.
     pub(crate) fn body_words(&self, code: &CompiledCode) -> Option<Vec<u64>> {
@@ -648,8 +715,20 @@ impl JitState {
                 );
                 continue;
             }
-            let twin = body.twin.map(|twin| &self.bodies[twin as usize]);
-            if let Some(twin) = twin {
+            // Optimized code transfers into its baseline body's twin.
+            let owner = match body.baseline {
+                Some(baseline) => {
+                    let owner = &self.bodies[baseline as usize];
+                    assert!(
+                        !owner.free && body.twin.is_none(),
+                        "internal: live optimized code's baseline body is freed, or it has a twin"
+                    );
+                    owner
+                }
+                None => body,
+            };
+            let twin = owner.twin.map(|twin| &self.bodies[twin as usize]);
+            if let Some(twin) = twin.filter(|_| body.baseline.is_none()) {
                 assert!(
                     !twin.free && twin.lean.is_some_and(|lean| lean as usize == index),
                     "internal: a live lean body's twin is freed or names another body"
@@ -690,8 +769,11 @@ impl JitState {
             if let Some(index) = self.named_body(code) {
                 let body = &self.bodies[index];
                 body.usage.set(MAXIMUM_USAGE);
-                if let Some(twin) = body.twin {
-                    self.bodies[twin as usize].usage.set(MAXIMUM_USAGE);
+                let optimized = u32::try_from(index)
+                    .ok()
+                    .and_then(|index| self.optimized_of(index));
+                for copy in body.twin.into_iter().chain(optimized) {
+                    self.bodies[copy as usize].usage.set(MAXIMUM_USAGE);
                 }
             }
         }
@@ -748,14 +830,29 @@ impl JitState {
                     return (freed_any, free_bytes);
                 }
                 let body = &self.bodies[index];
-                // A twin goes with its lean body, never alone.
-                if body.free || body.lean.is_some() || body.usage.get() > freeable {
+                // A twin, and optimized code, are freed here with their
+                // lean body, never alone.
+                if body.free || body.lean.is_some() || body.baseline.is_some() {
                     continue;
                 }
-                let (size, code, twin) = (body.size(), body.code.upgrade(), body.twin);
                 let Ok(number) = u32::try_from(index) else {
                     unreachable!("internal: a body's index fits its slot's map");
                 };
+                // The pair is as used as its more used copy: once a body
+                // is optimized, its cells and its row name the optimized
+                // code, whose links raise that copy's usage alone, so that
+                // the lean body's would make a hot optimized body the
+                // first a compaction frees.
+                let optimized = self.optimized_of(number);
+                let usage = optimized.map_or(body.usage.get(), |optimized| {
+                    body.usage
+                        .get()
+                        .max(self.bodies[optimized as usize].usage.get())
+                });
+                if usage > freeable {
+                    continue;
+                }
+                let (size, code, twin) = (body.size(), body.code.upgrade(), body.twin);
                 self.mark_free(number, FreedBy::TheCompaction);
                 freed_any = true;
                 free_bytes += size;
@@ -763,10 +860,10 @@ impl JitState {
                 if let Some(code) = code {
                     code.jit.forget();
                 }
-                if let Some(twin) = twin {
-                    let twin_size = self.bodies[twin as usize].size();
-                    if self.mark_free(twin, FreedBy::TheCompaction) {
-                        free_bytes += twin_size;
+                for copy in twin.into_iter().chain(optimized) {
+                    let copy_size = self.bodies[copy as usize].size();
+                    if self.mark_free(copy, FreedBy::TheCompaction) {
+                        free_bytes += copy_size;
                     }
                 }
             }
@@ -847,7 +944,7 @@ impl JitState {
         let mut renumbered: Vec<Option<(u32, u32)>> = Vec::with_capacity(old_bodies.len());
         let mut survivors = plan.survivors().iter();
         let mut moved_bytes = 0u64;
-        for mut body in old_bodies {
+        for (old_index, mut body) in old_bodies.into_iter().enumerate() {
             if body.free {
                 renumbered.push(None);
                 continue;
@@ -880,8 +977,17 @@ impl JitState {
             body.words -= delta;
             body.words_end -= delta;
             body.usage.set(body.usage.get() / 2);
-            // A twin's slot is its lean body's, which names the lean body.
-            if let Some(code) = body.code.upgrade().filter(|_| body.lean.is_none()) {
+            // A twin's slot is its lean body's, which names the lean body;
+            // optimized code's slot names it beside the lean body.
+            let code = body.code.upgrade();
+            if let Some(code) = code.as_ref().filter(|_| body.baseline.is_some()) {
+                debug_assert_eq!(
+                    code.jit.optimized.get() as usize,
+                    old_index,
+                    "internal: a compaction moves only optimized code its slot names"
+                );
+                code.jit.optimized.set(index);
+            } else if let Some(code) = code.filter(|_| body.lean.is_none()) {
                 let first_instruction = code.jit.first_instruction.get() - delta;
                 debug_assert_eq!(
                     code.jit.zone.get(),
@@ -919,6 +1025,7 @@ impl JitState {
         for body in &mut self.bodies {
             body.twin = renumber(body.twin);
             body.lean = renumber(body.lean);
+            body.baseline = renumber(body.baseline);
         }
         // Every byte the survivors no longer cover -- the gaps their
         // alignment leaves and the room freed past the last -- is filled
@@ -935,14 +1042,18 @@ impl JitState {
         self.statistics.zone_compactions += 1;
         self.statistics.moved_bytes += moved_bytes;
         // The transfer words name the twin's code, which may have moved
-        // apart from the lean body: each written afresh at the lean body's
-        // new place.
-        for lean in 0..self.bodies.len() {
-            if self.bodies[lean].twin.is_some() {
-                let Ok(lean) = u32::try_from(lean) else {
+        // apart from the lean body and the optimized code beside it: each
+        // written afresh at its body's new place.
+        for index in 0..self.bodies.len() {
+            let body = &self.bodies[index];
+            let owner = body
+                .baseline
+                .map_or(body, |baseline| &self.bodies[baseline as usize]);
+            if body.lean.is_none() && owner.twin.is_some() {
+                let Ok(index) = u32::try_from(index) else {
                     unreachable!("internal: a body's index fits its slot's map");
                 };
-                self.write_transfer_words(lean);
+                self.write_transfer_words(index);
             }
         }
     }
@@ -973,14 +1084,27 @@ impl Mutator<'_> {
     /// bodies until a quarter of the bodies' room past the stubs is free,
     /// and at least what the compile that found no room needed.
     pub(crate) fn compact_code_zone(&mut self) {
-        self.compact_code_zone_freeing(Freeing::ToAQuarter);
+        self.compact_code_zone_freeing(Freeing::ToAQuarter, Vec::new());
     }
 
     /// The compaction the zone stress mode makes (`NS_NEXT_STRESS_ZONE`):
-    /// every body no activation runs freed.
+    /// every body no activation runs freed -- but, when
+    /// `spare_optimized`, every body that has optimized code, which the
+    /// compaction slides and remaps with the rest. The mode alternates
+    /// the two: freed at every compaction, a callee's optimized code,
+    /// installed while the callee still ran its baseline code, would be
+    /// freed at its caller's next poll, before any call entered it, and
+    /// never run at an address a compaction gave it; spared at every
+    /// other one, it is moved, then run where it lies now, then freed and
+    /// compiled again.
     #[cfg(debug_assertions)]
-    pub(crate) fn compact_code_zone_for_stress(&mut self) {
-        self.compact_code_zone_freeing(Freeing::EveryInactiveBody);
+    pub(crate) fn compact_code_zone_for_stress(&mut self, spare_optimized: bool) {
+        let spared = if spare_optimized {
+            self.jit.codes_with_optimized_code()
+        } else {
+            Vec::new()
+        };
+        self.compact_code_zone_freeing(Freeing::EveryInactiveBody, spared);
     }
 
     /// The compaction, in Cog's order: the bodies marked, freed and
@@ -991,7 +1115,11 @@ impl Mutator<'_> {
     /// `cointerp.c:21546-21596`; `relocateMethodsPreCompaction`,
     /// `:13400-13417`); the bytes slid and the records rewritten; the
     /// request cleared, and the exhaustion once that much is free.
-    fn compact_code_zone_freeing(&mut self, freeing: Freeing) {
+    fn compact_code_zone_freeing(
+        &mut self,
+        freeing: Freeing,
+        spared: Vec<std::rc::Rc<CompiledCode>>,
+    ) {
         #[cfg(debug_assertions)]
         assert_eq!(
             self.jit.entries_in_progress, 0,
@@ -1009,7 +1137,13 @@ impl Mutator<'_> {
             self.jit.zone_exhausted = false;
             return;
         };
-        let active = self.heap.active_codes();
+        // The bodies still what their slots name before this compaction
+        // frees any: only their rows are cleared below, never that of a
+        // body compiled again since an older copy of it was freed.
+        #[cfg(ns_jit)]
+        let named_before = self.jit.named_bodies();
+        let mut active = self.heap.active_codes();
+        active.extend(spared);
         self.jit.mark_active(&active);
         drop(active);
         self.jit.free_unnamed();
@@ -1019,6 +1153,15 @@ impl Mutator<'_> {
         self.caches.remap_cell_entries(&plan);
         #[cfg(ns_jit)]
         self.heap.remap_machine_entries(&plan);
+        // A freed body's next compile arms its budget afresh, as its
+        // machine entry row is written afresh; and the slide renumbers the
+        // bodies a word still to be pointed names, which its first spend
+        // points instead.
+        #[cfg(ns_jit)]
+        for code in self.jit.freed_codes(&named_before) {
+            self.heap.forget_optimization_budget(&code);
+        }
+        self.jit.budget_words_to_point.clear();
         self.jit.slide(&plan);
         // After the slide, which lowered the zone's next offset: what the
         // freed bodies left past it is given back by the code zone's pair.
@@ -1091,8 +1234,9 @@ impl Mutator<'_> {
     /// site ranges, that every holder of an address into the zone was
     /// remapped: every cell agrees with its entry, which names a live
     /// body's start, a stub, or the miss stub (`InlineCaches::verify_cells`),
-    /// and every machine entry row names the start of a lean body the zone
-    /// holds and has not freed; no cell names a twin's start. The zone and collect stress modes so check every
+    /// and every machine entry row names the start of a lean body or of
+    /// optimized code the zone holds and has not freed; no cell names a
+    /// twin's start. The zone and collect stress modes so check every
     /// compaction and every slide they make.
     #[cfg(all(ns_jit, debug_assertions))]
     fn verify_code_zone_holders(&self) {
@@ -1107,8 +1251,9 @@ impl Mutator<'_> {
                 .zone()
                 .executable_address(CodeOffset(body.start)) as u64
         };
-        // Only a lean body is ever named: a twin is entered by its lean
-        // body's transfers and by a resumption alone.
+        // Only a lean body or the optimized code beside it is ever named:
+        // a twin is entered by its lean body's and its optimized code's
+        // transfers and by a resumption alone.
         let starts: Vec<u64> = self
             .jit
             .bodies
@@ -1267,6 +1412,53 @@ mod tests {
                 code.registers_above_header(),
             )
             .unwrap_or_else(|_| panic!("the stack holds the frame"))
+    }
+
+    /// A hot optimized body's pair is judged by its more used copy: its
+    /// cells and row link its optimized code, whose usage they raise,
+    /// while its lean body's is halved by every slide, so that a freeing
+    /// by usage frees a colder body first.
+    #[cfg(ns_jit)]
+    #[test]
+    fn a_hot_optimized_body_outlives_a_colder_one_at_a_usage_compaction() {
+        use crate::jit::tests::machine::{body_with_a_loop, enter_twice};
+        use std::rc::Rc;
+        let mut interpreter =
+            crate::interpreter::Interpreter::bootstrap_with(crate::Lowering::Optimized);
+        interpreter.set_jit_enabled(true);
+        interpreter.enter(|mutator| {
+            let cold = body_with_a_loop();
+            let hot = body_with_a_loop();
+            for code in [&cold, &hot] {
+                enter_twice(&mut mutator.jit, code);
+            }
+            crate::jit::after_compile_trigger(mutator);
+            mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+            crate::jit::optimize_requested(mutator);
+            let (cold_lean, hot_lean) = (cold.jit.map.get(), hot.jit.map.get());
+            let optimized = hot.jit.optimized.get();
+            assert_ne!(optimized, crate::jit::NO_BODY, "the hot body is optimized");
+            // Linked since its optimization, its optimized code is the
+            // copy whose usage went up, while slides halved its lean
+            // body's; the cold body is used, a little.
+            mutator.jit.bodies[hot_lean as usize].usage.set(0);
+            mutator.jit.bodies[optimized as usize]
+                .usage
+                .set(super::LINKED_USAGE_CEILING);
+            mutator.jit.bodies[cold_lean as usize].usage.set(1);
+            let (_, free) = mutator.jit.free_by_usage(super::Freeing::ToAQuarter, 0);
+            let (freed_any, _) = mutator
+                .jit
+                .free_by_usage(super::Freeing::ToAQuarter, free + 1);
+            assert!(freed_any);
+            assert!(
+                mutator.jit.bodies[cold_lean as usize].free,
+                "the colder body is freed"
+            );
+            assert!(!mutator.jit.bodies[hot_lean as usize].free);
+            assert!(!mutator.jit.bodies[optimized as usize].free);
+            assert!(mutator.jit.optimized(&hot).is_some());
+        });
     }
 
     /// A frame an exit left stopped in machine code a compaction freed --

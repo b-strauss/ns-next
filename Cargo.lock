@@ -443,6 +443,7 @@ dependencies = [
 name = "ns-runtime"
 version = "0.1.0"
 dependencies = [
+ "iced-x86",
  "indoc",
  "libtest-mimic",
  "ns-assembler",

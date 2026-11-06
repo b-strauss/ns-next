@@ -1,0 +1,36 @@
+/// A `^` out of a block inside a hot loop: every call of
+/// `firstMultipleOf:above:` scans from the bound with a block that returns
+/// from the method, so the optimized frame is unwound by the return and the
+/// caller goes on with the value. Called 20000 times; the scan misses
+/// (answering -1) whenever no multiple lies within the 20 numbers above the
+/// bound, which happens for the divisor 50 on most turns.
+class NonLocalReturnFromALoop = Object new () (
+  firstMultipleOf: divisor above: bound = (
+    bound + 1 to: bound + 20 do: [:candidate | candidate \\ divisor = 0 ifTrue: [^candidate]].
+    ^-1.
+  )
+
+  run: count = (
+    |
+      total ::= 0.
+      divisor ::= 0.
+    |
+    1 to: count do: [:index |
+      divisor:: index \\ 7 = 0 ifTrue: [50] ifFalse: [index \\ 7 + 1].
+      total:: total + (self firstMultipleOf: divisor above: index).
+    ].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self run: 20000) printString;
+        newLine.
+    transcript
+        show: (self run: 14) printString;
+        newLine.
+  )
+)

@@ -1,0 +1,39 @@
+/// An exception signalled from a hot method and handled in its caller: most
+/// turns of the loop run `adjust:` plainly, and every 50th goes through
+/// `guarded:`, whose handler resumes the signal, which returns into the
+/// optimized frame, or, on every 100th turn, returns from the `on:do:`,
+/// which unwinds that frame. `Exception` is resumable, so `signal:` answers
+/// the value the handler resumes with.
+class ExceptionThroughAnOptimizedFrame = Object new () (
+  adjust: value = (
+    ^value \\ 50 = 0 ifTrue: [(Exception signal: 'fifty') + value] ifFalse: [value + 1].
+  )
+
+  guarded: value = (
+    ^[self adjust: value] on: Exception do: [:exception |
+      value \\ 100 = 0 ifTrue: [exception return: 1] ifFalse: [exception resume: 1000].
+    ].
+  )
+
+  run: count = (
+    |
+      total ::= 0.
+    |
+    1 to: count do: [:index |
+      total:: total + (index \\ 50 = 0 ifTrue: [self guarded: index] ifFalse: [self adjust: index]).
+    ].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self run: 60000) printString;
+        newLine.
+    transcript
+        show: (self run: 100) printString;
+        newLine.
+  )
+)

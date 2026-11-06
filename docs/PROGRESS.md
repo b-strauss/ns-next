@@ -62,7 +62,7 @@ first.
 | Doc comments: a block of `///` lines coloured and rendered in place as Markdown, a hover with a declaration's signature and doc comment, Java-style tags (`@param`, `@answers`, `@signals`, `@see`, `@factory`, `{@summary}`) as sections with the server's warnings, and the whole core library documented with them | Complete | 2026-11-01 | [doc-comment-tags](superpowers/plans/2026-11-01-1608-doc-comment-tags.md) |
 | Identity and equality documented: the contract of `==`, `=`, `hash` and `identityHash` at `Object`, what a value's identity is, and every class's own | Complete | 2026-11-01 | — |
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
-| Road step 9 (M6) — an optimizing JIT | Not started | — | — |
+| Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes | In progress | 2026-11-06 (stage 1) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md) |
 
 ## Notes
 
@@ -6879,3 +6879,133 @@ again; AArch64 is unmeasured, since QEMU times nothing. No golden,
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): AArch64's
 speed, unmeasured; Windows on ARM's JIT; the paths no gate runs; and
 road step 9, the optimizing JIT, next.
+
+## The optimizing JIT designed, road step 9 (2026-11-05)
+
+Designed with the user on 2026-11-04 and 2026-11-05 in fourteen
+decisions, and written first, its first stage built the next day
+(below): [execution.md](design/execution.md), "Planned: the optimizing
+JIT". One optimizing tier above the baseline, an SSA control-flow graph
+in Maglev's shape built in one pass over the register bytecode, its
+nodes emitting through the repository's own
+macro assembler, a linear scan that writes the deoptimization metadata
+as it allocates. The compiler runs on a thread of its own from a
+snapshot the mutator builds -- Strongtalk's `RScope` tree, no handle --
+and its code is installed at a safepoint once the epochs of the
+applications it rests on are checked; the baseline compiler stays
+synchronous. A budget per body, weighted by bytecode as V8's, triggers
+it; Strongtalk's walk up the stack picks the body to compile, a block
+going to its home; on-stack replacement enters optimized code at the
+loop's head of the frame that runs the loop. The feedback is the caches'
+entries, sticky bits written on slow paths, and counts at polymorphic
+and megamorphic sites only, gathered in windows by a counting stub the
+cell switches off. Code is customized per receiver application, guards
+trap by default, and Strongtalk's and HotSpot's measures together rule
+out deoptimization loops. Inlining is planned on the snapshot by
+estimated frequency, with a set always inlined and a bonus for a block
+created in the same compile. Numbers live as Int64 and Float64, the
+61-bit range checked only where a value is tagged again. A frame object
+in a new state stands for an activation the optimizer inlined; partial
+escape analysis removes allocations; an install invalidates the code of
+the applications it rebuilds. Four stress modes, verifiers after every
+pass and differential number tests check it, and it is built in ten
+stages. Grounded in Strongtalk, HotSpot, V8, Cog's Sista and SOMns. Only
+Markdown changed.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), its first stage
+built below.
+
+## The optimizing tier's foundation, road step 9's first stage (2026-11-06)
+
+A second kind of machine code per body, compiled without speculation
+([execution.md](design/execution.md), "The optimizing tier's
+foundation"). Every body has a budget, a row per code id in a
+reservation of its own (`heap/optimization_budgets.rs`), which its
+baseline code spends at its prologue and at each back jump through a
+data word of each copy's, pointed at the row once the code is installed
+and afresh after every full collection, which carries what was left of
+it over; a cache fill after a miss raises it, so a compile waits for its
+feedback. A budget that runs out calls a leaf that records the request,
+and the run loop's next safepoint snapshots the body -- its
+instructions, its facts, the leftover analysis's tainted registers and
+which float-fed sites to send alone, no handle -- and compiles it
+synchronously in `jit/optimizing/`: an SSA graph built in one pass, a
+loop's head leaving a register its frame word where every way in brings
+it so; liveness and a linear scan that keeps values in
+`Roles::allocatable` between interrupt points and writes every value
+back into its frame word before each, leaving no store out; metadata per
+interrupt point, verified against the allocation in debug builds; and
+the code through the macro assembler, every frame node by the
+baseline's own template. It is installed beside the baseline code,
+entered at a push and through compiled calls and the closure stubs,
+while a frame returned to, switched at a back edge or resumed after a
+safepoint goes on in the baseline code; optimized code that keeps
+exiting is abandoned alone, its body's budget backed off, and the code
+zone frees, slides and judges it with its baseline body. Two stress
+modes, `NS_NEXT_STRESS_OPTIMIZE` and `NS_NEXT_STRESS_DEOPT`, join the
+`stress` group, and ten goldens under `goldens/runtime/optimizer/` run
+plain and under the optimize mode. Measured against `master` at
+`917e5928`: -1.45% on the geometric mean of the twenty-seven sources,
+`bench_new`, `bench_new2` and `bench_newarg` 10% to 13% faster,
+DeltaBlue 6.6%, Havlak 4.3%, Mandelbrot and NBody about 3%, the integer
+loops within about 1.7%, as the register cache's forecast said; Json
+and RichardsTon80 pay the synchronous compile inside their timed runs,
+and `bench_recursion` is +0.9%, its depth count's chain, accepted for
+this stage (decided with the user on 2026-11-05). The caches' feedback
+is read as layout only, an `IntegerBinary` whose fallback site saw only
+`Float`s sent alone (decided with the user on 2026-11-05).
+
+Every end-of-batch group passed: `images` (1,030 tests), `caches` (515),
+`benchmarks` (139), `release-checks` (4,584, and both lints), `codegen`,
+`stress` -- the suite under each of the eleven modes and without the
+JIT, 4,739 tests each, and `run-corpus` "ran 6, failed 0, skipped 205"
+plain and under each mode -- `linux` (4,738 tests, the 139 benchmark
+programs) and `aarch64` (4,738 tests under QEMU). The `stress` group's first run
+found six of the optimizer's tests assuming what another mode takes
+away -- the narrow encoding under the wide mode, the caches' feedback
+under the cache mode, long optimized activations under the modes that
+hold the safepoint request, optimized code run under the zone mode,
+whose compaction frees a callee's optimized code before the next call
+enters it -- which `16cb8660` fixes in the tests. `e7192d62` makes every
+other zone stress compaction keep and slide every body that has
+optimized code, so that a callee's optimized code is moved and then run
+under the mode (6,667 forced exits where there were none). `c5bd9f36`
+counts a push refused for a pending safepoint request against no caller,
+since it says nothing of the caller's code: a caller of callees
+optimized one after another paid one exit per request and could be
+abandoned, which also kept a long caller's optimized code from running
+under the zone mode; the optimizer's counters over the twenty-seven
+sources, abandonments included, are unchanged by it.
+
+- `2853c0ba` -- the plan.
+- `7c712ad2`, `dea20a31` -- the snapshot and `BodyFacts`.
+- `b1d564e4`, `f4ffb5cb` -- the budget per body and its word per copy.
+- `d780576f`, `19d09227` -- the SSA graph and its builder.
+- `c374f159`, `78645395` -- liveness, linear scan and the metadata.
+- `64ca6d20` -- emitting optimized code through the baseline's
+  templates.
+- `b5394092`, `2bf54552` -- the install at a safepoint and the entries.
+- `426b4bae`, `7334e564` -- exits, abandonment and the code zone.
+- `adcf7d22`, `cdc9a847`, `9a0f5ff1` -- the optimize and deopt stress
+  modes.
+- `3ad8c8cd` -- the optimizer's goldens.
+- `7cc019c9`, `61c4695c`, `cc55e60a`, `4f051c76`, `a92aa996`,
+  `917e5928`, `34c6408b`, `325aa59b`, `a002d6cf`, `2a20ca39`,
+  `a44c1cfb`, `d5e0dbb9`, `c64bccda` -- the measurement, the float-fed
+  sends, the loop head's rule, the budgets chosen, the leaf's frame
+  lookup, and the fixes its reviews found.
+- `16cb8660` -- the optimizer's tests under the other stress modes.
+- `ce2502dc`, `e7192d62` -- the zone stress mode's sparing of optimized
+  code, first tried as a list of the code installed at a safepoint
+  (`ce2502dc`, replaced), then alternated: every other compaction slides
+  optimized code instead of freeing it (`e7192d62`).
+- `c5bd9f36` -- a push refused for a pending safepoint request counts
+  against no caller.
+- The documents' commit after them.
+
+What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
+fallback-merge phis, the back-off the decay can hold at twice the
+budget,
+`bench_recursion`'s depth-count chain, DeltaBlueTon80's mispredicting
+stubs, the budget a compaction forgets, the reviews' smaller items, and
+road step 9's second stage, speculation, next.

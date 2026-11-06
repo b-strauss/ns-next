@@ -1,0 +1,43 @@
+/// Allocation inside a hot loop, enough of it that the nursery is
+/// scavenged while the optimized body runs: every turn allocates a
+/// 20-element array, and every 1000th turn keeps it in a list, so the
+/// kept arrays survive scavenges while the rest die. The arrays kept are
+/// summed at the end, so a stale or unforwarded handle changes the sum.
+class AllocationInALoop = Object new () (
+  run: count platform: platform = (
+    |
+      List = platform collections List.
+      kept = List new.
+      checksum ::= 0.
+    |
+    1 to: count do: [:index |
+      |
+        array = Array new: 20.
+      |
+      array at: 1 put: index.
+      array at: 20 put: index * 2.
+      checksum:: checksum + (array at: 1).
+      index \\ 1000 = 0 ifTrue: [kept add: array].
+    ].
+    ^{checksum. kept}.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      result = self run: 60000 platform: platform.
+      kept = result at: 2.
+      sum ::= 0.
+    |
+    kept do: [:array | sum:: sum + (array at: 1) + (array at: 20)].
+    transcript
+        show: (result at: 1) printString;
+        newLine.
+    transcript
+        show: kept size printString;
+        newLine.
+    transcript
+        show: sum printString;
+        newLine.
+  )
+)

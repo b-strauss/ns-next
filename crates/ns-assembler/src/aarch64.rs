@@ -1359,6 +1359,28 @@ impl Encoder for Aarch64 {
                     access(code, Width::Word64, false, second, target);
                 }
             }
+            Operation::SubtractFromMemory { target, value } => {
+                // Loaded into the second scratch register, since the first
+                // may carry the displacement, and stored back by `str`,
+                // which keeps the flags `subs` set as `cmp` sets them.
+                let second = own(SECOND_SCRATCH);
+                access(code, Width::Word64, true, second, target);
+                if let Some(opcode) = signed_arithmetic(
+                    value,
+                    SUBTRACT_IMMEDIATE_SETTING_FLAGS,
+                    ADD_IMMEDIATE_SETTING_FLAGS,
+                ) {
+                    emit(code, three_registers(opcode, second, second, 0));
+                } else {
+                    let scratch = own(SCRATCH);
+                    move_immediate(code, scratch, sign_extended(value));
+                    emit(
+                        code,
+                        three_registers(SUBTRACT_REGISTER_SETTING_FLAGS, second, second, scratch),
+                    );
+                }
+                access(code, Width::Word64, false, second, target);
+            }
             Operation::Add { target, source } => {
                 let (target, source) = (general(target, "an add"), general(source, "an add"));
                 emit(

@@ -15,8 +15,9 @@
 //! own-slot instruction, the divorce of a reified frame that retains its
 //! registers at its return, the refill of a `MakeClosure`'s code ids, the
 //! activation stack's growth for a frame a prologue pushes past the
-//! ordinary end, and the exit's materialization of the frames machine
-//! code pushed. Beside
+//! ordinary end, the record of a body whose optimization budget ran out,
+//! and the exit's materialization of the frames machine code pushed.
+//! Beside
 //! them the table holds the cut's two steps (`jit::cut`), which are no
 //! leaves by that rule: they read and pop the compiled frames of the
 //! current stretch, as no leaf may. A
@@ -99,6 +100,9 @@ pub(crate) enum Leaf {
     GrowStack = 17,
     /// Compiles a lean body's twin for its transfers (`twin`).
     Twin = 18,
+    /// Records the optimization request of a body whose budget ran out,
+    /// or points its spend at its row (`budget`).
+    Budget = 19,
 }
 
 impl Leaf {
@@ -125,7 +129,7 @@ macro_rules! counted {
 /// The leaves, in `Leaf` order, each counted and handed the mutator the
 /// code was entered with: one table for the process, a constant the
 /// compiler promotes to a static, so that no entry builds it.
-pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 19] {
+pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 20] {
     // Each cast on its own: an array's elements meet at one type only by
     // the first element's, and a fn item generic over the mutator's brand
     // does not meet the pointer of one brand that way.
@@ -149,6 +153,7 @@ pub(crate) fn table<'gc>() -> &'gc [ns_memory::Leaf<Mutator<'gc>>; 19] {
         counted!(cut_frame),
         counted!(grow_stack),
         counted!(twin),
+        counted!(budget),
     ]
 }
 
@@ -878,6 +883,31 @@ fn twin(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     } else {
         REFUSED
     }
+}
+
+/// The budget leaf, which a spend of a body's optimization budget calls
+/// (`MacroAssembler::spend_budget`) with the address it spent from,
+/// `arguments[0]` -- the unpointed budget for a data word not pointed at
+/// a row yet -- the program counter of the spend, `arguments[1]`, and an
+/// address inside the body, `arguments[2]`: once the row the address
+/// names ran out, records the body's optimization request, parks the row
+/// and requests a safepoint; otherwise points the data word at the
+/// body's row, armed (`jit::budget_spent`). It runs no Newspeak code,
+/// cannot collect, reads no frame and compiles nothing: only the request
+/// list, the budget table, a code id's registration and the body's data
+/// word change, none of which the code that called it reads before the
+/// next spend. Answers 0.
+fn budget(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
+    // The program counter is passed for the on-stack replacement into
+    // optimized code (road step 9, stage 6), which requests the compile of
+    // the frame's body with an entry at the loop whose back jump spent the
+    // budget; nothing reads it before then.
+    let [spent_from, _program_counter, code_address] = arguments;
+    let Ok(code_address) = usize::try_from(code_address) else {
+        unreachable!("internal: an address fits the pointer width");
+    };
+    jit::budget_spent(mutator, spent_from, code_address);
+    DONE
 }
 
 /// The divorce leaf, which the return of code that reifies its frame

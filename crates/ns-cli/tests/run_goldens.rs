@@ -47,6 +47,18 @@ fn main() {
             );
         }
         if cfg!(debug_assertions) {
+            // The optimizer's goldens also run with every body requested
+            // for optimization at its first spend, which the stress mode
+            // is only built to do in a debug build.
+            if let Some(optimizer_name) = name.strip_prefix("runtime/optimizer/") {
+                let checked = source.clone();
+                trials.push(
+                    Trial::test(format!("golden::optimizer::{optimizer_name}"), move || {
+                        matches_under_the_optimize_stress_mode(&checked)
+                    })
+                    .with_ignored_flag(skipped),
+                );
+            }
             trials.push(
                 Trial::test(
                     format!("golden_with_a_two_entry_global_cache::{name}"),
@@ -88,6 +100,22 @@ fn matches_under_one_lowering(source: &Path, lowering: &str) -> Result<(), Faile
         common::no_program_reaches_a_table_limit(&statistics, &expectation)?;
     }
     Ok(())
+}
+
+/// A golden under `goldens/runtime/optimizer/` answers alike when the
+/// optimizing compiler is asked for every body at its first spend
+/// (`NS_NEXT_STRESS_OPTIMIZE`, `docs/design/execution.md`), so that what it
+/// compiles is held to the interpreter's recorded outcome.
+fn matches_under_the_optimize_stress_mode(source: &Path) -> Result<(), Failed> {
+    let expectation = common::expectation_of(source);
+    let output = common::target_command(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("run")
+        .arg(source)
+        .args(common::program_arguments(source))
+        .env("NS_NEXT_STRESS_OPTIMIZE", "1")
+        .output()
+        .map_err(|error| format!("run ns-next: {error}"))?;
+    common::compare(&output, &expectation, "under the optimize stress mode").map_err(Failed::from)
 }
 
 /// A golden answers alike when the global cache is one two-slot group, so

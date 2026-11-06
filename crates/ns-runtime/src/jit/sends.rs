@@ -18,7 +18,7 @@
 
 use ns_assembler::{Condition, Label, Memory, Register, Width};
 
-use crate::bytecode::{CallSite, CompiledCode, Instruction, HEADER_REGISTERS};
+use crate::bytecode::{CallSite, CompiledCode, HEADER_REGISTERS};
 use crate::heap::machine_words::MachineWord;
 use crate::heap::{Heap, Immediate};
 use crate::interpreter::inline_cache::cells::{ChainStart, CELL_BYTES, CELL_WORDS};
@@ -29,6 +29,7 @@ use crate::Symbol;
 use super::baseline::{BodyAssembler, BodyRole, Lowering};
 use super::leaves::Leaf;
 use super::macro_assembler::{MacroAssembler, Operand};
+use super::optimizing::snapshot::{BodyFacts, SnapshotInstruction};
 use super::stubs::{BlockWord, ExitKind};
 
 /// The bytes of a frame register.
@@ -73,7 +74,10 @@ const _: () = assert!(
 /// handed over to the flags word (`MacroAssembler::record_frame_kind`);
 /// and for a block's what `Step::Block`'s push writes besides
 /// (`block_frame_words`): its closure, its copied values and whether it
-/// counts, the named locals past the copied values nil.
+/// counts, the named locals past the copied values nil; last, the spend
+/// of the body's length from its optimization budget
+/// (`BodyAssembler::spend_budget`), which the run loop's push, entering
+/// past the prologue, does not make.
 /// A factory's current class is the class object it runs on, its
 /// receiver. The run
 /// loop's push writes all of it itself and enters the body past the
@@ -89,16 +93,16 @@ const _: () = assert!(
 /// safepoint at the push (`Heap::write_safepoint_request`); a stress
 /// mode's hold leaves it, and the frames it lets nest take the hold at
 /// their polls.
-pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
+pub(super) fn prologue(body: &mut BodyAssembler, facts: &BodyFacts) {
     let role = body.role;
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
     let machine_words = roles.idiom_scratch;
     let (depth, scratch, end) = (roles.depth_count, roles.frame_extent, roles.stack_end);
     let word = |name| MacroAssembler::machine_word(machine_words, name);
-    let frame_end_bytes = (i32::from(code.argument_count)
+    let frame_end_bytes = (i32::from(facts.argument_count)
         + i32::from(HEADER_REGISTERS)
-        + register_number(code.registers_above_header()))
+        + register_number(facts.registers_above_header()))
         * REGISTER_BYTES;
     let stack_base = macro_assembler.block_word(BlockWord::StackBase);
     // The machine entry is what a compiled call, a stub's tail jump and
@@ -108,7 +112,11 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, depth, word(MachineWord::DepthCount));
     assembler.compare_memory(depth, word(MachineWord::DepthLimit));
-    macro_assembler.exit_if(Condition::AboveOrEqual, ExitKind::PushRefused, 0);
+    macro_assembler.exit_if(
+        Condition::AboveOrEqual,
+        ExitKind::PushRefused,
+        super::stubs::REFUSED_AT_THE_BOUND,
+    );
     let assembler = macro_assembler.assembler();
     assembler.move_register(scratch, roles.frame);
     assembler.load(Width::Word64, end, stack_base);
@@ -131,7 +139,7 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
     assembler.store(Width::Word64, word(MachineWord::DepthCount), depth);
     // Only now, every check passed: the receiver and the current class the
     // call handed over.
-    let receiver_place = Heap::receiver_register(code.argument_count);
+    let receiver_place = Heap::receiver_register(facts.argument_count);
     assembler.store(
         Width::Word64,
         frame_slot(roles.frame, receiver_place),
@@ -150,38 +158,42 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
         Width::Word64,
         frame_slot(
             roles.frame,
-            Heap::current_class_register(code.argument_count),
+            Heap::current_class_register(facts.argument_count),
         ),
         current_class,
     );
-    if code.addresses_own_slots {
-        own_slot_words(macro_assembler, code.argument_count, scratch, end);
+    if facts.addresses_own_slots {
+        own_slot_words(macro_assembler, facts.argument_count, scratch, end);
     }
     let assembler = macro_assembler.assembler();
-    let header_end = code.argument_count + HEADER_REGISTERS;
+    let header_end = facts.argument_count + HEADER_REGISTERS;
     // A block's copied values follow its header, which its call fills
     // below rather than nils.
     let copied = if role == BodyRole::Block {
-        code.copied_count
+        facts.copied_count
     } else {
         0
     };
-    for register in header_end.saturating_add(copied)..code.local_count.max(header_end) {
+    for register in header_end.saturating_add(copied)..facts.local_count.max(header_end) {
         let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
         assembler.store_immediate32(frame_slot(roles.frame, register), nil);
     }
     #[cfg(debug_assertions)]
-    debug_frame_words(body, code);
+    debug_frame_words(body, facts);
     // Last, over the flags word a debug build's generation was just
     // written into, and over the dead register's word in a scratch register
     // a copied value goes into.
     match role {
         BodyRole::Initializer => body
             .macro_assembler
-            .record_frame_kind(code.argument_count, scratch),
-        BodyRole::Block => block_frame_words(&mut body.macro_assembler, code),
+            .record_frame_kind(facts.argument_count, scratch),
+        BodyRole::Block => block_frame_words(&mut body.macro_assembler, facts),
         BodyRole::Method | BodyRole::Factory | BodyRole::EnteredOnly => {}
     }
+    // After every word of the frame is written, where the call holds
+    // nothing in a scratch register that the budget leaf's call could
+    // clobber.
+    body.spend_budget(facts.instruction_count);
 }
 
 /// What `Step::Block`'s push writes into a block's frame besides what
@@ -198,11 +210,11 @@ pub(super) fn prologue(body: &mut BodyAssembler, code: &CompiledCode) {
 /// keeps (`Heap::write_machine_frame`), and the slots it shifted the frame
 /// by, which the block's return reads (`unshift_block_frame`). Clobbers
 /// the flags, `frame_extent`, `stack_end` and the idiom scratch register.
-fn block_frame_words(macro_assembler: &mut MacroAssembler, code: &CompiledCode) {
+fn block_frame_words(macro_assembler: &mut MacroAssembler, facts: &BodyFacts) {
     let roles = macro_assembler.roles();
     let layout = Heap::machine_layout();
     let (closure, address, value) = (roles.callee_closure(), roles.frame_extent, roles.stack_end);
-    let argument_count = code.argument_count;
+    let argument_count = facts.argument_count;
     let assembler = macro_assembler.assembler();
     assembler.store(
         Width::Word64,
@@ -222,7 +234,7 @@ fn block_frame_words(macro_assembler: &mut MacroAssembler, code: &CompiledCode) 
         );
         assembler.bind(placed);
     }
-    if code.copied_count > 0 {
+    if facts.copied_count > 0 {
         assembler.move_register(address, closure);
         assembler.add(address, roles.object_space);
         let first = i32::try_from(layout.closure_fixed_fields)
@@ -231,7 +243,7 @@ fn block_frame_words(macro_assembler: &mut MacroAssembler, code: &CompiledCode) 
             .and_then(|bytes| bytes.checked_add(layout.fields_displacement))
             .expect("internal: a closure's fixed fields are few");
         let header_end = argument_count + HEADER_REGISTERS;
-        for position in 0..code.copied_count {
+        for position in 0..facts.copied_count {
             let displacement = i32::from(position)
                 .checked_mul(REGISTER_BYTES)
                 .and_then(|bytes| bytes.checked_add(first))
@@ -357,22 +369,22 @@ fn own_slot_words(
 /// it, so that a transfer can hold the frame to being unreified
 /// (`closures::transfer_to_twin`).
 #[cfg(debug_assertions)]
-fn debug_frame_words(body: &mut BodyAssembler, code: &CompiledCode) {
+fn debug_frame_words(body: &mut BodyAssembler, facts: &BodyFacts) {
     let macro_assembler = &mut body.macro_assembler;
     let roles = macro_assembler.roles();
-    let header_end = code.argument_count + HEADER_REGISTERS;
-    let first_scratch = code.local_count.max(header_end);
-    let window_end = header_end + u16::try_from(code.registers_above_header()).unwrap_or(u16::MAX);
+    let header_end = facts.argument_count + HEADER_REGISTERS;
+    let first_scratch = facts.local_count.max(header_end);
+    let window_end = header_end + u16::try_from(facts.registers_above_header()).unwrap_or(u16::MAX);
     let poison = roles.poison;
     let assembler = macro_assembler.assembler();
     assembler.move_immediate(poison, crate::heap::Word::DEAD_REGISTER_BITS);
     for register in first_scratch..window_end {
         assembler.store(Width::Word64, frame_slot(roles.frame, register), poison);
     }
-    let reified = Heap::machine_divorce(code.argument_count).reified_register;
+    let reified = Heap::machine_divorce(facts.argument_count).reified_register;
     let nil = i32::try_from(Immediate::NIL.bits()).expect("internal: nil is a small word");
     assembler.store_immediate32(frame_slot(roles.frame, reified), nil);
-    macro_assembler.store_frame_generation(code.argument_count);
+    macro_assembler.store_frame_generation(facts.argument_count);
 }
 
 /// Where the call machine code makes at an instruction lays its callee,
@@ -395,6 +407,8 @@ pub(crate) struct CallSlots {
 /// above the window with no argument, where the interpreter's push of it
 /// lays it. `None` for an instruction that calls nothing.
 pub(crate) fn call_slots(code: &CompiledCode, program_counter: u32) -> Option<CallSlots> {
+    // A cached send is read off its slot without decoding the
+    // instruction, which would build its argument list.
     if let Some(send) = code.cached_send(program_counter as usize) {
         return Some(CallSlots {
             argument_base: send.argument_base,
@@ -402,20 +416,41 @@ pub(crate) fn call_slots(code: &CompiledCode, program_counter: u32) -> Option<Ca
             selector: send.selector,
         });
     }
-    let instruction = code.instruction(program_counter as usize);
-    let selector = match &instruction {
-        Instruction::InitializeSuperclass { selector, .. } => *selector,
-        Instruction::InitializeAppliedLevel { .. } => Symbol::NEW,
-        Instruction::InitializeInstance { .. } => {
+    // A closure's creation calls nothing, so the form that needs no heap
+    // answers for every instruction that might.
+    let instruction =
+        SnapshotInstruction::of_unclosed(&code.instruction(program_counter as usize))?;
+    call_slots_of(&BodyFacts::of(code), &instruction)
+}
+
+/// `call_slots` from the snapshot form of the instruction.
+pub(crate) fn call_slots_of(
+    facts: &BodyFacts,
+    instruction: &SnapshotInstruction,
+) -> Option<CallSlots> {
+    let selector = match instruction {
+        SnapshotInstruction::SendLexical { selector, .. }
+        | SnapshotInstruction::SendPublic { selector, .. }
+        | SnapshotInstruction::SendSuper { selector, .. } => {
+            let (argument_base, sources) = instruction.argument_slots()?;
             return Some(CallSlots {
-                argument_base: window_end(code),
-                argument_count: code.argument_count,
+                argument_base,
+                argument_count: crate::heap::register_number(sources.len()),
+                selector: *selector,
+            });
+        }
+        SnapshotInstruction::InitializeSuperclass { selector, .. } => *selector,
+        SnapshotInstruction::InitializeAppliedLevel { .. } => Symbol::NEW,
+        SnapshotInstruction::InitializeInstance { .. } => {
+            return Some(CallSlots {
+                argument_base: facts.window_end(),
+                argument_count: facts.argument_count,
                 selector: Symbol::NEW,
             });
         }
-        Instruction::ResolveFuture { .. } => {
+        SnapshotInstruction::ResolveFuture { .. } => {
             return Some(CallSlots {
-                argument_base: window_end(code),
+                argument_base: facts.window_end(),
                 argument_count: 0,
                 selector: Symbol::RESOLVE,
             });
@@ -434,8 +469,7 @@ pub(crate) fn call_slots(code: &CompiledCode, program_counter: u32) -> Option<Ca
 /// end, above which a callee no send lays on the slots is pushed
 /// (`InitializeInstance`'s, as `Mutator::push_above` pushes it).
 pub(crate) fn window_end(code: &CompiledCode) -> u16 {
-    code.register_count
-        .max(code.argument_count.saturating_add(HEADER_REGISTERS))
+    BodyFacts::of(code).window_end()
 }
 
 /// How far an index into the machine words is shifted to be a byte
@@ -473,16 +507,25 @@ pub(super) fn return_from(body: &mut BodyAssembler, register: u16) -> Lowering {
     if body.reifies {
         divorce_if_reified(body);
     }
+    let leaf_result = body.macro_assembler.roles().leaf_result;
+    body.macro_assembler
+        .load_frame_register(leaf_result, register);
+    return_loaded(body);
+    Lowering::Transfer
+}
+
+/// The rest of `return_from` once the value is in the value register
+/// (`Roles::leaf_result`): a block's frame moved back down, the count
+/// taken back and `ret`. Optimized code, which never reifies its frame,
+/// returns a value it holds in a machine register through it.
+pub(super) fn return_loaded(body: &mut BodyAssembler) {
     let argument_count = body.argument_count;
     let block = body.role == BodyRole::Block;
     let macro_assembler = &mut body.macro_assembler;
-    let roles = macro_assembler.roles();
-    macro_assembler.load_frame_register(roles.leaf_result, register);
     if block {
         unshift_block_frame(macro_assembler, argument_count);
     }
     return_value(macro_assembler);
-    Lowering::Transfer
 }
 
 /// The frame register of a block's frame taking `argument_count`

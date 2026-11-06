@@ -20,6 +20,7 @@ use ns_assembler::{
 };
 
 use super::stubs::{BlockWord, ExitKind};
+use crate::bytecode::IntegerOperation;
 use crate::heap::machine_words::{MachineWord, MachineWords};
 
 /// The platform calling convention the stubs and leaf calls cross.
@@ -254,6 +255,26 @@ pub(crate) struct Roles {
     /// which the entry stub saves and the exit stub resets, and through
     /// which a stub reads the return address on top of the stack.
     pub(crate) stack_pointer: Register,
+    /// The registers optimized code keeps its values in between two
+    /// interrupt points (`jit::optimizing::allocate`), those a leaf call
+    /// preserves first. Every one but the first two is a scratch register
+    /// some role above takes, which is sound because a role is played
+    /// only inside a frame node's template, and every frame node clobbers
+    /// every allocatable register: what optimized code holds there it has
+    /// written back before, and it reads every register from its frame
+    /// word after. So nothing optimized code emits between two frame
+    /// nodes -- a simple node's code, a write-back, a reload, a phi's move
+    /// -- may take one of them as a temporary: only `idiom_scratch`,
+    /// `dividend`, `remainder`, `leaf_result` and the other registers no
+    /// value is allocated to. `MacroAssembler::hold_values` lets a debug
+    /// build refuse a temporary or a leaf call that breaks it.
+    pub(crate) allocatable: &'static [Register],
+    /// How many of `allocatable`'s first registers keep their values
+    /// across a leaf call (`MacroAssembler::call_leaf`): those the
+    /// convention has its callee preserve and the call passes no argument
+    /// in. Windows64 preserves `rsi` and `rdi` and SystemV passes the
+    /// shim's block and leaf index in them, so the count differs.
+    pub(crate) survive_leaf_calls: usize,
     /// The registers a stub or a call is entered with, which the methods
     /// below name.
     entered_with: EnteredWith,
@@ -322,6 +343,8 @@ impl Roles {
                 poison: RDX,
                 return_address: RSI,
                 stack_pointer: RSP,
+                allocatable: &[R13, RBP, R12, RSI, RDI, R8, R9, R10],
+                survive_leaf_calls: if abi == Abi::Windows64 { 5 } else { 3 },
                 entered_with: EnteredWith {
                     exit_program_counter: RCX,
                     exit_code_address: RDX,
@@ -356,6 +379,8 @@ impl Roles {
                 poison: X2,
                 return_address: X3,
                 stack_pointer: SP,
+                allocatable: &[X22, X23, X24, X25, X26, X27, X28, X3, X4, X5, X6, X7, X8],
+                survive_leaf_calls: 7,
                 entered_with: EnteredWith {
                     exit_program_counter: X1,
                     exit_code_address: X2,
@@ -447,6 +472,33 @@ impl Roles {
             self.callee_counted(),
             self.callee_argument(),
         ]
+    }
+
+    /// The registers optimized code computes a `SmallInteger` fast path in
+    /// (`MacroAssembler::small_integer_operation`): the four that no value
+    /// is allocated to and no pinned role takes -- the division's two, the
+    /// one scratch register besides them that is not allocatable, and the
+    /// idioms' own -- so that the operands, which stay in their allocated
+    /// registers for the fallback, are copied in and nothing a value is
+    /// held in is written before the fast path is sure to apply.
+    pub(crate) fn integer_temporaries(self) -> IntegerRegisters {
+        let third = self
+            .scratch
+            .iter()
+            .copied()
+            .find(|register| {
+                !self.allocatable.contains(register)
+                    && *register != self.dividend
+                    && *register != self.remainder
+            })
+            .expect("internal: a scratch register besides the division's is not allocatable");
+        IntegerRegisters {
+            left: self.dividend,
+            right: third,
+            remainder: self.remainder,
+            first_spare: self.idiom_scratch,
+            second_spare: self.remainder,
+        }
     }
 
     /// The two registers under `abi` that play no role and are no scratch
@@ -565,12 +617,26 @@ pub(crate) struct MacroAssembler {
     /// Whether a poll takes its exit unconditionally, as under
     /// `NS_NEXT_STRESS_EXIT`: a safepoint is always requested.
     exit_at_every_poll: bool,
+    /// Whether optimized code counts its interrupt points down to a
+    /// forced exit (`count_down_to_deoptimize`), as under
+    /// `NS_NEXT_STRESS_DEOPT`.
+    deoptimize_by_countdown: bool,
     /// Whether a back edge counts itself (`count_back_edge`).
     count_back_edges: bool,
     /// The body's data words, which `finish` places after its code, and
     /// the label they start at (`take_body_words`).
     body_words: usize,
     body_words_label: Option<Label>,
+    /// The allocatable registers optimized code holds values in where the
+    /// code being emitted runs (`hold_values`), which a debug build
+    /// refuses as a temporary and across a leaf call that clobbers them.
+    #[cfg(debug_assertions)]
+    values_held: Vec<Register>,
+    /// For each cold path, by its index, the registers values were held
+    /// in where the straight line branches off to it, which its code is
+    /// checked against when `finish` emits it after the straight line.
+    #[cfg(debug_assertions)]
+    cold_path_holds: Vec<Vec<Register>>,
 }
 
 /// The alignment of a body's data words, a cache line's, which they share
@@ -589,10 +655,64 @@ impl MacroAssembler {
             program_counter: 0,
             cold_paths: Vec::new(),
             exit_at_every_poll: super::stress_exit_from_env(),
+            deoptimize_by_countdown: false,
             count_back_edges: false,
             body_words: 0,
             body_words_label: None,
+            #[cfg(debug_assertions)]
+            values_held: Vec::new(),
+            #[cfg(debug_assertions)]
+            cold_path_holds: Vec::new(),
         }
+    }
+
+    /// Queues `cold_path` for `finish`, with the registers values are
+    /// held in here, where the straight line branches off to it.
+    fn push_cold_path(&mut self, cold_path: ColdPath) {
+        #[cfg(debug_assertions)]
+        self.cold_path_holds.push(self.values_held.clone());
+        self.cold_paths.push(cold_path);
+    }
+
+    /// Records that optimized code holds values in `registers`, all of
+    /// them `Roles::allocatable`, where the code emitted next runs, until
+    /// the next `hold_values`; the baseline holds none, and a frame node's
+    /// template is emitted after `hold_values(&[])`, since every value is
+    /// written back before it. A cold path queued meanwhile keeps the set
+    /// held where it was queued. Only a debug build keeps it, to refuse
+    /// what would clobber one of them -- and only at the entry points that
+    /// check it: `temporary`, `call_leaf`, and the out-of-line leaf calls
+    /// (`call_leaf_out_of_line`, `call_leaf_out_of_line_or_exit`), whose
+    /// result register is taken as a temporary. An idiom that writes a
+    /// register through `assembler()`, or a scratch register a template
+    /// names through its roles, is not checked: every idiom optimized code
+    /// emits between two frame nodes takes each register it writes,
+    /// other than the one its own value is allocated to, through
+    /// `temporary`.
+    pub(crate) fn hold_values(&mut self, registers: &[Register]) {
+        debug_assert!(
+            registers
+                .iter()
+                .all(|register| self.roles.allocatable.contains(register)),
+            "internal: values are held only in allocatable registers"
+        );
+        #[cfg(debug_assertions)]
+        {
+            self.values_held = registers.to_vec();
+        }
+    }
+
+    /// `register`, which the code about to be emitted writes as a
+    /// temporary: every idiom optimized code emits between two frame
+    /// nodes takes its temporaries through here, so that a debug build
+    /// refuses one that holds a value (`Roles::allocatable`).
+    pub(crate) fn temporary(&self, register: Register) -> Register {
+        #[cfg(debug_assertions)]
+        assert!(
+            !self.values_held.contains(&register),
+            "internal: {register:?} holds a value and cannot be a temporary"
+        );
+        register
     }
 
     /// Takes `count` more of the body's data words -- words the body reads
@@ -655,6 +775,13 @@ impl MacroAssembler {
     #[cfg(test)]
     pub(crate) fn set_exit_at_every_poll(&mut self, exit_at_every_poll: bool) {
         self.exit_at_every_poll = exit_at_every_poll;
+    }
+
+    /// Makes every interrupt point of the optimized code emitted from now
+    /// on count down to a forced exit (`true`), as under the deopt stress
+    /// mode, or emits nothing for the count (`count_down_to_deoptimize`).
+    pub(crate) fn set_deoptimize_by_countdown(&mut self, deoptimize_by_countdown: bool) {
+        self.deoptimize_by_countdown = deoptimize_by_countdown;
     }
 
     pub(crate) fn roles(&self) -> Roles {
@@ -749,7 +876,7 @@ impl MacroAssembler {
                 .move_immediate(scratch, crate::heap::Word::DEAD_REGISTER_BITS);
             self.assembler.compare(target, scratch);
             self.assembler.jump_if(Condition::Equal, label);
-            self.cold_paths.push(ColdPath::DeadRegister {
+            self.push_cold_path(ColdPath::DeadRegister {
                 label,
                 register,
                 program_counter: self.program_counter,
@@ -776,6 +903,185 @@ impl MacroAssembler {
         self.assembler.move_immediate(target, word);
     }
 
+    /// `target := source`. Keeps the flags.
+    pub(crate) fn move_register(&mut self, target: Register, source: Register) {
+        self.assembler.move_register(target, source);
+    }
+
+    /// `register :=` the integer the `SmallInteger` in it holds, its tag
+    /// shifted out.
+    pub(crate) fn untag_small_integer(&mut self, register: Register) {
+        self.assembler
+            .shift_right_arithmetic(register, small_integer_tag_bits());
+    }
+
+    /// `register :=` the `SmallInteger` of an integer already shifted into
+    /// place above its tag: the tag set.
+    pub(crate) fn tag_small_integer(&mut self, register: Register) {
+        self.assembler
+            .or_immediate(register, small_integer_tag_word());
+    }
+
+    /// `decline`s with `Condition::Equal` unless `left` holds a
+    /// `SmallInteger`, then likewise for `right`: `integer_into`'s decline
+    /// of any other operand. Each decline is its own branch, so that a
+    /// baseline body's backward one polls on its own way.
+    pub(crate) fn test_small_integer_tags(
+        &mut self,
+        left: Register,
+        right: Register,
+        decline: &mut dyn FnMut(&mut MacroAssembler, Condition),
+    ) {
+        let tag = small_integer_tag_word();
+        self.assembler.test_immediate(left, tag);
+        decline(self, Condition::Equal);
+        self.assembler.test_immediate(right, tag);
+        decline(self, Condition::Equal);
+    }
+
+    /// `IntegerBinary`'s `SmallInteger` fast path, `integer_into`'s, on the
+    /// words in `registers.left` and `registers.right`, answering the
+    /// register the result is left in: every case it does not compute --
+    /// an operand that is no `SmallInteger`, an overflow, a zero divisor --
+    /// calls `decline` with the condition under which the code branches
+    /// away, before any register but `registers`' own is written. The
+    /// baseline and optimized code both emit it, each with its own
+    /// registers and its own way to decline, so the two make the same
+    /// choice of instructions. Clobbers the flags and every register of
+    /// `registers`, the operands' included.
+    pub(crate) fn small_integer_operation(
+        &mut self,
+        operation: IntegerOperation,
+        registers: IntegerRegisters,
+        decline: &mut dyn FnMut(&mut MacroAssembler, Condition),
+    ) -> Register {
+        debug_assert!(
+            distinct(&[
+                registers.left,
+                registers.right,
+                registers.remainder,
+                registers.first_spare
+            ]) && distinct(&[
+                registers.left,
+                registers.right,
+                registers.first_spare,
+                registers.second_spare
+            ]),
+            "internal: a fast path's registers are distinct"
+        );
+        self.test_small_integer_tags(registers.left, registers.right, decline);
+        let tag = small_integer_tag_word();
+        let (left, right) = (registers.left, registers.right);
+        match operation {
+            // `(a << 3 | 1) + ((b << 3 | 1) - 1)` is `(a + b) << 3 | 1`,
+            // and overflows exactly when `a + b` leaves 61 bits:
+            // `Value::small_integer_sum`. The difference likewise.
+            IntegerOperation::Add | IntegerOperation::Subtract => {
+                let untagged = registers.first_spare;
+                let assembler = &mut self.assembler;
+                assembler.move_register(untagged, right);
+                assembler.add_immediate(untagged, -tag);
+                if operation == IntegerOperation::Add {
+                    assembler.add(left, untagged);
+                } else {
+                    assembler.subtract(left, untagged);
+                }
+                decline(self, Condition::Overflow);
+                left
+            }
+            // `a * (b << 3)` is `(a * b) << 3`, overflowing exactly when
+            // `a * b` leaves 61 bits: `Value::small_integer_product`.
+            IntegerOperation::Multiply => {
+                let untagged = registers.first_spare;
+                self.untag_small_integer(left);
+                let assembler = &mut self.assembler;
+                assembler.move_register(untagged, right);
+                assembler.add_immediate(untagged, -tag);
+                assembler.multiply_checked(left, untagged);
+                decline(self, Condition::Overflow);
+                self.tag_small_integer(left);
+                left
+            }
+            IntegerOperation::FloorDivide => self.small_integer_floor_quotient(registers, decline),
+            // Tagging keeps the order, so the words compare as the
+            // integers do: `Value::small_integer_order`.
+            IntegerOperation::Less => self.small_integer_compare(registers, Condition::Less),
+            IntegerOperation::Greater => self.small_integer_compare(registers, Condition::Greater),
+            IntegerOperation::LessOrEqual => {
+                self.small_integer_compare(registers, Condition::LessOrEqual)
+            }
+            IntegerOperation::GreaterOrEqual => {
+                self.small_integer_compare(registers, Condition::GreaterOrEqual)
+            }
+            IntegerOperation::Equal => self.small_integer_compare(registers, Condition::Equal),
+        }
+    }
+
+    /// The Boolean of comparing the `SmallInteger`s in `registers.left`
+    /// and `registers.right` by `condition`, in the register it answers.
+    fn small_integer_compare(
+        &mut self,
+        registers: IntegerRegisters,
+        condition: Condition,
+    ) -> Register {
+        let (answer, truth) = (registers.first_spare, registers.second_spare);
+        let assembler = &mut self.assembler;
+        assembler.move_immediate(answer, crate::heap::Immediate::boolean(false).bits());
+        assembler.move_immediate(truth, crate::heap::Immediate::boolean(true).bits());
+        assembler.compare(registers.left, registers.right);
+        assembler.move_if(condition, answer, truth);
+        answer
+    }
+
+    /// The floor quotient of the `SmallInteger`s in `registers.left` and
+    /// `registers.right`, tagged, in the register it answers:
+    /// `Value::small_integer_floor_quotient`, declining for a zero divisor
+    /// and for the one quotient that leaves 61 bits, the smallest
+    /// `SmallInteger` over -1. `registers.left` is the division's dividend
+    /// and `registers.remainder` its remainder, where the encoder fixes
+    /// them.
+    fn small_integer_floor_quotient(
+        &mut self,
+        registers: IntegerRegisters,
+        decline: &mut dyn FnMut(&mut MacroAssembler, Condition),
+    ) -> Register {
+        let (dividend, divisor) = (registers.left, registers.right);
+        self.untag_small_integer(dividend);
+        self.untag_small_integer(divisor);
+        self.assembler.compare_immediate(divisor, 0);
+        decline(self, Condition::Equal);
+        // Both are 61-bit integers, so the division cannot fault.
+        let assembler = &mut self.assembler;
+        assembler.divide_signed(dividend, registers.remainder, divisor);
+        // `checked_floor_divide`: no remainder, or one of the divisor's
+        // sign, leaves the truncated quotient; any other rounds it down.
+        // The second spare may be the remainder's register, which is read
+        // before it is written.
+        let (remainder_sign, divisor_sign) = (registers.first_spare, registers.second_spare);
+        let floored = assembler.label();
+        assembler.compare_immediate(registers.remainder, 0);
+        assembler.jump_if(Condition::Equal, floored);
+        assembler.move_register(remainder_sign, registers.remainder);
+        assembler.shift_right_arithmetic(remainder_sign, SIGN_SHIFT);
+        assembler.move_register(divisor_sign, divisor);
+        assembler.shift_right_arithmetic(divisor_sign, SIGN_SHIFT);
+        assembler.compare(remainder_sign, divisor_sign);
+        assembler.jump_if(Condition::Equal, floored);
+        assembler.add_immediate(dividend, -1);
+        assembler.bind(floored);
+        // Tagged, the quotient comes back unchanged from its shift unless
+        // it leaves 61 bits.
+        let (tagged, untagged) = (registers.first_spare, registers.second_spare);
+        assembler.move_register(tagged, dividend);
+        assembler.shift_left(tagged, small_integer_tag_bits());
+        assembler.move_register(untagged, tagged);
+        self.untag_small_integer(untagged);
+        self.assembler.compare(untagged, dividend);
+        decline(self, Condition::NotEqual);
+        self.tag_small_integer(tagged);
+        tagged
+    }
+
     /// Calls `leaf` through the shim with `arguments`, leaving its answer
     /// in the roles' `leaf_result`. Only the pinned roles survive it: the
     /// caller has flushed every value it caches in a scratch register.
@@ -800,6 +1106,16 @@ impl MacroAssembler {
     /// before the operand is read.
     pub(crate) fn call_leaf(&mut self, leaf: LeafIndex, arguments: [Operand; 3]) {
         let roles = self.roles;
+        // A value held past the survivors would be clobbered by the call
+        // or by its arguments' placement.
+        #[cfg(debug_assertions)]
+        if let Some(register) = self
+            .values_held
+            .iter()
+            .find(|register| !roles.allocatable[..roles.survive_leaf_calls].contains(register))
+        {
+            panic!("internal: a leaf call clobbers {register:?}, which holds a value");
+        }
         let stack_pointer = roles.stack_pointer;
         let layout = LeafCallLayout::of(self.abi);
         for argument in arguments {
@@ -943,7 +1259,7 @@ impl MacroAssembler {
     pub(crate) fn exit_if(&mut self, condition: Condition, kind: ExitKind, program_counter: u32) {
         let label = self.assembler.label();
         self.assembler.jump_if(condition, label);
-        self.cold_paths.push(ColdPath::Exit {
+        self.push_cold_path(ColdPath::Exit {
             label,
             kind,
             program_counter,
@@ -965,7 +1281,7 @@ impl MacroAssembler {
         result: Register,
         rejoin: Label,
     ) {
-        self.cold_paths.push(ColdPath::LeafCall {
+        self.push_cold_path(ColdPath::LeafCall {
             label,
             leaf,
             arguments,
@@ -989,7 +1305,7 @@ impl MacroAssembler {
         program_counter: u32,
         rejoin: Label,
     ) {
-        self.cold_paths.push(ColdPath::CheckedLeafCall {
+        self.push_cold_path(ColdPath::CheckedLeafCall {
             label,
             leaf,
             arguments,
@@ -1017,7 +1333,7 @@ impl MacroAssembler {
         let rejoin = self.assembler.label();
         self.assembler.jump_if(condition, label);
         self.assembler.bind(rejoin);
-        self.cold_paths.push(ColdPath::StackGrowth {
+        self.push_cold_path(ColdPath::StackGrowth {
             label,
             leaf,
             extent,
@@ -1741,7 +2057,7 @@ impl MacroAssembler {
     /// Takes `exit(kind, program_counter)` at `label`, out of line: the
     /// target of a check's jump to `failed`.
     pub(crate) fn exit_at(&mut self, label: Label, kind: ExitKind, program_counter: u32) {
-        self.cold_paths.push(ColdPath::Exit {
+        self.push_cold_path(ColdPath::Exit {
             label,
             kind,
             program_counter,
@@ -1753,6 +2069,54 @@ impl MacroAssembler {
     /// Clobbers the flags and the idiom scratch register.
     pub(crate) fn count_back_edge(&mut self) {
         self.count(BlockWord::BackEdges);
+    }
+
+    /// Spends `amount` of the body's optimization budget
+    /// (`heap/optimization_budgets.rs`) at the instruction at
+    /// `program_counter`: subtracts it from the word whose address the
+    /// body's data word `word` holds, and out of line, when the word fell
+    /// below zero, calls `Leaf::Budget` with the address, the program
+    /// counter and the code's own address, then goes on where the spend
+    /// ends, since the leaf changes nothing the code reads. Clobbers the
+    /// flags and the idiom scratch register.
+    ///
+    /// The data word names the row rather than the code holding a code
+    /// id, since a full collection may free a code id and mint it again
+    /// for another body: the JIT points the word at the body's row, and
+    /// afresh after every full collection. Until it is pointed the word
+    /// names the unpointed budget (`MachineWord::UnpointedBudget`), which
+    /// is negative, so that the hot path is the load of the address, the
+    /// subtract and one branch, with no test for a word naming none.
+    ///
+    /// # Panics
+    ///
+    /// On an amount past `i32::MAX`, which no body's length reaches: the
+    /// compile refuses a body past `u16::MAX` instructions.
+    pub(crate) fn spend_budget(&mut self, word: usize, amount: u32, program_counter: u32) {
+        let scratch = self.roles.idiom_scratch;
+        let amount = i32::try_from(amount).expect("internal: a body's length fits an immediate");
+        let (cold, rejoin) = (self.assembler.label(), self.assembler.label());
+        self.load_body_word(scratch, word);
+        self.assembler.subtract_from_memory(
+            Memory {
+                base: scratch,
+                displacement: 0,
+            },
+            amount,
+        );
+        self.assembler.jump_if(Condition::Less, cold);
+        self.assembler.bind(rejoin);
+        self.call_leaf_out_of_line(
+            cold,
+            super::leaves::Leaf::Budget.index(),
+            [
+                Operand::Register(scratch),
+                Operand::Immediate(u64::from(program_counter)),
+                Operand::CodeAddress,
+            ],
+            scratch,
+            rejoin,
+        );
     }
 
     /// Adds one to the entry block's `CompiledCalls` when the code counts
@@ -2410,6 +2774,71 @@ impl MacroAssembler {
             return;
         }
         let label = self.assembler.label();
+        self.jump_if_safepoint_requested(label);
+        self.push_cold_path(ColdPath::Exit {
+            label,
+            kind: ExitKind::Safepoint,
+            program_counter,
+        });
+    }
+
+    /// A poll whose exit is the caller's: jumps to `requested` when the
+    /// heap's safepoint request is set -- always under the exit stress
+    /// mode, as `poll` exits -- and falls through otherwise, so that
+    /// optimized code writes back the values it holds on that way alone
+    /// before its exit ("A poll writes nothing back", `execution.md`).
+    /// Clobbers the flags and the idiom scratch register.
+    pub(crate) fn poll_to(&mut self, requested: Label) {
+        if self.exit_at_every_poll {
+            self.assembler.jump(requested);
+            return;
+        }
+        self.jump_if_safepoint_requested(requested);
+    }
+
+    /// Under the deopt stress mode, an interrupt point's countdown: one
+    /// taken off `MachineWord::DeoptCountdown`, and the exit that
+    /// re-executes the instruction at `program_counter`, out of line, when
+    /// that brought it to zero, so that the frame -- written back, as at
+    /// every interrupt point -- goes on interpreted there as at any of the
+    /// point's own exits. Emits nothing outside the mode. Clobbers the
+    /// flags and the idiom scratch register.
+    pub(crate) fn count_down_to_deoptimize(&mut self, program_counter: u32) {
+        if !self.deoptimize_by_countdown {
+            return;
+        }
+        let label = self.assembler.label();
+        self.count_down_to(label);
+        self.push_cold_path(ColdPath::Exit {
+            label,
+            kind: ExitKind::Reexecute,
+            program_counter,
+        });
+    }
+
+    /// Under the deopt stress mode, an interrupt point's countdown whose
+    /// exit is the caller's: a jump to `exhausted` when the count reached
+    /// zero, as `count_down_to_deoptimize` exits; nothing outside the
+    /// mode. A back edge's poll goes to its own exit, the one way out of
+    /// it. Clobbers the flags and the idiom scratch register.
+    pub(crate) fn count_down_to(&mut self, exhausted: Label) {
+        if !self.deoptimize_by_countdown {
+            return;
+        }
+        let scratch = self.roles.idiom_scratch;
+        self.load_machine_words(scratch);
+        // The flags compare the word before the subtraction with 1: equal
+        // exactly when this point brought it to zero, so that a countdown
+        // already spent, negative until the safepoint sets it afresh,
+        // never exits again.
+        self.assembler
+            .subtract_from_memory(Self::machine_word(scratch, MachineWord::DeoptCountdown), 1);
+        self.assembler.jump_if(Condition::Equal, exhausted);
+    }
+
+    /// The poll's test: a jump to `label` when the safepoint request is
+    /// set. Clobbers the flags and the idiom scratch register.
+    fn jump_if_safepoint_requested(&mut self, label: Label) {
         let scratch = self.roles.idiom_scratch;
         let machine_words = self.block_word(BlockWord::MachineWords);
         self.assembler.load(Width::Word64, scratch, machine_words);
@@ -2420,18 +2849,23 @@ impl MacroAssembler {
         self.assembler.load(Width::Word64, scratch, requested);
         self.assembler.compare_immediate(scratch, 0);
         self.assembler.jump_if(Condition::NotEqual, label);
-        self.cold_paths.push(ColdPath::Exit {
-            label,
-            kind: ExitKind::Safepoint,
-            program_counter,
-        });
     }
 
     /// Lays the code out, the cold paths after the straight line, so a
     /// check that passes falls through rather than jumping over its
     /// failure.
     pub(crate) fn finish(mut self) -> Result<Assembled, AssemblyError> {
+        #[cfg(debug_assertions)]
+        let mut holds = std::mem::take(&mut self.cold_path_holds).into_iter();
         for cold_path in std::mem::take(&mut self.cold_paths) {
+            // A cold path runs where the straight line branched off to it,
+            // so it is checked against the values held there.
+            #[cfg(debug_assertions)]
+            {
+                self.values_held = holds
+                    .next()
+                    .expect("internal: every cold path records what was held");
+            }
             match cold_path {
                 ColdPath::Exit {
                     label,
@@ -2450,6 +2884,7 @@ impl MacroAssembler {
                 } => {
                     self.assembler.bind(label);
                     self.call_leaf(leaf, arguments);
+                    let result = self.temporary(result);
                     self.assembler.move_register(result, self.roles.leaf_result);
                     self.assembler.jump(rejoin);
                 }
@@ -2543,6 +2978,42 @@ const WORD_SHIFT: u8 = 3;
 
 /// A word's bytes, as an immediate operand.
 const WORD_BYTES: i32 = 8;
+
+/// The sign of a 64-bit word spread over all of it by an arithmetic
+/// shift: 0 for a word of zero or more, -1 for a negative one.
+const SIGN_SHIFT: u8 = 63;
+
+/// The `SmallInteger` tag, as an immediate operand.
+fn small_integer_tag_word() -> i32 {
+    i32::try_from(crate::heap::value_bits::SMALL_INTEGER_TAG)
+        .expect("internal: the tag is a low bit")
+}
+
+/// How far a `SmallInteger`'s payload lies above its tag, as a shift
+/// count.
+fn small_integer_tag_bits() -> u8 {
+    u8::try_from(crate::heap::value_bits::TAG_BITS).expect("internal: the tag takes a few bits")
+}
+
+/// The registers a `SmallInteger` fast path computes in
+/// (`MacroAssembler::small_integer_operation`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct IntegerRegisters {
+    /// The left operand; the result of a sum, a difference or a product;
+    /// a division's dividend, where the encoder fixes it.
+    pub(crate) left: Register,
+    /// The right operand; a division's divisor.
+    pub(crate) right: Register,
+    /// A division's remainder, where the encoder fixes it.
+    pub(crate) remainder: Register,
+    /// Every operation's first spare register, and the result of a
+    /// comparison and of a division.
+    pub(crate) first_spare: Register,
+    /// A comparison's and a division's second spare register, which may
+    /// be `remainder`: the division reads its remainder before it writes
+    /// it.
+    pub(crate) second_spare: Register,
+}
 
 // `check_own_slot_guard` takes a header's guard bits of 0 for `NONE`.
 const _: () = assert!(crate::mixin::DispatchId::NONE.bits() == 0);
@@ -2789,6 +3260,197 @@ mod encoding_tests {
     fn an_abi_s_stack_slot_is_its_encoder_s() {
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
             assert_eq!(abi.stack_slot_bytes(), abi.encoding().stack_slot_bytes());
+        }
+    }
+
+    /// No register a value is allocated to is one an idiom between two
+    /// frame nodes needs as it is -- a pinned role, the idioms' scratch,
+    /// a leaf's answer, a division's, the exit's or the encoder's own --
+    /// and the survivors are exactly the first registers a leaf call
+    /// leaves alone: preserved by the convention, and no argument of the
+    /// call's.
+    #[test]
+    fn the_allocatable_registers_take_no_fixed_role_and_the_survivors_come_first() {
+        use ns_assembler::aarch64::{X16, X17, X18, X29, X30};
+
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let roles = Roles::of(abi);
+            let fixed = [
+                roles.frame,
+                roles.context,
+                roles.object_space,
+                roles.idiom_scratch,
+                roles.leaf_result,
+                roles.dividend,
+                roles.remainder,
+                roles.stack_pointer,
+                roles.exit_kind(),
+                roles.exit_program_counter(),
+                roles.exit_code_address(),
+            ];
+            let arguments = super::leaf_call_argument_registers(abi);
+            for (index, register) in roles.allocatable.iter().enumerate() {
+                assert!(!fixed.contains(register), "{abi:?} {register:?}");
+                assert!(
+                    !roles.allocatable[..index].contains(register),
+                    "{abi:?} {register:?} twice"
+                );
+                if abi == Abi::Aapcs64 {
+                    assert!(
+                        ![X16, X17, X18, X29, X30].contains(register),
+                        "{abi:?} {register:?}"
+                    );
+                }
+                let survives =
+                    abi.callee_saved().contains(register) && !arguments.contains(register);
+                assert_eq!(
+                    survives,
+                    index < roles.survive_leaf_calls,
+                    "{abi:?} {register:?}"
+                );
+            }
+            assert_eq!(roles.allocatable[..2], Roles::free_survivors(abi));
+        }
+        assert_eq!(Roles::of(Abi::Windows64).survive_leaf_calls, 5);
+        assert_eq!(Roles::of(Abi::SystemV).survive_leaf_calls, 3);
+        assert_eq!(Roles::of(Abi::Aapcs64).survive_leaf_calls, 7);
+        assert_eq!(Roles::of(Abi::Windows64).allocatable.len(), 8);
+        assert_eq!(Roles::of(Abi::Aapcs64).allocatable.len(), 13);
+    }
+
+    /// Optimized code's fast path computes in registers no value is
+    /// allocated to and no pinned role holds, the division's where the
+    /// encoder fixes them.
+    #[test]
+    fn the_integer_temporaries_hold_no_value_and_no_pinned_role() {
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let roles = Roles::of(abi);
+            let temporaries = roles.integer_temporaries();
+            let registers = [
+                temporaries.left,
+                temporaries.right,
+                temporaries.remainder,
+                temporaries.first_spare,
+                temporaries.second_spare,
+            ];
+            for register in registers {
+                assert!(
+                    !roles.allocatable.contains(&register),
+                    "{abi:?} {register:?}"
+                );
+                assert!(
+                    ![
+                        roles.frame,
+                        roles.context,
+                        roles.object_space,
+                        roles.stack_pointer
+                    ]
+                    .contains(&register),
+                    "{abi:?} {register:?}"
+                );
+            }
+            assert_eq!(
+                (temporaries.left, temporaries.remainder),
+                (roles.dividend, roles.remainder)
+            );
+            assert!(super::distinct(&registers[..4]), "{abi:?}");
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "cannot be a temporary")]
+    fn a_debug_build_refuses_a_held_register_as_a_temporary() {
+        let mut macro_assembler = super::MacroAssembler::new(Abi::Windows64);
+        let held = Roles::of(Abi::Windows64).allocatable[3];
+        macro_assembler.hold_values(&[held]);
+        macro_assembler.temporary(held);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "clobbers")]
+    fn a_debug_build_refuses_a_leaf_call_over_a_value_past_the_survivors() {
+        let roles = Roles::of(Abi::SystemV);
+        let mut macro_assembler = super::MacroAssembler::new(Abi::SystemV);
+        macro_assembler.hold_values(&roles.allocatable[..=roles.survive_leaf_calls]);
+        macro_assembler.call_leaf(super::LeafIndex(0), [super::Operand::Immediate(0); 3]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "clobbers")]
+    fn a_debug_build_refuses_an_out_of_line_leaf_call_over_a_value_held_where_it_branches_off() {
+        let roles = Roles::of(Abi::Windows64);
+        let mut macro_assembler = super::MacroAssembler::new(Abi::Windows64);
+        let label = macro_assembler.assembler().label();
+        let rejoin = macro_assembler.assembler().label();
+        // r8, not a survivor, holds a value where the slow path branches
+        // off; nothing is held by the time `finish` emits it.
+        macro_assembler.hold_values(&[roles.allocatable[roles.survive_leaf_calls]]);
+        macro_assembler.call_leaf_out_of_line(
+            label,
+            super::LeafIndex(0),
+            [super::Operand::Immediate(0); 3],
+            roles.leaf_result,
+            rejoin,
+        );
+        macro_assembler.hold_values(&[]);
+        macro_assembler.assembler().bind(rejoin);
+        let _ = macro_assembler.finish();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "cannot be a temporary")]
+    fn a_debug_build_refuses_an_out_of_line_leaf_call_s_result_in_a_held_register() {
+        let roles = Roles::of(Abi::Windows64);
+        let mut macro_assembler = super::MacroAssembler::new(Abi::Windows64);
+        let label = macro_assembler.assembler().label();
+        let rejoin = macro_assembler.assembler().label();
+        let held = roles.allocatable[0];
+        macro_assembler.hold_values(&[held]);
+        macro_assembler.call_leaf_out_of_line(
+            label,
+            super::LeafIndex(0),
+            [super::Operand::Immediate(0); 3],
+            held,
+            rejoin,
+        );
+        macro_assembler.hold_values(&[]);
+        macro_assembler.assembler().bind(rejoin);
+        let _ = macro_assembler.finish();
+    }
+
+    #[test]
+    fn an_out_of_line_leaf_call_keeps_the_values_the_survivors_hold() {
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let roles = Roles::of(abi);
+            let mut macro_assembler = super::MacroAssembler::new(abi);
+            let label = macro_assembler.assembler().label();
+            let rejoin = macro_assembler.assembler().label();
+            macro_assembler.hold_values(&roles.allocatable[..roles.survive_leaf_calls]);
+            macro_assembler.call_leaf_out_of_line(
+                label,
+                super::LeafIndex(0),
+                [super::Operand::Immediate(0); 3],
+                roles.leaf_result,
+                rejoin,
+            );
+            macro_assembler.assembler().bind(rejoin);
+            assert!(macro_assembler.finish().is_ok(), "{abi:?}");
+        }
+    }
+
+    #[test]
+    fn a_leaf_call_keeps_the_values_the_survivors_hold() {
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let roles = Roles::of(abi);
+            let mut macro_assembler = super::MacroAssembler::new(abi);
+            macro_assembler.hold_values(&roles.allocatable[..roles.survive_leaf_calls]);
+            macro_assembler.call_leaf(super::LeafIndex(0), [super::Operand::Immediate(0); 3]);
+            let unheld = roles.allocatable[roles.survive_leaf_calls];
+            assert_eq!(macro_assembler.temporary(unheld), unheld);
         }
     }
 }

@@ -344,6 +344,11 @@ const GROUP_ONE_OR: u8 = 1;
 /// Intel SDM Vol. 2A, AND—Logical AND.
 const GROUP_ONE_AND: u8 = 4;
 
+/// The `/5` extension of the immediate group: `SUB r/m64, imm`.
+///
+/// Intel SDM Vol. 2B, SUB—Subtract.
+const GROUP_ONE_SUBTRACT: u8 = 5;
+
 /// The `/7` extension of the immediate group: `CMP r/m64, imm`.
 ///
 /// Intel SDM Vol. 2A, CMP—Compare Two Operands.
@@ -802,6 +807,32 @@ impl Encoder for X64 {
                     target,
                 );
                 code.extend_from_slice(&value.to_le_bytes());
+            }
+            Operation::SubtractFromMemory { target, value } => {
+                // `sub` sets the flags as `cmp` of the word before with
+                // the immediate does (SDM Vol. 2B, SUB—Subtract, "Flags
+                // Affected").
+                if let Ok(byte) = i8::try_from(value) {
+                    register_memory(
+                        code,
+                        true,
+                        false,
+                        &[GROUP_ONE_BYTE_IMMEDIATE],
+                        GROUP_ONE_SUBTRACT,
+                        target,
+                    );
+                    code.extend_from_slice(&byte.to_le_bytes());
+                } else {
+                    register_memory(
+                        code,
+                        true,
+                        false,
+                        &[GROUP_ONE_DOUBLEWORD_IMMEDIATE],
+                        GROUP_ONE_SUBTRACT,
+                        target,
+                    );
+                    code.extend_from_slice(&value.to_le_bytes());
+                }
             }
             Operation::Add { target, source } => {
                 register_register(code, &ADD_REGISTER_TO_RM, source, target);

@@ -33,7 +33,18 @@
 > decay of its exits or by its interpreted entries, and the code zone is
 > compacted and frees the code of dead bodies, so a run that keeps
 > compiling does so in a zone of fixed size ("Stage 4: closures, non-local
-> return, allocation and the barrier", "The code zone").
+> return, allocation and the barrier", "The code zone"). The optimizing
+> JIT is designed in ten stages ("Planned: the optimizing JIT") and its
+> first is built, the foundation without speculation ("The optimizing
+> tier's foundation"): a body whose budget, spent by its baseline code,
+> runs out is snapshotted and compiled at the next safepoint into an SSA
+> graph, its values kept in machine registers by a linear scan between
+> interrupt points and written back into the frame before each, every
+> instruction it does not lower as register arithmetic emitted by the
+> baseline's template; its code is installed beside the baseline code,
+> entered at pushes and compiled calls, left for the baseline code
+> wherever a frame goes on mid-body, and abandoned alone when it keeps
+> exiting.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -62,9 +73,12 @@
 > names in `jit/targets.rs`, the closures, outer locals and futures in
 > `jit/closures.rs`, the cut of a non-local return in `jit/cut.rs`, the
 > exit's walk in `jit/materialize.rs`, the leaves in `jit/leaves.rs`, and
-> the code zone's compaction and freeing in `jit/zone.rs`),
+> the code zone's compaction and freeing in `jit/zone.rs`; the
+> optimizing compiler in `jit/optimizing/`, and its request, install,
+> entries and abandonment in `jit/mod.rs`),
 > `heap/machine_entries.rs` (the machine entry table the closure stubs
-> read), `crates/ns-assembler` (the operations, the x64 encoder in
+> read), `heap/optimization_budgets.rs` (the budget rows baseline code
+> spends), `crates/ns-assembler` (the operations, the x64 encoder in
 > `x64.rs` and the AArch64 encoder in `aarch64.rs`),
 > `crates/ns-runtime/build.rs` (which targets set `cfg(ns_jit)`),
 > `crates/ns-memory/src/code_zone.rs` (the code zone and the
@@ -8564,6 +8578,248 @@ writes the slots, and register allocation is road step 9's ("The
 register cache" in "Planned: the baseline JIT"). Decided with the user
 on 2026-11-03.
 
+### What the optimizing tier's foundation moved
+
+**Measured 2026-11-05, `917e5928` against `master` (`76f6001c`)**, by
+the protocol of "What on-stack replacement moved": three pinned release
+builds a side with debug information, a, b and c laid out as there, the
+code zones at the same three paddings on both sides; `vm::run` spans
+44.1, 47.5 and 51.1 KB on both sides with 451 calls, and no build has a
+`run_stretch` or a `vm::run` closure of its own. Three rounds in one
+sitting, the order of the six binaries rotated each round;
+`--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue and
+`--iterations 8` for the rest. Each cell is a side's medians per build
+pooled by geometric mean, in milliseconds. Between the two trees lies
+road step 9's first stage ("Planned: the optimizing JIT"): the graph,
+linear scan, the emitters, the metadata, the budget baseline code
+spends, the synchronous compile installed at a safepoint, and the
+optimize and deopt stress modes.
+
+| Program | master (ms) | master's builds | `917e5928` (ms) | builds | vs master | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.205 | 0.201–0.208 | 0.207 | 0.204–0.209 | +0.9% | no |
+| `CD` | 3124.002 | 3117.185–3129.384 | 3108.904 | 3099.471–3121.533 | -0.5% | no |
+| `DeltaBlue` | 240.636 | 239.889–241.051 | 224.770 | 222.851–226.513 | -6.6% | faster |
+| `DeltaBlueTon80` | 1.967 | 1.926–2.027 | 2.033 | 2.012–2.046 | +3.4% | no |
+| `Havlak` | 1185.904 | 1178.195–1198.550 | 1135.200 | 1132.313–1137.591 | -4.3% | faster |
+| `Json` | 3.580 | 3.566–3.594 | 3.684 | 3.622–3.739 | +2.9% | slower (compile time) |
+| `List` | 0.192 | 0.188–0.198 | 0.193 | 0.189–0.195 | +0.5% | no |
+| `Mandelbrot` | 1876.262 | 1829.924–1968.571 | 1816.602 | 1804.706–1827.846 | -3.2% | faster |
+| `NBody` | 1125.225 | 1121.460–1129.363 | 1086.559 | 1077.809–1093.179 | -3.4% | faster |
+| `Permute` | 0.431 | 0.401–0.454 | 0.454 | 0.451–0.458 | +5.4% | no |
+| `Queens` | 0.327 | 0.326–0.329 | 0.331 | 0.327–0.334 | +1.2% | no |
+| `Richards` | 17.604 | 17.398–17.800 | 17.415 | 17.221–17.545 | -1.1% | no |
+| `RichardsTon80` | 1.787 | 1.764–1.806 | 1.842 | 1.830–1.857 | +3.1% | slower (compile time) |
+| `Sieve` | 0.423 | 0.415–0.429 | 0.441 | 0.416–0.454 | +4.3% | no |
+| `Storage` | 0.701 | 0.692–0.709 | 0.697 | 0.695–0.699 | -0.5% | no |
+| `Towers` | 0.523 | 0.513–0.531 | 0.532 | 0.525–0.535 | +1.6% | no |
+| `bench_block` | 0.863 | 0.856–0.871 | 0.856 | 0.851–0.864 | -0.8% | no |
+| `bench_loop` | 0.538 | 0.514–0.578 | 0.528 | 0.522–0.532 | -1.7% | no |
+| `bench_megamorphic` | 0.703 | 0.701–0.705 | 0.709 | 0.693–0.727 | +0.9% | no |
+| `bench_send` | 0.508 | 0.504–0.513 | 0.513 | 0.512–0.513 | +1.0% | no |
+| `bench_signal` | 19.190 | 19.075–19.256 | 19.075 | 18.842–19.516 | -0.6% | no |
+| `bench_while` | 6.281 | 5.993–6.442 | 6.229 | 6.067–6.388 | -0.8% | no |
+| `bench_recursion` | 0.665 | 0.663–0.666 | 0.671 | 0.667–0.674 | +0.9% | slower |
+| `bench_new` | 1.909 | 1.901–1.920 | 1.716 | 1.692–1.750 | -10.1% | faster |
+| `bench_new2` | 3.327 | 3.319–3.341 | 2.912 | 2.896–2.929 | -12.5% | faster |
+| `bench_newarg` | 3.419 | 3.405–3.433 | 2.965 | 2.943–3.006 | -13.3% | faster |
+| `bench_do` | 0.732 | 0.725–0.738 | 0.711 | 0.700–0.724 | -2.8% | faster |
+
+The geometric mean over the twenty-seven sources is -1.45%, and each of
+`917e5928`'s three builds lies below each of `master`'s: 4.171, 4.141
+and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
+
+- **Instantiation, and the leaves that find a compiled frame's body.**
+  `bench_new`, `bench_new2` and `bench_newarg` are 10% to 13% faster and
+  DeltaBlue 6.6%, and baseline code shares the gain: in an interim
+  measurement of build a alone, two rounds of three iterations, a build
+  of `917e5928` that optimizes nothing (a budget of 2^50) runs DeltaBlue
+  at 226 ms like `917e5928`'s build a, against `master`'s 240, and
+  Havlak at 1,152 ms against 1,134 and 1,176 -- about half of Havlak's
+  gain. Every leaf called from a frame machine code pushed asks
+  `materialize::leaf_frame` for the frame, which asks
+  `JitState::body_of` for its body. `body_of` and `upgraded` are inline
+  into every caller: answered through memory, their `Option<Installed>`
+  is stored field by field -- the feedback base, `reifies`, `optimized`
+  -- and loaded back as one word, which no store forwards, and `master`,
+  where `body_of` is called, has a tenth of `bench_new2`'s samples on
+  the instruction after that load. The codegen gate holds `leaf_frame`
+  to calling neither ("Keeping the hot path in registers"). The compile
+  trigger every initializer invocation passes through
+  (`jit::after_compile_trigger`) tests inline whether a body waits for
+  its budget's pointing, which an out-of-line call with a frame of its
+  own would cost 0.7% of the samples and 1.2% more instructions. Measured by the processor's
+  counters over runs of two million instantiations, the three builds a
+  side: `bench_new2` takes 17,085 to 17,316 million cycles against
+  `master`'s 20,004 to 20,945, `bench_new` 10,112 to 10,304 against
+  11,395 to 11,504. The tier's own cost there is the spend, three
+  instructions at each entry of a baseline body; with the copy gone the
+  branch retires 1.2% to 1.5% fewer instructions than `master`.
+- **Float arithmetic.** Mandelbrot is 3.2% and NBody 3.4% faster: their
+  loops keep the float locals in machine registers, every float operation
+  is sent alone, since its fallback site saw `Float` receivers and no
+  other, and a natural loop's head leaves a register its frame word
+  where every way in brings it so -- with no write-back before each send
+  and no reload after it (`optimizing::snapshot::Snapshot::fallback_taken`,
+  `optimizing::build`'s `build`).
+- **Integer loops and sends: what register allocation alone moves.**
+  `bench_loop` -1.7%, `bench_send` +1.0%, `bench_while` -0.8%,
+  `bench_block` -0.8% and `bench_megamorphic` +0.9% all lie within about
+  1.7%, as "What a register cache would move" forecast for keeping frame
+  registers in machine registers: about 1%, inside the noise.
+- **`bench_recursion`'s `fib:` runs slower optimized than in baseline
+  code.** It is +0.9% with its builds 0.001 ms apart, and the
+  processor's counters, per run from the difference of 2,500 runs and
+  500, say it is cost, not placement: at the code of the fixes
+  (`2a20ca39`) the three builds retire 23.95 million instructions a run
+  against `master`'s 23.70 -- about one more per `fib:` call, of 242,785
+  -- and take 3.65 to 3.86 million cycles against 3.69 to 3.73; over
+  four more zone paddings each side (16/48, 48/240, 144/80 and 320/112
+  bytes) 2.5% more cycles on average, more at every one. A build that
+  optimizes nothing retires 24.43 million -- three more instructions per
+  call, the spend at each entry -- in 3.64 million cycles, fewer than
+  `master`'s. A profile of both copies puts 3.2% more samples in the
+  optimized `fib:`. The two copies' listings, the profile annotated on
+  both, show the cause is not the optimized code's own work: it has no
+  write-back, reload, frame read or spill the baseline copy lacks, its
+  leaf path is shorter (26 instructions against 28 and the spend's 3),
+  and the one extra instruction is a register copy on the `count - 1`
+  fast path. The cycles go to the depth count: every prologue and every
+  return loads, changes and stores its one machine word, so all calls
+  form one serial chain through it, and the optimized copy, with less
+  other work to overlap it, makes that chain its critical path -- the
+  prologue's compare after the load, the return's decrement and `ret`
+  take 1,612, 3,654 and 2,198 samples against the baseline copy's 969,
+  2,066 and 1,315. The count stays in its machine word, as "The depth
+  count in a machine register, measured and not kept" decided; stage 1
+  accepts the cost ([OPEN-WORK.md](../OPEN-WORK.md), "Optimized `fib:`
+  runs slower than its baseline code").
+- **The short programs pay the synchronous compile inside their timed
+  runs.** Json's +2.9% and RichardsTon80's +3.1% separate, and
+  DeltaBlueTon80, Permute and Sieve are slower without separating. The
+  optimizing compile runs at a safepoint of the run it was requested in,
+  and a short program goes on requesting bodies for several runs: Json
+  optimizes 17 bodies in 1.75 ms over its nine runs, 5 of them, 0.39 ms,
+  between the fifth run and the ninth, about 0.1 ms a run, its whole
+  difference at the median of eight. At 200 iterations, where the runs
+  timed come after the compiles, the same builds measure:
+
+  | Program | master (ms) | master's builds | `917e5928` (ms) | builds | vs master | separated |
+  |---|---|---|---|---|---|---|
+  | `Bounce` | 0.219 | 0.216–0.221 | 0.220 | 0.217–0.223 | +0.5% | no |
+  | `DeltaBlueTon80` | 1.738 | 1.725–1.755 | 1.713 | 1.706–1.717 | -1.4% | faster |
+  | `Json` | 3.327 | 3.322–3.332 | 3.232 | 3.215–3.251 | -2.9% | faster |
+  | `List` | 0.189 | 0.188–0.189 | 0.193 | 0.191–0.194 | +2.1% | slower |
+  | `Permute` | 0.253 | 0.249–0.260 | 0.254 | 0.253–0.256 | +0.4% | no |
+  | `Queens` | 0.275 | 0.274–0.277 | 0.283 | 0.275–0.292 | +2.7% | no |
+  | `RichardsTon80` | 1.515 | 1.501–1.530 | 1.518 | 1.506–1.524 | +0.2% | no |
+  | `Sieve` | 0.143 | 0.141–0.146 | 0.145 | 0.143–0.148 | +1.3% | no |
+  | `Storage` | 0.535 | 0.533–0.537 | 0.498 | 0.495–0.501 | -6.9% | faster |
+  | `Towers` | 0.437 | 0.432–0.442 | 0.444 | 0.437–0.451 | +1.6% | no |
+  | `bench_recursion` | 0.661 | 0.660–0.662 | 0.663 | 0.646–0.672 | +0.4% | no |
+
+  RichardsTon80 and Queens are moreover the code's placement: at
+  `4f051c76`, over four more zone paddings at 30 iterations,
+  RichardsTon80 measured +0.1% and Queens +1.8%, each faster at two
+  paddings of the four. So is List: per run, from the difference of
+  6,000 runs and 1,000, it retires 5.487 million instructions against
+  `master`'s 5.503, 0.3% fewer, and takes from 0.3% fewer to 2.5% more
+  cycles over the three builds and four more paddings each side, level
+  or faster at three of the seven; the eight-iteration table above has
+  it level.
+- **DeltaBlueTon80's optimized code runs level with its baseline code.**
+  A profile of 3,000 runs with every body and stub of the zone mapped,
+  against a build of the same code that optimizes nothing: its optimized
+  bodies take 3.3% fewer samples than their baseline code did, but the
+  shared stubs they call take 6.8% more, the polymorphic stub and the
+  row stubs most, whose type tests mispredict more often when the caller
+  is optimized code (5% more branch mispredictions over the run); 0.8%
+  more samples in all, and the same cycles to 0.1%. Sends that test the
+  receiver's class at their own site -- stage 2's speculation, with a
+  guard and a trap in the optimized code -- would take the tests out of
+  the shared stubs
+  (`OPEN-WORK.md`, "Optimized code's sends mispredict in the shared
+  stubs").
+- **CD churns**: 159 bodies optimized and 136 of them abandoned, with
+  8,762 optimized exits, the same pattern as its baseline code's
+  ("What reclamation moved"; `OPEN-WORK.md`, "A nested class's accessor
+  on a private or `super` chain exits machine code"); the compiles take 13.8
+  ms against four runs of 3.1 s, 0.1%.
+
+**The optimizer's counters**, `--jit-statistics` on build a with the
+iterations above (every process runs one more, discarded, run):
+
+| Program | bodies optimized | in (ms) | optimized exits | abandoned |
+|---|---|---|---|---|
+| `Bounce` | 3 | 0.370 | 0 | 0 |
+| `CD` | 159 | 13.808 | 8,762 | 136 |
+| `DeltaBlue` | 64 | 3.261 | 136 | 0 |
+| `DeltaBlueTon80` | 10 | 0.971 | 9 | 0 |
+| `Havlak` | 78 | 5.040 | 1,408 | 0 |
+| `Json` | 17 | 1.752 | 5 | 0 |
+| `List` | 2 | 0.152 | 0 | 0 |
+| `Mandelbrot` | 3 | 0.490 | 0 | 0 |
+| `NBody` | 7 | 0.545 | 2 | 0 |
+| `Permute` | 4 | 0.308 | 0 | 0 |
+| `Queens` | 4 | 0.309 | 5 | 0 |
+| `Richards` | 26 | 1.165 | 5 | 0 |
+| `RichardsTon80` | 11 | 0.798 | 3 | 0 |
+| `Sieve` | 3 | 0.240 | 1 | 0 |
+| `Storage` | 4 | 0.263 | 1 | 0 |
+| `Towers` | 5 | 0.279 | 0 | 0 |
+| `bench_block` | 3 | 0.162 | 0 | 0 |
+| `bench_loop` | 1 | 0.134 | 8 | 0 |
+| `bench_megamorphic` | 1 | 0.192 | 8 | 0 |
+| `bench_send` | 2 | 0.137 | 8 | 0 |
+| `bench_signal` | 0 | 0.000 | 0 | 0 |
+| `bench_while` | 5 | 0.175 | 0 | 0 |
+| `bench_recursion` | 1 | 0.129 | 0 | 0 |
+| `bench_new` | 4 | 0.172 | 8 | 0 |
+| `bench_new2` | 5 | 0.179 | 8 | 0 |
+| `bench_newarg` | 5 | 0.181 | 8 | 0 |
+| `bench_do` | 3 | 0.232 | 1 | 0 |
+
+No optimized exit is forced outside the deopt stress mode. The compile
+time is small against every long program -- CD's 13.8 ms is the largest,
+0.1% -- and is what Json and RichardsTon80 pay at eight iterations.
+
+**The two constants.** `OPTIMIZATION_BUDGET` is 240,000 instructions and
+`BUDGET_AFTER_CACHE_CHANGE` a sixth of it, 40,000.
+
+- **The budget.** A sweep over 30,000, 60,000, 120,000 and 240,000 at
+  `cc55e60a` -- one pinned build a side at layout a, three rounds,
+  `--iterations 15`, the long programs at 3 -- separated no budget from
+  another: the geometric means against `master` were +0.58%, +0.31%,
+  +1.05% and -0.36%, and 240,000 left DeltaBlueTon80 closest to
+  `master` (+0.7% against +2.5% to +8.9%), since a larger budget
+  compiles fewer of a short program's bodies inside its first runs. A
+  reduced sweep at `917e5928` -- 60,000, 120,000 and 240,000, one build
+  each, the twenty-two short sources, the same rounds and iterations --
+  keeps it: the geometric means are -1.91%, -2.42% and -1.91%, no budget
+  separates, and DeltaBlueTon80 is again closest at 240,000 (+2.8%
+  against +3.9% and +8.1%).
+- **The wait after a cache change.** It decides when a body is
+  compiled, and so which fallback sites have filled when the compile
+  reads them (`Snapshot::fallback_taken`): the code's layout, never its
+  semantics. A sweep over 0 (no wait), 10,000, 40,000, 120,000 and
+  240,000 at `2a20ca39` -- one build each at layout a, three rounds,
+  Mandelbrot and NBody at 3 iterations, Json, DeltaBlueTon80,
+  RichardsTon80, Richards, Sieve and Towers at 15 -- separates none:
+  against `master`, Mandelbrot measures -0.3% to -1.0%, NBody -0.9% to
+  -3.6% and Json -0.1% to +0.8%, in no order of the wait. The
+  processor's counters say why: at every value Mandelbrot and NBody
+  retire the same instructions to 0.03% over three runs and Json to
+  0.05% over 300, and the optimizer's counters are the same -- each
+  compiles the same code, its float sites filled long before any budget
+  runs out. The sixth, the first guesses' ratio, stays.
+
+**Not covered**: AArch64, which runs under QEMU only; on-stack
+replacement into optimized code, which stage 1 does not have, so
+Mandelbrot's one long activation runs its optimized code from the
+second `bench` send on; the compiler thread, stage 8's, which takes the
+compile time out of the timed runs; and the stress and end-of-batch
+gates, which the batch's end runs.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -10081,7 +10337,14 @@ Four rules keep the path in registers, and a gate holds them.
   of 5,390 and 14, `push_step` and `push_initializer_placed` likewise.
   The count is static, over the listing's order rather than the control
   flow, so it counts candidate sites, cold ones among them; what it
-  catches is a jump in their number.
+  catches is a jump in their number. A stall whose narrow stores lie in
+  a callee it cannot see, so a function may also be held to never
+  calling a named callee: `materialize::leaf_frame`, which every leaf a
+  compiled frame calls passes through, calls neither `JitState::body_of`
+  nor `upgraded`, both `#[inline(always)]`, since through memory their
+  `Option<Installed>` -- written field by field, read back as one word
+  -- stalled a tenth of `bench_new2`'s samples ("What the optimizing
+  tier's foundation moved").
 
 ## Planned: tail calls, skipped but kept
 
@@ -10303,8 +10566,10 @@ is 1.34% faster than before the leftover analysis with no program slower
 
 ## Planned: JIT tiers
 
-Would change: hot code runs as machine code instead of in `vm::run`. Nothing
-is designed beyond the inline caches; the tiering model is sketched in
+Would change: hot code runs as optimized machine code. The baseline tier
+is built (road step 8) and the optimizing tier designed ("Planned: the
+optimizing JIT" below), its first stage built ("The optimizing tier's
+foundation"); the tiering model is sketched in
 [liveness-and-reflection.md](liveness-and-reflection.md), and the constraint
 that binds every tier is that no native code may ever enter an image. The
 tiers are the last three steps of the road to a high-performance VM (decided
@@ -10385,6 +10650,9 @@ Each step gets its own design when it comes up.
   ("The Are We Fast Yet benchmarks"), and with
   `prior-art/newspeak-benchmarks`, a separate suite -- DeltaBlue, Richards,
   Splay, parser combinators and micro-benchmarks -- with Java versions of five of its programs.
+  Designed on 2026-11-04 and 2026-11-05: "Planned: the optimizing JIT"
+  below, in ten stages, the first of them built ("The optimizing tier's
+  foundation").
 
 **Open: whether the interpreter tier is generated by the JIT's backend.**
 `vm::run` is a Rust `match` loop, compiled by LLVM, which decides where the
@@ -10734,15 +11002,699 @@ sees.
   target, or an unwind marker, inside it -- deoptimizes that frame
   first, which "What is observed is never inlined" makes the exception.
 
-### Open
+### A closure created in an inlined scope
 
-What the contract leaves to road steps 8 and 9 is in
-[OPEN-WORK.md](../OPEN-WORK.md): the home of a closure created in an inlined
-scope, since a frame object is married only to a frame that stands for
-one activation. A closure the optimizer does not inline still reifies the
-frame it is created in, whatever it captured, since `enclosingActivation`
-and the debugger read that link ("The closure keeps its defining
-activation" above); one it inlines creates neither.
+A closure the optimizer does not inline still reifies the frame it is
+created in, whatever it captured, since `enclosingActivation` and the
+debugger read that link ("The closure keeps its defining activation"
+above); one it inlines creates neither. Created in a scope the optimizer
+did inline, it takes as its home a frame object that stands for the
+inlined activation, which a deoptimization marries to the activation it
+rebuilds ("Planned: the optimizing JIT", "Closures, frames and
+non-local return in inlined scopes", below).
+
+## The optimizing tier's foundation
+
+Road step 9's first stage is built ("Planned: the optimizing JIT",
+"Stages" below): a second kind of machine code per body, compiled
+without speculation from a snapshot of the body at the run loop's
+safepoint, into an SSA graph whose values a linear scan keeps in
+machine registers between interrupt points, and emitted through the
+macro assembler and the baseline's own templates; it is installed beside
+the body's baseline code, never in its place, and a budget per body,
+which baseline code spends, decides when. Its code sends what baseline
+code sends and keeps the frame the interpreter's word for word at every
+interrupt point, so the exits, the exit's walk, the cut, the unwinder
+and the collector see nothing new. Measured in "What the optimizing
+tier's foundation moved": -1.45% on the geometric mean of the
+twenty-seven sources against `master`. **Code:**
+`crates/ns-runtime/src/jit/optimizing/` -- `snapshot.rs` (the snapshot
+and `BodyFacts`), `graph.rs` (the graph), `build.rs` (its builder),
+`verify.rs` (the graph's checks), `liveness.rs` (the block order, the
+positions, the live ranges and the bindings), `allocate.rs` (the
+linear scan and the write-backs), `metadata.rs` (the interrupt points'
+metadata and the allocation's verifier), `emit.rs` (the code) and
+`mod.rs` (`optimizing::compile`) -- `heap/optimization_budgets.rs` (the
+budget rows), and in `jit/mod.rs` the budget leaf's work, the request,
+the compile and install at the safepoint, the entries and abandonment.
+
+### The budget
+
+Every body has a budget, a signed word per code id in a reservation of
+its own (`heap/optimization_budgets.rs`), armed with
+`OPTIMIZATION_BUDGET`, 240,000 instructions. Baseline code subtracts
+the body's length at its prologue and the loop's length at each back
+jump -- the load of an address, a subtract from memory and one
+branch -- and below zero calls the budget leaf (`Leaf::Budget`), which
+records the body's optimization request, parks the row at `i64::MAX`
+and requests a safepoint; it compiles nothing. Optimized code spends no
+budget. A send whose cache fill follows a miss raises the running
+body's armed row to at least `BUDGET_AFTER_CACHE_CHANGE`, a sixth of the
+budget (`interpreter/inline_cache.rs`'s `fill`), so that a compile
+waits for its feedback to settle.
+
+Machine code never names a row by its code id, which a full collection
+may free and mint again for another body: each copy of a body's
+baseline code spends through one data word of its own, its **budget
+word**, which holds its row's address. The JIT points it once the code
+is installed, before it first runs (`jit::point_budget_words`), and
+afresh after every full collection, at the row of the id the body has
+then, armed with what was left of its budget before the collection
+(`jit::budgets_before_collection`,
+`jit::point_budget_words_after_collection`), so that a collection
+neither resets a budget nor leaves a word naming another body's row.
+Until it is pointed, a word names the unpointed budget
+(`MachineWord::UnpointedBudget`), a machine word that is always
+negative, so that the hot path needs no test for a word naming none:
+its first spend calls the leaf, which points the word. A code id past
+the table's 2^20 rows spends from a sink past the rows, parked. The
+budget word is written through the zone's one writer, as the closure
+and outer-local sites are, by `JitState::write_budget_word` beside
+`JitState::write_body_words`. A body whose compile the zone has no
+room for, or which is known not to fit an exhausted zone, has its
+budget armed afresh (`defer_optimization`), so that it is requested
+again once it has run as long.
+
+### The snapshot
+
+At the safepoint, the run loop takes up every request
+(`jit::optimize_requested`, from `Interpreter::safepoint`) and
+snapshots each body (`Snapshot::take`): its instructions as
+`SnapshotInstruction`s -- `Instruction` with `MakeClosure`'s `Rc`
+payloads replaced by the block's code id and its parameter count --
+its `BodyFacts`, the plain numbers the templates read off a
+`CompiledCode` (`sends::prologue` and `sends::call_slots_of` take them,
+the baseline's arms as much as the optimizer's), the registers the
+leftover analysis taints before each instruction (`tainted_before`),
+and for each `IntegerBinary` whether its fallback send's site has
+cached `Float` receivers and no other (`fallback_taken`). The snapshot
+holds no handle and is `Send`; the compile reads it alone, synchronously
+at the same safepoint, and the install only appends to the zone, so
+neither collects nor moves code.
+
+**Feedback is read as layout only.** An `IntegerBinary` whose fallback
+site has seen only `Float` receivers is built as a jump to its fallback
+send: the send alone, with no fast path, no guard and no deoptimization,
+as V8 Maglev's generic path for a `kAny` hint is, so that float
+arithmetic pays no failing `SmallInteger` test, diamond and merge. The
+send answers a `SmallInteger`'s operation too, so the feedback decides
+what the code loads and stores, never what it computes. Only a site
+that saw `Float` alone counts: a site that also saw another receiver
+-- a `nil` at the end of Json's input, beside the `SmallInteger`s the
+fast path answers without reaching the site -- keeps its fast path,
+since without counts the site cannot say which way the program takes,
+and reading any non-`SmallInteger` receiver so cost Json 10%
+(`Snapshot::fallback_taken`, `build::build`).
+
+### The graph
+
+`build::build` makes a control-flow graph in SSA form in one pass over
+the snapshot's instructions, abstractly interpreting the registers --
+each mapped to the value that last defined it -- with a block at every
+jump target and after every instruction that jumps or stops, and a phi
+where blocks meet that disagree on a register, only for a register
+some path still reads, so that no frame word is read that the
+interpreter would not read. A **simple node** is register arithmetic
+that emits no call: an immediate literal, the receiver, a copy, an
+`IntegerBinary`'s `SmallInteger` fast path, with an edge to its
+fallback; returns, jumps and branches end blocks. Every other
+instruction is a **frame node**, emitted by the baseline's template for
+it. A frame node may run Newspeak code, which can write this frame's
+registers by reference, move every object a value names or reify the
+frame, so a value lives in a machine register only between two frame
+nodes, and after one every register is read again from its frame word
+(`Node::FrameRead`).
+
+**A loop's head leaves a register its frame word** where every way in
+from before the loop brings a value that frame word holds, or the loop
+may change it: no phi, no load at the head and no store on the way in.
+A simple node's write of a register begins a new generation of its
+frame word on that path, so a read stays the word's only in the
+generation it was made in, and a path that writes the register leaves
+another path's read its frame word. The back edges, built later, must
+bring the frame word's value too; a head one refutes is built again with
+the phi (`Builder::forced_phis`), until none does. The rule, like the
+feedback, decides what the code loads and stores, never what it
+computes. `verify::verify` holds every graph, in a debug build, to its
+SSA form: a value read only where its definition dominates, a phi with
+an input for each way in.
+
+### The allocation and the write-back
+
+`liveness.rs` orders the blocks in reverse postorder (`block_order`),
+numbers their nodes, and finds each value's live ranges and which
+bytecode register is bound to which value where; `allocate.rs` runs a
+linear scan in the order values are defined, Maglev's straight-forward
+allocator's kind: each block entered with the state its way in leaves,
+a merge's state decided where it is first reached, and every way into it
+given the moves that bring its state there, a cycle through the idioms'
+scratch register. A value is in one of `Roles::allocatable` -- x64
+`r13, rbp, r12, rsi, rdi, r8, r9, r10`, AAPCS64 `x22` to `x28` and `x3`
+to `x8`, those that survive a leaf call first (`survive_leaf_calls`:
+five under Windows x64, three under System V, seven under AAPCS64) --
+or in its frame word; no value has a frame slot of its own. When no
+register is free the value whose next use is farthest goes to its frame
+word.
+
+A binding is **dirty** from the node that makes it until its value is
+stored into the register's frame word, and **no store is left out**:
+before every interrupt point -- every frame node, every back edge's poll,
+the poll's stores on its cold path alone -- every dirty binding is
+written back (`DirtyPoint`), and where control meets and a register's
+binding does not carry on, it is written back on its way in, unless the
+leftover analysis taints the register there (`Binding::STALE`). So at
+every interrupt point the frame is the interpreter's word for word, and
+what the collector traces is what baseline code would have left: a store
+left out would keep an object alive that a `WeakArray` shows gone
+(CLAUDE.md, "A register a frame does not read before it writes it is
+dead…").
+
+The **metadata** records, for each interrupt point, its program
+counter, whether a frame stopped there resumes by delivering a send's
+value or by running the instruction again (`Resumes`), and where the
+value of each register the leftover analysis does not taint is -- in
+stage 1 always its frame word. A debug build verifies the allocation
+against it (`metadata::verify_allocation`), replaying every move: a use
+whose reload is left out, a value a leaf call clobbers and a way into
+a merge that disagrees are each refused. The install drops the
+metadata: no frame is rebuilt from it until optimized code holds a
+value outside its frame word.
+
+### The code
+
+`emit.rs` emits the baseline's prologue (`sends::prologue`), then each
+block in the allocation's order: its moves, its simple nodes on the
+registers the allocation chose, and each frame node after its
+write-back, by the very template function the baseline's arm for its
+instruction calls (`baseline::lower`), with nothing held -- so optimized
+code is a lowering of the interpreter's instructions, never a second
+implementation of one. `MakeClosure` transfers the frame into the
+baseline body's reifying twin, after the write-back, as a lean baseline
+body's does, so optimized code never reifies its frame. Between two
+frame nodes nothing writes a register a value is held in but that
+value's own: a simple node computes in the registers no value is
+allocated to (`Roles::integer_temporaries`), each taken through
+`MacroAssembler::temporary`, which a debug build checks against the
+registers `MacroAssembler::hold_values` names, a leaf call's
+clobbers included. A refused compile -- too many instructions, code
+the assembler cannot lay out, or code too large for the zone even
+empty -- leaves the body in baseline code, its budget parked and the
+refusal recorded on its slot (`JitSlot::optimized_refused`), which no
+change of its baseline code's state clears: a recompile of the baseline
+code, after an abandonment or a compaction that freed it, arms a full
+budget, whose spend then parks the row again and requests nothing.
+
+### The two tiers' entries
+
+Optimized code lives beside baseline code: the body's slot names both
+(`JitSlot`'s `optimized`), and a body gets optimized code only once it
+has baseline code. A push enters the optimized code past its prologue
+(`optimized_push_entry`), and the install writes every cell that called
+the baseline code afresh from its entry and clears the machine entry
+row, so that compiled calls and the closure stubs enter the optimized
+prologue. A frame returned to (`jit::resumed`), switched at a back edge
+(`jit::at_back_edge`) or resumed after a safepoint goes on in the
+*baseline* code at its program counter, since only baseline code has an
+entry at every instruction; optimized code's program-counter map has
+only its calls' returns. Leaving optimized code is therefore always
+going on in baseline code or the interpreter, which the frame's words,
+written back, make exact ("Between the tiers"). The exit's walk
+(`jit/materialize.rs`) and the leaves find an optimized frame's send by
+the call's return address, as a baseline frame's.
+
+### Exits, abandonment and the code zone
+
+An exit of optimized code counts against the optimized code's own
+`EXIT_BUDGET`, 64; spent, it abandons the optimized code alone
+(`jit::abandon_optimized`): freed, its cells and machine entry row
+written afresh to enter the baseline code, which stays installed with
+its exits, and the body's budget armed again at the budget doubled for
+each abandonment, at most `MAXIMUM_REVIVAL_DOUBLINGS` times
+(`optimization_budget_after`), as Strongtalk backs off a recompilation
+after uncommon traps. The decay at every collection halves the
+abandonments with the exits (`JitSlot::decay_exits`). An exit of
+baseline code abandons the body as before, its optimized code with it.
+**An exit that says nothing of the code counts against neither
+budget**: the deopt stress mode's forced exits, and a push a callee's
+prologue refused at the depth limit word while a real safepoint request
+stands -- the request lowered the word to 0, and it is often the
+optimization request of a callee whose budget just ran out, so that,
+counted, it would abandon a hot caller of callees optimized one after
+another. The prologue's refusal names itself in the exit
+(`stubs::REFUSED_AT_THE_BOUND`) and `resumption_after_exit` reads
+whether a real request stands (`Heap::real_safepoint_requested`); the
+interpreter's push at the safepoint decides the depth limit, and a
+refusal at the word with no request standing is a real overflow and
+counts, as a stub's refusal and one past the stack's room do.
+The code zone frees optimized code whenever it frees its baseline body,
+and with it; a compaction moves each copy on its own and judges the pair
+by its more used copy, since the cells and the row raise the optimized
+code's usage (`jit/zone.rs`). A compaction that frees a live body clears
+its budget row (`Heap::forget_optimization_budget`), which its next
+compile arms afresh ([OPEN-WORK.md](../OPEN-WORK.md), "A compaction that
+frees a live body forgets the optimization budget it spent").
+`--jit-statistics` prints the tier's counters: requests, bodies
+optimized, the compile time, optimized exits, abandoned optimized
+bodies, frames materialized in optimized code, frames resumed of a body
+with optimized code, twin requests and the deopt stress mode's forced
+exits.
+
+### Verification
+
+Two stress modes, debug builds only, run in the `stress` group over the
+suite and `run-corpus` ([README.md](README.md), "Gates").
+`NS_NEXT_STRESS_OPTIMIZE` compiles every body to baseline code at its
+first entry or interpreted backward jump and arms its budget at 0, so
+that its first spend requests its optimization, which the next
+safepoint compiles -- V8's `stress_maglev`. Under it the back-off after
+an abandonment is void: the budget doubled is still 0
+(`optimization_budget_after`). `NS_NEXT_STRESS_DEOPT`, which implies it,
+makes optimized code leave at an interrupt point after its write-back
+and before its template, exactly where the template's own exits leave
+(`MacroAssembler::count_down_to_deoptimize`): every point subtracts one
+from a machine word (`MachineWord::DeoptCountdown`), and the one that
+brings it to zero exits; each safepoint sets the countdown to the next
+of the Fibonacci numbers up to 987 (`DEOPTIMIZATION_ROTATION`), small
+ones for every point of a short stretch and large ones for points deep
+in a long one, and a forced exit holds the safepoint that sets the next
+-- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`. A forced exit
+counts against no exit budget. Beside the other stress modes, a mode
+that holds the safepoint request ends an activation's optimized code at
+its first back edge. The zone stress mode's compactions alternate:
+every other one keeps every body that has optimized code and slides it
+with the rest, so that a callee's optimized code, installed while the
+callee still ran its baseline code, is moved, run where it now lies and
+then freed and compiled again. Every golden under
+`goldens/runtime/optimizer/` optimizes its hot body in a plain run --
+sends, a closure, a non-local return, an overflow, allocation, an
+exception through the frame, the depth limit, a mixin applied twice and
+a write in an exiting arm of a loop -- and a debug build also runs each
+as `golden::optimizer::<name>` under the optimize stress mode
+([README.md](README.md), "The goldens"). Beside the verifiers above,
+every pass has its own tests over hand-written bodies and over every
+body of `goldens/runtime/jit/` (`optimizing::corpus_of_bodies`), and
+`crates/ns-runtime/tests/jit.rs` pins the trigger, the install, the
+entries, abandonment and the zone's handling of optimized code.
+
+## Planned: the optimizing JIT
+
+Would change: hot code is recompiled, along the receiver types the inline
+caches recorded, into optimized machine code that inlines sends, keeps
+numbers unboxed in machine registers and deoptimizes when a speculation
+fails. Road step 9, designed with the user on 2026-11-04 and 2026-11-05 in
+fourteen decisions, built to the contract above. Its first stage, the
+foundation without speculation, is built ("The optimizing tier's
+foundation" above); the rest is not. Strongtalk's citations are to `prior-art/strongtalk/vm/`, HotSpot's to
+`prior-art/jdk/src/hotspot/share/`, V8's to `prior-art/v8/src/` but for
+its design documents, under `prior-art/v8/docs/`.
+
+### One tier, an SSA graph, the macro assembler
+
+- **One optimizing tier above the baseline, Maglev's shape**: a control
+  flow graph in SSA form, built in one pass over a body's register
+  bytecode, abstractly interpreting its registers -- each register maps
+  to the node that last defined it, as Maglev's `InterpreterFrameState`
+  maps Ignition's (`maglev/maglev-graph-builder.cc`;
+  `compiler/maglev/compiler-maglev.md:9-83` of the design documents) -- and
+  reading the feedback as it goes. Each node emits its own code through
+  the macro assembler's idioms, with no instruction selection, and a
+  linear-scan allocator, Maglev's `StraightForwardRegisterAllocator`'s
+  kind, gives every value a register, a frame slot or a place in the raw
+  area. Rejected: a sea of nodes, which V8 left for a control-flow graph
+  in Turboshaft because nearly every operation sits on an effect chain,
+  graphs are hard to debug and compile slowly
+  (`compiler/why-cfg.md:21-52` of the design documents), all truer of Newspeak, where nearly
+  everything is a send; Strongtalk's graph, which is not SSA and keeps
+  every value live across a basic block in a stack slot
+  (`compiler/regAlloc.cpp:55-95`); and two optimizing tiers now, which
+  the graph keeps open -- Turbolev builds TurboFan's input from Maglev's
+  graph (`flags/flag-definitions.h:1789`). Strongtalk's heuristics, not
+  its IR, decide inlining and which body is recompiled.
+- **The backend is the repository's own**: `ns-assembler`'s encoders and
+  the macro assembler the baseline JIT uses, so the write barrier, the
+  call through a cell, `enter_called` and the outer walk exist once, and
+  no file under `jit/` but `macro_assembler.rs` names a register. The
+  allocator writes the deoptimization metadata as it allocates. Rejected:
+  Cranelift, which knows stack maps but no deoptimization point -- every
+  guard would pass every live value to a cold block -- and whose calling
+  convention and frames cannot express the activation stack, the cells
+  and the return addresses on the native stack; `regalloc2` behind the
+  same interface stays possible if a measurement shows linear scan
+  limits the peak.
+
+### The compiler thread and the snapshot
+
+- **The optimizing compiler runs on a thread of its own and never
+  touches the heap.** When a compile is requested, the mutator builds a
+  snapshot that can cross threads: Strongtalk's `RScope` tree
+  (`compiler/rscope.cpp`), built eagerly down to what the inlining budget
+  could take -- the bodies' instructions, each site's feedback as
+  application ids and resolved targets, each application's layout and
+  chain, an epoch per application -- and no handle, since machine code
+  loads literals through the heap's tables; a body's instructions become
+  shareable across threads for it, or are copied. The thread compiles from it
+  alone and writes the code through the zone's writable view. A finished
+  compile requests a safepoint; there the mutator checks the epoch of
+  every application the code rests on and installs it, or discards it
+  and requests the compile again, as V8 retries a compile whose
+  dependencies changed (`compiler/compilation-dependencies.cc:1450-1510`)
+  and HotSpot discards one under `Compile_lock`
+  (`ci/ciEnv.cpp:977-998`). The body runs its baseline code meanwhile,
+  its budget parked. The same compiler runs synchronously on the same
+  snapshot for the tests and the stress modes. Reading the live heap
+  from the thread, HotSpot's and V8's way, is not an option: the heap is
+  one thread's, `CompiledCode` holds `Cell`s and `MixinMethod`s live in
+  `Rc`s, `ns-runtime` forbids `unsafe`, and the brand forbids a handle
+  outside `World::enter`.
+- **The baseline compiler stays synchronous** (decided 2026-11-05): its
+  share of a run is 0.01% to 4.2%, nearly all of it in the warm-up
+  ("What on-stack replacement moved"), where a thread would leave bodies
+  interpreted until a safepoint and take from the miss leaf its compile
+  of a callee, so that warm-up exits more and an exit budget could
+  abandon a body that would never exit again. It is measured again only
+  if its share of a program rises well past what was measured.
+
+### When a body is optimized
+
+- **A budget per body**, as V8's `interrupt_budget`
+  (`interpreter/interpreter-assembler.cc:1195-1220, 1463-1485`): baseline
+  code subtracts the body's length at each entry and the jump's distance
+  at each back jump, and below zero calls a leaf that decides. A cache
+  fill after a miss raises it, so a compile waits for stable feedback,
+  as V8's `NotifyICChanged` does (`execution/tiering-manager.cc:497-578`);
+  a pending compile parks it at its maximum. The budget is a row per
+  `CodeId` in a reservation of its own, since machine code writes it,
+  which each copy of baseline code reaches through a data word of its
+  own, pointed afresh after every full collection ("The optimizing
+  tier's foundation", "The budget"). It is not fused with the back edge's poll, which would delay a
+  safepoint by up to a budget of back jumps. The thresholds are measured:
+  240,000 instructions, and a sixth of it after a cache change ("What
+  the optimizing tier's foundation moved").
+- **The recompilee is found by walking up the stack**, Strongtalk's
+  `findTopInlinableFrame` (`recompiler/recompiler.cpp:56-121`): the
+  budget's cold path exits to the run loop, since a leaf reads no other
+  activation, and the run loop walks up from the triggering frame while
+  its body would be inlined into its caller; a block goes to its home, a
+  method with block arguments to the home of those blocks
+  (`senderOrParentOf`, `:215-252`); the walk stops after a bounded
+  number of frames, at young optimized code and at a caller that sent
+  too rarely. The loops of Newspeak are methods taking blocks --
+  `Number>>to:do:`, `Array>>do:`, `Closure>>whileTrue:` -- whose block
+  sends are shared by every caller and so megamorphic; only the body
+  that creates the block, compiled with the loop and the block inlined,
+  has the block as a constant.
+- **On-stack replacement into optimized code** at the back edge of the
+  frame running the loop: a budget that runs out at a back jump requests,
+  beside the compile the walk chose, a compile of that frame's body with
+  one entry, at that loop's head, specialized on the values the frame
+  holds -- its receiver's application, its blocks' code ids, the kind of
+  each number. The entry loads every register from the frame's words,
+  which are already the interpreter's -- the buffer HotSpot first copies
+  (`runtime/sharedRuntime.cpp:3803-3815`) -- and checks each
+  specialization once, as C2's `load_interpreter_state` does
+  (`opto/parse1.cpp:209-355`); the frame enters at a later back jump,
+  whose budget's cold path finds the code installed, and a
+  specialization that does not hold leaves the frame in its baseline
+  code and counts as a trap. A compile of its own per loop head, as
+  HotSpot's OSR nmethods and V8's are. Without it a long activation --
+  Mandelbrot's whole run is one -- never runs optimized; Strongtalk had
+  none (`interpreter/interpreter.cpp:2183-2190`).
+
+### Feedback
+
+- **Stage 1 reads the caches' feedback as layout information only**
+  (decided with the user on 2026-11-05): an `IntegerBinary` whose
+  fallback send site has seen only `Float` receivers is emitted as the
+  send alone -- no fast path, no guard, no deoptimization -- as V8
+  Maglev's generic path for a `kAny` hint is
+  (`Snapshot::fallback_taken`, `build::build`). It is Float-only, not
+  any receiver but a `SmallInteger`, because a single `nil` at the end
+  of Json's input, read so, cost Json 10%. And a register stays its
+  frame word at a natural loop's head when every way in brings the
+  value its frame word holds, a loop that writes the register beginning
+  a new generation of it, per path ("The optimizing tier's foundation",
+  "The graph"). From stage 2 on, the feedback below speculates: the
+  windows, the counting and the traps stay as written.
+- **Receiver types are the cache entries**, unchanged ([dispatch.md](dispatch.md),
+  "3b — The caches"). **Sticky bits**, written only on paths already
+  slow: an overflow seen at an `IntegerBinary` whose operands were
+  `SmallInteger`s, a non-Boolean seen at a conditional, a trap taken at
+  a site. **Frequencies** of bodies come from their budgets, within a body
+  from loop depth, as Strongtalk derives them from callee counts
+  (`compiler/rscope.cpp:337-346`). An **invalidation epoch per code
+  family** makes a site an invalidation vacated read as unknown -- a
+  real send -- not as never executed, which would be a trap. A **table
+  from dispatch id back to application** serves the snapshot.
+- **Counts only at polymorphic and megamorphic sites**: a count per
+  polymorphic entry; a megamorphic site keeps a profile of four rows of
+  guard and count and a count of the rest, taken over from its
+  polymorphic block, a row replaced as in Space-Saving (Metwally,
+  Agrawal and El Abbadi, 2005) -- the smallest row's count plus one -- so
+  that any type above a fifth of the sends holds a row however late it
+  first appears. A monomorphic site counts nothing. HotSpot counts at
+  every virtual call and its profiling tier runs about 30% slower for it
+  (`compiler/compilationPolicy.hpp:130, 204`).
+- **Counting in windows**: every polymorphic and megamorphic stub has a
+  counting and a non-counting variant, and the cell's entry address
+  selects which, part of the JIT's state a cell's entry is a function
+  of. A window counts every send of its site; when it is full a leaf
+  switches the cell to the non-counting stub, which then costs exactly
+  what it costs today. An invalidation, a trap at the site and a full
+  collection, which halves the counts, arm it again. The compiler orders
+  a type-case by frequency, leaves a type below a threshold to a send,
+  and at a megamorphic site whose leading type has 90% of the sends,
+  HotSpot's `TypeProfileMajorReceiverPercent` (`opto/c2_globals.hpp:713`),
+  inlines that type behind a real send for the rest
+  (`opto/doCall.cpp:258-345`). Before the counting is built, the share of
+  polymorphic and megamorphic sends in the benchmarks is measured with
+  `JitStatistics`; the window's size and rhythm are measured.
+
+### Customization
+
+Optimized code is compiled for a **(body, receiver application)** pair,
+Strongtalk's `LookupKey` of receiver class and selector
+(`code/nmethod.hpp`, `nmethod::receiver_klass`): every own and inherited
+slot is a fixed offset with neither guard nor slot base, every send to
+`self` is bound at compile time, and every outer walk's structure is
+fixed (the enclosing object is still loaded, a class object existing per
+enclosing instance). SOMns guards on the same unit, its `ClassFactory`
+(`prior-art/somns/src/som/interpreter/objectstorage/ClassFactory.java:20-25`).
+The key is the one the caches use: a monomorphic cell, which compared the
+dispatch id, enters the code's verified entry with no second check; a
+polymorphic entry names each application's code, the global cache the
+megamorphic site's. The interpreter and the leaves enter through an
+unverified entry that compares the dispatch id and falls back to the
+body's baseline code. A table maps (`CodeId`, application) to code;
+copies exist only for hot pairs.
+
+### Speculation and its failure
+
+- **A guard traps by default**: a failed guard, an overflow, a
+  non-Boolean and a site never executed deoptimize the frame at once and
+  run the instruction again ("Between the tiers" above), so that after a
+  guard the type is certain and no merge with an unknown path costs a
+  test or a box. The instruction run again widens the feedback by itself
+  through the cache. Each trap sets the site's sticky bit and arms its
+  counting window.
+- **Deoptimization loops are ruled out** by Strongtalk's and HotSpot's
+  measures together: a trap at a site that trapped before, or a trap
+  count reaching a limit (Strongtalk's `UncommonRecompileLimit` is 5,
+  `runtime/uncommonBranch.cpp:121-221`), makes the code not entrant and
+  gives the body a delayed budget; the compile after it gives every site
+  that trapped a compiled slow path -- a real send, a send of `+` for an
+  overflow, the fallback block -- and lets the others speculate on, as
+  Strongtalk's `isNotUncommonAt` and HotSpot's `too_many_traps` do
+  (`opto/compile.cpp:5046-5074`). Each recompile of a pair raises its
+  version; the wait before the next grows as the budget times 4 to the
+  version, Strongtalk's (`compiler/compiler.cpp:712-718`), and past the
+  last version the code is compiled with no trap at all, which can never
+  loop. Collections halve the counts. The limits are measured.
+
+### Inlining
+
+- **Always inlined**: slot accessors; methods that answer a constant,
+  `self`, a parameter or a slot (the `MethodFastPath` kinds); mirror
+  leaves a node can express -- `SmallInteger` and `Float` arithmetic and
+  comparisons, `at:` and `at:put:` on `Array` and `ByteArray`, `==`,
+  `class`; a lazy slot's getter as a test and a load; outer sends of
+  fixed structure. Strongtalk inlines its `always_inline` methods and
+  critical selectors regardless of size (`compiler/inliner.cpp:132-206`)
+  and its primitives through `PrimInliner` (`compiler/primInliner.cpp:823-930`).
+- **A plan on the snapshot's tree, made before the graph is built**:
+  candidates ordered by estimated frequency -- the site's loop depth, the
+  callee's budget, never-executed sites excluded -- and taken while each
+  is under a limit per callee and all under a limit per compile, as
+  TurboFan queues its larger candidates by call frequency
+  (`compiler/js-inlining-heuristic.cc:225-395`), where Strongtalk spends
+  its budget greedily in program order. The cost is instructions weighted
+  by kind, Strongtalk's `costModel.cpp` weights the start; a callee that
+  receives a block created in the same compile gets a bonus per such
+  argument (Strongtalk's 35, `MinBlockCostFraction`), and the block is
+  then inlined into it, so neither closure nor block send remains.
+  Recursion is unrolled at most once; depth is generously bounded, the
+  budget being the real bound. What is observed is never inlined
+  ("Observers" above). The numbers are measured.
+- **Late inlining**, C2's (`opto/doCall.cpp:243-253`), inlines after
+  optimization a send whose receiver the graph proved -- an object a
+  callee returns, a value object made and used at once -- as a pass of
+  its own, built with escape analysis.
+
+### Numbers
+
+- **Each SSA value has a representation**: tagged, Int64 or Float64,
+  chosen by the feedback, as Maglev's nodes carry theirs
+  (`maglev/maglev-ir.h:922-931`; `maglev-graph-builder.cc:1590-1690`).
+- **The 61-bit range is checked only where a value is tagged again.** Two
+  `SmallInteger`s added in 64 bits give the exact result unless 64 bits
+  overflow, so each operation checks only the flag its instruction sets,
+  and the range is checked when the value goes into a slot, an array, a
+  send, the frame or a return; a value that does not fit traps there,
+  the metadata describing the operation and its untagged inputs, and the
+  interpreter computes the `LargeInteger`. A comparison, an index or a
+  loop counter that is never tagged checks no range at all -- which V8,
+  whose small integers are 31 or 32 bits, cannot do.
+- **Floats live raw** in floating-point registers and across a call in
+  the raw area; leaving optimized code, one in `SmallFloat`'s range is
+  tagged, any other allocates a `Float`, which escape analysis removes
+  where it can. A loop phi whose inputs share a representation takes it,
+  Maglev's phi untagging (`maglev/maglev-phi-representation-selector.h:167-308`),
+  so a loop over numbers tags nothing. Mixed arithmetic follows the
+  kernel's semantics exactly and is tested against the interpreter.
+- **Range analysis**, which removes overflow and bounds checks a range
+  proves unnecessary, is a later pass; Strongtalk's
+  `optimizeIntegerLoop` shows how easily one goes wrong ("fix this: must
+  check upper bound against maxInt", `compiler/loopOpt.cpp:385-405`).
+
+### Closures, frames and non-local return in inlined scopes
+
+- **A frame object in the state "inlined"** stands for an activation the
+  optimizer inlined: inlined code that creates a closure leaving the
+  compile allocates one, naming the physical frame and the scope's index
+  in its metadata, shared by every closure of that scope; a closure
+  costs no more than it does today, where its creation reifies its
+  frame. Every read of such an object -- `enclosingActivation`, the
+  debugger, a mirror, a sender, a variable -- deoptimizes the physical
+  frame first, and the deoptimization marries the object to the
+  activation it rebuilds; a normal return of the physical frame
+  divorces it. Every reader of frame objects -- the unwinder, the leaves
+  that read activations, the collector, the mirrors, the image encoder
+  -- knows the state; it never reaches an image, which is written after
+  a deoptimization. A block compiled on its own reads its home only
+  through this chain and checks nothing at its entry, since the object
+  is always valid: inlined, married or divorced. Strongtalk's compiled
+  contexts are the model: real
+  objects shaped by the compiler, converted on deoptimization
+  (`compiler/oldCodeGenerator.cpp:625ff`;
+  `runtime/uncommonBranch.cpp:61, 188-218`).
+- **A non-local return into an inlined home** within the running stretch
+  is cut by `cut.rs` down to the physical frame, which continues at the
+  scope's non-local-return continuation, as Strongtalk's `NLRTestNode`
+  compares home and scope (`compiler/oldCodeGenerator.cpp:1355-1402`;
+  `code/stubRoutines.cpp:463-479`); outside the stretch it deoptimizes, as
+  "Non-local return and unwinding" above says.
+
+### Escape analysis
+
+**Partial escape analysis over the whole graph, for every allocation**
+-- closures, inlined frame objects, indirection vectors, `Float` boxes and
+a program's objects alike: an allocation starts virtual, its fields SSA
+values, and is materialized only on the path where it escapes; a merge
+of differing states materializes before the merge; an interrupt point
+describes each virtual object in its metadata, and a deoptimization
+materializes them before anything else, as V8's does
+(`runtime/runtime-compiler.cc:587-618`) and HotSpot's `realloc_objects`
+(`runtime/deoptimization.cpp:356-425`). Graal's partial escape analysis
+(Stadler, Würthinger and Mössenböck, CGO 2014), which SOMns relies on,
+is the model; C2's is flow-insensitive (`opto/escape.cpp`), so an object
+that escapes on one slow path is allocated on every path, and
+Strongtalk's covers only blocks (`MemoizeBlocks`, `compiler/node.cpp:2365ff`).
+A value object, whose `==` is its `=`, is materialized afresh at each
+escape, as far as four questions allow, decided when the stage comes:
+a value's lazy slot, `self` leaving a value's initializer before its
+slots are filled, whether the bulk forward may take a value, and values
+flattened into other objects and arrays
+([object-model.md](object-model.md), "A value object's four conditions").
+
+### Invalidation
+
+Optimized code records each application whose layout, method lookup or
+outer structure it relied on -- the set whose epochs its installation
+checks -- and each application keeps the list of the code that depends
+on it. An install marks the code of exactly the applications it
+rebuilds, those built from the replaced mixin and every one whose chain
+holds them; it points their cells and machine entry rows back at
+baseline code, raises the epochs and requests a safepoint, and their
+frames deoptimize as "Optimized frames" above says. Strongtalk marks by
+class (`code/zone.cpp:634-650`), HotSpot by its dependency kinds
+(`code/dependencies.hpp:105-170`; `oops/instanceKlass.cpp:1772-1792`), V8
+by its `DependentCode` groups (`objects/dependent-code.h:37-70`). The bulk
+forward deoptimizes all optimized code. A full collection that reclaims
+an application's id frees the code customized on it, so an id minted
+again never meets it. The caches keep being flushed whole.
+
+### Verification
+
+Four stress modes, debug builds only, run in the `stress` group over the
+suite and `run-corpus`: `NS_NEXT_STRESS_OPTIMIZE`, every budget running
+out at once, the recompilee compiled synchronously on its snapshot, OSR
+at the first back jump, as V8's `stress_maglev`
+(`flags/flag-definitions.h:601`); with it `NS_NEXT_STRESS_DEOPT`, a
+deoptimization at every n-th interrupt point passed, n rotated so that
+every point is met, V8's `deopt_every_n_times` (`:1382`) and HotSpot's
+`DeoptimizeALot` (`runtime/globals.hpp:387-396`);
+`NS_NEXT_STRESS_INLINED_FRAMES`, every read of an inlined frame object
+deoptimizing and every non-local return into an inlined home taken in
+turn by its continuation and by the unwinder; and
+`NS_NEXT_STRESS_INVALIDATE`, all optimized code marked at every
+safepoint, beside tests that install an edit and compare the optimized
+code's outcome with the interpreter's after it. Debug builds verify after every pass the graph's SSA form,
+dominance and representations, as Maglev's `maglev_assert` (`:679-682,
+757`), the register allocation, as C2's `VerifyRegisterAllocator`
+(`opto/c2_globals.hpp:331`), and each interrupt point's metadata against
+the leftover analysis's liveness, and assert in the generated code the
+types the compiler assumed. Differential tests run generated arithmetic
+over `SmallInteger`, `LargeInteger`, `SmallFloat` and boxed `Float` at the
+61-bit, 64-bit and `SmallFloat` bounds optimized and interpreted. At every
+commit run the verifiers, the number tests, the passes' own tests and
+goldens of the optimizer that switch `NS_NEXT_STRESS_OPTIMIZE` on per
+test; the modes join the gate table when they are built, as
+`NS_NEXT_STRESS_OPTIMIZE` and `NS_NEXT_STRESS_DEOPT` have, with the
+graph's and the allocation's verifiers and the optimizer's goldens
+("The optimizing tier's foundation", "Verification").
+
+### Stages
+
+Ten, each its own plan, branch, end-of-batch gates and measurement before
+the next:
+
+1. **The foundation, without speculation**, built ("The optimizing
+   tier's foundation" above): the graph, linear scan, the emitters, the
+   metadata, the synchronous compile on a snapshot, the installation at
+   a safepoint, the budget with the triggering body as recompilee, the
+   verifiers, `NS_NEXT_STRESS_OPTIMIZE` and `NS_NEXT_STRESS_DEOPT`. Its
+   code sends what baseline code sends, keeping values in registers
+   between interrupt points, the feedback read as layout only; it
+   measured what register allocation alone moves ("What the optimizing
+   tier's foundation moved", against "What a register cache would
+   move").
+2. **Speculation**: customization, guards and traps, the feedback's
+   groundwork without counting, the rules against deoptimization loops,
+   the invalidation per application, `NS_NEXT_STRESS_INVALIDATE`.
+3. **Inlining**: the plan, the walk up the stack, blocks with their home,
+   type-cases in the order the types first appeared.
+4. **Inlined frame objects** and the non-local return into an inlined
+   home, `NS_NEXT_STRESS_INLINED_FRAMES`.
+5. **Numbers**: the representations, phi untagging, the range checked at
+   tagging, the differential number tests, and the raw area, built with
+   the first unboxed value, since nothing is unboxed before this stage
+   and the area costs the collector a lookup per frame.
+6. **On-stack replacement into optimized code.**
+7. **Counting at polymorphic and megamorphic sites**, after the
+   measurement of their share.
+8. **The compiler thread.**
+9. **Escape analysis and late inlining**, the four value-object questions
+   first.
+10. **Range analysis.**
 
 ## The baseline JIT's foundation
 
@@ -11202,7 +12154,8 @@ the baseline JIT's foundation moved" that of the first two.
   `NS_NEXT_STRESS_EXIT` every poll takes its exit as if a safepoint were
   requested, and under `NS_NEXT_STRESS_ZONE` the zone is compacted at the
   safepoints a schedule picks, every body no activation runs freed
-  ([README.md](README.md), "Gates").
+  ([README.md](README.md), "Gates"); two more run it through optimized
+  code ("The optimizing tier's foundation", "Verification").
   `crates/ns-runtime/tests/jit.rs` pins the trigger, the zone's identity,
   a full zone, a body exiting mid-way, the sends at every lexical depth
   and both `super` levels against the interpreter, the stubs, the
@@ -12099,7 +13052,12 @@ load's cost moved the geometric mean by about 2%, so the cache would
 move it by about 1%, inside the noise ("What a register cache would
 move"). Register allocation, and the compare fused with its branch, are
 road step 9's, whose compiler allocates registers over a body
-("Planned: JIT tiers"). Decided with the user on 2026-11-03.
+("Planned: JIT tiers"). Decided with the user on 2026-11-03. Its first
+stage keeps values in machine registers between interrupt points by a
+linear scan ("The optimizing tier's foundation"), and measured what
+that alone moves within about 1.7% on the integer loops and sends, as
+forecast ("What the optimizing tier's foundation moved"); the fused
+compare is not built.
 
 ### When a body is compiled
 
@@ -12149,15 +13107,17 @@ road step 9's, whose compiler allocates registers over a body
   mapping keeps it open. Its optimizing compiler needs one, since its
   compile is costly; V8 compiles even its Sparkplug code there by
   default (`concurrent_sparkplug`, `src/flags/flag-definitions.h:1276`).
-  The baseline compiler stays synchronous until a measurement says
-  otherwise: a compile on a thread of its own takes its time off the
-  mutator, but leaves the body interpreted until the code is installed
-  at a safepoint, and the miss leaf could no longer compile a callee
-  from inside machine code, so warm-up runs more interpreted and exits
-  more. The share of a run the baseline compiler takes is measured
-  ("What on-stack replacement moved"), so that road step 9, which builds the thread, the
-  body's snapshot and the installation at a safepoint, decides whether
-  the baseline compiler joins it (decided with the user on 2026-11-02).
+  The baseline compiler stays synchronous: a compile on a thread of its
+  own would take its time off the mutator, but leave the body
+  interpreted until the code is installed at a safepoint, and the miss
+  leaf could no longer compile a callee from inside machine code, so
+  warm-up would run more interpreted and exit more, while the share of
+  a run the baseline compiler takes is 0.01% to 4.2%, nearly all of it
+  in the warm-up ("What on-stack replacement moved"). Decided with the
+  user on 2026-11-05, for road step 9, which builds the thread, the
+  snapshot and the installation at a safepoint for its optimizing
+  compiler alone ("Planned: the optimizing JIT", "The compiler thread
+  and the snapshot").
 
 ### The code zone
 
@@ -12398,9 +13358,10 @@ that make everything that grows reclaimable (plan
 - **A stress mode** (`NS_NEXT_STRESS_ZONE`, debug builds) compacts at
   the safepoints its schedule picks (`StressSchedule`, beside the collect
   stress mode's), freeing every body that is not active
-  (`zone::Freeing::EveryInactiveBody`), so every golden runs with its
-  bodies freed, compiled again and moved; like the exit stress mode, it
-  forces the JIT on.
+  (`zone::Freeing::EveryInactiveBody`) -- every other one keeping each
+  body that has optimized code, which it slides with the rest -- so
+  every golden runs with its bodies freed, compiled again and moved;
+  like the exit stress mode, it forces the JIT on.
 
 #### The code of a moved range is freed
 

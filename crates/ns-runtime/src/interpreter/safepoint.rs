@@ -80,6 +80,19 @@ impl Interpreter {
             )
         )]
         let mut rebuilt = false;
+        // A body's budget ran out: its optimized code is compiled and
+        // installed first, here, between two stretches, where no return
+        // address into the zone exists (`jit::optimize_requested`), so
+        // that the stress modes below run with it installed.
+        if self.world.optimization_requested() {
+            self.enter(crate::jit::optimize_requested);
+        }
+        // Under the deopt stress mode, one of the points optimized code
+        // passes from here on leaves: the first, second, third, fifth and
+        // so on up to the 987th, in turn at successive safepoints, so that
+        // every point of a short stretch is met and deep points of a long
+        // one too (`jit::DEOPTIMIZATION_ROTATION`).
+        self.world.rotate_deoptimization_countdown();
         #[cfg(debug_assertions)]
         {
             if self.stress_caches {
@@ -108,16 +121,16 @@ impl Interpreter {
                 stressed = true;
             }
             // The zone stress mode's compaction, which frees every body no
-            // activation runs: it reads the stack, which it leaves as it
-            // finds it.
+            // activation runs -- every other one sparing each body that has
+            // optimized code, which it slides and remaps with the rest:
+            // it reads the stack, which it leaves as it finds it.
             let traced_size = self.world.traced_size();
-            if let Some(due) = self
-                .stress_zone
-                .as_mut()
-                .map(|stress| stress.due(traced_size))
-            {
-                if due {
-                    self.enter(|mutator| mutator.compact_code_zone_for_stress());
+            if let Some(due) = self.stress_zone.as_mut().map(|stress| {
+                let due = stress.due(traced_size);
+                (due, stress.fired % 2 == 0)
+            }) {
+                if let (true, spare_optimized) = due {
+                    self.enter(|mutator| mutator.compact_code_zone_for_stress(spare_optimized));
                 }
                 stressed = true;
             }

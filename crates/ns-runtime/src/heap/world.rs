@@ -146,6 +146,8 @@ impl World {
                 futures_made: false,
             },
         };
+        let machine_words = world.mutator.heap.machine_words_handle();
+        world.mutator.jit.share_machine_words(machine_words);
         world.enter(|mutator| mutator.bootstrap_builtin_classes());
         world
     }
@@ -200,6 +202,20 @@ impl World {
     /// compaction (`Interpreter::safepoint`).
     pub(crate) fn code_zone_compaction_requested(&self) -> bool {
         self.mutator.jit.compaction_requested()
+    }
+
+    /// Sets the deopt stress mode's countdown to its rotation's next, at
+    /// the run loop's safepoint (`JitState::rotate_deoptimization_countdown`);
+    /// nothing outside the mode.
+    pub(crate) fn rotate_deoptimization_countdown(&mut self) {
+        self.mutator.jit.rotate_deoptimization_countdown();
+    }
+
+    /// Whether a body's optimization budget ran out since the last
+    /// safepoint, whose optimizing compile is pending
+    /// (`Interpreter::safepoint`).
+    pub(crate) fn optimization_requested(&self) -> bool {
+        !self.mutator.jit.optimization_requests.is_empty()
     }
 
     /// Sets the collection floor and the next limit to `floor` bytes of
@@ -375,7 +391,14 @@ impl World {
         self.mutator.heap.prune_mixin_objects();
         // After the prune, whose survivors keep their mixins, and before
         // the compaction, while the mark bits still say what lives.
+        // Before `reclaim_ids` clears the rows of the ids it frees.
+        let budgets = crate::jit::budgets_before_collection(&self.mutator);
         self.mutator.reclaim_ids(gathered);
+        // After `reclaim_ids`, which may have freed the code ids budget
+        // rows are indexed by, and before `shrink_committed_memory` gives
+        // the rows past the code table back: every body's machine code
+        // spends from the row its id names after the collection.
+        crate::jit::point_budget_words_after_collection(&mut self.mutator, &budgets);
         // After `forget_families`, which freed the ranges of the families
         // nothing runs any more: once enough of the table is free, the
         // live ranges slide down, and every holder of a base is rewritten

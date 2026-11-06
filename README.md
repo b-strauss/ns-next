@@ -14,8 +14,10 @@ resolution, nested classes, §6.2's mixin application with a class object per en
 instance, metaclasses, value objects, simultaneous and lazy slots, §8.6's exceptions,
 integers of any size, the bytecode compiler and a register VM with inline caches, a
 second, deliberately naive lowering the compiler is checked against, a mark-compact
-garbage collector, a core library written in Newspeak over one VM mirror, and a
-source-free image format.
+garbage collector, a core library written in Newspeak over one VM mirror, a
+source-free image format, a baseline JIT for x64 and AArch64, and the foundation
+of an optimizing JIT above it, which keeps values in machine registers across a
+body and speculates on nothing yet.
 Every `.ns` file in the vendored corpus parses.
 
 Not built yet, and the limits worth knowing before trying it on real code:
@@ -31,7 +33,7 @@ Not built yet, and the limits worth knowing before trying it on real code:
   collections, streams and mirrors that do not exist yet. The fourteen Are We Fast
   Yet benchmarks and Primordial Soup's Ton80 Richards and DeltaBlue run under
   their harness in `benchmarks/are-we-fast-yet/`.
-- **No actors, no reflection API, no debugger, no JIT.** An eventual send runs
+- **No actors, no reflection API, no debugger.** An eventual send runs
   synchronously and answers its value rather than a promise, a pattern literal
   evaluates to **nil**, and Typed-Newspeak annotations parse and are discarded.
 
@@ -125,14 +127,14 @@ cargo xtask gates benchmarks
 cargo xtask gates release-checks
 # the hot path's machine code against its budgets; needs cargo-show-asm
 cargo xtask gates codegen
-# the suite under the eight stress modes and once without the JIT, each into
+# the suite under the eleven stress modes and once without the JIT, each into
 # .temp/stress-<MODE>.log (NO_JIT for the last), then run-corpus plain and
 # under each mode
 cargo xtask gates stress
 # the JetBrains plugin against several IDEs, which it downloads
 cargo xtask gates plugin-verification
-# images, caches, benchmarks, release-checks, codegen and stress, for a batch
-# that changed the runtime
+# images, caches, benchmarks, release-checks, codegen, stress, linux and
+# aarch64, for a batch that changed the runtime
 cargo xtask gates end-of-batch
 # write the embedded shipped code (every gate call also does this first)
 cargo xtask shipped-code

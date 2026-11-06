@@ -80,10 +80,13 @@ pub struct Memory {
 /// [`Encoder`] honours the same contract, so a condition means the same on
 /// every architecture:
 ///
-/// - **Sets, every condition defined**: `compare`, `compare_immediate` and
-///   `compare_memory`. The signed conditions (`Less` … `GreaterOrEqual`)
-///   and the unsigned ones (`Below` … `AboveOrEqual`) compare `left` with
-///   `right`; `Overflow` holds when `left - right` overflows.
+/// - **Sets, every condition defined**: `compare`, `compare_immediate`,
+///   `compare_memory` and `subtract_from_memory`. The signed conditions
+///   (`Less` … `GreaterOrEqual`) and the unsigned ones (`Below` …
+///   `AboveOrEqual`) compare `left` with `right` -- for
+///   `subtract_from_memory` the word as it was before the subtraction
+///   with the value subtracted -- and `Overflow` holds when
+///   `left - right` overflows.
 /// - **Sets, only `Equal` and `NotEqual` defined**: `test_immediate` and
 ///   `test_immediate_with_width`.
 /// - **Sets, only `Overflow` and `NoOverflow` defined**: `add`,
@@ -182,6 +185,9 @@ pub enum Operation {
     },
     /// The 64-bit word at `target` := `value` sign-extended.
     StoreImmediate32 { target: Memory, value: i32 },
+    /// The 64-bit word at `target` := itself - `value` sign-extended,
+    /// setting the flags as a compare of the word before with `value`.
+    SubtractFromMemory { target: Memory, value: i32 },
     /// `target := target + source`, setting `Overflow`.
     Add { target: Register, source: Register },
     /// `target := target + value` sign-extended, setting `Overflow`.
@@ -570,6 +576,15 @@ impl<E: Encoder> Assembler<E> {
     /// flags.
     pub fn store_immediate32(&mut self, target: Memory, value: i32) {
         self.emit(Operation::StoreImmediate32 { target, value });
+    }
+
+    /// The 64-bit word at `target` := itself - `value` sign-extended, in
+    /// place: a counter machine code spends without a register to hold
+    /// it. Sets the flags as a compare of the word before the subtraction
+    /// with `value` does, every condition defined after it, so that `Less`
+    /// holds exactly when the word became negative.
+    pub fn subtract_from_memory(&mut self, target: Memory, value: i32) {
+        self.emit(Operation::SubtractFromMemory { target, value });
     }
 
     /// `target := target + source`. Sets the flags; only `Overflow` and

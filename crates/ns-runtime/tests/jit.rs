@@ -11,7 +11,20 @@ use ns_runtime::{
     SourceOrigin, Symbol, Value, ValueKind,
 };
 
+/// `source` loaded under `lowering`, with every body's optimization
+/// budget parked: these pin what baseline code does, which a request for
+/// an optimization -- the leaf's call and the safepoint's exit -- would
+/// change in every long loop. The budget's own tests load with
+/// `load_spending_with`.
 fn load_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let (mut interpreter, class) = load_spending_with(source, lowering);
+    interpreter.set_optimization_budget(i64::MAX);
+    (interpreter, class)
+}
+
+/// `source` loaded under `lowering`, every body's optimization budget the
+/// JIT's own.
+fn load_spending_with(source: &str, lowering: Lowering) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = ns_runtime::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
         .expect("resolve");
@@ -112,6 +125,18 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         back_edge_compiles: after.back_edge_compiles - before.back_edge_compiles,
         safepoint_resumptions: after.safepoint_resumptions - before.safepoint_resumptions,
         compile_nanoseconds: after.compile_nanoseconds - before.compile_nanoseconds,
+        optimization_requests: after.optimization_requests - before.optimization_requests,
+        optimized_bodies: after.optimized_bodies - before.optimized_bodies,
+        optimized_exits: after.optimized_exits - before.optimized_exits,
+        abandoned_optimized_bodies: after.abandoned_optimized_bodies
+            - before.abandoned_optimized_bodies,
+        optimize_nanoseconds: after.optimize_nanoseconds - before.optimize_nanoseconds,
+        optimized_frames_materialized: after.optimized_frames_materialized
+            - before.optimized_frames_materialized,
+        optimized_bodies_resumed: after.optimized_bodies_resumed - before.optimized_bodies_resumed,
+        optimized_twin_requests: after.optimized_twin_requests - before.optimized_twin_requests,
+        forced_exits: after.forced_exits - before.forced_exits,
+        deepest_forced_exit: after.deepest_forced_exit,
     }
 }
 
@@ -753,6 +778,737 @@ const COUNTING_LOOP: &str = indoc! {"
     ) : ()
 "};
 
+/// `source`'s `run` as `run_compiled` runs it with the JIT on, every
+/// body's optimization budget the JIT's own.
+fn run_spending(source: &str, lowering: Lowering) -> (i64, JitStatistics) {
+    let (mut interpreter, class) = load_spending_with(source, lowering);
+    interpreter.set_jit_stress(true);
+    interpreter.set_jit_counting(true);
+    let before = interpreter.jit_statistics();
+    let answer = run(&mut interpreter, &class);
+    (answer, since(interpreter.jit_statistics(), before))
+}
+
+/// A loop of 200,000 turns, which spends far more than a body's budget
+/// at its back jumps.
+const HOT_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 200000] whileTrue: [
+          sum:: sum + index.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// A body that runs once and returns.
+const RETURN_THREE: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        ^3
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The loop's back jumps spend `run`'s budget until it runs out: its
+    /// optimization is requested, once, and its row parked, so that the
+    /// rest of the loop requests nothing more. The reference lowering
+    /// inlines neither block: each turn sends `value` to both, whose
+    /// bodies are requested as well -- the condition's and the loop's,
+    /// `run`'s own back jump spending less than either.
+    fn a_hot_loop_requests_its_body_s_optimization(lowering) {
+        let (answer, statistics) = run_spending(HOT_LOOP, lowering);
+        assert_eq!(answer, 20_000_100_000);
+        let requested = match lowering {
+            Lowering::Optimized => 1,
+            Lowering::Reference => 2,
+        };
+        if spends_no_budget_in_a_loop(lowering) {
+            assert!(statistics.optimization_requests <= requested);
+        } else {
+            assert_eq!(statistics.optimization_requests, requested);
+        }
+    }
+}
+
+/// Whether a stress mode keeps a hot loop's bodies from running a budget
+/// out: only machine code spends one. The suspend stress mode's held
+/// request stops the loop at every backward jump, and the safepoint
+/// suspends its frame and resumes it, a frame that goes on interpreted
+/// rather than switch back into machine code at the loop's head
+/// (`vm::run`), so that after its first poll the loop never runs in
+/// machine code again. Under the zone stress mode the reference
+/// lowering's `run` runs each turn in machine code only up to its first
+/// send, uncached, which exits, so that it never reaches its backward
+/// jump there, while its blocks, which no activation runs at a
+/// safepoint, are freed at every compaction, which clears their budgets
+/// (`docs/OPEN-WORK.md`, "A compaction that frees a live body forgets
+/// the optimization budget it spent").
+fn spends_no_budget_in_a_loop(lowering: Lowering) -> bool {
+    let suspending = std::env::var_os("NS_NEXT_STRESS_SUSPEND")
+        .is_some_and(|value| !value.is_empty() && value != "0");
+    suspending || (lowering == Lowering::Reference && the_zone_stress_mode_is_on())
+}
+
+/// A loop whose every turn sends a method without a loop of its own,
+/// which spends its budget only at its entries.
+#[cfg(debug_assertions)]
+const STEPPING: &str = indoc! {"
+    class Subject = Object new () (
+      step: value = (
+        ^value + 1
+      )
+      public run = (
+        |
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          index:: self step: index.
+        ].
+        ^index.
+      )
+    ) : ()
+"};
+
+/// The budget `STEPPING`'s test arms every body with: a few dozen runs'
+/// worth.
+#[cfg(debug_assertions)]
+const STEPPING_BUDGET: i64 = 50_000;
+
+/// An interpreter with `STEPPING` loaded under `lowering`, every body's
+/// budget `STEPPING_BUDGET`, and an instance to send `run` to: the
+/// optimize stress mode off, whatever the environment says, since it arms
+/// every budget at 0 by design, and these pin what a budget carries.
+#[cfg(debug_assertions)]
+fn stepping(lowering: Lowering) -> (Interpreter, Root) {
+    let (mut interpreter, class) = load_spending_with(STEPPING, lowering);
+    interpreter.set_optimize_stress(false);
+    interpreter.set_optimization_budget(STEPPING_BUDGET);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    (interpreter, instance)
+}
+
+/// Sends `instance` `run` once, answering whether the JIT has requested
+/// an optimization since `before`.
+#[cfg(debug_assertions)]
+fn run_stepping(interpreter: &mut Interpreter, instance: &Root, before: JitStatistics) -> bool {
+    expect_ok(
+        interpreter.send(instance, Symbol::intern("run"), &[]),
+        "run",
+    );
+    since(interpreter.jit_statistics(), before).optimization_requests > 0
+}
+
+/// A full collection frees the code ids of the bodies no activation runs
+/// -- `run` and `step:` between two runs -- and mints new ones for them,
+/// whose rows are armed with what was left of the old: a budget spent
+/// across the collection runs out at the same total as one spent without
+/// it, so that a body called a little between every two collections is
+/// still requested. The optimized lowering's: under the reference
+/// lowering every body `STEPPING` runs would exit at once, so that none
+/// is compiled and none spends. A debug build's, as `collect_now` is.
+#[cfg(debug_assertions)]
+#[test]
+fn a_full_collection_keeps_what_is_left_of_a_budget() {
+    let lowering = Lowering::Optimized;
+    {
+        if the_zone_stress_mode_is_on() {
+            // No budget runs out: the compactions free `step:`, which no
+            // activation runs between two of its calls, and clear its
+            // budget, so that its next compile arms a full one
+            // (`docs/OPEN-WORK.md`, "A compaction that frees a live body
+            // forgets the optimization budget it spent"); the exemption
+            // goes with that item. `run` spends nothing either: its first
+            // call of `step:` after each compaction misses and finds it
+            // uncompiled, counting its entries afresh, so that the miss
+            // refuses the call (`jit::note_entry_by_call`) and `run`
+            // exits at the send, and is abandoned at its sixty-fourth
+            // such exit.
+            return;
+        }
+        let (mut interpreter, instance) = stepping(lowering);
+        let before = interpreter.jit_statistics();
+        let runs_to_request = (1..=10_000)
+            .find(|_| run_stepping(&mut interpreter, &instance, before))
+            .expect("the budget runs out");
+        assert!(runs_to_request >= 10, "{runs_to_request} runs");
+        let (mut interpreter, instance) = stepping(lowering);
+        let before = interpreter.jit_statistics();
+        let half = runs_to_request * 6 / 10 + 1;
+        for _ in 0..half {
+            assert!(
+                !run_stepping(&mut interpreter, &instance, before),
+                "requested before the collection"
+            );
+        }
+        interpreter.collect_now();
+        let requested = (0..half).any(|_| run_stepping(&mut interpreter, &instance, before));
+        assert!(
+            requested,
+            "{half} runs on either side of the collection, {runs_to_request} running out"
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A body run once spends a few instructions of its budget, which
+    /// requests nothing.
+    fn a_body_run_once_requests_nothing(lowering) {
+        let (answer, statistics) = run_spending(RETURN_THREE, lowering);
+        assert_eq!(answer, 3);
+        assert_eq!(statistics.optimization_requests, 0);
+    }
+}
+
+/// The budget the optimizing tests arm every body with: a few thousand
+/// instructions, so that a body a loop calls a few hundred times runs out.
+const OPTIMIZING_BUDGET: i64 = 5_000;
+
+/// `source`'s `run` sent `runs` times to one instance, as `run_compiled`
+/// runs it with the JIT on -- every body compiled at its first entry, so
+/// that the reference lowering's, which mostly exit at once, are too --
+/// and every body's budget `OPTIMIZING_BUDGET`: a body whose budget runs
+/// out is optimized at the safepoint its request asks for, and the pushes
+/// and calls after it enter its optimized code. Answers each run's answer,
+/// what the JIT did over all of them, and what it did in the last, which
+/// runs after the first run's optimizations.
+fn run_optimizing(
+    source: &str,
+    lowering: Lowering,
+    runs: usize,
+) -> (Vec<i64>, JitStatistics, JitStatistics) {
+    let (mut interpreter, class) = load_spending_with(source, lowering);
+    interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
+    interpreter.set_jit_stress(true);
+    interpreter.set_jit_counting(true);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let before = interpreter.jit_statistics();
+    let mut last = before;
+    let mut answers = Vec::new();
+    for _ in 0..runs {
+        last = interpreter.jit_statistics();
+        answers.push(send_unary(&mut interpreter, &subject, "run"));
+    }
+    let after = interpreter.jit_statistics();
+    (answers, since(after, before), since(after, last))
+}
+
+/// Whether the decisions about optimized code are pinned here: under the
+/// optimized lowering with no stress mode that changes which copy of a
+/// body runs when (`MODES_THAT_CHANGE_THE_COPY`). The wide stress mode
+/// keeps the pins, so that it holds the tiers' decisions too.
+fn pins_the_tiers(lowering: Lowering) -> bool {
+    lowering == Lowering::Optimized
+        && !MODES_THAT_CHANGE_THE_COPY
+            .iter()
+            .any(|mode| the_stress_mode_is_on(mode))
+}
+
+/// The stress modes that change which copy of a body runs when: by their
+/// compactions, collections, suspensions and moves, by compiling or
+/// optimizing every body at once, or by leaving machine code at every
+/// poll or interrupt point -- the cache stress mode among them, since it
+/// holds the safepoint request, which every poll takes, and vacates the
+/// caches there. The wide stress mode changes no machine code's decision.
+const MODES_THAT_CHANGE_THE_COPY: [&str; 10] = [
+    "MOVES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE", "JIT", "EXIT", "OPTIMIZE", "DEOPT", "CACHES",
+];
+
+/// The squares of 1 to 100,000 summed in one loop: `run`'s back jumps
+/// spend its budget in its first run, so that the second and third push
+/// `run` into its optimized code.
+const SUM_OF_SQUARES_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 100000] whileTrue: [
+          sum:: sum + (index * index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// The sum of the squares of 1 to 100,000.
+fn expected_sum_of_squares() -> i64 {
+    let count: i64 = 100_000;
+    count * (count + 1) * (2 * count + 1) / 6
+}
+
+ns_runtime::for_each_lowering! {
+    /// A body whose budget ran out is optimized at the next safepoint,
+    /// once, and the runs that push it afterwards answer what its first
+    /// run, in baseline code, answered. The optimized lowering inlines the
+    /// loop's blocks, so that `run` is the only body optimized; the
+    /// reference lowering's blocks are optimized as well.
+    fn a_hot_body_runs_optimized_and_answers_the_same(lowering) {
+        let (answers, statistics, _) = run_optimizing(SUM_OF_SQUARES_LOOP, lowering, 3);
+        assert_eq!(answers, vec![expected_sum_of_squares(); 3]);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.optimized_bodies, 1);
+        } else {
+            assert_some_optimized(&statistics, lowering);
+        }
+    }
+}
+
+/// `run` calling `three` twice: under the optimize stress mode `three` is
+/// compiled at its first entry, a push, which spends nothing, and its
+/// second, a call through its prologue, spends its budget, armed at 0.
+const RETURN_THREE_TWICE: &str = indoc! {"
+    class Subject = Object new () (
+      three = (
+        ^3
+      )
+      public run = (
+        ^self three + self three
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The optimize stress mode arms every budget at 0 whatever the test
+    /// parked it at, so that a body run twice is optimized: at the
+    /// safepoint its request asks for, which the reference lowering's
+    /// `run`, interpreted and with no loop, first reaches in its second
+    /// run, at its push.
+    fn under_the_optimize_stress_a_body_run_twice_is_optimized(lowering) {
+        let (mut interpreter, class) = load_with(RETURN_THREE_TWICE, lowering);
+        interpreter.set_optimize_stress(true);
+        assert_eq!(run(&mut interpreter, &class), 6);
+        assert_eq!(run(&mut interpreter, &class), 6);
+        let statistics = interpreter.jit_statistics();
+        // Under the zone stress mode the safepoint between the reference
+        // lowering's sends frees `three`, which no activation runs, so
+        // that each send compiles it afresh and enters it at a push,
+        // which spends nothing.
+        if lowering == Lowering::Reference && the_zone_stress_mode_is_on() {
+            return;
+        }
+        assert!(statistics.optimized_bodies >= 1, "{statistics:?}");
+    }
+}
+
+/// The squares of 1 to 100,000 summed by a loop that sends `square:` for
+/// each, whose send is an interrupt point of its optimized code: every
+/// call pushes `square:` into its optimized code afresh, so that the
+/// deopt stress mode's countdown meets its point at every turn.
+const SUM_OF_SQUARES_BY_SENDS: &str = indoc! {"
+    class Subject = Object new () (
+      square: value = (
+        ^self times: value with: value
+      )
+      times: left with: right = (
+        ^left * right
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 100000] whileTrue: [
+          sum:: sum + (self square: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Under the deopt stress mode optimized code leaves at every n-th
+    /// interrupt point it passes, writing its frame back and handing the
+    /// instruction to the interpreter, and the answer is the
+    /// interpreter's. With the JIT stress mode, as `run_optimizing`, so
+    /// that the reference lowering's bodies, which exit at once at their
+    /// uncached sends, are compiled and optimized too.
+    fn under_the_deopt_stress_every_point_leaves_and_the_answer_holds(lowering) {
+        let (mut interpreter, class) = load_with(SUM_OF_SQUARES_BY_SENDS, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_deopt_stress(true);
+        assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
+        let statistics = interpreter.jit_statistics();
+        // Under the zone stress mode the reference lowering's bodies spend
+        // no budget: each is compiled afresh at its push, which spends
+        // nothing, and exits at its first send, uncached, before it
+        // spends at a back jump (`spends_no_budget_in_a_loop`).
+        if lowering == Lowering::Reference && the_zone_stress_mode_is_on() {
+            return;
+        }
+        assert!(
+            statistics.forced_exits > 100,
+            "{} forced exits of optimized code",
+            statistics.forced_exits
+        );
+    }
+}
+
+/// The deopt stress mode's forced exits never count against the optimized
+/// code's `EXIT_BUDGET`, as the exit stress mode's forced poll exits never
+/// do: outside the JIT stress mode, which abandons nothing, `square:`'s
+/// optimized code leaves thousands of times and stays installed. The
+/// optimized lowering's: the reference lowering's uncached sends exit at
+/// once, so that no body of it is compiled outside the JIT stress mode.
+#[test]
+fn the_deopt_stress_s_forced_exits_abandon_nothing() {
+    let (mut interpreter, class) = load_with(SUM_OF_SQUARES_BY_SENDS, Lowering::Optimized);
+    interpreter.set_deopt_stress(true);
+    assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
+    let statistics = interpreter.jit_statistics();
+    assert!(
+        statistics.forced_exits > 100,
+        "{} forced exits of optimized code",
+        statistics.forced_exits
+    );
+    if !a_stress_mode_is_on() {
+        assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
+    }
+}
+
+/// `sweep:` runs a loop of `turns` turns whose every turn sends `step:`
+/// three times -- three interrupt points of its optimized code, and its
+/// back edge's poll a fourth -- while `step:`, which only answers its
+/// argument, has none: `run` calls it a hundred times, each call one
+/// long activation of `sweep:`'s optimized code, so that the points it
+/// passes are the only ones counted down between two safepoints.
+const LONG_OPTIMIZED_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      step: value = (
+        ^value
+      )
+      sweep: turns = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < turns] whileTrue: [
+          sum:: sum + (self step: index) + (self step: 1) + (self step: 2).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public run = (
+        |
+          total ::= 0.
+          call ::= 0.
+        |
+        [call < 100] whileTrue: [
+          total:: total + (self sweep: 300).
+          call:: call + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+/// The deopt stress mode forces exits deep in one long activation of
+/// optimized code, not only within its first few points: a forced exit
+/// leaves the activation's optimized code for good, so that its n-th
+/// point is forced only by a countdown of n, and the rotation reaches
+/// 987 -- the 247th turn of `sweep:`'s loop, past many a write-back of the
+/// values its back edge carries. The optimized lowering's, which inlines
+/// the loop's blocks into `sweep:`.
+#[test]
+fn the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation() {
+    let (mut interpreter, class) = load_with(LONG_OPTIMIZED_LOOP, Lowering::Optimized);
+    interpreter.set_deopt_stress(true);
+    let turn = (0..300).sum::<i64>() + 3 * 300;
+    assert_eq!(run(&mut interpreter, &class), 100 * turn);
+    let statistics = interpreter.jit_statistics();
+    assert!(statistics.forced_exits > 0, "no forced exit");
+    // Under a mode beside it whose every poll leaves machine code, each
+    // activation of `sweep:` leaves its optimized code for good at its
+    // first back edge, and the safepoint there sets the next countdown,
+    // so that no point past the first few is ever reached.
+    if a_stress_mode_beside_deopt_polls_out() {
+        return;
+    }
+    assert!(
+        statistics.forced_exits >= 50,
+        "{} forced exits",
+        statistics.forced_exits
+    );
+    assert!(
+        statistics.deepest_forced_exit >= 610,
+        "the deepest forced exit at point {}",
+        statistics.deepest_forced_exit
+    );
+}
+
+/// `turn:` sending each of `CALLEES` loopless callees once in its first
+/// two turns, which fill the sends' caches and compile the callees, and
+/// once a turn from the `STAGGER * index`-th on, which `run`'s loop calls `TURNS` times,
+/// so that `turn:` runs in machine code: with a budget of
+/// `OPTIMIZING_BUDGET`, the callees' budgets run out one after another,
+/// each in an activation of `turn:` of its own, each request raising a
+/// real safepoint request, at which `turn:`'s next compiled send is
+/// refused at the callee's prologue.
+fn callees_optimized_one_after_another() -> String {
+    let callees: String = (0..CALLEES)
+        .map(|index| {
+            formatdoc! {"
+                  callee{index}: value = (
+                    ^value + {index}
+                  )
+            "}
+        })
+        .collect();
+    let sends: String = (0..CALLEES)
+        .map(|index| {
+            let from = STAGGER * index;
+            format!(
+                "    ((value < 2) | (value >= {from})) ifTrue: [sum:: sum + (self callee{index}: value)].\n"
+            )
+        })
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {callees}  turn: value = (
+            | sum ::= 0. |
+        {sends}    ^sum
+          )
+          public run = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < {TURNS}] whileTrue: [
+              sum:: sum + (self turn: index).
+              index:: index + 1.
+            ].
+            ^sum
+          )
+        ) : ()
+    "}
+}
+
+/// More callees than a body's `EXIT_BUDGET` of 64 exits.
+const CALLEES: i64 = 100;
+
+/// The turns between the first sends of two callees.
+const STAGGER: i64 = 30;
+
+/// Enough turns for the last callee to run its budget out.
+const TURNS: i64 = 6000;
+
+/// A push refused at a callee's prologue because a real safepoint request
+/// lowered the depth limit word -- here the optimization request of a
+/// callee whose budget ran out -- is not counted against the caller,
+/// whose code it says nothing of: a caller whose callees keep requesting
+/// their optimization is not abandoned, however many there are.
+#[test]
+fn a_caller_whose_callees_keep_requesting_optimization_is_not_abandoned() {
+    let source = callees_optimized_one_after_another();
+    let (mut interpreter, class) = load_spending_with(&source, Lowering::Optimized);
+    interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let expected: i64 = (0..CALLEES)
+        .map(|index| {
+            (0..TURNS)
+                .filter(|value| *value < 2 || *value >= STAGGER * index)
+                .map(|value| value + index)
+                .sum::<i64>()
+        })
+        .sum();
+    assert_eq!(send_unary(&mut interpreter, &subject, "run"), expected);
+    let statistics = interpreter.jit_statistics();
+    if a_stress_mode_is_on() {
+        return;
+    }
+    assert!(
+        statistics.optimization_requests > 64,
+        "{} optimization requests",
+        statistics.optimization_requests
+    );
+    assert!(statistics.pushes_refused > 64, "{statistics:?}");
+    assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
+    assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
+}
+
+/// Holds `statistics` to some body optimized -- but under a stress mode
+/// that keeps a loop's bodies from spending their budgets
+/// (`spends_no_budget_in_a_loop`).
+fn assert_some_optimized(statistics: &JitStatistics, lowering: Lowering) {
+    if spends_no_budget_in_a_loop(lowering) {
+        return;
+    }
+    assert!(statistics.optimized_bodies >= 1, "a body is optimized");
+}
+
+/// A loop calling `guarded` 10,000 times, whose budget runs out after a
+/// few hundred calls: from then on the loop's calls enter its optimized
+/// code, whose `on:do:` send's callee signals a resumable exception, so
+/// that the exit materializes `guarded`'s optimized frame, and the
+/// handler's `resume:` returns into it.
+const SIGNAL_IN_A_HOT_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      warn = (
+        ^(Exception signal) + 1
+      )
+      guarded = (
+        ^[self warn] on: Exception do: [:e | e resume: 0]
+      )
+      public run = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < 10000] whileTrue: [
+          total:: total + self guarded.
+          index:: index + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A frame of optimized code that an exit materialized is returned to
+    /// in its baseline code, the only code with an entry at every
+    /// instruction, and the answer is the interpreter's: in the second
+    /// run, after the first optimized `guarded` and `warn`, every signal
+    /// materializes frames that stood in optimized code, and the frames
+    /// returned to are those of bodies with optimized code, which go on in
+    /// their baseline code.
+    fn a_frame_returned_to_resumes_in_baseline_code(lowering) {
+        let (answers, statistics, last) = run_optimizing(SIGNAL_IN_A_HOT_LOOP, lowering, 2);
+        assert_eq!(answers, vec![10_000; 2]);
+        assert_some_optimized(&statistics, lowering);
+        if pins_the_tiers(lowering) {
+            assert!(
+                last.optimized_frames_materialized >= 10_000,
+                "{} frames of optimized code materialized",
+                last.optimized_frames_materialized
+            );
+            assert!(
+                last.optimized_bodies_resumed >= 10_000,
+                "{} frames of optimized bodies resumed in baseline code",
+                last.optimized_bodies_resumed
+            );
+        }
+    }
+}
+
+/// A loop whose every turn calls `add:to:`, which adds, and from its
+/// 9,001st call on makes a block capturing its arguments and has
+/// `evaluate:` evaluate it: by then its budget has run out and it is
+/// optimized, so that its optimized code makes the first of its closures.
+const CLOSURE_IN_A_HOT_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      evaluate: block = (
+        ^block value
+      )
+      add: index to: total = (
+        index > 9000 ifTrue: [^self evaluate: [total + index]].
+        ^total + index
+      )
+      public run = (
+        |
+          total ::= 0.
+          index ::= 1.
+        |
+        [index <= 10000] whileTrue: [
+          total:: self add: index to: total.
+          index:: index + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `add:to:`'s optimized code makes its block as its lean baseline
+    /// code does, by transferring its frame into the body's twin, which
+    /// makes the closure: its first transfer finds no twin and calls the
+    /// twin leaf, which compiles the baseline body's twin -- once, the
+    /// second run's transfers finding it -- and the answer is the
+    /// interpreter's.
+    fn a_closure_made_in_optimized_code_transfers_into_the_twin(lowering) {
+        let (answers, statistics, last) = run_optimizing(CLOSURE_IN_A_HOT_LOOP, lowering, 2);
+        assert_eq!(answers, vec![50_005_000; 2]);
+        assert_some_optimized(&statistics, lowering);
+        assert!(statistics.compiled_twins >= 1);
+        if pins_the_tiers(lowering) {
+            assert_eq!(statistics.optimized_twin_requests, 1);
+            assert_eq!(last.optimized_twin_requests, 0);
+            assert_eq!(last.compiled_twins, 0, "the twin is compiled once");
+        }
+    }
+}
+
+/// A loop calling `step:` 3,100 times, whose budget runs out after a few
+/// hundred calls, so that the loop's calls enter its optimized code; from
+/// the 3,001st call on `step:` sends a message its class answers in its
+/// own `doesNotUnderstand:`, whose handler machine code leaves to the
+/// interpreter: an exit of the optimized code at every call.
+const EXITING_HOT_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      step: value = (
+        value < 3000 ifTrue: [^value].
+        ^self missing
+      )
+      public doesNotUnderstand: message = (
+        ^1
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 3100] whileTrue: [
+          sum:: sum + (self step: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// `source`'s `run` with the JIT on and every body's budget
+/// `OPTIMIZING_BUDGET`, outside the JIT stress mode, which never abandons
+/// a body; and what the JIT did meanwhile.
+fn run_abandoning(source: &str, lowering: Lowering) -> (i64, JitStatistics) {
+    let (mut interpreter, class) = load_spending_with(source, lowering);
+    interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
+    interpreter.set_jit_counting(true);
+    let before = interpreter.jit_statistics();
+    let answer = run(&mut interpreter, &class);
+    if let Err(message) = interpreter.verify_cells() {
+        panic!("after the run: {message}");
+    }
+    (answer, since(interpreter.jit_statistics(), before))
+}
+
+ns_runtime::for_each_lowering! {
+    /// `step:`'s optimized code exits at each of the last hundred calls:
+    /// the exits count against its own budget, never its baseline code's,
+    /// so that at the sixty-fourth its optimized code alone is abandoned
+    /// and the rest of the calls run its baseline code, whose thirty-six
+    /// exits abandon nothing. The reference lowering's sends are uncached
+    /// and exit, so that its bodies are never compiled.
+    fn an_optimized_body_that_keeps_exiting_is_abandoned_and_baseline_stays(lowering) {
+        let (answer, statistics) = run_abandoning(EXITING_HOT_LOOP, lowering);
+        assert_eq!(answer, 2999 * 3000 / 2 + 100);
+        if pins_the_tiers(lowering) {
+            assert!(statistics.optimized_bodies >= 1, "{statistics:?}");
+            assert_eq!(statistics.optimized_exits, 64, "{statistics:?}");
+            assert_eq!(statistics.abandoned_optimized_bodies, 1, "{statistics:?}");
+            assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
+        }
+    }
+}
+
 /// Runs `COUNTING_LOOP` twice on a thread of `stack_bytes`, answering the
 /// second run's answer and its entries into machine code.
 fn run_the_loop_on_a_thread_of(stack_bytes: usize) -> (i64, u64) {
@@ -994,20 +1750,39 @@ fn the_zone_stress_mode_is_on() -> bool {
     std::env::var_os("NS_NEXT_STRESS_ZONE").is_some_and(|value| !value.is_empty() && value != "0")
 }
 
+/// The stress modes beside the deopt stress mode under which every poll
+/// leaves machine code (`a_stress_mode_polls_out`): the exit stress
+/// mode, whose polls exit unconditionally, and every mode that holds the
+/// safepoint request, which a poll takes
+/// (`Interpreter::hold_safepoints_for_stress`).
+const MODES_THAT_POLL_OUT: [&str; 7] = [
+    "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE",
+];
+
+/// Whether the environment turns `mode`'s stress mode on.
+fn the_stress_mode_is_on(mode: &str) -> bool {
+    std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
+        .is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// Whether the environment turns on a stress mode, other than the deopt
+/// stress mode a test sets itself, under which every poll leaves machine
+/// code.
+fn a_stress_mode_beside_deopt_polls_out() -> bool {
+    MODES_THAT_POLL_OUT
+        .iter()
+        .any(|mode| the_stress_mode_is_on(mode))
+}
+
 /// Whether the environment turns on a stress mode under which every poll
 /// leaves machine code: the exit stress mode, whose polls exit
 /// unconditionally, and every mode that holds the safepoint request,
-/// which a poll takes (`Interpreter::hold_safepoints_for_stress`). The
-/// JIT's and the wide encoding's stress modes leave the polls alone.
+/// which a poll takes (`Interpreter::hold_safepoints_for_stress`), and the
+/// deopt stress mode, whose every forced exit holds it until the next
+/// safepoint resets the countdown. The JIT's, the optimize and the wide
+/// encoding's stress modes leave the polls alone.
 fn a_stress_mode_polls_out() -> bool {
-    [
-        "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE",
-    ]
-    .iter()
-    .any(|mode| {
-        std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
-            .is_some_and(|value| !value.is_empty() && value != "0")
-    })
+    a_stress_mode_beside_deopt_polls_out() || the_stress_mode_is_on("DEOPT")
 }
 
 /// A chain of compiled sends three deep -- `run:`, `first:with:`,
@@ -5427,6 +6202,49 @@ ns_runtime::for_each_lowering! {
             assert_eq!(done.miss_leaf_calls, 0, "the cell names `b`'s new place");
             assert!(done.compiled_calls >= 1, "`callB` calls `b` through its cell");
         }
+    }
+}
+
+/// A compaction slides a body's optimized code down with its baseline
+/// code over a body freed below both, and the next run pushes it at its
+/// new place: no optimization again, the same answer. `a`, compiled
+/// first, is abandoned for its exits; `spin`, compiled after it, is
+/// optimized after it is abandoned, its budget armed only then.
+#[test]
+fn a_compaction_slides_optimized_code() {
+    let (mut interpreter, class) = load_with(MOVING, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for _ in 0..2 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "a"), 1);
+    }
+    assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1_999_000);
+    abandon_a(&mut interpreter, &subject);
+    interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
+    for _ in 0..2 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1_999_000);
+    }
+    let spin = Symbol::intern("spin");
+    let optimized_before = interpreter.jit_optimized_offset(&class, MethodSide::Instance, spin);
+    let before = interpreter.jit_statistics();
+    interpreter.compact_jit_zone();
+    let optimized_after = interpreter.jit_optimized_offset(&class, MethodSide::Instance, spin);
+    if let Err(message) = interpreter.verify_cells() {
+        panic!("after the compaction: {message}");
+    }
+    assert_eq!(send_unary(&mut interpreter, &subject, "spin"), 1_999_000);
+    let done = since(interpreter.jit_statistics(), before);
+    if !a_stress_mode_is_on() {
+        let (Some(optimized_before), Some(optimized_after)) = (optimized_before, optimized_after)
+        else {
+            panic!("`spin` is optimized, and its optimized code survives the compaction");
+        };
+        assert!(
+            optimized_after < optimized_before,
+            "the optimized code moved down: {optimized_before:#x} to {optimized_after:#x}"
+        );
+        assert!(done.moved_bytes > 0);
+        assert_eq!(done.optimized_bodies, 0, "not optimized again");
+        assert_eq!(done.exits, 0, "nothing left machine code");
     }
 }
 

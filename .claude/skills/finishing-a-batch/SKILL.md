@@ -31,8 +31,14 @@ Create a todo for each item.
    its frame and runs on from the frames, JIT compiles every body at its first
    entry and enters it at every push even when its machine code exits at once, EXIT makes every poll in
    machine code take its exit, ZONE compacts the code zone at every safepoint,
-   freeing every body no activation runs; beside them the suite runs once with
-   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the ten suites at once,
+   freeing every body no activation runs -- every other compaction keeping
+   each body that has optimized code, which it slides -- OPTIMIZE arms every body's
+   optimization budget at 0, so that the next safepoint compiles its optimized
+   code once its baseline code first spends -- under it the back-off after an
+   abandonment is void, the doubled budget still 0 -- DEOPT does what OPTIMIZE does and
+   makes optimized code leave at every n-th interrupt point it passes, n
+   rotating at each safepoint; beside them the suite runs once with
+   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the twelve suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most
    cores idle and the tails overlap (measured 2026-10-01 for the first three:
    277 s, MOVES the longest, against 703 s, the sum of the three per-mode times,
