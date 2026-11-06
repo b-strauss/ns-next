@@ -1236,6 +1236,7 @@ mod tests {
                 .collect(),
             tainted_before: tainted_before_each(&code),
             fallback_taken: vec![false; code.instructions().len()],
+            sites: vec![None; code.instructions().len()],
         }
     }
 

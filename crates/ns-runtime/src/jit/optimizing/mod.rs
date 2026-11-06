@@ -104,6 +104,7 @@ pub(crate) fn test_snapshot_with_arguments(
             .collect(),
         tainted_before: snapshot::tainted_before_each(&code),
         fallback_taken: vec![false; code.instructions().len()],
+        sites: vec![None; code.instructions().len()],
     }
 }
 
