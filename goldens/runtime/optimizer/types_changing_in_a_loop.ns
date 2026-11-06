@@ -1,0 +1,69 @@
+/// One addition fed SmallIntegers, then Floats, then LargeIntegers, then
+/// all three in turn: `sumOf:` adds the elements of an Array in a loop,
+/// and is run 1000 times on each kind of Array before the three take
+/// turns. The optimized copy compiled from the SmallInteger phase never
+/// saw the addition's fallback run, so it speculates on SmallIntegers and
+/// traps at the first Float; its second trap makes it not entrant, and
+/// the copy compiled afterwards adds every kind. Each Array has 200
+/// elements: the SmallIntegers 1 to 200 sum to 20100, the Floats
+/// 1.5 to 200.5 to 20200.0, and the LargeIntegers 2^60 + 1 to 2^60 + 200
+/// to 200 * 2^60 + 20100 = 230584300921369415300. A phase prints the sum
+/// of its sums: 1000 or, taking turns, 200 of them.
+class TypesChangingInALoop = Object new () (
+  sumOf: values = (
+    |
+      total ::= 0.
+      index ::= 1.
+    |
+    [index <= values size] whileTrue: [
+      total:: total + (values at: index).
+      index:: index + 1.
+    ].
+    ^total.
+  )
+
+  sumOf: values times: count = (
+    |
+      sum ::= 0.
+    |
+    1 to: count do: [:round | sum:: sum + (self sumOf: values)].
+    ^sum.
+  )
+
+  arrayOf: block = (
+    |
+      values = Array new: 200.
+    |
+    1 to: 200 do: [:index | values at: index put: (block value: index)].
+    ^values.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      small = arrayOf: [:index | index].
+      floats = arrayOf: [:index | index + 0.5].
+      large = arrayOf: [:index | 1152921504606846976 + index].
+      sums = {0. 0. 0}.
+    |
+    transcript
+        show: (self sumOf: small times: 1000) printString;
+        newLine.
+    transcript
+        show: (self sumOf: floats times: 1000) printString;
+        newLine.
+    transcript
+        show: (self sumOf: large times: 1000) printString;
+        newLine.
+    1 to: 200 do: [:round |
+      sums at: 1 put: (sums at: 1) + (self sumOf: small).
+      sums at: 2 put: (sums at: 2) + (self sumOf: floats).
+      sums at: 3 put: (sums at: 3) + (self sumOf: large).
+    ].
+    sums do: [:each |
+      transcript
+          show: each printString;
+          newLine.
+    ].
+  )
+)

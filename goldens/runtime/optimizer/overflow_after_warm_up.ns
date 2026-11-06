@@ -1,0 +1,57 @@
+/// SmallInteger arithmetic that overflows only after its body was
+/// optimized: `powersUpTo:` doubles a power and adds it to a sum, and
+/// runs 2000 times up to 2^40 -- whose sum, 2^41 - 2, stays a
+/// SmallInteger -- before it runs up to 2^70. The copy compiled from the
+/// warm-up never saw the multiplication's or the addition's fallback run,
+/// so it speculates that neither overflows and traps at the 60th turn,
+/// whose power 2^60 is the first LargeInteger; the second run past it
+/// makes the copy not entrant, and the copy compiled afterwards runs the
+/// LargeIntegers too. The sum of the powers 2^1 to 2^n is 2^(n + 1) - 2:
+/// 2199023255550 for n = 40, 2361183241434822606846 for n = 70. The
+/// lines print 2000 sums up to 2^40, one up to 2^70, 2000 up to 2^70 and,
+/// back on SmallIntegers, 2000 up to 2^40 again.
+class OverflowAfterWarmUp = Object new () (
+  powersUpTo: count = (
+    |
+      power ::= 1.
+      sum ::= 0.
+      index ::= 0.
+    |
+    [index < count] whileTrue: [
+      power:: power * 2.
+      sum:: sum + power.
+      index:: index + 1.
+    ].
+    ^sum.
+  )
+
+  powersUpTo: count times: rounds = (
+    |
+      total ::= 0.
+      round ::= 0.
+    |
+    [round < rounds] whileTrue: [
+      total:: total + (self powersUpTo: count).
+      round:: round + 1.
+    ].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self powersUpTo: 40 times: 2000) printString;
+        newLine.
+    transcript
+        show: (self powersUpTo: 70) printString;
+        newLine.
+    transcript
+        show: (self powersUpTo: 70 times: 2000) printString;
+        newLine.
+    transcript
+        show: (self powersUpTo: 40 times: 2000) printString;
+        newLine.
+  )
+)

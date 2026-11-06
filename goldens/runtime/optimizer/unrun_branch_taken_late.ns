@@ -1,0 +1,73 @@
+/// A branch first taken after its body was optimized: `score:` sums an
+/// Array's elements, sending `penalize:` for each above 100, which
+/// answers a thousand times the element and counts the call. The first
+/// 1000 passes run over 1 to 100, so the branch is never taken and the
+/// copy compiled from them never saw `penalize:` sent: it speculates that
+/// the branch stays untaken and traps when the next 2000 passes find 150
+/// at position 50. The second trap makes the copy not entrant, and the
+/// copy compiled afterwards sends `penalize:`. The last 500 passes run
+/// over 1 to 100 again. A pass over 1 to 100 scores 5050, one with 150 in
+/// place of 50 scores 5050 - 50 + 150000 = 155000; the lines print each
+/// phase's sum of scores and, after the second, the calls of
+/// `penalize:`.
+class UnrunBranchTakenLate = Object new (
+  |
+    penalties ::= 0.
+  |
+) (
+  penalize: value = (
+    penalties:: penalties + 1.
+    ^value * 1000.
+  )
+
+  score: values = (
+    |
+      total ::= 0.
+      index ::= 1.
+    |
+    [index <= values size] whileTrue: [
+      total:: total
+          + ((values at: index) > 100 ifTrue: [
+            self penalize: (values at: index).
+          ] ifFalse: [
+            values at: index.
+          ]).
+      index:: index + 1.
+    ].
+    ^total.
+  )
+
+  score: values times: count = (
+    |
+      sum ::= 0.
+      round ::= 0.
+    |
+    [round < count] whileTrue: [
+      sum:: sum + (self score: values).
+      round:: round + 1.
+    ].
+    ^sum.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      values = Array new: 100.
+    |
+    1 to: 100 do: [:index | values at: index put: index].
+    transcript
+        show: (self score: values times: 1000) printString;
+        newLine.
+    values at: 50 put: 150.
+    transcript
+        show: (self score: values times: 2000) printString;
+        newLine.
+    transcript
+        show: penalties printString;
+        newLine.
+    values at: 50 put: 50.
+    transcript
+        show: (self score: values times: 500) printString;
+        newLine.
+  )
+)

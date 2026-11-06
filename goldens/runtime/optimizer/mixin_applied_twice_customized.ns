@@ -1,0 +1,83 @@
+/// One mixin applied twice in one chain, its hot methods run at both of
+/// its levels on one receiver, each level reading its own private slots:
+/// `Twice` is `Base new <: Marker step: 1 <: Middle <: Marker step: 10`,
+/// so the upper Marker level's `step` is 10 and the lower one's 1
+/// (newspeak-spec.pdf 6.2: each application is its own level, with its
+/// own subobject), and each level's lazy `doubled` twice its `step`
+/// (6.3.3). A private member is reached lexically, so each level reads
+/// its own (5.9). The upper level's `accumulate:` adds its `step` and
+/// its `doubled` once a turn and then sends `super accumulate:`, which
+/// reaches Middle's, whose `super accumulate:` reaches the lower level's:
+/// one body, two levels, so two optimized copies of `accumulate:` and two
+/// of the lazy getter, each keyed on the level it is entered at, the
+/// lower one reached through a super send. Base's answers 0. A run of
+/// 1000 turns answers (10 + 20) * 1000 + (1 + 2) * 1000 = 33000 at the
+/// top and 3000 from Middle's `lower:`, which runs only the lower
+/// level's; the lines sum 300 such runs each, then run both once with 3
+/// turns.
+class MixinAppliedTwiceCustomized = Object new () (
+  class Base = Object new () (
+    public accumulate: count = (
+      ^0.
+    )
+  )
+
+  class Marker step: amount = Object new (
+    |
+      private step = amount.
+    |
+  ) (
+    lazy private doubled = step * 2.
+
+    public accumulate: count = (
+      |
+        total ::= 0.
+        index ::= 0.
+      |
+      [index < count] whileTrue: [
+        total:: total + step + doubled.
+        index:: index + 1.
+      ].
+      ^total + (super accumulate: count).
+    )
+  )
+
+  class Middle = Object new () (
+    public accumulate: count = (
+      ^super accumulate: count.
+    )
+
+    public lower: count = (
+      ^super accumulate: count.
+    )
+  )
+
+  class Twice = Base new <: Marker step: 1 <: Middle <: Marker step: 10 () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      twice = Twice new.
+      upper ::= 0.
+      lower ::= 0.
+      round ::= 0.
+    |
+    [round < 300] whileTrue: [
+      upper:: upper + (twice accumulate: 1000).
+      lower:: lower + (twice lower: 1000).
+      round:: round + 1.
+    ].
+    transcript
+        show: upper printString;
+        newLine.
+    transcript
+        show: lower printString;
+        newLine.
+    transcript
+        show: (twice accumulate: 3) printString;
+        newLine.
+    transcript
+        show: (twice lower: 3) printString;
+        newLine.
+  )
+)

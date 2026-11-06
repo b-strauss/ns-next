@@ -1,0 +1,109 @@
+/// MirrorBuilder edits that add a slot, each installed from a callee of a
+/// hot optimized method in the middle of its loop, which then reads its
+/// receiver's slots. The install is atomic and migrates every instance,
+/// which keeps its slots' values by name and answers nil for a slot the
+/// edit added (docs/design/liveness-and-reflection.md, "A MirrorBuilder
+/// and an atomic install"); it frees the optimized copies keyed on the
+/// applications it rebuilds, and the frame below goes on in baseline
+/// code, whose sends after the install find the new layout.
+///
+/// `sweep:`, `Base`'s, sends `installAt:` every turn, then adds `Base`'s
+/// private slots, 3 and 4; it runs on a `Subject`, whose header the
+/// first edit changes to add the public slot `added` before `own`. The
+/// sweep that installs it reads 3 and 4 to its end: 2000 turns answer
+/// 14000 across the install and after it. The instance made before the
+/// install answers nil for `added`, one made after it 7.
+///
+/// `sweepOwn:`, `Subject`'s, reads `Subject`'s own private slot `own`,
+/// 5, every turn: 2000 turns answer 10000. The second edit adds the slot
+/// `more` in front of the others, so that `own` moves again, and the
+/// running sweep reads 5 in every turn after the install as before it.
+/// The old instance answers nil for `more`, and a new instance's sweep
+/// of 3 turns answers 15.
+class AnEditWhileAnOptimizedFrameIsBelow = Object new (
+  |
+    pending ::= nil.
+    installRound ::= 0.
+  |
+) (
+  class Base = Object new (
+    |
+      private first = 3.
+      private second = 4.
+    |
+  ) (
+    public sweep: rounds = (
+      |
+        total ::= 0.
+        index ::= 1.
+      |
+      [index <= rounds] whileTrue: [
+        installAt: index.
+        total:: total + first + second.
+        index:: index + 1.
+      ].
+      ^total.
+    )
+  )
+
+  class Subject = Base new (
+    |
+      private own = 5.
+    |
+  ) (
+    public sweepOwn: rounds = (
+      |
+        total ::= 0.
+        index ::= 1.
+      |
+      [index <= rounds] whileTrue: [
+        installAt: index.
+        total:: total + own.
+        index:: index + 1.
+      ].
+      ^total.
+    )
+  )
+
+  installAt: round = (
+    round = installRound ifTrue: [
+      pending install.
+      installRound:: 0.
+    ].
+  )
+
+  show: value on: transcript = (
+    transcript
+        show: value printString;
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Subject new.
+      sum ::= 0.
+    |
+    1 to: 30 do: [:round | sum:: sum + (instance sweep: 2000)].
+    show: sum on: transcript.
+    pending:: (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    pending header source: 'class Subject = Base new (| public added ::= 7. private own = 5. |)'.
+    installRound:: 1000.
+    show: (instance sweep: 2000) on: transcript.
+    show: (instance sweep: 2000) on: transcript.
+    show: instance added on: transcript.
+    show: Subject new added on: transcript.
+    sum:: 0.
+    1 to: 30 do: [:round | sum:: sum + (instance sweepOwn: 2000)].
+    show: sum on: transcript.
+    pending:: (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    pending
+        header source: 'class Subject = Base new (| public more ::= 9. public added ::= 7. private own = 5. |)'.
+    installRound:: 1000.
+    show: (instance sweepOwn: 2000) on: transcript.
+    show: (instance sweepOwn: 2000) on: transcript.
+    show: instance more on: transcript.
+    show: (Subject new sweepOwn: 3) on: transcript.
+  )
+)

@@ -1,0 +1,86 @@
+/// A superclass's hot method reached by `super` sends from two
+/// subclasses and by a plain send to an instance of its own class: one
+/// body entered at one level for three receiver applications, so three
+/// optimized copies, the two that `super` sends reach entered through the
+/// body's dispatching entry. `Gauge`'s `measure:` adds its private slot
+/// `unit`, 3, and `self scale` once a turn; `scale` is 0 for a `Gauge`,
+/// 10 for a `Plus` and 100 for a `Times` (newspeak-spec.pdf 5.10: the
+/// `super` send runs `Gauge`'s method with the receiver unchanged, so
+/// its `self scale` is the subclass's). `Plus`'s `measure:` adds its own
+/// private `offset`, 1, to what `super measure:` answers, `Times`'s
+/// doubles it. A run of 1000 turns answers 3000 for the `Gauge`,
+/// 13 * 1000 + 1 = 13001 for the `Plus` and 103 * 1000 * 2 = 206000 for
+/// the `Times`; the lines sum 300 runs of each, then run each once with
+/// 2 turns.
+class SuperSendCustomized = Object new () (
+  class Gauge = Object new (
+    |
+      private unit = 3.
+    |
+  ) (
+    public measure: count = (
+      |
+        total ::= 0.
+        index ::= 0.
+      |
+      [index < count] whileTrue: [
+        total:: total + unit + self scale.
+        index:: index + 1.
+      ].
+      ^total.
+    )
+
+    public scale = (
+      ^0.
+    )
+  )
+
+  class Plus = Gauge new (
+    |
+      private offset = 1.
+    |
+  ) (
+    public measure: count = (
+      ^(super measure: count) + offset.
+    )
+
+    public scale = (
+      ^10.
+    )
+  )
+
+  class Times = Gauge new () (
+    public measure: count = (
+      ^(super measure: count) * 2.
+    )
+
+    public scale = (
+      ^100.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      gauges = {Gauge new. Plus new. Times new}.
+      sums = {0. 0. 0}.
+      round ::= 0.
+    |
+    [round < 300] whileTrue: [
+      1 to: 3 do: [:index |
+        sums at: index put: (sums at: index) + ((gauges at: index) measure: 1000).
+      ].
+      round:: round + 1.
+    ].
+    sums do: [:each |
+      transcript
+          show: each printString;
+          newLine.
+    ].
+    gauges do: [:each |
+      transcript
+          show: (each measure: 2) printString;
+          newLine.
+    ].
+  )
+)
