@@ -42,7 +42,11 @@ stage, speculation**: customization per (body, receiver application),
 guards that trap by default, the feedback's groundwork without
 counting, the rules against deoptimization loops with their version
 cap, the invalidation per application and `NS_NEXT_STRESS_INVALIDATE`
-("Planned: the optimizing JIT", "Stages"), which gets its plan next.
+("Planned: the optimizing JIT", "Stages"); its three open questions
+were decided with the user on 2026-11-06 -- method bodies customized,
+block bodies not; send sites keep their cells; an abandonment raises
+the version, and past the last one the pair stays in baseline code --
+and it gets its plan next.
 Beside it stand what the first stage left (the items under step 9) and
 what the baseline's stages left to the steps after them (the items
 under step 8).

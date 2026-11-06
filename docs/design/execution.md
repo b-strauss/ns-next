@@ -11485,7 +11485,35 @@ polymorphic entry names each application's code, the global cache the
 megamorphic site's. The interpreter and the leaves enter through an
 unverified entry that compares the dispatch id and falls back to the
 body's baseline code. A table maps (`CodeId`, application) to code;
-copies exist only for hot pairs.
+copies exist only for hot pairs. The body's budget stays one per body:
+its run-out compiles a copy for the triggering frame's receiver, the
+budget is armed again, and a later run-out by a receiver of an
+application without a copy compiles that one, as Strongtalk's counter
+per method, reset after each recompile, compiles for the receiver that
+overflows it (`recompiler/recompile.cpp:180-198`).
+
+**A block body is not customized** (decided with the user on
+2026-11-06): it has one optimized copy, whose slot accesses keep their
+guards, since a block's closures come from homes of any application and
+one machine entry row per code id names one copy. A block a customized
+home creates is compiled with its home from stage 3 on ("blocks with
+their home", "Stages" below), customized to that home's copy as
+Strongtalk customizes a block to the version of its home method
+(`compiler/compileTimeClosure.hpp:27-36`); a block created by baseline
+code has no home that could.
+
+**No frame is converted in stage 2.** Every event that invalidates -- an
+install (`installEdit:`), the bulk forward (`forwardIdentityTo:`), both
+mirror rows machine code exits for (`MachineCall::Exit`), and a full
+collection, which runs at a safepoint -- happens after an exit, and after
+an exit every frame goes on in its baseline code ("The two tiers'
+entries"). Marking code therefore makes it not entrant -- its cells,
+machine entry rows and push entry pointed at baseline code -- and frees
+it at the next safepoint; a marked frame below the top that is converted
+when control returns into it exists from stage 3 on, when one frame
+stands for several activations. A customized slot access needs no guard
+for the same reason: the receiver was verified at the entry, and any
+forward of it ends the frame's optimized code.
 
 ### Speculation and its failure
 
@@ -11508,7 +11536,25 @@ copies exist only for hot pairs.
   version; the wait before the next grows as the budget times 4 to the
   version, Strongtalk's (`compiler/compiler.cpp:712-718`), and past the
   last version the code is compiled with no trap at all, which can never
-  loop. Collections halve the counts. The limits are measured.
+  loop. Collections halve the counts. The limits are measured, starting
+  from Strongtalk's 5 traps and `MaxVersions` of 3
+  (`recompiler/recompile.hpp:121`).
+- **An abandonment is a version too** (decided with the user on
+  2026-11-06): optimized code abandoned for its exits -- the templates'
+  exits, not traps -- raises its pair's version and waits as a trap's
+  recompile does, replacing stage 1's doubling, and a pair abandoned past
+  its last version stays in baseline code for good, as HotSpot stays in
+  the interpreter past `PerMethodRecompilationCutoff`
+  (`runtime/globals.hpp:1356`) and Strongtalk refuses at "max. version
+  reached" (`recompiler/recompiler.cpp:188`). Otherwise the decay at
+  every collection, which halves the abandonments, would hold the
+  back-off of code with no trap at about twice the budget and recompile
+  it without end.
+- **Send sites do not speculate in stage 2** (decided with the user on
+  2026-11-06): a send goes through its cell as baseline code's does,
+  and a monomorphic cell already compares its guard inline. A type-case
+  is built with inlining in stage 3, where each of its arms inlines its
+  callee; a type-case of calls built before would be rebuilt there.
 
 ### Inlining
 
@@ -11677,9 +11723,11 @@ the next:
    measured what register allocation alone moves ("What the optimizing
    tier's foundation moved", against "What a register cache would
    move").
-2. **Speculation**: customization, guards and traps, the feedback's
-   groundwork without counting, the rules against deoptimization loops,
-   the invalidation per application, `NS_NEXT_STRESS_INVALIDATE`.
+2. **Speculation**: customization of method bodies, guards and traps at
+   arithmetic, conditionals and sites never executed, the feedback's
+   groundwork without counting, the rules against deoptimization loops
+   with abandonment as a version, the invalidation per application,
+   `NS_NEXT_STRESS_INVALIDATE`; sends keep their cells.
 3. **Inlining**: the plan, the walk up the stack, blocks with their home,
    type-cases in the order the types first appeared.
 4. **Inlined frame objects** and the non-local return into an inlined
