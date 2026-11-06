@@ -1125,7 +1125,11 @@ ns_runtime::for_each_lowering! {
         interpreter.set_deopt_stress(true);
         assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
         let statistics = interpreter.jit_statistics();
-        if the_zone_stress_mode_frees_optimized_callees_unrun() {
+        // Under the zone stress mode the reference lowering's bodies spend
+        // no budget: each is compiled afresh at its push, which spends
+        // nothing, and exits at its first send, uncached, before it
+        // spends at a back jump (`spends_no_budget_in_a_loop`).
+        if lowering == Lowering::Reference && the_zone_stress_mode_is_on() {
             return;
         }
         assert!(
@@ -1148,9 +1152,6 @@ fn the_deopt_stress_s_forced_exits_abandon_nothing() {
     interpreter.set_deopt_stress(true);
     assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
     let statistics = interpreter.jit_statistics();
-    if the_zone_stress_mode_frees_optimized_callees_unrun() {
-        return;
-    }
     assert!(
         statistics.forced_exits > 100,
         "{} forced exits of optimized code",
@@ -1211,7 +1212,7 @@ fn the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation() {
     let turn = (0..300).sum::<i64>() + 3 * 300;
     assert_eq!(run(&mut interpreter, &class), 100 * turn);
     let statistics = interpreter.jit_statistics();
-    if the_zone_stress_mode_frees_optimized_callees_unrun() {
+    if the_zone_stress_mode_abandons_a_caller_of_churned_callees() {
         return;
     }
     assert!(statistics.forced_exits > 0, "no forced exit");
@@ -1649,20 +1650,15 @@ fn the_zone_stress_mode_is_on() -> bool {
 }
 
 /// Whether the environment turns the zone stress mode on, under which a
-/// callee's optimized code is freed before any frame enters it: the
-/// mode holds the safepoint request, so the callee's request is served
-/// while the callee itself still runs its baseline code -- at its first
-/// send, whose push the held request refuses, or its loop's first poll
-/// -- which the install leaves it in, and its caller's loop polls out
-/// at its back edge before the next call, where the compaction frees
-/// every body no activation runs, the callee's optimized code with its
-/// baseline body; the compaction at the installing safepoint, which
-/// spares the code (`JitState::optimized_at_this_safepoint`), is not the
-/// one that frees it. Measured over `SUM_OF_SQUARES_BY_SENDS`: 100,001 bodies
-/// optimized and not one optimized exit, and over `LONG_OPTIMIZED_LOOP`
-/// no forced exit (`docs/OPEN-WORK.md`, "The zone stress mode frees a
-/// callee's optimized code before it runs").
-fn the_zone_stress_mode_frees_optimized_callees_unrun() -> bool {
+/// caller that sends a callee at every turn of a long loop is abandoned
+/// before its optimized code runs: the mode frees the callee, which no
+/// activation runs, at every poll of the caller's loop, so that every
+/// send of it misses and its push, at the request the mode holds, is
+/// refused -- an exit of the caller's baseline code, which spends the
+/// caller's `EXIT_BUDGET` within some twenty turns and abandons it,
+/// optimized code and all. Measured over `LONG_OPTIMIZED_LOOP`: 192
+/// pushes refused, two bodies abandoned, no optimized exit.
+fn the_zone_stress_mode_abandons_a_caller_of_churned_callees() -> bool {
     the_zone_stress_mode_is_on()
 }
 

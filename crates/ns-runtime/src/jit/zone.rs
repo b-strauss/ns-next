@@ -291,6 +291,18 @@ impl JitState {
             .collect()
     }
 
+    /// Every live body that has optimized code here: what the zone stress
+    /// mode's sparing compaction keeps (`compact_code_zone_for_stress`).
+    #[cfg(debug_assertions)]
+    fn codes_with_optimized_code(&self) -> Vec<std::rc::Rc<CompiledCode>> {
+        self.bodies
+            .iter()
+            .filter(|body| !body.free)
+            .filter_map(|body| body.code.upgrade())
+            .filter(|code| self.optimized(code).is_some())
+            .collect()
+    }
+
     /// The bodies whose machine code a compaction freed, those `named`
     /// said were what their slots named before it and that are freed now,
     /// which still live: a copy freed before, whose body may have been
@@ -1076,19 +1088,22 @@ impl Mutator<'_> {
     }
 
     /// The compaction the zone stress mode makes (`NS_NEXT_STRESS_ZONE`):
-    /// every body no activation runs freed -- but a body whose optimized
-    /// code this safepoint installed, which no activation can run yet:
-    /// freed here, optimized code no frame was ever in would be all the
-    /// mode saw of it, never its cells, its machine entry row and its
-    /// budget word remapped under code that runs.
+    /// every body no activation runs freed -- but, when
+    /// `spare_optimized`, every body that has optimized code, which the
+    /// compaction slides and remaps with the rest. The mode alternates
+    /// the two: freed at every compaction, a callee's optimized code,
+    /// installed while the callee still ran its baseline code, would be
+    /// freed at its caller's next poll, before any call entered it, and
+    /// never run at an address a compaction gave it; spared at every
+    /// other one, it is moved, then run where it lies now, then freed and
+    /// compiled again.
     #[cfg(debug_assertions)]
-    pub(crate) fn compact_code_zone_for_stress(&mut self) {
-        let spared = self
-            .jit
-            .optimized_at_this_safepoint
-            .iter()
-            .filter_map(std::rc::Weak::upgrade)
-            .collect();
+    pub(crate) fn compact_code_zone_for_stress(&mut self, spare_optimized: bool) {
+        let spared = if spare_optimized {
+            self.jit.codes_with_optimized_code()
+        } else {
+            Vec::new()
+        };
         self.compact_code_zone_freeing(Freeing::EveryInactiveBody, spared);
     }
 

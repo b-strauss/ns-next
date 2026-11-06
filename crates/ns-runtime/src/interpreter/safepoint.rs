@@ -121,21 +121,19 @@ impl Interpreter {
                 stressed = true;
             }
             // The zone stress mode's compaction, which frees every body no
-            // activation runs: it reads the stack, which it leaves as it
-            // finds it.
+            // activation runs -- every other one sparing each body that has
+            // optimized code, which it slides and remaps with the rest:
+            // it reads the stack, which it leaves as it finds it.
             let traced_size = self.world.traced_size();
-            if let Some(due) = self
-                .stress_zone
-                .as_mut()
-                .map(|stress| stress.due(traced_size))
-            {
-                if due {
-                    self.enter(|mutator| mutator.compact_code_zone_for_stress());
+            if let Some(due) = self.stress_zone.as_mut().map(|stress| {
+                let due = stress.due(traced_size);
+                (due, stress.fired % 2 == 0)
+            }) {
+                if let (true, spare_optimized) = due {
+                    self.enter(|mutator| mutator.compact_code_zone_for_stress(spare_optimized));
                 }
                 stressed = true;
             }
-            // Spared by this safepoint's compaction alone.
-            self.enter(|mutator| mutator.jit.optimized_at_this_safepoint.clear());
             // After the other five, which leave the stack as they find it:
             // whatever this rebuilds is what the loop reads back, so the
             // floor it suspends from is the run's and nothing below it.
