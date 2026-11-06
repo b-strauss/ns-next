@@ -213,7 +213,10 @@ fn replay(
         return Err(VerifyError::Unaligned);
     }
     let lives = intervals_knowing(graph, order, Some(&snapshot.tainted_before));
-    let register_count = snapshot.register_count().max(lives.register_count);
+    // Counted once: the count walks every instruction, and every
+    // interrupt point compares each register with it.
+    let named_registers = snapshot.register_count();
+    let register_count = named_registers.max(lives.register_count);
     let survivors = &allocation.allocatable[..allocation.survive_leaf_calls];
     let mut points = allocation.dirty_at.iter().zip(&metadata.points);
     let mut replay = Replay {
@@ -265,7 +268,15 @@ fn replay(
                 }
                 let mut stopped = replay.clone();
                 write_back(&mut stopped, &point.stores, use_position)?;
-                interrupt(&stopped, graph, *block, point.kind, described, snapshot)?;
+                interrupt(
+                    &stopped,
+                    graph,
+                    *block,
+                    point.kind,
+                    described,
+                    snapshot,
+                    named_registers,
+                )?;
                 for (register, value) in reads {
                     let register = usize::from(*register);
                     if stopped.interpreter[register] != Some(*value) || !stopped.in_sync(register) {
@@ -312,7 +323,15 @@ fn replay(
                 }
                 let mut stopped = replay.clone();
                 write_back(&mut stopped, &point.stores, use_position)?;
-                interrupt(&stopped, graph, *block, point.kind, described, snapshot)?;
+                interrupt(
+                    &stopped,
+                    graph,
+                    *block,
+                    point.kind,
+                    described,
+                    snapshot,
+                    named_registers,
+                )?;
             }
             if leaf_calls.binary_search(&use_position).is_ok() {
                 let clobbered: Vec<(Spot, ValueId)> = replay
@@ -393,7 +412,15 @@ fn replay(
             }
             let mut stopped = replay.clone();
             write_back(&mut stopped, &point.stores, end_use)?;
-            interrupt(&stopped, graph, *block, point.kind, described, snapshot)?;
+            interrupt(
+                &stopped,
+                graph,
+                *block,
+                point.kind,
+                described,
+                snapshot,
+                named_registers,
+            )?;
         }
         if graph.end_trap(*block).is_some() {
             let Some((point, described)) = points.next() else {
@@ -404,7 +431,15 @@ fn replay(
             }
             let mut stopped = replay.clone();
             write_back(&mut stopped, &point.stores, end_use)?;
-            interrupt(&stopped, graph, *block, point.kind, described, snapshot)?;
+            interrupt(
+                &stopped,
+                graph,
+                *block,
+                point.kind,
+                described,
+                snapshot,
+                named_registers,
+            )?;
         }
         apply(&mut replay, allocation, positions.end_definition(*block))?;
         for successor in graph.block(*block).end.successors() {
@@ -509,7 +544,8 @@ fn write_back(
 
 /// Checks the frame at an interrupt point, after its write-back: every
 /// register the leftover analysis does not taint holds the interpreter's
-/// value in its frame word, and the metadata says it is there.
+/// value in its frame word, and the metadata says it is there, for each
+/// of the `named_registers` the body names (`Snapshot::register_count`).
 fn interrupt(
     stopped: &Replay,
     graph: &Graph,
@@ -517,6 +553,7 @@ fn interrupt(
     kind: PointKind,
     described: &InterruptPoint,
     snapshot: &Snapshot,
+    named_registers: usize,
 ) -> Result<(), VerifyError> {
     let (program_counter, resumes) = point_of(graph, block, kind);
     if described.program_counter != program_counter || described.resumes != resumes {
@@ -538,7 +575,7 @@ fn interrupt(
                 program_counter,
             });
         }
-        if register < snapshot.register_count()
+        if register < named_registers
             && described_registers.next() != Some(&(number, Location::FrameWord))
         {
             return Err(VerifyError::MetadataDisagrees { program_counter });
