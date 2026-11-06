@@ -126,6 +126,18 @@ pub(crate) enum Node {
         right: ValueId,
         fallback: BlockId,
     },
+    /// A customized copy's read of the receiver's field at
+    /// `absolute_index` (`LoadOwnSlot`, `ReturnSlotIfFilled`): the
+    /// `own_index` offset by the entered application's own slot base,
+    /// which the copy's key fixes. It checks no guard: the receiver was
+    /// verified at the copy's entry, and whatever could replace it -- a
+    /// forward, an install -- runs after an exit, past which the frame goes
+    /// on in baseline code (`docs/design/execution.md`, "Customization").
+    OwnSlotLoad {
+        value: ValueId,
+        receiver: ValueId,
+        absolute_index: u32,
+    },
     /// Every other instruction, emitted by the baseline's template, its
     /// result in its frame word. Before it, every register binding not yet
     /// stored -- each `Copy`, fast path and phi whose value its register's
@@ -162,6 +174,13 @@ pub(crate) enum End {
     Return {
         value: ValueId,
     },
+    /// A customized copy's `ReturnSlotIfFilled`: returns `value`, the
+    /// slot it read, unless it is `nil`, a lazy slot not yet computed
+    /// (§6.3.3), and goes on at `next`, the slot's initializer, if it is.
+    ReturnUnlessNil {
+        value: ValueId,
+        next: BlockId,
+    },
     /// The block ends in a frame node that does not fall through: a
     /// non-local return, a signal, a load that always raises.
     Frame,
@@ -180,7 +199,8 @@ impl Node {
             Node::FrameRead { value, .. }
             | Node::Constant { value, .. }
             | Node::Receiver { value }
-            | Node::IntegerBinary { value, .. } => Some(*value),
+            | Node::IntegerBinary { value, .. }
+            | Node::OwnSlotLoad { value, .. } => Some(*value),
             Node::Copy { .. } | Node::Frame { .. } => None,
         }
     }
@@ -196,6 +216,7 @@ impl Node {
             | Node::Receiver { .. }
             | Node::Copy { .. }
             | Node::IntegerBinary { .. }
+            | Node::OwnSlotLoad { .. }
             | Node::Frame { .. } => false,
         }
     }
@@ -205,6 +226,7 @@ impl Node {
         match self {
             Node::FrameRead { .. } | Node::Constant { .. } | Node::Receiver { .. } => Vec::new(),
             Node::Copy { source, .. } => vec![*source],
+            Node::OwnSlotLoad { receiver, .. } => vec![*receiver],
             Node::IntegerBinary { left, right, .. } => vec![*left, *right],
             Node::Frame { reads, .. } => reads.iter().map(|(_, value)| *value).collect(),
         }
@@ -215,7 +237,7 @@ impl End {
     /// The blocks the end leads to, each once.
     pub(crate) fn successors(&self) -> Vec<BlockId> {
         let listed = match self {
-            End::Jump(target) => vec![*target],
+            End::Jump(target) | End::ReturnUnlessNil { next: target, .. } => vec![*target],
             End::Branch {
                 if_true,
                 if_false,
@@ -238,7 +260,7 @@ impl End {
     pub(crate) fn uses(&self) -> Option<ValueId> {
         match self {
             End::Branch { condition, .. } => Some(*condition),
-            End::Return { value } => Some(*value),
+            End::Return { value } | End::ReturnUnlessNil { value, .. } => Some(*value),
             End::Jump(_) | End::Frame | End::FrameJump { .. } => None,
         }
     }

@@ -24,6 +24,11 @@ use super::verify::immediate_dominators;
 /// The input of a loop head's phi whose back edge is not seen yet.
 const UNFILLED: ValueId = ValueId(u32::MAX);
 
+/// The first absolute field index a customized copy does not read as a
+/// simple node: past it a field's displacement from its object might not
+/// fit a load's, and the template, which computes the address, reads it.
+const FIXED_FIELD_LIMIT: u32 = 1 << 24;
+
 /// The graph of `snapshot`'s body. Only the blocks reachable from the
 /// body's first instruction are built: an unreachable block has no
 /// register state to start from -- nothing defines its registers -- and
@@ -80,6 +85,15 @@ enum Kind {
     Return {
         register: u16,
     },
+    /// A customized copy's own-slot read (`Node::OwnSlotLoad`).
+    OwnSlotLoad {
+        destination: u16,
+        absolute_index: u32,
+    },
+    /// A customized copy's `ReturnSlotIfFilled` (`End::ReturnUnlessNil`).
+    ReturnUnlessNil {
+        absolute_index: u32,
+    },
     Jump,
     /// A branch instruction, which goes to its target for one outcome and
     /// to the next instruction for the other two.
@@ -108,9 +122,35 @@ enum Outcome {
 /// instruction, failing, writes nothing and goes there, so the frame at the
 /// fallback send is the one the interpreter has there, and no fast path,
 /// diamond or merge is built for a test the program's numbers fail.
-fn kind_of(instruction: &SnapshotInstruction, program_counter: usize, send_only: bool) -> Kind {
+///
+/// In a customized copy, whose entered application's own slots start at
+/// `own_slot_base`, an own-slot read is a load at a fixed field
+/// (`own_slot_index`); `InitializeSlot` and `InitializeSlotProvisionally`
+/// keep their templates, since an initializer runs once per instance.
+fn kind_of(
+    instruction: &SnapshotInstruction,
+    program_counter: usize,
+    send_only: bool,
+    own_slot_base: Option<u32>,
+) -> Kind {
     match instruction {
         SnapshotInstruction::IntegerBinary { .. } if send_only => Kind::Jump,
+        SnapshotInstruction::LoadOwnSlot {
+            destination,
+            own_index,
+        } => match own_slot_index(own_slot_base, *own_index) {
+            Some(absolute_index) => Kind::OwnSlotLoad {
+                destination: *destination,
+                absolute_index,
+            },
+            None => Kind::Frame,
+        },
+        SnapshotInstruction::ReturnSlotIfFilled { own_index } => {
+            match own_slot_index(own_slot_base, *own_index) {
+                Some(absolute_index) => Kind::ReturnUnlessNil { absolute_index },
+                None => Kind::Frame,
+            }
+        }
         SnapshotInstruction::LoadLiteral {
             destination,
             literal,
@@ -172,6 +212,26 @@ fn kind_of(instruction: &SnapshotInstruction, program_counter: usize, send_only:
         },
         _ => Kind::Frame,
     }
+}
+
+/// The absolute field index of own slot `own_index` in a copy whose
+/// entered application's own slots start at `own_slot_base`, if the copy
+/// reads it as a simple node: with no customization the template finds
+/// the base and checks the guard.
+fn own_slot_index(own_slot_base: Option<u32>, own_index: u32) -> Option<u32> {
+    own_slot_base?
+        .checked_add(own_index)
+        .filter(|index| *index < FIXED_FIELD_LIMIT)
+}
+
+/// Whether `instruction` ends its block though it falls through: a
+/// customized copy's `ReturnSlotIfFilled`, whose block ends in the
+/// slot's return (`End::ReturnUnlessNil`).
+fn ends_block(instruction: &SnapshotInstruction, own_slot_base: Option<u32>) -> bool {
+    matches!(
+        kind_of(instruction, 0, false, own_slot_base),
+        Kind::ReturnUnlessNil { .. }
+    )
 }
 
 /// A set of registers, one bit each.
@@ -312,6 +372,9 @@ impl std::ops::IndexMut<usize> for State {
 
 struct Builder<'snapshot> {
     instructions: &'snapshot [SnapshotInstruction],
+    /// The entered application's own slot base of a customized copy
+    /// (`Snapshot::customization`).
+    own_slot_base: Option<u32>,
     /// Each instruction lowered to a jump to its fallback (`kind_of`).
     send_only: Vec<bool>,
     /// The registers the leftover analysis taints before each instruction
@@ -391,10 +454,14 @@ impl<'snapshot> Builder<'snapshot> {
             })
             .collect();
         let register_count = snapshot.register_count();
-        let shapes = shapes_of(instructions, &send_only);
+        let own_slot_base = snapshot
+            .customization
+            .map(|customization| customization.own_slot_base);
+        let shapes = shapes_of(instructions, &send_only, own_slot_base);
         let block_count = shapes.len();
         let mut builder = Builder {
             instructions,
+            own_slot_base,
             send_only,
             tainted_before: &snapshot.tainted_before,
             reads,
@@ -584,7 +651,12 @@ impl<'snapshot> Builder<'snapshot> {
                     }
                     for index in self.shapes[member].instructions.clone() {
                         if matches!(
-                            kind_of(&self.instructions[index], index, self.send_only[index]),
+                            kind_of(
+                                &self.instructions[index],
+                                index,
+                                self.send_only[index],
+                                self.own_slot_base
+                            ),
                             Kind::Frame
                         ) {
                             facts.frame_node = true;
@@ -883,6 +955,21 @@ impl<'snapshot> Builder<'snapshot> {
         value
     }
 
+    /// The receiver's field at `absolute_index`, read by a new
+    /// `Node::OwnSlotLoad` at the end of `block`.
+    fn own_slot_load(&mut self, block: usize, absolute_index: u32) -> ValueId {
+        let receiver = self.new_value(None);
+        let value = self.new_value(None);
+        let nodes = &mut self.blocks[block].nodes;
+        nodes.push(Node::Receiver { value: receiver });
+        nodes.push(Node::OwnSlotLoad {
+            value,
+            receiver,
+            absolute_index,
+        });
+        value
+    }
+
     fn build_block(&mut self, block: usize) {
         let mut state = if block == 0 {
             State::unbound(self.register_count)
@@ -922,7 +1009,12 @@ impl<'snapshot> Builder<'snapshot> {
         target: Option<BlockId>,
     ) -> Option<End> {
         let instruction = &self.instructions[index];
-        match kind_of(instruction, index, self.send_only[index]) {
+        match kind_of(
+            instruction,
+            index,
+            self.send_only[index],
+            self.own_slot_base,
+        ) {
             Kind::Constant { destination, word } => {
                 let value = self.new_value(None);
                 let nodes = &mut self.blocks[block].nodes;
@@ -981,6 +1073,25 @@ impl<'snapshot> Builder<'snapshot> {
             Kind::Return { register } => {
                 let value = self.read(block, state, register);
                 Some(End::Return { value })
+            }
+            Kind::OwnSlotLoad {
+                destination,
+                absolute_index,
+            } => {
+                let value = self.own_slot_load(block, absolute_index);
+                self.blocks[block].nodes.push(Node::Copy {
+                    destination_register: destination,
+                    source: value,
+                });
+                self.bind(state, destination, value);
+                None
+            }
+            Kind::ReturnUnlessNil { absolute_index } => {
+                let value = self.own_slot_load(block, absolute_index);
+                Some(End::ReturnUnlessNil {
+                    value,
+                    next: next.expect("internal: a lazy slot's getter goes on to its initializer"),
+                })
             }
             Kind::Jump => Some(End::Jump(target.expect("internal: a jump has its target"))),
             Kind::Branch { register, taken } => {
@@ -1044,7 +1155,13 @@ impl<'snapshot> Builder<'snapshot> {
 /// of a frame word placed on its way alone: on the other way the register
 /// may be dead, its word one a callee left, and a mirror send's template
 /// jumps for its failure itself, leaving no room after it on one way only.
-fn shapes_of(instructions: &[SnapshotInstruction], send_only: &[bool]) -> Vec<Shape> {
+/// A customized copy's `ReturnSlotIfFilled` ends its run too
+/// (`ends_block`), its block ending in the slot's return.
+fn shapes_of(
+    instructions: &[SnapshotInstruction],
+    send_only: &[bool],
+    own_slot_base: Option<u32>,
+) -> Vec<Shape> {
     let count = instructions.len();
     let index_of = |target: u32| {
         let target = usize::try_from(target).expect("internal: a jump target fits a usize");
@@ -1060,7 +1177,9 @@ fn shapes_of(instructions: &[SnapshotInstruction], send_only: &[bool]) -> Vec<Sh
         if let Some(target) = target {
             starts[index_of(target)] = true;
         }
-        if (target.is_some() || !falls_through(index)) && index + 1 < count {
+        if (target.is_some() || !falls_through(index) || ends_block(instruction, own_slot_base))
+            && index + 1 < count
+        {
             starts[index + 1] = true;
         }
     }
@@ -1203,12 +1322,14 @@ mod tests {
     };
     use crate::heap::CodeId;
     use crate::interpreter::inline_cache::FeedbackBase;
-    use crate::jit::optimizing::graph::{BlockId, Definition, End, Node};
+    use crate::jit::optimizing::graph::{BlockId, Definition, End, Graph, Node};
     use crate::jit::optimizing::snapshot::{
-        tainted_before_each, BodyFacts, Snapshot, SnapshotInstruction,
+        tainted_before_each, BodyFacts, Customization, Snapshot, SnapshotInstruction,
     };
     use crate::jit::optimizing::verify::verify;
     use crate::jit::optimizing::{corpus_of_bodies, shipped_bodies};
+    use crate::jit::CustomizationKey;
+    use crate::mixin::DispatchId;
     use crate::Symbol;
 
     /// The snapshot of a method of `instructions`, none of which makes a
@@ -1237,6 +1358,7 @@ mod tests {
             tainted_before: tainted_before_each(&code),
             fallback_taken: vec![false; code.instructions().len()],
             sites: vec![None; code.instructions().len()],
+            customization: None,
         }
     }
 
@@ -1977,5 +2099,136 @@ mod tests {
                 .count();
         }
         assert!(mirror_sends > 0, "the core library sends to the mirror");
+    }
+
+    /// The customization of a copy entered at an application whose own
+    /// slots start at field 3.
+    fn customized_at_three() -> Customization {
+        Customization {
+            key: CustomizationKey {
+                receiver: DispatchId::from_bits(7),
+                entered: DispatchId::from_bits(7),
+            },
+            own_slot_base: 3,
+        }
+    }
+
+    fn nodes(graph: &Graph) -> Vec<&Node> {
+        graph.blocks.iter().flat_map(|block| &block.nodes).collect()
+    }
+
+    fn own_slot_read() -> Vec<Instruction> {
+        vec![
+            Instruction::LoadOwnSlot {
+                destination: 1,
+                own_index: 0,
+            },
+            Instruction::Return { register: 1 },
+        ]
+    }
+
+    #[test]
+    fn a_copy_reads_an_own_slot_as_a_simple_node() {
+        let mut snapshot = snapshot_of(own_slot_read());
+        snapshot.customization = Some(customized_at_three());
+        let graph = build(&snapshot);
+        let graph_nodes = nodes(&graph);
+        assert!(graph_nodes.iter().any(|node| matches!(
+            node,
+            Node::OwnSlotLoad {
+                absolute_index: 3,
+                ..
+            }
+        )));
+        assert!(!graph_nodes
+            .iter()
+            .any(|node| matches!(node, Node::Frame { .. })));
+    }
+
+    #[test]
+    fn a_shared_body_keeps_its_own_slot_template() {
+        let graph = build(&snapshot_of(own_slot_read()));
+        let graph_nodes = nodes(&graph);
+        assert!(graph_nodes
+            .iter()
+            .any(|node| matches!(node, Node::Frame { .. })));
+        assert!(!graph_nodes
+            .iter()
+            .any(|node| matches!(node, Node::OwnSlotLoad { .. })));
+    }
+
+    /// A lazy slot's getter: its slot returned once filled, its
+    /// initializer -- here a send -- run and stored otherwise.
+    fn lazy_getter() -> Vec<Instruction> {
+        vec![
+            Instruction::ReturnSlotIfFilled { own_index: 1 },
+            Instruction::LoadSelf { destination: 4 },
+            send(4, 4, 5),
+            Instruction::InitializeSlot {
+                source: 5,
+                own_index: 1,
+            },
+            Instruction::Return { register: 5 },
+        ]
+    }
+
+    #[test]
+    fn a_copy_s_lazy_getter_returns_its_slot_unless_it_is_nil() {
+        let mut snapshot = snapshot_of(lazy_getter());
+        snapshot.customization = Some(customized_at_three());
+        let graph = build(&snapshot);
+        let End::ReturnUnlessNil { value, next } = graph.blocks[0].end else {
+            panic!("the getter's first block returns its slot: {graph:#?}");
+        };
+        assert!(matches!(
+            graph.definition(value),
+            Definition::Node(Node::OwnSlotLoad {
+                absolute_index: 4,
+                ..
+            })
+        ));
+        assert_eq!(graph.block(next).program_counter, 1, "the initializer");
+        // The initializer's store keeps its template.
+        assert!(nodes(&graph).iter().any(|node| matches!(
+            node,
+            Node::Frame {
+                instruction: SnapshotInstruction::InitializeSlot { .. },
+                ..
+            }
+        )));
+        verify(&graph).expect("the graph verifies");
+    }
+
+    #[test]
+    fn a_shared_lazy_getter_keeps_its_template() {
+        let graph = build(&snapshot_of(lazy_getter()));
+        assert!(matches!(
+            graph.blocks[0].nodes.first(),
+            Some(Node::Frame {
+                instruction: SnapshotInstruction::ReturnSlotIfFilled { .. },
+                ..
+            })
+        ));
+    }
+
+    /// Every body of the corpus and of the shipped library, built as a
+    /// copy customized at a slot base, verifies: its lazy getters among
+    /// them, whose first block ends in the slot's return.
+    #[test]
+    fn every_body_s_customized_graph_verifies() {
+        let mut returns = 0;
+        for mut snapshot in corpus_of_bodies().into_iter().chain(shipped_bodies()) {
+            snapshot.customization = Some(customized_at_three());
+            let graph = build(&snapshot);
+            if let Err(error) = verify(&graph) {
+                panic!("{error:?} in {:?}\n{graph:#?}", snapshot.instructions);
+            }
+            returns += graph
+                .blocks
+                .iter()
+                .filter(|block| matches!(block.end, End::ReturnUnlessNil { .. }))
+                .count();
+        }
+        assert!(returns > 0, "the shipped library has lazy slots");
     }
 }

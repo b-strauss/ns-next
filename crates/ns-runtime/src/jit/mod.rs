@@ -4488,9 +4488,6 @@ fn optimize(
     if done {
         return;
     }
-    // What a copy reads of its entered application is the snapshot's
-    // once the copies are customized; until then the request is only
-    // held to its key.
     debug_assert!(
         entered.upgrade().is_none_or(|application| {
             key.is_some_and(|key| key.entered == application.dispatch_ids.instances)
@@ -4523,12 +4520,21 @@ fn optimize(
         },
         None => None,
     };
+    // A copy whose entered application is gone, or whose slot base no
+    // index holds, is compiled as the shared body is: its own-slot
+    // instructions keep their templates, which find the base and check
+    // the guard, and are right for any key.
+    let customization = key.and_then(|key| {
+        let own_slot_base = u32::try_from(entered.upgrade()?.own_slot_base).ok()?;
+        Some(optimizing::snapshot::Customization { key, own_slot_base })
+    });
     let started = std::time::Instant::now();
     let snapshot = optimizing::snapshot::Snapshot::take(
         code,
         &mut mutator.heap,
         &mutator.caches,
         feedback_base,
+        customization,
     );
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
@@ -6948,17 +6954,20 @@ mod tests {
                 panic!("instantiate: an error");
             };
             sent(&mut interpreter, &subject, "runA");
-            let a_class = sent(&mut interpreter, &subject, "aClass");
-            let b_class = sent(&mut interpreter, &subject, "bClass");
-            let check = |interpreter: &mut Interpreter, b_has_a_copy: bool| {
+            let base_class = sent(&mut interpreter, &subject, "aClass");
+            let subclass = sent(&mut interpreter, &subject, "bClass");
+            let check = |interpreter: &mut Interpreter, subclass_has_a_copy: bool| {
                 interpreter.enter(|mutator| {
-                    let a_object = mutator.fetch(&a_class).as_object().expect("a class");
-                    let b_object = mutator.fetch(&b_class).as_object().expect("a class");
-                    let (a_id, b_id) = (
-                        mutator.heap.class_dispatch_ids(a_object).instances,
-                        mutator.heap.class_dispatch_ids(b_object).instances,
+                    let base_object = mutator.fetch(&base_class).as_object().expect("a class");
+                    let subclass_object = mutator.fetch(&subclass).as_object().expect("a class");
+                    let (base_id, subclass_id) = (
+                        mutator.heap.class_dispatch_ids(base_object).instances,
+                        mutator.heap.class_dispatch_ids(subclass_object).instances,
                     );
-                    let application = mutator.heap.class_application(a_object).expect("applied");
+                    let application = mutator
+                        .heap
+                        .class_application(base_object)
+                        .expect("applied");
                     let method = application
                         .mixin
                         .compiled_method(crate::Symbol::intern("total"))
@@ -6984,30 +6993,36 @@ mod tests {
                     let copy = |receiver| {
                         let key = CustomizationKey {
                             receiver,
-                            entered: a_id,
+                            entered: base_id,
                         };
                         jit.copy_of(&code, key).map(|body| address(body.start))
                     };
-                    let a_copy = copy(a_id).expect("A's copy");
-                    assert_eq!(cell_entry(jit, &entry(a_id, 0, Chain::Public)), a_copy);
+                    let base_copy = copy(base_id).expect("A's copy");
+                    assert_eq!(
+                        cell_entry(jit, &entry(base_id, 0, Chain::Public)),
+                        base_copy
+                    );
                     // A `super` cell's guard says nothing of the receiver:
                     // it names the body's dispatching entry, which the
                     // receiver's copy is reached through.
                     assert_eq!(
-                        Some(cell_entry(jit, &entry(a_id, 0, Chain::Super))),
+                        Some(cell_entry(jit, &entry(base_id, 0, Chain::Super))),
                         jit.dispatching_entry_address(&code),
                         "a super cell names the dispatching entry"
                     );
-                    match copy(b_id) {
-                        Some(b_copy) => {
-                            assert!(b_has_a_copy);
-                            assert_ne!(b_copy, a_copy);
-                            assert_eq!(cell_entry(jit, &entry(b_id, 1, Chain::Public)), b_copy);
+                    match copy(subclass_id) {
+                        Some(subclass_copy) => {
+                            assert!(subclass_has_a_copy);
+                            assert_ne!(subclass_copy, base_copy);
+                            assert_eq!(
+                                cell_entry(jit, &entry(subclass_id, 1, Chain::Public)),
+                                subclass_copy
+                            );
                         }
                         None => {
-                            assert!(!b_has_a_copy);
+                            assert!(!subclass_has_a_copy);
                             assert_eq!(
-                                cell_entry(jit, &entry(b_id, 1, Chain::Public)),
+                                cell_entry(jit, &entry(subclass_id, 1, Chain::Public)),
                                 baseline,
                                 "B's baseline code before B's copy exists"
                             );
@@ -7021,6 +7036,153 @@ mod tests {
             check(&mut interpreter, false);
             sent(&mut interpreter, &subject, "runB");
             check(&mut interpreter, true);
+        }
+
+        /// `M`'s private lazy slot `step`, read by `total` in a loop, `M`
+        /// applied twice in `Twice`'s chain, its slot holding 10 at the
+        /// upper level and 1 at the lower one.
+        const ONE_MIXIN_APPLIED_TWICE: &str = indoc::indoc! {"
+            class Subject = Object new () (
+              class Base = Object new () ()
+
+              class M step: value = Object new (
+                |
+                  private seed = value.
+                |
+              ) (
+                lazy private step = seed.
+
+                public total = (
+                  |
+                    sum ::= 0.
+                    index ::= 0.
+                  |
+                  [index < 100] whileTrue: [
+                    sum:: sum + step.
+                    index:: index + 1.
+                  ].
+                  ^sum.
+                )
+              )
+
+              class Middle = Object new () (
+                public lowerTotal = (
+                  ^super total.
+                )
+              )
+
+              class Twice = Base new <: M step: 1 <: Middle <: M step: 10.
+
+              public mixinClass = (
+                ^M.
+              )
+
+              public twiceClass = (
+                ^Twice.
+              )
+
+              public run = (
+                |
+                  twice = Twice new.
+                |
+                ^twice total + twice lowerTotal.
+              )
+            ) : ()
+        "};
+
+        /// A mixin applied twice has a copy of its lazy slot's getter per
+        /// level, each reading its own level's field, and a cell guarded by
+        /// the receiver's id names, at each level, that level's copy: the
+        /// level reaches the entered application the copy's key names.
+        #[test]
+        fn a_receiver_guarded_cell_at_each_level_names_that_level_s_copy() {
+            use crate::interpreter::inline_cache::{CacheEntry, Target};
+            use crate::interpreter::resolve::Chain;
+            use crate::jit::{cell_entry, CustomizationKey};
+
+            let source = ONE_MIXIN_APPLIED_TWICE;
+            let module = ns_syntax::parse(source).expect("parse");
+            let resolved = crate::resolve(
+                module,
+                Rc::from(source),
+                crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+            )
+            .expect("resolve");
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.set_jit_stress(true);
+            interpreter.set_optimize_stress(true);
+            let class = interpreter.load_module(&resolved);
+            let Ok(subject) = interpreter.instantiate(&class, &[]) else {
+                panic!("instantiate: an error");
+            };
+            for _ in 0..3 {
+                let answer = sent(&mut interpreter, &subject, "run");
+                let answer = interpreter.enter(|mutator| mutator.fetch(&answer).as_small_integer());
+                assert_eq!(answer, Some(1100), "each level reads its own slot");
+            }
+            if a_stress_mode_frees_copies() {
+                return;
+            }
+            let mixin_class = sent(&mut interpreter, &subject, "mixinClass");
+            let twice_class = sent(&mut interpreter, &subject, "twiceClass");
+            interpreter.enter(|mutator| {
+                let mixin_object = mutator.fetch(&mixin_class).as_object().expect("a class");
+                let twice_object = mutator.fetch(&twice_class).as_object().expect("a class");
+                let mixin = Rc::clone(
+                    &mutator
+                        .heap
+                        .class_application(mixin_object)
+                        .expect("applied")
+                        .mixin,
+                );
+                let method = mixin
+                    .compiled_method(crate::Symbol::intern("step"))
+                    .expect("the getter")
+                    .clone();
+                let code = Rc::clone(&method.code);
+                let feedback_base = mutator.feedback_base_for(&code);
+                let receiver = mutator.heap.class_dispatch_ids(twice_object).instances;
+                // The levels of `Twice`'s chain that apply `M`, by their
+                // steps from `Twice`, and the id each is entered at.
+                let mut levels = Vec::new();
+                let mut current = Some(twice_object);
+                let mut steps: u16 = 0;
+                while let Some(level) = current {
+                    if let Some(application) = mutator.heap.class_application(level) {
+                        if Rc::ptr_eq(&application.mixin, &mixin) {
+                            levels.push((steps, application.dispatch_ids.instances));
+                        }
+                    }
+                    current = mutator.heap.class_superclass(level);
+                    steps += 1;
+                }
+                assert_eq!(levels.len(), 2, "M is applied twice");
+                let jit = &mutator.jit;
+                let zone = jit.zone.as_ref().expect("a zone");
+                let address =
+                    |start: u32| zone.writer.zone().executable_address(CodeOffset(start)) as u64;
+                let mut copies = Vec::new();
+                for (level, entered) in levels {
+                    let key = CustomizationKey { receiver, entered };
+                    let copy = jit
+                        .copy_of(&code, key)
+                        .map(|body| address(body.start))
+                        .expect("the level's copy");
+                    let entry = CacheEntry {
+                        guard: receiver,
+                        target: Target::Method {
+                            method: Rc::clone(&method),
+                            feedback_base,
+                            level,
+                            chain: Chain::Public,
+                        },
+                    };
+                    assert_eq!(cell_entry(jit, &entry), copy, "level {level}");
+                    copies.push(copy);
+                }
+                assert_ne!(copies[0], copies[1], "a copy per level");
+            });
         }
 
         /// A body that makes a closure, so that its lean code transfers its

@@ -341,7 +341,10 @@ fn replay(
                     value,
                     ..
                 } => replay.interpreter[usize::from(*destination_register)] = Some(*value),
-                Node::Constant { .. } | Node::Receiver { .. } | Node::Frame { .. } => {}
+                Node::Constant { .. }
+                | Node::Receiver { .. }
+                | Node::OwnSlotLoad { .. }
+                | Node::Frame { .. } => {}
             }
             apply(&mut replay, allocation, definition)?;
         }

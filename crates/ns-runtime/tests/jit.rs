@@ -1185,29 +1185,32 @@ ns_runtime::for_each_lowering! {
         if !counts_the_copies() {
             return;
         }
-        let a_class = class_answered(&mut interpreter, &subject, "aClass");
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
         let total = Symbol::intern("total");
         assert_eq!(
-            interpreter.jit_customized_copies(&a_class, MethodSide::Instance, total),
+            interpreter.jit_customized_copies(&base_class, MethodSide::Instance, total),
             2
         );
         assert!(interpreter.jit_statistics().customized_copies >= 2);
     }
 }
 
-/// `M`'s `total` summing `M`'s private slot in a loop, `M` applied twice
-/// in `Twice`'s chain: sent publicly it runs at the upper level, which
-/// reads 10, and sent by `super` from `Middle` at the lower one, which
-/// reads 1 -- one body on one receiver at two levels.
+/// `M`'s `total` summing `M`'s private lazy slot in a loop, `M` applied
+/// twice in `Twice`'s chain: sent publicly it runs at the upper level,
+/// whose slot holds 10, and sent by `super` from `Middle` at the lower
+/// one, whose slot holds 1 -- one body on one receiver at two levels, and
+/// one getter, which reads its level's own field.
 const ONE_MIXIN_APPLIED_TWICE: &str = indoc! {"
     class Subject = Object new () (
       class Base = Object new () ()
 
       class M step: value = Object new (
         |
-          private step = value.
+          private seed = value.
         |
       ) (
+        lazy private step = seed.
+
         public total = (
           |
             sum ::= 0.
@@ -1246,20 +1249,94 @@ ns_runtime::for_each_lowering! {
     /// A mixin applied twice in one chain runs its method's one body on
     /// one receiver at two levels, and each level has a copy of its own:
     /// the key's entered application tells them apart, so that neither
-    /// level runs the copy made for the other.
+    /// level runs the copy made for the other. The lazy slot's getter
+    /// reads its slot at the field its copy's level fixes, so a level that
+    /// ran the other's copy would read the other's slot: the sum of 100
+    /// tens and 100 ones holds at every run only if each runs its own.
     fn a_mixin_applied_twice_has_a_copy_per_level(lowering) {
         let (mut interpreter, class) = load_customizing(ONE_MIXIN_APPLIED_TWICE, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 1100);
-        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 1100);
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 1100);
+        }
         if !counts_the_copies() {
             return;
         }
-        let m_class = class_answered(&mut interpreter, &subject, "mClass");
-        let total = Symbol::intern("total");
+        let mixin_class = class_answered(&mut interpreter, &subject, "mClass");
+        for selector in ["total", "step"] {
+            assert_eq!(
+                interpreter.jit_customized_copies(
+                    &mixin_class,
+                    MethodSide::Instance,
+                    Symbol::intern(selector)
+                ),
+                2,
+                "{selector}: a copy per level"
+            );
+        }
+    }
+}
+
+/// `run` reading `Holder`'s lazy slot a hundred times: its getter, whose
+/// initializer counts its evaluations, computes it at the first read and
+/// answers the slot's value at every later one.
+const A_LAZY_SLOT_READ_IN_A_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      class Holder = Object new (
+        |
+          public evaluations ::= 0.
+        |
+      ) (
+        lazy public cached = count.
+
+        count = (
+          evaluations:: evaluations + 1.
+          ^evaluations * 7.
+        )
+      )
+
+      public holderClass = (
+        ^Holder.
+      )
+
+      public run = (
+        |
+          holder = Holder new.
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + holder cached.
+          index:: index + 1.
+        ].
+        ^sum * 1000 + holder evaluations.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A lazy slot's getter run as a customized copy, which reads the
+    /// slot at a fixed field with no guard, computes the slot once and
+    /// answers its value from then on: a hundred reads of 7, one
+    /// evaluation.
+    fn a_lazy_slot_read_by_a_copy_answers_its_value_once_filled(lowering) {
+        let (mut interpreter, class) = load_customizing(A_LAZY_SLOT_READ_IN_A_LOOP, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 700_001);
+        }
+        if !counts_the_copies() {
+            return;
+        }
+        let holder_class = class_answered(&mut interpreter, &subject, "holderClass");
         assert_eq!(
-            interpreter.jit_customized_copies(&m_class, MethodSide::Instance, total),
-            2
+            interpreter.jit_customized_copies(
+                &holder_class,
+                MethodSide::Instance,
+                Symbol::intern("cached")
+            ),
+            1,
+            "the getter runs as a copy"
         );
     }
 }
@@ -1322,9 +1399,9 @@ ns_runtime::for_each_lowering! {
         if !counts_the_copies() {
             return;
         }
-        let a_class = class_answered(&mut interpreter, &subject, "aClass");
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
         let total = Symbol::intern("total");
-        let blocks = interpreter.jit_block_tiers(&a_class, MethodSide::Instance, total);
+        let blocks = interpreter.jit_block_tiers(&base_class, MethodSide::Instance, total);
         assert_eq!(blocks, vec![(true, 0)], "optimized once, no copies");
         assert!(interpreter.jit_statistics().optimized_bodies >= 1);
     }
@@ -1413,12 +1490,12 @@ ns_runtime::for_each_lowering! {
         if !counts_the_copies() {
             return;
         }
-        let a_class = class_answered(&mut interpreter, &subject, "aClass");
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
         assert_eq!(
-            interpreter.jit_customized_copies(&a_class, MethodSide::Instance, Symbol::intern("sum")),
+            interpreter.jit_customized_copies(&base_class, MethodSide::Instance, Symbol::intern("sum")),
             2
         );
-        let (rows, copies) = dispatching_entries(&mut interpreter, &a_class, "sum");
+        let (rows, copies) = dispatching_entries(&mut interpreter, &base_class, "sum");
         assert_eq!(copies.len(), 2);
         assert_eq!(rows, copies, "a row for each copy");
         // The reference lowering's sends are uncached: no cell names the
@@ -1496,8 +1573,8 @@ ns_runtime::for_each_lowering! {
         if !counts_the_copies() {
             return;
         }
-        let a_class = class_answered(&mut interpreter, &subject, "aClass");
-        let (rows, copies) = dispatching_entries(&mut interpreter, &a_class, "total");
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
+        let (rows, copies) = dispatching_entries(&mut interpreter, &base_class, "total");
         assert!(!copies.is_empty(), "the body has a copy");
         assert_eq!(rows, copies, "a row for each copy");
         // The reference lowering's sends are uncached: no cell names the
@@ -1524,10 +1601,10 @@ ns_runtime::for_each_lowering! {
         }
         interpreter.set_stress_zone(false);
         assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
-        let a_class = class_answered(&mut interpreter, &subject, "aClass");
-        let before = dispatching_entries(&mut interpreter, &a_class, "sum");
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
+        let before = dispatching_entries(&mut interpreter, &base_class, "sum");
         interpreter.compact_jit_zone();
-        let (rows, copies) = dispatching_entries(&mut interpreter, &a_class, "sum");
+        let (rows, copies) = dispatching_entries(&mut interpreter, &base_class, "sum");
         assert_eq!(rows, copies, "the rows name the copies where they lie now");
         assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
         if counts_the_copies() {

@@ -674,6 +674,7 @@ impl Allocator<'_> {
         let mut moves = Vec::new();
         let operands = match node {
             Node::Copy { source, .. } => vec![*source],
+            Node::OwnSlotLoad { receiver, .. } => vec![*receiver],
             Node::IntegerBinary { left, right, .. } => vec![*left, *right],
             Node::FrameRead { .. }
             | Node::Constant { .. }

@@ -105,6 +105,7 @@ pub(crate) fn test_snapshot_with_arguments(
         tainted_before: snapshot::tainted_before_each(&code),
         fallback_taken: vec![false; code.instructions().len()],
         sites: vec![None; code.instructions().len()],
+        customization: None,
     }
 }
 
@@ -188,6 +189,7 @@ fn snapshots_of(modules: &[std::rc::Rc<crate::ResolvedModule>]) -> Vec<snapshot:
                     &mut mutator.heap,
                     &mutator.caches,
                     FeedbackBase::NOT_ASSIGNED,
+                    None,
                 )
             })
             .collect()
@@ -335,7 +337,7 @@ mod tests {
             )
             .expect("the method");
             let base = mutator.caches.known_base(&code).expect("it ran");
-            super::snapshot::Snapshot::take(&code, &mut mutator.heap, &mutator.caches, base)
+            super::snapshot::Snapshot::take(&code, &mut mutator.heap, &mutator.caches, base, None)
         });
         let taken = snapshot
             .fallback_taken

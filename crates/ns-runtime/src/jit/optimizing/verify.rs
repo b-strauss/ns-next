@@ -371,7 +371,9 @@ fn check_end(block: &Block, block_id: BlockId) -> Result<(), VerifyError> {
     let agrees = match &block.end {
         End::Frame => last.is_some_and(stops),
         End::FrameJump { .. } => last.is_some_and(jumps),
-        End::Jump(_) | End::Branch { .. } | End::Return { .. } => !last.is_some_and(stops),
+        End::Jump(_) | End::Branch { .. } | End::Return { .. } | End::ReturnUnlessNil { .. } => {
+            !last.is_some_and(stops)
+        }
     };
     if agrees && !early_stop {
         Ok(())

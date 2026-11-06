@@ -198,7 +198,7 @@ pub(crate) fn named_registers(graph: &Graph) -> usize {
                         note(*written);
                     }
                 }
-                Node::Constant { .. } | Node::Receiver { .. } => {}
+                Node::Constant { .. } | Node::Receiver { .. } | Node::OwnSlotLoad { .. } => {}
             }
         }
     }
@@ -239,7 +239,7 @@ pub(crate) fn bind(bindings: &mut [Binding], node: &Node) {
             };
         }
         Node::Frame { .. } => bindings.fill(Binding::FRAME_WORD),
-        Node::Constant { .. } | Node::Receiver { .. } => {}
+        Node::Constant { .. } | Node::Receiver { .. } | Node::OwnSlotLoad { .. } => {}
     }
 }
 
@@ -514,7 +514,10 @@ pub(crate) fn intervals_knowing(
                     frames.push(position);
                     write_back(&bindings, position, reads);
                 }
-                Node::Copy { source, .. } => reads.push((position, *source, Need::Register)),
+                Node::Copy { source, .. }
+                | Node::OwnSlotLoad {
+                    receiver: source, ..
+                } => reads.push((position, *source, Need::Register)),
                 Node::IntegerBinary { left, right, .. } => {
                     reads.push((position, *left, Need::Register));
                     reads.push((position, *right, Need::Register));

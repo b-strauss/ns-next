@@ -21,6 +21,7 @@ use crate::bytecode::{
 };
 use crate::heap::{CodeId, Heap};
 use crate::interpreter::inline_cache::{FeedbackBase, InlineCaches};
+use crate::jit::CustomizationKey;
 use crate::Symbol;
 
 /// What a body says of itself apart from its instructions: the numbers
@@ -921,6 +922,16 @@ pub(crate) struct SiteFacts {
     pub(crate) trapped: bool,
 }
 
+/// What a customized copy is compiled for (`docs/design/execution.md`,
+/// "Customization"): its key, and the own slot base of the application
+/// the key enters at, which fixes the absolute index of every own slot
+/// the body addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Customization {
+    pub(crate) key: CustomizationKey,
+    pub(crate) own_slot_base: u32,
+}
+
 /// A body as the optimizing compiler reads it, taken at a safepoint.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snapshot {
@@ -953,6 +964,10 @@ pub(crate) struct Snapshot {
     /// and its trapped bit whether a speculation on it trapped. `None` for
     /// every other instruction.
     pub(crate) sites: Vec<Option<SiteFacts>>,
+    /// The copy's key and entered level, for a customized copy; `None`
+    /// for a body's one uncustomized copy, whose own-slot instructions
+    /// keep their templates, which find the slot base and check the guard.
+    pub(crate) customization: Option<Customization>,
 }
 
 /// The registers tainted before each instruction of `code`, as
@@ -990,13 +1005,14 @@ impl Snapshot {
     }
 
     /// The snapshot of `code`, its sends' cells found from
-    /// `feedback_base`; the body and its blocks are registered with `heap`
-    /// if they were not yet.
+    /// `feedback_base`, for the copy `customization` names; the body and
+    /// its blocks are registered with `heap` if they were not yet.
     pub(crate) fn take(
         code: &Rc<CompiledCode>,
         heap: &mut Heap,
         caches: &InlineCaches,
         feedback_base: FeedbackBase,
+        customization: Option<Customization>,
     ) -> Snapshot {
         let instructions = code.instructions();
         let float = heap.float_dispatch_id();
@@ -1024,6 +1040,7 @@ impl Snapshot {
             tainted_before: tainted_before_each(code),
             fallback_taken,
             sites: Self::sites_of(&instructions, code.family_size, caches, feedback_base),
+            customization,
         }
     }
 
@@ -1126,7 +1143,13 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
         interpreter.enter(|mutator| {
             let heap = &mut mutator.heap;
-            let snapshot = Snapshot::take(&code, heap, &mutator.caches, FeedbackBase::NOT_ASSIGNED);
+            let snapshot = Snapshot::take(
+                &code,
+                heap,
+                &mutator.caches,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+            );
             assert_eq!(snapshot.instructions.len(), code.instruction_count());
             assert!(matches!(
                 snapshot.instructions[1],
@@ -1165,7 +1188,13 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
         interpreter.enter(|mutator| {
             let heap = &mut mutator.heap;
-            let snapshot = Snapshot::take(&code, heap, &mutator.caches, FeedbackBase::NOT_ASSIGNED);
+            let snapshot = Snapshot::take(
+                &code,
+                heap,
+                &mutator.caches,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+            );
             let SnapshotInstruction::MakeClosure {
                 block: block_id,
                 parameter_count,
@@ -1247,7 +1276,7 @@ mod tests {
         interpreter.enter(|mutator| {
             let base = mutator.caches.base_for(&code);
             assert!(!mutator.caches.note_trap(base, fallback_send_site));
-            let snapshot = Snapshot::take(&code, &mut mutator.heap, &mutator.caches, base);
+            let snapshot = Snapshot::take(&code, &mut mutator.heap, &mutator.caches, base, None);
             assert_eq!(snapshot.sites.len(), code.instruction_count());
             assert_eq!(
                 snapshot.sites[send_index].map(|facts| facts.site),
@@ -1288,6 +1317,7 @@ mod tests {
                 &mut mutator.heap,
                 &mutator.caches,
                 FeedbackBase::NOT_ASSIGNED,
+                None,
             );
             for facts in snapshot.sites.iter().flatten() {
                 assert!(facts.executed && facts.trapped, "site {}", facts.site);

@@ -907,6 +907,32 @@ impl MacroAssembler {
         self.assembler.load(Width::Word64, target, slot);
     }
 
+    /// `target :=` field `index` of the object `object` names, with no
+    /// check: for a customized copy, whose receiver's application, verified
+    /// at its entry, has the field (`Node::OwnSlotLoad`). `object` is kept
+    /// unless it is `target`; clobbers the flags.
+    pub(crate) fn load_field(&mut self, target: Register, object: Register, index: u32) {
+        let displacement = i32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(WORD_BYTES))
+            .and_then(|offset| {
+                offset.checked_add(crate::heap::Heap::machine_layout().fields_displacement)
+            })
+            .expect("internal: a fixed field's displacement fits a load's");
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        assembler.move_register(target, object);
+        assembler.add(target, object_space);
+        assembler.load(
+            Width::Word64,
+            target,
+            Memory {
+                base: target,
+                displacement,
+            },
+        );
+    }
+
     /// The frame's register `register := source`. Keeps the flags.
     pub(crate) fn store_frame_register(&mut self, register: u16, source: Register) {
         let slot = self.frame_slot(register);

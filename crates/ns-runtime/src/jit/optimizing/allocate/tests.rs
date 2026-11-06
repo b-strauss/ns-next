@@ -439,6 +439,43 @@ fn every_built_graph_allocates_and_verifies_on_both_abis() {
     assert!(points > 0);
 }
 
+/// Every body that reads an own slot, built as a customized copy, its
+/// reads simple nodes, allocates and verifies on both ABIs.
+#[test]
+fn every_customized_graph_allocates_and_verifies_on_both_abis() {
+    let id = crate::mixin::DispatchId::from_bits(7);
+    let customization = crate::jit::optimizing::snapshot::Customization {
+        key: crate::jit::CustomizationKey {
+            receiver: id,
+            entered: id,
+        },
+        own_slot_base: 3,
+    };
+    let mut loads = 0;
+    for mut snapshot in corpus_of_bodies().into_iter().chain(shipped_bodies()) {
+        snapshot.customization = Some(customization);
+        let graph = build(&snapshot);
+        let reads = graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .filter(|node| matches!(node, Node::OwnSlotLoad { .. }))
+            .count();
+        if reads == 0 {
+            continue;
+        }
+        loads += reads;
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let (allocation, described) = allocate_and_describe(&snapshot, &graph, &Roles::of(abi));
+            assert_eq!(
+                verify_allocation(&graph, &allocation, &described, &snapshot),
+                Ok(())
+            );
+        }
+    }
+    assert!(loads > 0, "the library's lazy getters read their slots");
+}
+
 /// `r5 := 1. r6 := r3 new: r5. [r3 := r3 new: r5. r3 < r5] whileTrue.
 /// ^r3`: every way into the loop's head, and into the merge of the
 /// comparison's fast path and its fallback, brings r3 as its frame word,

@@ -228,6 +228,17 @@ impl Emitter<'_> {
             }
             // A binding, which the write-backs store.
             Node::Copy { .. } => {}
+            Node::OwnSlotLoad {
+                value,
+                receiver,
+                absolute_index,
+            } => {
+                let receiver = self.register_of(*receiver, use_position);
+                if let Some(target) = defined_in(*value) {
+                    body.macro_assembler
+                        .load_field(target, receiver, *absolute_index);
+                }
+            }
             Node::IntegerBinary {
                 operation,
                 value,
@@ -418,6 +429,30 @@ impl Emitter<'_> {
                 macro_assembler.move_register(leaf_result, value);
                 sends::return_loaded(body);
             }
+            // The return is laid out before the way on, so that the moves
+            // owed `next` are made on that way alone.
+            End::ReturnUnlessNil {
+                value,
+                next: initializer,
+            } => {
+                let value = self.register_of(*value, end_use);
+                let nil = crate::heap::Heap::machine_layout().nil_word;
+                let macro_assembler = &mut body.macro_assembler;
+                let unfilled = macro_assembler.assembler().label();
+                macro_assembler.assembler().compare_immediate(value, nil);
+                macro_assembler
+                    .assembler()
+                    .jump_if(Condition::Equal, unfilled);
+                // No value lives on the way that returns.
+                macro_assembler.hold_values(&[]);
+                let leaf_result = macro_assembler.temporary(macro_assembler.roles().leaf_result);
+                macro_assembler.move_register(leaf_result, value);
+                sends::return_loaded(body);
+                body.macro_assembler.assembler().bind(unfilled);
+                self.hold(body, end_use);
+                self.moves(body, end_definition);
+                jump_unless_next(body, &self.labels, *initializer);
+            }
             End::Frame => {}
             End::FrameJump {
                 next: fall_through, ..
@@ -495,12 +530,12 @@ mod tests {
     use crate::interpreter::inline_cache::FeedbackBase;
     use crate::jit::baseline::BodyRole;
     use crate::jit::macro_assembler::{Abi, MacroAssembler};
-    use crate::jit::optimizing::snapshot::{Snapshot, SnapshotInstruction};
+    use crate::jit::optimizing::snapshot::{Customization, Snapshot, SnapshotInstruction};
     use crate::jit::optimizing::{
         compile, corpus_of_bodies, shipped_bodies, test_send, test_snapshot_with_arguments,
     };
     use crate::jit::stubs::testing::Machine;
-    use crate::jit::stubs::MachineExit;
+    use crate::jit::stubs::{BlockWord, MachineExit};
 
     fn small_integer(value: i64) -> u64 {
         Immediate::small_integer(value)
@@ -765,6 +800,116 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A lazy slot's getter of own slot 1, its initializer a send, as a
+    /// copy customized at an application whose own slots start at field
+    /// 3: its slot is field 4.
+    fn customized_lazy_getter() -> Snapshot {
+        let mut snapshot = test_snapshot_with_arguments(
+            vec![
+                Instruction::ReturnSlotIfFilled { own_index: 1 },
+                Instruction::LoadSelf { destination: 13 },
+                test_send(13, 13, 14),
+                Instruction::InitializeSlot {
+                    source: 14,
+                    own_index: 1,
+                },
+                Instruction::Return { register: 14 },
+            ],
+            0,
+        );
+        let id = crate::mixin::DispatchId::from_bits(7);
+        snapshot.customization = Some(Customization {
+            key: crate::jit::CustomizationKey {
+                receiver: id,
+                entered: id,
+            },
+            own_slot_base: 3,
+        });
+        snapshot
+    }
+
+    /// `customized_lazy_getter` run on a receiver whose field 4 holds
+    /// `slot`, in an object space of its own.
+    fn run_lazy_getter(slot: u64) -> (MachineExit, [u64; 64]) {
+        let optimized = compile(
+            &customized_lazy_getter(),
+            MacroAssembler::new(Abi::host()),
+            BodyRole::Method,
+            false,
+        )
+        .unwrap_or_else(|refusal| panic!("refused: {refusal:?}"));
+        let fields = crate::heap::Heap::machine_layout().fields_displacement;
+        let receiver: usize = 64;
+        let mut object_space = vec![Immediate::NIL.bits(); 64];
+        let field = (receiver + usize::try_from(fields).expect("positive")) / 8 + 4;
+        object_space[field] = slot;
+        let mut machine = Machine::new();
+        machine.set_block_word(
+            BlockWord::ObjectSpaceBase,
+            object_space.as_mut_ptr().expose_provenance() as u64,
+        );
+        let start = machine.install(&optimized.code);
+        let entry = ns_memory::CodeOffset(start.0 + optimized.push_entry);
+        let mut frame = [0u64; 64];
+        frame[usize::from(crate::heap::Heap::receiver_register(0))] =
+            u64::try_from(receiver).expect("small");
+        let exit = machine.run(entry, &mut frame, 0, false, &mut (), &[]).0;
+        (exit, frame)
+    }
+
+    /// A copy's lazy getter reads its slot at the fixed field its key's
+    /// entered level gives, with no guard: a filled slot is returned, and
+    /// an empty one goes on to the initializer, whose send exits here.
+    #[test]
+    fn a_copy_s_lazy_getter_returns_its_filled_slot_and_computes_an_empty_one() {
+        assert_eq!(
+            run_lazy_getter(small_integer(42)).0,
+            MachineExit::Returned {
+                value: small_integer(42)
+            }
+        );
+        let (exit, frame) = run_lazy_getter(Immediate::NIL.bits());
+        assert_eq!(exit, MachineExit::Reexecute { program_counter: 2 });
+        assert_eq!(frame[13], 64, "the receiver, written back for the send");
+    }
+
+    /// Every body of the corpus and of the shipped library that reads an
+    /// own slot compiles as a customized copy under every ABI.
+    #[test]
+    fn a_customized_copy_assembles_under_every_abi() {
+        let customization = customized_lazy_getter().customization;
+        let mut compiled = 0;
+        for mut snapshot in corpus_of_bodies()
+            .into_iter()
+            .chain(shipped_bodies())
+            .chain([customized_lazy_getter()])
+        {
+            let reads_a_slot = snapshot.instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    SnapshotInstruction::LoadOwnSlot { .. }
+                        | SnapshotInstruction::ReturnSlotIfFilled { .. }
+                )
+            });
+            if !reads_a_slot {
+                continue;
+            }
+            snapshot.feedback_base = FeedbackBase::from_raw(0);
+            snapshot.customization = customization;
+            for abi in [Abi::Aapcs64, Abi::Windows64, Abi::SystemV] {
+                compile(
+                    &snapshot,
+                    MacroAssembler::new(abi),
+                    role_of(&snapshot),
+                    false,
+                )
+                .unwrap_or_else(|refusal| panic!("refused under {abi:?}: {refusal:?}"));
+            }
+            compiled += 1;
+        }
+        assert!(compiled > 1, "the library's lazy getters among them");
     }
 
     /// The role a body of `snapshot`'s kind is compiled as.

@@ -11117,7 +11117,13 @@ some path still reads, so that no frame word is read that the
 interpreter would not read. A **simple node** is register arithmetic
 that emits no call: an immediate literal, the receiver, a copy, an
 `IntegerBinary`'s `SmallInteger` fast path, with an edge to its
-fallback; returns, jumps and branches end blocks. Every other
+fallback, and in a customized copy an own slot's read
+(`Node::OwnSlotLoad`), a load at the fixed field the entered
+application's own slot base gives (`Snapshot::customization`), with no
+guard ("Customization" below); returns, jumps and branches end blocks,
+and so does a copy's `ReturnSlotIfFilled`, which returns its slot unless
+it is `nil` and goes on to the initializer otherwise
+(`End::ReturnUnlessNil`). Every other
 instruction is a **frame node**, emitted by the baseline's template for
 it. A frame node may run Newspeak code, which can write this frame's
 registers by reference, move every object a value names or reify the
