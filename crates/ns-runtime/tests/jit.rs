@@ -1212,9 +1212,6 @@ fn the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation() {
     let turn = (0..300).sum::<i64>() + 3 * 300;
     assert_eq!(run(&mut interpreter, &class), 100 * turn);
     let statistics = interpreter.jit_statistics();
-    if the_zone_stress_mode_abandons_a_caller_of_churned_callees() {
-        return;
-    }
     assert!(statistics.forced_exits > 0, "no forced exit");
     // Under a mode beside it whose every poll leaves machine code, each
     // activation of `sweep:` leaves its optimized code for good at its
@@ -1233,6 +1230,96 @@ fn the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation() {
         "the deepest forced exit at point {}",
         statistics.deepest_forced_exit
     );
+}
+
+/// `turn:` sending each of `CALLEES` loopless callees once in its first
+/// two turns, which fill the sends' caches and compile the callees, and
+/// once a turn from the `STAGGER * index`-th on, which `run`'s loop calls `TURNS` times,
+/// so that `turn:` runs in machine code: with a budget of
+/// `OPTIMIZING_BUDGET`, the callees' budgets run out one after another,
+/// each in an activation of `turn:` of its own, each request raising a
+/// real safepoint request, at which `turn:`'s next compiled send is
+/// refused at the callee's prologue.
+fn callees_optimized_one_after_another() -> String {
+    let callees: String = (0..CALLEES)
+        .map(|index| {
+            formatdoc! {"
+                  callee{index}: value = (
+                    ^value + {index}
+                  )
+            "}
+        })
+        .collect();
+    let sends: String = (0..CALLEES)
+        .map(|index| {
+            let from = STAGGER * index;
+            format!(
+                "    ((value < 2) | (value >= {from})) ifTrue: [sum:: sum + (self callee{index}: value)].\n"
+            )
+        })
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {callees}  turn: value = (
+            | sum ::= 0. |
+        {sends}    ^sum
+          )
+          public run = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < {TURNS}] whileTrue: [
+              sum:: sum + (self turn: index).
+              index:: index + 1.
+            ].
+            ^sum
+          )
+        ) : ()
+    "}
+}
+
+/// More callees than a body's `EXIT_BUDGET` of 64 exits.
+const CALLEES: i64 = 100;
+
+/// The turns between the first sends of two callees.
+const STAGGER: i64 = 30;
+
+/// Enough turns for the last callee to run its budget out.
+const TURNS: i64 = 6000;
+
+/// A push refused at a callee's prologue because a real safepoint request
+/// lowered the depth limit word -- here the optimization request of a
+/// callee whose budget ran out -- is not counted against the caller,
+/// whose code it says nothing of: a caller whose callees keep requesting
+/// their optimization is not abandoned, however many there are.
+#[test]
+fn a_caller_whose_callees_keep_requesting_optimization_is_not_abandoned() {
+    let source = callees_optimized_one_after_another();
+    let (mut interpreter, class) = load_spending_with(&source, Lowering::Optimized);
+    interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let expected: i64 = (0..CALLEES)
+        .map(|index| {
+            (0..TURNS)
+                .filter(|value| *value < 2 || *value >= STAGGER * index)
+                .map(|value| value + index)
+                .sum::<i64>()
+        })
+        .sum();
+    assert_eq!(send_unary(&mut interpreter, &subject, "run"), expected);
+    let statistics = interpreter.jit_statistics();
+    if a_stress_mode_is_on() {
+        return;
+    }
+    assert!(
+        statistics.optimization_requests > 64,
+        "{} optimization requests",
+        statistics.optimization_requests
+    );
+    assert!(statistics.pushes_refused > 64, "{statistics:?}");
+    assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
+    assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
 }
 
 /// Holds `statistics` to some body optimized -- but under a stress mode
@@ -1647,19 +1734,6 @@ fn a_stress_mode_is_on() -> bool {
 /// a body's entries and calls are not those of its one compile.
 fn the_zone_stress_mode_is_on() -> bool {
     std::env::var_os("NS_NEXT_STRESS_ZONE").is_some_and(|value| !value.is_empty() && value != "0")
-}
-
-/// Whether the environment turns the zone stress mode on, under which a
-/// caller that sends a callee at every turn of a long loop is abandoned
-/// before its optimized code runs: the mode frees the callee, which no
-/// activation runs, at every poll of the caller's loop, so that every
-/// send of it misses and its push, at the request the mode holds, is
-/// refused -- an exit of the caller's baseline code, which spends the
-/// caller's `EXIT_BUDGET` within some twenty turns and abandons it,
-/// optimized code and all. Measured over `LONG_OPTIMIZED_LOOP`: 192
-/// pushes refused, two bodies abandoned, no optimized exit.
-fn the_zone_stress_mode_abandons_a_caller_of_churned_callees() -> bool {
-    the_zone_stress_mode_is_on()
 }
 
 /// The stress modes beside the deopt stress mode under which every poll

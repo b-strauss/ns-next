@@ -172,12 +172,34 @@ pub(crate) enum ExitKind {
 /// An exit, decoded from the block and the kind `enter` answered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineExit {
-    Reexecute { program_counter: u32 },
-    Safepoint { program_counter: u32 },
-    DeadRegister { program_counter: u32, register: u16 },
-    PushRefused,
-    Returned { value: u64 },
+    Reexecute {
+        program_counter: u32,
+    },
+    Safepoint {
+        program_counter: u32,
+    },
+    DeadRegister {
+        program_counter: u32,
+        register: u16,
+    },
+    /// `at_the_bound` when the callee's prologue refused it at the depth
+    /// limit word (`REFUSED_AT_THE_BOUND`), which a real safepoint request
+    /// lowers to 0.
+    PushRefused {
+        at_the_bound: bool,
+    },
+    Returned {
+        value: u64,
+    },
 }
+
+/// What a `PushRefused` exit's program-counter word holds when a callee's
+/// prologue refused the call at the depth limit word
+/// (`jit::sends::prologue`): every other refusal -- past the stack's
+/// room, or a stub's -- writes 0. The word names the exit's cause, not
+/// its program counter, which a refused push takes from the caller's
+/// frame.
+pub(crate) const REFUSED_AT_THE_BOUND: u32 = 1;
 
 /// The exit `kind` and the block an entry left behind describe.
 ///
@@ -192,7 +214,9 @@ pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
         return MachineExit::Returned { value: word };
     }
     if kind == ExitKind::PushRefused as u64 {
-        return MachineExit::PushRefused;
+        return MachineExit::PushRefused {
+            at_the_bound: word == u64::from(REFUSED_AT_THE_BOUND),
+        };
     }
     let Ok(program_counter) = u32::try_from(word) else {
         panic!("internal: machine code exited at program counter {word}");

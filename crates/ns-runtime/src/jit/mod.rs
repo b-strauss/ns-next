@@ -231,11 +231,13 @@ pub struct JitStatistics {
     /// instruction re-executed, a safepoint, a refused push, a dead
     /// register's read -- each handing a frame to the interpreter.
     pub exits: u64,
-    /// Compiled calls a callee's prologue refused (`ExitKind::PushRefused`):
-    /// at the depth limit, at a safepoint requested, or where the
-    /// activation stack's ordinary room cannot hold the frame -- never for
-    /// a frame past the ordinary end alone, which the growth leaf makes
-    /// room for (`jit::leaves::grow_stack`).
+    /// Compiled calls refused before the callee was pushed
+    /// (`ExitKind::PushRefused`): by the callee's prologue, at the depth
+    /// limit, at a safepoint requested, or where the activation stack's
+    /// ordinary room cannot hold the frame -- never for a frame past the
+    /// ordinary end alone, which the growth leaf makes room for
+    /// (`jit::leaves::grow_stack`) -- and by the miss stub and the
+    /// refusing stub, for a target machine code does not run.
     pub pushes_refused: u64,
     /// Pushes of machine code past the activation stack's ordinary end
     /// the growth leaf made room for, and those it refused, the ordinary
@@ -4646,7 +4648,7 @@ fn resumption_after_exit(
     // nothing (`CompiledCode::is_send`), on a path that has just left
     // machine code.
     let at_a_send = match exit {
-        MachineExit::PushRefused => true,
+        MachineExit::PushRefused { .. } => true,
         MachineExit::Reexecute { program_counter } => mutator
             .heap
             .activation_code(innermost)
@@ -4656,13 +4658,23 @@ fn resumption_after_exit(
     if at_a_send {
         mutator.jit.statistics.send_exits += 1;
     }
+    // A push the callee's prologue refused at the depth limit word while a
+    // real safepoint request stands was refused for the request, which
+    // lowered the word to 0 -- often the optimization request a freshly
+    // compiled callee's first spend made -- whatever the depth: like a
+    // forced exit it says nothing of the caller's code, and counted it
+    // would abandon a hot caller of callees optimized one after another.
+    // The interpreter's push, at the safepoint, decides the depth limit.
+    let refused_for_a_request = matches!(exit, MachineExit::PushRefused { at_the_bound: true })
+        && mutator.heap.real_safepoint_requested();
     // The stress mode enters every body at every push, however often it
     // leaves.
     if matches!(
         exit,
-        MachineExit::Reexecute { .. } | MachineExit::PushRefused
+        MachineExit::Reexecute { .. } | MachineExit::PushRefused { .. }
     ) && !mutator.jit.install_bodies_exiting_at_once
         && !forced
+        && !refused_for_a_request
     {
         let code = mutator.heap.activation_code(innermost);
         count_exit(mutator, &code, optimized);
@@ -4680,7 +4692,7 @@ fn resumption_after_exit(
         },
         // The innermost frame is the caller, stopped at the send the walk
         // wrote as its program counter: it runs the send again.
-        MachineExit::PushRefused => {
+        MachineExit::PushRefused { .. } => {
             mutator.jit.statistics.pushes_refused += 1;
             let program_counter = mutator.heap.activation_program_counter(innermost);
             Resumption::Interpreted {

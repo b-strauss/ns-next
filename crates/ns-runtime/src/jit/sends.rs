@@ -112,7 +112,11 @@ pub(super) fn prologue(body: &mut BodyAssembler, facts: &BodyFacts) {
     let assembler = macro_assembler.assembler();
     assembler.load(Width::Word64, depth, word(MachineWord::DepthCount));
     assembler.compare_memory(depth, word(MachineWord::DepthLimit));
-    macro_assembler.exit_if(Condition::AboveOrEqual, ExitKind::PushRefused, 0);
+    macro_assembler.exit_if(
+        Condition::AboveOrEqual,
+        ExitKind::PushRefused,
+        super::stubs::REFUSED_AT_THE_BOUND,
+    );
     let assembler = macro_assembler.assembler();
     assembler.move_register(scratch, roles.frame);
     assembler.load(Width::Word64, end, stack_base);
