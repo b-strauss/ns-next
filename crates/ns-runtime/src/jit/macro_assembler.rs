@@ -635,8 +635,12 @@ pub(crate) struct MacroAssembler {
     /// Whether optimized code counts its interrupt points down to a
     /// forced exit (`count_down_to_deoptimize`), as under
     /// `NS_NEXT_STRESS_DEOPT` -- and under `NS_NEXT_STRESS_INVALIDATE`,
-    /// whose countdown no run reaches the end of.
+    /// whose forced exit leaves for the safepoint that runs its round.
     deoptimize_by_countdown: bool,
+    /// Whether optimized code's push entry is an interrupt point of the
+    /// countdown too (`count_down_at_entry`), as under
+    /// `NS_NEXT_STRESS_INVALIDATE`.
+    count_down_at_entry: bool,
     /// Whether a back edge counts itself (`count_back_edge`).
     count_back_edges: bool,
     /// The body's data words, which `finish` places after its code, and
@@ -676,6 +680,7 @@ impl MacroAssembler {
             cold_paths: Vec::new(),
             exit_at_every_poll: super::stress_exit_from_env(),
             deoptimize_by_countdown: false,
+            count_down_at_entry: false,
             count_back_edges: false,
             body_words: 0,
             body_words_label: None,
@@ -810,6 +815,16 @@ impl MacroAssembler {
     /// mode, or emits nothing for the count (`count_down_to_deoptimize`).
     pub(crate) fn set_deoptimize_by_countdown(&mut self, deoptimize_by_countdown: bool) {
         self.deoptimize_by_countdown = deoptimize_by_countdown;
+    }
+
+    /// Makes the entry of the optimized code emitted from now on an
+    /// interrupt point of the countdown (`true`), as under the invalidate
+    /// stress mode, whose countdown would otherwise never move in a copy
+    /// without a send or a loop, or emits nothing there
+    /// (`count_down_at_entry`). Effective only with the countdown on
+    /// (`set_deoptimize_by_countdown`).
+    pub(crate) fn set_count_down_at_entry(&mut self, count_down_at_entry: bool) {
+        self.count_down_at_entry = count_down_at_entry;
     }
 
     pub(crate) fn roles(&self) -> Roles {
@@ -2901,6 +2916,17 @@ impl MacroAssembler {
             kind: ExitKind::Reexecute,
             program_counter,
         });
+    }
+
+    /// Under the invalidate stress mode, the countdown at optimized code's
+    /// entry, where the frame is the interpreter's word for word and
+    /// nothing is held in a register: its exit runs the body's first
+    /// instruction, at `program_counter`, in the interpreter. Emits nothing
+    /// outside the mode. Clobbers the flags and the idiom scratch register.
+    pub(crate) fn count_down_at_entry(&mut self, program_counter: u32) {
+        if self.count_down_at_entry {
+            self.count_down_to_deoptimize(program_counter);
+        }
     }
 
     /// Under the deopt stress mode, an interrupt point's countdown whose

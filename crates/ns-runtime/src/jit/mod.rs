@@ -333,7 +333,8 @@ pub struct JitStatistics {
     /// transfer found its baseline body's twin not compiled yet.
     pub optimized_twin_requests: u64,
     /// Exits of optimized code the deopt stress mode forced at an
-    /// interrupt point: of `optimized_exits`.
+    /// interrupt point, and the invalidate stress mode at the last point
+    /// of its countdown: of `optimized_exits`.
     pub forced_exits: u64,
     /// The largest countdown a forced exit came at: how many interrupt
     /// points optimized code had passed since the safepoint that set it,
@@ -353,9 +354,10 @@ pub struct JitStatistics {
     /// Optimized copies freed because what they were compiled against
     /// changed: the copies keyed on an application an install rebuilt
     /// (`invalidate_applications`) or whose id a full collection reclaimed
-    /// (`forget_freed_copies`), and every copy at a bulk forward or under
-    /// the invalidate stress mode (`invalidate_all_optimized`). Neither a
-    /// trap nor an exit: no version is raised for them.
+    /// (`forget_freed_copies`), every copy at a bulk forward
+    /// (`invalidate_all_optimized`), and those the invalidate stress mode's
+    /// rounds free (`invalidate_optimized_for_stress`). Neither a trap nor
+    /// an exit: no version is raised for them.
     pub invalidated_copies: u64,
 }
 
@@ -1561,12 +1563,15 @@ pub(crate) struct JitState {
     deopt_stress: bool,
     /// Whether the invalidate stress mode is on (`NS_NEXT_STRESS_INVALIDATE`,
     /// `set_invalidate_stress`), which implies the optimize stress mode:
-    /// every optimized copy is invalidated at every safepoint
-    /// (`invalidate_all_optimized`).
+    /// once optimized code has passed `STRESS_INVALIDATION_POINTS`
+    /// interrupt points, it leaves for a safepoint, which frees every
+    /// body's copies but those of the bodies backing off
+    /// (`invalidate_optimized_for_stress`).
     invalidate_stress: bool,
-    /// The interrupt points optimized code passes before the invalidate
-    /// stress mode's next invalidation (`arm_invalidation_count`).
-    stress_invalidation_period: u64,
+    /// Each body's back-off under the invalidate stress mode, by its
+    /// address, checked against the `Weak` it holds.
+    #[cfg(ns_jit)]
+    stress_back_offs: IdentityMap<usize, StressBackOff>,
     /// The method bodies that have a key's row (`JitSlot::copies`), held
     /// weakly as the installed bodies are: what an invalidation by
     /// application (`invalidate_applications`, `forget_freed_copies`)
@@ -1676,12 +1681,13 @@ pub(crate) fn stress_deopt_from_env() -> bool {
 
 /// Whether `NS_NEXT_STRESS_INVALIDATE` asks for the invalidate stress
 /// mode: set, and neither empty nor `0`. Debug builds only; read once per
-/// process. It implies the optimize stress mode, and every safepoint
-/// invalidates all optimized code (`invalidate_all_optimized`) before it
-/// installs what was requested since the last one, so that every copy
-/// installed has had a stretch to run before it is freed, and its body
-/// is optimized afresh at its next run-out (`docs/design/execution.md`,
-/// "Verification").
+/// process. It implies the optimize stress mode, and optimized code counts
+/// its interrupt points: at the `STRESS_INVALIDATION_POINTS`th since the
+/// last round it leaves for a safepoint, which frees the copies of every
+/// body but those backing off (`invalidate_optimized_for_stress`) before
+/// it installs what was requested since, so that every copy freed has had
+/// a stretch to run, and its body is optimized afresh at its next run-out
+/// (`docs/design/execution.md`, "Verification").
 pub(crate) fn stress_invalidate_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
@@ -1691,22 +1697,60 @@ pub(crate) fn stress_invalidate_from_env() -> bool {
         })
 }
 
-/// The interrupt points optimized code passes before the invalidate
-/// stress mode's first invalidation, doubled after each
-/// (`JitState::arm_invalidation_count`) up to
-/// `MAXIMUM_STRESS_INVALIDATION_POINTS`: so that the copies compiled since
-/// the last one run a while, a test's short run is invalidated many times,
-/// and a long run whose bodies keep asking for their copies -- a
-/// thousand-send body among them, which a debug build takes seconds to
-/// optimize -- compiles them again a number of times that grows with the
-/// logarithm of its length, not with it, as the revival of an abandoned
-/// body backs off (`revival_entries`).
-const STRESS_INVALIDATION_POINTS: u64 = 100;
+/// The interrupt points optimized code passes between two rounds of the
+/// invalidate stress mode (`JitState::arm_invalidation_count`): enough
+/// that the copies installed since the last round run past their entry
+/// before they are freed, few enough that a program whose optimized code
+/// runs at all -- a golden's few sends -- meets a round, as a hundred did
+/// not for most goldens. A body freed often backs off on its own
+/// (`StressBackOff`).
+const STRESS_INVALIDATION_POINTS: u64 = 10;
 
-/// The most interrupt points the invalidate stress mode waits between two
-/// invalidations (`STRESS_INVALIDATION_POINTS`): sixteen doublings
-/// past the first, so that a long run is still invalidated now and then.
-const MAXIMUM_STRESS_INVALIDATION_POINTS: u64 = STRESS_INVALIDATION_POINTS << 16;
+/// The most rounds of the invalidate stress mode one body sits out
+/// between two invalidations of its copies, as a power of two
+/// (`StressBackOff`): a body freed at a round sits out the next one, then
+/// two, then four, up to 2 to this power, as an abandoned body's revival
+/// backs off (`revival_entries`), so that a body every round would
+/// recompile -- a hundred-send body takes a debug build seconds to
+/// optimize -- is recompiled a number of times that grows with the
+/// logarithm of the run's length until the cap, and every body is still
+/// invalidated now and then in a long run.
+const MAXIMUM_STRESS_BACK_OFF_DOUBLINGS: u32 = 10;
+
+/// One body's back-off under the invalidate stress mode
+/// (`MAXIMUM_STRESS_BACK_OFF_DOUBLINGS`): how many times a round freed its
+/// copies, and how many rounds it has sat out since the last.
+#[cfg(ns_jit)]
+struct StressBackOff {
+    code: Weak<CompiledCode>,
+    invalidations: u32,
+    rounds_sat_out: u32,
+}
+
+#[cfg(ns_jit)]
+impl StressBackOff {
+    /// Whether this round frees the body's copies, counting the round
+    /// either way: the first round always does, and each after waits
+    /// twice as many rounds as the last, up to the cap.
+    fn take_round(&mut self) -> bool {
+        let doublings = self
+            .invalidations
+            .saturating_sub(1)
+            .min(MAXIMUM_STRESS_BACK_OFF_DOUBLINGS);
+        let wait = if self.invalidations == 0 {
+            0
+        } else {
+            1_u32 << doublings
+        };
+        if self.rounds_sat_out < wait {
+            self.rounds_sat_out += 1;
+            return false;
+        }
+        self.invalidations = self.invalidations.saturating_add(1);
+        self.rounds_sat_out = 0;
+        true
+    }
+}
 
 /// The countdowns the deopt stress mode's safepoints set in turn
 /// (`MachineWord::DeoptCountdown`), the Fibonacci numbers up to 987:
@@ -1791,7 +1835,8 @@ impl JitState {
             optimize_stress,
             deopt_stress: stress_deopt_from_env(),
             invalidate_stress: stress_invalidate_from_env(),
-            stress_invalidation_period: STRESS_INVALIDATION_POINTS,
+            #[cfg(ns_jit)]
+            stress_back_offs: IdentityMap::default(),
             #[cfg(ns_jit)]
             customized: Vec::new(),
             deoptimization_rotation: 0,
@@ -1954,7 +1999,7 @@ impl JitState {
         );
         self.machine_words = words;
         self.rotate_deoptimization_countdown();
-        self.arm_invalidation_count(false);
+        self.arm_invalidation_count();
     }
 
     /// The unpointed budget's address (`MachineWord::UnpointedBudget`).
@@ -2007,7 +2052,7 @@ impl JitState {
         self.deopt_stress = stress;
         self.deoptimization_rotation = 0;
         self.rotate_deoptimization_countdown();
-        self.arm_invalidation_count(false);
+        self.arm_invalidation_count();
         budget
     }
 
@@ -2022,24 +2067,25 @@ impl JitState {
             self.optimization_budget
         };
         self.invalidate_stress = stress;
-        self.arm_invalidation_count(false);
+        self.arm_invalidation_count();
         budget
     }
 
-    /// Whether the invalidate stress mode is on, under which every
-    /// safepoint invalidates all optimized code.
+    /// Whether the invalidate stress mode is on, under which optimized code
+    /// leaves for a round of invalidation at every
+    /// `STRESS_INVALIDATION_POINTS`th interrupt point it passes.
     pub(crate) fn invalidate_stress(&self) -> bool {
         self.invalidate_stress
     }
 
-    /// Whether the invalidate stress mode's safepoint frees all optimized
-    /// code now: once the code compiled under the mode passed
-    /// `stress_invalidation_period` interrupt points since the last
-    /// invalidation -- or, under the deopt stress mode too, any point since
-    /// the last safepoint -- each point taking one off the countdown
-    /// (`MachineWord::DeoptCountdown`). So every copy freed has had the
-    /// chance to run: a safepoint every run-out requests would otherwise
-    /// free every copy before a frame entered it, and every body would ask
+    /// Whether the invalidate stress mode's safepoint runs a round now:
+    /// once the code compiled under the mode has spent the countdown the
+    /// last round armed (`arm_invalidation_count`), whose last point left
+    /// for this safepoint (`take_forced_exit`) -- or, under the deopt
+    /// stress mode too, which sets the countdown at every safepoint, once
+    /// it passed any point since the last. So every copy freed has had the
+    /// chance to run: a round at every safepoint a run-out requests would
+    /// free each copy before a frame entered it, and every body would ask
     /// for its copy again at its next spend, compiling at every safepoint
     /// for ever.
     pub(crate) fn invalidation_due_for_stress(&self) -> bool {
@@ -2048,32 +2094,51 @@ impl JitState {
         if self.deopt_stress {
             return countdown != self.deoptimization_countdown;
         }
-        u64::MAX - countdown >= self.stress_invalidation_period
+        // Spent: at zero, or past it -- `take_forced_exit` sets it to
+        // `u64::MAX`, below which every later point counts.
+        countdown == 0 || countdown > self.deoptimization_countdown
     }
 
     /// Under the invalidate stress mode alone, arms the countdown at
-    /// `u64::MAX`, which no run counts down to its exit, so that it counts
-    /// the interrupt points optimized code passes from now on
-    /// (`invalidation_due_for_stress`): at the mode's start, waiting
-    /// `STRESS_INVALIDATION_POINTS` of them, and after each of its
-    /// invalidations (`after_an_invalidation`), waiting twice as many as
-    /// before, up to `MAXIMUM_STRESS_INVALIDATION_POINTS`. The deopt stress
-    /// mode's safepoints set the countdown themselves
-    /// (`rotate_deoptimization_countdown`).
-    pub(crate) fn arm_invalidation_count(&mut self, after_an_invalidation: bool) {
+    /// `STRESS_INVALIDATION_POINTS`, so that the point that spends it
+    /// leaves for the next round (`take_forced_exit`): at the mode's start
+    /// and after each round. Under the deopt stress mode too, its
+    /// safepoints set the countdown themselves
+    /// (`rotate_deoptimization_countdown`), and every one that follows a
+    /// point passed runs a round.
+    pub(crate) fn arm_invalidation_count(&mut self) {
         use crate::heap::machine_words::MachineWord;
-        self.stress_invalidation_period = if after_an_invalidation {
-            self.stress_invalidation_period
-                .saturating_mul(2)
-                .min(MAXIMUM_STRESS_INVALIDATION_POINTS)
-        } else {
-            STRESS_INVALIDATION_POINTS
-        };
         if self.invalidate_stress && !self.deopt_stress {
-            self.deoptimization_countdown = u64::MAX;
+            self.deoptimization_countdown = STRESS_INVALIDATION_POINTS;
             self.machine_words
-                .set(MachineWord::DeoptCountdown, u64::MAX);
+                .set(MachineWord::DeoptCountdown, STRESS_INVALIDATION_POINTS);
         }
+    }
+
+    /// Whether the invalidate stress mode's round frees `code`'s copies,
+    /// counting the round in its back-off (`StressBackOff`).
+    #[cfg(ns_jit)]
+    fn stress_round_frees(&mut self, code: &Rc<CompiledCode>) -> bool {
+        let key = Rc::as_ptr(code) as usize;
+        let back_off = self
+            .stress_back_offs
+            .entry(key)
+            .or_insert_with(|| StressBackOff {
+                code: Rc::downgrade(code),
+                invalidations: 0,
+                rounds_sat_out: 0,
+            });
+        // Another body at the address of a dead one starts afresh.
+        if !std::ptr::eq(back_off.code.as_ptr(), Rc::as_ptr(code))
+            || back_off.code.strong_count() == 0
+        {
+            *back_off = StressBackOff {
+                code: Rc::downgrade(code),
+                invalidations: 0,
+                rounds_sat_out: 0,
+            };
+        }
+        back_off.take_round()
     }
 
     /// The live method bodies that have a key's row, the dead ones
@@ -2107,17 +2172,20 @@ impl JitState {
             .set(MachineWord::DeoptCountdown, countdown);
     }
 
-    /// Whether the exit just taken was the deopt stress mode's own: the
-    /// countdown at zero, which only the point that brought it there, and
-    /// exited at once, leaves it at, since the safepoint sets it afresh
-    /// to at least 1. The countdown is then spent past zero, so that no
-    /// later exit is taken for one, and the safepoint request held, so
-    /// that the stretch the exit goes on in leaves for the safepoint that
-    /// sets the next countdown.
+    /// Whether the exit just taken was the deopt or the invalidate stress
+    /// mode's own: the countdown at zero, which only the point that
+    /// brought it there, and exited at once, leaves it at, since the
+    /// safepoint sets it afresh to at least 1. The countdown is then spent
+    /// past zero, so that no later exit is taken for one, and the
+    /// safepoint request held, so that the stretch the exit goes on in
+    /// leaves for the safepoint that sets the next countdown -- under the
+    /// invalidate stress mode, the one that runs its round
+    /// (`invalidation_due_for_stress`).
     #[cfg(ns_jit)]
     fn take_forced_exit(&mut self, heap: &mut crate::heap::Heap) -> bool {
         use crate::heap::machine_words::MachineWord;
-        if !self.deopt_stress || self.machine_words.get(MachineWord::DeoptCountdown) != 0 {
+        let counting = self.deopt_stress || self.invalidate_stress;
+        if !counting || self.machine_words.get(MachineWord::DeoptCountdown) != 0 {
             return false;
         }
         self.machine_words
@@ -2750,7 +2818,8 @@ impl JitState {
             optimize_stress: false,
             deopt_stress: false,
             invalidate_stress: false,
-            stress_invalidation_period: STRESS_INVALIDATION_POINTS,
+            #[cfg(ns_jit)]
+            stress_back_offs: IdentityMap::default(),
             #[cfg(ns_jit)]
             customized: Vec::new(),
             deoptimization_rotation: 0,
@@ -4831,10 +4900,11 @@ fn optimize(
     );
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
-    // Under the invalidate stress mode the countdown, armed beyond reach,
-    // only says whether optimized code ran (`optimized_code_ran`).
+    // Under the invalidate stress mode the countdown's last point leaves
+    // for the safepoint that runs its round (`invalidation_due_for_stress`).
     macro_assembler
         .set_deoptimize_by_countdown(mutator.jit.deopt_stress || mutator.jit.invalidate_stress);
+    macro_assembler.set_count_down_at_entry(mutator.jit.invalidate_stress);
     let role = baseline::BodyRole::of(code, method.is_some());
     let installation = optimizing::compile(
         &snapshot,
@@ -6142,7 +6212,7 @@ fn invalidate_copy(
 }
 
 /// Frees every customized copy of `code` whose key `stale` says is stale,
-/// and the body's one uncustomized copy too when `uncustomized`, adding
+/// and the body's one uncustomized copy too when `uncustomized` is set, adding
 /// the addresses cells may name of them to `entries`; then, if any was
 /// freed, arms the body's budget afresh at the longest wait the freed
 /// copies' versions earned (`optimization_budget_after`), so that the next
@@ -6153,7 +6223,8 @@ fn invalidate_copy(
 fn invalidate_copies_of(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
-    (stale, uncustomized): (&dyn Fn(CustomizationKey) -> bool, bool),
+    stale: &dyn Fn(CustomizationKey) -> bool,
+    uncustomized: bool,
     entries: &mut Vec<u64>,
 ) {
     let keys: Vec<(CustomizationKey, u8)> = code
@@ -6208,7 +6279,7 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
         .retain(|request| request.key.is_none_or(|key| !stale(key)));
     let mut entries = Vec::new();
     for code in mutator.jit.customized_codes() {
-        invalidate_copies_of(mutator, &code, (&stale, false), &mut entries);
+        invalidate_copies_of(mutator, &code, &stale, false, &mut entries);
     }
     refresh_cells_entering(mutator, entries);
 }
@@ -6216,29 +6287,64 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
 /// Frees every optimized copy there is, customized or not: what a bulk
 /// forward (`elementsOf:forwardIdentityToElementsOf:ifFail:`) does, since
 /// a forwarded object may be the receiver a copy was verified for or
-/// reached through any of its slots, and what the invalidate stress mode
-/// does at every safepoint (`NS_NEXT_STRESS_INVALIDATE`). Freed at once,
-/// as `invalidate_applications` frees: the forward is a mirror leaf run
-/// after an exit, the stress mode's safepoint lies between two stretches.
+/// reached through any of its slots; the invalidate stress mode's rounds
+/// free the same, but for the bodies backing off
+/// (`invalidate_optimized_for_stress`). Freed at once, as
+/// `invalidate_applications` frees: the forward is a mirror leaf run
+/// after an exit.
 /// No version is raised (`invalidate_copy`).
 #[cfg(ns_jit)]
 pub(crate) fn invalidate_all_optimized(mutator: &mut Mutator<'_>) {
-    let mut codes: Vec<Rc<CompiledCode>> = Vec::new();
-    for body in &mutator.jit.bodies {
-        if body.free || body.tier != Tier::Optimized {
-            continue;
-        }
-        if let Some(code) = body.code.upgrade() {
-            if !codes.iter().any(|known| Rc::ptr_eq(known, &code)) {
-                codes.push(code);
-            }
-        }
-    }
     let mut entries = Vec::new();
-    for code in codes {
-        invalidate_copies_of(mutator, &code, (&|_| true, true), &mut entries);
+    for code in mutator.jit.codes_with_optimized_bodies() {
+        invalidate_copies_of(mutator, &code, &|_| true, true, &mut entries);
     }
     refresh_cells_entering(mutator, entries);
+}
+
+/// The invalidate stress mode's round (`NS_NEXT_STRESS_INVALIDATE`), at
+/// the run loop's safepoint once optimized code has spent the countdown
+/// (`JitState::invalidation_due_for_stress`), before what was requested
+/// since the last one is installed: frees every body's copies as
+/// `invalidate_all_optimized` does, but those of a body that sits this
+/// round out (`StressBackOff`), and arms the countdown afresh. Nothing
+/// outside the mode, or before the countdown is spent.
+#[cfg(ns_jit)]
+pub(crate) fn invalidate_optimized_for_stress(mutator: &mut Mutator<'_>) {
+    if !mutator.jit.invalidate_stress() || !mutator.jit.invalidation_due_for_stress() {
+        return;
+    }
+    let mut entries = Vec::new();
+    for code in mutator.jit.codes_with_optimized_bodies() {
+        if mutator.jit.stress_round_frees(&code) {
+            invalidate_copies_of(mutator, &code, &|_| true, true, &mut entries);
+        }
+    }
+    refresh_cells_entering(mutator, entries);
+    mutator
+        .jit
+        .stress_back_offs
+        .retain(|_, back_off| back_off.code.strong_count() > 0);
+    mutator.jit.arm_invalidation_count();
+}
+
+impl JitState {
+    /// Every live body with optimized code installed, each once.
+    #[cfg(ns_jit)]
+    fn codes_with_optimized_bodies(&self) -> Vec<Rc<CompiledCode>> {
+        let mut codes: Vec<Rc<CompiledCode>> = Vec::new();
+        for body in &self.bodies {
+            if body.free || body.tier != Tier::Optimized {
+                continue;
+            }
+            if let Some(code) = body.code.upgrade() {
+                if !codes.iter().any(|known| Rc::ptr_eq(known, &code)) {
+                    codes.push(code);
+                }
+            }
+        }
+        codes
+    }
 }
 
 /// Drops every key's row whose receiver's or entered application's id a
@@ -6295,6 +6401,10 @@ pub(crate) fn invalidate_applications(_mutator: &mut Mutator<'_>, _rebuilt: &[Di
 /// Without a JIT there is no optimized code to invalidate.
 #[cfg(not(ns_jit))]
 pub(crate) fn invalidate_all_optimized(_mutator: &mut Mutator<'_>) {}
+
+/// Without a JIT there is no optimized code to invalidate.
+#[cfg(not(ns_jit))]
+pub(crate) fn invalidate_optimized_for_stress(_mutator: &mut Mutator<'_>) {}
 
 /// Without a JIT no body has a key's row.
 #[cfg(not(ns_jit))]

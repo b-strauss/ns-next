@@ -1342,10 +1342,12 @@ impl Interpreter {
     }
 
     /// Turns the invalidate stress mode (`NS_NEXT_STRESS_INVALIDATE`) on
-    /// or off for this interpreter: on, with the optimize stress mode,
-    /// every safepoint frees all optimized code before it installs what
-    /// was requested since the last one; off, the optimize stress mode left
-    /// on. A test hook, set before the code it is meant for runs.
+    /// or off for this interpreter: on, with the optimize stress mode, the
+    /// optimized code compiled from now on leaves for a safepoint at every
+    /// tenth interrupt point it passes, which frees the copies of every
+    /// body but those backing off before it installs what was requested
+    /// since; off, the optimize stress mode left on. A test hook, set
+    /// before the code it is meant for runs.
     #[doc(hidden)]
     pub fn set_invalidate_stress(&mut self, stress: bool) {
         self.enter(|mutator| {

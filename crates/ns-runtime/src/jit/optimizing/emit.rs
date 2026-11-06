@@ -98,10 +98,19 @@ pub(in crate::jit) fn emit(
         snapshot,
     };
     let order = &allocation.positions.order;
-    let push_entry = emitter.labels[order
-        .first()
-        .expect("internal: a graph has an entry block")
-        .index()];
+    let first = *order.first().expect("internal: a graph has an entry block");
+    // The push enters here, past the prologue, which falls through, and
+    // before the first block, whose own label a back edge may jump to with
+    // values in registers: the entry's countdown, if any, sees the frame
+    // as the interpreter left it.
+    let push_entry = body.macro_assembler.assembler().label();
+    body.macro_assembler.assembler().bind(push_entry);
+    let first_program_counter = graph.block(first).program_counter;
+    body.program_counter = first_program_counter;
+    body.macro_assembler
+        .set_program_counter(first_program_counter);
+    body.macro_assembler
+        .count_down_at_entry(first_program_counter);
     for (index, block) in order.iter().enumerate() {
         emitter.block(body, *block, order.get(index + 1).copied());
     }

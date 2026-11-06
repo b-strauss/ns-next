@@ -214,18 +214,11 @@ impl World {
         self.mutator.jit.rotate_deoptimization_countdown();
     }
 
-    /// Under the invalidate stress mode, invalidates all optimized code
-    /// (`jit::invalidate_all_optimized`) once it ran long enough since the
-    /// last invalidation (`JitState::invalidation_due_for_stress`): at the
-    /// run loop's safepoint, before what was requested since the last one
-    /// is installed, so that every copy is freed after a stretch it could
-    /// run in. Nothing outside the mode.
+    /// The invalidate stress mode's round, when the countdown its
+    /// optimized code spends says one is due
+    /// (`jit::invalidate_optimized_for_stress`). Nothing outside the mode.
     pub(crate) fn invalidate_optimized_for_stress(&mut self) {
-        let jit = &self.mutator.jit;
-        if jit.invalidate_stress() && jit.invalidation_due_for_stress() {
-            crate::jit::invalidate_all_optimized(&mut self.mutator);
-            self.mutator.jit.arm_invalidation_count(true);
-        }
+        crate::jit::invalidate_optimized_for_stress(&mut self.mutator);
     }
 
     /// Whether a body's optimization budget ran out since the last

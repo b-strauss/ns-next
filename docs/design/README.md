@@ -427,7 +427,7 @@ NS_NEXT_STRESS_EXIT=1 cargo nextest run --workspace     # every poll in machine 
 NS_NEXT_STRESS_ZONE=1 cargo nextest run --workspace     # compacting the code zone at safepoints, every body no activation runs freed (every other compaction keeping each body that has optimized code, slid), the reservations given back as under COLLECT
 NS_NEXT_STRESS_OPTIMIZE=1 cargo nextest run --workspace # every body's optimization budget armed at 0, so that the next safepoint compiles its optimized code once its baseline code first spends
 NS_NEXT_STRESS_DEOPT=1 cargo nextest run --workspace    # OPTIMIZE, and optimized code leaving at every n-th interrupt point it passes, n rotating at each safepoint
-NS_NEXT_STRESS_INVALIDATE=1 cargo nextest run --workspace # OPTIMIZE, and every safepoint freeing all optimized code before it installs what was requested since the last
+NS_NEXT_STRESS_INVALIDATE=1 cargo nextest run --workspace # OPTIMIZE, and optimized code leaving for a safepoint at every tenth interrupt point it passes, which frees every body's copies -- a body freed often sitting out ever more rounds -- before it installs what was requested since
 NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every body interpreted, in every build
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings

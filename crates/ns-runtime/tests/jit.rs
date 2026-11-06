@@ -832,6 +832,11 @@ ns_runtime::for_each_lowering! {
     fn a_hot_loop_requests_its_body_s_optimization(lowering) {
         let (answer, statistics) = run_spending(HOT_LOOP, lowering);
         assert_eq!(answer, 20_000_100_000);
+        // The invalidate stress mode frees the copies the requests made,
+        // and each body asks for its copy again at its next spend.
+        if the_stress_mode_is_on("INVALIDATE") {
+            return;
+        }
         let requested = match lowering {
             Lowering::Optimized => 1,
             Lowering::Reference => 2,
@@ -1022,9 +1027,9 @@ fn pins_the_tiers(lowering: Lowering) -> bool {
 /// optimizing every body at once, or by leaving machine code at every
 /// poll or interrupt point -- the cache stress mode among them, since it
 /// holds the safepoint request, which every poll takes, and vacates the
-/// caches there -- and by freeing every copy at every safepoint, the
-/// invalidate stress mode. The wide stress mode changes no machine code's
-/// decision.
+/// caches there -- and by freeing the copies at every tenth interrupt
+/// point optimized code passes, the invalidate stress mode. The wide
+/// stress mode changes no machine code's decision.
 const MODES_THAT_CHANGE_THE_COPY: [&str; 11] = [
     "MOVES",
     "COLLECT",
@@ -1453,6 +1458,12 @@ ns_runtime::for_each_lowering! {
                 1
             );
         }
+        // Only the statistic shows the copy freed: no receiver carries the
+        // old application's id after the install, so a copy left keyed on
+        // it would never be entered again. `invalidate_applications` frees
+        // its memory early; it prevents no wrong answer, which the
+        // reclaim's dropping of the rows does
+        // (`a_copy_keyed_on_a_reclaimed_id_is_freed`).
         let statistics_before = interpreter.jit_statistics();
         assert_eq!(send_unary(&mut interpreter, &subject, "edit"), 0);
         let statistics_after = since(interpreter.jit_statistics(), statistics_before);
@@ -1472,10 +1483,11 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// Under the invalidate stress mode every safepoint frees all
-    /// optimized code before it installs what was requested since the
-    /// last, and the bodies are optimized afresh at their next run-out:
-    /// copies are installed and freed run after run, and the answers hold.
+    /// Under the invalidate stress mode optimized code leaves for a
+    /// safepoint at every tenth interrupt point it passes, which frees
+    /// the copies before it installs what was requested since, and the
+    /// bodies are optimized afresh at their next run-out: copies are
+    /// installed and freed run after run, and the answers hold.
     fn under_the_invalidate_stress_copies_are_freed_and_the_answer_holds(lowering) {
         let (mut interpreter, class) = load_with(ONE_METHOD_ON_TWO_APPLICATIONS, lowering);
         interpreter.set_jit_stress(true);
