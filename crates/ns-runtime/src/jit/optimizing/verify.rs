@@ -3,14 +3,6 @@
 //! value only where it is defined, and a phi has an input for each way in.
 //! The rules apply to the blocks reachable from block 0; an unreachable
 //! block never runs.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the optimizing compiler's emitter, Task 5's, is the verifier's first caller"
-    )
-)]
-
 use super::graph::{Block, BlockId, End, Graph, Node, Place, ValueId};
 
 /// What `verify` refuses in a graph.

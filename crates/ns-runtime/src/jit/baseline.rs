@@ -49,7 +49,9 @@ pub(crate) struct BaselineBody {
     pub(crate) twin_transfers: Vec<TwinTransfer>,
     /// The index of the data word holding the address the code spends its
     /// optimization budget from (`MacroAssembler::spend_budget`), if it
-    /// spends any: 0 until the JIT points it at the body's row.
+    /// spends any: it names the unpointed budget
+    /// (`MachineWord::UnpointedBudget`) until the JIT points it at the
+    /// body's row.
     pub(crate) budget_word: Option<usize>,
 }
 

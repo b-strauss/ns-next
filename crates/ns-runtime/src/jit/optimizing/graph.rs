@@ -9,14 +9,6 @@
 //! frame, so after one every register is read again from its frame word
 //! (`Node::FrameRead`). Every node but a frame node is register
 //! arithmetic that emits no call.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the optimizing compiler's emitter, Task 5's, is the graph's first caller"
-    )
-)]
-
 use crate::bytecode::IntegerOperation;
 
 use super::snapshot::SnapshotInstruction;
@@ -69,6 +61,7 @@ pub(crate) enum Place {
 }
 
 /// What defines a value, as `Graph::definition` answers it.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Definition<'graph> {
     Phi(&'graph Phi),
@@ -330,6 +323,7 @@ impl Graph {
     }
 
     /// The phi or node that defines `value`.
+    #[cfg(test)]
     pub(crate) fn definition(&self, value: ValueId) -> Definition<'_> {
         let ValueDefinition { block, place } = self.values[value.index()];
         let block = self.block(block);
@@ -340,6 +334,7 @@ impl Graph {
     }
 
     /// The blocks that head a loop, in block order.
+    #[cfg(test)]
     pub(crate) fn loop_heads(&self) -> impl Iterator<Item = BlockId> + '_ {
         self.blocks
             .iter()

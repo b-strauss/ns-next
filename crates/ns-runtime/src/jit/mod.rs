@@ -507,6 +507,14 @@ pub(crate) struct JitSlot {
     /// (`abandon_optimized`), which doubles the budget its next
     /// optimization waits for (`optimization_budget_after`).
     optimized_abandonments: Cell<u32>,
+    /// Whether the optimizing compiler refused the body for a reason no
+    /// compaction removes -- too large for the zone, or unassembled -- so
+    /// that it is never requested nor compiled again: a recompile of its
+    /// baseline code, after an abandonment or a compaction that freed it,
+    /// arms a full budget, which would otherwise ask for the same refusal
+    /// once per budget for the rest of the run. Kept, as `twin_refused`
+    /// is, across every change of the baseline code's state.
+    optimized_refused: Cell<bool>,
 }
 
 /// What `JitSlot::optimized` holds for a body without optimized code.
@@ -527,6 +535,7 @@ impl Default for JitSlot {
             back_jumps: Cell::new(0),
             optimized: Cell::new(NO_BODY),
             optimized_abandonments: Cell::new(0),
+            optimized_refused: Cell::new(false),
         }
     }
 }
@@ -1240,7 +1249,8 @@ pub(crate) struct JitState {
     /// The installed bodies, by index in `bodies`, whose budget word is
     /// still to be pointed at their row, which only a caller holding the
     /// heap can do (`after_compile_trigger`). Emptied by a compaction,
-    /// which renumbers the bodies: a word left 0 is pointed at its first
+    /// which renumbers the bodies: a word left naming the unpointed
+    /// budget (`MachineWord::UnpointedBudget`) is pointed at its first
     /// spend.
     budget_words_to_point: Vec<u32>,
     /// The budget a body's row is armed with: `OPTIMIZATION_BUDGET`, but
@@ -3644,6 +3654,9 @@ pub(crate) fn budget_spent(mutator: &mut Mutator<'_>, spent_from: u64, code_addr
         return;
     }
     mutator.heap.park_optimization_budget(budget.id);
+    if code.jit.optimized_refused.get() {
+        return;
+    }
     let requested = Rc::as_ptr(&code);
     let requests = &mut mutator.jit.optimization_requests;
     requests.retain(|request| request.strong_count() > 0);
@@ -3681,13 +3694,14 @@ pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
 /// push, every cell of a method it is the body of and its machine entry
 /// row enter the optimized code, its prologue the baseline's, while a
 /// frame that goes on mid-body goes on in the baseline code. A body the
-/// optimizing compiler refuses stays in baseline code, its budget parked
-/// for good, as its request left it, so that it is not requested again;
-/// one whose code the zone has no room for asks for a compaction and has
-/// its budget armed afresh.
+/// optimizing compiler refuses stays in baseline code, its budget parked,
+/// as its request left it, and the refusal recorded
+/// (`JitSlot::optimized_refused`), so that it is not requested again,
+/// whatever becomes of its baseline code; one whose code the zone has no
+/// room for asks for a compaction and has its budget armed afresh.
 #[cfg(ns_jit)]
 fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
-    if mutator.jit.optimized(code).is_some() {
+    if code.jit.optimized_refused.get() || mutator.jit.optimized(code).is_some() {
         return;
     }
     let Some(body) = mutator.jit.installed(code) else {
@@ -3756,7 +3770,10 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
             defer_optimization(mutator, code);
             return;
         }
-        Err(_) => return,
+        Err(_) => {
+            code.jit.optimized_refused.set(true);
+            return;
+        }
     };
     mutator.jit.bodies[lean as usize].optimized_needed = 0;
     code.jit.optimized.set(index);
@@ -4851,12 +4868,13 @@ fn abandon_optimized(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
 }
 
 /// The budget a body whose optimized code was abandoned `abandonments`
-/// times -- none for one never abandoned -- is armed with: `budget` doubled at each abandonment, at most
-/// `MAXIMUM_REVIVAL_DOUBLINGS` times, as an abandoned body's revival
-/// backs off (`revival_entries`), so that a body whose optimized code
-/// always exits is compiled at most once per sixteen budgets once the cap
-/// is reached; and decay halves the abandonments (`JitSlot::decay_exits`),
-/// so that the wait shrinks again in a run that allocates.
+/// times -- none for one never abandoned -- is armed with: `budget`
+/// doubled at each abandonment, at most `MAXIMUM_REVIVAL_DOUBLINGS` times,
+/// as an abandoned body's revival backs off (`revival_entries`), so that a
+/// body whose optimized code always exits is compiled at most once per
+/// sixteen budgets once the cap is reached; and decay halves the
+/// abandonments (`JitSlot::decay_exits`), so that the wait shrinks again in
+/// a run that allocates.
 #[cfg(ns_jit)]
 fn optimization_budget_after(budget: i64, abandonments: u32) -> i64 {
     budget.saturating_mul(1 << abandonments.min(MAXIMUM_REVIVAL_DOUBLINGS))
@@ -5773,6 +5791,62 @@ mod tests {
                 crate::jit::optimize_requested(mutator);
                 assert!(mutator.jit.optimized(&hot).is_some());
                 assert_eq!(mutator.jit.bodies[lean as usize].optimized_needed, 0);
+            });
+        }
+
+        /// A body whose optimized code the zone could not hold even empty
+        /// is refused for good: once the refusal is recorded, a budget
+        /// armed afresh -- as a recompile of its baseline code arms one --
+        /// runs out without requesting the body, and a request still
+        /// pending compiles nothing.
+        #[test]
+        fn an_optimization_refused_for_good_is_never_requested_again() {
+            let mut interpreter = pinning_the_budget();
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                let zone = mutator.jit.zone.as_mut().expect("a zone");
+                zone.limit = zone.bodies_start + 1;
+                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                crate::jit::optimize_requested(mutator);
+                assert!(mutator.jit.optimized(&code).is_none());
+                assert!(code.jit.optimized_refused.get(), "the refusal is recorded");
+                let spent = mutator.jit.statistics.optimize_nanoseconds;
+                let index = code.jit.map.get();
+                let inside = {
+                    let body = &mutator.jit.bodies[index as usize];
+                    let zone = mutator.jit.zone.as_ref().expect("a zone");
+                    zone.writer
+                        .zone()
+                        .executable_address(CodeOffset(body.start + 1))
+                };
+                let row = mutator.heap.optimization_budget_of(&code).address;
+                mutator.heap.forget_optimization_budget(&code);
+                crate::jit::budget_spent(mutator, row, inside);
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::jit::OPTIMIZATION_BUDGET),
+                    "armed afresh"
+                );
+                let requests = mutator.jit.statistics.optimization_requests;
+                crate::jit::budget_spent(mutator, row, inside);
+                assert!(mutator.jit.optimization_requests.is_empty());
+                assert_eq!(
+                    mutator.jit.statistics.optimization_requests, requests,
+                    "not requested"
+                );
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::heap::OPTIMIZATION_BUDGET_PARKED),
+                    "parked"
+                );
+                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                crate::jit::optimize_requested(mutator);
+                assert_eq!(
+                    mutator.jit.statistics.optimize_nanoseconds, spent,
+                    "nothing compiled"
+                );
             });
         }
 

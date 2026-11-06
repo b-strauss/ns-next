@@ -326,7 +326,18 @@ impl Emitter<'_> {
                 End::FrameJump {
                     target: entered, ..
                 } if index + 1 == block.nodes.len() => self.labels[entered.index()],
-                _ => after,
+                // Only the frame node a `FrameJump` ends on jumps elsewhere:
+                // a mirror send's failure that some later change left
+                // before another node would go on after the template
+                // instead, a wrong way taken at exit status 0.
+                _ => {
+                    debug_assert_eq!(
+                        target,
+                        program_counter + 1,
+                        "internal: a template's jump the block does not end on goes to the next instruction"
+                    );
+                    after
+                }
             };
             body.set_start(target, label);
         }
@@ -411,6 +422,13 @@ impl Emitter<'_> {
             End::FrameJump {
                 next: fall_through, ..
             } => {
+                // The frame node it ends with holds no value past it, so no
+                // way out owes a move: one set of moves here would serve
+                // the template's jump and the fall-through alike.
+                debug_assert!(
+                    self.allocation.moves_at(end_definition).is_empty(),
+                    "internal: a frame jump's ways out move nothing"
+                );
                 self.moves(body, end_definition);
                 jump_unless_next(body, &self.labels, *fall_through);
             }

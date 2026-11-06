@@ -11196,9 +11196,13 @@ value's own: a simple node computes in the registers no value is
 allocated to (`Roles::integer_temporaries`), each taken through
 `MacroAssembler::temporary`, which a debug build checks against the
 registers `MacroAssembler::hold_values` names, a leaf call's
-clobbers included. A refused compile -- too many instructions, or code
-the assembler cannot lay out -- leaves the body in baseline code, its
-budget parked for good.
+clobbers included. A refused compile -- too many instructions, code
+the assembler cannot lay out, or code too large for the zone even
+empty -- leaves the body in baseline code, its budget parked and the
+refusal recorded on its slot (`JitSlot::optimized_refused`), which no
+change of its baseline code's state clears: a recompile of the baseline
+code, after an abandonment or a compaction that freed it, arms a full
+budget, whose spend then parks the row again and requests nothing.
 
 ### The two tiers' entries
 

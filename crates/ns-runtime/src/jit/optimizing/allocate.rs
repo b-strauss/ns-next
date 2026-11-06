@@ -33,14 +33,6 @@
 //!
 //! Nothing here emits code, and no move takes a temporary but the idioms'
 //! scratch register (`Spot::Scratch`), as `Roles::allocatable` requires.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the optimizing compiler's emitter, Task 5's, is the allocation's first caller"
-    )
-)]
-
 use std::collections::BTreeMap;
 
 use ns_assembler::Register;
@@ -153,6 +145,7 @@ impl Allocation {
     }
 
     /// How many values live at `position` are in their frame words.
+    #[cfg(test)]
     pub(crate) fn in_frame_word_at(&self, position: u32) -> usize {
         (0..self.location_at.len())
             .map(|index| ValueId(u32::try_from(index).expect("internal: a value id fits a u32")))

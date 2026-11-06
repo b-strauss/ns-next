@@ -22,14 +22,6 @@
 //! back on its way in, since no later write-back knows its value, unless
 //! the leftover analysis taints the register there (`Binding::STALE`).
 //! Each write-back is a use of its value, so the value lives until it.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the optimizing compiler's emitter, Task 5's, is the allocation's first caller"
-    )
-)]
-
 use std::ops::Range;
 
 use super::graph::{Block, BlockId, End, Graph, Node, ValueId};
@@ -472,6 +464,7 @@ impl Intervals {
 /// The live ranges of `graph`'s values over its blocks in `order`, which
 /// `block_order` gives, knowing nothing of the leftover analysis: every
 /// binding a merge does not carry on is written back on its way in.
+#[cfg(test)]
 pub(crate) fn intervals(graph: &Graph, order: &[BlockId]) -> Intervals {
     intervals_knowing(graph, order, None)
 }

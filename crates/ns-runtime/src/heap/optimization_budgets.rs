@@ -17,10 +17,11 @@
 //! (`jit::baseline`), which the JIT points at the row once the code is
 //! installed, and afresh after every full collection, at the row of the
 //! id the body has then (`jit::point_budget_words_after_collection`); a
-//! word still 0 asks the leaf to point it at its first spend. A code id
-//! past `CAPACITY_ROWS` has no row: its copies spend from the sink, one
-//! more word past the rows, parked so that it never runs out in
-//! practice.
+//! word that still names the unpointed budget
+//! (`MachineWord::UnpointedBudget`) asks the leaf to point it at its
+//! first spend. A code id past `CAPACITY_ROWS` has no row: its copies
+//! spend from the sink, one more word past the rows, parked so that it
+//! never runs out in practice.
 //!
 //! The rows are committed on demand, as `machine_entries.rs`'s are, and a
 //! full collection gives the pages above the code table's length and a

@@ -835,14 +835,11 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       forward merge with no frame node between is dropped and read again
       (`optimizing/build.rs`), extra loads only; the bindings kept per
       block for the allocation's verifier are unmeasured in memory.
-    - *Checks a debug build lacks*: a template's jump redirected to the
-      block its edge enters rests on an unasserted shape
-      (`optimizing/emit.rs`, `frame_node`), the `FrameJump` end's moves,
-      always empty, are not asserted so, and the back edges' cold polls
-      are emitted under a stale hold set rather than each under its own
-      (`emit_polls`); a direct write through `assembler()` or a
-      template's `Roles` between two frame nodes is documented, not
-      guarded by `MacroAssembler::temporary`.
+    - *Checks a debug build lacks*: the back edges' cold polls are
+      emitted under a stale hold set rather than each under its own
+      (`optimizing/emit.rs`, `emit_polls`); a direct write through
+      `assembler()` or a template's `Roles` between two frame nodes is
+      documented, not guarded by `MacroAssembler::temporary`.
     - *Tests*: `SnapshotInstruction`'s fidelity tests would pass a slip
       made the same in `convert` and `unsnapshot`; a two-phi swap is
       tested on one shape only; nothing compares baseline code byte for
