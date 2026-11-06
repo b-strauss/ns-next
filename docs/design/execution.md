@@ -11492,6 +11492,28 @@ application without a copy compiles that one, as Strongtalk's counter
 per method, reset after each recompile, compiles for the receiver that
 overflows it (`recompiler/recompile.cpp:180-198`).
 
+**The key is the body, the receiver's application and the entered
+application.** Code lives on the mixin, shared by every application of
+it, so a mixin applied twice in one chain runs one body on one receiver
+at two levels, with two slot bases; Strongtalk needs no third part,
+since it copies a mixin's methods into each class and customizes them
+there (`memory/reflection.cpp:369-370`). The entered application is
+the current class's, which the call writes. A cell guarded by the
+receiver's dispatch id knows both parts on its cold path and names its
+copy's verified entry.
+
+**A `super` or private lexical site reaches its copy through the body's
+dispatching entry** (decided with the user on 2026-11-06): its cell's
+guard is S's or N's application word, not the receiver's id, so the
+cell cannot name a copy. Once a body has copies, such a cell names one
+shared stub, which compares the receiver's dispatch id and the current
+class's application with the rows of the body's table of copies, a
+reservation of its own as the machine entry table is, and jumps into
+the copy whose row matches, or into the baseline code. Every receiver of
+such a site so reaches its copy, for one indirect jump more at these
+sites only; the cell's entry stays a function of its target and the
+JIT's state.
+
 **A block body is not customized** (decided with the user on
 2026-11-06): it has one optimized copy, whose slot accesses keep their
 guards, since a block's closures come from homes of any application and
