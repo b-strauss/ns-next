@@ -310,7 +310,8 @@ pub struct JitStatistics {
     /// (`CustomizedCopy`): of `optimized_bodies`.
     pub customized_copies: u64,
     /// Calls through a method body's dispatching entry -- a `super` or
-    /// private lexical send's once the body has a customized copy
+    /// private lexical send's, and an interpreted send's (`jit::called`),
+    /// once the body has a customized copy
     /// (`targets::emit_dispatching_entry`) -- that entered the copy whose
     /// row matched: counted by the bodies compiled while the JIT counts, as
     /// `compiled_calls` is.
@@ -463,10 +464,11 @@ const MAXIMUM_REVIVAL_WAIT: u32 = REVIVAL_ENTRIES << MAXIMUM_REVIVAL_DOUBLINGS;
 
 /// The traps an optimized copy may take before it is made not entrant
 /// (`count_trap`), though no site of it trapped twice: Strongtalk's
-/// `UncommonRecompileLimit`, where the measurements of the limits start
-/// (`docs/design/execution.md`, "Speculation and its failure"). A copy whose traps are all at sites never seen to trap is
-/// still recompiled, so that one trap at each of many sites does not run
-/// on in code whose feedback is stale everywhere.
+/// `UncommonRecompileLimit`, measured and kept: 3 and 10 changed nothing
+/// (`docs/design/execution.md`, "What speculation moved"). A copy whose
+/// traps are all at sites never seen to trap is still recompiled, so
+/// that one trap at each of many sites does not run on in code whose
+/// feedback is stale everywhere.
 pub(crate) const TRAP_LIMIT: u8 = 5;
 
 /// The last version of a copy compiled with traps
@@ -474,8 +476,9 @@ pub(crate) const TRAP_LIMIT: u8 = 5;
 /// failure compiles none, and so can never be made not entrant again,
 /// and an abandonment of that one leaves the key in baseline code for
 /// good (`retire_optimized`). Strongtalk's `MaxVersions`, as
-/// `TRAP_LIMIT` is its limit. Public, since it bounds what
-/// `JitStatistics::made_not_entrant` counts of one copy.
+/// `TRAP_LIMIT` is its limit, and measured and kept as it is. Public,
+/// since it bounds what `JitStatistics::made_not_entrant` counts of one
+/// copy.
 pub const LAST_VERSION: u8 = 3;
 
 /// The interpreted entries a body abandoned for the `abandonments`th time
@@ -908,6 +911,16 @@ impl JitSlot {
     /// computing for an entry into it.
     pub(crate) fn has_copies(&self) -> bool {
         !self.copies.borrow().is_empty()
+    }
+
+    /// Whether some key's row names an installed copy: only then can the
+    /// key of an entry change which code it enters, so that an entry into
+    /// a body whose copies are all requested, freed or refused pays for
+    /// no key, and an interpreted send into it enters its baseline code
+    /// directly (`jit::called`).
+    #[inline]
+    fn has_installed_copy(&self) -> bool {
+        self.copies.borrow().iter().any(|copy| copy.body != NO_BODY)
     }
 
     /// The row for `key`, copied out.
@@ -3300,12 +3313,14 @@ fn dispatching_entry(
     if lean.feedback_base != feedback_base || lean.dispatching.is_none() {
         return None;
     }
+    // `copy_of` for each row, the body installed already: a row names
+    // its own copy.
     let has_a_copy = code
         .jit
         .copies
         .borrow()
         .iter()
-        .any(|copy| copy.body != NO_BODY && state.copy_of(code, copy.key).is_some());
+        .any(|copy| copy.body != NO_BODY && state.live_body(copy.body).is_some());
     if !has_a_copy {
         return None;
     }
@@ -3313,6 +3328,32 @@ fn dispatching_entry(
         lean.note_linked();
     }
     state.dispatching_entry_address(code)
+}
+
+/// The dispatching entry `called` enters `code`'s lean body at, compiled
+/// against `feedback_base`, while a row names an installed copy: no row
+/// is looked at further, since a row whose copy is gone stands in no
+/// dispatching row and so sends the call to the baseline code, which is
+/// what the call would enter without it. No cell is written from it.
+#[cfg(ns_jit)]
+fn called_dispatching_entry(
+    state: &JitState,
+    code: &CompiledCode,
+    feedback_base: FeedbackBase,
+) -> Option<u64> {
+    if !code.jit.has_installed_copy() {
+        return None;
+    }
+    let lean = state.installed(code)?;
+    let dispatching = lean
+        .dispatching
+        .filter(|_| lean.feedback_base == feedback_base)?;
+    let zone = state.zone.as_ref()?;
+    Some(
+        zone.writer
+            .zone()
+            .executable_address(CodeOffset(lean.start + dispatching.entry)) as u64,
+    )
 }
 
 /// No body has a dispatching entry without a JIT.
@@ -3762,19 +3803,44 @@ impl JitState {
     /// the key once it has some (`optimized_for`), its baseline code
     /// otherwise. Each starts with the same prologue and takes the same
     /// frame, so that whoever enters at the start needs no other change.
+    /// Inline, since an interpreted send into machine code asks it on
+    /// every call (`jit::called`), almost always without a key: a call
+    /// out of line cost CD 0.4% of its cycles, a body without copies
+    /// included.
+    #[inline]
     fn entered_body(
         &self,
         code: &CompiledCode,
         key: Option<CustomizationKey>,
     ) -> Option<&InstalledBody> {
-        self.optimized_for(code, key)
-            .or_else(|| self.installed(code))
+        match key {
+            None => self.optimized(code).or_else(|| self.installed(code)),
+            Some(key) => self.entered_copy(code, key),
+        }
+    }
+
+    /// `entered_body` for `key`: `optimized_for`'s answer, else
+    /// `installed`'s, with the slot's state read once.
+    #[inline(never)]
+    fn entered_copy(&self, code: &CompiledCode, key: CustomizationKey) -> Option<&InstalledBody> {
+        let baseline = self.installed(code)?;
+        let copy = code.jit.copy_row(key).map_or(NO_BODY, |row| row.body);
+        let optimized = [copy, code.jit.optimized.get()]
+            .into_iter()
+            .filter(|&index| index != NO_BODY)
+            .find_map(|index| self.live_body(index));
+        debug_assert!(
+            optimized.is_none_or(|body| body.tier == Tier::Optimized),
+            "internal: a slot's optimized code is optimized"
+        );
+        Some(optimized.unwrap_or(baseline))
     }
 
     /// Where a compiled call enters `code`'s machine code for an
     /// activation with `key` -- its prologue, the body's first byte, its
     /// optimized code's for the key once it has some -- when it has
     /// machine code in this zone compiled against `feedback_base`.
+    #[inline]
     fn machine_entry_of(
         &self,
         code: &CompiledCode,
@@ -3949,7 +4015,10 @@ pub(crate) fn machine_entry(state: &JitState, code: &CompiledCode) -> Option<Cod
 
 /// The address a compiled call enters `code` at for an activation with
 /// `key` (`entry_key`), its machine entry, when it has machine code in
-/// this zone compiled against `feedback_base`.
+/// this zone compiled against `feedback_base`. Inline, as `entered_body`
+/// is, for the interpreted sends into machine code (`called`,
+/// `called_closure`).
+#[inline]
 pub(crate) fn machine_entry_address(
     state: &JitState,
     code: &CompiledCode,
@@ -3962,16 +4031,17 @@ pub(crate) fn machine_entry_address(
 }
 
 /// The key an entry into `code` on `receiver` at `current_class` asks
-/// its copies for: `None` for a body without a row for any key, which
-/// answers the same whatever the key, so that only an entry into a
-/// customized body pays for the lookups.
+/// its copies for: `None` for a body with no copy installed for any key
+/// (`JitSlot::has_installed_copy`), whose entry answers the same whatever
+/// the key, so that only an entry into a customized body pays for the
+/// lookups.
 pub(crate) fn entry_key<'gc>(
     heap: &Heap<'gc>,
     code: &CompiledCode,
     receiver: Value<'gc>,
     current_class: Option<ClassReference<'gc>>,
 ) -> Option<CustomizationKey> {
-    if !code.jit.has_copies() {
+    if !code.jit.has_installed_copy() {
         return None;
     }
     CustomizationKey::of(heap, receiver, current_class)
@@ -3983,7 +4053,7 @@ fn activation_key(
     code: &CompiledCode,
     activation: ActivationReference,
 ) -> Option<CustomizationKey> {
-    if !code.jit.has_copies() {
+    if !code.jit.has_installed_copy() {
         return None;
     }
     let (receiver, current_class) = heap.activation_receiver_and_current_class(activation);
@@ -5568,8 +5638,13 @@ pub(crate) fn called<'gc>(
     code: &Rc<CompiledCode>,
     feedback_base: FeedbackBase,
 ) -> Called {
-    let key = entry_key(&mutator.heap, code, receiver, Some(defining_class));
-    let Some(machine_entry) = machine_entry_address(&mutator.jit, code, feedback_base, key) else {
+    // A body with a customized copy is called at its dispatching entry,
+    // whose rows find the receiver's copy in machine code, as a `super` or
+    // private lexical site's cell does: the key's lookups on this side
+    // cost CD 1.6% of its cycles, on its interpreted sends alone.
+    let machine_entry = called_dispatching_entry(&mutator.jit, code, feedback_base)
+        .or_else(|| machine_entry_address(&mutator.jit, code, feedback_base, None));
+    let Some(machine_entry) = machine_entry else {
         return Called::Refused;
     };
     if !native_stack_has_room() {

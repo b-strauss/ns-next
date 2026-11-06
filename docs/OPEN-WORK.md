@@ -845,39 +845,20 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       to of every body that has optimized code, not only of frames that
       ran it, and `deepest_forced_exit` counts the points since the last
       safepoint across all optimized code, not per activation.
-  - **Optimized `fib:` runs slower than its baseline code** (2026-11-05).
-    `bench_recursion.ns` is +0.9% against `master` with its three builds
-    apart, and the processor's counters make it cost, not placement:
-    23.95 million instructions a run against `master`'s 23.70, about
-    one more per `fib:` call, and 2.5% more cycles on average over four
-    more zone paddings each side, more at every one, while a build that
-    optimizes nothing takes fewer cycles than `master` despite its three
-    instructions of spend per call. A profile of the two copies of
-    `fib:` puts 3.2% more samples in the optimized one. The cause is the
-    depth count, not the optimized code's own work: every prologue and
-    return loads, changes and stores its machine word, one serial chain
-    through all calls, which the leaner optimized copy can no longer
-    hide behind other work. Stage 1 accepts the cost (decided
-    2026-11-05). Two ways remain: fusing a `SmallInteger`
-    comparison with its branch in optimized code, part of road step 9's
-    register allocation (the item above), which shortens the call but
-    leaves the chain; and measuring the count kept in a machine register
-    again once optimized code runs, since the 2026-11-03 measurement
-    ("The depth count in a machine register, measured and not kept") saw
-    baseline code only and rejected it for `bench_megamorphic`'s +3.7%.
-    [execution.md](design/execution.md), "What the optimizing tier's
-    foundation moved".
   - **Optimized code's sends mispredict in the shared stubs**
-    (2026-11-05). DeltaBlueTon80's optimized bodies take 3.3% fewer
-    samples than their baseline code, but the polymorphic stub and the
-    row stubs they call take 6.8% more, their type tests mispredicting
-    more often behind an optimized caller, so the program runs level
-    with a build that optimizes nothing. The first stage speculates on
-    nothing and sends through the same cells as baseline code; the
-    second stage's guard at the site is what would take the test out of
-    the shared stub. To be measured again when it is built.
-    [execution.md](design/execution.md), "What the optimizing tier's
-    foundation moved".
+    (2026-11-05). At the first stage, DeltaBlueTon80's optimized bodies
+    took 3.3% fewer samples than their baseline code, but the
+    polymorphic stub and the row stubs they call took 6.8% more, their
+    type tests mispredicting more often behind an optimized caller, so
+    the program ran level with a build that optimizes nothing. The
+    second stage's customized copies run it about 1.7% ahead of its
+    baseline code (2026-11-06), but its sends still go through the same
+    cells and shared stubs, since send sites do not speculate before
+    stage 3's type-cases, and the mispredictions were not measured
+    again: this machine's sampled profiles did not separate them. To be
+    measured again with stage 3. [execution.md](design/execution.md),
+    "What the optimizing tier's foundation moved", "What speculation
+    moved".
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any

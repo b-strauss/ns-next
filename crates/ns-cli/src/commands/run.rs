@@ -26,6 +26,7 @@ pub(crate) fn execute(
     };
     let mut loaded = program::load_program(&program, lowering);
     entry::report_jit_unavailable(&loaded.interpreter);
+    entry::count_jit_if(&mut loaded.interpreter, jit_statistics);
     let application = match program::instantiate_application(&program, &mut loaded) {
         Ok(application) => application,
         Err(code) => return code,

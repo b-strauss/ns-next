@@ -136,7 +136,9 @@ impl OptimizedCopies {
     }
 
     /// Whether the block at `address` -- the vacant block, or one
-    /// `block_address` answered -- lies within what is committed.
+    /// `block_address` answered -- lies within what is committed. Only a
+    /// debug build's check of the dispatching words after a shrink asks.
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn is_committed(&self, address: u64) -> bool {
         usize::try_from(address)
             .ok()

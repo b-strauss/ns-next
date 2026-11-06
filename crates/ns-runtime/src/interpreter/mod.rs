@@ -1369,9 +1369,12 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.set_futures_exit(futures_exit));
     }
 
-    /// Makes machine code count its backward jumps
-    /// (`JitStatistics::machine_back_edges`), which it otherwise leaves
-    /// uncounted so that a loop pays nothing for the count. A test hook.
+    /// Makes machine code compiled from now on count its backward jumps,
+    /// its compiled calls and its calls through a dispatching entry
+    /// (`JitStatistics::machine_back_edges`, `compiled_calls`,
+    /// `dispatched_calls`), which it otherwise leaves uncounted so that a
+    /// loop or a call pays nothing for the count. A test hook, and
+    /// `--jit-statistics`'s.
     #[doc(hidden)]
     pub fn set_jit_counting(&mut self, counting: bool) {
         self.enter(|mutator| mutator.jit.set_counting(counting));

@@ -74,7 +74,8 @@ enum Command {
         #[arg(long)]
         collector_statistics: bool,
         /// Print the JIT's counts and the baseline compiler's time to stderr
-        /// after the run.
+        /// after the run. It makes machine code count what it otherwise
+        /// leaves uncounted, which changes the code: time without it.
         #[arg(long)]
         jit_statistics: bool,
         /// A script of the project's `newspeak.json`: its arguments go to
@@ -128,7 +129,8 @@ enum Command {
         #[arg(long)]
         collector_statistics: bool,
         /// Print the JIT's counts and the baseline compiler's time to stderr
-        /// after the run.
+        /// after the run. It makes machine code count what it otherwise
+        /// leaves uncounted, which changes the code: time without it.
         #[arg(long)]
         jit_statistics: bool,
         /// A script of the project's `newspeak.json`: its arguments go to

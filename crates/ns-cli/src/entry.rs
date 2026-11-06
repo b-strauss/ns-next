@@ -64,7 +64,8 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
          {} resumptions after a safepoint, {} exits; optimizer: {} requests, \
          {} bodies optimized ({} customized copies) in {:.3} ms, \
          {} optimized exits ({} forced, {} traps), {} abandoned, \
-         {} made not entrant, {} refused for good, {} invalidated copies",
+         {} made not entrant, {} refused for good, {} invalidated copies, \
+         {} dispatched calls",
         statistics.compiled_bodies,
         statistics.compiled_twins,
         statistics.compile_nanoseconds as f64 / 1_000_000.0,
@@ -82,7 +83,19 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
         statistics.made_not_entrant,
         statistics.refused_for_good,
         statistics.invalidated_copies,
+        statistics.dispatched_calls,
     );
+}
+
+/// Makes machine code count what it leaves uncounted unless asked -- the
+/// calls through a dispatching entry among it
+/// (`JitStatistics::dispatched_calls`) -- when `--jit-statistics` asked
+/// for the counts. Counting changes the code compiled from here on, so a
+/// run that times passes no `--jit-statistics`.
+pub(crate) fn count_jit_if(interpreter: &mut ns_runtime::Interpreter, jit_statistics: bool) {
+    if jit_statistics {
+        interpreter.set_jit_counting(true);
+    }
 }
 
 /// Renders the entry send's outcome -- the goldens' recorded `stderr` pins

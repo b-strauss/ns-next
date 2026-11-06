@@ -8692,8 +8692,8 @@ and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
   take 1,612, 3,654 and 2,198 samples against the baseline copy's 969,
   2,066 and 1,315. The count stays in its machine word, as "The depth
   count in a machine register, measured and not kept" decided; stage 1
-  accepts the cost ([OPEN-WORK.md](../OPEN-WORK.md), "Optimized `fib:`
-  runs slower than its baseline code").
+  accepted the cost, and the second stage's customized copy runs `fib:`
+  a quarter faster than its baseline code ("What speculation moved").
 - **The short programs pay the synchronous compile inside their timed
   runs.** Json's +2.9% and RichardsTon80's +3.1% separate, and
   DeltaBlueTon80, Permute and Sieve are slower without separating. The
@@ -8819,6 +8819,204 @@ Mandelbrot's one long activation runs its optimized code from the
 second `bench` send on; the compiler thread, stage 8's, which takes the
 compile time out of the timed runs; and the stress and end-of-batch
 gates, which the batch's end runs.
+
+### What speculation moved
+
+**Measured 2026-11-06, `55ec5c1c` with the fixes below against
+`master` (`0ada2ebb`)**, by the protocol of "What the optimizing tier's
+foundation moved": three pinned release builds a side with debug
+information, a, b and c laid out as there, the code zones at the same
+three paddings on both sides; `vm::run` spans 44.1, 47.5 and 51.1 KB on
+both sides with 451 calls, and no build has a `run_stretch` or a
+`vm::run` closure of its own. Three rounds in one sitting, the order of
+the six binaries rotated each round; `--iterations 3` for CD, Havlak,
+Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest. Each
+cell is a side's medians per build pooled by geometric mean, in
+milliseconds. Between the two trees lies road step 9's second stage
+("Planned: the optimizing JIT", "Stages"): customized copies of method
+bodies and their dispatching entries, own slots at fixed offsets,
+guards and traps at arithmetic, conditionals and sites never executed,
+versions, and the invalidation per application.
+
+**Every process ran on the performance cores.** The machine, a Core
+Ultra 9 285K, has eight performance and sixteen efficiency cores, and
+Windows moved a process that ran for a few seconds onto an efficiency
+core: Mandelbrot's first timed run took 2.11 s and every later one 2.69
+s, on both sides and with the optimizer off alike, while a process held
+to the performance cores ran every one in 1.82 s, and one held to the
+efficiency cores in 2.69 s. A first sitting without the affinity
+measured CD at 4.5 s and Mandelbrot +4.1%, both the scheduler's. Each
+process of the measurement was held to the eight performance cores
+(`SetProcessAffinityMask`, the mask `0xC03C03`) from its start.
+
+| Program | master (ms) | master's builds | branch (ms) | builds | vs master | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.213 | 0.208–0.222 | 0.196 | 0.192–0.200 | -8.1% | faster |
+| `CD` | 3160.410 | 3136.144–3180.125 | 3186.813 | 3166.813–3207.447 | +0.8% | no |
+| `DeltaBlue` | 225.938 | 223.283–227.466 | 226.913 | 224.824–228.387 | +0.4% | no |
+| `DeltaBlueTon80` | 1.934 | 1.911–1.977 | 1.939 | 1.937–1.943 | +0.2% | no |
+| `Havlak` | 1157.748 | 1154.022–1161.938 | 1136.224 | 1135.476–1136.698 | -1.9% | faster |
+| `Json` | 3.613 | 3.582–3.675 | 3.510 | 3.496–3.525 | -2.9% | faster |
+| `List` | 0.198 | 0.193–0.203 | 0.192 | 0.186–0.197 | -3.2% | no |
+| `Mandelbrot` | 1836.555 | 1822.587–1852.273 | 1834.632 | 1820.806–1843.669 | -0.1% | no |
+| `NBody` | 1103.911 | 1093.069–1111.348 | 1096.758 | 1088.201–1102.014 | -0.6% | no |
+| `Permute` | 0.418 | 0.393–0.452 | 0.397 | 0.384–0.408 | -4.8% | no |
+| `Queens` | 0.323 | 0.318–0.329 | 0.310 | 0.308–0.312 | -4.1% | faster |
+| `Richards` | 17.711 | 17.457–17.852 | 17.409 | 17.351–17.442 | -1.7% | faster |
+| `RichardsTon80` | 1.822 | 1.818–1.825 | 1.783 | 1.778–1.791 | -2.2% | faster |
+| `Sieve` | 0.408 | 0.385–0.431 | 0.375 | 0.330–0.415 | -8.1% | no |
+| `Storage` | 0.672 | 0.661–0.679 | 0.681 | 0.667–0.702 | +1.2% | no |
+| `Towers` | 0.505 | 0.473–0.557 | 0.478 | 0.462–0.509 | -5.4% | no |
+| `bench_block` | 0.858 | 0.849–0.863 | 0.862 | 0.857–0.867 | +0.5% | no |
+| `bench_loop` | 0.534 | 0.526–0.538 | 0.513 | 0.503–0.523 | -3.9% | faster |
+| `bench_megamorphic` | 0.724 | 0.715–0.741 | 0.709 | 0.707–0.710 | -2.1% | faster |
+| `bench_send` | 0.517 | 0.516–0.518 | 0.496 | 0.492–0.500 | -4.0% | faster |
+| `bench_signal` | 19.534 | 19.481–19.635 | 19.551 | 19.419–19.667 | +0.1% | no |
+| `bench_while` | 6.213 | 6.078–6.370 | 6.058 | 5.898–6.253 | -2.5% | no |
+| `bench_recursion` | 0.677 | 0.675–0.679 | 0.512 | 0.463–0.541 | -24.4% | faster |
+| `bench_new` | 1.709 | 1.707–1.711 | 1.713 | 1.694–1.727 | +0.2% | no |
+| `bench_new2` | 2.863 | 2.834–2.910 | 2.841 | 2.817–2.858 | -0.8% | no |
+| `bench_newarg` | 3.001 | 2.971–3.031 | 3.004 | 2.950–3.054 | +0.1% | no |
+| `bench_do` | 0.699 | 0.687–0.710 | 0.666 | 0.646–0.679 | -4.7% | faster |
+
+The geometric mean over the twenty-seven sources is -3.17%, and each of
+the branch's three builds lies below each of `master`'s: 4.008, 3.991
+and 4.004 against 4.124, 4.133 and 4.138. No program is slower with its
+builds apart. What each difference is:
+
+- **Interpreted sends into a customized body: two slowdowns, fixed.**
+  The first sitting on the performance cores, of `55ec5c1c` as it was,
+  measured CD +1.5% and `bench_newarg` +3.1%, each with its builds
+  apart. A sampled profile of CD (xperf, three processes a side) put it
+  in `jit::called`, an interpreter's send into machine code: it computed
+  the callee's key -- the receiver's dispatch id, the instances id of
+  the current class's application through the application table -- and
+  searched the body's copies for it on every call into a body with a
+  row for any key, and `JitState::entered_body`, which `master` inlined
+  into its callers, had grown into a call that read the slot's state
+  three times; together 1.4% of CD's samples, and 0.4% with no copy at
+  all. CD's interpreted code, which its churn of baseline code keeps
+  large ("What reclamation moved"), calls customized bodies about
+  twenty million times in four runs. Now an interpreted send into a
+  body with an installed copy enters the body's dispatching entry
+  (`jit::called_dispatching_entry`), whose rows find the receiver's copy
+  in machine code as a `super` or private lexical site's cell does
+  (`dispatched_calls` counts both), any other enters its baseline or
+  uncustomized code by `entered_body`, inline again, and a key is
+  computed only for a body with an installed copy
+  (`JitSlot::has_installed_copy`). Measured on build a alone, CD went
+  from about +2.5% to about +1% over these steps, and the final measurement has
+  it +0.8%, its builds overlapping; the samples still above `master`'s
+  are spread over the exit and cell-refresh paths CD's churn runs
+  (`refresh_cells_entering_any`, `leaf_frame`, `resume_caller`), none
+  above 0.2%.
+- **`bench_recursion`'s `fib:` is a quarter faster.** Stage 1's
+  optimized `fib:` ran 0.9% slower than its baseline code, the depth
+  count's chain its critical path ("What the optimizing tier's
+  foundation moved"); now, at 200 iterations, it runs in 0.464 ms
+  against `master`'s 0.659 and a build of this tree that optimizes
+  nothing at 0.663, so the whole gain is the customized copy's, which
+  takes no trap: its `<`, `-` and `+` and the conditional speculate on
+  `SmallInteger` and `Boolean` operands and trap instead of keeping the
+  fallback sends and their merge. The branch's builds measured 0.46 or
+  0.54 ms from one round to the next, both far below `master`.
+- **Short programs, own slots and integer loops.** Bounce, Queens,
+  Richards, RichardsTon80, Json, `bench_loop`, `bench_send`,
+  `bench_megamorphic` and `bench_do` are 1.7% to 8.1% faster with their
+  builds apart: the copies read own slots at fixed offsets and their
+  arithmetic and conditionals trap instead of falling back. Havlak's
+  1.9% is the same, behind 54 customized copies.
+- **DeltaBlueTon80's optimized code now runs ahead of its baseline
+  code.** At 200 iterations, three rounds, the branch's build a runs it
+  in 1.679 to 1.692 ms against 1.711 to 1.847 for this tree with the
+  optimizer off, about 1.7% faster, where `master` ran level with its
+  own (1.712 to 1.726 against 1.706 to 1.711) as stage 1 found. Its
+  sends still go through the same cells and shared stubs as baseline
+  code's, since send sites do not speculate in this stage ("Speculation
+  and its failure"), so the mispredictions in the shared stubs stage 1
+  measured stand; xperf's sampled profiles on this machine did not
+  separate them (`OPEN-WORK.md`, "Optimized code's sends mispredict in
+  the shared stubs").
+- **Placement.** `bench_block` measured +1.9% with its builds apart in a
+  sitting before the last, while a sampled profile of 400 runs a side
+  put 96% of its samples in machine code and the same totals to 0.1%,
+  and its median at 400 iterations level (0.855 against 0.859 ms); the
+  last sitting has it +0.5%. Storage, Sieve, Permute and List move in
+  both directions between sittings without separating.
+
+**The speculation's counters**, `--jit-statistics` on build a with the
+iterations above (every process runs one more, discarded, run), which
+turns on the counts machine code otherwise leaves out and so changes
+the code: these runs time nothing.
+
+| Program | optimized (customized) | in (ms) | optimized exits | traps | made not entrant | refused for good | dispatched calls |
+|---|---|---|---|---|---|---|---|
+| `Bounce` | 3 (2) | 0.304 | 0 | 0 | 0 | 0 | 1 |
+| `CD` | 29 (16) | 2.362 | 336 | 2 | 1 | 1 | 47,997,964 |
+| `DeltaBlue` | 87 (63) | 3.992 | 166 | 30 | 15 | 0 | 84,682 |
+| `DeltaBlueTon80` | 11 (10) | 0.805 | 9 | 0 | 0 | 0 | 14 |
+| `Havlak` | 81 (54) | 4.828 | 1,416 | 6 | 3 | 0 | 26,192,328 |
+| `Json` | 19 (19) | 1.236 | 9 | 4 | 2 | 0 | 4,697 |
+| `List` | 2 (2) | 0.147 | 0 | 0 | 0 | 0 | 1 |
+| `Mandelbrot` | 4 (1) | 0.623 | 2 | 2 | 1 | 0 | 0 |
+| `NBody` | 7 (3) | 0.477 | 2 | 0 | 0 | 0 | 184 |
+| `Permute` | 4 (3) | 0.252 | 0 | 0 | 0 | 0 | 5 |
+| `Queens` | 4 (3) | 0.254 | 5 | 0 | 0 | 0 | 0 |
+| `Richards` | 28 (20) | 1.116 | 7 | 2 | 1 | 0 | 34 |
+| `RichardsTon80` | 11 (9) | 0.627 | 3 | 0 | 0 | 0 | 9 |
+| `Sieve` | 3 (1) | 0.212 | 1 | 0 | 0 | 0 | 0 |
+| `Storage` | 4 (3) | 0.225 | 1 | 0 | 0 | 0 | 8 |
+| `Towers` | 5 (4) | 0.260 | 0 | 0 | 0 | 0 | 11 |
+| `bench_block` | 3 (2) | 0.139 | 0 | 0 | 0 | 0 | 0 |
+| `bench_loop` | 2 (2) | 0.170 | 7 | 2 | 1 | 0 | 0 |
+| `bench_megamorphic` | 1 (1) | 0.173 | 8 | 0 | 0 | 0 | 0 |
+| `bench_send` | 3 (3) | 0.169 | 6 | 2 | 1 | 0 | 0 |
+| `bench_signal` | 0 (0) | 0.000 | 0 | 0 | 0 | 0 | 0 |
+| `bench_while` | 5 (2) | 0.163 | 0 | 0 | 0 | 0 | 8 |
+| `bench_recursion` | 1 (1) | 0.099 | 0 | 0 | 0 | 0 | 2 |
+| `bench_new` | 4 (2) | 0.152 | 8 | 0 | 0 | 0 | 2 |
+| `bench_new2` | 5 (2) | 0.160 | 8 | 0 | 0 | 0 | 2 |
+| `bench_newarg` | 5 (2) | 0.160 | 8 | 0 | 0 | 0 | 2 |
+| `bench_do` | 3 (2) | 0.246 | 1 | 0 | 0 | 0 | 0 |
+
+No copy was invalidated and no exit forced. Every copy made not
+entrant was made so by a second trap at one site, never by
+`TRAP_LIMIT` traps at different ones: the programs trap 2 to 30 times
+in all, two per copy retired. CD's churn of optimized code is gone --
+29 bodies optimized and 5 abandoned, where `master` optimized 159 and
+abandoned 136 -- since an abandonment raises the version and waits
+four times longer each time, and one body ran past its last version and
+stays in baseline code.
+
+**The two limits.** `TRAP_LIMIT` stays 5 and `LAST_VERSION` 3,
+Strongtalk's. On the eight programs that trap, one build of each
+variant at layout a, three rounds, `--iterations 15`, the long programs
+at 3, each against the limits as they are:
+
+| Program | 5 and 3 (ms) | `TRAP_LIMIT` 3 | `TRAP_LIMIT` 10 | `LAST_VERSION` 2 | `LAST_VERSION` 4 |
+|---|---|---|---|---|---|
+| `CD` | 3215.408 | -0.3% | -0.4% | -0.4% | -0.1% |
+| `DeltaBlue` | 223.641 | +0.9% | +0.5% | +0.1% | -0.2% |
+| `Havlak` | 1127.911 | +0.3% | +1.2% | -0.7% | +0.8% |
+| `Json` | 3.256 | -0.1% | +2.8% | +2.3% | +0.2% |
+| `Mandelbrot` | 1820.818 | -0.3% | +0.1% | -0.4% | -0.2% |
+| `Richards` | 16.758 | -0.3% | +3.2% | -0.5% | -1.2% |
+| `bench_loop` | 0.502 | +1.6% | +2.8% | +3.1% | +3.7% |
+| `bench_send` | 0.489 | -0.1% | -0.0% | -0.0% | +0.5% |
+
+Nothing separates: every difference lies within the rounds' ranges of
+one build, and the counters say why. `TRAP_LIMIT` decides nothing in
+these programs, whose copies all retire at a site's second trap, and
+the three builds trap, retire and recompile identically; `LAST_VERSION`
+changes only CD's abandonments, 4 at 2, 5 at 3 and 6 at 4, with 272,
+336 and 400 optimized exits, at -0.4%, 0 and -0.1%.
+
+**Not covered**: AArch64, which runs under QEMU only; the shared
+stubs' mispredictions, which no counter of this machine's profiles
+separated; on-stack replacement into optimized code, stage 6's, so that
+Mandelbrot's one long activation still runs a copy only from its second
+`bench` send on; the compiler thread, stage 8's; and the stress and
+end-of-batch gates, which the batch's end runs.
 
 ## The trampoline
 
@@ -11547,7 +11745,10 @@ reservation of its own as the machine entry table is, and jumps into
 the copy whose row matches, or into the baseline code. Every receiver of
 such a site so reaches its copy, for one indirect jump more at these
 sites only; the cell's entry stays a function of its target and the
-JIT's state.
+JIT's state. An interpreter's send into a body with an installed copy
+enters the same dispatching entry (`jit::called`), which writes no
+cell: finding the receiver's key there on the Rust side, on every call,
+cost CD 1.4% of its samples ("What speculation moved").
 
 **A block body is not customized** (decided with the user on
 2026-11-06): it has one optimized copy, whose slot accesses keep their
@@ -11593,9 +11794,9 @@ forward of it ends the frame's optimized code.
   version; the wait before the next grows as the budget times 4 to the
   version, Strongtalk's (`compiler/compiler.cpp:712-718`), and past the
   last version the code is compiled with no trap at all, which can never
-  loop. Collections halve the counts. The limits are measured, starting
-  from Strongtalk's 5 traps and `MaxVersions` of 3
-  (`recompiler/recompile.hpp:121`).
+  loop. Collections halve the counts. The limits are Strongtalk's 5
+  traps and `MaxVersions` of 3 (`recompiler/recompile.hpp:121`),
+  measured and kept ("What speculation moved").
 - **An abandonment is a version too** (decided with the user on
   2026-11-06): optimized code abandoned for its exits -- the templates'
   exits, not traps -- raises its pair's version and waits as a trap's

@@ -469,7 +469,8 @@ fn jit_statistics_print_one_line_to_stderr() {
          # resumptions after a safepoint, # exits; optimizer: # requests, \
          # bodies optimized (# customized copies) in # ms, \
          # optimized exits (# forced, # traps), # abandoned, \
-         # made not entrant, # refused for good, # invalidated copies"
+         # made not entrant, # refused for good, # invalidated copies, \
+         # dispatched calls"
     );
 }
 
