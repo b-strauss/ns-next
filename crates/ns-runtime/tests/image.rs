@@ -17307,6 +17307,97 @@ fn a_record_of_a_shipped_class_carries_exactly_its_layout() {
     );
 }
 
+/// A program class whose instances have two slots.
+const TWO_SLOTS: &str = indoc! {"
+    class Holder = Object new (
+      |
+        first = 1.
+        second = 2.
+      |
+    ) () : ()
+"};
+
+/// A graph section of `Holder`'s class record (object 0), its metaclass
+/// record (object 1) and an object of `Holder` (object 2), its body
+/// written by `body`.
+fn a_holder_object(body: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    class_records(3, |writer| {
+        class_record(writer, 1, 0, no_class_references);
+        metaclass_record(writer, 0);
+        writer.write_u8(CLASS_RECORD); // its class: `Holder`'s record
+        writer.write_u32(0);
+        writer.write_u32(5); // identity hash
+        body(writer);
+    })
+}
+
+/// An instance record of `fields` nil fields.
+fn instance_body(fields: u32) -> impl FnOnce(&mut encode::Writer) {
+    move |writer| {
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(fields);
+        for _ in 0..fields {
+            writer.write_u8(VALUE_NIL);
+        }
+    }
+}
+
+/// An instance of a program class carries exactly its application's
+/// slots, as every one is allocated: a customized copy reads them at
+/// fixed fields with no check, past the end of an object with fewer.
+#[test]
+fn a_record_of_a_program_class_carries_exactly_its_layout() {
+    let mut fixture = GraphFixture::with_source(TWO_SLOTS);
+    fixture.decoded(
+        &a_holder_object(instance_body(2)),
+        "a holder record",
+        |_, _| {},
+    );
+    for fields in [1, 3] {
+        let error = fixture.decode_error(&a_holder_object(instance_body(fields)));
+        assert_eq!(
+            error,
+            decode::DecodeError::ProgramInstanceFieldCount {
+                expected: 2,
+                found: fields as usize
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "an instance of a program class carries {fields} field(s), but its class lays \
+                 its instances out with 2"
+            )
+        );
+    }
+}
+
+/// An object of a program class is an instance record: an array or a
+/// string record under `Holder`'s header is refused.
+#[test]
+fn a_record_of_a_program_class_with_another_body_is_refused() {
+    let array = |writer: &mut encode::Writer| {
+        writer.write_u8(OBJECT_ARRAY);
+        writer.write_u32(2);
+        writer.write_u8(VALUE_NIL);
+        writer.write_u8(VALUE_NIL);
+    };
+    let string = |writer: &mut encode::Writer| {
+        writer.write_u8(OBJECT_STRING);
+        writer.write_str("two");
+    };
+    let mut fixture = GraphFixture::with_source(TWO_SLOTS);
+    for bytes in [a_holder_object(array), a_holder_object(string)] {
+        let error = fixture.decode_error(&bytes);
+        assert_eq!(error, decode::DecodeError::ProgramInstanceBody);
+        assert_eq!(
+            error.to_string(),
+            "an object of a program class is not an instance record, but every instance of \
+             that class is one"
+        );
+    }
+}
+
 /// A module instance holds the core library's state, as the platform holds
 /// the mirror, so the encoder names one only where a frame of shipped code
 /// holds it and refuses it anywhere else; a module's root class is no value

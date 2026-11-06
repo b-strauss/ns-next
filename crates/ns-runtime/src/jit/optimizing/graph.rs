@@ -133,6 +133,11 @@ pub(crate) enum Node {
     /// verified at the copy's entry, and whatever could replace it -- a
     /// forward, an install -- runs after an exit, past which the frame goes
     /// on in baseline code (`docs/design/execution.md`, "Customization").
+    /// Nor does it check the field exists: every object of a program class
+    /// is an ordinary instance of exactly its application's slot count,
+    /// which the allocation makes and the image decoder holds a loaded one
+    /// to (`image::decode`'s `check_program_instances`, and its checks of
+    /// a shipped class's records as they are read).
     OwnSlotLoad {
         value: ValueId,
         receiver: ValueId,

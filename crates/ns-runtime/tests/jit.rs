@@ -6681,11 +6681,11 @@ ns_runtime::for_each_lowering! {
         let offset = |interpreter: &mut Interpreter, selector: &str| {
             interpreter.jit_body_offset(&class, MethodSide::Instance, Symbol::intern(selector))
         };
-        let a_before = offset(&mut interpreter, "a");
-        let b_before = offset(&mut interpreter, "b");
+        let freed_offset_before = offset(&mut interpreter, "a");
+        let moved_offset_before = offset(&mut interpreter, "b");
         abandon_a(&mut interpreter, &subject);
         interpreter.compact_jit_zone();
-        let b_after = offset(&mut interpreter, "b");
+        let moved_offset_after = offset(&mut interpreter, "b");
         if let Err(message) = interpreter.verify_cells() {
             panic!("after the compaction: {message}");
         }
@@ -6697,15 +6697,15 @@ ns_runtime::for_each_lowering! {
         // among them, so that its bodies exit at their first send and are
         // never compiled.
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            let (Some(a_before), Some(b_before), Some(b_after)) = (a_before, b_before, b_after)
+            let (Some(freed_offset_before), Some(moved_offset_before), Some(moved_offset_after)) = (freed_offset_before, moved_offset_before, moved_offset_after)
             else {
                 panic!("`a` and `b` were compiled, and `b` survives");
             };
-            assert!(a_before < b_before, "`a` compiled first");
+            assert!(freed_offset_before < moved_offset_before, "`a` compiled first");
             assert_eq!(offset(&mut interpreter, "a"), None, "`a` is freed");
             assert!(
-                b_after < b_before,
-                "`b` moved down: {b_before:#x} to {b_after:#x}"
+                moved_offset_after < moved_offset_before,
+                "`b` moved down: {moved_offset_before:#x} to {moved_offset_after:#x}"
             );
             assert!(
                 done.called_entries >= 1,
