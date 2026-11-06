@@ -309,10 +309,10 @@ pub struct JitStatistics {
     /// The customized copies of method bodies compiled
     /// (`CustomizedCopy`): of `optimized_bodies`.
     pub customized_copies: u64,
-    /// Calls code compiled to count them made through a method body's
-    /// dispatching entry, a `super` or private lexical send's once the
-    /// body has a customized copy (`targets::emit_dispatching_entry`),
-    /// whether a row matched or not: counted while the JIT counts, as
+    /// Calls through a method body's dispatching entry -- a `super` or
+    /// private lexical send's once the body has a customized copy
+    /// (`targets::emit_dispatching_entry`) -- that entered the copy whose
+    /// row matched: counted by the bodies compiled while the JIT counts, as
     /// `compiled_calls` is.
     pub dispatched_calls: u64,
     /// Exits of optimized machine code.
@@ -1000,8 +1000,11 @@ struct Zone {
     /// (`targets::assemble_megamorphic_stub`).
     megamorphic_stub: CodeOffset,
     /// The shared tail of every method body's dispatching entry
-    /// (`targets::assemble_dispatching_stub`).
+    /// (`targets::assemble_dispatching_stub`), and the tail that counts
+    /// the calls it enters a copy by, which a body compiled while the JIT
+    /// counts jumps to.
     dispatching_stub: CodeOffset,
+    counting_dispatching_stub: CodeOffset,
     /// The stubs a cell names for a target that is no method with code
     /// (`targets::assemble_accessor_stubs`).
     accessors: AccessorStubs,
@@ -2212,6 +2215,57 @@ impl JitState {
             .get_or_insert_with(crate::heap::optimized_copies::OptimizedCopies::new)
     }
 
+    /// The bytes of the dispatching rows' reservation committed, 0 before
+    /// its first use (`Interpreter::table_sizes`).
+    pub(crate) fn optimized_copies_committed_bytes(&self) -> usize {
+        #[cfg(ns_jit)]
+        {
+            self.optimized_copies.as_ref().map_or(
+                0,
+                crate::heap::optimized_copies::OptimizedCopies::committed_bytes,
+            )
+        }
+        #[cfg(not(ns_jit))]
+        0
+    }
+
+    /// Gives back the dispatching rows' committed pages above the blocks
+    /// of `code_ids` ids, the code table's length after a full collection,
+    /// as `shrink` and `damped` say (`OptimizedCopies::shrink`), answering
+    /// the bytes given back. Called at the end of the collection, after
+    /// every body's word was pointed afresh
+    /// (`point_budget_words_after_collection`), so that none names a
+    /// block given back, which a debug build checks.
+    pub(crate) fn shrink_optimized_copies(
+        &mut self,
+        code_ids: usize,
+        shrink: crate::heap::limits::Shrink,
+        damped: bool,
+    ) -> usize {
+        #[cfg(ns_jit)]
+        {
+            let Some(table) = self.optimized_copies.as_mut() else {
+                return 0;
+            };
+            let bytes = table.shrink(code_ids, shrink, damped);
+            #[cfg(debug_assertions)]
+            for body in self.bodies.iter().filter(|body| !body.free) {
+                if let Some(dispatching) = body.dispatching {
+                    assert!(
+                        table.is_committed(dispatching.rows),
+                        "internal: a dispatching word names a block given back"
+                    );
+                }
+            }
+            bytes
+        }
+        #[cfg(not(ns_jit))]
+        {
+            let _ = (code_ids, shrink, damped);
+            0
+        }
+    }
+
     /// Writes the dispatching entry's data words of the lean body at
     /// `index` that are given -- the address of its rows, the tail's --
     /// through the zone's one writer, as every data word is written.
@@ -2281,13 +2335,21 @@ impl JitState {
     /// for a body its slot does not name, nor into the vacant block.
     #[cfg(ns_jit)]
     fn write_dispatching_rows(&mut self, lean: u32) {
-        let Some(address) = self
-            .live_body(lean)
-            .and_then(|body| body.dispatching)
-            .map(|dispatching| dispatching.rows)
-        else {
+        let Some(body) = self.live_body(lean) else {
             return;
         };
+        let Some(address) = body.dispatching.map(|dispatching| dispatching.rows) else {
+            return;
+        };
+        // A body its slot no longer names may still name the block of the
+        // body that took its place, whose rows are that body's to write.
+        let named = body
+            .code
+            .upgrade()
+            .is_some_and(|code| self.named_body(&code) == Some(lean as usize));
+        if !named {
+            return;
+        }
         let rows = self.dispatching_rows_of(lean);
         self.copies_table().write(address, &rows);
     }
@@ -2619,6 +2681,7 @@ fn zone_with_paddings(
         polymorphic_stub: CodeOffset(0),
         megamorphic_stub: CodeOffset(0),
         dispatching_stub: CodeOffset(0),
+        counting_dispatching_stub: CodeOffset(0),
         accessors: AccessorStubs {
             getters: Vec::new(),
             setters: Vec::new(),
@@ -2662,7 +2725,12 @@ fn zone_with_paddings(
     .ok()?;
     zone.dispatching_stub = install(
         &mut zone,
-        &targets::assemble_dispatching_stub(Abi::host()).bytes,
+        &targets::assemble_dispatching_stub(Abi::host(), false).bytes,
+    )
+    .ok()?;
+    zone.counting_dispatching_stub = install(
+        &mut zone,
+        &targets::assemble_dispatching_stub(Abi::host(), true).bytes,
     )
     .ok()?;
     let (accessors, entries) = targets::assemble_accessor_stubs(Abi::host());
@@ -3250,6 +3318,20 @@ impl JitState {
     pub(crate) fn dispatching_stub_address(&self) -> u64 {
         self.zone.as_ref().map_or(0, |zone| {
             zone.writer.zone().executable_address(zone.dispatching_stub) as u64
+        })
+    }
+
+    /// The address of the dispatching entry's tail a body compiled with
+    /// `counting` jumps to: the one that counts the calls it enters a copy
+    /// by, or the shared tail; 0 where there is no zone.
+    pub(crate) fn dispatching_tail_address(&self, counting: bool) -> u64 {
+        if !counting {
+            return self.dispatching_stub_address();
+        }
+        self.zone.as_ref().map_or(0, |zone| {
+            zone.writer
+                .zone()
+                .executable_address(zone.counting_dispatching_stub) as u64
         })
     }
 
@@ -3951,7 +4033,7 @@ fn install_body(
     // moves.
     if dispatching.is_some() {
         let vacant = state.copies_table().vacant_address();
-        let tail = state.dispatching_stub_address();
+        let tail = state.dispatching_tail_address(settings.counting);
         state.write_dispatching_words(map, Some(vacant), Some(tail));
     }
     Ok(map)
@@ -7588,7 +7670,14 @@ mod cross_assembly_tests {
             ("refusing", stubs::assemble_refusing_stub(abi)),
             ("polymorphic", targets::assemble_polymorphic_stub(abi)),
             ("megamorphic", targets::assemble_megamorphic_stub(abi)),
-            ("dispatching", targets::assemble_dispatching_stub(abi)),
+            (
+                "dispatching",
+                targets::assemble_dispatching_stub(abi, false),
+            ),
+            (
+                "counting dispatching",
+                targets::assemble_dispatching_stub(abi, true),
+            ),
         ];
         for (name, assembled) in &stubs {
             assert_instructions(name, &assembled.bytes);

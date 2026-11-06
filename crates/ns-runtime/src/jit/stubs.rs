@@ -102,8 +102,9 @@ pub(crate) enum BlockWord {
     /// word (`Heap::eden_cursor_address`), which an allocation in machine
     /// code bumps in place (`MacroAssembler::bump_allocate`).
     EdenCursor = 22,
-    /// The calls code compiled to count them made through a body's
-    /// dispatching entry (`JitStatistics::dispatched_calls`).
+    /// The calls through a body's dispatching entry that entered a copy,
+    /// counted by the tail a body compiled to count jumps to
+    /// (`JitStatistics::dispatched_calls`).
     DispatchedCalls = 23,
     /// The address of the machine entry table's row 0
     /// (`Heap::machine_entries_address`), where a closure stub finds the

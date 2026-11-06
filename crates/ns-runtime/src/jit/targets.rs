@@ -292,9 +292,15 @@ pub(crate) fn assemble_megamorphic_stub(abi: Abi) -> Assembled {
 /// dispatch id, which the cell's guard compare reads the same way: one
 /// load from the class object, where the id would take the application
 /// id table's bound check and two loads more.
-pub(crate) fn assemble_dispatching_stub(abi: Abi) -> Assembled {
+///
+/// The zone holds two: one that, when `counting`, counts each call it
+/// enters a copy by (`JitStatistics::dispatched_calls`), which a body
+/// compiled while the JIT counts jumps to, and one that counts nothing,
+/// so that a body compiled while nobody counts pays nothing for it.
+pub(crate) fn assemble_dispatching_stub(abi: Abi, counting: bool) -> Assembled {
     use crate::heap::optimized_copies::{RowWord, DISPATCHING_ROWS, ROW_BYTES};
     let mut macro_assembler = MacroAssembler::new(abi);
+    macro_assembler.set_count_back_edges(counting);
     let roles = macro_assembler.roles();
     let (rows, baseline) = (roles.dispatching_rows(), roles.dispatching_baseline());
     let (receiver, class) = (roles.callee_receiver(), roles.callee_class());
@@ -304,22 +310,25 @@ pub(crate) fn assemble_dispatching_stub(abi: Abi) -> Assembled {
     macro_assembler.jump_unless_object(class, unmatched);
     macro_assembler.load_guard(guard, receiver);
     macro_assembler.load_application_word(word, class);
-    let assembler = macro_assembler.assembler();
     let row_word = |row: i32, word: RowWord| Memory {
         base: rows,
         displacement: row * ROW_BYTES + word.displacement(),
     };
     let rows_count = i32::try_from(DISPATCHING_ROWS).expect("internal: eight rows");
     for row in 0..rows_count {
+        let assembler = macro_assembler.assembler();
         let next = assembler.label();
         assembler.compare_memory(guard, row_word(row, RowWord::Receiver));
         assembler.jump_if(Condition::NotEqual, next);
         assembler.compare_memory(word, row_word(row, RowWord::Entered));
         assembler.jump_if(Condition::NotEqual, next);
+        macro_assembler.count_dispatched_call();
+        let assembler = macro_assembler.assembler();
         assembler.load(Width::Word64, entry, row_word(row, RowWord::Entry));
         assembler.jump_into_called(entry);
         assembler.bind(next);
     }
+    let assembler = macro_assembler.assembler();
     assembler.bind(unmatched);
     assembler.jump_into_called(baseline);
     finish_stub(macro_assembler)
@@ -327,8 +336,8 @@ pub(crate) fn assemble_dispatching_stub(abi: Abi) -> Assembled {
 
 /// A method body's dispatching entry, at `entry`, which `jit::cell_entry`
 /// names for a `super` or private lexical site once the body has
-/// optimized copies: entered as the body's prologue is, it counts the
-/// call when the code counts, hands the shared tail
+/// optimized copies: entered as the body's prologue is, it hands the
+/// shared tail
 /// (`assemble_dispatching_stub`) the address of the body's dispatching
 /// rows from its data word `rows_word` and the body's own machine entry,
 /// `start`, and jumps to the tail, whose address is its data word
@@ -337,8 +346,9 @@ pub(crate) fn assemble_dispatching_stub(abi: Abi) -> Assembled {
 /// points it at the block of the body's code id, and afresh after every
 /// full collection, which may free that id and mint it for another body
 /// (`jit::point_budget_word`); the tail lies among the stubs, which never
-/// move. The machine entry is reached relative to the code, which a
-/// compaction moves whole.
+/// move: the counting tail for a body compiled while the JIT counts. The
+/// machine entry is reached relative to the code, which a compaction
+/// moves whole.
 pub(crate) fn emit_dispatching_entry(
     macro_assembler: &mut MacroAssembler,
     entry: Label,
@@ -355,7 +365,6 @@ pub(crate) fn emit_dispatching_entry(
     let assembler = macro_assembler.assembler();
     assembler.bind(entry);
     assembler.enter_called();
-    macro_assembler.count_dispatched_call();
     macro_assembler.load_body_word(rows, rows_word);
     macro_assembler.load_body_word(tail, tail_word);
     let assembler = macro_assembler.assembler();
@@ -1443,10 +1452,12 @@ mod tests {
     #[test]
     fn the_dispatching_stub_assembles_on_both_architectures() {
         for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
-            let assembled = super::assemble_dispatching_stub(abi);
-            assert!(!assembled.bytes.is_empty(), "{abi:?}");
-            if abi == Abi::Aapcs64 {
-                assert_eq!(assembled.bytes.len() % 4, 0, "whole instructions");
+            for counting in [false, true] {
+                let assembled = super::assemble_dispatching_stub(abi, counting);
+                assert!(!assembled.bytes.is_empty(), "{abi:?}");
+                if abi == Abi::Aapcs64 {
+                    assert_eq!(assembled.bytes.len() % 4, 0, "whole instructions");
+                }
             }
         }
     }
@@ -1455,12 +1466,13 @@ mod tests {
     /// receiver's dispatch id and the current class's application word,
     /// and the body's baseline code when no row holds both -- a row with
     /// the receiver's id but another application, a vacant block -- each
-    /// of the three fakes exiting at a program counter of its own.
+    /// of the three fakes exiting at a program counter of its own; its
+    /// counting form counts exactly the calls it entered a copy by.
     #[test]
     fn the_dispatching_stub_enters_the_copy_whose_row_matches() {
         let layout = crate::heap::Heap::machine_layout();
         let mut machine = Machine::new();
-        let tail = machine.install(&super::assemble_dispatching_stub(Abi::host()));
+        let tail = machine.install(&super::assemble_dispatching_stub(Abi::host(), true));
         // A callee entered as a cell's call enters it, exiting at
         // `program_counter`.
         let mut callee = |program_counter: u32| {
@@ -1513,12 +1525,19 @@ mod tests {
                 assembler.jump_register(roles.send_entry);
             });
             let mut frame = [0u64; 8];
-            let (exit, _) = machine.run(entry, &mut frame, 0, false, &mut (), &[]);
+            let (exit, block) = machine.run(entry, &mut frame, 0, false, &mut (), &[]);
             assert_eq!(
                 exit,
                 MachineExit::Reexecute {
                     program_counter: expected
                 }
+            );
+            // The counting tail counts the calls it enters a copy by, and
+            // no other.
+            assert_eq!(
+                block[BlockWord::DispatchedCalls.index()],
+                u64::from(expected == 2),
+                "counted as matched"
             );
         }
     }

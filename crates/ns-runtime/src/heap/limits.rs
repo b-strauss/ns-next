@@ -333,6 +333,12 @@ pub(crate) const MACHINE_ENTRIES_SHRINK: Shrink = Shrink {
     threshold: 1 << 20,
     headroom: 512 << 10,
 };
+/// The dispatching rows' pair (`heap/optimized_copies.rs`), for 48 MiB
+/// of address space, the machine entry table's.
+pub(crate) const OPTIMIZED_COPIES_SHRINK: Shrink = Shrink {
+    threshold: 1 << 20,
+    headroom: 512 << 10,
+};
 /// The application id table's pair.
 pub(crate) const APPLICATION_IDS_SHRINK: Shrink = Shrink {
     threshold: 1 << 20,
@@ -353,6 +359,7 @@ pub struct ShrinkPairs {
     pub stack: Shrink,
     pub cells: Shrink,
     pub machine_entries: Shrink,
+    pub optimized_copies: Shrink,
     pub application_ids: Shrink,
     pub code_zone: Shrink,
     /// Whether every shrink is damped (`ShrinkDamping`); false gives back
@@ -367,6 +374,7 @@ impl Default for ShrinkPairs {
             stack: STACK_SHRINK,
             cells: CELLS_SHRINK,
             machine_entries: MACHINE_ENTRIES_SHRINK,
+            optimized_copies: OPTIMIZED_COPIES_SHRINK,
             application_ids: APPLICATION_IDS_SHRINK,
             code_zone: CODE_ZONE_SHRINK,
             damped: true,
@@ -451,6 +459,9 @@ pub struct TableSizes {
     pub machine_entry_rows_committed: usize,
     /// Rows of the application id table committed.
     pub application_id_rows_committed: usize,
+    /// Bytes of the dispatching rows' reservation committed
+    /// (`heap/optimized_copies.rs`), 0 before its first use.
+    pub optimized_copies_committed_bytes: usize,
 }
 
 #[cfg(test)]

@@ -722,7 +722,6 @@ impl JitState {
                 .expect("internal: a body's words lie in the committed zone");
             u64::from_le_bytes(bytes.try_into().expect("eight bytes"))
         };
-        let tail = self.dispatching_stub_address();
         for (index, body) in self.bodies.iter().enumerate() {
             let Some(dispatching) = body.dispatching.filter(|_| !body.free) else {
                 continue;
@@ -734,7 +733,7 @@ impl JitState {
             );
             assert_eq!(
                 word_at(body.start + dispatching.tail_word),
-                tail,
+                self.dispatching_tail_address(body.settings.counting),
                 "internal: a dispatching entry's tail word names the tail"
             );
             let named = body

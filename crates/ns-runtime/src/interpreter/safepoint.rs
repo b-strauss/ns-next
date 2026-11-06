@@ -433,6 +433,7 @@ impl Interpreter {
                 stack: one_page,
                 cells: one_page,
                 machine_entries: one_page,
+                optimized_copies: one_page,
                 application_ids: one_page,
                 code_zone: one_page,
                 damped: false,

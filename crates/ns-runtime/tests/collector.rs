@@ -792,6 +792,7 @@ fn only_the_stack_shrinks(damped: bool) -> ns_runtime::ShrinkPairs {
     ns_runtime::ShrinkPairs {
         cells: never,
         machine_entries: never,
+        optimized_copies: never,
         application_ids: never,
         code_zone: never,
         damped,

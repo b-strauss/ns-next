@@ -455,6 +455,15 @@ impl World {
         let bytes = self.mutator.jit.shrink_zone(pairs.code_zone, pairs.damped);
         self.mutator.heap.count_decommit(bytes);
         self.mutator.heap.shrink_reservations();
+        // After `point_budget_words_after_collection`, which pointed every
+        // body's dispatching word at a block below the code table's ids.
+        let code_ids = self.mutator.heap.table_sizes().code_ids;
+        let bytes = self.mutator.jit.shrink_optimized_copies(
+            code_ids,
+            pairs.optimized_copies,
+            pairs.damped,
+        );
+        self.mutator.heap.count_decommit(bytes);
         let bytes = self.mutator.caches.shrink_cells(pairs.cells, pairs.damped);
         self.mutator.heap.count_decommit(bytes);
     }
@@ -480,6 +489,7 @@ impl World {
             zone_returns,
             zone_committed_bytes: mutator.jit.zone_committed_bytes(),
             cells_committed_bytes: mutator.caches.cells_committed_bytes(),
+            optimized_copies_committed_bytes: mutator.jit.optimized_copies_committed_bytes(),
             ..mutator.heap.table_sizes()
         }
     }

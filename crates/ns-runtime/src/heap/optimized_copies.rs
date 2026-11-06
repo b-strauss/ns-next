@@ -96,11 +96,19 @@ pub(crate) type Row = [u64; ROW_WORDS];
 const VACANT_ROW: Row = [VACANT, 0, 0];
 
 /// The table: a reservation of `CAPACITY_IDS` blocks past the vacant
-/// block 0, committed as blocks are pointed at.
+/// block 0, committed as blocks are pointed at, and given back above the
+/// code table's ids after a full collection (`shrink`).
 pub(crate) struct OptimizedCopies {
     reservation: Reservation,
-    /// How many blocks are committed, block 0 among them.
+    /// The bytes committed, a multiple of the page.
+    committed: usize,
+    /// How many whole blocks the committed bytes hold, block 0 among them.
     blocks: usize,
+    /// How far the next shrink goes (`shrink`).
+    damping: super::limits::ShrinkDamping,
+    /// Whether it committed more since the last shrink: demand, which
+    /// keeps the next collection from shrinking it.
+    grew: bool,
 }
 
 impl OptimizedCopies {
@@ -112,10 +120,62 @@ impl OptimizedCopies {
             Reservation::reserve(bytes).unwrap_or_else(|_| super::out_of_memory(bytes));
         let mut table = OptimizedCopies {
             reservation,
+            committed: 0,
             blocks: 0,
+            damping: super::limits::ShrinkDamping::default(),
+            grew: false,
         };
         table.commit_through(0);
+        table.grew = false;
         table
+    }
+
+    /// The bytes committed, which `Interpreter::table_sizes` reports.
+    pub(crate) fn committed_bytes(&self) -> usize {
+        self.committed
+    }
+
+    /// Whether the block at `address` -- the vacant block, or one
+    /// `block_address` answered -- lies within what is committed.
+    pub(crate) fn is_committed(&self, address: u64) -> bool {
+        usize::try_from(address)
+            .ok()
+            .and_then(|address| address.checked_sub(self.reservation.base_address()))
+            .is_some_and(|offset| offset + BLOCK_BYTES <= self.committed)
+    }
+
+    /// Gives back the committed pages above the blocks of `high_ids` code
+    /// ids and `shrink`'s headroom once more than its threshold lies above
+    /// them (`limits::Shrink`), and answers how many bytes that was.
+    /// `high_ids` is the code table's length after a full collection
+    /// truncated it, called once every body's word was pointed afresh
+    /// (`jit::point_budget_words_after_collection`): a live body's names
+    /// the block of an id below it, a dead one's the vacant block, so no
+    /// word names a block given back.
+    pub(crate) fn shrink(
+        &mut self,
+        high_ids: usize,
+        shrink: super::limits::Shrink,
+        damped: bool,
+    ) -> usize {
+        let high_mark = (high_ids.min(CAPACITY_IDS) + 1) * BLOCK_BYTES;
+        let Some(end) = shrink.keep(
+            &mut self.damping,
+            damped,
+            std::mem::take(&mut self.grew),
+            high_mark.min(self.committed),
+            self.committed,
+        ) else {
+            return 0;
+        };
+        let committed = self.committed;
+        self.committed = end;
+        self.blocks = end / BLOCK_BYTES;
+        match self.reservation.decommit(end..committed) {
+            Ok(()) => committed - end,
+            // Counted uncommitted, the next growth commits them again.
+            Err(_) => 0,
+        }
     }
 
     /// The address of the vacant block, which matches no receiver.
@@ -193,32 +253,68 @@ impl OptimizedCopies {
     /// Commits the blocks through `block`, and a generous margin past it,
     /// each vacant.
     fn commit_through(&mut self, block: usize) {
-        let committed = self.blocks * BLOCK_BYTES;
+        self.grew = true;
+        let committed = self.committed;
         let page = Reservation::page_size();
         let capacity = ((CAPACITY_IDS + 1) * BLOCK_BYTES).div_ceil(page) * page;
         let needed = ((block + 1) * BLOCK_BYTES).div_ceil(page) * page;
         let generous = (committed + committed.max(MINIMUM_GROWTH)).div_ceil(page) * page;
-        let committed_end = committed.div_ceil(page) * page;
         let target = needed.max(generous).min(capacity);
-        let end = if self.reservation.commit(committed_end..target).is_ok() {
+        let end = if self.reservation.commit(committed..target).is_ok() {
             target
-        } else if self.reservation.commit(committed_end..needed).is_ok() {
+        } else if self.reservation.commit(committed..needed).is_ok() {
             needed
         } else {
-            super::out_of_memory(needed - committed_end)
+            super::out_of_memory(needed - committed)
         };
         let blocks = end / BLOCK_BYTES;
         let (start, stop) = (self.blocks * BLOCK_BYTES, blocks * BLOCK_BYTES);
         if let Some(words) = self.reservation.words_mut(start..stop) {
             words.as_chunks_mut::<ROW_WORDS>().0.fill(VACANT_ROW);
         }
+        self.committed = end;
         self.blocks = blocks;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{OptimizedCopies, DISPATCHING_ROWS, VACANT};
+    use super::{OptimizedCopies, BLOCK_BYTES, DISPATCHING_ROWS, VACANT};
+    use crate::heap::limits::Shrink;
+
+    /// After a full collection the table gives back what lies above the
+    /// code table's ids and the headroom, once more than the threshold
+    /// does and it grew no more since the last shrink, keeping the vacant
+    /// block and every block below the mark with its rows; a later
+    /// pointing past it commits the blocks again, vacant.
+    #[test]
+    fn the_table_gives_back_the_blocks_above_the_code_table() {
+        let page = ns_memory::Reservation::page_size();
+        let pair = Shrink {
+            threshold: page,
+            headroom: page,
+        };
+        let mut table = OptimizedCopies::new();
+        let kept = table.block_address(2);
+        table.write(kept, &[[11, 3, 0x3000]]);
+        let far = table.block_address(20_000);
+        table.write(far, &[[12, 3, 0x4000]]);
+        let grown = table.committed_bytes();
+        assert!(grown >= 20_001 * BLOCK_BYTES);
+        assert_eq!(table.shrink(3, pair, false), 0, "a growth since keeps it");
+        let given_back = table.shrink(3, pair, false);
+        assert!(given_back > 0);
+        assert_eq!(table.committed_bytes(), grown - given_back);
+        assert!(table.committed_bytes() <= (4 * BLOCK_BYTES + page).next_multiple_of(page));
+        assert!(table.is_committed(table.vacant_address()) && table.is_committed(kept));
+        assert!(!table.is_committed(far));
+        assert_eq!(table.rows(kept), vec![[11, 3, 0x3000]]);
+        assert!(table.rows(far).is_empty(), "given back");
+        let again = table.block_address(20_000);
+        assert_eq!(again, far);
+        assert!(table.rows(again).is_empty(), "committed again, vacant");
+        assert_eq!(table.shrink(3, pair, false), 0, "grown again");
+    }
 
     /// A block holds what was last written into it, its other rows
     /// vacant, and the vacant block is never written: a body's word that
