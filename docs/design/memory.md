@@ -76,7 +76,12 @@
 > which each reservation beside it gives memory back), `heap/symbols.rs`
 > (the weak table of the symbols a program makes), `heap/machine_entries.rs`
 > (the machine entry table, whose rows a full collection's free of a code
-> id clears and whose committed rows it gives back), `heap/world.rs` (the step
+> id clears and whose committed rows it gives back),
+> `heap/optimization_budgets.rs` (each body's optimization budget by its
+> code id, which a full collection carries over to the id the body has
+> after it and whose rows past the code table it gives back;
+> [execution.md](execution.md), "The optimizing tier's foundation"),
+> `heap/world.rs` (the step
 > state at rest, the entry that lends it out, `StepRoots`, `World::collect`
 > and `World::scavenge`),
 > `interpreter/mod.rs` (`Mutator`, and `Interpreter::enter` with the
@@ -86,7 +91,8 @@
 > (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
 > the switches of the memory-facing stress modes: moves, caches, collection,
 > scavenges, every instruction wide, suspensions and the code zone's
-> compaction; the JIT's and the exits' are in `jit/mod.rs`, which also
+> compaction; the JIT's, the exits', the optimizer's and the
+> deoptimizations' are in `jit/mod.rs`, which also
 > reads the zone's to force the JIT on),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
@@ -1941,6 +1947,7 @@ and the stress runs check that each bound is lowered before its pages go:
 | the cells (1 GiB reserved) | 32 MiB / 16 MiB, Spur's | the end of `sites` after the sites' slide ([dispatch.md](dispatch.md), "Code families"), and the polymorphic pool's length; the global rows never shrink | each region's committed end, which only Rust reads: machine code reads a site's cell only for a live range and a block's only for one a site names |
 | the activation stack | 4 MiB / 2 MiB | the stack's top; a 100,000-deep recursion commits about 16 MiB | the committed end and the ordinary end, with its machine word `OrdinaryStackEnd` (`FrameStack::shrink`) |
 | the machine entry table | 1 MiB / 512 KiB | the code table's length after its truncation | the committed rows and their machine word `MachineEntryRows`, which the closure stubs compare an id with |
+| the optimization budget rows | the machine entry table's pair | the code table's length after its truncation | nothing: every budget word was pointed at a row of an id the table holds before ([execution.md](execution.md), "The optimizing tier's foundation", "The budget") |
 | the application id table | 1 MiB / 512 KiB | the rows recorded after the application rows' truncation | nothing: machine code's bound, `ApplicationIdRows`, is the rows recorded, which the truncation lowered |
 | the code zone (16 MiB by default) | 2 MiB / 1 MiB | the zone's next offset, after its compaction slid the survivors down ([execution.md](execution.md), "The code zone") | the writer's committed end (`CodeWriter::decommit_above`) |
 
@@ -2286,7 +2293,7 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are nine stress modes, each a gate of its own at the end of a batch,
+There are eleven stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
@@ -2301,7 +2308,13 @@ each of these six keeping the safepoint flag set while it is on,
 enters its machine code at every push, even when that exits at once, and
 `NS_NEXT_STRESS_EXIT`, which makes every poll in machine code -- every
 backward jump it takes -- take its exit, as if a safepoint were
-requested.
+requested, `NS_NEXT_STRESS_OPTIMIZE`, which arms every body's
+optimization budget at 0, so that the next safepoint compiles its
+optimized code once its baseline code first spends, and
+`NS_NEXT_STRESS_DEOPT`, which implies it and makes optimized code leave
+at every n-th interrupt point it passes, n rotating at each safepoint
+([execution.md](execution.md), "The optimizing tier's foundation",
+"Verification").
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
 than at a limit, paced by heap size like `STRESS_MOVE_BUDGET`
@@ -2953,7 +2966,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name nine stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name eleven stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit

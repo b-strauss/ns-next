@@ -60,8 +60,18 @@ Rust 1.98.0, edition 2021, seven crates:
   the entry, which bodies are entered and abandonment in `jit/mod.rs`;
   `execution.md`, "The baseline JIT's foundation", "Sends, returns and
   the exit that materializes", "The entry at a send", "Stage 4: closures,
-  non-local return, allocation and the barrier", "The code zone") and the
-  send machinery it calls
+  non-local return, allocation and the barrier", "The code zone"), the
+  optimizing JIT's first stage beside it (`jit/optimizing/`: a body whose
+  budget -- a row per code id in `heap/optimization_budgets.rs`, which
+  its baseline code spends through a data word of each copy's -- runs
+  out is snapshotted at the next safepoint (`snapshot.rs`), built into
+  an SSA graph (`build.rs`), its values kept in machine registers by a
+  linear scan between interrupt points (`liveness.rs`, `allocate.rs`,
+  `metadata.rs`) and emitted through the baseline's templates
+  (`emit.rs`), installed beside its baseline code, entered at a push or
+  a compiled call and left for the baseline code wherever a frame goes
+  on mid-body; `execution.md`, "The optimizing tier's foundation") and
+  the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
@@ -470,7 +480,9 @@ hands the instruction to the interpreter, never re-applies it. A leaf
 (`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
 activation and never pushes; only the miss leaf, the initializer leaf
 and the forcing leaf compile and install a callee, and the twin leaf
-the running body's twin; and a leaf answers "re-execute" only
+the running body's twin -- the budget leaf only records a body's
+optimization request, which the run loop's safepoint compiles and
+installs (`jit::optimize_requested`); and a leaf answers "re-execute" only
 before it changed anything but a send's argument slots, which the mirror
 leaf places as the interpreter does and which nothing reads after the
 send but the send re-executed. Every body compiles lean, and its
@@ -499,7 +511,16 @@ frame, a home not running, suspended or below the entry frame, an
 unwind marker's activation between, a return address into a stub
 before the home, and a home that catches no return.
 A new instruction is one arm of `jit::baseline::lower` plus the
-macro-assembler idioms it lacks, never a second dispatch; the run loop
+macro-assembler idioms it lacks, never a second dispatch, and optimized
+code (`jit/optimizing/emit.rs`) emits every instruction it does not
+lower as a simple node -- register arithmetic that emits no call --
+through the very template function the baseline's arm for it calls,
+after writing back into the frame every value it holds that the frame
+word does not hold yet, so that at every interrupt point the frame is
+the interpreter's word for word; it leaves no store out, its code is
+entered only at its start, and a frame that goes on mid-body goes on in
+the baseline code (`execution.md`, "The optimizing tier's
+foundation"); the run loop
 enters machine code through `jit::entered` and `jit::resumed`, a send it
 delivers through `jit::called` and `jit::called_closure` (`mod.rs`);
 the entry block's lasting words -- what does not move between entries --
@@ -524,10 +545,16 @@ address of its own but those relative to `rip`.
 No word machine code reads or writes between two leaf calls lives inline
 in `Mutator`: frame registers and object fields lie in the activation
 stack's and the object space's reservations, the cells, the
-application id table and the machine entry table in reservations of
-their own, a body's closure and outer-local sites among its data words
-in the code zone, moved and freed with it and written only through the
-zone's writer (`JitState::write_body_words`), all outside it, and
+application id table, the machine entry table and the optimization
+budget rows in reservations of their own, a body's closure and
+outer-local sites among its data words in the code zone, moved and
+freed with it and written only through the zone's writer
+(`JitState::write_body_words`), and each copy's budget word, the
+address of its body's budget row, among them, written through the same
+writer by `JitState::write_budget_word` -- once the code is installed
+and afresh after every full collection, which may free the code id the
+row is indexed by (`jit::point_budget_words_after_collection`), or the
+word names another body's row -- all outside it, and
 every other such word lives in the heap's machine words
 (`heap/machine_words.rs`) or the entry block (`ns_memory::EntryBlock`),
 `Cell`s behind an `Rc` each. `CodeZone::enter` holds the mutator as a
@@ -592,7 +619,7 @@ every one runs on 18 threads.
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy, warning-free, for `aarch64-pc-windows-msvc`, a target without a JIT, where no `cfg(ns_jit)` code is compiled, and for `aarch64-apple-darwin`, Apple's JIT (`rustup target add` both) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
-| `stress` | the suite under the nine stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `stress` | the suite under the eleven stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
 | `linux` | in Docker, in an x86_64 container of the image `ns-next-gates` (`xtask/docker/Dockerfile`, built first, cached by Docker), the checkout mounted read-only and rsynced into a working-copy volume of its own, `ns-next-gates-<hash of the checkout's path>-work` (what a `.gitignore` names and `prior-art` excluded; `target` and cargo's registry volumes of their own, so a second run builds incrementally and two checkouts never share one; a linked worktree's git metadata mounted read-only instead of copied): `cargo xtask shipped-code`, `cargo clippy --workspace --all-targets` warning-free, the default suite on as many threads as the container has CPUs, the doctests, and the benchmark programs with their Java counterparts (profile `benchmarks-verify`, as `benchmarks` runs them; the image has a JDK), all for `x86_64-unknown-linux-gnu` | the end of a batch that changed the runtime |
 | `aarch64` | in Docker, the same image and copy, then the shipped code, clippy for `aarch64-unknown-linux-gnu` warning-free, and the suite cross-compiled for it, run through the image's own `qemu-aarch64`, a pinned QEMU release, as the target's runner, which also starts every `ns-next` and `ns-next-analyzer` a test starts (`aarch64-linux-gnu-gcc` the linker, `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64`, `QEMU_LD_PREFIX=/usr/aarch64-linux-gnu`, `RUST_MIN_STACK=8388608`), no doctests (`docs/design/execution.md`, "Tests"); about 8.5 minutes | the end of a batch that changed the runtime |

@@ -6,7 +6,11 @@
 > **Code:** `crates/ns-runtime/src/resolver/`, `dispatch.rs`,
 > `interpreter/resolve.rs` (every send's lookup, `doesNotUnderstand:`, and
 > `act`, which runs what a lookup found), `interpreter/inline_cache.rs` (the
-> caches), `interpreter/mod.rs` (`decide_send`, the uncached explicit-receiver
+> caches, whose fill after a miss also raises the running body's
+> optimization budget, and whose entries the optimizing compiler's
+> snapshot reads as layout only, `InlineCaches::saw_only_receivers_of`;
+> [execution.md](execution.md), "The optimizing tier's foundation"),
+> `interpreter/mod.rs` (`decide_send`, the uncached explicit-receiver
 > send), `interpreter/sends.rs` (the uncached lexical and super sends),
 > `interpreter/instantiate.rs` (`decide_factory`, the action of a factory
 > entry, and the factory body's allocation, which reads per instantiation

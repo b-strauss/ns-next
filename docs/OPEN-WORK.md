@@ -29,12 +29,23 @@ Maglev's shape, the repository's own backend, a compiler thread fed a
 snapshot, customization per receiver application, traps by default,
 inlining planned by frequency, unboxed numbers, frame objects for
 inlined activations, partial escape analysis and invalidation per
-application, in ten stages. Next is its **first stage, the foundation
-without speculation** -- the graph, linear scan, the emitters, the
-metadata and raw area, a synchronous compile on a snapshot installed at
-a safepoint, the budget, the verifiers and two stress modes -- which
-gets its plan next. Beside it stand what the baseline's stages left to
-the steps after them (the items under step 8).
+application, in ten stages. Its first stage, the foundation without
+speculation, is built (2026-11-06; "The optimizing tier's foundation"):
+a budget per body that baseline code spends, a snapshot compiled at the
+safepoint into an SSA graph, a linear scan that keeps values in machine
+registers between interrupt points and writes them back before each,
+the code emitted through the baseline's templates and installed beside
+its baseline code, abandonment, and the optimize and deopt stress
+modes; measured -1.45% on the geometric mean against `master`
+("What the optimizing tier's foundation moved"). Next is its **second
+stage, speculation**: customization per (body, receiver application),
+guards that trap by default, the feedback's groundwork without
+counting, the rules against deoptimization loops with their version
+cap, the invalidation per application and `NS_NEXT_STRESS_INVALIDATE`
+("Planned: the optimizing JIT", "Stages"), which gets its plan next.
+Beside it stand what the first stage left (the items under step 9) and
+what the baseline's stages left to the steps after them (the items
+under step 8).
 
 Road step 8 is complete (2026-11-04): the baseline JIT, Cog's class,
 in six stages ("The baseline JIT's foundation", "Sends, returns and the
@@ -759,33 +770,111 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class, designed with the user
   on 2026-11-04 and 2026-11-05 ([execution.md](design/execution.md),
-  "Planned: the optimizing JIT"), in ten stages, none built: the
-  foundation without speculation; speculation with customization, traps
-  and invalidation; inlining; frame objects for inlined activations;
-  numbers; on-stack replacement into optimized code; counting at
-  polymorphic and megamorphic sites; the compiler thread; escape
-  analysis with late inlining; range analysis. Left by the design to
-  measurement, each in the stage that builds it: every threshold and
-  limit (the budget's, the inlining plan's, the trap limit, the last
-  version), what the budget costs baseline code at each entry and back
-  jump, the share of polymorphic and megamorphic sends in the benchmarks
-  before their counting is built, and the counting window's size and
-  rhythm.
+  "Planned: the optimizing JIT"), in ten stages, the first built
+  (2026-11-06; "The optimizing tier's foundation"): the foundation
+  without speculation, built; speculation with customization, traps
+  and invalidation, next; inlining; frame objects for inlined
+  activations; numbers, with the raw area; on-stack replacement into
+  optimized code; counting at polymorphic and megamorphic sites; the
+  compiler thread; escape analysis with late inlining; range analysis.
+  The first stage measured the budget (240,000 instructions, a sixth of
+  it after a cache change) and its spend in baseline code ("What the
+  optimizing tier's foundation moved"). Left by the design to
+  measurement, each in the stage that builds it: the inlining plan's
+  limits, the trap limit, the last version, the share of polymorphic and
+  megamorphic sends in the benchmarks before their counting is built,
+  and the counting window's size and rhythm. What the first stage left:
   - **Register allocation over a body** (decided with the user on
     2026-11-03): a frame register's value kept in a machine register
-    across instructions and the merges of the inlined forms, an
+    across instructions and merges is built in the first stage, a
+    linear scan between interrupt points ("The optimizing tier's
+    foundation", "The allocation and the write-back"), its registers
+    `Roles::allocatable`, `r13` and `x22` among them. Open: an
     immediate literal taken as an operand, and a `SmallInteger`
-    comparison fused with the branch that tests it. The baseline has no
-    register cache: measured before it was built, one would have served
-    27% to 75% of the frame loads and moved the geometric mean by about
-    1%, inside the noise, and a fusable comparison runs at most 0.08
-    times per instruction. Only a store a body provably needs no longer
-    may be left out, and only once the collector's pre-pass nils what
-    the frame did not write, or the leftover analysis is broken.
-    `r13` is left free for it, `x22` under AAPCS64 (`Roles::of`).
-    Its allocator is the optimizing tier's linear scan, built in the
-    first stage. [execution.md](design/execution.md), "The register
-    cache", "What a register cache would move".
+    comparison fused with the branch that tests it, which runs at most
+    0.08 times per instruction. Only a store a body provably needs no
+    longer may be left out, and only once the collector's pre-pass nils
+    what the frame did not write, or the leftover analysis is broken;
+    the first stage leaves none out. [execution.md](design/execution.md),
+    "The register cache", "What a register cache would move".
+  - **The stores and reloads at a fast path's merge** (2026-11-05). An
+    `IntegerBinary`'s fast path and its fallback send meet in a merge
+    whose phis the allocator keeps in registers where the fast way first
+    reaches it, so the fallback way writes back every dirty binding
+    before its send and reloads after it, and a binding dead and
+    untainted at a merge is stored on every pass through its way in,
+    as frame consistency at every interrupt point requires. Two rules
+    took most of it away: a float-fed site is sent alone
+    (`Snapshot::fallback_taken`), and a natural loop's head leaves a
+    register its frame word where every way in brings it so. The
+    fallback-merge phis remain, on the sites that saw `SmallInteger`s
+    and something else; a phi of the optimizer's own for a dead dirty
+    register, or the merge's state chosen from the way the counts of
+    stage 7 say is taken, would remove them.
+    [execution.md](design/execution.md), "The optimizing tier's
+    foundation", "What the optimizing tier's foundation moved".
+  - **Abandonments halved at every collection can hold the back-off at
+    2x for ever** (2026-11-05). A body whose optimized code is abandoned
+    has its budget armed at the budget doubled per abandonment, and the
+    decay at every collection halves the abandonments with the exits
+    (`jit::optimization_budget_after`, `JitSlot::decay_exits`), so a
+    body whose optimized code keeps exiting in a program that collects
+    between its abandonments never backs off further than about twice
+    the budget, and is recompiled and abandoned without end. The second
+    stage's version cap, past which the code is compiled with no trap
+    and can never loop, is what breaks it ("Planned: the optimizing
+    JIT", "Speculation and its failure").
+    [execution.md](design/execution.md), "The optimizing tier's
+    foundation", "Exits, abandonment and the code zone".
+  - **No stress mode runs optimized code through the zone's
+    compactions** (2026-11-06). The zone stress mode compacts at the
+    safepoints its schedule picks, after the optimizing compile at the
+    same safepoint has installed its code, and frees every body no
+    activation runs -- the optimized code just installed among them,
+    before any frame enters it: over `SUM_OF_SQUARES_BY_SENDS`
+    (`crates/ns-runtime/tests/jit.rs`) 100,001 bodies are optimized and
+    not one optimized exit is taken. A compaction that slides, frees and
+    remaps optimized code a frame has run is covered by
+    `a_compaction_slides_optimized_code` (`tests/jit.rs`) and
+    `a_hot_optimized_body_outlives_a_colder_one_at_a_usage_compaction`
+    (`jit/zone.rs`) only, and the deopt tests that count forced exits
+    skip the count under the mode
+    (`the_zone_stress_mode_frees_optimized_code_unrun`). Compacting
+    before the install, or sparing the code installed at the same
+    safepoint, would let the mode cover it.
+    [execution.md](design/execution.md), "The optimizing tier's
+    foundation", "Verification".
+  - **What the first stage's reviews left** (2026-11-05), none a wrong
+    answer, each in `crates/ns-runtime/src/jit/`:
+    - *Costs*: `sends::call_slots`' path for an instruction that is no
+      cached send decodes and clones it, on the exit's, the cut's and
+      the materialization's paths only; a frame read valid across a
+      forward merge with no frame node between is dropped and read again
+      (`optimizing/build.rs`), extra loads only; the bindings kept per
+      block for the allocation's verifier are unmeasured in memory.
+    - *Checks a debug build lacks*: a template's jump redirected to the
+      block its edge enters rests on an unasserted shape
+      (`optimizing/emit.rs`, `frame_node`), the `FrameJump` end's moves,
+      always empty, are not asserted so, and the back edges' cold polls
+      are emitted under a stale hold set rather than each under its own
+      (`emit_polls`); a direct write through `assembler()` or a
+      template's `Roles` between two frame nodes is documented, not
+      guarded by `MacroAssembler::temporary`.
+    - *Tests*: `SnapshotInstruction`'s fidelity tests would pass a slip
+      made the same in `convert` and `unsnapshot`; a two-phi swap is
+      tested on one shape only; nothing compares baseline code byte for
+      byte with the code before the snapshot form, a probe that ran once
+      over 14,106 bodies and was removed; `futures_exit` in optimized
+      code has no test of its own; `a_deferred_optimization_keeps_its_back_off`
+      runs the held path twice and never the full zone's install path
+      its comment names; `a_full_collection_keeps_what_is_left_of_a_budget`
+      runs in debug builds only, `collect_now` having no release
+      counterpart; `deep_recursion_optimized.ns`'s second loop never
+      passes its first turn, since the recursion overflows in it.
+    - *Statistics*: `optimized_bodies_resumed` counts the frames returned
+      to of every body that has optimized code, not only of frames that
+      ran it, and `deepest_forced_exit` counts the points since the last
+      safepoint across all optimized code, not per activation.
   - **Optimized `fib:` runs slower than its baseline code** (2026-11-05).
     `bench_recursion.ns` is +0.9% against `master` with its three builds
     apart, and the processor's counters make it cost, not placement:
@@ -2613,7 +2702,9 @@ program's subclass of `String` as an argument, the error of a
   close it; `a_full_collection_keeps_what_is_left_of_a_budget` and
   `a_hot_loop_requests_its_body_s_optimization`
   (`crates/ns-runtime/tests/jit.rs`) are exempt under
-  `NS_NEXT_STRESS_ZONE` for it, an exemption to remove with the fix.
+  `NS_NEXT_STRESS_ZONE` for it, and the exemption's comment names this
+  item, so that it is removed, and the tests hold under the zone stress
+  mode again, with the fix.
 
 ## Missing tests
 
