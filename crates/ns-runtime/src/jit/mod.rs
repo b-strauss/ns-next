@@ -1460,6 +1460,12 @@ pub(crate) struct JitState {
     /// instruction, or, for a refused push, the code the caller's call
     /// returns into. Cleared with `walked` before every entry.
     pub(crate) walked_optimized: bool,
+    /// Whether the miss leaf refused the last call for a callee that has
+    /// no machine code yet but may still be compiled -- counting its
+    /// entries, never compiled or freed by a compaction: a refusal that
+    /// says nothing of the caller's code (`resumption_after_exit`).
+    /// Cleared with `walked` before every entry.
+    pub(crate) refused_for_an_uncompiled_callee: bool,
     /// The block every entry hands machine code (`stubs::BlockWord`), kept
     /// from one entry to the next: an entry writes only the words that
     /// name its frame and its code, the others when `block_stale` says
@@ -1810,6 +1816,7 @@ impl JitState {
             cut: cut::CutWalk::default(),
             walked: None,
             walked_optimized: false,
+            refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -2797,6 +2804,7 @@ impl JitState {
             cut: cut::CutWalk::default(),
             walked: None,
             walked_optimized: false,
+            refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -4046,6 +4054,14 @@ pub(crate) fn note_entry_by_call(
     if compiles {
         note_entry(state, code, feedback_base, method);
     }
+}
+
+/// Notes that the miss leaf refuses a compiled call to `code`, which has
+/// no machine code to enter: a refusal that says nothing of the caller's
+/// code when `code` may still be compiled, which the exit then counts
+/// against no budget (`resumption_after_exit`).
+pub(crate) fn note_call_refused(state: &mut JitState, code: &CompiledCode) {
+    state.refused_for_an_uncompiled_callee = state.may_compile(code);
 }
 
 /// Compiles `code` into the zone and records the outcome in its slot and
@@ -5450,6 +5466,7 @@ fn run_machine_code(
     mutator.jit.statistics.machine_entries += 1;
     mutator.jit.walked = None;
     mutator.jit.walked_optimized = false;
+    mutator.jit.refused_for_an_uncompiled_callee = false;
     let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
     // was materialized, none goes on interpreted and nothing exited.
@@ -5646,6 +5663,7 @@ fn call_through(
     mutator.jit.statistics.called_entries += 1;
     mutator.jit.walked = None;
     mutator.jit.walked_optimized = false;
+    mutator.jit.refused_for_an_uncompiled_callee = false;
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
         // No exit took the seed.
@@ -5887,6 +5905,20 @@ fn resumption_after_exit(
     // The interpreter's push, at the safepoint, decides the depth limit.
     let refused_for_a_request = matches!(exit, MachineExit::PushRefused { at_the_bound: true })
         && mutator.heap.real_safepoint_requested();
+    // A call the miss leaf refused because its callee has no machine code
+    // yet says nothing of the caller's code either: the interpreter's push
+    // counts the callee's entry, which compiles it soon. Counted, a caller
+    // whose callees a compaction frees -- each counting its entries again
+    // -- would spend a refusal on every callee every compaction freed, and
+    // be abandoned for what the zone did.
+    let refused_for_an_uncompiled_callee =
+        std::mem::take(&mut mutator.jit.refused_for_an_uncompiled_callee)
+            && matches!(
+                exit,
+                MachineExit::PushRefused {
+                    at_the_bound: false
+                }
+            );
     // The stress mode enters every body at every push, however often it
     // leaves.
     if matches!(
@@ -5895,6 +5927,7 @@ fn resumption_after_exit(
     ) && !mutator.jit.install_bodies_exiting_at_once
         && !forced
         && !refused_for_a_request
+        && !refused_for_an_uncompiled_callee
     {
         let code = mutator.heap.activation_code(innermost);
         // The copy the frame ran is the one its key names: a copy is

@@ -2782,6 +2782,7 @@ pub(crate) fn decide_at<'gc>(
             .caches
             .refresh_cells(index, guard, global_key, &mutator.jit);
         let Some(address) = address else {
+            jit::note_call_refused(&mut mutator.jit, code);
             return MissAnswer::Refuse;
         };
         mutator.heap.hand_machine_callee(receiver, *level);
@@ -2856,6 +2857,7 @@ pub(crate) fn decide_at<'gc>(
         .caches
         .refresh_cells(index, guard, global_key, &mutator.jit);
     let Some(address) = address else {
+        jit::note_call_refused(&mut mutator.jit, &method.code);
         return MissAnswer::Refuse;
     };
     mutator.heap.hand_machine_callee(receiver, defining_class);

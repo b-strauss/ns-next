@@ -11259,7 +11259,15 @@ another. The prologue's refusal names itself in the exit
 whether a real request stands (`Heap::real_safepoint_requested`); the
 interpreter's push at the safepoint decides the depth limit, and a
 refusal at the word with no request standing is a real overflow and
-counts, as a stub's refusal and one past the stack's room do.
+counts, as a stub's refusal and one past the stack's room do. Nor does
+a call the miss leaf refuses because its callee has no machine code yet
+but may still be compiled -- never compiled, or freed by a compaction
+and counting its entries again: the interpreter's push counts the
+callee's entry, which compiles it soon, while counted, under the zone
+stress mode, whose compactions free every callee between two calls of
+its caller, every call of a loop spent the caller's budget and abandoned
+it. The miss leaf notes the refusal (`jit::note_call_refused`), which
+`resumption_after_exit` takes.
 The code zone frees optimized code whenever it frees its baseline body,
 and with it; a compaction moves each copy on its own and judges the pair
 by its more used copy, since the cells and the row raise the optimized
@@ -12117,7 +12125,8 @@ the baseline JIT's foundation moved" that of the first two.
     bridge");
   - a body whose machine code has handed its frame to the interpreter
     `EXIT_BUDGET` (64) times -- an exit at an instruction or a refused
-    call, not a poll -- is **abandoned** (`jit::abandon`,
+    call, not a poll, nor a call refused for a callee not compiled yet
+    ("Exits, abandonment and the code zone") -- is **abandoned** (`jit::abandon`,
     `JitStatistics::abandoned_bodies`): it is settled abandoned
     (`FIRST_ABANDONED` to `LAST_ABANDONED`), so
     that neither an interpreter's send nor a push nor a frame returned to

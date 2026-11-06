@@ -2126,6 +2126,71 @@ fn a_caller_whose_callees_keep_requesting_optimization_is_not_abandoned() {
     assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
 }
 
+/// `sweep:`, compiled by its first two calls, whose loops turn no turn,
+/// then called once more to turn `CALLEES` turns, each of which sends a
+/// callee it never sent before: every one of those calls finds a callee
+/// that has no machine code yet, and every refusal leaves `sweep:`'s
+/// frame to the interpreter until its loop's back edge enters the
+/// machine code again.
+fn a_caller_of_callees_never_compiled() -> String {
+    let callees: String = (0..CALLEES)
+        .map(|index| {
+            formatdoc! {"
+                  callee{index}: value = (
+                    ^value + {index}
+                  )
+            "}
+        })
+        .collect();
+    let sends: String = (0..CALLEES)
+        .map(|index| {
+            format!(
+                "      index = {index} ifTrue: [sum:: sum + (self callee{index}: 1)].
+"
+            )
+        })
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {callees}  sweep: turns = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < turns] whileTrue: [
+        {sends}      index:: index + 1.
+            ].
+            ^sum
+          )
+          public run = (
+            ^(self sweep: 0) + (self sweep: 0) + (self sweep: {CALLEES})
+          )
+        ) : ()
+    "}
+}
+
+/// A call the miss leaf refuses because its callee has no machine code
+/// yet -- never compiled, or freed by a compaction and counting its
+/// entries again -- is not counted against the caller, whose code it
+/// says nothing of: a caller of more such callees than its exit budget
+/// is not abandoned. Under the zone stress mode, whose compactions free
+/// every callee between two of its caller's calls, every call of a loop
+/// was refused this way, and the loop's body abandoned.
+#[test]
+fn a_caller_of_callees_never_compiled_is_not_abandoned() {
+    let source = a_caller_of_callees_never_compiled();
+    let (mut interpreter, class) = load_with(&source, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let expected: i64 = (0..CALLEES).map(|index| 1 + index).sum();
+    assert_eq!(send_unary(&mut interpreter, &subject, "run"), expected);
+    let statistics = interpreter.jit_statistics();
+    if a_stress_mode_is_on() {
+        return;
+    }
+    assert!(statistics.pushes_refused >= 64, "{statistics:?}");
+    assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
+}
+
 /// Holds `statistics` to some body optimized -- but under a stress mode
 /// that keeps a loop's bodies from spending their budgets
 /// (`spends_no_budget_in_a_loop`).
