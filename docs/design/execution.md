@@ -11300,7 +11300,9 @@ holds no handle and is `Send`; the compile reads it alone, synchronously
 at the same safepoint, and the install only appends to the zone, so
 neither collects nor moves code.
 
-**Feedback is read as layout only.** An `IntegerBinary` whose fallback
+**Here the feedback is read as layout**, and as each site's executed
+and trapped bits in optimized code's guards ("Speculation", "Guards
+and traps"). An `IntegerBinary` whose fallback
 site has seen only `Float` receivers is built as a jump to its fallback
 send: the send alone, with no fast path, no guard and no deoptimization,
 as V8 Maglev's generic path for a `kAny` hint is, so that float
@@ -11451,8 +11453,8 @@ budget armed again at the budget times 4 to the version
 (`optimization_budget_after`), Strongtalk's wait before a recompile. A
 copy compiles with traps up to `LAST_VERSION`, 3, and without past it
 (`optimizing::Speculation::at_version`); one that fails past it is
-refused for good, its key never requested again ("Speculation and its
-failure"). The decay at every collection halves each copy's traps with
+refused for good, its key never requested again ("Speculation",
+"Versions and the refusal for good"). The decay at every collection halves each copy's traps with
 the exits (`JitSlot::decay_exits`); a version never decays. An exit of
 baseline code abandons the body as before, its optimized code with it,
 and raises no version.

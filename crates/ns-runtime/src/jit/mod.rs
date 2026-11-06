@@ -1684,7 +1684,8 @@ pub(crate) fn stress_zone_from_env() -> bool {
 /// at its first entry or interpreted backward jump, its budget armed at 0,
 /// so that its first spend requests its optimization, which the next
 /// safepoint compiles -- V8's `stress_maglev` (`docs/design/execution.md`,
-/// "Verification"). It forces the JIT on where it is available.
+/// "The optimizing tier's foundation", "Verification"). It forces the JIT
+/// on where it is available.
 pub(crate) fn stress_optimize_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     stress_deopt_from_env()
@@ -1702,7 +1703,8 @@ pub(crate) fn stress_optimize_from_env() -> bool {
 /// n-th interrupt point it passes, n drawn from
 /// `DEOPTIMIZATION_ROTATION` afresh at every safepoint, so that every
 /// point is met -- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`
-/// (`docs/design/execution.md`, "Verification").
+/// (`docs/design/execution.md`, "The optimizing tier's foundation",
+/// "Verification").
 pub(crate) fn stress_deopt_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
@@ -6421,7 +6423,8 @@ fn invalidate_copies_of(
 /// Freed at once, with their cells, dispatching rows and machine entry
 /// rows written afresh: an install runs after an exit, where no return
 /// address into the zone exists and every frame goes on in its baseline
-/// code (`docs/design/execution.md`, "Speculation", "Invalidation"). No version is raised (`invalidate_copy`).
+/// code (`docs/design/execution.md`, "Speculation", "Invalidation"). No
+/// version is raised (`invalidate_copy`).
 #[cfg(ns_jit)]
 pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[DispatchId]) {
     if rebuilt.is_empty() {

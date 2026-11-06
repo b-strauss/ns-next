@@ -2331,7 +2331,8 @@ at every n-th interrupt point it passes, n drawn afresh at each safepoint
 "Verification"), and `NS_NEXT_STRESS_INVALIDATE`, which implies the
 optimize stress mode too and makes optimized code leave for a
 safepoint at every tenth interrupt point it passes, which frees every
-body's copies before it installs what was requested since
+body's copies -- a body freed often sitting out ever more rounds --
+before it installs what was requested since
 ([execution.md](execution.md), "Speculation", "Verification").
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather

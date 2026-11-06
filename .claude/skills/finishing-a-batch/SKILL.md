@@ -40,7 +40,8 @@ Create a todo for each item.
    makes optimized code leave at every n-th interrupt point it passes, n
    drawn afresh at each safepoint, and INVALIDATE does what OPTIMIZE does and
    makes optimized code leave for a safepoint at every tenth interrupt point
-   it passes, which frees every body's optimized copies before it installs
+   it passes, which frees every body's optimized copies -- a body freed
+   often sitting out ever more rounds -- before it installs
    what was requested since; beside them the suite runs once with
    `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the thirteen suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most

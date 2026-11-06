@@ -7023,7 +7023,7 @@ an initializer's, a factory's and a clause's body keeps one copy
 polymorphic entry and a global row name the copy for their guard at
 their target's level, the push looks the key up, and a `super` or
 private lexical send, whose guard says nothing of the receiver, enters
-the body's dispatching entry, a shared stub over eight rows a body in a
+the body's dispatching entry, a shared stub over eight rows per body in a
 reservation of its own (`heap/optimized_copies.rs`; decided with the
 user on 2026-11-06), which an interpreted send into a body with one to
 eight copies enters too. A copy reads its own slots at the fixed field
