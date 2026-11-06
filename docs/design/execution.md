@@ -11232,14 +11232,22 @@ the call's return address, as a baseline frame's.
 
 An exit of optimized code counts against the optimized code's own
 `EXIT_BUDGET`, 64; spent, it abandons the optimized code alone
-(`jit::abandon_optimized`): freed, its cells and machine entry row
-written afresh to enter the baseline code, which stays installed with
-its exits, and the body's budget armed again at the budget doubled for
-each abandonment, at most `MAXIMUM_REVIVAL_DOUBLINGS` times
-(`optimization_budget_after`), as Strongtalk backs off a recompilation
-after uncommon traps. The decay at every collection halves the
-abandonments with the exits (`JitSlot::decay_exits`). An exit of
-baseline code abandons the body as before, its optimized code with it.
+(`jit::abandon_optimized`), and a trap, which counts against no exit
+budget, makes it not entrant at a second trap at its site or at its
+copy's `TRAP_LIMIT`th, 5 (`jit::count_trap`). Both retire the copy
+alike (`jit::retire_optimized`): freed, its cells, dispatching rows and
+machine entry row written afresh to enter the baseline code, which
+stays installed with its exits, its version raised -- the key's row's,
+or the slot's own for a body's one uncustomized copy -- and the body's
+budget armed again at the budget times 4 to the version
+(`optimization_budget_after`), Strongtalk's wait before a recompile. A
+copy compiles with traps up to `LAST_VERSION`, 3, and without past it
+(`optimizing::Speculation::at_version`); one that fails past it is
+refused for good, its key never requested again ("Speculation and its
+failure"). The decay at every collection halves each copy's traps with
+the exits (`JitSlot::decay_exits`); a version never decays. An exit of
+baseline code abandons the body as before, its optimized code with it,
+and raises no version.
 **An exit that says nothing of the code counts against neither
 budget**: the deopt stress mode's forced exits, and a push a callee's
 prologue refused at the depth limit word while a real safepoint request
@@ -11260,10 +11268,9 @@ its budget row (`Heap::forget_optimization_budget`), which its next
 compile arms afresh ([OPEN-WORK.md](../OPEN-WORK.md), "A compaction that
 frees a live body forgets the optimization budget it spent").
 `--jit-statistics` prints the tier's counters: requests, bodies
-optimized, the compile time, optimized exits, abandoned optimized
-bodies, frames materialized in optimized code, frames resumed of a body
-with optimized code, twin requests and the deopt stress mode's forced
-exits.
+optimized and customized copies, the compile time, optimized exits, of
+them the deopt stress mode's forced exits and the traps, abandoned
+optimized bodies, copies made not entrant and keys refused for good.
 
 ### Verification
 
@@ -11273,8 +11280,9 @@ suite and `run-corpus` ([README.md](README.md), "Gates").
 first entry or interpreted backward jump and arms its budget at 0, so
 that its first spend requests its optimization, which the next
 safepoint compiles -- V8's `stress_maglev`. Under it the back-off after
-an abandonment is void: the budget doubled is still 0
-(`optimization_budget_after`). `NS_NEXT_STRESS_DEOPT`, which implies it,
+an abandonment or a trap is void: the budget times 4 to the version is
+still 0 (`optimization_budget_after`), while the versions still climb
+to the last. `NS_NEXT_STRESS_DEOPT`, which implies it,
 makes optimized code leave at an interrupt point after its write-back
 and before its template, exactly where the template's own exits leave
 (`MacroAssembler::count_down_to_deoptimize`): every point subtracts one

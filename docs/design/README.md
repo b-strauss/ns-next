@@ -482,9 +482,9 @@ build ([memory.md](memory.md), "The move stress mode", "The gates the collector 
 [dispatch.md](dispatch.md), "Invalidation"; [execution.md](execution.md),
 "The compact instruction encoding", "Suspending and resuming", "The code
 zone", "The optimizing tier's foundation"). Under the optimize stress
-mode the back-off of a body whose optimized code was abandoned is void,
-the budget doubled still 0, so a body is optimized again at its next
-spend. Clippy's gate
+mode the back-off of a body whose optimized code was abandoned or made
+not entrant is void, the budget times 4 to the version still 0, so a
+body is optimized again at its next spend until its last version. Clippy's gate
 includes `min_ident_chars` (`clippy.toml`), which refuses identifiers of one
 or two characters: names are written out
 (`CLAUDE.md`, "Conventions"). It also includes `cast_possible_truncation` and

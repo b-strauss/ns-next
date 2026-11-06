@@ -343,6 +343,13 @@ pub struct JitStatistics {
     /// (`stubs::ExitKind::Trap`): of `optimized_exits`, counted against no
     /// exit budget.
     pub traps: u64,
+    /// Optimized copies made not entrant for their traps (`count_trap`):
+    /// a second trap at a site, or `TRAP_LIMIT` traps of one copy.
+    pub made_not_entrant: u64,
+    /// Keys -- or a body's one uncustomized copy -- left in baseline code
+    /// for good, their copy past `LAST_VERSION` made not entrant or
+    /// abandoned all the same (`retire_optimized`).
+    pub refused_for_good: u64,
 }
 
 impl JitStatistics {
@@ -445,6 +452,23 @@ const MAXIMUM_REVIVAL_DOUBLINGS: u32 = 4;
 /// states a slot has (`FIRST_ABANDONED`).
 const MAXIMUM_REVIVAL_WAIT: u32 = REVIVAL_ENTRIES << MAXIMUM_REVIVAL_DOUBLINGS;
 
+/// The traps an optimized copy may take before it is made not entrant
+/// (`count_trap`), though no site of it trapped twice: Strongtalk's
+/// `UncommonRecompileLimit`, where the measurements of the limits start
+/// (`docs/design/execution.md`, "Speculation and its failure"). A copy whose traps are all at sites never seen to trap is
+/// still recompiled, so that one trap at each of many sites does not run
+/// on in code whose feedback is stale everywhere.
+pub(crate) const TRAP_LIMIT: u8 = 5;
+
+/// The last version of a copy compiled with traps
+/// (`optimizing::Speculation::at_version`): its recompile after one more
+/// failure compiles none, and so can never be made not entrant again,
+/// and an abandonment of that one leaves the key in baseline code for
+/// good (`retire_optimized`). Strongtalk's `MaxVersions`, as
+/// `TRAP_LIMIT` is its limit. Public, since it bounds what
+/// `JitStatistics::made_not_entrant` counts of one copy.
+pub const LAST_VERSION: u8 = 3;
+
 /// The interpreted entries a body abandoned for the `abandonments`th time
 /// waits before it is revived: `base` -- `REVIVAL_ENTRIES` but in a test
 /// (`JitState::set_revival_entries`) -- doubled at each abandonment after
@@ -517,13 +541,17 @@ pub(crate) struct JitSlot {
     /// this zone, beside which it lives (`optimize_requested`), so that
     /// every change of the baseline code's state forgets it.
     optimized: Cell<u32>,
-    /// How many times the JIT abandoned the body's optimized code
-    /// (`abandon_optimized`), which doubles the budget its next
-    /// optimization waits for (`optimization_budget_after`).
-    optimized_abandonments: Cell<u32>,
+    /// The version of the body's one uncustomized copy, as a copy's row
+    /// holds its key's (`CustomizedCopy::version`).
+    optimized_version: Cell<u8>,
+    /// The traps the body's one uncustomized copy took, as a copy's row
+    /// counts its key's (`CustomizedCopy::traps`).
+    optimized_traps: Cell<u8>,
     /// Whether the optimizing compiler refused the body for a reason no
-    /// compaction removes -- too large for the zone, or unassembled -- so
-    /// that it is never requested nor compiled again: a recompile of its
+    /// compaction removes -- too large for the zone, or unassembled -- or
+    /// its uncustomized copy failed past `LAST_VERSION`
+    /// (`JitSlot::raise_version`), so that it is never requested nor
+    /// compiled again: a recompile of its
     /// baseline code, after an abandonment or a compaction that freed it,
     /// arms a full budget, which would otherwise ask for the same refusal
     /// once per budget for the rest of the run. Kept, as `twin_refused`
@@ -579,12 +607,15 @@ pub(crate) struct CustomizedCopy {
     /// The copy's optimized code, by its index in `bodies`; `NO_BODY` while
     /// it has none -- requested and not yet installed, freed, or refused.
     pub(crate) body: u32,
-    /// How many times the key's copy was compiled anew after a failed
-    /// speculation; 0 until speculation is.
-    #[expect(dead_code, reason = "a trap raises it once the copies speculate")]
+    /// How many times the key's copy was made not entrant for its traps
+    /// or abandoned for its exits (`retire_optimized`): what its next
+    /// compile waits for (`optimization_budget_after`) and whether it
+    /// speculates (`optimizing::Speculation::at_version`). Never decays,
+    /// so that a copy that keeps failing reaches its last version.
     pub(crate) version: u8,
-    /// The traps the key's copy took; 0 until speculation is.
-    #[expect(dead_code, reason = "a trap counts it once the copies speculate")]
+    /// The traps the key's current copy took, from none at each version,
+    /// halved at every decay (`JitSlot::decay_exits`): at `TRAP_LIMIT` the
+    /// copy is made not entrant.
     pub(crate) traps: u8,
     /// Whether the optimizing compiler refused the key's copy for a reason
     /// no compaction removes, so that the key is never requested again.
@@ -639,7 +670,8 @@ impl Default for JitSlot {
             twin_refused: Cell::new(false),
             back_jumps: Cell::new(0),
             optimized: Cell::new(NO_BODY),
-            optimized_abandonments: Cell::new(0),
+            optimized_version: Cell::new(0),
+            optimized_traps: Cell::new(0),
             optimized_refused: Cell::new(false),
             copies: RefCell::new(Vec::new()),
         }
@@ -761,14 +793,91 @@ impl JitSlot {
     /// Halves the count of the body's exits and of its abandonments
     /// (`JitState::decay_exits`), answering the exits: in a run that
     /// allocates, the wait of its next revival by entries shrinks again as
-    /// its exits decay (`revival_entries`).
+    /// its exits decay (`revival_entries`). Halves each copy's traps too,
+    /// so that traps far apart in a long run do not add up to
+    /// `TRAP_LIMIT`, as Strongtalk's sweeper decays its uncommon-trap
+    /// counters; a copy's version never decays, or a copy that keeps
+    /// failing would never reach its last.
     fn decay_exits(&self) -> u32 {
         let exits = self.exits.get() / 2;
         self.exits.set(exits);
         self.abandonments.set(self.abandonments.get() / 2);
-        self.optimized_abandonments
-            .set(self.optimized_abandonments.get() / 2);
+        self.optimized_traps.set(self.optimized_traps.get() / 2);
+        for copy in self.copies.borrow_mut().iter_mut() {
+            copy.traps /= 2;
+        }
         exits
+    }
+
+    /// The version of the copy for `key` -- the row's for a key, the
+    /// slot's own for the uncustomized copy, `None` -- 0 for a key with
+    /// no row yet.
+    fn optimized_version(&self, key: Option<CustomizationKey>) -> u8 {
+        match key {
+            Some(key) => self.copy_row(key).map_or(0, |row| row.version),
+            None => self.optimized_version.get(),
+        }
+    }
+
+    /// Counts a trap of the copy for `key`, answering its traps now.
+    fn count_trap(&self, key: Option<CustomizationKey>) -> u8 {
+        let raise = |traps: u8| traps.saturating_add(1);
+        match key {
+            Some(key) => self.with_copy_row(key, |copy| {
+                copy.traps = raise(copy.traps);
+                copy.traps
+            }),
+            None => {
+                let traps = raise(self.optimized_traps.get());
+                self.optimized_traps.set(traps);
+                traps
+            }
+        }
+    }
+
+    /// Raises the version of the copy for `key`, its traps counted from
+    /// none at the new one, answering the version raised to; or, for a
+    /// copy already past `LAST_VERSION`, which compiled without a trap and
+    /// failed all the same, refuses the key for good and answers `None`.
+    fn raise_version(&self, key: Option<CustomizationKey>) -> Option<u8> {
+        let raise = |version: u8, traps: &mut u8, refused: &mut bool| {
+            *traps = 0;
+            if version > LAST_VERSION {
+                *refused = true;
+                return None;
+            }
+            Some(version + 1)
+        };
+        match key {
+            Some(key) => self.with_copy_row(key, |copy| {
+                let raised = raise(copy.version, &mut copy.traps, &mut copy.refused);
+                copy.version = raised.unwrap_or(copy.version);
+                raised
+            }),
+            None => {
+                let (mut traps, mut refused) = (0, self.optimized_refused.get());
+                let raised = raise(self.optimized_version.get(), &mut traps, &mut refused);
+                self.optimized_traps.set(traps);
+                self.optimized_refused.set(refused);
+                if let Some(version) = raised {
+                    self.optimized_version.set(version);
+                }
+                raised
+            }
+        }
+    }
+
+    /// Runs `change` on the row for `key`, which exists.
+    fn with_copy_row<T>(
+        &self,
+        key: CustomizationKey,
+        change: impl FnOnce(&mut CustomizedCopy) -> T,
+    ) -> T {
+        let mut copies = self.copies.borrow_mut();
+        let Some(copy) = copies.iter_mut().find(|copy| copy.key == key) else {
+            unreachable!("internal: a copy's row is made with its request");
+        };
+        change(copy)
     }
 
     fn settle(&self, state: u32) {
@@ -803,20 +912,12 @@ impl JitSlot {
 
     /// Records the refusal of the copy for `key`, whose row exists.
     fn refuse_copy(&self, key: CustomizationKey) {
-        let mut copies = self.copies.borrow_mut();
-        let Some(copy) = copies.iter_mut().find(|copy| copy.key == key) else {
-            unreachable!("internal: a copy's row is made with its request");
-        };
-        copy.refused = true;
+        self.with_copy_row(key, |copy| copy.refused = true);
     }
 
     /// Sets the body of the row for `key`, which exists.
     fn set_copy_body(&self, key: CustomizationKey, body: u32) {
-        let mut copies = self.copies.borrow_mut();
-        let Some(copy) = copies.iter_mut().find(|copy| copy.key == key) else {
-            unreachable!("internal: a copy's row is made with its request");
-        };
-        copy.body = body;
+        self.with_copy_row(key, |copy| copy.body = body);
     }
 
     /// Puts the body back to counting its entries, from none, its exits
@@ -4368,8 +4469,10 @@ fn request_copy(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, frame_addres
     };
     match code.jit.copy_row(key) {
         Some(row) if row.refused => return true,
+        // The next run-out is another key's, which has failed nothing:
+        // the plain wait.
         Some(_) if mutator.jit.copy_of(code, key).is_some() => {
-            rearm_optimization_budget(mutator, code);
+            rearm_optimization_budget(mutator, code, 0);
             return true;
         }
         Some(_) => {}
@@ -4425,15 +4528,12 @@ fn levels_to<'gc>(
     None
 }
 
-/// Arms `code`'s budget afresh at the wait its abandonments earned
+/// Arms `code`'s budget afresh at the wait a copy at `version` earned
 /// (`optimization_budget_after`).
 #[cfg(ns_jit)]
-fn rearm_optimization_budget(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+fn rearm_optimization_budget(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, version: u8) {
     let budget = mutator.heap.optimization_budget_of(code);
-    let armed = optimization_budget_after(
-        mutator.jit.optimization_budget,
-        code.jit.optimized_abandonments.get(),
-    );
+    let armed = optimization_budget_after(mutator.jit.optimization_budget, version);
     mutator.heap.arm_optimization_budget(budget.id, armed);
 }
 
@@ -4514,7 +4614,7 @@ fn optimize(
     // budget: the request is held, as a baseline compile's is.
     if !mutator.jit.may_compile_needing(needed) {
         mutator.jit.hold_compile();
-        defer_optimization(mutator, code);
+        defer_optimization(mutator, code, key);
         return;
     }
     let method = match &body.method {
@@ -4549,7 +4649,7 @@ fn optimize(
         macro_assembler,
         role,
         settings.futures_exit,
-        optimizing::Speculation::Traps,
+        optimizing::Speculation::at_version(code.jit.optimized_version(key)),
     )
     .and_then(|optimized| {
         install_optimized(
@@ -4576,7 +4676,7 @@ fn optimize(
                 mutator.jit.compaction_requested = true;
                 mutator.jit.zone_exhausted = true;
             }
-            defer_optimization(mutator, code);
+            defer_optimization(mutator, code, key);
             return;
         }
         Err(_) => {
@@ -4611,22 +4711,28 @@ fn optimize(
     if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
         note_block_entry(mutator, id, code);
     }
+    // As for a key that has its copy (`request_copy`), the next run-out
+    // is another key's.
     if key.is_some() {
-        rearm_optimization_budget(mutator, code);
+        rearm_optimization_budget(mutator, code, 0);
     }
 }
 
 /// Puts off `code`'s optimization, which found no room or knows it would
 /// not: a compaction asked for is passed on to the heap, and the body's
 /// budget armed afresh, so that it is requested again once it has run as
-/// long -- as long as its abandoned optimized code's back-off says
+/// long -- as long as the version of the copy for `key` says
 /// (`optimization_budget_after`), which a full zone does not reset.
 #[cfg(ns_jit)]
-fn defer_optimization(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+fn defer_optimization(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+) {
     if mutator.jit.compaction_requested {
         mutator.heap.request_safepoint();
     }
-    rearm_optimization_budget(mutator, code);
+    rearm_optimization_budget(mutator, code, code.jit.optimized_version(key));
 }
 
 /// Installs `optimized`, the optimized code of `code` -- `method`'s body
@@ -5545,9 +5651,11 @@ fn resumption_after_exit(
         // A trap runs its instruction again, as a template's exit does,
         // which widens the feedback the speculation failed on.
         MachineExit::Trap {
-            program_counter, ..
+            program_counter,
+            site,
         } => {
-            mutator.jit.statistics.traps += 1;
+            debug_assert!(optimized, "internal: only optimized code traps");
+            count_trap(mutator, innermost, site);
             Resumption::Interpreted {
                 activation: innermost,
                 program_counter,
@@ -5685,33 +5793,79 @@ fn count_exit(
 }
 
 /// Abandons `code`'s optimized code for `key`, which has spent its
-/// `EXIT_BUDGET`: it alone is freed (`JitState::free_optimized`) -- the
-/// body's other copies staying -- and the body goes on
-/// in its baseline code, which every cell and the machine entry row that
-/// entered the optimized code are written afresh to enter -- as the
-/// optimized code's install wrote them to enter it -- while its exits and
-/// its usage stay what they were. Its optimization budget is armed again
-/// at the budget doubled for each of its abandonments
-/// (`optimization_budget_after`), so that a body whose optimized code
-/// keeps exiting is optimized again ever more rarely, as Strongtalk backs
-/// off a recompilation after uncommon traps
-/// (`docs/design/execution.md`, "Speculation and its failure"). Between
-/// entries only,
-/// where no return address into the zone exists; a frame an exit left
-/// stopped in optimized code goes on in baseline code, as every frame
-/// returned to does.
+/// `EXIT_BUDGET` -- the templates' exits, never its traps: retired as a
+/// copy made not entrant is (`retire_optimized`), since an abandonment is
+/// a version too, so that code with no trap that keeps exiting backs off
+/// as a trap's recompile does, and is left in baseline code for good past
+/// its last version, as HotSpot stays interpreted past
+/// `PerMethodRecompilationCutoff` (`docs/design/execution.md`, "Speculation
+/// and its failure"). Its exits and its usage stay what they were.
 #[cfg(ns_jit)]
 fn abandon_optimized(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
     key: Option<CustomizationKey>,
 ) {
-    let Some(start) = mutator.jit.free_optimized(code, key) else {
+    if retire_optimized(mutator, code, key) {
+        mutator.jit.statistics.abandoned_optimized_bodies += 1;
+    }
+}
+
+/// Counts a trap of the optimized code the innermost frame of an exit,
+/// `innermost`, ran, at a speculation resting on `site`: the site's
+/// trapped bit is set, so that the next compile gives it its slow path,
+/// and the copy is made not entrant (`retire_optimized`) when the site
+/// had trapped before -- the same speculation failed again, in code that
+/// will go on failing it -- or the copy's traps reach `TRAP_LIMIT`.
+/// Counted against no exit budget: a trap says the feedback has widened,
+/// not that the code exits where it must. Between entries only, as every
+/// retirement is.
+#[cfg(ns_jit)]
+fn count_trap(mutator: &mut Mutator<'_>, innermost: ActivationReference, site: u32) {
+    mutator.jit.statistics.traps += 1;
+    let code = mutator.heap.activation_code(innermost);
+    // The copy the frame ran is the one its key names: a copy is entered
+    // only where its key holds.
+    let key = activation_key(&mutator.heap, &code, innermost);
+    let Some(body) = mutator.jit.optimized_for(&code, key) else {
         return;
     };
-    let abandonments = code.jit.optimized_abandonments.get().saturating_add(1);
-    code.jit.optimized_abandonments.set(abandonments);
-    mutator.jit.statistics.abandoned_optimized_bodies += 1;
+    let (feedback_base, copy) = (body.feedback_base, body.key);
+    // A site past the family runs uncached and records nothing, as one of
+    // a family without a range does, and its bit would be a neighbouring
+    // family's: it reads as trapped before, as the snapshot reads it.
+    let trapped_before = site >= code.family_size || mutator.caches.note_trap(feedback_base, site);
+    let traps = code.jit.count_trap(copy);
+    if (trapped_before || traps >= TRAP_LIMIT) && retire_optimized(mutator, &code, copy) {
+        mutator.jit.statistics.made_not_entrant += 1;
+    }
+}
+
+/// Retires `code`'s optimized code for `key` (`JitState::optimized_for`),
+/// made not entrant for its traps or abandoned for its exits, answering
+/// whether it had some: it alone is freed (`JitState::free_optimized`) --
+/// the body's other copies staying -- and the body goes on in its baseline
+/// code, which every cell, dispatching row and machine entry row that
+/// entered the copy is written afresh to enter, as the copy's install
+/// wrote them to enter it. Its version is raised (`JitSlot::raise_version`)
+/// and the body's budget armed at the new version's wait
+/// (`optimization_budget_after`), so that a copy that keeps failing is
+/// compiled again ever more rarely, as Strongtalk backs off a
+/// recompilation, and past `LAST_VERSION` without a trap; one that fails
+/// past it is refused for good, its key never requested again, and the
+/// budget left as it is for the body's other keys. Between entries only,
+/// where no return address into the zone exists; a frame an exit left
+/// stopped in the copy goes on in baseline code, as every frame returned
+/// to does.
+#[cfg(ns_jit)]
+fn retire_optimized(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+) -> bool {
+    let Some((start, copy)) = mutator.jit.free_optimized(code, key) else {
+        return false;
+    };
     if let Some(zone) = mutator.jit.zone.as_ref() {
         let entry = zone.writer.zone().executable_address(CodeOffset(start)) as u64;
         mutator.caches.refresh_cells_entering(entry, &mutator.jit);
@@ -5724,20 +5878,20 @@ fn abandon_optimized(
     if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
         note_block_entry(mutator, id, code);
     }
-    rearm_optimization_budget(mutator, code);
+    match code.jit.raise_version(copy) {
+        Some(version) => rearm_optimization_budget(mutator, code, version),
+        None => mutator.jit.statistics.refused_for_good += 1,
+    }
+    true
 }
 
-/// The budget a body whose optimized code was abandoned `abandonments`
-/// times -- none for one never abandoned -- is armed with: `budget`
-/// doubled at each abandonment, at most `MAXIMUM_REVIVAL_DOUBLINGS` times,
-/// as an abandoned body's revival backs off (`revival_entries`), so that a
-/// body whose optimized code always exits is compiled at most once per
-/// sixteen budgets once the cap is reached; and decay halves the
-/// abandonments (`JitSlot::decay_exits`), so that the wait shrinks again in
-/// a run that allocates.
-#[cfg(ns_jit)]
-fn optimization_budget_after(budget: i64, abandonments: u32) -> i64 {
-    budget.saturating_mul(1 << abandonments.min(MAXIMUM_REVIVAL_DOUBLINGS))
+/// The budget a body is armed with for a copy at `version`: `budget` times
+/// 4 to the version, saturating, Strongtalk's wait before a recompile
+/// (`docs/design/execution.md`, "Speculation and its failure"), so that a
+/// copy compiled at its first run-out waits the plain budget and each
+/// failure quadruples the next wait.
+fn optimization_budget_after(budget: i64, version: u8) -> i64 {
+    budget.saturating_mul(4_i64.saturating_pow(u32::from(version)))
 }
 
 impl JitState {
@@ -5767,14 +5921,15 @@ impl JitState {
 
     /// Frees `code`'s optimized code for `key` alone (`optimized_for`), if
     /// it has some here, and forgets it in the slot -- the key's row
-    /// staying -- answering its start for the cells that named it: its
+    /// staying -- answering its start for the cells that named it and the
+    /// key it was compiled for, `None` for the uncustomized copy: its
     /// baseline code, its other copies, its twin and their exits stay.
     #[cfg(ns_jit)]
     fn free_optimized(
         &mut self,
         code: &CompiledCode,
         key: Option<CustomizationKey>,
-    ) -> Option<u32> {
+    ) -> Option<(u32, Option<CustomizationKey>)> {
         let body = self.optimized_for(code, key)?;
         let (start, copy) = (body.start, body.key);
         let index = match copy {
@@ -5789,7 +5944,7 @@ impl JitState {
             Some(copy) => code.jit.set_copy_body(copy, NO_BODY),
             None => code.jit.optimized.set(NO_BODY),
         }
-        Some(start)
+        Some((start, copy))
     }
 
     /// Frees `code`'s baseline code and the optimized code beside it -- its
@@ -5937,6 +6092,99 @@ mod tests {
             16_384,
             "the third abandonment's wait, after the halving"
         );
+    }
+
+    #[test]
+    fn the_wait_grows_as_four_to_the_version() {
+        use super::optimization_budget_after;
+        assert_eq!(optimization_budget_after(240_000, 0), 240_000);
+        assert_eq!(optimization_budget_after(240_000, 2), 3_840_000);
+        assert_eq!(
+            optimization_budget_after(0, 4),
+            0,
+            "the optimize stress mode's"
+        );
+        assert_eq!(
+            optimization_budget_after(i64::MAX / 2, 3),
+            i64::MAX,
+            "saturating"
+        );
+    }
+
+    /// A row for one key, as a run-out makes it.
+    fn row_of_a_key() -> (JitSlot, super::CustomizationKey) {
+        use crate::mixin::DispatchId;
+        let key = super::CustomizationKey {
+            receiver: DispatchId::from_counter(DispatchId::FIRST_MINTED),
+            entered: DispatchId::from_counter(DispatchId::FIRST_MINTED + 1),
+        };
+        let slot = JitSlot::default();
+        slot.copies.borrow_mut().push(super::CustomizedCopy {
+            key,
+            body: super::NO_BODY,
+            version: 0,
+            traps: 0,
+            refused: false,
+            level: Some(0),
+            entered_word: 0,
+        });
+        (slot, key)
+    }
+
+    #[test]
+    fn a_decay_halves_a_copy_s_traps() {
+        let (slot, key) = row_of_a_key();
+        for traps in 1..=4 {
+            assert_eq!(slot.count_trap(Some(key)), traps);
+            assert_eq!(slot.count_trap(None), traps);
+        }
+        slot.raise_version(Some(key));
+        slot.raise_version(None);
+        for _ in 0..4 {
+            slot.count_trap(Some(key));
+            slot.count_trap(None);
+        }
+        slot.decay_exits();
+        let row = slot.copy_row(key).expect("the row");
+        assert_eq!(row.traps, 2);
+        assert_eq!(slot.optimized_traps.get(), 2);
+        assert_eq!(row.version, 1, "a version never decays");
+        assert_eq!(slot.optimized_version.get(), 1);
+    }
+
+    /// A key's versions climb to one past `LAST_VERSION`, each counting
+    /// its traps from none, and a failure there refuses the key for good,
+    /// as it refuses the uncustomized copy.
+    #[test]
+    fn a_failure_past_the_last_version_refuses_for_good() {
+        use super::LAST_VERSION;
+        let (slot, key) = row_of_a_key();
+        for version in 1..=LAST_VERSION + 1 {
+            slot.count_trap(Some(key));
+            slot.count_trap(None);
+            assert_eq!(slot.raise_version(Some(key)), Some(version));
+            assert_eq!(slot.raise_version(None), Some(version));
+            assert_eq!(slot.copy_row(key).expect("the row").traps, 0);
+            assert_eq!(slot.optimized_traps.get(), 0);
+        }
+        assert_eq!(slot.optimized_version(Some(key)), LAST_VERSION + 1);
+        assert!(!slot.copy_row(key).expect("the row").refused);
+        assert!(!slot.optimized_refused.get());
+        assert_eq!(slot.raise_version(Some(key)), None);
+        assert_eq!(slot.raise_version(None), None);
+        let row = slot.copy_row(key).expect("the row");
+        assert!(row.refused);
+        assert_eq!(row.version, LAST_VERSION + 1, "kept where it failed");
+        assert!(slot.optimized_refused.get());
+    }
+
+    #[test]
+    fn a_copy_speculates_up_to_its_last_version() {
+        use super::optimizing::Speculation;
+        use super::LAST_VERSION;
+        assert_eq!(Speculation::at_version(0), Speculation::Traps);
+        assert_eq!(Speculation::at_version(LAST_VERSION), Speculation::Traps);
+        assert_eq!(Speculation::at_version(LAST_VERSION + 1), Speculation::None);
     }
 
     #[test]
@@ -6755,9 +7003,10 @@ mod tests {
 
         /// Optimized code that spends its exit budget is abandoned alone:
         /// its exits are its own, never the baseline code's, its baseline
-        /// code stays installed and entered at its start again, and its
-        /// budget is armed at twice the last for each abandonment, up to
-        /// the cap.
+        /// code stays installed and entered at its start again, and each
+        /// abandonment raises its version, the budget armed at four times
+        /// the last; abandoned past its last version, it is refused for
+        /// good, and a request compiles nothing.
         #[test]
         fn optimized_code_that_keeps_exiting_is_abandoned_alone_and_backs_off() {
             let mut interpreter = pinning_the_budget();
@@ -6769,7 +7018,8 @@ mod tests {
                 let lean = code.jit.map.get();
                 let baseline_start = mutator.jit.bodies[lean as usize].start;
                 let budget = crate::jit::OPTIMIZATION_BUDGET;
-                for abandonments in 1..=crate::jit::MAXIMUM_REVIVAL_DOUBLINGS + 1 {
+                let last = crate::jit::LAST_VERSION;
+                for abandonments in 1..=last + 2 {
                     mutator
                         .jit
                         .optimization_requests
@@ -6792,25 +7042,40 @@ mod tests {
                         Some(CodeOffset(baseline_start)),
                         "a compiled call enters the baseline code again"
                     );
-                    let doublings = abandonments.min(crate::jit::MAXIMUM_REVIVAL_DOUBLINGS);
-                    assert_eq!(
-                        mutator.heap.armed_optimization_budget(&code),
-                        Some(budget << doublings),
-                        "abandonment {abandonments}"
-                    );
+                    if abandonments <= last + 1 {
+                        assert_eq!(
+                            mutator.heap.armed_optimization_budget(&code),
+                            Some(budget * 4_i64.pow(u32::from(abandonments))),
+                            "abandonment {abandonments}"
+                        );
+                        assert!(!code.jit.optimized_refused.get());
+                    }
                     assert_eq!(
                         mutator.jit.statistics.abandoned_optimized_bodies,
                         u64::from(abandonments)
                     );
                 }
+                assert!(code.jit.optimized_refused.get(), "refused for good");
+                assert_eq!(mutator.jit.statistics.refused_for_good, 1);
+                let spent = mutator.jit.statistics.optimize_nanoseconds;
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
+                crate::jit::optimize_requested(mutator);
+                assert_eq!(
+                    mutator.jit.statistics.optimize_nanoseconds, spent,
+                    "nothing compiled"
+                );
                 assert_eq!(mutator.jit.statistics.abandoned_bodies, 0);
             });
         }
 
         /// An optimization put off for want of room keeps the back-off
         /// its body's abandoned optimized code earned: the budget is armed
-        /// afresh at twice the plain one after one abandonment, both when
-        /// the install finds no room and when the exhausted zone holds it.
+        /// afresh at four times the plain one after one abandonment, both
+        /// when the install finds no room and when the exhausted zone
+        /// holds it.
         #[test]
         fn a_deferred_optimization_keeps_its_back_off() {
             let mut interpreter = pinning_the_budget();
@@ -6826,8 +7091,8 @@ mod tests {
                 for _ in 0..crate::jit::EXIT_BUDGET {
                     crate::jit::count_exit(mutator, &code, true, None);
                 }
-                assert_eq!(code.jit.optimized_abandonments.get(), 1);
-                let backed_off = Some(crate::jit::OPTIMIZATION_BUDGET << 1);
+                assert_eq!(code.jit.optimized_version.get(), 1);
+                let backed_off = Some(crate::jit::OPTIMIZATION_BUDGET * 4);
                 let zone = mutator.jit.zone.as_mut().expect("a zone");
                 zone.limit = zone.next_offset;
                 for held in [false, true] {

@@ -94,7 +94,7 @@ pub use interpreter::{
     CacheStatistics, CachedTarget, CachedTargetKind, CallSiteCell, CallSiteState, HostError,
     HostResult, HostSignal, Interpreter, MethodSide, Mutator,
 };
-pub use jit::JitStatistics;
+pub use jit::{JitStatistics, LAST_VERSION};
 pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
 pub use resolver::{resolve, resolve_for_editor, root_class_is_value};
 pub use symbol::Symbol;

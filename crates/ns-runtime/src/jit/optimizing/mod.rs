@@ -30,6 +30,20 @@ pub(crate) enum Speculation {
     None,
 }
 
+impl Speculation {
+    /// How far a copy at `version` speculates: with traps up to
+    /// `jit::LAST_VERSION`, without past it, so that the copy a key ends
+    /// with can never be made not entrant (`docs/design/execution.md`,
+    /// "Speculation and its failure").
+    pub(crate) fn at_version(version: u8) -> Speculation {
+        if version <= crate::jit::LAST_VERSION {
+            Speculation::Traps
+        } else {
+            Speculation::None
+        }
+    }
+}
+
 /// The optimized code of `snapshot`'s body, compiled as `role` with
 /// `macro_assembler` (`docs/design/execution.md`, "Planned: the
 /// optimizing JIT"): its graph built (and, in a debug build, verified),

@@ -1322,17 +1322,14 @@ impl MacroAssembler {
     /// the interpreter, as `ExitKind::Reexecute` does, named as a trap of
     /// a speculation resting on `site`, which it leaves in the block's
     /// `ExitTrapSite` for the run loop that counts it. The caller has
-    /// written the frame back. Answers the label the trap begins at, bound
-    /// here, which a failed guard jumps to.
-    pub(crate) fn trap(&mut self, program_counter: u32, site: u32) -> Label {
-        let start = self.assembler.label();
-        self.assembler.bind(start);
+    /// written the frame back, and bound the label a failed guard jumps
+    /// to before it.
+    pub(crate) fn trap(&mut self, program_counter: u32, site: u32) {
         let scratch = self.roles.idiom_scratch;
         let trap_site = self.block_word(BlockWord::ExitTrapSite);
         self.assembler.move_immediate(scratch, u64::from(site));
         self.assembler.store(Width::Word64, trap_site, scratch);
         self.exit(ExitKind::Trap, program_counter);
-        start
     }
 
     /// Takes `exit(kind, program_counter)` when `condition` holds, out of

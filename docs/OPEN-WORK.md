@@ -818,19 +818,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     stage 7 say is taken, would remove them.
     [execution.md](design/execution.md), "The optimizing tier's
     foundation", "What the optimizing tier's foundation moved".
-  - **Abandonments halved at every collection can hold the back-off at
-    2x for ever** (2026-11-05). A body whose optimized code is abandoned
-    has its budget armed at the budget doubled per abandonment, and the
-    decay at every collection halves the abandonments with the exits
-    (`jit::optimization_budget_after`, `JitSlot::decay_exits`), so a
-    body whose optimized code keeps exiting in a program that collects
-    between its abandonments never backs off further than about twice
-    the budget, and is recompiled and abandoned without end. The second
-    stage's version cap, past which the code is compiled with no trap
-    and can never loop, is what breaks it ("Planned: the optimizing
-    JIT", "Speculation and its failure").
-    [execution.md](design/execution.md), "The optimizing tier's
-    foundation", "Exits, abandonment and the code zone".
   - **What the first stage's reviews left** (2026-11-05), none a wrong
     answer, each in `crates/ns-runtime/src/jit/`:
     - *Costs*: `sends::call_slots`' path for an instruction that is no

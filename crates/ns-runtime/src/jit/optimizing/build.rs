@@ -364,11 +364,13 @@ fn own_slot_index(own_slot_base: Option<u32>, own_index: u32) -> Option<u32> {
         .filter(|index| *index < FIXED_FIELD_LIMIT)
 }
 
-/// Whether `instruction` ends its block though it falls through and has
-/// no jump target the graph keeps: a customized copy's
+/// Whether `instruction`'s kind ends its block, whether or not it falls
+/// through or has a jump target the graph keeps: a customized copy's
 /// `ReturnSlotIfFilled`, whose block ends in the slot's return
-/// (`End::ReturnUnlessNil`), and a `JumpIfNotBoolean` built without its
-/// third way, whose block ends in its test.
+/// (`End::ReturnUnlessNil`), and every branch, whose block ends in its
+/// test -- what decides for a `JumpIfNotBoolean` built without its third
+/// way, which keeps no jump target, while any other branch ends its block
+/// by its target as well.
 fn ends_block(
     instruction: &SnapshotInstruction,
     choice: Choice,

@@ -140,6 +140,8 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         forced_exits: after.forced_exits - before.forced_exits,
         deepest_forced_exit: after.deepest_forced_exit,
         traps: after.traps - before.traps,
+        made_not_entrant: after.made_not_entrant - before.made_not_entrant,
+        refused_for_good: after.refused_for_good - before.refused_for_good,
     }
 }
 
@@ -8579,5 +8581,155 @@ ns_runtime::for_each_lowering! {
         let (answer, statistics) = after_warm_up(lowering, "withNonBoolean");
         assert_eq!(answer, 3);
         assert_trapped_once(&statistics, lowering);
+    }
+}
+
+/// `over:and:and:and:and:and:` sums each of its six arguments a hundred
+/// times into an accumulator of its own, so that each sum is a site of
+/// its own; `phase:` calls it fifty times with every argument 1 but the
+/// one `phase` names, which is 0.5. Phase 0 gives none a `Float`.
+const ONE_FLOAT_A_PHASE: &str = indoc! {"
+    class Subject = Object new () (
+      over: first and: second and: third and: fourth and: fifth and: sixth = (
+        |
+          one ::= 0.
+          two ::= 0.
+          three ::= 0.
+          four ::= 0.
+          five ::= 0.
+          six ::= 0.
+          index ::= 1.
+        |
+        [index <= 100] whileTrue: [
+          one:: one + first.
+          two:: two + second.
+          three:: three + third.
+          four:: four + fourth.
+          five:: five + fifth.
+          six:: six + sixth.
+          index:: index + 1.
+        ].
+        ^one asInteger + two asInteger + three asInteger + four asInteger
+          + five asInteger + six asInteger
+      )
+      argument: position in: phase = (
+        ^position = phase ifTrue: [0.5] ifFalse: [1]
+      )
+      public phase: phase = (
+        |
+          total ::= 0.
+          index ::= 1.
+        |
+        [index <= 50] whileTrue: [
+          total:: total
+            + (self
+              over: (self argument: 1 in: phase)
+              and: (self argument: 2 in: phase)
+              and: (self argument: 3 in: phase)
+              and: (self argument: 4 in: phase)
+              and: (self argument: 5 in: phase)
+              and: (self argument: 6 in: phase)).
+          index:: index + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Each phase of `ONE_FLOAT_A_PHASE` after the first feeds a `Float`
+    /// to one more of `over:and:and:and:and:and:`'s sums, each long
+    /// enough for the copy made not entrant to be compiled again: each
+    /// phase's site traps twice and makes the copy not entrant, until the
+    /// copy past the last version, compiled without a trap, takes the
+    /// remaining phases as they come. The bound holds whatever the stress
+    /// mode; where the tiers are pinned it is reached.
+    fn alternating_types_settle_within_the_last_version(lowering) {
+        let (mut interpreter, class) = load_spending_with(ONE_FLOAT_A_PHASE, lowering);
+        interpreter.set_optimization_budget(SPECULATING_BUDGET);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let before = interpreter.jit_statistics();
+        for phase in 0..=6 {
+            // Every sum is 100 but the one fed 0.5, which is 50.
+            let expected = if phase == 0 { 50 * 600 } else { 50 * 550 };
+            for round in 0..10 {
+                assert_eq!(
+                    send_number(&mut interpreter, &subject, "phase:", phase),
+                    expected,
+                    "phase {phase}, round {round}"
+                );
+            }
+        }
+        let statistics = since(interpreter.jit_statistics(), before);
+        let last = u64::from(ns_runtime::LAST_VERSION);
+        assert!(statistics.made_not_entrant <= last + 1, "{statistics:?}");
+        assert_eq!(statistics.refused_for_good, 0, "{statistics:?}");
+        if pins_the_tiers(lowering) {
+            assert_eq!(statistics.made_not_entrant, last + 1, "{statistics:?}");
+            assert_eq!(statistics.traps, 2 * (last + 1), "{statistics:?}");
+            assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
+        }
+    }
+}
+
+/// `step:at:` sends `probe:` to a `Stranger`, which answers it in its
+/// own `doesNotUnderstand:`, whose handler machine code leaves to the
+/// interpreter: an exit of its optimized code at every call, and of its
+/// baseline code too. The site ran, so its send is no trap.
+const ALWAYS_EXITING: &str = indoc! {"
+    class Subject = Object new (
+      | stranger = Stranger new. |
+    ) (
+      class Stranger = () (
+        public doesNotUnderstand: message = (
+          ^1
+        )
+      )
+      step: target at: value = (
+        ^target probe: value
+      )
+      public run: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (self step: stranger at: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `step:at:`'s optimized code, compiled again after each
+    /// abandonment for its exits, is abandoned at every version up to one
+    /// past the last, which leaves its key in baseline code for good: a
+    /// second run enters no optimized code of it, and so leaves none.
+    fn a_copy_abandoned_past_its_last_version_stays_in_baseline_code(lowering) {
+        let (mut interpreter, class) = load_spending_with(ALWAYS_EXITING, lowering);
+        interpreter.set_optimization_budget(100);
+        interpreter.set_jit_revival_entries(64);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "run:", 40_000), 40_000);
+        let statistics = since(interpreter.jit_statistics(), before);
+        assert!(statistics.refused_for_good <= 1, "{statistics:?}");
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "run:", 1_000), 1_000);
+        let again = since(interpreter.jit_statistics(), before);
+        if pins_the_tiers(lowering) {
+            let last = u64::from(ns_runtime::LAST_VERSION);
+            assert_eq!(statistics.refused_for_good, 1, "{statistics:?}");
+            assert_eq!(
+                statistics.abandoned_optimized_bodies,
+                last + 2,
+                "{statistics:?}"
+            );
+            assert_eq!(statistics.traps, 0, "{statistics:?}");
+            assert_eq!(again.optimized_exits, 0, "{again:?}");
+            assert_eq!(again.refused_for_good, 0, "{again:?}");
+        }
     }
 }

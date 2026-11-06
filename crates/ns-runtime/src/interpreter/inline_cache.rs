@@ -508,8 +508,8 @@ impl InlineCaches {
     /// before -- true for a site the table holds no record of, which can
     /// record none.
     #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the exit that counts a trap calls it next")
+        not(any(ns_jit, test)),
+        expect(dead_code, reason = "only machine code traps")
     )]
     pub(crate) fn note_trap(&mut self, feedback_base: FeedbackBase, site: u32) -> bool {
         match Self::bit_index(feedback_base, site) {
