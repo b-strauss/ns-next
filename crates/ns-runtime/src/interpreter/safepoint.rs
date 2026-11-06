@@ -134,6 +134,8 @@ impl Interpreter {
                 }
                 stressed = true;
             }
+            // Spared by this safepoint's compaction alone.
+            self.enter(|mutator| mutator.jit.optimized_at_this_safepoint.clear());
             // After the other five, which leave the stack as they find it:
             // whatever this rebuilds is what the loop reads back, so the
             // floor it suspends from is the run's and nothing below it.

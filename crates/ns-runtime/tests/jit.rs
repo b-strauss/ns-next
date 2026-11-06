@@ -1125,7 +1125,7 @@ ns_runtime::for_each_lowering! {
         interpreter.set_deopt_stress(true);
         assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
         let statistics = interpreter.jit_statistics();
-        if the_zone_stress_mode_frees_optimized_code_unrun() {
+        if the_zone_stress_mode_frees_optimized_callees_unrun() {
             return;
         }
         assert!(
@@ -1148,7 +1148,7 @@ fn the_deopt_stress_s_forced_exits_abandon_nothing() {
     interpreter.set_deopt_stress(true);
     assert_eq!(run(&mut interpreter, &class), expected_sum_of_squares());
     let statistics = interpreter.jit_statistics();
-    if the_zone_stress_mode_frees_optimized_code_unrun() {
+    if the_zone_stress_mode_frees_optimized_callees_unrun() {
         return;
     }
     assert!(
@@ -1211,6 +1211,10 @@ fn the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation() {
     let turn = (0..300).sum::<i64>() + 3 * 300;
     assert_eq!(run(&mut interpreter, &class), 100 * turn);
     let statistics = interpreter.jit_statistics();
+    if the_zone_stress_mode_frees_optimized_callees_unrun() {
+        return;
+    }
+    assert!(statistics.forced_exits > 0, "no forced exit");
     // Under a mode beside it whose every poll leaves machine code, each
     // activation of `sweep:` leaves its optimized code for good at its
     // first back edge, and the safepoint there sets the next countdown,
@@ -1644,27 +1648,46 @@ fn the_zone_stress_mode_is_on() -> bool {
     std::env::var_os("NS_NEXT_STRESS_ZONE").is_some_and(|value| !value.is_empty() && value != "0")
 }
 
-/// Whether the environment turns the zone stress mode on, under which the
-/// compaction at the safepoint that installs a body's optimized code
-/// frees it again, since no activation runs it yet, before any frame
-/// enters it: measured over `SUM_OF_SQUARES_BY_SENDS`, 100,001 bodies
-/// optimized and not one optimized exit.
-fn the_zone_stress_mode_frees_optimized_code_unrun() -> bool {
+/// Whether the environment turns the zone stress mode on, under which a
+/// callee's optimized code is freed before any frame enters it: the
+/// mode holds the safepoint request, so the callee's request is served
+/// while the callee itself still runs its baseline code -- at its first
+/// send, whose push the held request refuses, or its loop's first poll
+/// -- which the install leaves it in, and its caller's loop polls out
+/// at its back edge before the next call, where the compaction frees
+/// every body no activation runs, the callee's optimized code with its
+/// baseline body; the compaction at the installing safepoint, which
+/// spares the code (`JitState::optimized_at_this_safepoint`), is not the
+/// one that frees it. Measured over `SUM_OF_SQUARES_BY_SENDS`: 100,001 bodies
+/// optimized and not one optimized exit, and over `LONG_OPTIMIZED_LOOP`
+/// no forced exit (`docs/OPEN-WORK.md`, "The zone stress mode frees a
+/// callee's optimized code before it runs").
+fn the_zone_stress_mode_frees_optimized_callees_unrun() -> bool {
     the_zone_stress_mode_is_on()
+}
+
+/// The stress modes beside the deopt stress mode under which every poll
+/// leaves machine code (`a_stress_mode_polls_out`): the exit stress
+/// mode, whose polls exit unconditionally, and every mode that holds the
+/// safepoint request, which a poll takes
+/// (`Interpreter::hold_safepoints_for_stress`).
+const MODES_THAT_POLL_OUT: [&str; 7] = [
+    "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE",
+];
+
+/// Whether the environment turns `mode`'s stress mode on.
+fn the_stress_mode_is_on(mode: &str) -> bool {
+    std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
+        .is_some_and(|value| !value.is_empty() && value != "0")
 }
 
 /// Whether the environment turns on a stress mode, other than the deopt
 /// stress mode a test sets itself, under which every poll leaves machine
-/// code (`a_stress_mode_polls_out`).
+/// code.
 fn a_stress_mode_beside_deopt_polls_out() -> bool {
-    [
-        "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE",
-    ]
-    .iter()
-    .any(|mode| {
-        std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
-            .is_some_and(|value| !value.is_empty() && value != "0")
-    })
+    MODES_THAT_POLL_OUT
+        .iter()
+        .any(|mode| the_stress_mode_is_on(mode))
 }
 
 /// Whether the environment turns on a stress mode under which every poll
@@ -1675,14 +1698,7 @@ fn a_stress_mode_beside_deopt_polls_out() -> bool {
 /// safepoint resets the countdown. The JIT's, the optimize and the wide
 /// encoding's stress modes leave the polls alone.
 fn a_stress_mode_polls_out() -> bool {
-    [
-        "EXIT", "MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE", "DEOPT",
-    ]
-    .iter()
-    .any(|mode| {
-        std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
-            .is_some_and(|value| !value.is_empty() && value != "0")
-    })
+    a_stress_mode_beside_deopt_polls_out() || the_stress_mode_is_on("DEOPT")
 }
 
 /// A chain of compiled sends three deep -- `run:`, `first:with:`,

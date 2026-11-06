@@ -1072,14 +1072,24 @@ impl Mutator<'_> {
     /// bodies until a quarter of the bodies' room past the stubs is free,
     /// and at least what the compile that found no room needed.
     pub(crate) fn compact_code_zone(&mut self) {
-        self.compact_code_zone_freeing(Freeing::ToAQuarter);
+        self.compact_code_zone_freeing(Freeing::ToAQuarter, Vec::new());
     }
 
     /// The compaction the zone stress mode makes (`NS_NEXT_STRESS_ZONE`):
-    /// every body no activation runs freed.
+    /// every body no activation runs freed -- but a body whose optimized
+    /// code this safepoint installed, which no activation can run yet:
+    /// freed here, optimized code no frame was ever in would be all the
+    /// mode saw of it, never its cells, its machine entry row and its
+    /// budget word remapped under code that runs.
     #[cfg(debug_assertions)]
     pub(crate) fn compact_code_zone_for_stress(&mut self) {
-        self.compact_code_zone_freeing(Freeing::EveryInactiveBody);
+        let spared = self
+            .jit
+            .optimized_at_this_safepoint
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .collect();
+        self.compact_code_zone_freeing(Freeing::EveryInactiveBody, spared);
     }
 
     /// The compaction, in Cog's order: the bodies marked, freed and
@@ -1090,7 +1100,11 @@ impl Mutator<'_> {
     /// `cointerp.c:21546-21596`; `relocateMethodsPreCompaction`,
     /// `:13400-13417`); the bytes slid and the records rewritten; the
     /// request cleared, and the exhaustion once that much is free.
-    fn compact_code_zone_freeing(&mut self, freeing: Freeing) {
+    fn compact_code_zone_freeing(
+        &mut self,
+        freeing: Freeing,
+        spared: Vec<std::rc::Rc<CompiledCode>>,
+    ) {
         #[cfg(debug_assertions)]
         assert_eq!(
             self.jit.entries_in_progress, 0,
@@ -1113,7 +1127,8 @@ impl Mutator<'_> {
         // body compiled again since an older copy of it was freed.
         #[cfg(ns_jit)]
         let named_before = self.jit.named_bodies();
-        let active = self.heap.active_codes();
+        let mut active = self.heap.active_codes();
+        active.extend(spared);
         self.jit.mark_active(&active);
         drop(active);
         self.jit.free_unnamed();

@@ -1235,6 +1235,14 @@ pub(crate) struct JitState {
     /// weakly as the installed bodies are: what the optimizing compile at
     /// the next safepoint takes up.
     pub(crate) optimization_requests: Vec<Weak<CompiledCode>>,
+    /// The bodies the optimizing compile installed optimized code for at
+    /// the safepoint being served: the zone stress mode's compaction at
+    /// that same safepoint keeps them as if an activation ran them, so
+    /// that the code is entered and run before a later compaction slides
+    /// or frees it (`Mutator::compact_code_zone_for_stress`). Emptied at
+    /// the end of every safepoint.
+    #[cfg(debug_assertions)]
+    pub(crate) optimized_at_this_safepoint: Vec<Weak<CompiledCode>>,
     /// The installed bodies, by index in `bodies`, whose budget word is
     /// still to be pointed at their row, which only a caller holding the
     /// heap can do (`after_compile_trigger`). Emptied by a compaction,
@@ -1424,6 +1432,8 @@ impl JitState {
             revived_by_entries: false,
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
+            #[cfg(debug_assertions)]
+            optimized_at_this_safepoint: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: if optimize_stress {
                 0
@@ -2095,6 +2105,8 @@ impl JitState {
             revived_by_entries: false,
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
+            #[cfg(debug_assertions)]
+            optimized_at_this_safepoint: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: OPTIMIZATION_BUDGET,
             budget_set: OPTIMIZATION_BUDGET,
@@ -3759,6 +3771,11 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     mutator.jit.bodies[lean as usize].optimized_needed = 0;
     code.jit.optimized.set(index);
     mutator.jit.statistics.optimized_bodies += 1;
+    #[cfg(debug_assertions)]
+    mutator
+        .jit
+        .optimized_at_this_safepoint
+        .push(Rc::downgrade(code));
     // Its transfers go into the twin, which the baseline body may have.
     mutator.jit.write_transfer_words(index);
     // Every cell that called the baseline code is written afresh from its
