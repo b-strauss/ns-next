@@ -913,7 +913,7 @@ impl InlineCaches {
                     slots
                         .iter()
                         .position(|slot| slot.guard == guard)
-                        .map(|position| (position, jit::cell_entry(jit, &slots[position].target)))
+                        .map(|position| (position, jit::cell_entry(jit, &slots[position])))
                 });
                 if let Some((position, address)) = slot {
                     let cell = Cell {
@@ -925,7 +925,7 @@ impl InlineCaches {
             }
             _ if entry.guard == guard => {
                 let cell = Cell {
-                    entry: jit::cell_entry(jit, &entry.target),
+                    entry: jit::cell_entry(jit, entry),
                     ..self.cells.site(index)
                 };
                 self.cells.write_site(index, cell);
@@ -964,7 +964,7 @@ impl InlineCaches {
         for (index, entry) in self.sites.iter().enumerate() {
             let cell = self.cells.site(index);
             if named(cell.entry) {
-                let entry = jit::cell_entry(jit, &entry.target);
+                let entry = jit::cell_entry(jit, entry);
                 self.cells.write_site(index, Cell { entry, ..cell });
             }
         }
@@ -972,7 +972,7 @@ impl InlineCaches {
             for (position, slot) in slots.iter().enumerate() {
                 let cell = self.cells.block_cell(block, position);
                 if named(cell.entry) {
-                    let entry = jit::cell_entry(jit, &slot.target);
+                    let entry = jit::cell_entry(jit, slot);
                     self.cells
                         .write_block_cell(block, position, Cell { entry, ..cell });
                 }
@@ -1135,7 +1135,7 @@ impl InlineCaches {
                 // entry address follows the JIT's state, which may have
                 // changed since the site's cell was written.
                 let first_cell = Cell {
-                    entry: jit::cell_entry(jit, &first.target),
+                    entry: jit::cell_entry(jit, &first),
                     ..self.cells.site(index)
                 };
                 let slots = &mut self.pool[block as usize];
@@ -1586,7 +1586,11 @@ impl GlobalCache {
                 cells.write_global_row(
                     row,
                     GlobalRow {
-                        entry: jit::cell_entry(jit, &self.entries[row].target),
+                        entry: jit::cell_entry_for(
+                            jit,
+                            self.entries[row].guard,
+                            &self.entries[row].target,
+                        ),
                         ..found
                     },
                 );
@@ -1603,7 +1607,7 @@ impl GlobalCache {
                 cells.write_global_row(
                     row,
                     GlobalRow {
-                        entry: jit::cell_entry(jit, &entry.target),
+                        entry: jit::cell_entry_for(jit, entry.guard, &entry.target),
                         ..found
                     },
                 );
@@ -2773,7 +2777,7 @@ pub(crate) fn decide_at<'gc>(
         let base = mutator.feedback_base_for(code);
         jit::note_entry(&mut mutator.jit, code, base, None);
         jit::after_compile_trigger(mutator);
-        let address = jit::machine_entry_address(&mutator.jit, code, base);
+        let address = jit::machine_entry_address(&mutator.jit, code, base, None);
         mutator
             .caches
             .refresh_cells(index, guard, global_key, &mutator.jit);
@@ -2839,7 +2843,10 @@ pub(crate) fn decide_at<'gc>(
     };
     jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
     jit::after_compile_trigger(mutator);
-    let address = jit::machine_entry_address(&mutator.jit, &method.code, base);
+    // The callee entered at its copy for its key, which a cell names only
+    // behind a guard that is the receiver's own id.
+    let key = jit::entry_key(&mutator.heap, &method.code, receiver, Some(defining_class));
+    let address = jit::machine_entry_address(&mutator.jit, &method.code, base, key);
     // The cells the decision went through follow the JIT's state either
     // way: the callee's machine entry once it has one, the refusing stub
     // once it never will -- refused or exiting at once -- so that the
@@ -2969,7 +2976,7 @@ fn cell_for<'gc>(mutator: &Mutator<'gc>, key: SendKey<'_, 'gc>, target: &Target)
     };
     Cell {
         guard,
-        entry: jit::cell_entry(&mutator.jit, target),
+        entry: jit::cell_entry_for(&mutator.jit, key.guard, target),
         level: cell_level(target),
         chain_start: chain_start_word(chain_start, target),
     }
@@ -2999,7 +3006,7 @@ fn chain_start_word(chain_start: ChainStart, target: &Target) -> u64 {
 fn site_state_cell(jit: &JitState, target: &Target, chain_start: u64) -> Cell {
     Cell {
         guard: VACANT_GUARD,
-        entry: jit::cell_entry(jit, target),
+        entry: jit::cell_entry_for(jit, DispatchId::VACANT, target),
         level: cell_level(target),
         chain_start,
     }
@@ -3375,6 +3382,7 @@ fn expected_cell(
         | Target::Factory { chain, .. } => *chain,
     };
     let chain_start = chain_start_of(chain);
+    let entry_guard = guard;
     let guard = match chain_start {
         ChainStart::ReceiverClass => u64::from(guard.bits()),
         ChainStart::LexicalClass | ChainStart::Superclass => {
@@ -3390,7 +3398,7 @@ fn expected_cell(
     };
     Ok(Some(Cell {
         guard,
-        entry: jit::expected_cell_entry(jit, target),
+        entry: jit::expected_cell_entry(jit, entry_guard, target),
         level: cell_level(target),
         chain_start: chain_start_word(chain_start, target),
     }))
@@ -3493,7 +3501,7 @@ mod tests {
     pub(super) fn public_cell(guard: DispatchId, target: &Target, jit: &JitState) -> Cell {
         Cell {
             guard: u64::from(guard.bits()),
-            entry: jit::cell_entry(jit, target),
+            entry: jit::cell_entry_for(jit, guard, target),
             level: cell_level(target),
             chain_start: ChainStart::ReceiverClass as u64,
         }
@@ -4094,6 +4102,19 @@ mod tests {
     }
 
     /// An entry holds no handle and is the size the pool's blocks are laid
+    /// out for.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn an_entry_stays_the_size_the_caches_were_measured_at() {
+        assert_eq!(std::mem::size_of::<Target>(), 16);
+        assert_eq!(std::mem::size_of::<CacheEntry>(), 24);
+        // Pins the global cache's own entry: `CacheRule`'s `Lexical` payload
+        // is a `DispatchId`, which padding happens to absorb today -- add a
+        // second payload to any rule and this catches it silently doubling
+        // the cache's footprint instead of a passing test hiding it.
+        assert_eq!(std::mem::size_of::<GlobalEntry>(), 32);
+    }
+
     /// A slot target, for the tests of the executed and trapped bits,
     /// which read nothing of it.
     fn any_slot() -> Target {
@@ -4203,19 +4224,6 @@ mod tests {
         assert!(caches.site_executed(unassigned, 0));
         assert!(caches.site_trapped(unassigned, 0));
         assert!(caches.note_trap(unassigned, 0));
-    }
-
-    /// out for.
-    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
-    #[test]
-    fn an_entry_stays_the_size_the_caches_were_measured_at() {
-        assert_eq!(std::mem::size_of::<Target>(), 16);
-        assert_eq!(std::mem::size_of::<CacheEntry>(), 24);
-        // Pins the global cache's own entry: `CacheRule`'s `Lexical` payload
-        // is a `DispatchId`, which padding happens to absorb today -- add a
-        // second payload to any rule and this catches it silently doubling
-        // the cache's footprint instead of a passing test hiding it.
-        assert_eq!(std::mem::size_of::<GlobalEntry>(), 32);
     }
 
     /// A factory entry records the body the lookup found, and a hit hands

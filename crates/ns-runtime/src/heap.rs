@@ -10379,6 +10379,39 @@ impl<'gc> Heap<'gc> {
         word.map(|bits| self.load(Word::from_bits(bits)))
     }
 
+    /// The receiver and the current class of the frame machine code runs
+    /// whose register 0 lies at `frame_address`, a body taking
+    /// `argument_count` arguments: the header words its call wrote
+    /// (`frame_header::RECEIVER`, `frame_header::CURRENT_CLASS`), which
+    /// the budget leaf reads for the key of the frame that ran its body's
+    /// budget out (`jit::budget_spent`). `None` for an address outside the
+    /// stack's committed words.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_frame_receiver_and_current_class(
+        &self,
+        frame_address: u64,
+        argument_count: u16,
+    ) -> Option<(Value<'gc>, Option<ClassReference<'gc>>)> {
+        let base = self.stack.frames.base_address() as u64;
+        let word_at = |register: u16| {
+            let index = frame_address
+                .checked_sub(base)
+                .filter(|bytes| bytes % 8 == 0)
+                .and_then(|bytes| usize::try_from(bytes / 8).ok())?
+                .checked_add(usize::from(register))?;
+            (index < self.stack.frames.committed_words())
+                .then(|| Word::from_bits(self.stack.frames.committed_word(index)))
+        };
+        let receiver = word_at(Self::receiver_register(argument_count))?;
+        let current_class = word_at(Self::current_class_register(argument_count))?;
+        Some((
+            self.load(receiver),
+            current_class
+                .object_offset()
+                .map(|class| self.object_handle(class)),
+        ))
+    }
+
     /// The value machine code answered as the word `bits`
     /// (`jit::Resumption::Returned`): a word a frame register held.
     pub(crate) fn machine_value(&self, bits: u64) -> Value<'gc> {

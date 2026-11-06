@@ -323,8 +323,7 @@ impl BodyAssembler {
                 word
             }
         };
-        self.macro_assembler
-            .spend_budget(word, amount, self.program_counter);
+        self.macro_assembler.spend_budget(word, amount);
     }
 
     /// The instructions a backward jump from the instruction being lowered
@@ -368,7 +367,8 @@ impl BodyAssembler {
         for (label, target, distance) in std::mem::take(&mut self.backward_branches) {
             self.macro_assembler.assembler().bind(label);
             self.macro_assembler.count_back_edge();
-            // The jump's own instruction, which the spend names.
+            // The jump's own instruction, the one the code after it
+            // stands at.
             self.program_counter = target + distance - 1;
             self.spend_budget(distance);
             self.macro_assembler.poll(target);

@@ -62,8 +62,8 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
     eprintln!(
         "jit: {} bodies, {} twins compiled in {:.3} ms; {} back-edge switches, \
          {} resumptions after a safepoint, {} exits; optimizer: {} requests, \
-         {} bodies optimized in {:.3} ms, {} optimized exits ({} forced), \
-         {} abandoned",
+         {} bodies optimized ({} customized copies) in {:.3} ms, \
+         {} optimized exits ({} forced), {} abandoned",
         statistics.compiled_bodies,
         statistics.compiled_twins,
         statistics.compile_nanoseconds as f64 / 1_000_000.0,
@@ -72,6 +72,7 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
         statistics.exits,
         statistics.optimization_requests,
         statistics.optimized_bodies,
+        statistics.customized_copies,
         statistics.optimize_nanoseconds as f64 / 1_000_000.0,
         statistics.optimized_exits,
         statistics.forced_exits,

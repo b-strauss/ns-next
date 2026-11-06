@@ -299,7 +299,7 @@ impl JitState {
             .iter()
             .filter(|body| !body.free)
             .filter_map(|body| body.code.upgrade())
-            .filter(|code| self.optimized(code).is_some())
+            .filter(|code| self.has_optimized_code(code))
             .collect()
     }
 
@@ -325,7 +325,7 @@ impl JitState {
     pub(super) fn free_body(&mut self, index: u32) {
         let twin = self.bodies.get(index as usize).and_then(|body| body.twin);
         // Optimized code goes with its baseline body, as the twin does.
-        let optimized = self.optimized_of(index);
+        let optimized = self.optimized_copies_of(index);
         for copy in std::iter::once(index).chain(twin).chain(optimized) {
             self.free_one(copy);
         }
@@ -371,12 +371,14 @@ impl JitState {
     /// its code lives, and it was neither abandoned nor compiled again; for
     /// a twin, whether its lean body is, unfreed, and still has it as its
     /// twin; for optimized code, whether its baseline body is, and its
-    /// slot names it as the optimized code beside it.
+    /// slot names it as the optimized code beside it -- its one copy, or
+    /// the copy its key's row names.
     fn still_named(&self, index: usize) -> bool {
         if let Some(baseline) = self.bodies[index].baseline {
             return self
-                .optimized_of(baseline)
-                .is_some_and(|optimized| optimized as usize == index);
+                .optimized_copies_of(baseline)
+                .iter()
+                .any(|optimized| *optimized as usize == index);
         }
         if let Some(lean) = self.bodies[index].lean {
             let lean_body = &self.bodies[lean as usize];
@@ -632,10 +634,23 @@ impl JitState {
         Some(self.bodies[index].start)
     }
 
-    /// The zone offset of `code`'s optimized code, if it has some here.
-    /// For tests.
+    /// The zone offset of `code`'s optimized code, if it has some here:
+    /// its one copy's, or its first customized copy's. For tests.
     pub(crate) fn optimized_offset(&self, code: &CompiledCode) -> Option<u32> {
-        Some(self.optimized(code)?.start)
+        let lean = u32::try_from(self.named_body(code)?).ok()?;
+        let first = *self.optimized_copies_of(lean).first()?;
+        Some(self.bodies[first as usize].start)
+    }
+
+    /// How many customized copies of `code`'s optimized code it has here.
+    /// For tests.
+    pub(crate) fn customized_copies(&self, code: &CompiledCode) -> usize {
+        code.jit
+            .copies
+            .borrow()
+            .iter()
+            .filter(|copy| self.copy_of(code, copy.key).is_some())
+            .count()
     }
 
     /// The data words of the machine code `code`'s slot names -- its
@@ -770,8 +785,8 @@ impl JitState {
                 let body = &self.bodies[index];
                 body.usage.set(MAXIMUM_USAGE);
                 let optimized = u32::try_from(index)
-                    .ok()
-                    .and_then(|index| self.optimized_of(index));
+                    .map(|index| self.optimized_copies_of(index))
+                    .unwrap_or_default();
                 for copy in body.twin.into_iter().chain(optimized) {
                     self.bodies[copy as usize].usage.set(MAXIMUM_USAGE);
                 }
@@ -838,17 +853,16 @@ impl JitState {
                 let Ok(number) = u32::try_from(index) else {
                     unreachable!("internal: a body's index fits its slot's map");
                 };
-                // The pair is as used as its more used copy: once a body
+                // The body is as used as its most used copy: once a body
                 // is optimized, its cells and its row name the optimized
                 // code, whose links raise that copy's usage alone, so that
                 // the lean body's would make a hot optimized body the
                 // first a compaction frees.
-                let optimized = self.optimized_of(number);
-                let usage = optimized.map_or(body.usage.get(), |optimized| {
-                    body.usage
-                        .get()
-                        .max(self.bodies[optimized as usize].usage.get())
-                });
+                let optimized = self.optimized_copies_of(number);
+                let usage = optimized
+                    .iter()
+                    .map(|optimized| self.bodies[*optimized as usize].usage.get())
+                    .fold(body.usage.get(), u8::max);
                 if usage > freeable {
                     continue;
                 }
@@ -946,6 +960,17 @@ impl JitState {
         let mut moved_bytes = 0u64;
         for (old_index, mut body) in old_bodies.into_iter().enumerate() {
             if body.free {
+                // A row naming a freed copy would name whichever body
+                // takes its index now.
+                if let (Some(key), Some(code)) = (body.key, body.code.upgrade()) {
+                    if code
+                        .jit
+                        .copy_row(key)
+                        .is_some_and(|row| row.body as usize == old_index)
+                    {
+                        code.jit.set_copy_body(key, super::NO_BODY);
+                    }
+                }
                 renumbered.push(None);
                 continue;
             }
@@ -978,15 +1003,23 @@ impl JitState {
             body.words_end -= delta;
             body.usage.set(body.usage.get() / 2);
             // A twin's slot is its lean body's, which names the lean body;
-            // optimized code's slot names it beside the lean body.
+            // optimized code's slot names it beside the lean body, as its
+            // one copy or in its key's row.
             let code = body.code.upgrade();
             if let Some(code) = code.as_ref().filter(|_| body.baseline.is_some()) {
+                let named = match body.key {
+                    Some(key) => code.jit.copy_row(key).map(|row| row.body),
+                    None => Some(code.jit.optimized.get()),
+                };
                 debug_assert_eq!(
-                    code.jit.optimized.get() as usize,
-                    old_index,
+                    named.map(|named| named as usize),
+                    Some(old_index),
                     "internal: a compaction moves only optimized code its slot names"
                 );
-                code.jit.optimized.set(index);
+                match body.key {
+                    Some(key) => code.jit.set_copy_body(key, index),
+                    None => code.jit.optimized.set(index),
+                }
             } else if let Some(code) = code.filter(|_| body.lean.is_none()) {
                 let first_instruction = code.jit.first_instruction.get() - delta;
                 debug_assert_eq!(
@@ -1422,7 +1455,6 @@ mod tests {
     #[test]
     fn a_hot_optimized_body_outlives_a_colder_one_at_a_usage_compaction() {
         use crate::jit::tests::machine::{body_with_a_loop, enter_twice};
-        use std::rc::Rc;
         let mut interpreter =
             crate::interpreter::Interpreter::bootstrap_with(crate::Lowering::Optimized);
         interpreter.set_jit_enabled(true);
@@ -1433,7 +1465,10 @@ mod tests {
                 enter_twice(&mut mutator.jit, code);
             }
             crate::jit::after_compile_trigger(mutator);
-            mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+            mutator
+                .jit
+                .optimization_requests
+                .push(crate::jit::OptimizationRequest::uncustomized(&hot));
             crate::jit::optimize_requested(mutator);
             let (cold_lean, hot_lean) = (cold.jit.map.get(), hot.jit.map.get());
             let optimized = hot.jit.optimized.get();

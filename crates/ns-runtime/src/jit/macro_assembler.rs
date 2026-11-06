@@ -2072,13 +2072,13 @@ impl MacroAssembler {
     }
 
     /// Spends `amount` of the body's optimization budget
-    /// (`heap/optimization_budgets.rs`) at the instruction at
-    /// `program_counter`: subtracts it from the word whose address the
-    /// body's data word `word` holds, and out of line, when the word fell
-    /// below zero, calls `Leaf::Budget` with the address, the program
-    /// counter and the code's own address, then goes on where the spend
-    /// ends, since the leaf changes nothing the code reads. Clobbers the
-    /// flags and the idiom scratch register.
+    /// (`heap/optimization_budgets.rs`): subtracts it from the word whose
+    /// address the body's data word `word` holds, and out of line, when
+    /// the word fell below zero, calls `Leaf::Budget` with the address,
+    /// the frame's -- whose header names the key a method's body is
+    /// optimized for (`jit::budget_spent`) -- and the code's own address,
+    /// then goes on where the spend ends, since the leaf changes nothing
+    /// the code reads. Clobbers the flags and the idiom scratch register.
     ///
     /// The data word names the row rather than the code holding a code
     /// id, since a full collection may free a code id and mint it again
@@ -2092,7 +2092,7 @@ impl MacroAssembler {
     ///
     /// On an amount past `i32::MAX`, which no body's length reaches: the
     /// compile refuses a body past `u16::MAX` instructions.
-    pub(crate) fn spend_budget(&mut self, word: usize, amount: u32, program_counter: u32) {
+    pub(crate) fn spend_budget(&mut self, word: usize, amount: u32) {
         let scratch = self.roles.idiom_scratch;
         let amount = i32::try_from(amount).expect("internal: a body's length fits an immediate");
         let (cold, rejoin) = (self.assembler.label(), self.assembler.label());
@@ -2111,7 +2111,7 @@ impl MacroAssembler {
             super::leaves::Leaf::Budget.index(),
             [
                 Operand::Register(scratch),
-                Operand::Immediate(u64::from(program_counter)),
+                Operand::Register(self.roles.frame),
                 Operand::CodeAddress,
             ],
             scratch,

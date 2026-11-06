@@ -1126,6 +1126,52 @@ impl Interpreter {
         })
     }
 
+    /// How many customized copies of `method`'s body -- one per receiver
+    /// application and entered application it was optimized for -- have
+    /// optimized code in this interpreter's zone. A test hook.
+    #[doc(hidden)]
+    pub fn jit_customized_copies(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> usize {
+        self.enter(|mutator| {
+            method_code(mutator, class, side, method)
+                .map_or(0, |code| mutator.jit.customized_copies(&code))
+        })
+    }
+
+    /// For each block `method` makes, in order: whether its body has
+    /// optimized code in this interpreter's zone, and how many customized
+    /// copies of it there are, which a block never has. A test hook.
+    #[doc(hidden)]
+    pub fn jit_block_tiers(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Vec<(bool, usize)> {
+        self.enter(|mutator| {
+            let Some(code) = method_code(mutator, class, side, method) else {
+                return Vec::new();
+            };
+            code.instructions()
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    crate::bytecode::Instruction::MakeClosure { code: block, .. } => Some(block),
+                    _ => None,
+                })
+                .map(|block| {
+                    (
+                        mutator.jit.optimized_offset(block).is_some(),
+                        mutator.jit.customized_copies(block),
+                    )
+                })
+                .collect()
+        })
+    }
+
     /// The data words of `method`'s body's machine code -- its transfer
     /// words, which name its twin's code -- as the zone holds them. A test
     /// hook.

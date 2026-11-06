@@ -135,6 +135,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
             - before.optimized_frames_materialized,
         optimized_bodies_resumed: after.optimized_bodies_resumed - before.optimized_bodies_resumed,
         optimized_twin_requests: after.optimized_twin_requests - before.optimized_twin_requests,
+        customized_copies: after.customized_copies - before.customized_copies,
         forced_exits: after.forced_exits - before.forced_exits,
         deepest_forced_exit: after.deepest_forced_exit,
     }
@@ -1097,6 +1098,234 @@ ns_runtime::for_each_lowering! {
             return;
         }
         assert!(statistics.optimized_bodies >= 1, "{statistics:?}");
+    }
+}
+
+/// Whether the copies a test counts are pinned here: under no stress mode
+/// that frees or compiles again the code a run made -- by its
+/// compactions, collections, suspensions and moves, or by leaving machine
+/// code at every poll -- beside the optimize, JIT and deopt stress modes,
+/// which these tests set or which change no copy's key.
+fn counts_the_copies() -> bool {
+    !MODES_THAT_CHANGE_THE_COPY
+        .iter()
+        .filter(|mode| !matches!(**mode, "OPTIMIZE" | "JIT" | "DEOPT"))
+        .any(|mode| the_stress_mode_is_on(mode))
+}
+
+/// `source` loaded under `lowering` with every body compiled at its first
+/// entry, installed whatever it exits at, and optimized at the first
+/// spend of its budget, so that a body's every key is optimized once it
+/// has run.
+fn load_customizing(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let (mut interpreter, class) = load_with(source, lowering);
+    interpreter.set_jit_stress(true);
+    interpreter.set_optimize_stress(true);
+    (interpreter, class)
+}
+
+/// The class `subject`'s unary `selector` answers.
+fn class_answered(interpreter: &mut Interpreter, subject: &Root, selector: &str) -> Root {
+    expect_ok(
+        interpreter.send(subject, Symbol::intern(selector), &[]),
+        selector,
+    )
+}
+
+/// `total`, a method of `A`, summing `A`'s slot in a loop, run on an `A`
+/// and on a `B`, a subclass of `A` with a slot of its own: one body, run
+/// on two receivers' applications and entered at `A`'s for both.
+const ONE_METHOD_ON_TWO_APPLICATIONS: &str = indoc! {"
+    class Subject = Object new () (
+      class A step: value = Object new (
+        |
+          step = value.
+        |
+      ) (
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      class B = A step: 3 (
+        |
+          own = 5.
+        |
+      ) ()
+
+      public aClass = (
+        ^A.
+      )
+
+      public run = (
+        ^(A step: 2) total + B new total.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A method body run on receivers of two applications has a copy for
+    /// each: its key is the receiver's application and the one it was
+    /// entered at, and the copy made for an `A` is never entered for a
+    /// `B`, which runs the baseline code until its own copy is made.
+    fn a_method_run_on_two_applications_has_two_copies(lowering) {
+        let (mut interpreter, class) = load_customizing(ONE_METHOD_ON_TWO_APPLICATIONS, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        if !counts_the_copies() {
+            return;
+        }
+        let a_class = class_answered(&mut interpreter, &subject, "aClass");
+        let total = Symbol::intern("total");
+        assert_eq!(
+            interpreter.jit_customized_copies(&a_class, MethodSide::Instance, total),
+            2
+        );
+        assert!(interpreter.jit_statistics().customized_copies >= 2);
+    }
+}
+
+/// `M`'s `total` summing `M`'s private slot in a loop, `M` applied twice
+/// in `Twice`'s chain: sent publicly it runs at the upper level, which
+/// reads 10, and sent by `super` from `Middle` at the lower one, which
+/// reads 1 -- one body on one receiver at two levels.
+const ONE_MIXIN_APPLIED_TWICE: &str = indoc! {"
+    class Subject = Object new () (
+      class Base = Object new () ()
+
+      class M step: value = Object new (
+        |
+          private step = value.
+        |
+      ) (
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      class Middle = Object new () (
+        public lowerTotal = (
+          ^super total.
+        )
+      )
+
+      class Twice = Base new <: M step: 1 <: Middle <: M step: 10.
+
+      public mClass = (
+        ^M.
+      )
+
+      public run = (
+        |
+          twice = Twice new.
+        |
+        ^twice total + twice lowerTotal.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A mixin applied twice in one chain runs its method's one body on
+    /// one receiver at two levels, and each level has a copy of its own:
+    /// the key's entered application tells them apart, so that neither
+    /// level runs the copy made for the other.
+    fn a_mixin_applied_twice_has_a_copy_per_level(lowering) {
+        let (mut interpreter, class) = load_customizing(ONE_MIXIN_APPLIED_TWICE, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 1100);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 1100);
+        if !counts_the_copies() {
+            return;
+        }
+        let m_class = class_answered(&mut interpreter, &subject, "mClass");
+        let total = Symbol::intern("total");
+        assert_eq!(
+            interpreter.jit_customized_copies(&m_class, MethodSide::Instance, total),
+            2
+        );
+    }
+}
+
+/// `total`, a method of `A`, adding `A`'s slot in a block it hands
+/// `repeat:`, which runs it a hundred times: one block body, run by the
+/// closures of an `A` and of a `B`.
+const ONE_BLOCK_ON_TWO_RECEIVERS: &str = indoc! {"
+    class Subject = Object new () (
+      class A step: value = Object new (
+        |
+          step = value.
+        |
+      ) (
+        repeat: block = (
+          |
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            block value.
+            index:: index + 1.
+          ].
+        )
+
+        public total = (
+          |
+            sum ::= 0.
+          |
+          self repeat: [sum:: sum + step].
+          ^sum.
+        )
+      )
+
+      class B = A step: 3 (
+        |
+          own = 5.
+        |
+      ) ()
+
+      public aClass = (
+        ^A.
+      )
+
+      public run = (
+        ^(A step: 2) total + B new total.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A block body has one optimized copy whatever its closures'
+    /// receivers: it is never customized, so that the block `total`
+    /// makes, run by an `A`'s closure and a `B`'s, is optimized once and
+    /// has no copies.
+    fn a_block_has_one_copy_whatever_its_receivers(lowering) {
+        let (mut interpreter, class) = load_customizing(ONE_BLOCK_ON_TWO_RECEIVERS, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        if !counts_the_copies() {
+            return;
+        }
+        let a_class = class_answered(&mut interpreter, &subject, "aClass");
+        let total = Symbol::intern("total");
+        let blocks = interpreter.jit_block_tiers(&a_class, MethodSide::Instance, total);
+        assert_eq!(blocks, vec![(true, 0)], "optimized once, no copies");
+        assert!(interpreter.jit_statistics().optimized_bodies >= 1);
     }
 }
 

@@ -466,7 +466,8 @@ fn jit_statistics_print_one_line_to_stderr() {
         shape,
         "jit: # bodies, # twins compiled in # ms; # back-edge switches, \
          # resumptions after a safepoint, # exits; optimizer: # requests, \
-         # bodies optimized in # ms, # optimized exits (# forced), # abandoned"
+         # bodies optimized (# customized copies) in # ms, \
+         # optimized exits (# forced), # abandoned"
     );
 }
 
