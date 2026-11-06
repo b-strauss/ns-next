@@ -2300,7 +2300,8 @@ them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_COLLECT`, `NS_NEXT_STRESS_SCAVENGE` ("Finding a missed
 barrier: the scavenge stress mode"), `NS_NEXT_STRESS_SUSPEND`,
 `NS_NEXT_STRESS_ZONE`, which compacts the code zone, freeing every body
-no activation runs ([execution.md](execution.md), "The code zone"),
+no activation runs, every other compaction keeping each body that has
+optimized code ([execution.md](execution.md), "The code zone"),
 each of these six keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),

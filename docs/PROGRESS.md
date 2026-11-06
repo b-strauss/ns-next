@@ -6965,10 +6965,12 @@ away -- the narrow encoding under the wide mode, the caches' feedback
 under the cache mode, long optimized activations under the modes that
 hold the safepoint request, optimized code run under the zone mode,
 whose compaction frees a callee's optimized code before the next call
-enters it -- which `16cb8660` fixes in the tests. `ce2502dc` makes the
-zone mode's compaction spare the optimized code installed at its own
-safepoint; the callees stay freed before they run, at the next
-safepoint.
+enters it -- which `16cb8660` fixes in the tests. `e7192d62` makes every
+other zone stress compaction keep and slide every body that has
+optimized code, so that a callee's optimized code is moved and then run
+under the mode (6,667 forced exits where there were none); a long caller
+of churned callees is still abandoned under it before its optimized code
+runs.
 
 - `2853c0ba` -- the plan.
 - `7c712ad2`, `dea20a31` -- the snapshot and `BodyFacts`.
@@ -6988,14 +6990,14 @@ safepoint.
   sends, the loop head's rule, the budgets chosen, the leaf's frame
   lookup, and the fixes its reviews found.
 - `16cb8660` -- the optimizer's tests under the other stress modes.
-- `ce2502dc` -- the zone stress mode spares the code its safepoint
-  installed.
+- `ce2502dc`, `e7192d62` -- every other zone stress compaction slides
+  optimized code instead of freeing it.
 - The documents' commit after them.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 fallback-merge phis, the back-off the decay can hold at twice the
-budget, the zone stress mode that frees a callee's optimized code
-before it runs,
+budget, the long caller the zone stress mode abandons before its
+optimized code runs,
 `bench_recursion`'s depth-count chain, DeltaBlueTon80's mispredicting
 stubs, the budget a compaction forgets, the reviews' smaller items, and
 road step 9's second stage, speculation, next.

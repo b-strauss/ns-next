@@ -11264,12 +11264,14 @@ in a long one, and a forced exit holds the safepoint that sets the next
 -- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`. A forced exit
 counts against no exit budget. Beside the other stress modes, a mode
 that holds the safepoint request ends an activation's optimized code at
-its first back edge, and the zone stress mode's compaction, which spares
-the optimized code installed at its own safepoint, frees a callee's
-optimized code at the next one, at its caller's back edge, before the
-next call enters it, so neither runs optimized code far
-([OPEN-WORK.md](../OPEN-WORK.md), "The zone stress mode frees a
-callee's optimized code before it runs"). Every golden under
+its first back edge. The zone stress mode's compactions alternate:
+every other one keeps every body that has optimized code and slides it
+with the rest, so that a callee's optimized code, installed while the
+callee still ran its baseline code, is moved, run where it now lies and
+then freed and compiled again; a long caller of churned callees is
+abandoned under the mode before its optimized code runs
+([OPEN-WORK.md](../OPEN-WORK.md), "Under the zone stress mode a caller
+of churned callees is abandoned before its optimized code runs"). Every golden under
 `goldens/runtime/optimizer/` optimizes its hot body in a plain run --
 sends, a closure, a non-local return, an overflow, allocation, an
 exception through the frame, the depth limit, a mixin applied twice and
@@ -13343,9 +13345,10 @@ that make everything that grows reclaimable (plan
 - **A stress mode** (`NS_NEXT_STRESS_ZONE`, debug builds) compacts at
   the safepoints its schedule picks (`StressSchedule`, beside the collect
   stress mode's), freeing every body that is not active
-  (`zone::Freeing::EveryInactiveBody`), so every golden runs with its
-  bodies freed, compiled again and moved; like the exit stress mode, it
-  forces the JIT on.
+  (`zone::Freeing::EveryInactiveBody`) -- every other one keeping each
+  body that has optimized code, which it slides with the rest -- so
+  every golden runs with its bodies freed, compiled again and moved;
+  like the exit stress mode, it forces the JIT on.
 
 #### The code of a moved range is freed
 

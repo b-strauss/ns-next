@@ -31,7 +31,8 @@ Create a todo for each item.
    its frame and runs on from the frames, JIT compiles every body at its first
    entry and enters it at every push even when its machine code exits at once, EXIT makes every poll in
    machine code take its exit, ZONE compacts the code zone at every safepoint,
-   freeing every body no activation runs, OPTIMIZE arms every body's
+   freeing every body no activation runs -- every other compaction keeping
+   each body that has optimized code, which it slides -- OPTIMIZE arms every body's
    optimization budget at 0, so that the next safepoint compiles its optimized
    code once its baseline code first spends -- under it the back-off after an
    abandonment is void, the doubled budget still 0 -- DEOPT does what OPTIMIZE does and

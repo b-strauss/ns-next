@@ -826,34 +826,24 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     JIT", "Speculation and its failure").
     [execution.md](design/execution.md), "The optimizing tier's
     foundation", "Exits, abandonment and the code zone".
-  - **The zone stress mode frees a callee's optimized code before it
-    runs** (2026-11-06). The mode frees every body no activation runs at
-    every compaction, its baseline and optimized code together, and holds
-    the safepoint request, so that a poll, and a push from machine code,
-    always stops at a safepoint. The compaction at the safepoint that
-    installs optimized code spares it (`JitState::optimized_at_this_safepoint`,
-    `Mutator::compact_code_zone_for_stress`), but a callee's request is
-    served while the callee still runs its baseline code -- at its first
-    send's refused push or its loop's first poll -- which the install
-    leaves it in, and the next safepoint, at its caller's back edge,
-    comes before the next call and frees the callee, idle there, with its
-    optimized code. So the mode almost never enters optimized code: over
-    `SUM_OF_SQUARES_BY_SENDS` (`crates/ns-runtime/tests/jit.rs`) 100,001
-    bodies are optimized and not one optimized exit is taken, and over
-    `LONG_OPTIMIZED_LOOP` none is forced. What it misses is the remap of
-    optimized code a frame has run -- its cells, its machine entry row and
-    its budget word -- after a slide, which
-    `a_compaction_slides_optimized_code` (`tests/jit.rs`) and
-    `a_hot_optimized_body_outlives_a_colder_one_at_a_usage_compaction`
-    (`jit/zone.rs`) alone cover; the deopt tests that count forced exits
-    skip the count under the mode
-    (`the_zone_stress_mode_frees_optimized_callees_unrun`). Sparing
-    optimized code until a frame has entered it would close it, but
-    machine code enters a callee through its cell without Rust seeing
-    the entry, so it needs a bound of its own: open. Compacting before
-    the install does not help: it would free the idle callee's baseline
-    body too, and the install, finding none, would drop the request.
-    [execution.md](design/execution.md), "The optimizing tier's
+  - **Under the zone stress mode a caller of churned callees is
+    abandoned before its optimized code runs** (2026-11-06). The mode
+    frees every body no activation runs at every other compaction --
+    the compactions between keep every body that has optimized code and
+    slide it (`Mutator::compact_code_zone_for_stress`) -- and holds the
+    safepoint request. A loop that sends a callee at every turn polls at
+    every back edge, where the callee, idle, is freed often enough that
+    its sends miss and its pushes are refused at the held request: exits
+    of the caller's baseline code, which spend its `EXIT_BUDGET` within
+    some twenty turns and abandon it, its optimized code with it. Over
+    `LONG_OPTIMIZED_LOOP` (`crates/ns-runtime/tests/jit.rs`) 192 pushes
+    are refused, two bodies abandoned and no optimized exit taken, so
+    `the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation`
+    skips its counts under the mode
+    (`the_zone_stress_mode_abandons_a_caller_of_churned_callees`).
+    Callees' optimized code is moved and run under it (over
+    `SUM_OF_SQUARES_BY_SENDS`, 6,667 forced exits); a long caller's is
+    not. [execution.md](design/execution.md), "The optimizing tier's
     foundation", "Verification".
   - **What the first stage's reviews left** (2026-11-05), none a wrong
     answer, each in `crates/ns-runtime/src/jit/`:
