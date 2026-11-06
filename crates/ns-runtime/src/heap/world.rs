@@ -207,7 +207,7 @@ impl World {
         self.mutator.jit.compaction_requested()
     }
 
-    /// Sets the deopt stress mode's countdown to its rotation's next, at
+    /// Sets the deopt stress mode's countdown to the next it draws, at
     /// the run loop's safepoint (`JitState::rotate_deoptimization_countdown`);
     /// nothing outside the mode.
     pub(crate) fn rotate_deoptimization_countdown(&mut self) {

@@ -1997,7 +1997,7 @@ const LONG_OPTIMIZED_LOOP: &str = indoc! {"
 /// The deopt stress mode forces exits deep in one long activation of
 /// optimized code, not only within its first few points: a forced exit
 /// leaves the activation's optimized code for good, so that its n-th
-/// point is forced only by a countdown of n, and the rotation reaches
+/// point is forced only by a countdown of n, and the draw reaches
 /// 987 -- the 247th turn of `sweep:`'s loop, past many a write-back of the
 /// values its back edge carries. The optimized lowering's, which inlines
 /// the loop's blocks into `sweep:`.

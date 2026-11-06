@@ -11295,11 +11295,20 @@ makes optimized code leave at an interrupt point after its write-back
 and before its template, exactly where the template's own exits leave
 (`MacroAssembler::count_down_to_deoptimize`): every point subtracts one
 from a machine word (`MachineWord::DeoptCountdown`), and the one that
-brings it to zero exits; each safepoint sets the countdown to the next
-of the Fibonacci numbers up to 987 (`DEOPTIMIZATION_ROTATION`), small
+brings it to zero exits; each safepoint sets the countdown to one of
+the Fibonacci numbers up to 987 (`DEOPTIMIZATION_ROTATION`), small
 ones for every point of a short stretch and large ones for points deep
 in a long one, and a forced exit holds the safepoint that sets the next
--- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`. A forced exit
+-- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`. The number is
+drawn by a xorshift sequence from a fixed seed, set afresh whenever the
+mode is turned on (`DEOPTIMIZATION_SEED`), so that a run's forced exits
+reproduce and every number recurs; walked in a fixed order, the
+rotation's period locked in step with an activation spanning a multiple
+of its safepoints -- `sweep:` of
+`the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation`
+spans 600 under the zone and optimize stress modes together -- which
+then began at the same countdown every time and was never forced where
+the others fell. A forced exit
 counts against no exit budget. Beside the other stress modes, a mode
 that holds the safepoint request ends an activation's optimized code at
 its first back edge. The zone stress mode's compactions alternate:

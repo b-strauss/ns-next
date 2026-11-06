@@ -1586,8 +1586,9 @@ pub(crate) struct JitState {
     /// it lies.
     #[cfg(ns_jit)]
     customized: Vec<Weak<CompiledCode>>,
-    /// Where the next safepoint's countdown lies in `DEOPTIMIZATION_ROTATION`.
-    deoptimization_rotation: usize,
+    /// The state of the sequence that draws the next safepoint's
+    /// countdown from `DEOPTIMIZATION_ROTATION` (`DEOPTIMIZATION_SEED`).
+    deoptimization_draw: u64,
     /// The countdown the last safepoint set, which a forced exit came at
     /// (`JitStatistics::deepest_forced_exit`).
     deoptimization_countdown: u64,
@@ -1672,9 +1673,9 @@ pub(crate) fn stress_optimize_from_env() -> bool {
 /// Whether `NS_NEXT_STRESS_DEOPT` asks for the deopt stress mode: set, and
 /// neither empty nor `0`. Debug builds only; read once per process. It
 /// implies the optimize stress mode, and optimized code leaves at every
-/// n-th interrupt point it passes, n rotating over
-/// `DEOPTIMIZATION_ROTATION` at successive safepoints, so that every point
-/// is met -- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`
+/// n-th interrupt point it passes, n drawn from
+/// `DEOPTIMIZATION_ROTATION` afresh at every safepoint, so that every
+/// point is met -- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`
 /// (`docs/design/execution.md`, "Verification").
 pub(crate) fn stress_deopt_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -1758,7 +1759,7 @@ impl StressBackOff {
     }
 }
 
-/// The countdowns the deopt stress mode's safepoints set in turn
+/// The countdowns the deopt stress mode's safepoints draw from
 /// (`MachineWord::DeoptCountdown`), the Fibonacci numbers up to 987:
 /// small ones, so that the exit falls on every point of a short stretch
 /// of optimized code, and large ones, so that it falls deep in a long
@@ -1770,6 +1771,16 @@ impl StressBackOff {
 /// where the values its back edge carries are written back.
 const DEOPTIMIZATION_ROTATION: [u64; 15] =
     [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987];
+
+/// The seed of the xorshift sequence that draws each safepoint's
+/// countdown from `DEOPTIMIZATION_ROTATION`
+/// (`JitState::rotate_deoptimization_countdown`), set afresh whenever the
+/// mode is turned on, so that a run's forced exits reproduce. Drawn, not
+/// walked in order: an order of fixed period locks in step with any
+/// activation that spans a multiple of its safepoints, which then starts
+/// at the same countdown every time and is never forced at the points
+/// the others name.
+const DEOPTIMIZATION_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 impl JitState {
     /// The state of a new interpreter: a zone of `DEFAULT_ZONE_BYTES`,
@@ -1846,7 +1857,7 @@ impl JitState {
             stress_back_offs: IdentityMap::default(),
             #[cfg(ns_jit)]
             customized: Vec::new(),
-            deoptimization_rotation: 0,
+            deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
             #[cfg(ns_jit)]
@@ -2046,7 +2057,7 @@ impl JitState {
 
     /// Turns the deopt stress mode on or off for this state, as
     /// `NS_NEXT_STRESS_DEOPT` does at its creation: on, with the optimize
-    /// stress mode and the countdown at the rotation's start; off, the
+    /// stress mode and the countdown drawn from its seed; off, the
     /// optimize stress mode left as it is. Optimized code compiled before
     /// keeps its points uncounted. Answers the budget every row is armed
     /// with from now on.
@@ -2057,7 +2068,7 @@ impl JitState {
             self.optimization_budget
         };
         self.deopt_stress = stress;
-        self.deoptimization_rotation = 0;
+        self.deoptimization_draw = DEOPTIMIZATION_SEED;
         self.rotate_deoptimization_countdown();
         self.arm_invalidation_count();
         budget
@@ -2162,18 +2173,25 @@ impl JitState {
         self.optimize_stress
     }
 
-    /// Under the deopt stress mode, sets the countdown to the rotation's
-    /// next (`DEOPTIMIZATION_ROTATION`): what the run loop's safepoint
-    /// does, so that of the points passed until the next safepoint the
-    /// one the countdown names leaves. Nothing outside the mode.
+    /// Under the deopt stress mode, sets the countdown to the next value
+    /// drawn from `DEOPTIMIZATION_ROTATION` by a xorshift sequence from
+    /// `DEOPTIMIZATION_SEED`, whose period of 2^64 - 1 draws every value
+    /// again and again: what the run loop's safepoint does, so that of
+    /// the points passed until the next safepoint the one the countdown
+    /// names leaves. Nothing outside the mode.
     pub(crate) fn rotate_deoptimization_countdown(&mut self) {
         use crate::heap::machine_words::MachineWord;
         if !self.deopt_stress {
             return;
         }
-        let countdown = DEOPTIMIZATION_ROTATION[self.deoptimization_rotation];
-        self.deoptimization_rotation =
-            (self.deoptimization_rotation + 1) % DEOPTIMIZATION_ROTATION.len();
+        let mut draw = self.deoptimization_draw;
+        draw ^= draw << 13;
+        draw ^= draw >> 7;
+        draw ^= draw << 17;
+        self.deoptimization_draw = draw;
+        let index = usize::try_from(draw % DEOPTIMIZATION_ROTATION.len() as u64)
+            .expect("internal: an index into the rotation fits a usize");
+        let countdown = DEOPTIMIZATION_ROTATION[index];
         self.deoptimization_countdown = countdown;
         self.machine_words
             .set(MachineWord::DeoptCountdown, countdown);
@@ -2830,7 +2848,7 @@ impl JitState {
             stress_back_offs: IdentityMap::default(),
             #[cfg(ns_jit)]
             customized: Vec::new(),
-            deoptimization_rotation: 0,
+            deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
             #[cfg(ns_jit)]
