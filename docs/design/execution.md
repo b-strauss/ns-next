@@ -11264,10 +11264,12 @@ in a long one, and a forced exit holds the safepoint that sets the next
 -- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`. A forced exit
 counts against no exit budget. Beside the other stress modes, a mode
 that holds the safepoint request ends an activation's optimized code at
-its first back edge, and the zone stress mode's compaction frees the
-optimized code its safepoint installed before any frame enters it, so
-neither runs optimized code far ([OPEN-WORK.md](../OPEN-WORK.md), "No
-stress mode runs optimized code through the zone's compactions"). Every golden under
+its first back edge, and the zone stress mode's compaction, which spares
+the optimized code installed at its own safepoint, frees a callee's
+optimized code at the next one, at its caller's back edge, before the
+next call enters it, so neither runs optimized code far
+([OPEN-WORK.md](../OPEN-WORK.md), "The zone stress mode frees a
+callee's optimized code before it runs"). Every golden under
 `goldens/runtime/optimizer/` optimizes its hot body in a plain run --
 sends, a closure, a non-local return, an overflow, allocation, an
 exception through the frame, the depth limit, a mixin applied twice and

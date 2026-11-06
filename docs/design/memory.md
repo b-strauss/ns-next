@@ -2310,7 +2310,9 @@ enters its machine code at every push, even when that exits at once, and
 backward jump it takes -- take its exit, as if a safepoint were
 requested, `NS_NEXT_STRESS_OPTIMIZE`, which arms every body's
 optimization budget at 0, so that the next safepoint compiles its
-optimized code once its baseline code first spends, and
+optimized code once its baseline code first spends -- under it the
+back-off after an abandonment is void, the doubled budget still 0 --
+and
 `NS_NEXT_STRESS_DEOPT`, which implies it and makes optimized code leave
 at every n-th interrupt point it passes, n rotating at each safepoint
 ([execution.md](execution.md), "The optimizing tier's foundation",

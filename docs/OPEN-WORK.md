@@ -826,22 +826,33 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     JIT", "Speculation and its failure").
     [execution.md](design/execution.md), "The optimizing tier's
     foundation", "Exits, abandonment and the code zone".
-  - **No stress mode runs optimized code through the zone's
-    compactions** (2026-11-06). The zone stress mode compacts at the
-    safepoints its schedule picks, after the optimizing compile at the
-    same safepoint has installed its code, and frees every body no
-    activation runs -- the optimized code just installed among them,
-    before any frame enters it: over `SUM_OF_SQUARES_BY_SENDS`
-    (`crates/ns-runtime/tests/jit.rs`) 100,001 bodies are optimized and
-    not one optimized exit is taken. A compaction that slides, frees and
-    remaps optimized code a frame has run is covered by
+  - **The zone stress mode frees a callee's optimized code before it
+    runs** (2026-11-06). The mode frees every body no activation runs at
+    every compaction, its baseline and optimized code together, and holds
+    the safepoint request, so that a poll, and a push from machine code,
+    always stops at a safepoint. The compaction at the safepoint that
+    installs optimized code spares it (`JitState::optimized_at_this_safepoint`,
+    `Mutator::compact_code_zone_for_stress`), but a callee's request is
+    served while the callee still runs its baseline code -- at its first
+    send's refused push or its loop's first poll -- which the install
+    leaves it in, and the next safepoint, at its caller's back edge,
+    comes before the next call and frees the callee, idle there, with its
+    optimized code. So the mode almost never enters optimized code: over
+    `SUM_OF_SQUARES_BY_SENDS` (`crates/ns-runtime/tests/jit.rs`) 100,001
+    bodies are optimized and not one optimized exit is taken, and over
+    `LONG_OPTIMIZED_LOOP` none is forced. What it misses is the remap of
+    optimized code a frame has run -- its cells, its machine entry row and
+    its budget word -- after a slide, which
     `a_compaction_slides_optimized_code` (`tests/jit.rs`) and
     `a_hot_optimized_body_outlives_a_colder_one_at_a_usage_compaction`
-    (`jit/zone.rs`) only, and the deopt tests that count forced exits
+    (`jit/zone.rs`) alone cover; the deopt tests that count forced exits
     skip the count under the mode
-    (`the_zone_stress_mode_frees_optimized_code_unrun`). Compacting
-    before the install, or sparing the code installed at the same
-    safepoint, would let the mode cover it.
+    (`the_zone_stress_mode_frees_optimized_callees_unrun`). Sparing
+    optimized code until a frame has entered it would close it, but
+    machine code enters a callee through its cell without Rust seeing
+    the entry, so it needs a bound of its own: open. Compacting before
+    the install does not help: it would free the idle callee's baseline
+    body too, and the install, finding none, would drop the request.
     [execution.md](design/execution.md), "The optimizing tier's
     foundation", "Verification".
   - **What the first stage's reviews left** (2026-11-05), none a wrong
@@ -1341,13 +1352,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   [object-model.md](design/object-model.md), "Instantiation".
 - **The stress gate's time** (noted with the user on 2026-11-01, to be
   taken up in a session of its own). The stress step of `cargo xtask
-  gates end-of-batch` takes about 556 s: the ten suites run at once, so
-  both the slowest mode and the CPU work of all ten count. Measure first:
+  gates end-of-batch` takes about 690 s (2026-11-06): the twelve suites
+  run at once, so both the slowest mode and the CPU work of all twelve
+  count. Measure first:
   the nextest logs of one gate run (`.temp/stress-<MODE>.log`) give each
   test's time, from which the slowest tests per mode and each crate's
   share follow. The candidates, none measured yet:
   - *`NS_NEXT_STRESS_COLLECT` is the slowest mode* (about 555 s against
-    350 to 415 s for the others). A full collection still has fixed costs
+    350 to 415 s for the others, measured 2026-11-01; 675 s against 404
+    to 549 s on 2026-11-06). A full collection still has fixed costs
     independent of the heap's size: the tables' reclamation
     (`Mutator::reclaim_ids`, `Heap::held_mixin_ids`,
     `Heap::module_trees`, hash maps built afresh at each collection) and

@@ -33,7 +33,8 @@ Create a todo for each item.
    machine code take its exit, ZONE compacts the code zone at every safepoint,
    freeing every body no activation runs, OPTIMIZE arms every body's
    optimization budget at 0, so that the next safepoint compiles its optimized
-   code once its baseline code first spends, DEOPT does what OPTIMIZE does and
+   code once its baseline code first spends -- under it the back-off after an
+   abandonment is void, the doubled budget still 0 -- DEOPT does what OPTIMIZE does and
    makes optimized code leave at every n-th interrupt point it passes, n
    rotating at each safepoint; beside them the suite runs once with
    `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the twelve suites at once,

@@ -482,7 +482,8 @@ activation and never pushes; only the miss leaf, the initializer leaf
 and the forcing leaf compile and install a callee, and the twin leaf
 the running body's twin -- the budget leaf only records a body's
 optimization request, which the run loop's safepoint compiles and
-installs (`jit::optimize_requested`); and a leaf answers "re-execute" only
+installs (`jit::optimize_requested`), or points its own body's budget
+word; and a leaf answers "re-execute" only
 before it changed anything but a send's argument slots, which the mirror
 leaf places as the interpreter does and which nothing reads after the
 send but the send re-executed. Every body compiles lean, and its
@@ -518,8 +519,8 @@ through the very template function the baseline's arm for it calls,
 after writing back into the frame every value it holds that the frame
 word does not hold yet, so that at every interrupt point the frame is
 the interpreter's word for word; it leaves no store out, its code is
-entered only at its start, and a frame that goes on mid-body goes on in
-the baseline code (`execution.md`, "The optimizing tier's
+entered only at its prologue, or just past it at a push, never mid-body,
+and a frame that goes on mid-body goes on in the baseline code (`execution.md`, "The optimizing tier's
 foundation"); the run loop
 enters machine code through `jit::entered` and `jit::resumed`, a send it
 delivers through `jit::called` and `jit::called_closure` (`mod.rs`);
@@ -551,10 +552,11 @@ outer-local sites among its data words in the code zone, moved and
 freed with it and written only through the zone's writer
 (`JitState::write_body_words`), and each copy's budget word, the
 address of its body's budget row, among them, written through the same
-writer by `JitState::write_budget_word` -- once the code is installed
-and afresh after every full collection, which may free the code id the
-row is indexed by (`jit::point_budget_words_after_collection`), or the
-word names another body's row -- all outside it, and
+writer by `JitState::write_budget_word` -- once the code is installed,
+afresh after every full collection, which may free the code id the row
+is indexed by (`jit::point_budget_words_after_collection`), or the word
+names another body's row, and by the budget leaf when the word named no
+row of its body's (`jit::budget_spent`) -- all outside it, and
 every other such word lives in the heap's machine words
 (`heap/machine_words.rs`) or the entry block (`ns_memory::EntryBlock`),
 `Cell`s behind an `Rc` each. `CodeZone::enter` holds the mutator as a
