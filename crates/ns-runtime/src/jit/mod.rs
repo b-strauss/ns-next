@@ -4076,10 +4076,22 @@ pub(crate) fn note_entry_by_call(
 
 /// Notes that the miss leaf refuses a compiled call to `code`, which has
 /// no machine code to enter: a refusal that says nothing of the caller's
-/// code when `code` may still be compiled, which the exit then counts
-/// against no budget (`resumption_after_exit`).
+/// code when `code` is counting its entries, or compiled into another
+/// zone, and the zone has room to compile it at an entry to come, which
+/// the exit then counts against no budget (`resumption_after_exit`).
+/// Every other refusal counts: a callee compiled here against another
+/// feedback base, which no call compiles again, and one whose compile the
+/// exhausted zone holds, whose retries back off for many entries -- a hot
+/// caller of either would exit at every call, and its abandonment is what
+/// stops that, and gives the exhausted zone its room back.
 pub(crate) fn note_call_refused(state: &mut JitState, code: &CompiledCode) {
-    state.refused_for_an_uncompiled_callee = state.may_compile(code);
+    let slot = &code.jit;
+    let counting = match slot.state.get() {
+        COMPILED => slot.zone.get() != state.zone_identity(),
+        entries => entries < COMPILED,
+    };
+    state.refused_for_an_uncompiled_callee =
+        state.enabled && counting && state.may_compile_now(slot);
 }
 
 /// Compiles `code` into the zone and records the outcome in its slot and
@@ -5924,11 +5936,12 @@ fn resumption_after_exit(
     let refused_for_a_request = matches!(exit, MachineExit::PushRefused { at_the_bound: true })
         && mutator.heap.real_safepoint_requested();
     // A call the miss leaf refused because its callee has no machine code
-    // yet says nothing of the caller's code either: the interpreter's push
-    // counts the callee's entry, which compiles it soon. Counted, a caller
-    // whose callees a compaction frees -- each counting its entries again
-    // -- would spend a refusal on every callee every compaction freed, and
-    // be abandoned for what the zone did.
+    // yet, while the zone has room to compile it, says nothing of the
+    // caller's code either: the interpreter's push counts the callee's
+    // entry, and an entry to come compiles it (`note_call_refused`).
+    // Counted, a caller whose callees a compaction frees -- each counting
+    // its entries again -- would spend a refusal on every callee every
+    // compaction freed, and be abandoned for what the zone did.
     let refused_for_an_uncompiled_callee =
         std::mem::take(&mut mutator.jit.refused_for_an_uncompiled_callee)
             && matches!(

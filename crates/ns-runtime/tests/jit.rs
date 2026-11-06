@@ -2184,11 +2184,113 @@ fn a_caller_of_callees_never_compiled_is_not_abandoned() {
     let expected: i64 = (0..CALLEES).map(|index| 1 + index).sum();
     assert_eq!(send_unary(&mut interpreter, &subject, "run"), expected);
     let statistics = interpreter.jit_statistics();
+    // The zone stress mode alone frees every callee between two calls,
+    // the very case the rule is for.
+    if !a_stress_mode_is_on() || only_the_zone_stress_mode_is_on() {
+        assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
+    }
     if a_stress_mode_is_on() {
         return;
     }
     assert!(statistics.pushes_refused >= 64, "{statistics:?}");
-    assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
+}
+
+/// Whether the zone stress mode is the one stress mode the environment
+/// turns on.
+fn only_the_zone_stress_mode_is_on() -> bool {
+    the_zone_stress_mode_is_on()
+        && std::env::vars_os().all(|(name, value)| {
+            let name = name.to_string_lossy();
+            !name.starts_with("NS_NEXT_STRESS_")
+                || name == "NS_NEXT_STRESS_ZONE"
+                || value.is_empty()
+                || value == "0"
+        })
+}
+
+/// `sweep:`, compiled by its first two calls, whose loops turn no turn,
+/// then called once more to turn `TURNS_PAST_THE_BUDGET` turns, each of
+/// which calls `large:`, a body of many additions and no send to compile
+/// beside it; `measureSweep` and `measureLarge` compile only `sweep:` and
+/// only `large:`, which the second of their two calls compiles.
+fn a_caller_of_a_callee_the_zone_cannot_hold() -> String {
+    let additions: String = (0..200)
+        .map(|index| format!("    sum:: sum + value + {index}.\n"))
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+          large: value = (
+            | sum ::= 0. |
+        {additions}    ^sum
+          )
+          sweep: turns = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < turns] whileTrue: [
+              sum:: sum + (self large: index).
+              index:: index + 1.
+            ].
+            ^sum
+          )
+          public measureSweep = (
+            ^(self sweep: 0) + (self sweep: 0)
+          )
+          public measureLarge = (
+            ^(self large: 0) + (self large: 0)
+          )
+          public run = (
+            ^(self sweep: 0) + (self sweep: 0) + (self sweep: {TURNS_PAST_THE_BUDGET})
+          )
+        ) : ()
+    "}
+}
+
+/// More turns than a body's `EXIT_BUDGET` of 64 exits.
+const TURNS_PAST_THE_BUDGET: i64 = 200;
+
+/// How many bytes of a fresh zone `selector` leaves used past its stubs,
+/// sent to a fresh instance of `source`'s class.
+fn zone_bytes_compiled_by(source: &str, selector: &str) -> usize {
+    let (mut interpreter, class) = load_with(source, Lowering::Optimized);
+    interpreter.set_jit_zone_bytes(1 << 20);
+    let stubs = interpreter.table_sizes().zone_used_bytes;
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    send_unary(&mut interpreter, &subject, selector);
+    interpreter.table_sizes().zone_used_bytes - stubs
+}
+
+/// A call refused for a callee whose compile the exhausted zone holds is
+/// counted against its caller: the zone retries the compile only after a
+/// growing number of held ones, so that a hot caller would exit at every
+/// call, and its abandonment stops that, and gives the zone room back.
+/// The zone holds its stubs, `large:` and half of `sweep:`: `large:`
+/// fits the zone emptied -- a body larger than that is refused for good,
+/// and its calls refused by the refusing stub -- but not beside
+/// `sweep:`, which the compaction keeps while it runs.
+#[test]
+fn a_caller_of_a_callee_the_exhausted_zone_holds_is_abandoned() {
+    let source = a_caller_of_a_callee_the_zone_cannot_hold();
+    let expected: i64 = (0..TURNS_PAST_THE_BUDGET)
+        .map(|value| (0..200).map(|index| value + index).sum::<i64>())
+        .sum();
+    let sweep_bytes = zone_bytes_compiled_by(&source, "measureSweep");
+    let large_bytes = zone_bytes_compiled_by(&source, "measureLarge");
+    let (mut interpreter, class) = load_with(&source, Lowering::Optimized);
+    interpreter.set_jit_zone_bytes(1 << 20);
+    let stubs = interpreter.table_sizes().zone_used_bytes;
+    let checked = !a_stress_mode_is_on();
+    if checked {
+        interpreter.set_jit_zone_bytes(stubs + large_bytes + sweep_bytes / 2);
+    }
+    assert_eq!(run(&mut interpreter, &class), expected);
+    if !checked {
+        return;
+    }
+    let statistics = interpreter.jit_statistics();
+    assert!(statistics.abandoned_bodies >= 1, "{statistics:?}");
+    assert_eq!(statistics.refused_bodies, 0, "{statistics:?}");
 }
 
 /// Holds `statistics` to some body optimized -- but under a stress mode
