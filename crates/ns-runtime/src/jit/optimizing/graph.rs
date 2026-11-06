@@ -58,7 +58,7 @@ pub(crate) struct ValueDefinition {
 }
 
 /// What a value is known to be, so that what it is is not tested again
-/// (`docs/design/execution.md`, "Speculation and its failure"): a value
+/// (`docs/design/execution.md`, "Speculation", "Guards and traps"): a value
 /// is of a kind only where its definition guarantees it -- an integer
 /// fast path's result, which exists only on the way its tests passed, a
 /// constant's word, or a phi whose every input is of the kind -- and the
@@ -169,7 +169,7 @@ pub(crate) enum Node {
     /// path does not apply -- or `None`, where the feedback says the
     /// fallback never ran: the fast path's failure is then a trap, which
     /// writes the frame back and exits to run the instruction again
-    /// (`docs/design/execution.md`, "Speculation and its failure"), so
+    /// (`docs/design/execution.md`, "Speculation", "Guards and traps"), so
     /// that past the node the result is certain and no merge with the
     /// fallback's way costs a phi.
     IntegerBinary {
@@ -187,7 +187,8 @@ pub(crate) enum Node {
     /// which the copy's key fixes. It checks no guard: the receiver was
     /// verified at the copy's entry, and whatever could replace it -- a
     /// forward, an install -- runs after an exit, past which the frame goes
-    /// on in baseline code (`docs/design/execution.md`, "Customization").
+    /// on in baseline code (`docs/design/execution.md`, "Speculation", "Own
+    /// slots at fixed offsets").
     /// Nor does it check the field exists: every object of a program class
     /// is an ordinary instance of exactly its application's slot count,
     /// which the allocation makes and the image decoder holds a loaded one

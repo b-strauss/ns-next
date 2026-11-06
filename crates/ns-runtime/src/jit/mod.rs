@@ -576,7 +576,8 @@ pub(crate) struct JitSlot {
     /// its state forgets it, while the row itself stays, so that what it
     /// says of its key -- its version, its traps, its refusal -- outlives
     /// its code. Empty for every other body, whose one copy is
-    /// `optimized` (`docs/design/execution.md`, "Customization").
+    /// `optimized` (`docs/design/execution.md`, "Speculation", "The key and
+    /// the copies").
     copies: RefCell<Vec<CustomizedCopy>>,
 }
 
@@ -1719,7 +1720,7 @@ pub(crate) fn stress_deopt_from_env() -> bool {
 /// body but those backing off (`invalidate_optimized_for_stress`) before
 /// it installs what was requested since, so that every copy freed has had
 /// a stretch to run, and its body is optimized afresh at its next run-out
-/// (`docs/design/execution.md`, "Verification").
+/// (`docs/design/execution.md`, "Speculation", "Verification").
 pub(crate) fn stress_invalidate_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
@@ -6351,7 +6352,7 @@ fn refresh_cells_entering(mutator: &mut Mutator<'_>, mut entries: Vec<u64>) {
 /// does, counting it (`JitStatistics::invalidated_copies`), and answers
 /// whether it had some. No version is raised and no trap counted: what
 /// the copy was compiled against changed, which says nothing of its
-/// speculations (`docs/design/execution.md`, "Invalidation").
+/// speculations (`docs/design/execution.md`, "Speculation", "Invalidation").
 #[cfg(ns_jit)]
 fn invalidate_copy(
     mutator: &mut Mutator<'_>,
@@ -6420,8 +6421,7 @@ fn invalidate_copies_of(
 /// Freed at once, with their cells, dispatching rows and machine entry
 /// rows written afresh: an install runs after an exit, where no return
 /// address into the zone exists and every frame goes on in its baseline
-/// code (`docs/design/execution.md`, "No frame is converted in stage
-/// 2"). No version is raised (`invalidate_copy`).
+/// code (`docs/design/execution.md`, "Speculation", "Invalidation"). No version is raised (`invalidate_copy`).
 #[cfg(ns_jit)]
 pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[DispatchId]) {
     if rebuilt.is_empty() {
@@ -6575,7 +6575,8 @@ pub(crate) fn forget_freed_copies(
 
 /// The budget a body is armed with for a copy at `version`: `budget` times
 /// 4 to the version, saturating, Strongtalk's wait before a recompile
-/// (`docs/design/execution.md`, "Speculation and its failure"), so that a
+/// (`docs/design/execution.md`, "Speculation", "Versions and the refusal
+/// for good"), so that a
 /// copy compiled at its first run-out waits the plain budget and each
 /// failure quadruples the next wait.
 fn optimization_budget_after(budget: i64, version: u8) -> i64 {

@@ -928,7 +928,7 @@ pub(crate) struct SiteFacts {
 }
 
 /// What a customized copy is compiled for (`docs/design/execution.md`,
-/// "Customization"): its key, and the own slot base of the application
+/// "Speculation", "Own slots at fixed offsets"): its key, and the own slot base of the application
 /// the key enters at, which fixes the absolute index of every own slot
 /// the body addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

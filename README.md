@@ -15,9 +15,11 @@ instance, metaclasses, value objects, simultaneous and lazy slots, §8.6's excep
 integers of any size, the bytecode compiler and a register VM with inline caches, a
 second, deliberately naive lowering the compiler is checked against, a mark-compact
 garbage collector, a core library written in Newspeak over one VM mirror, a
-source-free image format, a baseline JIT for x64 and AArch64, and the foundation
-of an optimizing JIT above it, which keeps values in machine registers across a
-body and speculates on nothing yet.
+source-free image format, a baseline JIT for x64 and AArch64, and the first two
+stages of an optimizing JIT above it, which keeps values in machine registers
+across a body, compiles a method a copy per receiver class and level, reading its slots
+at fixed offsets, and traps where the feedback says a path never ran; it
+inlines nothing yet.
 Every `.ns` file in the vendored corpus parses.
 
 Not built yet, and the limits worth knowing before trying it on real code:
@@ -127,7 +129,7 @@ cargo xtask gates benchmarks
 cargo xtask gates release-checks
 # the hot path's machine code against its budgets; needs cargo-show-asm
 cargo xtask gates codegen
-# the suite under the eleven stress modes and once without the JIT, each into
+# the suite under the twelve stress modes and once without the JIT, each into
 # .temp/stress-<MODE>.log (NO_JIT for the last), then run-corpus plain and
 # under each mode
 cargo xtask gates stress

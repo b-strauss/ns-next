@@ -37,18 +37,23 @@ registers between interrupt points and writes them back before each,
 the code emitted through the baseline's templates and installed beside
 its baseline code, abandonment, and the optimize and deopt stress
 modes; measured -1.45% on the geometric mean against `master`
-("What the optimizing tier's foundation moved"). Next is its **second
-stage, speculation**: customization per (body, receiver application),
-guards that trap by default, the feedback's groundwork without
-counting, the rules against deoptimization loops with their version
-cap, the invalidation per application and `NS_NEXT_STRESS_INVALIDATE`
-("Planned: the optimizing JIT", "Stages"); its three open questions
-were decided with the user on 2026-11-06 -- method bodies customized,
-block bodies not; send sites keep their cells; an abandonment raises
-the version, and past the last one the pair stays in baseline code --
-and it gets its plan next.
-Beside it stand what the first stage left (the items under step 9) and
-what the baseline's stages left to the steps after them (the items
+("What the optimizing tier's foundation moved"). Its second stage,
+speculation, is built (2026-11-06 and 2026-11-07; "Speculation"): a
+method body's copies per receiver application and entered application,
+reached by receiver-guarded cells, the push and a dispatching entry for
+`super`, private lexical and interpreted sends; own slots at fixed
+offsets; guards that trap at arithmetic, conditionals and sites never
+executed; versions against deoptimization loops, an abandonment one
+too, the last compiled without traps; the invalidation of copies by an
+edit, a bulk forward and a reclaimed id, and `NS_NEXT_STRESS_INVALIDATE`;
+measured -3.17% on the geometric mean against `master` ("What
+speculation moved"). Next is its **third stage, inlining**: the plan on
+the snapshot's tree, the walk up the stack for the recompilee, blocks
+compiled with their home and type-cases in the order the types first
+appeared ("Planned: the optimizing JIT", "Inlining", "Stages"), which
+gets its design questions and its plan next.
+Beside it stand what the first two stages left (the items under step 9)
+and what the baseline's stages left to the steps after them (the items
 under step 8).
 
 Road step 8 is complete (2026-11-04): the baseline JIT, Cog's class,
@@ -775,18 +780,19 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class, designed with the user
   on 2026-11-04 and 2026-11-05 ([execution.md](design/execution.md),
-  "Planned: the optimizing JIT"), in ten stages, the first built
-  (2026-11-06; "The optimizing tier's foundation"): the foundation
-  without speculation, built; speculation with customization, traps
-  and invalidation, next; inlining; frame objects for inlined
-  activations; numbers, with the raw area; on-stack replacement into
-  optimized code; counting at polymorphic and megamorphic sites; the
-  compiler thread; escape analysis with late inlining; range analysis.
-  The first stage measured the budget (240,000 instructions, a sixth of
-  it after a cache change) and its spend in baseline code ("What the
-  optimizing tier's foundation moved"). Left by the design to
-  measurement, each in the stage that builds it: the inlining plan's
-  limits, the trap limit, the last version, the share of polymorphic and
+  "Planned: the optimizing JIT"), in ten stages, the first two built:
+  the foundation (2026-11-06; "The optimizing tier's foundation");
+  speculation with customization, traps and invalidation (2026-11-06
+  and 2026-11-07; "Speculation"); inlining, next; frame objects for
+  inlined activations; numbers, with the raw area; on-stack replacement
+  into optimized code; counting at polymorphic and megamorphic sites;
+  the compiler thread; escape analysis with late inlining; range
+  analysis. The first stage measured the budget (240,000 instructions,
+  a sixth of it after a cache change) and its spend in baseline code
+  ("What the optimizing tier's foundation moved"), the second the trap
+  limit (5) and the last version (3), both kept ("What speculation
+  moved"). Left by the design to measurement, each in the stage that
+  builds it: the inlining plan's limits, the share of polymorphic and
   megamorphic sends in the benchmarks before their counting is built,
   and the counting window's size and rhythm. What the first stage left:
   - **Register allocation over a body** (decided with the user on
@@ -859,6 +865,49 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     measured again with stage 3. [execution.md](design/execution.md),
     "What the optimizing tier's foundation moved", "What speculation
     moved".
+  - **What the second stage left** (2026-11-06), none a wrong answer;
+    [execution.md](design/execution.md), "Speculation":
+    - *For stage 3*: no table maps a dispatch id back to its
+      application; a request carries the entered application its copy
+      needs, and stage 3's snapshot, which reads callees' receivers,
+      builds the table (decided in the plan, 2026-11-06). The budget
+      leaf receives the frame register in place of the program counter,
+      so stage 6's on-stack replacement into optimized code, which
+      wanted the counter at the leaf, needs another way to learn it.
+    - *A copy past `DISPATCHING_ROWS`*: a body's block holds eight
+      rows, so a ninth key's copy stands in none, and a `super` or
+      private lexical send of that key runs the baseline code, while
+      an interpreted send reaches it through the key's lookup
+      (`jit::called`) and a receiver-guarded cell names it directly.
+    - *What is not speculated*: an inlined `whileTrue:` or `whileFalse:`
+      condition's non-Boolean path, `SignalNonBoolean`, has no site, so
+      it keeps its exit, an ordinary one counted against the exit budget.
+    - *Approximations*: the budget is one per body, shared by its keys,
+      so a re-arm for one key shortens another retired key's wait of 4
+      to its version (`rearm_optimization_budget`); the trapped bit is
+      per site, shared by every key of the body, so one key's trap
+      gives every key's next copy that site's slow path.
+    - *Costs*: a method body's keyed copies are searched linearly at a
+      push and at a call past the rows (O(keys)); `Heap::machine_frame_receiver_and_current_class`
+      repeats its neighbour's read of the frame words; and
+      `intervals_knowing` runs three times per optimization, once in
+      the allocation and twice in `verify_allocation`.
+    - *Tests*: `a_caller_whose_callees_keep_requesting_optimization_is_not_abandoned`
+      takes about 95 to 150 s under INVALIDATE and the pairs of ZONE with
+      OPTIMIZE or DEOPT, and `counting_loop` 72 to 97 s under the ZONE
+      pairs; `a_hot_loop_requests_its_body_s_optimization` skips its pin
+      under INVALIDATE in both lowerings, where only the reference
+      lowering re-requests; `a_compaction_remaps_the_dispatching_rows`
+      cannot fail on its own, the check being `verify_dispatching_rows`
+      after every compaction under the zone stress mode.
+    - *Gates*: no gate runs the stress modes in pairs. ZONE with
+      OPTIMIZE or DEOPT had failed on `master`, unnoticed, until this
+      stage's runs of the pairs found it: a refused call to a callee a
+      compaction freed abandoned its caller, the deopt countdown's
+      rotation locked in step with a long activation, and the
+      allocation's verification ran cubic in a body's size (`e5fb65f5`,
+      `d0e8f458`, `7096a52e`). A gate of the pairs that touch the
+      optimizer would keep such failures found.
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any
@@ -1292,15 +1341,17 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   [object-model.md](design/object-model.md), "Instantiation".
 - **The stress gate's time** (noted with the user on 2026-11-01, to be
   taken up in a session of its own). The stress step of `cargo xtask
-  gates end-of-batch` takes about 690 s (2026-11-06): the twelve suites
-  run at once, so both the slowest mode and the CPU work of all twelve
-  count. Measure first:
+  gates end-of-batch` takes about 965 s (2026-11-07; 690 s with one
+  mode fewer on 2026-11-06): the thirteen suites run at once, so both
+  the slowest mode and the CPU work of all thirteen count. Measure first:
   the nextest logs of one gate run (`.temp/stress-<MODE>.log`) give each
   test's time, from which the slowest tests per mode and each crate's
   share follow. The candidates, none measured yet:
-  - *`NS_NEXT_STRESS_COLLECT` is the slowest mode* (about 555 s against
+  - *`NS_NEXT_STRESS_COLLECT` is among the slowest modes* (about 555 s against
     350 to 415 s for the others, measured 2026-11-01; 675 s against 404
-    to 549 s on 2026-11-06). A full collection still has fixed costs
+    to 549 s on 2026-11-06; on 2026-11-07, with INVALIDATE beside it,
+    MOVES the slowest at 954 s, COLLECT 891 s and SCAVENGE 815 s against
+    419 to 665 s for the others). A full collection still has fixed costs
     independent of the heap's size: the tables' reclamation
     (`Mutator::reclaim_ids`, `Heap::held_mixin_ids`,
     `Heap::module_trees`, hash maps built afresh at each collection) and

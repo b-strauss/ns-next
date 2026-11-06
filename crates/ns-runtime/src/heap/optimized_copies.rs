@@ -1,10 +1,11 @@
 //! The dispatching rows of each method body's optimized copies, by the
 //! body's code id, in a reservation of its own (`docs/design/execution.md`,
-//! "Customization"): what the dispatching stub (`jit::targets`) compares a
-//! `super` or private lexical send's receiver and current class with, to
-//! enter the copy customized for both. Such a send's cell is guarded by
-//! S's or N's application word, which says nothing of the receiver, so
-//! the cell names the body's dispatching entry rather than a copy.
+//! "Speculation", "The dispatching entry"): what the dispatching stub
+//! (`jit::targets`) compares a `super` or private lexical send's
+//! receiver and current class with, to enter the copy customized for
+//! both. Such a send's cell is guarded by S's or N's application word,
+//! which says nothing of the receiver, so the cell names the body's
+//! dispatching entry rather than a copy.
 //!
 //! A body's block is `DISPATCHING_ROWS` rows of three words (`RowWord`):
 //! the receiver's dispatch id the copy was customized for, the

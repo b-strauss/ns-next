@@ -44,7 +44,8 @@
 > that requests a full collection, so that a program that mints rows
 > without allocating much still collects, and after every full collection
 > the reservations beside the space -- the activation stack, the cells,
-> the two id tables of machine code and the code zone -- give back what a
+> the two id tables of machine code, the dispatching rows and the code
+> zone -- give back what a
 > peak committed, by a band and a damping ("The trigger and the growth
 > policy", "Giving committed memory back").
 > Allocation is inline (road step 6, "Inline allocation"): a young object
@@ -81,6 +82,9 @@
 > code id, which a full collection carries over to the id the body has
 > after it and whose rows past the code table it gives back;
 > [execution.md](execution.md), "The optimizing tier's foundation"),
+> `heap/optimized_copies.rs` (each method body's dispatching rows by its
+> code id, whose blocks past the code table a full collection gives
+> back; [execution.md](execution.md), "Speculation"),
 > `heap/world.rs` (the step
 > state at rest, the entry that lends it out, `StepRoots`, `World::collect`
 > and `World::scavenge`),
@@ -1948,6 +1952,7 @@ and the stress runs check that each bound is lowered before its pages go:
 | the activation stack | 4 MiB / 2 MiB | the stack's top; a 100,000-deep recursion commits about 16 MiB | the committed end and the ordinary end, with its machine word `OrdinaryStackEnd` (`FrameStack::shrink`) |
 | the machine entry table | 1 MiB / 512 KiB | the code table's length after its truncation | the committed rows and their machine word `MachineEntryRows`, which the closure stubs compare an id with |
 | the optimization budget rows | the machine entry table's pair | the code table's length after its truncation | nothing: every budget word was pointed at a row of an id the table holds before ([execution.md](execution.md), "The optimizing tier's foundation", "The budget") |
+| the dispatching rows (48 MiB reserved) | the machine entry table's pair (`OPTIMIZED_COPIES_SHRINK`) | the blocks of the code table's ids after its truncation | nothing: every body's dispatching word was pointed at a block of an id the table holds before, which a debug build checks ([execution.md](execution.md), "Speculation", "The dispatching entry") |
 | the application id table | 1 MiB / 512 KiB | the rows recorded after the application rows' truncation | nothing: machine code's bound, `ApplicationIdRows`, is the rows recorded, which the truncation lowered |
 | the code zone (16 MiB by default) | 2 MiB / 1 MiB | the zone's next offset, after its compaction slid the survivors down ([execution.md](execution.md), "The code zone") | the writer's committed end (`CodeWriter::decommit_above`) |
 
@@ -2299,7 +2304,7 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are eleven stress modes, each a gate of its own at the end of a batch,
+There are twelve stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
@@ -2312,18 +2317,22 @@ each of these six keeping the safepoint flag set while it is on,
 `NS_NEXT_STRESS_WIDE`, which emits every instruction in a wide form
 ([execution.md](execution.md), "The compact instruction encoding"),
 `NS_NEXT_STRESS_JIT`, which compiles every body at its first entry and
-enters its machine code at every push, even when that exits at once, and
+enters its machine code at every push, even when that exits at once,
 `NS_NEXT_STRESS_EXIT`, which makes every poll in machine code -- every
 backward jump it takes -- take its exit, as if a safepoint were
 requested, `NS_NEXT_STRESS_OPTIMIZE`, which arms every body's
 optimization budget at 0, so that the next safepoint compiles its
-optimized code once its baseline code first spends -- under it the
-back-off after an abandonment is void, the doubled budget still 0 --
-and
+optimized code once its baseline code first spends (under it the
+back-off after an abandonment or a trap is void, the budget times 4 to
+the version still 0),
 `NS_NEXT_STRESS_DEOPT`, which implies it and makes optimized code leave
-at every n-th interrupt point it passes, n rotating at each safepoint
+at every n-th interrupt point it passes, n drawn afresh at each safepoint
 ([execution.md](execution.md), "The optimizing tier's foundation",
-"Verification").
+"Verification"), and `NS_NEXT_STRESS_INVALIDATE`, which implies the
+optimize stress mode too and makes optimized code leave for a
+safepoint at every tenth interrupt point it passes, which frees every
+body's copies before it installs what was requested since
+([execution.md](execution.md), "Speculation", "Verification").
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
 than at a limit, paced by heap size like `STRESS_MOVE_BUDGET`
@@ -2975,7 +2984,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name eleven stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name twelve stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit

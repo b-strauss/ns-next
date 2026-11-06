@@ -164,7 +164,7 @@ pub(crate) fn build_speculating(snapshot: &Snapshot) -> Graph {
 }
 
 /// What the feedback lets the graph speculate at an instruction
-/// (`docs/design/execution.md`, "Speculation and its failure"): only at a
+/// (`docs/design/execution.md`, "Speculation", "Guards and traps"): only at a
 /// site that neither ran nor trapped (`SiteFacts`), and only under
 /// `Speculation::Traps`.
 #[derive(Clone, Copy, PartialEq, Eq)]

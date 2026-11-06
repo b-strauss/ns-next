@@ -1333,7 +1333,7 @@ impl MacroAssembler {
         self.assembler.jump_register(roles.idiom_scratch);
     }
 
-    /// A trap (`docs/design/execution.md`, "Speculation and its failure"):
+    /// A trap (`docs/design/execution.md`, "Speculation", "Guards and traps"):
     /// the exit that runs the instruction at `program_counter` again in
     /// the interpreter, as `ExitKind::Reexecute` does, named as a trap of
     /// a speculation resting on `site`, which it leaves in the block's

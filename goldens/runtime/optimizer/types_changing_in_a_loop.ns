@@ -4,7 +4,8 @@
 /// turns. The optimized copy compiled from the SmallInteger phase never
 /// saw the addition's fallback run, so it speculates on SmallIntegers and
 /// traps at the first Float; its second trap makes it not entrant, and
-/// the copy compiled afterwards adds every kind. Each Array has 200
+/// the copy compiled afterwards adds every kind. The LargeInteger and
+/// turn-taking phases check that recompiled general copy. Each Array has 200
 /// elements: the SmallIntegers 1 to 200 sum to 20100, the Floats
 /// 1.5 to 200.5 to 20200.0, and the LargeIntegers 2^60 + 1 to 2^60 + 200
 /// to 200 * 2^60 + 20100 = 230584300921369415300. A phase prints the sum

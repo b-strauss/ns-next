@@ -35,10 +35,14 @@ Create a todo for each item.
    each body that has optimized code, which it slides -- OPTIMIZE arms every body's
    optimization budget at 0, so that the next safepoint compiles its optimized
    code once its baseline code first spends -- under it the back-off after an
-   abandonment is void, the doubled budget still 0 -- DEOPT does what OPTIMIZE does and
+   abandonment or a trap is void, the budget times 4 to the version still 0 --
+   DEOPT does what OPTIMIZE does and
    makes optimized code leave at every n-th interrupt point it passes, n
-   rotating at each safepoint; beside them the suite runs once with
-   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the twelve suites at once,
+   drawn afresh at each safepoint, and INVALIDATE does what OPTIMIZE does and
+   makes optimized code leave for a safepoint at every tenth interrupt point
+   it passes, which frees every body's optimized copies before it installs
+   what was requested since; beside them the suite runs once with
+   `NS_NEXT_NO_JIT=1`, the interpreter alone. `stress` runs the thirteen suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most
    cores idle and the tails overlap (measured 2026-10-01 for the first three:
    277 s, MOVES the longest, against 703 s, the sum of the three per-mode times,

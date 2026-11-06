@@ -35,16 +35,21 @@
 > compiling does so in a zone of fixed size ("Stage 4: closures, non-local
 > return, allocation and the barrier", "The code zone"). The optimizing
 > JIT is designed in ten stages ("Planned: the optimizing JIT") and its
-> first is built, the foundation without speculation ("The optimizing
-> tier's foundation"): a body whose budget, spent by its baseline code,
+> first two are built, the foundation ("The optimizing tier's
+> foundation") and speculation ("Speculation"): a body whose budget, spent by its baseline code,
 > runs out is snapshotted and compiled at the next safepoint into an SSA
 > graph, its values kept in machine registers by a linear scan between
 > interrupt points and written back into the frame before each, every
 > instruction it does not lower as register arithmetic emitted by the
 > baseline's template; its code is installed beside the baseline code,
 > entered at pushes and compiled calls, left for the baseline code
-> wherever a frame goes on mid-body, and abandoned alone when it keeps
-> exiting.
+> wherever a frame goes on mid-body, and retired alone when it keeps
+> exiting or trapping. A method body's optimized code is a copy per
+> receiver application and entered application, which reads its own
+> slots at fixed offsets; a site the feedback says never ran traps,
+> and a copy that keeps failing is compiled again ever more rarely,
+> past its last version without traps; an edit, a bulk forward and a
+> reclaimed id free the copies they make stale.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -75,10 +80,11 @@
 > exit's walk in `jit/materialize.rs`, the leaves in `jit/leaves.rs`, and
 > the code zone's compaction and freeing in `jit/zone.rs`; the
 > optimizing compiler in `jit/optimizing/`, and its request, install,
-> entries and abandonment in `jit/mod.rs`),
+> entries, copies, traps, retirement and invalidation in `jit/mod.rs`),
 > `heap/machine_entries.rs` (the machine entry table the closure stubs
 > read), `heap/optimization_budgets.rs` (the budget rows baseline code
-> spends), `crates/ns-assembler` (the operations, the x64 encoder in
+> spends), `heap/optimized_copies.rs` (the dispatching rows the
+> dispatching stub compares), `crates/ns-assembler` (the operations, the x64 encoder in
 > `x64.rs` and the AArch64 encoder in `aarch64.rs`),
 > `crates/ns-runtime/build.rs` (which targets set `cfg(ns_jit)`),
 > `crates/ns-memory/src/code_zone.rs` (the code zone and the
@@ -8735,7 +8741,7 @@ and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
   row stubs most, whose type tests mispredict more often when the caller
   is optimized code (5% more branch mispredictions over the run); 0.8%
   more samples in all, and the same cycles to 0.1%. Sends that test the
-  receiver's class at their own site -- stage 2's speculation, with a
+  receiver's class at their own site -- stage 3's type-cases, with a
   guard and a trap in the optimized code -- would take the tests out of
   the shared stubs
   (`OPEN-WORK.md`, "Optimized code's sends mispredict in the shared
@@ -10768,8 +10774,8 @@ is 1.34% faster than before the leftover analysis with no program slower
 
 Would change: hot code runs as optimized machine code. The baseline tier
 is built (road step 8) and the optimizing tier designed ("Planned: the
-optimizing JIT" below), its first stage built ("The optimizing tier's
-foundation"); the tiering model is sketched in
+optimizing JIT" below), its first two stages built ("The optimizing
+tier's foundation", "Speculation"); the tiering model is sketched in
 [liveness-and-reflection.md](liveness-and-reflection.md), and the constraint
 that binds every tier is that no native code may ever enter an image. The
 tiers are the last three steps of the road to a high-performance VM (decided
@@ -11217,8 +11223,7 @@ non-local return in inlined scopes", below).
 
 Road step 9's first stage is built ("Planned: the optimizing JIT",
 "Stages" below): a second kind of machine code per body, compiled
-without speculation from a snapshot of the body at the run loop's
-safepoint, into an SSA graph whose values a linear scan keeps in
+from a snapshot of the body at the run loop's safepoint, into an SSA graph whose values a linear scan keeps in
 machine registers between interrupt points, and emitted through the
 macro assembler and the baseline's own templates; it is installed beside
 the body's baseline code, never in its place, and a budget per body,
@@ -11227,7 +11232,10 @@ code sends and keeps the frame the interpreter's word for word at every
 interrupt point, so the exits, the exit's walk, the cut, the unwinder
 and the collector see nothing new. Measured in "What the optimizing
 tier's foundation moved": -1.45% on the geometric mean of the
-twenty-seven sources against `master`. **Code:**
+twenty-seven sources against `master`. The second stage builds on it
+("Speculation" below): what this section says of optimized code holds
+for every copy, and the next section says what a copy adds -- its key,
+its own slots at fixed offsets, its guards and their traps. **Code:**
 `crates/ns-runtime/src/jit/optimizing/` -- `snapshot.rs` (the snapshot
 and `BodyFacts`), `graph.rs` (the graph), `build.rs` (its builder),
 `verify.rs` (the graph's checks), `liveness.rs` (the block order, the
@@ -11320,7 +11328,7 @@ that emits no call: an immediate literal, the receiver, a copy, an
 fallback, and in a customized copy an own slot's read
 (`Node::OwnSlotLoad`), a load at the fixed field the entered
 application's own slot base gives (`Snapshot::customization`), with no
-guard ("Customization" below); returns, jumps and branches end blocks,
+guard ("Speculation", "Own slots at fixed offsets" below); returns, jumps and branches end blocks,
 and so does a copy's `ReturnSlotIfFilled`, which returns its slot unless
 it is `nil` and goes on to the initializer otherwise
 (`End::ReturnUnlessNil`). Every other
@@ -11482,7 +11490,9 @@ frees a live body forgets the optimization budget it spent").
 `--jit-statistics` prints the tier's counters: requests, bodies
 optimized and customized copies, the compile time, optimized exits, of
 them the deopt stress mode's forced exits and the traps, abandoned
-optimized bodies, copies made not entrant and keys refused for good.
+optimized bodies, copies made not entrant, keys refused for good,
+copies invalidated and, under `--jit-statistics` alone, which makes
+machine code count, the calls a dispatching entry entered a copy by.
 
 ### Verification
 
@@ -11523,7 +11533,8 @@ then freed and compiled again. Every golden under
 `goldens/runtime/optimizer/` optimizes its hot body in a plain run --
 sends, a closure, a non-local return, an overflow, allocation, an
 exception through the frame, the depth limit, a mixin applied twice and
-a write in an exiting arm of a loop -- and a debug build also runs each
+a write in an exiting arm of a loop, and the speculation's eight
+("Speculation", "Verification" below) -- and a debug build also runs each
 as `golden::optimizer::<name>` under the optimize stress mode
 ([README.md](README.md), "The goldens"). Beside the verifiers above,
 every pass has its own tests over hand-written bodies and over every
@@ -11531,15 +11542,308 @@ body of `goldens/runtime/jit/` (`optimizing::corpus_of_bodies`), and
 `crates/ns-runtime/tests/jit.rs` pins the trigger, the install, the
 entries, abandonment and the zone's handling of optimized code.
 
+## Speculation
+
+Road step 9's second stage is built ("Planned: the optimizing JIT",
+"Stages" below), on the foundation above: a method body's optimized
+code is compiled per key, one copy for each receiver application and
+entered application whose frames ran the body's budget out, and reads
+its own slots at fixed offsets; in every optimized body a site the
+feedback says never ran is a guard that traps; a trap counts against
+its copy, and a copy that keeps trapping or exiting is retired and
+compiled again ever more rarely, with no trap past its last version;
+an edit, a bulk forward and a reclaimed id free the copies they make
+stale. Sends keep their cells: a send site does not speculate before
+stage 3's type-cases. Measured in "What speculation moved": -3.17% on
+the geometric mean of the twenty-seven sources against `master`, and
+`fib:` a quarter faster. **Code:** in `crates/ns-runtime/src/`,
+`jit/mod.rs` (`CustomizationKey`, `CustomizedCopy` and
+`JitSlot::copies`, `request_copy`, the entries, `count_trap`,
+`retire_optimized` and the invalidations), `heap/optimized_copies.rs`
+(the dispatching rows), `jit/targets.rs` (`assemble_dispatching_stub`,
+`emit_dispatching_entry`), `jit/optimizing/` (`Speculation`,
+`Snapshot::sites` and `Snapshot::customization`, `build::guard_of`,
+`Node::OwnSlotLoad`, the traps' cold paths in `emit.rs`), and
+`interpreter/inline_cache.rs` (the executed and trapped bits).
+
+### The key and the copies
+
+A method body's copy is compiled for a **key** (`CustomizationKey`):
+the receiver's application and the application the body is entered
+at, each by its instances' dispatch id. The entered application is
+the current class's, which the call writes into the frame. Code lives
+on the mixin, shared by every application of it, so a mixin applied
+twice in one chain runs one body on one receiver at two levels, with
+two slot bases, and the receiver alone does not tell its copies apart;
+Strongtalk needs no second part, since it copies a mixin's methods
+into each class and customizes them there
+(`memory/reflection.cpp:369-370`). Strongtalk's `LookupKey` of
+receiver class and selector (`code/nmethod.hpp`,
+`nmethod::receiver_klass`) and SOMns's `ClassFactory`
+(`prior-art/somns/src/som/interpreter/objectstorage/ClassFactory.java:20-25`)
+guard on the same unit.
+
+**Only a method's body is customized.** A block body has one optimized
+copy (decided with the user on 2026-11-06), whose slot accesses keep
+their guards, since a block's closures come from homes of any
+application and one machine entry row per code id names one copy; a
+block a customized home creates is compiled with its home from stage 3
+on, customized to that home's copy as Strongtalk customizes a block to
+the version of its home method (`compiler/compileTimeClosure.hpp:27-36`).
+An initializer's, a factory's and a superclass clause's body has one
+copy too: its activation is entered by the initializer leaf or the run
+loop at a level the body's kind fixes, never through a
+receiver-guarded cell. That one copy lives where stage 1's does
+(`JitSlot::optimized`), a method body's copies in `JitSlot::copies`;
+and a frame without a key -- its receiver or its class of an
+application with no minted id, which only a crafted image makes --
+gets its method body's uncustomized copy.
+
+**The budget stays one per body.** Its run-out by a frame in baseline
+code requests the copy for that frame's key, read off the header the
+call wrote, never another activation's (`request_copy`); the budget is
+armed again, and a later run-out by a frame of another key compiles
+that key's copy, as Strongtalk's counter per method, reset after each
+recompile, compiles for the receiver that overflows it
+(`recompiler/recompile.cpp:180-198`). The first request makes the key's
+row (`CustomizedCopy`), which records the level the frame was entered
+at above the receiver's class and the entered class's application
+word, and outlives the copy's code, so that what the row says of its
+key -- its version, its traps, its refusal -- outlives each copy. The
+request carries the entered application it was made for, all the
+snapshot needs: no table maps a dispatch id back to its application
+yet (stage 3's, whose snapshot reads callees' receivers).
+
+**A copy is entered wherever its key is known.** A cell guarded by the
+receiver's dispatch id -- a monomorphic cell, a polymorphic entry, a
+global cache row -- knows the receiver's application by its guard and
+the entered one as its target's level above it, and names the copy
+whose row holds both (`jit::cell_entry`, `receiver_guarded_copy`), so
+a cell's entry is a function of its whole entry, guard and target, and
+the JIT's state. The run loop's push looks the frame's key up
+(`optimized_push_entry`). An interpreter's send into a body with one
+to eight installed copies enters the body's dispatching entry (below),
+which finds the receiver's copy in machine code; finding the key on
+the Rust side on every call took 1.4% of CD's samples ("What
+speculation moved"). A body with more copies than the rows hold is
+called through the lookup, which reaches every copy (`jit::called`).
+
+### The dispatching entry
+
+A `super` or private lexical site's cell is guarded by S's or N's
+application word, not by the receiver's id, so it cannot name a copy
+(decided with the user on 2026-11-06). Once a body has a copy, such a
+cell names the body's **dispatching entry** (`emit_dispatching_entry`),
+which hands the shared dispatching stub (`assemble_dispatching_stub`)
+the address of the body's block of rows, through a data word of the
+lean body's own, and the stub compares the receiver's dispatch id and
+the current class's application word with each row and jumps into the
+copy whose row holds both, or into the baseline code. Every receiver of
+such a site so reaches its copy, for one indirect jump more at these
+sites, and the cell's entry stays a function of its entry and the JIT's
+state.
+
+The rows lie in a reservation of their own, as the machine entry
+table's do (`heap/optimized_copies.rs`): a block of `DISPATCHING_ROWS`,
+eight, rows of three words per code id -- the receiver's dispatch id,
+the entered application word and the copy's machine entry -- a row past
+the body's copies vacant, its receiver word one no dispatch id is, so
+that the stub tests no vacancy. Block 0 belongs to no code id and stays
+vacant: a body's word names it until the budget leaf, or the pointing
+of the budget words after a full collection, points it at the block of
+the body's code id (`jit::point_budget_word`), so that the stub falls
+through to the baseline code with nothing to test. A block is written
+only from the copies of the body whose word names it
+(`JitState::write_dispatching_rows`), afresh wherever a copy is
+installed, retired, invalidated or moved, and a compaction of the zone
+remaps every row's entry; its committed pages are given back after a
+full collection as the machine entry table's are
+([memory.md](memory.md), "Giving committed memory back"). A copy past
+the eighth stands in no row: a `super` or private lexical send of its
+key runs the baseline code ([OPEN-WORK.md](../OPEN-WORK.md)). Counting
+machine code counts the calls the stub entered a copy by
+(`JitStatistics::dispatched_calls`).
+
+### Own slots at fixed offsets
+
+A copy knows the own slot base of the application its key enters at
+(`Snapshot::customization`), so `LoadOwnSlot` and `ReturnSlotIfFilled`
+are simple nodes in it, at the absolute field that base gives
+(`Node::OwnSlotLoad`; `End::ReturnUnlessNil`, which returns the slot
+unless it is `nil` and goes on to the initializer otherwise), with no
+guard. `InitializeSlot` and `InitializeSlotProvisionally` keep their
+templates, since an initializer runs once per instance, and so does the
+outer walk, whose fixed structure pays with inlining. `LoadOwnSlot`
+appears only in initializers, which are not customized, and a method
+reads a slot by a lexical send to its accessor, so a running program's
+copies read their own slots through lazy getters' `ReturnSlotIfFilled`
+today; `LoadOwnSlot`'s node is reached by the tests and the passes'
+sweeps over every body.
+
+**The reads need no guard**: the receiver was verified at the copy's
+entry, by its cell's guard, the dispatching rows or the key's lookup;
+any forward of it -- the bulk forward, an install's migration -- runs in
+a mirror leaf that machine code exits for, and after an exit the frame
+goes on in baseline code ("The two tiers' entries"); and the decoder
+holds every instance of a program class to its application's slot
+count ([image-format.md](image-format.md), "Verification"), so that no
+crafted image makes an object a copy reads past its end.
+
+### Guards and traps
+
+**The feedback is a bit per site, not an epoch per family.** Beside
+each site's cell the caches keep an executed bit, set by every write
+of an entry that is not vacant -- a fill, an advance, the polymorphic
+and megamorphic promotions -- and a trapped bit, set by the exit that
+counts a trap there (`InlineCaches::site_executed`, `site_trapped`,
+`note_trap`); both are cleared only when the family is dropped
+(`forget_families`), so a site an invalidation vacated still reads as
+executed, a real send. A send resolved to `doesNotUnderstand:` fills no
+cache, so a site that ran only so reads as never executed, and only its
+trapped bit says it ran; a site past its family, which runs uncached,
+reads as both. The snapshot names, for each instruction, the site its
+speculation rests on (`Snapshot::sites`): a send's own, an
+`IntegerBinary`'s fallback send's, and a `JumpIfNotBoolean`'s first send
+at its not-Boolean target (`Snapshot::fallback_site`) -- the send that
+runs where the speculation fails, so that the overflow's and the
+non-Boolean's sticky bits are that site's executed bit.
+
+**A site speculates only when neither bit is set**
+(`build::guard_of`), and only at a version that compiles traps
+(`optimizing::Speculation`): an `IntegerBinary`'s fast path has no
+fallback, its overflow or a non-`SmallInteger` operand a trap; a
+conditional has no third way, a non-Boolean a trap; and a send never
+executed ends its block in a trap. The builder tracks each value's
+kind (`ValueKind`): an arithmetic result after its guard is a
+`SmallInteger`, a comparison's a Boolean, so a known `SmallInteger`
+operand tests no tag and a known Boolean condition has no third way.
+What a site that trapped or ran is compiled to is stage 1's: the
+fallback send, the third way, the call -- the compiled slow path
+Strongtalk's `isNotUncommonAt` and HotSpot's `too_many_traps` give a
+site that trapped (`opto/compile.cpp:5046-5074`).
+
+**A trap is an exit that runs the instruction again**
+(`ExitKind::Trap`), its write-back on its cold path alone, as a poll's
+is, so that at a trap the frame is the interpreter's word for word:
+the metadata says the frame resumes by running the instruction
+(`Resumes::Reexecute`), and a debug build's allocation verifier replays
+the cold write-back. The exit names its site in the entry block
+(`BlockWord::ExitTrapSite`), and `resumption_after_exit` counts it
+against the copy the frame ran (`count_trap`), never against an exit
+budget: a trap says the feedback has widened, which the instruction run
+again widens further through its cache. The site's trapped bit is set,
+and the copy is made not entrant at a second trap at a site that
+trapped before -- the same speculation failed again -- or at its
+`TRAP_LIMIT`th trap, 5, Strongtalk's `UncommonRecompileLimit`
+(`runtime/uncommonBranch.cpp:121-221`).
+
+### Versions and the refusal for good
+
+A copy made not entrant for its traps and one abandoned for its exits
+-- the templates' `EXIT_BUDGET` exits -- are retired alike
+(`retire_optimized`; decided with the user on 2026-11-06): freed alone,
+the body's other copies staying, its cells, dispatching rows and machine
+entry row written afresh to enter the baseline code, which stays
+installed; its **version** raised, the key's row's or, for a body's
+uncustomized copy, the slot's own; and the body's budget armed at the
+budget times 4 to the version (`optimization_budget_after`),
+Strongtalk's wait before a recompile (`compiler/compiler.cpp:712-718`).
+Versions 0 to `LAST_VERSION`, 3, Strongtalk's `MaxVersions`
+(`recompiler/recompile.hpp:121`), compile with traps, and the version
+past it without (`Speculation::None`, stage 1's code), which can never
+be made not entrant; one more failure, an abandonment, refuses the key
+for good, as HotSpot stays in the interpreter past
+`PerMethodRecompilationCutoff` (`runtime/globals.hpp:1356`) and
+Strongtalk refuses at "max. version reached"
+(`recompiler/recompiler.cpp:188`): it is never requested again, and the
+body's budget is armed afresh for its other pairs whenever a frame of
+the refused one runs it out (`rearm_for_other_pairs`). Both limits were
+measured and kept ("What speculation moved"). The decay at every
+collection halves each copy's traps with the exits; a version never
+decays, so a copy that keeps failing reaches its last version, where
+stage 1's doubling of the budget per abandonment, which the decay
+halved, held a body that kept exiting at about twice the budget. The
+budget is one per body, so a re-arm for one key can shorten another
+retired key's wait; mostly it cuts nothing, since a run-out parked the
+budget and its wait was spent by whichever pair's frames
+(`rearm_optimization_budget`).
+
+### Invalidation
+
+Three events make copies stale, and each frees exactly those, counted
+in `JitStatistics::invalidated_copies`:
+
+- **An install** (`installEdit:`) frees every copy whose key names an
+  application it rebuilt, as receiver or as entered application
+  (`invalidate_applications`), each compiled against a layout, a lookup
+  or an outer structure the install changed, with every pending request
+  for such a key. A body's uncustomized copy stays: it fixes no layout.
+- **The bulk forward** (`forwardIdentityTo:`) frees every copy, the
+  uncustomized ones too (`invalidate_all_optimized`): a forwarded object
+  may be the receiver a copy was verified for or reached through any of
+  its slots.
+- **A full collection that reclaims an id** drops every key's row naming
+  it, with its copy and its pending requests (`forget_freed_copies`), so
+  that the id minted again for an application of another layout meets
+  neither the copy nor the old row's refusal, version, level or
+  application word.
+
+The copies are **freed at once**, their cells, dispatching rows and
+machine entry rows written afresh: an install and a forward are mirror
+leaves machine code exits for (`MachineCall::Exit`), and a collection
+runs at a safepoint, so no return address into the zone exists and
+every frame goes on in its baseline code. No frame is converted, nor
+needs to be: a marked frame below the top that is converted when
+control returns into it exists from stage 3 on, when one frame stands
+for several activations. An invalidation is no failure of a
+speculation: it raises no version and counts no trap, and the body's
+budget is armed at the longest wait the freed copies' versions earned,
+so that the next copy waits for feedback gathered since. The caches go
+on being flushed whole ([dispatch.md](dispatch.md), "Invalidation").
+
+### Verification
+
+`NS_NEXT_STRESS_INVALIDATE`, a debug build's, implies the optimize
+stress mode and counts optimized code's interrupt points on the deopt
+stress mode's countdown: at the tenth since the last round
+(`STRESS_INVALIDATION_POINTS`) it leaves for a safepoint, which frees
+the copies of every body (`invalidate_optimized_for_stress`) before it
+installs what was requested since, so that every freed copy has run a
+stretch, and each body is optimized afresh at its next run-out. A body
+whose copies a round freed sits out the next round, then two, then
+four, up to 2^10 (`StressBackOff`), so that a body every round would
+recompile is recompiled a number of times that grows with the
+logarithm of the run. It runs in the `stress` group with the other
+eleven ([README.md](README.md), "Gates").
+
+The speculation's goldens under `goldens/runtime/optimizer/` each pin
+an outcome at a speculation's failure, under both lowerings and the
+optimize stress mode: types changing in a loop, an overflow and a
+non-Boolean after warm-up, a branch never run taken late, a mixin
+applied twice, a private method on two receivers, a `super` send, and
+an edit installed from a callee of an optimized frame below on the
+stack. `crates/ns-runtime/tests/jit.rs` pins the copies per key and
+per level, a block's one copy, the dispatching entry for a `super`, a
+private and an interpreted send, past the rows too, a compaction of
+the rows, a trap per speculation, the settling within the last version,
+the refusal for good and the other keys it leaves armed, the
+invalidation by an edit, by a reclaimed id and under the stress mode.
+A debug build checks after every compaction and slide that each
+body's dispatching words and block hold exactly its copies' rows
+(`verify_dispatching_rows`), which the zone stress mode's compactions
+run at every safepoint: `a_compaction_remaps_the_dispatching_rows`
+cannot fail on its own.
+
 ## Planned: the optimizing JIT
 
 Would change: hot code is recompiled, along the receiver types the inline
 caches recorded, into optimized machine code that inlines sends, keeps
 numbers unboxed in machine registers and deoptimizes when a speculation
 fails. Road step 9, designed with the user on 2026-11-04 and 2026-11-05 in
-fourteen decisions, built to the contract above. Its first stage, the
-foundation without speculation, is built ("The optimizing tier's
-foundation" above); the rest is not. Strongtalk's citations are to `prior-art/strongtalk/vm/`, HotSpot's to
+fourteen decisions, built to the contract above. Its first two stages,
+the foundation and speculation, are built ("The optimizing tier's
+foundation" and "Speculation" above); the rest is not, and this section
+says only what is not. Strongtalk's citations are to `prior-art/strongtalk/vm/`, HotSpot's to
 `prior-art/jdk/src/hotspot/share/`, V8's to `prior-art/v8/src/` but for
 its design documents, under `prior-art/v8/docs/`.
 
@@ -11657,29 +11961,18 @@ its design documents, under `prior-art/v8/docs/`.
 
 ### Feedback
 
-- **Stage 1 reads the caches' feedback as layout information only**
-  (decided with the user on 2026-11-05): an `IntegerBinary` whose
-  fallback send site has seen only `Float` receivers is emitted as the
-  send alone -- no fast path, no guard, no deoptimization -- as V8
-  Maglev's generic path for a `kAny` hint is
-  (`Snapshot::fallback_taken`, `build::build`). It is Float-only, not
-  any receiver but a `SmallInteger`, because a single `nil` at the end
-  of Json's input, read so, cost Json 10%. And a register stays its
-  frame word at a natural loop's head when every way in brings the
-  value its frame word holds, a loop that writes the register beginning
-  a new generation of it, per path ("The optimizing tier's foundation",
-  "The graph"). From stage 2 on, the feedback below speculates: the
-  windows, the counting and the traps stay as written.
+What is built reads the feedback as layout ("The optimizing tier's
+foundation", "The snapshot") and as each site's executed and trapped
+bits, the sticky bits of an overflow, a non-Boolean and a trap
+("Speculation", "Guards and traps"). What is not:
+
 - **Receiver types are the cache entries**, unchanged ([dispatch.md](dispatch.md),
-  "3b — The caches"). **Sticky bits**, written only on paths already
-  slow: an overflow seen at an `IntegerBinary` whose operands were
-  `SmallInteger`s, a non-Boolean seen at a conditional, a trap taken at
-  a site. **Frequencies** of bodies come from their budgets, within a body
-  from loop depth, as Strongtalk derives them from callee counts
-  (`compiler/rscope.cpp:337-346`). An **invalidation epoch per code
-  family** makes a site an invalidation vacated read as unknown -- a
-  real send -- not as never executed, which would be a trap. A **table
-  from dispatch id back to application** serves the snapshot.
+  "3b — The caches"), read by stage 3's type-cases. **Frequencies** of
+  bodies come from their budgets, within a body from loop depth, as
+  Strongtalk derives them from callee counts
+  (`compiler/rscope.cpp:337-346`). A **table from dispatch id back to
+  application** serves the snapshot of callees' receivers; stage 2's
+  request carries the one application its copy needs.
 - **Counts only at polymorphic and megamorphic sites**: a count per
   polymorphic entry; a megamorphic site keeps a profile of four rows of
   guard and count and a count of the rest, taken over from its
@@ -11706,118 +11999,36 @@ its design documents, under `prior-art/v8/docs/`.
 
 ### Customization
 
-Optimized code is compiled for a **(body, receiver application)** pair,
-Strongtalk's `LookupKey` of receiver class and selector
-(`code/nmethod.hpp`, `nmethod::receiver_klass`): every own and inherited
-slot is a fixed offset with neither guard nor slot base, every send to
-`self` is bound at compile time, and every outer walk's structure is
-fixed (the enclosing object is still loaded, a class object existing per
-enclosing instance). SOMns guards on the same unit, its `ClassFactory`
-(`prior-art/somns/src/som/interpreter/objectstorage/ClassFactory.java:20-25`).
-The key is the one the caches use: a monomorphic cell, which compared the
-dispatch id, enters the code's verified entry with no second check; a
-polymorphic entry names each application's code, the global cache the
-megamorphic site's. The interpreter and the leaves enter through an
-unverified entry that compares the dispatch id and falls back to the
-body's baseline code. A table maps (`CodeId`, application) to code;
-copies exist only for hot pairs. The body's budget stays one per body:
-its run-out compiles a copy for the triggering frame's receiver, the
-budget is armed again, and a later run-out by a receiver of an
-application without a copy compiles that one, as Strongtalk's counter
-per method, reset after each recompile, compiles for the receiver that
-overflows it (`recompiler/recompile.cpp:180-198`).
-
-**The key is the body, the receiver's application and the entered
-application.** Code lives on the mixin, shared by every application of
-it, so a mixin applied twice in one chain runs one body on one receiver
-at two levels, with two slot bases; Strongtalk needs no third part,
-since it copies a mixin's methods into each class and customizes them
-there (`memory/reflection.cpp:369-370`). The entered application is
-the current class's, which the call writes. A cell guarded by the
-receiver's dispatch id knows both parts on its cold path and names its
-copy's verified entry.
-
-**A `super` or private lexical site reaches its copy through the body's
-dispatching entry** (decided with the user on 2026-11-06): its cell's
-guard is S's or N's application word, not the receiver's id, so the
-cell cannot name a copy. Once a body has copies, such a cell names one
-shared stub, which compares the receiver's dispatch id and the current
-class's application with the rows of the body's table of copies, a
-reservation of its own as the machine entry table is, and jumps into
-the copy whose row matches, or into the baseline code. Every receiver of
-such a site so reaches its copy, for one indirect jump more at these
-sites; the cell's entry stays a function of its target and the JIT's
-state. An interpreter's send into a body with one to eight installed
-copies, as many as its rows hold (`DISPATCHING_ROWS`), enters the same
-dispatching entry (`jit::called`), which writes no cell: finding the
-receiver's key there on the Rust side, on every call, took 1.4% of CD's
-samples ("What speculation moved"). A body with more copies is called
-through that lookup, which reaches every copy, where the rows would
-send a receiver past the eighth to the baseline code.
-
-**A block body is not customized** (decided with the user on
-2026-11-06): it has one optimized copy, whose slot accesses keep their
-guards, since a block's closures come from homes of any application and
-one machine entry row per code id names one copy. A block a customized
-home creates is compiled with its home from stage 3 on ("blocks with
-their home", "Stages" below), customized to that home's copy as
-Strongtalk customizes a block to the version of its home method
-(`compiler/compileTimeClosure.hpp:27-36`); a block created by baseline
-code has no home that could.
-
-**No frame is converted in stage 2.** Every event that invalidates -- an
-install (`installEdit:`), the bulk forward (`forwardIdentityTo:`), both
-mirror rows machine code exits for (`MachineCall::Exit`), and a full
-collection, which runs at a safepoint -- happens after an exit, and after
-an exit every frame goes on in its baseline code ("The two tiers'
-entries"). Marking code therefore makes it not entrant -- its cells,
-machine entry rows and push entry pointed at baseline code -- and frees
-it at the next safepoint; a marked frame below the top that is converted
-when control returns into it exists from stage 3 on, when one frame
-stands for several activations. A customized slot access needs no guard
-for the same reason: the receiver was verified at the entry, and any
-forward of it ends the frame's optimized code.
+What is built customizes a method body's own slots per key
+("Speculation", "The key and the copies", "Own slots at fixed
+offsets"). What is not: every inherited slot a fixed offset too, every
+send to `self` bound at compile time, and every outer walk's structure
+fixed (the enclosing object is still loaded, a class object existing
+per enclosing instance), each with inlining, whose fixed structure is
+what pays for it; and a block a customized home creates compiled with
+its home, customized to that home's copy as Strongtalk customizes a
+block to the version of its home method
+(`compiler/compileTimeClosure.hpp:27-36`) -- stage 3's "blocks with
+their home" ("Stages" below); a block created by baseline code has no
+home that could.
 
 ### Speculation and its failure
 
-- **A guard traps by default**: a failed guard, an overflow, a
-  non-Boolean and a site never executed deoptimize the frame at once and
-  run the instruction again ("Between the tiers" above), so that after a
-  guard the type is certain and no merge with an unknown path costs a
-  test or a box. The instruction run again widens the feedback by itself
-  through the cache. Each trap sets the site's sticky bit and arms its
-  counting window.
-- **Deoptimization loops are ruled out** by Strongtalk's and HotSpot's
-  measures together: a trap at a site that trapped before, or a trap
-  count reaching a limit (Strongtalk's `UncommonRecompileLimit` is 5,
-  `runtime/uncommonBranch.cpp:121-221`), makes the code not entrant and
-  gives the body a delayed budget; the compile after it gives every site
-  that trapped a compiled slow path -- a real send, a send of `+` for an
-  overflow, the fallback block -- and lets the others speculate on, as
-  Strongtalk's `isNotUncommonAt` and HotSpot's `too_many_traps` do
-  (`opto/compile.cpp:5046-5074`). Each recompile of a pair raises its
-  version; the wait before the next grows as the budget times 4 to the
-  version, Strongtalk's (`compiler/compiler.cpp:712-718`), and past the
-  last version the code is compiled with no trap at all, which can never
-  loop. Collections halve the counts. The limits are Strongtalk's 5
-  traps and `MaxVersions` of 3 (`recompiler/recompile.hpp:121`),
-  measured and kept ("What speculation moved").
-- **An abandonment is a version too** (decided with the user on
-  2026-11-06): optimized code abandoned for its exits -- the templates'
-  exits, not traps -- raises its pair's version and waits as a trap's
-  recompile does, replacing stage 1's doubling, and a pair abandoned past
-  its last version stays in baseline code for good, as HotSpot stays in
-  the interpreter past `PerMethodRecompilationCutoff`
-  (`runtime/globals.hpp:1356`) and Strongtalk refuses at "max. version
-  reached" (`recompiler/recompiler.cpp:188`). Otherwise the decay at
-  every collection, which halves the abandonments, would hold the
-  back-off of code with no trap at about twice the budget and recompile
-  it without end.
-- **Send sites do not speculate in stage 2** (decided with the user on
-  2026-11-06): a send goes through its cell as baseline code's does,
-  and a monomorphic cell already compares its guard inline. A type-case
-  is built with inlining in stage 3, where each of its arms inlines its
-  callee; a type-case of calls built before would be rebuilt there.
+What is built traps at arithmetic, conditionals and sites never
+executed, and rules out deoptimization loops by versions
+("Speculation", "Guards and traps", "Versions and the refusal for
+good"). What is not:
+
+- **A type guard at a send traps too**: a type-case, built with
+  inlining in stage 3 where each of its arms inlines its callee, traps
+  for a receiver none of its arms names, so that after it the type is
+  certain and no merge with an unknown path costs a test or a box; a
+  send goes through its cell until then (decided with the user on
+  2026-11-06), a monomorphic cell already comparing its guard inline,
+  since a type-case of calls built before would be rebuilt there.
+- **A trap arms its site's counting window** (stage 7, "Feedback"
+  above), so that the type-case compiled after it orders its arms by
+  the sends counted since.
 
 ### Inlining
 
@@ -11926,50 +12137,45 @@ flattened into other objects and arrays
 
 ### Invalidation
 
-Optimized code records each application whose layout, method lookup or
-outer structure it relied on -- the set whose epochs its installation
-checks -- and each application keeps the list of the code that depends
-on it. An install marks the code of exactly the applications it
-rebuilds, those built from the replaced mixin and every one whose chain
-holds them; it points their cells and machine entry rows back at
-baseline code, raises the epochs and requests a safepoint, and their
-frames deoptimize as "Optimized frames" above says. Strongtalk marks by
-class (`code/zone.cpp:634-650`), HotSpot by its dependency kinds
+What is built frees the copies an install, a bulk forward or a
+reclaimed id makes stale, by their keys, at once ("Speculation",
+"Invalidation"). What is not: optimized code that inlines records each
+application whose layout, method lookup or outer structure it relied
+on -- the set whose epochs its installation checks once a compile runs
+on its own thread -- and each application keeps the list of the code
+that depends on it. An install marks the code of exactly the
+applications it rebuilds, those built from the replaced mixin and every
+one whose chain holds them; it points their cells and machine entry
+rows back at baseline code and raises the epochs, and a marked frame
+below the top, which stands for several activations once code inlines,
+deoptimizes as "Optimized frames" above says. Strongtalk marks by class
+(`code/zone.cpp:634-650`), HotSpot by its dependency kinds
 (`code/dependencies.hpp:105-170`; `oops/instanceKlass.cpp:1772-1792`), V8
-by its `DependentCode` groups (`objects/dependent-code.h:37-70`). The bulk
-forward deoptimizes all optimized code. A full collection that reclaims
-an application's id frees the code customized on it, so an id minted
-again never meets it. The caches keep being flushed whole.
+by its `DependentCode` groups (`objects/dependent-code.h:37-70`).
 
 ### Verification
 
-Four stress modes, debug builds only, run in the `stress` group over the
-suite and `run-corpus`: `NS_NEXT_STRESS_OPTIMIZE`, every budget running
-out at once, the recompilee compiled synchronously on its snapshot, OSR
-at the first back jump, as V8's `stress_maglev`
-(`flags/flag-definitions.h:601`); with it `NS_NEXT_STRESS_DEOPT`, a
-deoptimization at every n-th interrupt point passed, n rotated so that
-every point is met, V8's `deopt_every_n_times` (`:1382`) and HotSpot's
-`DeoptimizeALot` (`runtime/globals.hpp:387-396`);
+Built: `NS_NEXT_STRESS_OPTIMIZE` and `NS_NEXT_STRESS_DEOPT` ("The
+optimizing tier's foundation", "Verification") and
+`NS_NEXT_STRESS_INVALIDATE` ("Speculation", "Verification"), with the
+graph's and the allocation's verifiers and the optimizer's goldens. Not
+built: on-stack replacement at the first back jump under
+`NS_NEXT_STRESS_OPTIMIZE`, as V8's `stress_maglev`
+(`flags/flag-definitions.h:601`), with stage 6;
 `NS_NEXT_STRESS_INLINED_FRAMES`, every read of an inlined frame object
 deoptimizing and every non-local return into an inlined home taken in
-turn by its continuation and by the unwinder; and
-`NS_NEXT_STRESS_INVALIDATE`, all optimized code marked at every
-safepoint, beside tests that install an edit and compare the optimized
-code's outcome with the interpreter's after it. Debug builds verify after every pass the graph's SSA form,
-dominance and representations, as Maglev's `maglev_assert` (`:679-682,
-757`), the register allocation, as C2's `VerifyRegisterAllocator`
-(`opto/c2_globals.hpp:331`), and each interrupt point's metadata against
-the leftover analysis's liveness, and assert in the generated code the
-types the compiler assumed. Differential tests run generated arithmetic
-over `SmallInteger`, `LargeInteger`, `SmallFloat` and boxed `Float` at the
-61-bit, 64-bit and `SmallFloat` bounds optimized and interpreted. At every
-commit run the verifiers, the number tests, the passes' own tests and
-goldens of the optimizer that switch `NS_NEXT_STRESS_OPTIMIZE` on per
-test; the modes join the gate table when they are built, as
-`NS_NEXT_STRESS_OPTIMIZE` and `NS_NEXT_STRESS_DEOPT` have, with the
-graph's and the allocation's verifiers and the optimizer's goldens
-("The optimizing tier's foundation", "Verification").
+turn by its continuation and by the unwinder, with stage 4; the
+verification of representations after every pass, as Maglev's
+`maglev_assert` (`:679-682, 757`), and of each interrupt point's
+metadata against the leftover analysis's liveness once a value lives
+outside its frame word, and assertions in the generated code of the
+types the compiler assumed; and differential tests that run generated
+arithmetic over `SmallInteger`, `LargeInteger`, `SmallFloat` and boxed
+`Float` at the 61-bit, 64-bit and `SmallFloat` bounds optimized and
+interpreted, with stage 5. At every commit run the verifiers, the
+number tests, the passes' own tests and goldens of the optimizer that
+switch `NS_NEXT_STRESS_OPTIMIZE` on per test; a mode joins the gate
+table when it is built.
 
 ### Stages
 
@@ -11986,11 +12192,13 @@ the next:
    measured what register allocation alone moves ("What the optimizing
    tier's foundation moved", against "What a register cache would
    move").
-2. **Speculation**: customization of method bodies, guards and traps at
-   arithmetic, conditionals and sites never executed, the feedback's
-   groundwork without counting, the rules against deoptimization loops
-   with abandonment as a version, the invalidation per application,
-   `NS_NEXT_STRESS_INVALIDATE`; sends keep their cells.
+2. **Speculation**, built ("Speculation" above): customization of
+   method bodies, guards and traps at arithmetic, conditionals and sites
+   never executed, the feedback's groundwork without counting, the rules
+   against deoptimization loops with abandonment as a version, the
+   invalidation per application, `NS_NEXT_STRESS_INVALIDATE`; sends keep
+   their cells. It measured what customization and traps move ("What
+   speculation moved").
 3. **Inlining**: the plan, the walk up the stack, blocks with their home,
    type-cases in the order the types first appeared.
 4. **Inlined frame objects** and the non-local return into an inlined
@@ -12077,10 +12285,9 @@ the baseline JIT's foundation moved" that of the first two.
   system cannot back
   fails as a value rather than by `SIGBUS`, on every kernel with `memfd`.
   `CodeZone::enter` calls the entry or the call stub with the platform's
-  C convention, handing it a block of thirty-two words, an `EntryBlock`
+  C convention, handing it a block of thirty-three words, an `EntryBlock`
   kept from one entry to the next -- 0 to 3 its own, written at every
-  entry, 4 to 31 the caller's (`jit::stubs::BlockWord`), 23 of those
-  free for a later stage's word ("The entry at a send" below) --
+  entry, 4 to 32 the caller's (`jit::stubs::BlockWord`) --
   and the leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64`
   back, from a leaf table that is one constant for the process.
   Every zone has an identity of its own, never 0, so that a body records
@@ -12504,8 +12711,12 @@ sends and the inline caches in machine code.
   the guard, the entry address, the level and the chain start --
   written in the same function as the entry, and every polymorphic
   block's slot and every global cache row has one likewise. A cell's
-  entry address is a function of its entry's `Target` and of the JIT's
-  state alone (`jit::cell_entry`), never of the send or the receiver:
+  entry address is a function of its entry -- its guard and its
+  `Target` -- and of the JIT's state alone (`jit::cell_entry`), never of
+  the send or the receiver: a receiver-guarded cell names the copy
+  customized for its guard at its target's level, a `super` or private
+  lexical one its body's dispatching entry once the body has a copy
+  ("Speculation", "The key and the copies"), and otherwise
   the callee's machine entry for a method machine code runs as an
   activation of its body, once the body has machine code in this zone
   compiled against the entry's feedback base; the miss stub while the
@@ -12514,7 +12725,7 @@ sends and the inline caches in machine code.
   the accessor stubs for a target that is no method with code; 0 for a
   vacant entry and everywhere there is no zone. So the cell copies what
   the lookup decided, and the JIT's state -- which stubs the zone has,
-  whether a body has code -- is all it adds.
+  whether a body has code, which copies it has -- is all it adds.
 - **A send** (`jit/sends.rs`): `SendPublic`, `SendLexical` and
   `SendSuper` with a cached call site load their receiver -- a lexical
   send's enclosing object by the lexical chain, a `super` send's `self`
@@ -12858,7 +13069,7 @@ send.
   program-counter map; the leaf table is a constant the compiler
   promotes to a static (`leaves::table`); a return is answered before
   the exit is decoded.
-- **The entry block** (`ns_memory::EntryBlock`): the thirty-two words
+- **The entry block** (`ns_memory::EntryBlock`): the thirty-three words
   machine code is entered with are `Cell`s behind an `Rc` that
   `JitState` holds and keeps from one entry to the next, an allocation
   of its own outside the mutator, as the machine words are ("The machine

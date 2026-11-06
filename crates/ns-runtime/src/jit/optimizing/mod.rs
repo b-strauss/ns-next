@@ -15,8 +15,8 @@ pub(crate) mod metadata;
 pub(crate) mod snapshot;
 pub(crate) mod verify;
 
-/// How far a compile speculates (`docs/design/execution.md`, "Speculation
-/// and its failure").
+/// How far a compile speculates (`docs/design/execution.md`, "Speculation",
+/// "Guards and traps", "Versions and the refusal for good").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Speculation {
     /// Every site the feedback says never ran is a guard that traps: an
@@ -34,7 +34,7 @@ impl Speculation {
     /// How far a copy at `version` speculates: with traps up to
     /// `jit::LAST_VERSION`, without past it, so that the copy a key ends
     /// with can never be made not entrant (`docs/design/execution.md`,
-    /// "Speculation and its failure").
+    /// "Speculation", "Versions and the refusal for good").
     pub(crate) fn at_version(version: u8) -> Speculation {
         if version <= crate::jit::LAST_VERSION {
             Speculation::Traps
