@@ -455,6 +455,21 @@ impl Roles {
         self.entered_with.callee_argument
     }
 
+    /// The register a body's dispatching entry hands the shared
+    /// dispatching stub the address of the body's dispatching rows in
+    /// (`targets::assemble_dispatching_stub`): the send's guard, which the
+    /// cell's compare is done with once the call is made.
+    pub(crate) fn dispatching_rows(self) -> Register {
+        self.send_guard
+    }
+
+    /// The register a body's dispatching entry hands the shared
+    /// dispatching stub the body's machine entry in, where the stub goes
+    /// on when no row matches: the send's key, which only a miss reads.
+    pub(crate) fn dispatching_baseline(self) -> Register {
+        self.send_key
+    }
+
     /// What a prologue reads after its checks, of what the call handed it
     /// and of what it counted: the machine words' address it stores the
     /// count through, the depth count it is about to store, the receiver,
@@ -2124,6 +2139,13 @@ impl MacroAssembler {
     /// flags and the idiom scratch register.
     pub(crate) fn count_compiled_call(&mut self) {
         self.count(BlockWord::CompiledCalls);
+    }
+
+    /// Adds one to the entry block's `DispatchedCalls` when the code
+    /// counts, and emits nothing otherwise. Clobbers the flags and the
+    /// idiom scratch register.
+    pub(crate) fn count_dispatched_call(&mut self) {
+        self.count(BlockWord::DispatchedCalls);
     }
 
     /// Adds one to the block's `word` when the code counts.

@@ -1142,6 +1142,32 @@ impl Interpreter {
         })
     }
 
+    /// The machine entries the dispatching rows of `method`'s body name, in
+    /// the rows' order, and those of the customized copies of it this
+    /// interpreter's zone holds, sorted: what a `super` or private lexical
+    /// send of it enters through its dispatching entry. A test hook.
+    #[doc(hidden)]
+    pub fn jit_dispatching_entries(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> (Vec<u64>, Vec<u64>) {
+        #[cfg(ns_jit)]
+        {
+            self.enter(|mutator| {
+                method_code(mutator, class, side, method)
+                    .map(|code| mutator.jit.dispatching_entries(&code))
+                    .unwrap_or_default()
+            })
+        }
+        #[cfg(not(ns_jit))]
+        {
+            let _ = (class, side, method);
+            (Vec::new(), Vec::new())
+        }
+    }
+
     /// For each block `method` makes, in order: whether its body has
     /// optimized code in this interpreter's zone, and how many customized
     /// copies of it there are, which a block never has. A test hook.

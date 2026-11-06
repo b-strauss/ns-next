@@ -29,10 +29,8 @@ use crate::heap::machine_words::MachineWord;
 /// that counts its back edges `BackEdges`; the entry and the call stub
 /// each write `EnteredByCall`.
 ///
-/// Word 23 is free, kept for what the later stages enter machine code
-/// with, so the three words only a debug build or a test uses sit at the
-/// top. It named the closure sites until they moved into the code zone
-/// beside their bodies (`jit::closures`); nothing reads or writes it.
+/// Code that counts writes `DispatchedCalls`, word 23, as it writes
+/// `CompiledCalls` and `BackEdges`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BlockWord {
     /// The leaf shim's address, which `call_leaf` calls. Words 0, 2 and 3,
@@ -104,6 +102,9 @@ pub(crate) enum BlockWord {
     /// word (`Heap::eden_cursor_address`), which an allocation in machine
     /// code bumps in place (`MacroAssembler::bump_allocate`).
     EdenCursor = 22,
+    /// The calls code compiled to count them made through a body's
+    /// dispatching entry (`JitStatistics::dispatched_calls`).
+    DispatchedCalls = 23,
     /// The address of the machine entry table's row 0
     /// (`Heap::machine_entries_address`), where a closure stub finds the
     /// machine entry of the block a closure's code id names
@@ -715,6 +716,11 @@ pub(super) mod testing {
         /// what a body under test reads of the heap there.
         pub(crate) fn set_machine_word(&mut self, word: MachineWord, value: u64) {
             self.machine_words.push((word, value));
+        }
+
+        /// The executable address of the code installed at `offset`.
+        pub(crate) fn executable_address(&self, offset: CodeOffset) -> u64 {
+            self.zone.zone().executable_address(offset) as u64
         }
 
         /// Installs the body `build` writes and finishes.

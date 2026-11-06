@@ -47,10 +47,11 @@ use super::{InstalledBody, JitState, BODY_ALIGNMENT, COMPILED};
 
 /// A body a slide freed (`JitState::free_bodies_with_moved_bases`): its
 /// code, while it lives, whose machine entry row names it, and its entry's
-/// offset, which cells may name.
+/// offset and its dispatching entry's, which cells may name.
 pub(crate) struct FreedBody {
     code: Option<std::rc::Rc<CompiledCode>>,
     start: CodeOffset,
+    dispatching: Option<CodeOffset>,
 }
 
 /// The usage a body is born with: what Cog's `initialMethodUsageCount`
@@ -359,11 +360,20 @@ impl JitState {
         }
         body.free = true;
         let size = body.size();
+        let customized_beside = body.key.and(body.baseline);
         self.statistics.count_freed(body.lean.is_some());
         if freed_by == FreedBy::BetweenCompactions {
             self.bytes_freed_since_compaction =
                 self.bytes_freed_since_compaction.saturating_add(size);
         }
+        // A dispatching row naming a freed copy would enter whatever the
+        // zone holds there next.
+        #[cfg(ns_jit)]
+        if let Some(lean) = customized_beside {
+            self.write_dispatching_rows(lean);
+        }
+        #[cfg(not(ns_jit))]
+        let _ = customized_beside;
         true
     }
 
@@ -465,6 +475,9 @@ impl JitState {
             }
             let code = body.code.upgrade();
             let start = body.start;
+            let dispatching = body
+                .dispatching
+                .map(|dispatching| CodeOffset(start + dispatching.entry));
             if let Some(code) = &code {
                 if self.named_body(code) == Some(index) {
                     code.jit.forget();
@@ -475,6 +488,7 @@ impl JitState {
                 freed.push(FreedBody {
                     code,
                     start: CodeOffset(start),
+                    dispatching,
                 });
             }
         }
@@ -651,6 +665,93 @@ impl JitState {
             .iter()
             .filter(|copy| self.copy_of(code, copy.key).is_some())
             .count()
+    }
+
+    /// The machine entries the dispatching rows of `code`'s lean body name,
+    /// in order, and those of the customized copies beside it, sorted.
+    /// For tests.
+    #[cfg(ns_jit)]
+    pub(crate) fn dispatching_entries(&self, code: &CompiledCode) -> (Vec<u64>, Vec<u64>) {
+        use crate::heap::optimized_copies::RowWord;
+        let Some(index) = self.named_body(code) else {
+            return (Vec::new(), Vec::new());
+        };
+        let Some(dispatching) = self.bodies[index].dispatching else {
+            return (Vec::new(), Vec::new());
+        };
+        let rows = self
+            .optimized_copies
+            .as_ref()
+            .map(|table| table.rows(dispatching.rows))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| row[RowWord::Entry as usize])
+            .collect();
+        let Some(zone) = self.zone.as_ref() else {
+            return (rows, Vec::new());
+        };
+        let lean = u32::try_from(index).unwrap_or(u32::MAX);
+        let mut copies: Vec<u64> = self
+            .optimized_copies_of(lean)
+            .into_iter()
+            .filter(|copy| self.bodies[*copy as usize].key.is_some())
+            .map(|copy| {
+                zone.writer
+                    .zone()
+                    .executable_address(CodeOffset(self.bodies[copy as usize].start))
+                    as u64
+            })
+            .collect();
+        copies.sort_unstable();
+        (rows, copies)
+    }
+
+    /// A debug build's check, after every compaction and slide, that every
+    /// method's lean body's dispatching words name what the JIT recorded
+    /// -- its rows' block and the tail -- and that the block of a body its
+    /// slot names holds exactly its copies' rows.
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn verify_dispatching_rows(&self) {
+        let Some(zone) = self.zone.as_ref() else {
+            return;
+        };
+        let word_at = |offset: u32| {
+            let bytes = zone
+                .writer
+                .bytes(offset..offset + 8)
+                .expect("internal: a body's words lie in the committed zone");
+            u64::from_le_bytes(bytes.try_into().expect("eight bytes"))
+        };
+        let tail = self.dispatching_stub_address();
+        for (index, body) in self.bodies.iter().enumerate() {
+            let Some(dispatching) = body.dispatching.filter(|_| !body.free) else {
+                continue;
+            };
+            assert_eq!(
+                word_at(body.start + dispatching.rows_word),
+                dispatching.rows,
+                "internal: a dispatching entry's rows word names what the JIT recorded"
+            );
+            assert_eq!(
+                word_at(body.start + dispatching.tail_word),
+                tail,
+                "internal: a dispatching entry's tail word names the tail"
+            );
+            let named = body
+                .code
+                .upgrade()
+                .is_some_and(|code| self.named_body(&code) == Some(index));
+            let table = self.optimized_copies.as_ref();
+            if !named || table.is_none_or(|table| table.vacant_address() == dispatching.rows) {
+                continue;
+            }
+            let lean = u32::try_from(index).unwrap_or(u32::MAX);
+            assert_eq!(
+                table.map(|table| table.rows(dispatching.rows)),
+                Some(self.dispatching_rows_of(lean)),
+                "internal: a body's dispatching rows are its copies' after a compaction or a slide"
+            );
+        }
     }
 
     /// The data words of the machine code `code`'s slot names -- its
@@ -1089,6 +1190,17 @@ impl JitState {
                 self.write_transfer_words(index);
             }
         }
+        // The dispatching rows name the copies' entries, which may have
+        // moved: each lean body's written afresh.
+        #[cfg(ns_jit)]
+        for index in 0..self.bodies.len() {
+            if self.bodies[index].dispatching.is_some() {
+                let Ok(index) = u32::try_from(index) else {
+                    unreachable!("internal: a body's index fits its slot's map");
+                };
+                self.write_dispatching_rows(index);
+            }
+        }
     }
 }
 
@@ -1249,7 +1361,8 @@ impl Mutator<'_> {
         };
         let mut entries: Vec<u64> = freed
             .iter()
-            .map(|body| zone.writer.zone().executable_address(body.start) as u64)
+            .flat_map(|body| std::iter::once(body.start).chain(body.dispatching))
+            .map(|offset| zone.writer.zone().executable_address(offset) as u64)
             .collect();
         entries.sort_unstable();
         for body in &freed {
@@ -1315,6 +1428,7 @@ impl Mutator<'_> {
             );
         }
         self.jit.verify_pairs();
+        self.jit.verify_dispatching_rows();
     }
 }
 

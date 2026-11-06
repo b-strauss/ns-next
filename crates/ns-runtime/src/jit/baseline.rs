@@ -53,6 +53,22 @@ pub(crate) struct BaselineBody {
     /// (`MachineWord::UnpointedBudget`) until the JIT points it at the
     /// body's row.
     pub(crate) budget_word: Option<usize>,
+    /// A method's lean body's dispatching entry
+    /// (`targets::emit_dispatching_entry`); `None` for every other code.
+    pub(crate) dispatching: Option<DispatchingEntry>,
+}
+
+/// Where a method's lean body's dispatching entry lies and which of its
+/// data words it reads (`targets::emit_dispatching_entry`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct DispatchingEntry {
+    /// The entry's offset from the body's start.
+    pub(crate) entry: u32,
+    /// The index of the data word holding the address of the body's
+    /// dispatching rows.
+    pub(crate) rows_word: usize,
+    /// The index of the data word holding the shared tail's address.
+    pub(crate) tail_word: usize,
 }
 
 /// A lean body's `MakeClosure`, which goes on in the twin at the same
@@ -1121,6 +1137,16 @@ pub(crate) fn compile(
         budget_word: None,
         optimized: false,
     };
+    // A method's lean body is entered by a `super` or private lexical
+    // send through its dispatching entry once it has copies
+    // (`targets::emit_dispatching_entry`), which goes on at its start
+    // when no copy matches.
+    let dispatching = (copy == BodyCopy::Lean && role == BodyRole::Method).then(|| {
+        let start = body.macro_assembler.assembler().label();
+        body.macro_assembler.assembler().bind(start);
+        let rows_word = body.macro_assembler.take_body_words(2);
+        (start, rows_word)
+    });
     if copy == BodyCopy::Lean {
         sends::prologue(&mut body, &BodyFacts::of(code));
     }
@@ -1141,6 +1167,17 @@ pub(crate) fn compile(
     }
     let exits_at_once = !reaches_before_an_exit(code, &exits, &transfers);
     body.emit_backward_branches();
+    let dispatching_entry = dispatching.map(|(start, rows_word)| {
+        let entry = body.macro_assembler.assembler().label();
+        super::targets::emit_dispatching_entry(
+            &mut body.macro_assembler,
+            entry,
+            start,
+            rows_word,
+            rows_word + 1,
+        );
+        (entry, rows_word)
+    });
     let words = body.macro_assembler.body_words_label();
     let word_bytes =
         u32::try_from(body.macro_assembler.body_word_count() * 8).map_err(|_| Refusal::ZoneFull)?;
@@ -1152,6 +1189,12 @@ pub(crate) fn compile(
         .and_then(|label| assembled.label_offsets[label.index()])
         .map(|start| start..start + word_bytes);
     let map = program_counter_map(&assembled, &body.starts, &body.call_returns);
+    let dispatching = dispatching_entry.map(|(entry, rows_word)| DispatchingEntry {
+        entry: assembled.label_offsets[entry.index()]
+            .expect("internal: the dispatching entry is bound"),
+        rows_word,
+        tail_word: rows_word + 1,
+    });
     Ok(BaselineBody {
         code: assembled,
         map,
@@ -1160,6 +1203,7 @@ pub(crate) fn compile(
         words,
         twin_transfers: body.twin_transfers,
         budget_word: body.budget_word,
+        dispatching,
     })
 }
 

@@ -136,6 +136,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         optimized_bodies_resumed: after.optimized_bodies_resumed - before.optimized_bodies_resumed,
         optimized_twin_requests: after.optimized_twin_requests - before.optimized_twin_requests,
         customized_copies: after.customized_copies - before.customized_copies,
+        dispatched_calls: after.dispatched_calls - before.dispatched_calls,
         forced_exits: after.forced_exits - before.forced_exits,
         deepest_forced_exit: after.deepest_forced_exit,
     }
@@ -1326,6 +1327,212 @@ ns_runtime::for_each_lowering! {
         let blocks = interpreter.jit_block_tiers(&a_class, MethodSide::Instance, total);
         assert_eq!(blocks, vec![(true, 0)], "optimized once, no copies");
         assert!(interpreter.jit_statistics().optimized_bodies >= 1);
+    }
+}
+
+/// `sum`, a private method of `A` summing `A`'s slot in a loop, sent
+/// lexically ten times by the public `total`, run on an `A` and on a `B`,
+/// a subclass of `A` with a slot of its own: a private lexical site,
+/// whose cell's guard is `A`'s application word, reaching one body on two
+/// receivers' applications.
+const A_PRIVATE_METHOD_ON_TWO_APPLICATIONS: &str = indoc! {"
+    class Subject = Object new () (
+      class A step: value = Object new (
+        |
+          step = value.
+        |
+      ) (
+        private sum = (
+          |
+            total ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            total:: total + step.
+            index:: index + 1.
+          ].
+          ^total.
+        )
+
+        public total = (
+          |
+            result ::= 0.
+            index ::= 0.
+          |
+          [index < 10] whileTrue: [
+            result:: result + sum.
+            index:: index + 1.
+          ].
+          ^result.
+        )
+      )
+
+      class B = A step: 3 (
+        |
+          own = 5.
+        |
+      ) ()
+
+      public aClass = (
+        ^A.
+      )
+
+      public run = (
+        ^(A step: 2) total + B new total.
+      )
+    ) : ()
+"};
+
+/// The machine entries `selector`'s body's dispatching rows name, and
+/// those of its customized copies, sorted alike, for a comparison of the
+/// two sets.
+fn dispatching_entries(
+    interpreter: &mut Interpreter,
+    class: &Root,
+    selector: &str,
+) -> (Vec<u64>, Vec<u64>) {
+    let (mut rows, copies) =
+        interpreter.jit_dispatching_entries(class, MethodSide::Instance, Symbol::intern(selector));
+    rows.sort_unstable();
+    (rows, copies)
+}
+
+ns_runtime::for_each_lowering! {
+    /// A private method sent lexically reaches each receiver's copy: the
+    /// site's cell, guarded by `A`'s application word, names the body's
+    /// dispatching entry once it has a copy, whose rows hold the copy of
+    /// an `A`'s and of a `B`'s.
+    fn a_private_method_reaches_each_receiver_s_copy(lowering) {
+        let (mut interpreter, class) =
+            load_customizing(A_PRIVATE_METHOD_ON_TWO_APPLICATIONS, lowering);
+        interpreter.set_jit_counting(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
+        }
+        if !counts_the_copies() {
+            return;
+        }
+        let a_class = class_answered(&mut interpreter, &subject, "aClass");
+        assert_eq!(
+            interpreter.jit_customized_copies(&a_class, MethodSide::Instance, Symbol::intern("sum")),
+            2
+        );
+        let (rows, copies) = dispatching_entries(&mut interpreter, &a_class, "sum");
+        assert_eq!(copies.len(), 2);
+        assert_eq!(rows, copies, "a row for each copy");
+        // The reference lowering's sends are uncached: no cell names the
+        // entry.
+        if lowering == Lowering::Optimized {
+            assert!(interpreter.jit_statistics().dispatched_calls > 0);
+        }
+    }
+}
+
+/// `total`, a method of `A` summing `A`'s slot in a loop, which `B`, a
+/// subclass of `A` with a slot of its own, overrides by a `super` send:
+/// the `super` site's cell, guarded by `A`'s application word, reaches
+/// `A`'s body on a `B`, whose copy is customized for a `B` entered at `A`.
+const A_SUPER_SEND_ON_A_SUBCLASS: &str = indoc! {"
+    class Subject = Object new () (
+      class A step: value = Object new (
+        |
+          step = value.
+        |
+      ) (
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      class B = A step: 3 (
+        |
+          own = 5.
+        |
+      ) (
+        public total = (
+          ^super total + 1.
+        )
+      )
+
+      public aClass = (
+        ^A.
+      )
+
+      public run = (
+        |
+          b = B new.
+          result ::= 0.
+          index ::= 0.
+        |
+        [index < 10] whileTrue: [
+          result:: result + b total.
+          index:: index + 1.
+        ].
+        ^(A step: 2) total + result.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A `super` send reaches its copy: `A`'s `total` run on a `B` by
+    /// `B`'s `super total` has the copy for a `B` entered at `A`, which the
+    /// body's dispatching rows name, as they name an `A`'s own.
+    fn a_super_send_reaches_its_copy(lowering) {
+        let (mut interpreter, class) = load_customizing(A_SUPER_SEND_ON_A_SUBCLASS, lowering);
+        interpreter.set_jit_counting(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 3210);
+        }
+        if !counts_the_copies() {
+            return;
+        }
+        let a_class = class_answered(&mut interpreter, &subject, "aClass");
+        let (rows, copies) = dispatching_entries(&mut interpreter, &a_class, "total");
+        assert!(!copies.is_empty(), "the body has a copy");
+        assert_eq!(rows, copies, "a row for each copy");
+        // The reference lowering's sends are uncached: no cell names the
+        // entry.
+        if lowering == Lowering::Optimized {
+            assert!(interpreter.jit_statistics().dispatched_calls > 0);
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A compaction of the code zone moves the copies a body's
+    /// dispatching rows name, and the rows move with them: under the zone
+    /// stress mode, which compacts at its safepoints, the program's answer
+    /// holds at every run, and after a compaction between runs the rows
+    /// still name exactly the copies the zone holds.
+    fn a_compaction_remaps_the_dispatching_rows(lowering) {
+        let (mut interpreter, class) =
+            load_customizing(A_PRIVATE_METHOD_ON_TWO_APPLICATIONS, lowering);
+        interpreter.set_stress_zone(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..4 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
+        }
+        interpreter.set_stress_zone(false);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
+        let a_class = class_answered(&mut interpreter, &subject, "aClass");
+        let before = dispatching_entries(&mut interpreter, &a_class, "sum");
+        interpreter.compact_jit_zone();
+        let (rows, copies) = dispatching_entries(&mut interpreter, &a_class, "sum");
+        assert_eq!(rows, copies, "the rows name the copies where they lie now");
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
+        if counts_the_copies() {
+            assert!(!before.1.is_empty(), "the body had copies before the compaction");
+        }
     }
 }
 

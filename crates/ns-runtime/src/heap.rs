@@ -46,6 +46,8 @@ pub(crate) mod mark;
 mod object;
 #[cfg(ns_jit)]
 mod optimization_budgets;
+#[cfg(ns_jit)]
+pub(crate) mod optimized_copies;
 mod pending;
 pub(crate) mod reclaim;
 mod records;

@@ -309,6 +309,12 @@ pub struct JitStatistics {
     /// The customized copies of method bodies compiled
     /// (`CustomizedCopy`): of `optimized_bodies`.
     pub customized_copies: u64,
+    /// Calls code compiled to count them made through a method body's
+    /// dispatching entry, a `super` or private lexical send's once the
+    /// body has a customized copy (`targets::emit_dispatching_entry`),
+    /// whether a row matched or not: counted while the JIT counts, as
+    /// `compiled_calls` is.
+    pub dispatched_calls: u64,
     /// Exits of optimized machine code.
     pub optimized_exits: u64,
     /// Bodies whose optimized machine code was abandoned for its exits.
@@ -586,6 +592,11 @@ pub(crate) struct CustomizedCopy {
     /// receiver's application by its id alone, and the entered
     /// application only as a level above it.
     pub(crate) level: Option<u16>,
+    /// The application word of the class the key's body is entered at
+    /// (`Heap::class_application_word`), read off the frame whose spend
+    /// made the row: what the dispatching stub compares a `super` or
+    /// private lexical send's current class with (`heap/optimized_copies.rs`).
+    pub(crate) entered_word: u64,
 }
 
 /// A body whose optimization budget ran out, for the optimizing compile
@@ -988,6 +999,9 @@ struct Zone {
     /// The stub a megamorphic site's cell names
     /// (`targets::assemble_megamorphic_stub`).
     megamorphic_stub: CodeOffset,
+    /// The shared tail of every method body's dispatching entry
+    /// (`targets::assemble_dispatching_stub`).
+    dispatching_stub: CodeOffset,
     /// The stubs a cell names for a target that is no method with code
     /// (`targets::assemble_accessor_stubs`).
     accessors: AccessorStubs,
@@ -1189,6 +1203,22 @@ struct InstalledBody {
     /// slot's `copies` names it while it is current; `None` for baseline
     /// code and for a body's one uncustomized copy.
     key: Option<CustomizationKey>,
+    /// A method's lean body's dispatching entry and its data words
+    /// (`targets::emit_dispatching_entry`); `None` for every other code.
+    dispatching: Option<InstalledDispatching>,
+}
+
+/// A method's lean body's dispatching entry as installed: the offsets
+/// from the body's start of the entry and of its two data words, which a
+/// compaction keeps, and the address of the dispatching rows the rows'
+/// word names (`heap/optimized_copies.rs`): the vacant block's until the
+/// JIT points it at the block of the body's code id.
+#[derive(Clone, Copy, Debug)]
+struct InstalledDispatching {
+    entry: u32,
+    rows_word: u32,
+    tail_word: u32,
+    rows: u64,
 }
 
 /// Which of the JIT's two compilers made a body's machine code
@@ -1419,6 +1449,12 @@ pub(crate) struct JitState {
     /// is made (`share_machine_words`), or a state's own in a test that
     /// has no heap.
     machine_words: crate::heap::machine_words::MachineWords,
+    /// The dispatching rows of the method bodies' optimized copies, by
+    /// code id (`heap/optimized_copies.rs`), reserved at the first install
+    /// of a method body: what the bodies' dispatching entries compare a
+    /// `super` or private lexical send's receiver and current class with.
+    #[cfg(ns_jit)]
+    optimized_copies: Option<crate::heap::optimized_copies::OptimizedCopies>,
 }
 
 /// Whether `NS_NEXT_STRESS_JIT` asks for the JIT stress mode: set, and
@@ -1585,6 +1621,8 @@ impl JitState {
             deoptimization_rotation: 0,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
+            #[cfg(ns_jit)]
+            optimized_copies: None,
         }
     }
 
@@ -1705,6 +1743,11 @@ impl JitState {
     /// JIT off never revives one.
     pub(crate) fn replace_zone(&mut self, bytes: usize) {
         self.bodies.clear();
+        // Every row's entry lies in the old zone.
+        #[cfg(ns_jit)]
+        if let Some(table) = self.optimized_copies.as_mut() {
+            table.clear_all();
+        }
         self.returns.clear();
         self.budget_words_to_point.clear();
         self.compaction_requested = false;
@@ -2162,6 +2205,141 @@ impl JitState {
             .collect()
     }
 
+    /// The table of dispatching rows, reserved at its first use.
+    #[cfg(ns_jit)]
+    fn copies_table(&mut self) -> &mut crate::heap::optimized_copies::OptimizedCopies {
+        self.optimized_copies
+            .get_or_insert_with(crate::heap::optimized_copies::OptimizedCopies::new)
+    }
+
+    /// Writes the dispatching entry's data words of the lean body at
+    /// `index` that are given -- the address of its rows, the tail's --
+    /// through the zone's one writer, as every data word is written.
+    #[cfg(ns_jit)]
+    fn write_dispatching_words(&mut self, index: u32, rows: Option<u64>, tail: Option<u64>) {
+        let Some(dispatching) = self.live_body(index).and_then(|body| body.dispatching) else {
+            return;
+        };
+        let start = self.bodies[index as usize].start;
+        if let Some(rows) = rows {
+            self.bodies[index as usize].dispatching = Some(InstalledDispatching {
+                rows,
+                ..dispatching
+            });
+        }
+        let Some(zone) = self.zone.as_mut() else {
+            unreachable!("internal: an installed body lies in a zone");
+        };
+        for (offset, word) in [(dispatching.rows_word, rows), (dispatching.tail_word, tail)] {
+            let Some(word) = word else {
+                continue;
+            };
+            if zone
+                .writer
+                .write(CodeOffset(start + offset), &word.to_le_bytes())
+                .is_err()
+            {
+                unreachable!("internal: an installed body's words lie in the committed zone");
+            }
+        }
+    }
+
+    /// Points the dispatching rows' word of the body at `index`, if it is
+    /// a method's lean body, at the block of `id`, the code id its body
+    /// has now -- or, given none, at the vacant block -- and writes the
+    /// block from the body's copies (`write_dispatching_rows`): with its
+    /// budget word, at install and afresh after every full collection,
+    /// which may have freed the id the block was the block of and minted
+    /// it for another body. Only the lean body its slot names takes the
+    /// block, so that no other body's word writes a block the named one
+    /// owns.
+    #[cfg(ns_jit)]
+    fn point_dispatching_rows(&mut self, index: u32, id: Option<usize>) {
+        let Some(body) = self.live_body(index) else {
+            return;
+        };
+        if body.dispatching.is_none() {
+            return;
+        }
+        let named = body
+            .code
+            .upgrade()
+            .is_some_and(|code| self.named_body(&code) == Some(index as usize));
+        let rows = match id.filter(|_| named) {
+            Some(id) => self.copies_table().block_address(id),
+            None => self.copies_table().vacant_address(),
+        };
+        self.write_dispatching_words(index, Some(rows), None);
+        self.write_dispatching_rows(index);
+    }
+
+    /// Writes the dispatching rows of the lean body at `lean` from the
+    /// optimized copies its slot names beside it, at most
+    /// `DISPATCHING_ROWS` of them, in the block its word names: the one
+    /// way a block is written, called wherever a copy is installed or
+    /// freed and after a compaction moved the copies. Nothing is written
+    /// for a body its slot does not name, nor into the vacant block.
+    #[cfg(ns_jit)]
+    fn write_dispatching_rows(&mut self, lean: u32) {
+        let Some(address) = self
+            .live_body(lean)
+            .and_then(|body| body.dispatching)
+            .map(|dispatching| dispatching.rows)
+        else {
+            return;
+        };
+        let rows = self.dispatching_rows_of(lean);
+        self.copies_table().write(address, &rows);
+    }
+
+    /// What the dispatching rows of the lean body at `lean` should hold:
+    /// for each customized copy its slot names beside it, in order, the
+    /// receiver's dispatch id and entered application word of its key and
+    /// its machine entry.
+    #[cfg(ns_jit)]
+    fn dispatching_rows_of(&self, lean: u32) -> Vec<crate::heap::optimized_copies::Row> {
+        let Some(zone) = self.zone.as_ref() else {
+            return Vec::new();
+        };
+        let Some(code) = self
+            .bodies
+            .get(lean as usize)
+            .and_then(|body| body.code.upgrade())
+        else {
+            return Vec::new();
+        };
+        self.optimized_copies_of(lean)
+            .into_iter()
+            .filter_map(|index| {
+                let body = &self.bodies[index as usize];
+                let row = code.jit.copy_row(body.key?)?;
+                Some([
+                    u64::from(row.key.receiver.bits()),
+                    row.entered_word,
+                    zone.writer
+                        .zone()
+                        .executable_address(CodeOffset(body.start)) as u64,
+                ])
+            })
+            .take(crate::heap::optimized_copies::DISPATCHING_ROWS)
+            .collect()
+    }
+
+    /// The address of the dispatching entry of `code`'s lean body, when
+    /// it has machine code here and is a method's.
+    #[cfg(ns_jit)]
+    fn dispatching_entry_address(&self, code: &CompiledCode) -> Option<u64> {
+        let index = self.named_body(code)?;
+        let body = &self.bodies[index];
+        let entry = body.dispatching?.entry;
+        let zone = self.zone.as_ref()?;
+        Some(
+            zone.writer
+                .zone()
+                .executable_address(CodeOffset(body.start + entry)) as u64,
+        )
+    }
+
     /// The innermost frame the last exit's walk materialized, taken, and
     /// whether it stood in optimized code.
     pub(crate) fn take_walked(&mut self) -> Option<(ActivationReference, bool)> {
@@ -2263,6 +2441,8 @@ impl JitState {
             deoptimization_rotation: 0,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
+            #[cfg(ns_jit)]
+            optimized_copies: None,
         }
     }
 }
@@ -2438,6 +2618,7 @@ fn zone_with_paddings(
         cut_stub: CodeOffset(0),
         polymorphic_stub: CodeOffset(0),
         megamorphic_stub: CodeOffset(0),
+        dispatching_stub: CodeOffset(0),
         accessors: AccessorStubs {
             getters: Vec::new(),
             setters: Vec::new(),
@@ -2477,6 +2658,11 @@ fn zone_with_paddings(
     zone.megamorphic_stub = install(
         &mut zone,
         &targets::assemble_megamorphic_stub(Abi::host()).bytes,
+    )
+    .ok()?;
+    zone.dispatching_stub = install(
+        &mut zone,
+        &targets::assemble_dispatching_stub(Abi::host()).bytes,
     )
     .ok()?;
     let (accessors, entries) = targets::assemble_accessor_stubs(Abi::host());
@@ -2602,7 +2788,10 @@ fn install_aligned(zone: &mut Zone, bytes: &[u8], alignment: u32) -> Result<Code
 /// the copy customized for the receiver's application and the one the
 /// target's level names above it, once there is one
 /// (`receiver_guarded_copy`), and the body's baseline code before; behind
-/// any other guard the baseline code -- and through the
+/// a `super` or private lexical guard, S's or N's application word, the
+/// body's dispatching entry once it has a customized copy, which finds
+/// the receiver's (`dispatching_entry`); behind any other guard the
+/// baseline code -- and through the
 /// miss stub while its body may still be compiled, which compiles it and
 /// rewrites the site's cell (`inline_cache::decide_at`). A factory's
 /// body is reached the same way.
@@ -2671,6 +2860,56 @@ fn receiver_guarded_copy<'state>(
     state.copy_of(code, key)
 }
 
+/// The dispatching entry of `code`'s lean body that a cell guarded on
+/// `chain` names for a method target found against `feedback_base`,
+/// raising the body's usage when `noting`: only
+/// a `super` or private lexical chain's guard is the application word of
+/// the class its chain starts at, which tells nothing of the receiver, so
+/// such a cell names the entry once the body has a customized copy, and
+/// its baseline code before (`targets::assemble_dispatching_stub`). The
+/// entry lies in the lean body, whose usage the cell raises as a cell
+/// naming its start does, and which a compaction moves it with.
+#[cfg(ns_jit)]
+fn dispatching_entry(
+    state: &JitState,
+    code: &CompiledCode,
+    (chain, feedback_base): (crate::interpreter::resolve::Chain, FeedbackBase),
+    noting: bool,
+) -> Option<u64> {
+    use crate::interpreter::resolve::Chain;
+    if !matches!(chain, Chain::Private | Chain::Super) || !code.jit.has_copies() {
+        return None;
+    }
+    let lean = state.installed(code)?;
+    if lean.feedback_base != feedback_base || lean.dispatching.is_none() {
+        return None;
+    }
+    let has_a_copy = code
+        .jit
+        .copies
+        .borrow()
+        .iter()
+        .any(|copy| copy.body != NO_BODY && state.copy_of(code, copy.key).is_some());
+    if !has_a_copy {
+        return None;
+    }
+    if noting {
+        lean.note_linked();
+    }
+    state.dispatching_entry_address(code)
+}
+
+/// No body has a dispatching entry without a JIT.
+#[cfg(not(ns_jit))]
+fn dispatching_entry(
+    _state: &JitState,
+    _code: &CompiledCode,
+    _target: (crate::interpreter::resolve::Chain, FeedbackBase),
+    _noting: bool,
+) -> Option<u64> {
+    None
+}
+
 /// `cell_entry_for`, raising the usage of the body it answers the
 /// machine entry of when `noting`.
 fn entry_of_target(
@@ -2694,6 +2933,11 @@ fn entry_of_target(
             chain,
             level,
         } if runs_in_machine_code(method, *chain) => {
+            if let Some(entry) =
+                dispatching_entry(state, &method.code, (*chain, *feedback_base), noting)
+            {
+                return entry;
+            }
             let body = receiver_guarded_copy(state, &method.code, guard, *chain, *level)
                 .or_else(|| state.entered_body(&method.code, None))
                 .filter(|body| body.feedback_base == *feedback_base);
@@ -2997,6 +3241,15 @@ impl JitState {
     pub(crate) fn refusing_stub_address(&self) -> u64 {
         self.zone.as_ref().map_or(0, |zone| {
             zone.writer.zone().executable_address(zone.refusing_stub) as u64
+        })
+    }
+
+    /// The address of the shared tail of every method body's dispatching
+    /// entry (`targets::assemble_dispatching_stub`), 0 where there is no
+    /// zone.
+    pub(crate) fn dispatching_stub_address(&self) -> u64 {
+        self.zone.as_ref().map_or(0, |zone| {
+            zone.writer.zone().executable_address(zone.dispatching_stub) as u64
         })
     }
 
@@ -3639,6 +3892,22 @@ fn install_body(
     });
     let unpointed = budget_word.map(|_| state.unpointed_budget_address());
     let push_entry = body.map.machine_offset(0).unwrap_or(0);
+    let word_offset = |word: usize| {
+        let Some(offset) = u32::try_from(word)
+            .ok()
+            .and_then(|word| word.checked_mul(8))
+            .and_then(|bytes| bytes.checked_add(words))
+        else {
+            unreachable!("internal: a body's data words lie within its bytes");
+        };
+        offset
+    };
+    let dispatching = body.dispatching.map(|dispatching| InstalledDispatching {
+        entry: dispatching.entry,
+        rows_word: word_offset(dispatching.rows_word),
+        tail_word: word_offset(dispatching.tail_word),
+        rows: 0,
+    });
     state.bodies.push(InstalledBody {
         code: Rc::downgrade(code),
         method: method.map(Rc::downgrade),
@@ -3668,6 +3937,7 @@ fn install_body(
         exits: Cell::new(0),
         optimized_needed: 0,
         key: None,
+        dispatching,
     });
     // Until it is pointed at its row the code spends from the unpointed
     // budget, whose first spend calls the leaf: the word is never one the
@@ -3675,6 +3945,14 @@ fn install_body(
     if let Some(unpointed) = unpointed {
         state.write_budget_word(map, unpointed);
         state.budget_words_to_point.push(map);
+    }
+    // Likewise its dispatching entry finds no copy until its word is
+    // pointed with the budget's (`point_budget_word`); the tail never
+    // moves.
+    if dispatching.is_some() {
+        let vacant = state.copies_table().vacant_address();
+        let tail = state.dispatching_stub_address();
+        state.write_dispatching_words(map, Some(vacant), Some(tail));
     }
     Ok(map)
 }
@@ -3849,6 +4127,9 @@ pub(crate) fn point_budget_words_after_collection(
         let index = u32::try_from(index).expect("internal: a body's index fits a u32");
         if !point_budget_word(mutator, index, Some(carried)) {
             mutator.jit.write_budget_word(index, unpointed);
+            // A dead body's word may name a block whose id was minted for
+            // another body.
+            mutator.jit.point_dispatching_rows(index, None);
         }
     }
 }
@@ -3864,7 +4145,9 @@ pub(crate) fn point_budget_words_after_collection(
 /// Points the budget word of the body at `index` in `bodies` at the row
 /// of the id its body has now -- the sink for an id past the table --
 /// arming the row unless it is armed already: with what `carried` keeps
-/// for the body across a collection, or else the state's budget. Answers
+/// for the body across a collection, or else the state's budget; and a
+/// method's lean body's dispatching rows' word at the block of the same
+/// id (`JitState::point_dispatching_rows`), for the same reason. Answers
 /// whether the body lives to have a row.
 #[cfg(ns_jit)]
 fn point_budget_word(
@@ -3888,6 +4171,9 @@ fn point_budget_word(
         mutator.heap.arm_optimization_budget(budget.id, left);
     }
     mutator.jit.write_budget_word(index, budget.address);
+    mutator
+        .jit
+        .point_dispatching_rows(index, Some(budget.id.index()));
     true
 }
 
@@ -4003,6 +4289,11 @@ fn request_copy(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, frame_addres
         Some(_) => {}
         None => {
             let level = current_class.and_then(|class| levels_to(mutator, receiver, class));
+            // A key exists only for a class of an application, whose
+            // class objects hold its word.
+            let entered_word = current_class
+                .and_then(|class| mutator.heap.class_application_word(class))
+                .unwrap_or(crate::heap::optimized_copies::VACANT);
             code.jit.copies.borrow_mut().push(CustomizedCopy {
                 key,
                 body: NO_BODY,
@@ -4010,6 +4301,7 @@ fn request_copy(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, frame_addres
                 traps: 0,
                 refused: false,
                 level,
+                entered_word,
             });
         }
     }
@@ -4203,6 +4495,7 @@ fn optimize(
         Some(key) => {
             code.jit.set_copy_body(key, index);
             mutator.jit.statistics.customized_copies += 1;
+            mutator.jit.write_dispatching_rows(lean);
         }
     }
     mutator.jit.statistics.optimized_bodies += 1;
@@ -4287,6 +4580,7 @@ fn install_optimized(
         words,
         twin_transfers,
         budget_word: None,
+        dispatching: None,
     };
     let needed = needed_bytes(&body);
     let index = install_body(
@@ -5032,6 +5326,7 @@ fn prepared_block(
     if mutator.jit.counting {
         block.set(BlockWord::BackEdges.index(), 0);
         block.set(BlockWord::CompiledCalls.index(), 0);
+        block.set(BlockWord::DispatchedCalls.index(), 0);
     }
     block
 }
@@ -5065,6 +5360,7 @@ fn enter_block(
     if mutator.jit.counting {
         mutator.jit.statistics.machine_back_edges += block.get(BlockWord::BackEdges.index());
         mutator.jit.statistics.compiled_calls += block.get(BlockWord::CompiledCalls.index());
+        mutator.jit.statistics.dispatched_calls += block.get(BlockWord::DispatchedCalls.index());
     }
     kind
 }
@@ -5310,6 +5606,11 @@ fn abandon_optimized(
         let entry = zone.writer.zone().executable_address(CodeOffset(start)) as u64;
         mutator.caches.refresh_cells_entering(entry, &mutator.jit);
     }
+    // A `super` or private lexical cell names the body's dispatching
+    // entry only while the body has a copy.
+    if let Some(entry) = mutator.jit.dispatching_entry_address(code) {
+        mutator.caches.refresh_cells_entering(entry, &mutator.jit);
+    }
     if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
         note_block_entry(mutator, id, code);
     }
@@ -5391,9 +5692,13 @@ impl JitState {
         let Some(lean) = self.installed(code).map(|_| code.jit.map.get()) else {
             return Vec::new();
         };
+        let dispatching = self.bodies[lean as usize]
+            .dispatching
+            .map(|dispatching| self.bodies[lean as usize].start + dispatching.entry);
         let starts: Vec<u32> = std::iter::once(lean)
             .chain(self.optimized_copies_of(lean))
             .map(|index| self.bodies[index as usize].start)
+            .chain(dispatching)
             .collect();
         self.free_body(code.jit.map.get());
         let Some(zone) = self.zone.as_ref() else {
@@ -6537,7 +6842,7 @@ mod tests {
         /// application and the application the level reaches above it --
         /// and the baseline code while that key has no copy; a `super`
         /// cell, whose guard tells nothing of the receiver, names the
-        /// baseline code whatever copies there are.
+        /// body's dispatching entry once it has a copy.
         #[test]
         fn a_receiver_guarded_cell_names_its_copy() {
             use crate::interpreter::inline_cache::{CacheEntry, Target};
@@ -6603,10 +6908,13 @@ mod tests {
                     };
                     let a_copy = copy(a_id).expect("A's copy");
                     assert_eq!(cell_entry(jit, &entry(a_id, 0, Chain::Public)), a_copy);
+                    // A `super` cell's guard says nothing of the receiver:
+                    // it names the body's dispatching entry, which the
+                    // receiver's copy is reached through.
                     assert_eq!(
-                        cell_entry(jit, &entry(a_id, 0, Chain::Super)),
-                        baseline,
-                        "a super cell names the baseline code"
+                        Some(cell_entry(jit, &entry(a_id, 0, Chain::Super))),
+                        jit.dispatching_entry_address(&code),
+                        "a super cell names the dispatching entry"
                     );
                     match copy(b_id) {
                         Some(b_copy) => {
@@ -7280,6 +7588,7 @@ mod cross_assembly_tests {
             ("refusing", stubs::assemble_refusing_stub(abi)),
             ("polymorphic", targets::assemble_polymorphic_stub(abi)),
             ("megamorphic", targets::assemble_megamorphic_stub(abi)),
+            ("dispatching", targets::assemble_dispatching_stub(abi)),
         ];
         for (name, assembled) in &stubs {
             assert_instructions(name, &assembled.bytes);
