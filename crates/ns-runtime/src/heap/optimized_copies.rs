@@ -35,7 +35,10 @@
 use ns_memory::Reservation;
 
 /// The rows a body's block holds: a copy past them is entered by a
-/// receiver-guarded cell, the push and the call stub only.
+/// receiver-guarded cell, the push, and the call stub only through the
+/// key's lookup on the Rust side, which an interpreted send into a body
+/// with more installed copies than rows takes (`jit::called`); one into a
+/// body with no more enters the dispatching entry.
 pub(crate) const DISPATCHING_ROWS: usize = 8;
 
 /// The words of a row, in order.

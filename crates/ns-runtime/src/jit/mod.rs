@@ -923,6 +923,18 @@ impl JitSlot {
         self.copies.borrow().iter().any(|copy| copy.body != NO_BODY)
     }
 
+    /// How many keys' rows name an installed copy, a freed one whose row
+    /// still names it included: at most `DISPATCHING_ROWS` of them stand
+    /// in the body's dispatching rows.
+    #[inline]
+    fn installed_copies(&self) -> usize {
+        self.copies
+            .borrow()
+            .iter()
+            .filter(|copy| copy.body != NO_BODY)
+            .count()
+    }
+
     /// The row for `key`, copied out.
     fn copy_row(&self, key: CustomizationKey) -> Option<CustomizedCopy> {
         self.copies
@@ -3331,17 +3343,21 @@ fn dispatching_entry(
 }
 
 /// The dispatching entry `called` enters `code`'s lean body at, compiled
-/// against `feedback_base`, while a row names an installed copy: no row
-/// is looked at further, since a row whose copy is gone stands in no
-/// dispatching row and so sends the call to the baseline code, which is
-/// what the call would enter without it. No cell is written from it.
+/// against `feedback_base`, while one to `DISPATCHING_ROWS` keys' rows
+/// name an installed copy, so that every installed copy stands in a
+/// dispatching row: no row is looked at further, since a row whose copy
+/// is gone stands in no dispatching row and so sends the call to the
+/// baseline code, which is what the call would enter without it. A body
+/// with more copies is called through the key's lookup instead, which
+/// reaches every copy (`called`). No cell is written from it.
 #[cfg(ns_jit)]
 fn called_dispatching_entry(
     state: &JitState,
     code: &CompiledCode,
     feedback_base: FeedbackBase,
 ) -> Option<u64> {
-    if !code.jit.has_installed_copy() {
+    let copies = code.jit.installed_copies();
+    if copies == 0 || copies > crate::heap::optimized_copies::DISPATCHING_ROWS {
         return None;
     }
     let lean = state.installed(code)?;
@@ -3805,7 +3821,7 @@ impl JitState {
     /// frame, so that whoever enters at the start needs no other change.
     /// Inline, since an interpreted send into machine code asks it on
     /// every call (`jit::called`), almost always without a key: a call
-    /// out of line cost CD 0.4% of its cycles, a body without copies
+    /// out of line took 0.4% of CD's samples, a body without copies
     /// included.
     #[inline]
     fn entered_body(
@@ -5641,9 +5657,13 @@ pub(crate) fn called<'gc>(
     // A body with a customized copy is called at its dispatching entry,
     // whose rows find the receiver's copy in machine code, as a `super` or
     // private lexical site's cell does: the key's lookups on this side
-    // cost CD 1.6% of its cycles, on its interpreted sends alone.
-    let machine_entry = called_dispatching_entry(&mutator.jit, code, feedback_base)
-        .or_else(|| machine_entry_address(&mutator.jit, code, feedback_base, None));
+    // took 1.4% of CD's samples, on its interpreted sends alone. A body
+    // with more copies than its rows hold takes the lookup, which reaches
+    // every copy, and a body with none enters its code without a key.
+    let machine_entry = called_dispatching_entry(&mutator.jit, code, feedback_base).or_else(|| {
+        let key = entry_key(&mutator.heap, code, receiver, Some(defining_class));
+        machine_entry_address(&mutator.jit, code, feedback_base, key)
+    });
     let Some(machine_entry) = machine_entry else {
         return Called::Refused;
     };

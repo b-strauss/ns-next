@@ -851,7 +851,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     polymorphic stub and the row stubs they call took 6.8% more, their
     type tests mispredicting more often behind an optimized caller, so
     the program ran level with a build that optimizes nothing. The
-    second stage's customized copies run it about 1.7% ahead of its
+    second stage's customized copies run it about 2% ahead of its
     baseline code (2026-11-06), but its sends still go through the same
     cells and shared stubs, since send sites do not speculate before
     stage 3's type-cases, and the mispredictions were not measured

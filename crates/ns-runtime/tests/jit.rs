@@ -1767,11 +1767,10 @@ ns_runtime::for_each_lowering! {
         let (rows, copies) = dispatching_entries(&mut interpreter, &base_class, "sum");
         assert_eq!(copies.len(), 2);
         assert_eq!(rows, copies, "a row for each copy");
-        // The reference lowering's sends are uncached: no cell names the
-        // entry.
-        if lowering == Lowering::Optimized {
-            assert!(interpreter.jit_statistics().dispatched_calls > 0);
-        }
+        // The optimized lowering's cell names the entry; the reference
+        // lowering's sends are uncached, and its interpreted send enters
+        // the entry through the call stub (`jit::called`).
+        assert!(interpreter.jit_statistics().dispatched_calls > 0);
     }
 }
 
@@ -1846,11 +1845,234 @@ ns_runtime::for_each_lowering! {
         let (rows, copies) = dispatching_entries(&mut interpreter, &base_class, "total");
         assert!(!copies.is_empty(), "the body has a copy");
         assert_eq!(rows, copies, "a row for each copy");
-        // The reference lowering's sends are uncached: no cell names the
-        // entry.
-        if lowering == Lowering::Optimized {
-            assert!(interpreter.jit_statistics().dispatched_calls > 0);
+        // The optimized lowering's cell names the entry; the reference
+        // lowering's sends are uncached, and its interpreted send enters
+        // the entry through the call stub (`jit::called`).
+        assert!(interpreter.jit_statistics().dispatched_calls > 0);
+    }
+}
+
+/// `pick:`, a method of `A` that answers `other` when its argument is
+/// `true` and sums a loop otherwise, run on `B1` to `B9`, nine subclasses
+/// of `A` and so nine receivers' applications: each its own copy, whose
+/// `other` site, never executed while the argument was `false`, traps.
+/// A method entered once, its first entry interpreted, sends `pick:` as
+/// an interpreted send, which calls the body through the call stub
+/// (`jit::called`); so does every send under the reference lowering,
+/// whose sends are uncached.
+const PICK_ON_NINE_APPLICATIONS: &str = indoc! {"
+    class Subject = Object new (
+      |
+        receivers = {B1 new. B2 new. B3 new. B4 new. B5 new. B6 new. B7 new. B8 new. B9 new}.
+        chosen ::= 1.
+      |
+    ) (
+      class A = Object new () (
+        public pick: flag = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          flag ifTrue: [^self other].
+          [index < 100] whileTrue: [
+            sum:: sum + index.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+
+        public other = (
+          ^7.
+        )
+      )
+
+      class B1 = A new () ()
+
+      class B2 = A new () ()
+
+      class B3 = A new () ()
+
+      class B4 = A new () ()
+
+      class B5 = A new () ()
+
+      class B6 = A new () ()
+
+      class B7 = A new () ()
+
+      class B8 = A new () ()
+
+      class B9 = A new () ()
+
+      class C = A new () ()
+
+      public aClass = (
+        ^A.
+      )
+
+      public pickTwo = (
+        ^((receivers at: 1) pick: false) + ((receivers at: 2) pick: false).
+      )
+
+      public pickAll = (
+        ^pickEach: false.
+      )
+
+      public choose: index = (
+        chosen:: index.
+      )
+
+      public pickChosenTaking = (
+        ^(receivers at: chosen) pick: true.
+      )
+
+      public pickFirstTaking = (
+        ^(receivers at: 1) pick: true.
+      )
+
+      public pickOnAnother = (
+        ^C new pick: true.
+      )
+
+      pickEach: flag = (
+        |
+          total ::= 0.
+          index ::= 1.
+        |
+        [index <= receivers size] whileTrue: [
+          total:: total + ((receivers at: index) pick: flag).
+          index:: index + 1.
+        ].
+        ^total.
+      )
+    ) : ()
+"};
+
+/// Whether a copy's trap is what a send that runs it takes: no stress
+/// mode changes the copy, and none forces the exits that would leave it
+/// before its trap.
+fn a_copy_runs_to_its_trap() -> bool {
+    counts_the_copies() && !the_stress_mode_is_on("DEOPT")
+}
+
+/// Ends `load_customizing`'s stress once its copies are made: no key is
+/// optimized from here on, and a body is compiled at its second entry
+/// again, so that a method entered once runs interpreted.
+fn stop_customizing(interpreter: &mut Interpreter) {
+    interpreter.set_optimize_stress(false);
+    interpreter.set_jit_stress(false);
+}
+
+/// An interpreted send into a body with a copy for its receiver enters
+/// the body's dispatching entry, whose rows find the copy: the answer
+/// holds, and the calls through the entry are counted.
+#[test]
+fn an_interpreted_send_reaches_its_copy_through_the_dispatching_entry() {
+    let (mut interpreter, class) = load_customizing(PICK_ON_NINE_APPLICATIONS, Lowering::Reference);
+    interpreter.set_jit_counting(true);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for _ in 0..3 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "pickTwo"), 9900);
+    }
+    if !counts_the_copies() {
+        return;
+    }
+    let base_class = class_answered(&mut interpreter, &subject, "aClass");
+    assert_eq!(
+        interpreter.jit_customized_copies(
+            &base_class,
+            MethodSide::Instance,
+            Symbol::intern("pick:")
+        ),
+        2
+    );
+    let before = interpreter.jit_statistics().dispatched_calls;
+    assert_eq!(send_unary(&mut interpreter, &subject, "pickTwo"), 9900);
+    assert!(
+        interpreter.jit_statistics().dispatched_calls >= before + 2,
+        "each interpreted send enters its copy through the entry"
+    );
+}
+
+/// An interpreted send whose receiver has no copy of a body that has
+/// copies for others finds no row and runs the baseline code, with the
+/// right answer, so that no copy traps at its `other` site; one whose
+/// receiver has a copy runs it to that trap.
+#[test]
+fn an_interpreted_send_without_a_copy_runs_the_baseline_code() {
+    let (mut interpreter, class) = load_customizing(PICK_ON_NINE_APPLICATIONS, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for _ in 0..3 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "pickTwo"), 9900);
+    }
+    // No copy is made for a `C`, whose first send spends no budget now.
+    stop_customizing(&mut interpreter);
+    let before = interpreter.jit_statistics().traps;
+    assert_eq!(send_unary(&mut interpreter, &subject, "pickOnAnother"), 7);
+    let between = interpreter.jit_statistics().traps;
+    assert_eq!(send_unary(&mut interpreter, &subject, "pickFirstTaking"), 7);
+    if !a_copy_runs_to_its_trap() {
+        return;
+    }
+    let base_class = class_answered(&mut interpreter, &subject, "aClass");
+    assert_eq!(
+        interpreter.jit_customized_copies(
+            &base_class,
+            MethodSide::Instance,
+            Symbol::intern("pick:")
+        ),
+        2
+    );
+    assert_eq!(between, before, "no copy ran the send on a `C`");
+    assert_eq!(
+        interpreter.jit_statistics().traps,
+        between + 1,
+        "a `B1`'s copy ran the send on a `B1`"
+    );
+}
+
+/// A body with more copies than its dispatching rows hold: an interpreted
+/// send reaches every receiver's copy all the same, the one past the
+/// eighth row too, by the key's lookup. Each receiver is tried in an
+/// interpreter of its own, with all nine copies installed, since a
+/// second trap at the `other` site makes the copy that takes it not
+/// entrant: the copy runs to its trap there, which the baseline code a
+/// send past the rows would run does not take.
+#[test]
+fn an_interpreted_send_reaches_a_copy_past_the_dispatching_rows() {
+    for index in 1..=9 {
+        let (mut interpreter, class) =
+            load_customizing(PICK_ON_NINE_APPLICATIONS, Lowering::Optimized);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "pickAll"), 44550);
         }
+        stop_customizing(&mut interpreter);
+        let chosen = interpreter.enter(|mutator| mutator.stash(Value::small_integer(index)));
+        expect_ok(
+            interpreter.send(&subject, Symbol::intern("choose:"), &[chosen]),
+            "choose:",
+        );
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
+        let copies = interpreter.jit_customized_copies(
+            &base_class,
+            MethodSide::Instance,
+            Symbol::intern("pick:"),
+        );
+        let before = interpreter.jit_statistics().traps;
+        assert_eq!(
+            send_unary(&mut interpreter, &subject, "pickChosenTaking"),
+            7
+        );
+        if !a_copy_runs_to_its_trap() {
+            continue;
+        }
+        assert_eq!(copies, 9, "a copy for each receiver");
+        assert_eq!(
+            interpreter.jit_statistics().traps,
+            before + 1,
+            "the send on receiver {index} ran its copy"
+        );
     }
 }
 

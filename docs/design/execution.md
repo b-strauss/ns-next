@@ -8901,10 +8901,11 @@ builds apart. What each difference is:
   body with an installed copy enters the body's dispatching entry
   (`jit::called_dispatching_entry`), whose rows find the receiver's copy
   in machine code as a `super` or private lexical site's cell does
-  (`dispatched_calls` counts both), any other enters its baseline or
-  uncustomized code by `entered_body`, inline again, and a key is
-  computed only for a body with an installed copy
-  (`JitSlot::has_installed_copy`). Measured on build a alone, CD went
+  (`dispatched_calls` counts both) -- unless it has more copies than
+  the eight rows hold, which takes the lookup, so that every copy stays
+  reachable -- any other enters its baseline or uncustomized code by
+  `entered_body`, inline again, and a key is computed only for a body
+  with an installed copy (`JitSlot::has_installed_copy`). Measured on build a alone, CD went
   from about +2.5% to about +1% over these steps, and the final measurement has
   it +0.8%, its builds overlapping; the samples still above `master`'s
   are spread over the exit and cell-refresh paths CD's churn runs
@@ -8929,7 +8930,8 @@ builds apart. What each difference is:
 - **DeltaBlueTon80's optimized code now runs ahead of its baseline
   code.** At 200 iterations, three rounds, the branch's build a runs it
   in 1.679 to 1.692 ms against 1.711 to 1.847 for this tree with the
-  optimizer off, about 1.7% faster, where `master` ran level with its
+  optimizer off, about 2.0% faster at the medians (1.680 against
+  1.714), where `master` ran level with its
   own (1.712 to 1.726 against 1.706 to 1.711) as stage 1 found. Its
   sends still go through the same cells and shared stubs as baseline
   code's, since send sites do not speculate in this stage ("Speculation
@@ -11744,11 +11746,14 @@ class's application with the rows of the body's table of copies, a
 reservation of its own as the machine entry table is, and jumps into
 the copy whose row matches, or into the baseline code. Every receiver of
 such a site so reaches its copy, for one indirect jump more at these
-sites only; the cell's entry stays a function of its target and the
-JIT's state. An interpreter's send into a body with an installed copy
-enters the same dispatching entry (`jit::called`), which writes no
-cell: finding the receiver's key there on the Rust side, on every call,
-cost CD 1.4% of its samples ("What speculation moved").
+sites; the cell's entry stays a function of its target and the JIT's
+state. An interpreter's send into a body with one to eight installed
+copies, as many as its rows hold (`DISPATCHING_ROWS`), enters the same
+dispatching entry (`jit::called`), which writes no cell: finding the
+receiver's key there on the Rust side, on every call, took 1.4% of CD's
+samples ("What speculation moved"). A body with more copies is called
+through that lookup, which reaches every copy, where the rows would
+send a receiver past the eighth to the baseline code.
 
 **A block body is not customized** (decided with the user on
 2026-11-06): it has one optimized copy, whose slot accesses keep their
