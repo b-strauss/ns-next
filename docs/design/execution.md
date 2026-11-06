@@ -11230,6 +11230,18 @@ each abandonment, at most `MAXIMUM_REVIVAL_DOUBLINGS` times
 after uncommon traps. The decay at every collection halves the
 abandonments with the exits (`JitSlot::decay_exits`). An exit of
 baseline code abandons the body as before, its optimized code with it.
+**An exit that says nothing of the code counts against neither
+budget**: the deopt stress mode's forced exits, and a push a callee's
+prologue refused at the depth limit word while a real safepoint request
+stands -- the request lowered the word to 0, and it is often the
+optimization request of a callee whose budget just ran out, so that,
+counted, it would abandon a hot caller of callees optimized one after
+another. The prologue's refusal names itself in the exit
+(`stubs::REFUSED_AT_THE_BOUND`) and `resumption_after_exit` reads
+whether a real request stands (`Heap::real_safepoint_requested`); the
+interpreter's push at the safepoint decides the depth limit, and a
+refusal at the word with no request standing is a real overflow and
+counts, as a stub's refusal and one past the stack's room do.
 The code zone frees optimized code whenever it frees its baseline body,
 and with it; a compaction moves each copy on its own and judges the pair
 by its more used copy, since the cells and the row raise the optimized
@@ -11268,10 +11280,7 @@ its first back edge. The zone stress mode's compactions alternate:
 every other one keeps every body that has optimized code and slides it
 with the rest, so that a callee's optimized code, installed while the
 callee still ran its baseline code, is moved, run where it now lies and
-then freed and compiled again; a long caller of churned callees is
-abandoned under the mode before its optimized code runs
-([OPEN-WORK.md](../OPEN-WORK.md), "Under the zone stress mode a caller
-of churned callees is abandoned before its optimized code runs"). Every golden under
+then freed and compiled again. Every golden under
 `goldens/runtime/optimizer/` optimizes its hot body in a plain run --
 sends, a closure, a non-local return, an overflow, allocation, an
 exception through the frame, the depth limit, a mixin applied twice and

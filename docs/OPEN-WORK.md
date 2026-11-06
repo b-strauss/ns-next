@@ -506,8 +506,9 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     callee's own prologue refuses -- at the depth limit's bound, which
     the machine words' `DepthLimit` keeps at L while a
     `doesNotUnderstand:` handler holds the reserve -- answers
-    `Called::Refused`, and the interpreter pushes the callee; neither the
-    exit budget nor any statistic counts it (`jit::called`). So a
+    `Called::Refused`, and the interpreter pushes the callee; no exit
+    budget counts it, only the statistics' `exits` and `pushes_refused`
+    (`jit::called`). So a
     recursion that stays at the bound pays a round trip through the call
     stub on every send that no budget stops: correct, only slow
     ([execution.md](design/execution.md), "The entry at a send", "A
@@ -826,25 +827,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     JIT", "Speculation and its failure").
     [execution.md](design/execution.md), "The optimizing tier's
     foundation", "Exits, abandonment and the code zone".
-  - **Under the zone stress mode a caller of churned callees is
-    abandoned before its optimized code runs** (2026-11-06). The mode
-    frees every body no activation runs at every other compaction --
-    the compactions between keep every body that has optimized code and
-    slide it (`Mutator::compact_code_zone_for_stress`) -- and holds the
-    safepoint request. A loop that sends a callee at every turn polls at
-    every back edge, where the callee, idle, is freed often enough that
-    its sends miss and its pushes are refused at the held request: exits
-    of the caller's baseline code, which spend its `EXIT_BUDGET` within
-    some twenty turns and abandon it, its optimized code with it. Over
-    `LONG_OPTIMIZED_LOOP` (`crates/ns-runtime/tests/jit.rs`) 192 pushes
-    are refused, two bodies abandoned and no optimized exit taken, so
-    `the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation`
-    skips its counts under the mode
-    (`the_zone_stress_mode_abandons_a_caller_of_churned_callees`).
-    Callees' optimized code is moved and run under it (over
-    `SUM_OF_SQUARES_BY_SENDS`, 6,667 forced exits); a long caller's is
-    not. [execution.md](design/execution.md), "The optimizing tier's
-    foundation", "Verification".
   - **What the first stage's reviews left** (2026-11-05), none a wrong
     answer, each in `crates/ns-runtime/src/jit/`:
     - *Costs*: `sends::call_slots`' path for an instruction that is no

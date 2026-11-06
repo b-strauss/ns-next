@@ -6968,9 +6968,13 @@ whose compaction frees a callee's optimized code before the next call
 enters it -- which `16cb8660` fixes in the tests. `e7192d62` makes every
 other zone stress compaction keep and slide every body that has
 optimized code, so that a callee's optimized code is moved and then run
-under the mode (6,667 forced exits where there were none); a long caller
-of churned callees is still abandoned under it before its optimized code
-runs.
+under the mode (6,667 forced exits where there were none). `c5bd9f36`
+counts a push refused for a pending safepoint request against no caller,
+since it says nothing of the caller's code: a caller of callees
+optimized one after another paid one exit per request and could be
+abandoned, which also kept a long caller's optimized code from running
+under the zone mode; the optimizer's counters over the twenty-seven
+sources, abandonments included, are unchanged by it.
 
 - `2853c0ba` -- the plan.
 - `7c712ad2`, `dea20a31` -- the snapshot and `BodyFacts`.
@@ -6990,14 +6994,17 @@ runs.
   sends, the loop head's rule, the budgets chosen, the leaf's frame
   lookup, and the fixes its reviews found.
 - `16cb8660` -- the optimizer's tests under the other stress modes.
-- `ce2502dc`, `e7192d62` -- every other zone stress compaction slides
-  optimized code instead of freeing it.
+- `ce2502dc`, `e7192d62` -- the zone stress mode's sparing of optimized
+  code, first tried as a list of the code installed at a safepoint
+  (`ce2502dc`, replaced), then alternated: every other compaction slides
+  optimized code instead of freeing it (`e7192d62`).
+- `c5bd9f36` -- a push refused for a pending safepoint request counts
+  against no caller.
 - The documents' commit after them.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 fallback-merge phis, the back-off the decay can hold at twice the
-budget, the long caller the zone stress mode abandons before its
-optimized code runs,
+budget,
 `bench_recursion`'s depth-count chain, DeltaBlueTon80's mispredicting
 stubs, the budget a compaction forgets, the reviews' smaller items, and
 road step 9's second stage, speculation, next.
