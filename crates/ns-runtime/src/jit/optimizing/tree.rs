@@ -7,11 +7,14 @@
 //! the snapshot is, so that the inlining plan and the graph read nothing
 //! the interpreter can change.
 //!
-//! The tree is taken eagerly, down to whatever an inlining plan with the
-//! callee limit `weight_limit` could take: a callee heavier than it is
-//! recorded as `CalleeFacts::Other` and not walked into, and every other
-//! body is walked once, whatever number of sites reach it, so that
-//! recursion ends.
+//! The tree is taken down to whatever the inlining plan under `limits`
+//! could take, and no further: a method callee heavier than the most its
+//! limit can grow to at its site, or whose chain's accumulated weight
+//! would pass the compile's limit, or whose frame would pass the
+//! register ceiling where it lies, is recorded as `CalleeFacts::Other`
+//! and not walked into. The bodies are walked lightest chain first, so
+//! that a body reached by several chains is walked once, from its
+//! lightest, and recursion ends.
 #![cfg_attr(
     not(test),
     expect(
@@ -20,31 +23,36 @@
     )
 )]
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
-use crate::bytecode::{CompiledCode, Instruction};
+use crate::bytecode::{CompiledCode, Instruction, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId, Heap};
 use crate::interpreter::inline_cache::{
     CacheEntry, FeedbackBase, InlineCaches, SiteEntries, Target,
 };
+use crate::interpreter::resolve::Chain;
 use crate::mixin::{AccessorKind, DispatchId, MethodFastPath};
 
+use super::plan::{weight, Limits};
 use super::snapshot::{Customization, Snapshot};
 
 /// What a cache entry's guard says of the receivers it was filled for:
-/// the guard and the application it names, with the own-slot base of
-/// each level of that application's chain, the application's own first,
-/// so that an inlined method entered at any level -- the entry's `level`
-/// steps up -- reads its receiver's own slots at fixed offsets. For a
-/// public send the application is the receiver's; for a `super` or a
-/// private lexical send, whose entries are keyed by the class the send
-/// starts its lookup at, it is that class's.
+/// the guard and the application it names, with that application's
+/// chain -- its own index first, then each superclass's -- and the
+/// own-slot base of each level of it, so that an inlined method entered
+/// at any level -- the entry's `level` steps up -- reads its receiver's
+/// own slots at fixed offsets. For a public send the application is the
+/// receiver's; for a `super` or a private lexical send, whose entries
+/// are keyed by the class the send starts its lookup at, it is that
+/// class's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReceiverFacts {
     pub(crate) dispatch_id: DispatchId,
     pub(crate) application: ApplicationIndex,
+    pub(crate) applications: Vec<ApplicationIndex>,
     pub(crate) own_slot_bases: Vec<u32>,
 }
 
@@ -66,8 +74,11 @@ pub(crate) enum CalleeFacts {
     FastPath(MethodFastPath),
     /// A primitive.
     Primitive(Primitive),
-    /// What no inlining plan takes: a method heavier than the tree's
-    /// limit, a nested class's accessor, a factory.
+    /// What no inlining plan takes: a method past what the plan's limits
+    /// allow where it is sent, a nested class's accessor, a factory, and
+    /// every target a `doesNotUnderstand:` lookup found, whose activation
+    /// takes the message the send reifies rather than the send's
+    /// arguments.
     Other,
 }
 
@@ -78,102 +89,206 @@ pub(crate) enum CalleeFacts {
 /// application carries -- which a live entry never has, since a
 /// collection vacates every entry naming an id it gives back -- is
 /// recorded as megamorphic, so that no plan takes a type-case that would
-/// leave out a receiver the site saw.
+/// leave out a receiver the site saw. `private` is a lexical site's §5.9
+/// decision, which says whether its guard is N's application or the
+/// receiver's; false for every other site.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SiteCandidates {
     pub(crate) site: u32,
     pub(crate) megamorphic: bool,
+    pub(crate) private: bool,
     pub(crate) arms: Vec<(ReceiverFacts, CalleeFacts)>,
 }
 
 /// The compiled body's snapshot and what lies below it: the candidates of
 /// every send of every body walked, keyed by the body's code id and the
-/// send's call-site number, and the snapshot of every block literal of a
-/// walked body, by its code id.
+/// send's call-site number; the snapshot of every block literal of a
+/// walked body and of every method callee, by its code id; what is left
+/// of the optimization budget of each of them whose row is armed, the
+/// estimate of how often it ran (`plan`'s frequency); and, for a
+/// customized root, what its key's receiver and entered application are.
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotTree {
     pub(crate) root: Snapshot,
     pub(crate) sites: HashMap<(CodeId, u32), SiteCandidates>,
     pub(crate) blocks: HashMap<CodeId, Snapshot>,
+    pub(crate) callees: HashMap<CodeId, Snapshot>,
+    pub(crate) budgets: HashMap<CodeId, i64>,
+    pub(crate) root_receiver: Option<ReceiverFacts>,
+    pub(crate) root_entered: Option<ReceiverFacts>,
 }
 
-/// The walk's state: the tree so far, the bodies still to walk with the
-/// range their sends' cells lie in, the code ids of the bodies walked or
-/// queued, and each method callee's snapshot, taken once.
+impl SnapshotTree {
+    /// The snapshot of the body `code_id` names: the root's, a method
+    /// callee's or a block's.
+    pub(crate) fn snapshot_of(&self, code_id: CodeId) -> Option<&Snapshot> {
+        if code_id == self.root.code_id {
+            return Some(&self.root);
+        }
+        self.callees
+            .get(&code_id)
+            .or_else(|| self.blocks.get(&code_id))
+    }
+}
+
+/// A body still to walk: the weight of the lightest chain of bodies that
+/// reaches it, itself included, and the register its frame would start
+/// at in the physical frame. The queue orders it by the weight, and of
+/// two as heavy by the order they were queued in, so that the walk is
+/// deterministic.
+struct Pending {
+    chain_weight: u32,
+    offset: u32,
+    body: Rc<CompiledCode>,
+    base: FeedbackBase,
+}
+
+/// The walk's state: the tree so far, the bodies still to walk, lightest
+/// chain first, the code ids of the bodies walked or queued, and each
+/// method callee's snapshot, taken once.
 struct Walk<'caches> {
     caches: &'caches InlineCaches,
-    weight_limit: u32,
+    limits: Limits,
     tree: SnapshotTree,
-    work: Vec<(Rc<CompiledCode>, FeedbackBase)>,
+    work: BinaryHeap<Reverse<(u32, u64)>>,
+    pending: HashMap<u64, Pending>,
+    queued: u64,
     walked: HashSet<CodeId>,
-    callees: HashMap<CodeId, Snapshot>,
 }
 
 impl SnapshotTree {
     /// The tree of `code`, its sends' cells found from `feedback_base`,
     /// for the copy `customization` names: the root's snapshot is
     /// `Snapshot::take`'s, every callee is snapshotted against the range
-    /// its entry names and every block against its home's, and a method
-    /// callee of more than `weight_limit` instructions -- the measure the
-    /// inlining plan's weight is to replace -- is `CalleeFacts::Other`.
-    /// Every body and block is registered with `heap` if it was not yet.
+    /// its entry names and every block against its home's, and the walk
+    /// is bounded by what a plan under `limits` could inline (the
+    /// module's comment). Every body and block is registered with `heap`
+    /// if it was not yet.
     pub(crate) fn take(
         code: &Rc<CompiledCode>,
         heap: &mut Heap,
         caches: &InlineCaches,
         feedback_base: FeedbackBase,
         customization: Option<Customization>,
-        weight_limit: u32,
+        limits: &Limits,
     ) -> SnapshotTree {
         let root = Snapshot::take(code, heap, caches, feedback_base, customization);
+        let root_weight = weight(&root);
+        let root_receiver = customization
+            .and_then(|customization| receiver_facts(heap, customization.key.receiver));
+        let root_entered =
+            customization.and_then(|customization| receiver_facts(heap, customization.key.entered));
         let mut walk = Walk {
             caches,
-            weight_limit,
+            limits: *limits,
             walked: HashSet::from([root.code_id]),
             tree: SnapshotTree {
                 root,
                 sites: HashMap::new(),
                 blocks: HashMap::new(),
+                callees: HashMap::new(),
+                budgets: HashMap::new(),
+                root_receiver,
+                root_entered,
             },
-            work: vec![(Rc::clone(code), feedback_base)],
-            callees: HashMap::new(),
+            work: BinaryHeap::new(),
+            pending: HashMap::new(),
+            queued: 0,
         };
-        while let Some((body, base)) = walk.work.pop() {
-            walk.body(&body, base, heap);
+        walk.queue(Rc::clone(code), feedback_base, root_weight, 0);
+        while let Some(Reverse((_, order))) = walk.work.pop() {
+            let pending = walk
+                .pending
+                .remove(&order)
+                .expect("internal: every queued body is pending");
+            walk.body(&pending, heap);
         }
         walk.tree
     }
 }
 
 impl Walk<'_> {
-    /// Records the candidates of each send of `body`, whose cells lie in
-    /// the range at `base`, and snapshots each of its block literals,
-    /// queueing every body below it not walked yet.
-    fn body(&mut self, body: &Rc<CompiledCode>, base: FeedbackBase, heap: &mut Heap) {
+    fn queue(
+        &mut self,
+        body: Rc<CompiledCode>,
+        base: FeedbackBase,
+        chain_weight: u32,
+        offset: u32,
+    ) {
+        let order = self.queued;
+        self.queued += 1;
+        self.work.push(Reverse((chain_weight, order)));
+        self.pending.insert(
+            order,
+            Pending {
+                chain_weight,
+                offset,
+                body,
+                base,
+            },
+        );
+    }
+
+    /// Records the candidates of each send of the pending body and
+    /// snapshots each of its block literals, queueing every body below it
+    /// not walked yet that a plan could still inline.
+    fn body(&mut self, pending: &Pending, heap: &mut Heap) {
+        let body = &pending.body;
+        let base = pending.base;
         let body_id = heap.code_id(body);
-        for instruction in body.instructions() {
-            if let Instruction::MakeClosure { code: block, .. } = &instruction {
+        let instructions = body.instructions();
+        let block_registers = block_registers(body, &instructions);
+        for instruction in &instructions {
+            if let Instruction::MakeClosure { code: block, .. } = instruction {
                 let block_id = heap.code_id(block);
                 if self.walked.insert(block_id) {
                     // A block's sends are sites of its home's family.
                     let snapshot = Snapshot::take(block, heap, self.caches, base, None);
+                    let block_weight = pending.chain_weight.saturating_add(weight(&snapshot));
+                    self.record_budget(block, block_id, heap);
                     self.tree.blocks.insert(block_id, snapshot);
-                    self.work.push((Rc::clone(block), base));
+                    if block_weight <= self.limits.compile {
+                        self.queue(Rc::clone(block), base, block_weight, pending.offset);
+                    }
                 }
             } else if let Some(site) = instruction.call_site() {
-                let arms = match self.caches.entries_of(base, body.family_size, site) {
+                let (argument_base, sources) = instruction
+                    .argument_slots()
+                    .expect("internal: a send names its argument slots");
+                let block_arguments = sources
+                    .iter()
+                    .filter(|source| block_registers.contains(source))
+                    .count();
+                let send_site = Site {
+                    chain_weight: pending.chain_weight,
+                    offset: pending.offset + u32::from(argument_base),
+                    block_arguments: u32::try_from(block_arguments)
+                        .expect("internal: a send takes at most 255 arguments"),
+                };
+                let entries = self.caches.entries_of(base, body.family_size, site);
+                let private = match &entries {
+                    SiteEntries::Monomorphic(entry) => target_is_private(&entry.target),
+                    SiteEntries::Polymorphic(slots) => {
+                        slots.iter().any(|slot| target_is_private(&slot.target))
+                    }
+                    SiteEntries::Megamorphic | SiteEntries::Vacant => false,
+                };
+                let arms = match entries {
                     SiteEntries::Vacant => Some(Vec::new()),
                     SiteEntries::Megamorphic => None,
-                    SiteEntries::Monomorphic(entry) => self.arm(entry, heap).map(|arm| vec![arm]),
+                    SiteEntries::Monomorphic(entry) => {
+                        self.arm(entry, &send_site, heap).map(|arm| vec![arm])
+                    }
                     SiteEntries::Polymorphic(slots) => slots
                         .iter()
                         .filter(|slot| !matches!(slot.target, Target::Vacant))
-                        .map(|slot| self.arm(slot, heap))
+                        .map(|slot| self.arm(slot, &send_site, heap))
                         .collect(),
                 };
                 let candidates = SiteCandidates {
                     site: site.number,
                     megamorphic: arms.is_none(),
+                    private,
                     arms: arms.unwrap_or_default(),
                 };
                 self.tree.sites.insert((body_id, site.number), candidates);
@@ -181,11 +296,26 @@ impl Walk<'_> {
         }
     }
 
-    /// The arm of `entry`: its receiver and its callee; `None` when no
-    /// registered application carries its guard.
-    fn arm(&mut self, entry: &CacheEntry, heap: &mut Heap) -> Option<(ReceiverFacts, CalleeFacts)> {
+    /// The arm of `entry` at `send_site`: its receiver and its callee;
+    /// `None` when no registered application carries its guard.
+    fn arm(
+        &mut self,
+        entry: &CacheEntry,
+        send_site: &Site,
+        heap: &mut Heap,
+    ) -> Option<(ReceiverFacts, CalleeFacts)> {
         let receiver = receiver_facts(heap, entry.guard)?;
         let callee = match &entry.target {
+            Target::Method { chain, .. }
+            | Target::Slot { chain, .. }
+            | Target::Primitive { chain, .. }
+                if matches!(
+                    chain,
+                    Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand
+                ) =>
+            {
+                CalleeFacts::Other
+            }
             Target::Method {
                 method,
                 feedback_base,
@@ -193,13 +323,7 @@ impl Walk<'_> {
                 ..
             } => match method.fast_path {
                 Some(fast_path) => CalleeFacts::FastPath(fast_path),
-                None if method.code.instruction_count() > self.weight_limit as usize => {
-                    CalleeFacts::Other
-                }
-                None => CalleeFacts::Method {
-                    snapshot: Box::new(self.callee(&method.code, *feedback_base, heap)),
-                    level: *level,
-                },
+                None => self.method(&method.code, *feedback_base, *level, send_site, heap),
             },
             Target::Slot {
                 field, kind, level, ..
@@ -218,20 +342,106 @@ impl Walk<'_> {
         Some((receiver, callee))
     }
 
-    /// The snapshot of the method body `code`, whose family's range is at
-    /// `base`, taken once whatever number of sites reach it, the body
-    /// queued for the walk.
-    fn callee(&mut self, code: &Rc<CompiledCode>, base: FeedbackBase, heap: &mut Heap) -> Snapshot {
+    /// The method callee `code`, whose family's range is at `base`, sent
+    /// at `send_site`: its snapshot, taken once whatever number of sites reach
+    /// it, and the body queued for the walk -- or `Other` when no plan
+    /// could inline it there (the module's comment).
+    fn method(
+        &mut self,
+        code: &Rc<CompiledCode>,
+        base: FeedbackBase,
+        level: u16,
+        send_site: &Site,
+        heap: &mut Heap,
+    ) -> CalleeFacts {
         let code_id = heap.code_id(code);
-        if let Some(snapshot) = self.callees.get(&code_id) {
-            return snapshot.clone();
+        let snapshot = match self.tree.callees.get(&code_id) {
+            Some(snapshot) => snapshot.clone(),
+            None => {
+                let snapshot = Snapshot::take(code, heap, self.caches, base, None);
+                self.record_budget(code, code_id, heap);
+                self.tree.callees.insert(code_id, snapshot.clone());
+                snapshot
+            }
+        };
+        let callee_weight = weight(&snapshot);
+        let limit = self.limits.method.saturating_add(
+            self.limits
+                .block_argument_bonus
+                .saturating_mul(send_site.block_arguments),
+        );
+        let chain_weight = send_site.chain_weight.saturating_add(callee_weight);
+        let extent = send_site
+            .offset
+            .saturating_add(u32::try_from(snapshot.register_count()).unwrap_or(u32::MAX));
+        if callee_weight > limit
+            || chain_weight > self.limits.compile
+            || extent > u32::from(u16::MAX)
+        {
+            return CalleeFacts::Other;
         }
-        let snapshot = Snapshot::take(code, heap, self.caches, base, None);
-        self.callees.insert(code_id, snapshot.clone());
         if self.walked.insert(code_id) {
-            self.work.push((Rc::clone(code), base));
+            self.queue(Rc::clone(code), base, chain_weight, send_site.offset);
         }
-        snapshot
+        CalleeFacts::Method {
+            snapshot: Box::new(snapshot),
+            level,
+        }
+    }
+
+    /// Records what is left of `code`'s optimization budget, if its row
+    /// is armed: how often its baseline code ran.
+    #[cfg_attr(
+        not(ns_jit),
+        expect(unused_variables, reason = "no budget without a JIT")
+    )]
+    fn record_budget(&mut self, code: &Rc<CompiledCode>, code_id: CodeId, heap: &Heap) {
+        #[cfg(ns_jit)]
+        if let Some(remaining) = heap.armed_optimization_budget(code) {
+            self.tree.budgets.insert(code_id, remaining);
+        }
+    }
+}
+
+/// Where a send lies in the walk: the accumulated weight of its body's
+/// lightest chain, the register its callee's frame would start at, and
+/// how many of its arguments may be a block made in the compile.
+struct Site {
+    chain_weight: u32,
+    offset: u32,
+    block_arguments: u32,
+}
+
+/// The registers of `body` that may hold a block the compile makes: each
+/// a `MakeClosure` writes, and every parameter and copied value, which
+/// an inlining sender may have filled with one -- an over-estimate, so
+/// that the walk never leaves out a callee the bonus for a block
+/// argument would let the plan take.
+fn block_registers(body: &CompiledCode, instructions: &[Instruction]) -> HashSet<u16> {
+    let mut registers: HashSet<u16> = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::MakeClosure { destination, .. } => Some(*destination),
+            _ => None,
+        })
+        .collect();
+    registers.extend(0..body.argument_count);
+    let copied_start = body.argument_count.saturating_add(HEADER_REGISTERS);
+    registers.extend(copied_start..copied_start.saturating_add(body.copied_count));
+    registers
+}
+
+/// Whether `target` stands at a private lexical site (§5.9), whose guard
+/// is N's application.
+fn target_is_private(target: &Target) -> bool {
+    match target {
+        Target::Polymorphic { private, .. } | Target::Megamorphic { private } => *private,
+        Target::Method { chain, .. }
+        | Target::Slot { chain, .. }
+        | Target::NestedClass { chain, .. }
+        | Target::Primitive { chain, .. }
+        | Target::Factory { chain, .. } => *chain == Chain::Private,
+        Target::Vacant => false,
     }
 }
 
@@ -241,14 +451,17 @@ impl Walk<'_> {
 fn receiver_facts(heap: &Heap, guard: DispatchId) -> Option<ReceiverFacts> {
     let index = heap.application_of_dispatch_id(guard)?;
     let mut own_slot_bases = Vec::new();
+    let mut applications = Vec::new();
     let mut level = heap.application(index);
     while let Some(application) = level {
         own_slot_bases.push(u32::try_from(application.own_slot_base).ok()?);
+        applications.push(application.index);
         level = application.superclass.clone();
     }
     Some(ReceiverFacts {
         dispatch_id: guard,
         application: index,
+        applications,
         own_slot_bases,
     })
 }
@@ -259,6 +472,7 @@ mod tests {
 
     use super::{CalleeFacts, SiteCandidates, SnapshotTree};
     use crate::interpreter::inline_cache::MethodSide;
+    use crate::jit::optimizing::plan::Limits;
     use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
 
     fn expect_ok(result: HostResult, what: &str) -> Root {
@@ -292,7 +506,8 @@ mod tests {
     }
 
     /// The tree of `selector`'s body on `class`'s instance side, against
-    /// its family's range, every callee up to `weight_limit` snapshotted.
+    /// its family's range, every method callee up to the method limit
+    /// `weight_limit` snapshotted.
     fn tree_of(
         interpreter: &mut Interpreter,
         class: &Root,
@@ -314,7 +529,10 @@ mod tests {
                 &mutator.caches,
                 base,
                 None,
-                weight_limit,
+                &Limits {
+                    method: weight_limit,
+                    ..Limits::STANDARD
+                },
             )
         })
     }

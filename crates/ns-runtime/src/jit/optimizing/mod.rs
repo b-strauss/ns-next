@@ -12,6 +12,7 @@ pub(crate) mod graph;
 pub(crate) mod liveness;
 #[cfg(ns_jit)]
 pub(crate) mod metadata;
+pub(crate) mod plan;
 pub(crate) mod snapshot;
 pub(crate) mod tree;
 pub(crate) mod verify;
