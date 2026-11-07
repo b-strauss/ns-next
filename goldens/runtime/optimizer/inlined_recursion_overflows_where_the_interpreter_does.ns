@@ -1,25 +1,27 @@
 /// Recursion through a method the optimizing compiler inlines, to the depth
 /// limit: `down:` sends `step:`, small enough to be inlined into it, which
 /// sends `down:` again. First a shallow recursion runs many times, so that
-/// both bodies are optimized, each with the other inlined; then an
-/// unbounded one, five times over, each overflow caught and the depth it
-/// reached printed -- every inlined scope is an activation the depth limit
-/// counts, so that the overflow is raised at the activation the
-/// interpreter raises it at -- and once more uncaught, which ends the run
-/// with the interpreter's error.
+/// `down:` is optimized with `step:` inlined into it, whose send of
+/// `down:` stays a send of that optimized code; then an unbounded one,
+/// five times over, each overflow caught and the activations it reached
+/// printed -- both methods count every activation of theirs, so that an
+/// overflow raised one activation early or late changes the count, and
+/// every inlined scope is an activation the depth limit counts -- and once
+/// more uncaught, which ends the run with the interpreter's error.
 class InlinedRecursionOverflowsWhereTheInterpreterDoes = Object new (
   |
     limit ::= 10.
-    deepest ::= 0.
+    activations ::= 0.
   |
 ) (
   down: depth = (
     depth = limit ifTrue: [^0].
-    deepest:: depth.
+    activations:: activations + 1.
     ^1 + (self step: depth + 1).
   )
 
   step: depth = (
+    activations:: activations + 1.
     ^self down: depth.
   )
 
@@ -34,10 +36,10 @@ class InlinedRecursionOverflowsWhereTheInterpreterDoes = Object new (
         newLine.
     limit:: -1.
     1 to: 5 do: [:index |
-      deepest:: 0.
+      activations:: 0.
       [self down: 0] on: Error do: [:error | 0].
       transcript
-          show: deepest printString;
+          show: activations printString;
           newLine.
     ].
     self down: 0.

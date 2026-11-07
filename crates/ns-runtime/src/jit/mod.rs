@@ -1509,7 +1509,7 @@ pub(crate) struct JitState {
     pub(crate) exited_physical: Option<ActivationReference>,
     /// What a test records of every exit's stack and every leaf's frame,
     /// once it asks (`inlining_tests`).
-    #[cfg(test)]
+    #[cfg(all(test, ns_jit))]
     pub(crate) recorder: Option<inlining_tests::Recorder>,
     /// Whether the miss leaf refused the last call for a callee that has
     /// no machine code yet but may still be compiled -- counting its
@@ -1881,7 +1881,7 @@ impl JitState {
             walked: None,
             walked_optimized: false,
             exited_physical: None,
-            #[cfg(test)]
+            #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
@@ -2916,7 +2916,7 @@ impl JitState {
             walked: None,
             walked_optimized: false,
             exited_physical: None,
-            #[cfg(test)]
+            #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
@@ -5671,6 +5671,8 @@ pub(crate) fn resumed(
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     match entry_of_frame(mutator, activation, code, feedback_base, program_counter) {
         Some(entry) if native_stack_has_room() => {
+            #[cfg(all(test, ns_jit))]
+            inlining_tests::record_resumption(mutator, activation, program_counter);
             mutator.jit.statistics.resumed_entries += 1;
             if mutator.jit.has_optimized_code(code) {
                 mutator.jit.statistics.optimized_bodies_resumed += 1;
@@ -6365,7 +6367,12 @@ fn resumption_after_exit(
         count_exit(mutator, &code, optimized, key);
     }
     #[cfg(test)]
-    inlining_tests::record_exit(mutator, innermost, physical.is_some());
+    inlining_tests::record_exit(
+        mutator,
+        innermost,
+        physical.is_some(),
+        matches!(exit, MachineExit::Trap { .. }),
+    );
     // The innermost frame goes on interpreted from here: it no longer
     // stands in machine code, which only the frames below it still do.
     mutator.heap.clear_compiled(innermost);
@@ -6871,10 +6878,9 @@ pub(crate) fn invalidate_optimized_for_stress(mutator: &mut Mutator<'_>) {
 }
 
 impl JitState {
-    /// Every live body with optimized code installed, each once.
-    #[cfg(ns_jit)]
     /// The body and key of every installed optimized copy one of whose
     /// type-cases tests one of `guards`.
+    #[cfg(ns_jit)]
     fn copies_testing(
         &self,
         guards: &std::collections::HashSet<DispatchId, crate::hash::IdentityBuildHasher>,
@@ -6887,6 +6893,8 @@ impl JitState {
             .collect()
     }
 
+    /// Every live body with optimized code installed, each once.
+    #[cfg(ns_jit)]
     fn codes_with_optimized_bodies(&self) -> Vec<Rc<CompiledCode>> {
         let mut codes: Vec<Rc<CompiledCode>> = Vec::new();
         for body in &self.bodies {

@@ -19,6 +19,10 @@ pub(crate) struct Recorder {
     exits: Vec<RecordedExit>,
     /// Each leaf's frame, and whether it is an inlined scope's.
     leaves: Vec<(RecordedFrame, bool)>,
+    /// Each frame returned to that went on in its body's baseline code
+    /// (`jit::resumed`): how many exits were recorded before it, its body
+    /// and the program counter it went on at.
+    resumptions: Vec<(usize, CodeId, u32)>,
 }
 
 /// The stack an exit left, innermost first, as the run loop found it, how
@@ -27,7 +31,11 @@ pub(crate) struct Recorder {
 struct RecordedExit {
     frames: Vec<RecordedFrame>,
     depth: usize,
+    /// The activations the depth limit counts (`Heap::counted_depth`).
+    counted: usize,
     inlined: bool,
+    /// Whether the exit is a trap.
+    trapped: bool,
 }
 
 /// One activation as an observer reads it.
@@ -53,11 +61,12 @@ fn describe(heap: &Heap<'_>, activation: ActivationReference) -> RecordedFrame {
 }
 
 /// Records the stack an exit left, from `innermost` down to the bottom;
-/// `inlined` when it left an inlined scope.
+/// `inlined` when it left an inlined scope, `trapped` when it is a trap.
 pub(crate) fn record_exit(
     mutator: &mut Mutator<'_>,
     innermost: ActivationReference,
     inlined: bool,
+    trapped: bool,
 ) {
     if mutator.jit.recorder.is_none() {
         return;
@@ -69,12 +78,29 @@ pub(crate) fn record_exit(
         frame = mutator.heap.activation_sender(activation);
     }
     let depth = mutator.heap.activation_depth();
+    let counted = mutator.heap.counted_depth();
     if let Some(recorder) = mutator.jit.recorder.as_mut() {
         recorder.exits.push(RecordedExit {
             frames,
             depth,
+            counted,
             inlined,
+            trapped,
         });
+    }
+}
+
+/// Records the frame `activation`, returned to, going on in its body's
+/// baseline code at `program_counter` (`jit::resumed`).
+pub(crate) fn record_resumption(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    program_counter: u32,
+) {
+    let code = mutator.heap.activation_code_id(activation);
+    if let Some(recorder) = mutator.jit.recorder.as_mut() {
+        let exits = recorder.exits.len();
+        recorder.resumptions.push((exits, code, program_counter));
     }
 }
 
@@ -235,7 +261,10 @@ fn sum_of_indices(addend: i64) -> i64 {
 /// one physical frame, each read as an interpreter's -- `middle:` the
 /// innermost, at its `probe:` send, its caller `outer:`, at its `middle:`
 /// send, each its own body -- and the heap counts every activation the
-/// stack holds, the scope among them.
+/// stack holds, the scope among them, live and against the depth limit
+/// alike: every exit's stack holds as many uncounted activations, the
+/// host's, inside an inlined scope as anywhere else, as the interpreter's
+/// would.
 #[test]
 fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
     let (answer, recorder, sends) = run_recording(
@@ -271,34 +300,64 @@ fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
         assert_eq!(
             exit.depth,
             exit.frames.len(),
-            "every activation of the stack is counted, the scope among them"
+            "every activation of the stack is live, the scope among them"
+        );
+    }
+    let uncounted = |exit: &RecordedExit| exit.frames.len() - exit.counted;
+    let first = uncounted(&recorder.exits[0]);
+    for exit in &recorder.exits {
+        assert_eq!(
+            uncounted(exit),
+            first,
+            "the depth limit counts every activation, an inlined scope's among them"
         );
     }
 }
 
-/// After an exit inside an inlined scope the scope is an activation of
-/// its own, going on interpreted from the exit, and the physical frame
-/// below it stands in machine code at its send, so that the scope's
-/// return resumes it in its body's baseline code, as any frame an exit
-/// left below the innermost: the answer is the interpreter's.
+/// After an exit inside an inlined scope each scope the exit left is an
+/// activation of its own going on in its own body's code: `middle:`, the
+/// innermost, interpreted from the exit at its `probe:` send; `outer:`,
+/// the scope it was inlined into, stopped at its `middle:` send and
+/// resumed, once `middle:` returns, in `outer:`'s own baseline code right
+/// past that send, as any frame an exit left below the innermost. The
+/// answer is the interpreter's.
 #[test]
 fn each_scope_goes_on_in_its_own_baseline_code_after_an_exit() {
-    let (answer, recorder, _) = run_recording(NESTED, true, &[]);
-    assert_eq!(answer, sum_of_indices(0));
-    let exit = recorder
-        .exits
-        .iter()
-        .find(|exit| {
-            exit.inlined
-                && exit.frames.len() >= 2
-                && exit.frames[0].selector == Some(Symbol::intern("middle:"))
-                && exit.frames[1].selector == Some(Symbol::intern("outer:"))
-        })
-        .expect("an exit inside the inlined scope");
-    assert!(
-        exit.frames[1].compiled,
-        "the physical frame goes on in machine code once its scope returns"
+    let (answer, recorder, sends) = run_recording(
+        NESTED,
+        true,
+        &[("middle:", "probe:"), ("outer:", "middle:")],
     );
+    assert_eq!(answer, sum_of_indices(0));
+    let [(_, probe_send), (outer, middle_send)] = sends[..] else {
+        panic!("two sends");
+    };
+    let after_send = u32::try_from(middle_send + 1).expect("a small body");
+    let mut checked = 0;
+    for (index, exit) in recorder.exits.iter().enumerate() {
+        if !(exit.inlined
+            && exit.frames.len() >= 2
+            && exit.frames[0].selector == Some(Symbol::intern("middle:"))
+            && exit.frames[1].selector == Some(Symbol::intern("outer:")))
+        {
+            continue;
+        }
+        assert_eq!(exit.frames[0].program_counter, probe_send);
+        assert!(exit.frames[1].compiled, "`outer:` stands in machine code");
+        // The next resumption after this exit is `outer:`'s, past its send.
+        let resumed = recorder
+            .resumptions
+            .iter()
+            .find(|(exits, _, _)| *exits > index)
+            .expect("a frame resumed after the exit");
+        assert_eq!(
+            (resumed.1, resumed.2),
+            (outer, after_send),
+            "`outer:` goes on in its own baseline code past its send"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "an exit inside the inlined scope");
 }
 
 /// A leaf called inside an inlined scope runs in that scope's frame, its
@@ -401,5 +460,250 @@ fn the_prologue_refuses_within_the_deepest_chain_of_the_limit() {
     assert!(
         matches!(run_at(limit - 2), MachineExit::Trap { .. }),
         "past the prologue"
+    );
+}
+
+/// What the growth leaf is handed and answers, for the prologue's test.
+#[derive(Default)]
+struct Growth {
+    extents: Vec<u64>,
+}
+
+fn refuse_growth(growth: &mut Growth, arguments: [u64; 3]) -> u64 {
+    growth.extents.push(arguments[0]);
+    1
+}
+
+fn no_leaf(_: &mut Growth, _: [u64; 3]) -> u64 {
+    0
+}
+
+/// Optimized code's prologue holds the stack's ordinary room to the
+/// deepest physical register its inlined scopes reach, not only to its
+/// own window: with the room's end between the two, the call asks the
+/// growth leaf for the inlined extent, and is refused when the leaf
+/// makes no room; with room past it, the call goes on.
+#[test]
+fn the_prologue_holds_the_room_to_the_deepest_extent() {
+    use crate::heap::machine_words::MachineWord;
+    use crate::jit::baseline::BodyRole;
+    use crate::jit::leaves::Leaf;
+    use crate::jit::macro_assembler::{Abi, MacroAssembler};
+    use crate::jit::optimizing::{compile_tree, tree_of_run, Speculation};
+    use crate::jit::stubs::testing::Machine;
+    use crate::jit::stubs::MachineExit;
+
+    let tree = tree_of_run(
+        indoc! {"
+            class Monomorphic = () (
+              public run = (
+                ^self helper: 3
+              )
+              public helper: number = (
+                | a b c d e f g h |
+                a:: number.
+                b:: a.
+                c:: b.
+                d:: c.
+                e:: d.
+                f:: e.
+                g:: f.
+                h:: g.
+                ^h + 1
+              )
+            )
+        "},
+        "run",
+    );
+    let window_end = u32::from(tree.root.facts.window_end());
+    let optimized = compile_tree(
+        &tree,
+        MacroAssembler::new(Abi::host()),
+        BodyRole::Method,
+        false,
+        Speculation::Traps,
+    )
+    .unwrap_or_else(|refusal| panic!("refused: {refusal:?}"));
+    assert_eq!(optimized.deepest_chain, 1, "`helper:` is inlined");
+    let extent = optimized.deepest_extent;
+    assert!(extent > window_end + 1, "the scope reaches past the window");
+    let run_with_end = |end: u32| {
+        let mut machine = Machine::new();
+        machine.set_machine_word(MachineWord::DepthCount, 0);
+        machine.set_machine_word(MachineWord::DepthLimit, 1000);
+        machine.set_machine_word(MachineWord::OrdinaryStackEnd, u64::from(end));
+        machine.set_machine_word(
+            MachineWord::CalleeReceiver,
+            crate::heap::Immediate::small_integer(5)
+                .expect("a SmallInteger")
+                .bits(),
+        );
+        let body = machine.install(&optimized.code);
+        let mut leaves: Vec<ns_memory::Leaf<Growth>> = vec![no_leaf; Leaf::GrowStack as usize + 1];
+        leaves[Leaf::GrowStack as usize] = refuse_growth;
+        let mut frame = vec![0u64; 1 << 12];
+        let mut growth = Growth::default();
+        let exit = machine.run_called(body, &mut frame, &mut growth, &leaves).0;
+        (exit, growth.extents)
+    };
+    let (exit, extents) = run_with_end(window_end + 1);
+    assert_eq!(
+        exit,
+        MachineExit::PushRefused {
+            at_the_bound: false,
+            for_its_inlining: false,
+        },
+        "no room made for the inlined scope"
+    );
+    assert_eq!(
+        extents,
+        vec![u64::from(extent) * 8],
+        "the inlined extent asked for"
+    );
+    let (exit, extents) = run_with_end(extent);
+    assert!(
+        matches!(exit, MachineExit::Trap { .. }),
+        "past the prologue"
+    );
+    assert!(extents.is_empty(), "room enough");
+}
+
+/// An inlined site that only ever saw one receiver meets another: the
+/// type-case traps, the trap sets the site's trapped bit, the copy is
+/// retired at its second trap there, and the copy compiled again has the
+/// site's send as the type-case's way for receivers without an arm, so
+/// that later runs with both receivers trap there no more. Every answer
+/// is the interpreter's.
+#[test]
+fn an_inlined_site_meeting_an_unseen_receiver_traps_and_is_recompiled_with_its_send() {
+    use crate::jit::optimizing::plan::{plan, FallThrough, Limits};
+    use crate::jit::optimizing::tree::SnapshotTree;
+
+    let source = indoc! {"
+        class Subject = Object new (
+          | other = Other new. |
+        ) (
+          class Other = () (
+            public value: number = (
+              ^number * 2
+            )
+          )
+          public value: number = (
+            ^number + 1
+          )
+          outer: target at: number = (
+            ^target value: number
+          )
+          public run = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 3000] whileTrue: [
+              sum:: sum + (self outer: (index < 2000 ifTrue: [self] ifFalse: [other]) at: index).
+              index:: index + 1.
+            ].
+            ^sum
+          )
+        )
+    "};
+    let expected: i64 = (0..3000)
+        .map(|index| if index < 2000 { index + 1 } else { index * 2 })
+        .sum();
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = crate::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
+        .unwrap_or_else(|_| panic!("the module resolves"));
+    let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_caches(false);
+    interpreter.set_jit_stress(true);
+    interpreter.set_optimize_stress(true);
+    let class = interpreter.load_module(&resolved);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    interpreter.enter(|mutator| mutator.jit.recorder = Some(Recorder::default()));
+    // The traps recorded so far in `outer:at:`'s code, the inlined
+    // `value:` among it.
+    let traps_of_outer = |interpreter: &mut Interpreter| {
+        interpreter.enter(|mutator| {
+            let recorder = mutator.jit.recorder.as_ref().expect("recording");
+            recorder
+                .exits
+                .iter()
+                .filter(|exit| exit.trapped)
+                .filter(|exit| {
+                    exit.frames
+                        .iter()
+                        .any(|frame| frame.selector == Some(Symbol::intern("outer:at:")))
+                })
+                .count()
+        })
+    };
+    let run = |interpreter: &mut Interpreter| {
+        let answer = expect_ok(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run",
+        );
+        interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+            crate::ValueKind::SmallInteger(integer) => integer,
+            _ => panic!("run: expected a small integer"),
+        })
+    };
+    assert_eq!(run(&mut interpreter), expected);
+    let first = interpreter.jit_statistics();
+    let trapped = traps_of_outer(&mut interpreter);
+    assert!(trapped >= 1, "the unseen receiver traps: {first:?}");
+    assert!(
+        first.made_not_entrant >= 1,
+        "the copy is retired: {first:?}"
+    );
+    // The site trapped: the plan now sends to a receiver without an arm.
+    let site_plan = interpreter.enter(|mutator| {
+        let code = crate::interpreter::method_code(
+            mutator,
+            &class,
+            MethodSide::Instance,
+            Symbol::intern("outer:at:"),
+        )
+        .expect("the method");
+        let base = mutator.caches.known_base(&code).expect("it ran");
+        let tree = SnapshotTree::take(
+            &code,
+            &mut mutator.heap,
+            &mutator.caches,
+            base,
+            None,
+            &Limits::STANDARD,
+        );
+        let send = tree
+            .root
+            .instructions
+            .iter()
+            .position(|instruction| instruction.argument_slots().is_some())
+            .expect("the send");
+        let facts = tree.root.sites[send].expect("its site");
+        let planned = plan(&tree, crate::jit::optimizing::Speculation::Traps);
+        let fall_through = planned
+            .sites
+            .get(&(
+                crate::jit::optimizing::plan::ScopeId::ROOT,
+                u32::try_from(send).expect("small"),
+            ))
+            .map(|site| site.fall_through);
+        (facts.trapped, fall_through)
+    });
+    assert!(site_plan.0, "the trap set the site's bit");
+    assert_ne!(
+        site_plan.1,
+        Some(FallThrough::Trap),
+        "no trap for an unseen receiver"
+    );
+    // `run`'s own copy, compiled before it saw the other receiver, traps
+    // at its own speculations; `outer:at:`'s, compiled again, never.
+    assert_eq!(run(&mut interpreter), expected);
+    assert_eq!(run(&mut interpreter), expected);
+    assert_eq!(
+        traps_of_outer(&mut interpreter),
+        trapped,
+        "the copy compiled again traps no more"
     );
 }

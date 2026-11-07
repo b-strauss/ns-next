@@ -9598,7 +9598,8 @@ fn a_minted_dispatch_id_answers_its_application() {
 
 /// A full collection that reclaims an application clears its id's row,
 /// so that an id minted again never answers the application it named
-/// before.
+/// before. A debug build's, as `collect_now` is.
+#[cfg(debug_assertions)]
 #[test]
 fn a_reclaimed_dispatch_id_answers_none() {
     let (mut interpreter, class) = load_with(DISPATCH_ID_TABLE, Lowering::Optimized);

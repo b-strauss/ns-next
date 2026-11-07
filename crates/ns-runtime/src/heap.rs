@@ -9740,7 +9740,6 @@ impl<'gc> Heap<'gc> {
     /// ordinary stack's end: what optimized code whose inlined scopes nest
     /// `chain` deep and reach `extent` needs of the frame it is entered
     /// for (`jit::entered`), as its prologue compares them for a call.
-    #[cfg(ns_jit)]
     pub(crate) fn machine_frame_fits(
         &self,
         register_base: RegisterBase,
