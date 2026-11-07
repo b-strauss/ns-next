@@ -1152,6 +1152,17 @@ impl Interpreter {
         })
     }
 
+    /// How many bodies the optimized copies of `method`'s body that this
+    /// interpreter's zone holds inlined, counted once per copy that
+    /// inlines each (`jit::CopyDependencies`). A test hook.
+    #[doc(hidden)]
+    pub fn jit_inlined_bodies(&mut self, class: &Root, side: MethodSide, method: Symbol) -> usize {
+        self.enter(|mutator| {
+            method_code(mutator, class, side, method)
+                .map_or(0, |code| mutator.jit.inlined_bodies(&code))
+        })
+    }
+
     /// The machine entries the dispatching rows of `method`'s body name, in
     /// the rows' order, and those of the customized copies of it this
     /// interpreter's zone holds, sorted: what a `super` or private lexical

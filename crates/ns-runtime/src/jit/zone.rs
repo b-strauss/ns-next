@@ -1406,6 +1406,10 @@ impl Mutator<'_> {
 
     /// `free_code_of_moved_bases`'s work, before its check.
     fn free_moved_code(&mut self, slide: &SiteSlide) {
+        // A copy whose own base stayed but which inlined a body whose base
+        // moved goes as an invalidation frees it, its baseline code staying.
+        #[cfg(ns_jit)]
+        crate::jit::invalidate_copies_of_moved_bases(self, slide);
         let freed = self.jit.free_bodies_with_moved_bases(slide);
         if freed.is_empty() {
             return;

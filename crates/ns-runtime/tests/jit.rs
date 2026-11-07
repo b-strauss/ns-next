@@ -1484,6 +1484,270 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `run:`, summing `helper:` of an `A` over `0` to `count - 1` in a loop,
+/// `helper:` a method of `A`'s superclass `Base` small enough to be
+/// inlined into `run:`'s copy, and the edits and collections the copies'
+/// dependencies answer to: `replaceInBase` and `overrideInA` give
+/// `helper:` another body at its definer and below it, `editD` gives the
+/// unrelated `D` another method, `collect` asks for a full collection,
+/// and `helper: -1`, sent from outside, asks for one while an activation
+/// of `helper:` runs. `victim` and `editVictim` give the collection after
+/// them a thousand freed sites to slide the ranges over. `run: 100`
+/// answers 5050 with `helper:`'s first body, 5250 with `replaceInBase`'s
+/// and 5150 with `overrideInA`'s.
+const AN_INLINED_CALLEE_AND_ITS_EDITS: &str = indoc! {"
+    class Subject usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+        kernel = platform kernel.
+      |
+    ) (
+      class Base = Object new () (
+        public helper: value = (
+          value < 0 ifTrue: [kernel garbageCollect].
+          ^value + 1.
+        )
+      )
+
+      class A = Base new () ()
+
+      class D = Object new () (
+        public answer = (
+          ^3.
+        )
+      )
+
+      class Victim = Object new () (
+        public answer = (
+          ^self yourself yourself yourself yourself yourself yourself yourself yourself yourself yourself.
+        )
+      )
+
+      public anA = (
+        ^A new.
+      )
+
+      public run: count = (
+        |
+          receiver = A new.
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (receiver helper: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+
+      public collect = (
+        kernel garbageCollect.
+        ^0.
+      )
+
+      public replaceInBase = (
+        | builder |
+        builder:: (ClassMirror reflecting: Base) mixin declaration asBuilder.
+        builder instanceSide methods addFromSource: 'public helper: value = ( ^value + 3 )'.
+        builder install.
+        ^0.
+      )
+
+      public overrideInA = (
+        | builder |
+        builder:: (ClassMirror reflecting: A) mixin declaration asBuilder.
+        builder instanceSide methods addFromSource: 'public helper: value = ( ^value + 2 )'.
+        builder install.
+        ^0.
+      )
+
+      public editD = (
+        | builder |
+        builder:: (ClassMirror reflecting: D) mixin declaration asBuilder.
+        builder instanceSide methods addFromSource: 'public answer = ( ^4 )'.
+        builder install.
+        ^0.
+      )
+
+      public victim = (
+        ^Victim new answer == nil ifTrue: [1] ifFalse: [0].
+      )
+
+      public editVictim = (
+        | builder |
+        builder:: (ClassMirror reflecting: Victim) mixin declaration asBuilder.
+        builder instanceSide methods addFromSource: 'public answer = ( ^0 )'.
+        builder install.
+        ^0.
+      )
+    ) : ()
+"};
+
+/// The module above with `Victim>>answer` a family of a thousand sites,
+/// so that the collection after `editVictim` frees enough of the ranges
+/// to slide them.
+fn an_inlined_callee_and_a_victim() -> String {
+    AN_INLINED_CALLEE_AND_ITS_EDITS.replace(
+        "^self yourself yourself yourself yourself yourself yourself yourself yourself yourself yourself.",
+        &format!("^self{}.", " yourself".repeat(1_000)),
+    )
+}
+
+/// `AN_INLINED_CALLEE_AND_ITS_EDITS`'s subject, made with the platform.
+fn subject_using_platform(interpreter: &mut Interpreter, class: &Root) -> Root {
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(class, Symbol::intern("usingPlatform:"), &[platform]),
+        "usingPlatform:",
+    )
+}
+
+/// Runs `run: 100` three times, each answering `expected`, and answers
+/// whether the copies are pinned and `run:`'s copy inlines a body: only
+/// the optimized lowering's caches give the plan the receivers it
+/// inlines for, and a stress mode that frees or compiles copies again
+/// changes which copy there is (`counts_the_copies`).
+fn run_until_inlined(
+    interpreter: &mut Interpreter,
+    class: &Root,
+    subject: &Root,
+    lowering: Lowering,
+    expected: i64,
+) -> bool {
+    for _ in 0..3 {
+        assert_eq!(send_integer(interpreter, subject, "run:", 100), expected);
+    }
+    if lowering != Lowering::Optimized || !counts_the_copies() {
+        return false;
+    }
+    let run = Symbol::intern("run:");
+    assert_eq!(
+        interpreter.jit_customized_copies(class, MethodSide::Instance, run),
+        1,
+        "`run:` runs as a copy"
+    );
+    assert!(
+        interpreter.jit_inlined_bodies(class, MethodSide::Instance, run) >= 1,
+        "`run:`'s copy inlines `helper:`"
+    );
+    true
+}
+
+ns_runtime::for_each_lowering! {
+    /// An edit that gives an inlined callee another body frees the copy
+    /// it is inlined in at once, whether it replaces the method at its
+    /// definer, `Base`, or adds an override below it, in `A`: both
+    /// rebuild the receiver's application the copy's type-case relied
+    /// on. The program answers what each edit says.
+    fn an_edit_of_an_inlined_callee_frees_the_copy(lowering) {
+        let (mut interpreter, class) = load_customizing(AN_INLINED_CALLEE_AND_ITS_EDITS, lowering);
+        let subject = subject_using_platform(&mut interpreter, &class);
+        let run = Symbol::intern("run:");
+        let pinned = run_until_inlined(&mut interpreter, &class, &subject, lowering, 5050);
+        for (edit, expected) in [("replaceInBase", 5250), ("overrideInA", 5150)] {
+            let before = interpreter.jit_statistics();
+            assert_eq!(send_unary(&mut interpreter, &subject, edit), 0);
+            let edited = since(interpreter.jit_statistics(), before);
+            if pinned {
+                assert_eq!(
+                    interpreter.jit_customized_copies(&class, MethodSide::Instance, run),
+                    0,
+                    "{edit}: `run:`'s copy is freed"
+                );
+                assert!(edited.invalidated_copies >= 1, "{edit}: {edited:?}");
+            }
+            let inlined_again =
+                run_until_inlined(&mut interpreter, &class, &subject, lowering, expected);
+            assert_eq!(inlined_again, pinned, "{edit}: `run:` is optimized again");
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// An edit of a class no copy relied on frees no copy: `run:`'s copy
+    /// inlines `helper:` of an `A`, and `D` is on no chain it looked up.
+    fn an_edit_of_an_unrelated_class_keeps_the_copy(lowering) {
+        let (mut interpreter, class) = load_customizing(AN_INLINED_CALLEE_AND_ITS_EDITS, lowering);
+        let subject = subject_using_platform(&mut interpreter, &class);
+        let pinned = run_until_inlined(&mut interpreter, &class, &subject, lowering, 5050);
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "editD"), 0);
+        let edited = since(interpreter.jit_statistics(), before);
+        if pinned {
+            assert_eq!(edited.invalidated_copies, 0, "{edited:?}");
+            assert_eq!(
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, Symbol::intern("run:")),
+                1,
+                "`run:`'s copy stays"
+            );
+        }
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 5050);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A full collection that frees the code id of a body a copy inlined
+    /// frees the copy: no activation of `helper:` runs, every one of its
+    /// calls being inlined, so `collect`'s collection frees its id, which
+    /// may be minted again for another body.
+    fn a_reclaimed_inlined_code_id_frees_the_copy(lowering) {
+        let (mut interpreter, class) = load_customizing(AN_INLINED_CALLEE_AND_ITS_EDITS, lowering);
+        let subject = subject_using_platform(&mut interpreter, &class);
+        let pinned = run_until_inlined(&mut interpreter, &class, &subject, lowering, 5050);
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "collect"), 0);
+        let collected = since(interpreter.jit_statistics(), before);
+        if pinned {
+            assert_eq!(
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, Symbol::intern("run:")),
+                0,
+                "`run:`'s copy is freed"
+            );
+            assert!(collected.invalidated_copies >= 1, "{collected:?}");
+        }
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 5050);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A slide that moves the feedback base of a body a copy inlined frees
+    /// the copy, whose inlined scope's sends address their cells from the
+    /// old base: `run:`'s range is minted before `Victim`'s thousand sites,
+    /// `helper:`'s after them, so the collection after `editVictim` slides
+    /// `helper:`'s down and leaves `run:`'s. The collection runs inside an
+    /// activation of `helper:`, which keeps its code id named, so that the
+    /// slide alone frees the copy.
+    fn a_slide_of_an_inlined_callee_s_feedback_base_frees_the_copy(lowering) {
+        let (mut interpreter, class) = load_customizing(&an_inlined_callee_and_a_victim(), lowering);
+        let subject = subject_using_platform(&mut interpreter, &class);
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 0), 0);
+        assert_eq!(send_unary(&mut interpreter, &subject, "victim"), 0);
+        let pinned = run_until_inlined(&mut interpreter, &class, &subject, lowering, 5050);
+        assert_eq!(send_unary(&mut interpreter, &subject, "editVictim"), 0);
+        let receiver = class_answered(&mut interpreter, &subject, "anA");
+        let slides = interpreter.cache_statistics().site_slides;
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_integer(&mut interpreter, &receiver, "helper:", -1), 0);
+        let collected = since(interpreter.jit_statistics(), before);
+        if pinned {
+            assert!(
+                interpreter.cache_statistics().site_slides > slides,
+                "the collection slid the ranges"
+            );
+            assert_eq!(
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, Symbol::intern("run:")),
+                0,
+                "`run:`'s copy is freed"
+            );
+            assert!(collected.invalidated_copies >= 1, "{collected:?}");
+        }
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 5050);
+        if let Err(message) = interpreter.verify_cells() {
+            panic!("after the slide: {message}");
+        }
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// Under the invalidate stress mode optimized code leaves for a
     /// safepoint at every tenth interrupt point it passes, which frees
@@ -5141,7 +5405,6 @@ fn tenured_writer() -> (Interpreter, Root, Root) {
 /// Sends `selector` to `subject` with the `SmallInteger` `argument`, or
 /// with none for a unary selector, answering the `SmallInteger` it
 /// answers.
-#[cfg(debug_assertions)]
 fn send_integer(
     interpreter: &mut Interpreter,
     subject: &Root,

@@ -85,16 +85,32 @@ pub(crate) struct OptimizedBody {
     /// (`plan::InliningPlan`).
     pub(crate) deepest_chain: u16,
     pub(crate) deepest_extent: u32,
-    /// The guards its type-cases test their arms by, each once: a full
-    /// collection that frees one, to mint it again for another
-    /// application, frees the copy (`jit::forget_freed_copies`).
-    pub(crate) guards: Vec<crate::mixin::DispatchId>,
+    /// What the code relied on beyond its own body, which the install
+    /// records as the copy's dependencies (`jit::CopyDependencies`).
+    pub(crate) relied_on: ReliedOn,
     /// The offset in the code where the run loop's push enters, past the
     /// prologue a compiled call enters at: the body's first block.
     pub(crate) push_entry: u32,
     /// The `SmallInteger` tag tests the code holds, which the tests count.
     #[cfg(test)]
     pub(crate) small_integer_tag_tests: usize,
+}
+
+/// What optimized code relied on beyond its own body and its key: what an
+/// edit, a full collection or a slide of the site ranges can change under
+/// it (`docs/design/execution.md`, "Invalidation").
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ReliedOn {
+    /// The guards its type-cases test their arms by, each once.
+    pub(crate) guards: Vec<crate::mixin::DispatchId>,
+    /// The applications its inlined scopes were compiled for, each once:
+    /// each scope's receiver's and the one it is entered at, whose lookup
+    /// found the callee, whose layout its slot reads and whose outer
+    /// structure its lexical sends walk.
+    pub(crate) applications: Vec<crate::heap::ApplicationIndex>,
+    /// Each inlined method's body and the feedback base its sends' cells
+    /// are found from, in the order of its scopes, each once.
+    pub(crate) bodies: Vec<(CodeId, FeedbackBase)>,
 }
 
 /// One scope of the graph as the emitter lowers it: the snapshot of its

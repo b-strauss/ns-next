@@ -171,27 +171,59 @@ pub(crate) fn compile_tree(
             .collect(),
         deepest_chain: plan.deepest_chain,
         deepest_extent: plan.deepest_extent,
-        guards: type_case_guards(&graph),
+        relied_on: relied_on(&plan, &graph, &scopes),
         push_entry,
         #[cfg(test)]
         small_integer_tag_tests,
     })
 }
 
-/// The guards `graph`'s type-cases test their arms by, each once.
+/// What the code `graph` lays out relied on (`emit::ReliedOn`): the
+/// guards its type-cases test, and of every method scope it lays out
+/// code for -- not those the plan made whose site the graph sends, which
+/// the copy relies on no more than on any send -- the receiver's and
+/// entered applications `plan` customized it to and its body and feedback
+/// base, as `scopes` emitted it. A block scope's body is its home's to
+/// rely on.
 #[cfg(ns_jit)]
-fn type_case_guards(graph: &graph::Graph) -> Vec<crate::mixin::DispatchId> {
-    let mut guards = Vec::new();
+fn relied_on(
+    plan: &plan::InliningPlan,
+    graph: &graph::Graph,
+    scopes: &[emit::EmittedScope<'_>],
+) -> emit::ReliedOn {
+    let mut relied_on = emit::ReliedOn::default();
+    let mut laid_out = vec![false; graph.scopes.len()];
     for block in &graph.blocks {
+        laid_out[block.scope.0 as usize] = true;
         if let graph::End::TypeCase { arms, .. } = &block.end {
             for (guard, _) in arms {
-                if !guards.contains(guard) {
-                    guards.push(*guard);
+                if !relied_on.guards.contains(guard) {
+                    relied_on.guards.push(*guard);
                 }
             }
         }
     }
-    guards
+    for (index, scope_plan) in plan.scopes.iter().enumerate().skip(1) {
+        if !laid_out[index] || scope_plan.block_of.is_some() {
+            continue;
+        }
+        for application in [scope_plan.receiver, scope_plan.entered]
+            .into_iter()
+            .flatten()
+        {
+            if !relied_on.applications.contains(&application) {
+                relied_on.applications.push(application);
+            }
+        }
+        let body = (
+            scopes[index].snapshot.code_id,
+            scopes[index].snapshot.feedback_base,
+        );
+        if !relied_on.bodies.contains(&body) {
+            relied_on.bodies.push(body);
+        }
+    }
+    relied_on
 }
 
 /// The snapshot of a method of `instructions`, none of which makes a

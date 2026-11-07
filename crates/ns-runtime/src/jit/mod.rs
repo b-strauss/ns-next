@@ -1369,8 +1369,9 @@ struct InstalledBody {
     /// that inlines nothing.
     deepest_chain: u16,
     deepest_extent: u32,
-    /// Optimized code's type-cases' guards (`OptimizedBody::guards`).
-    guards: Vec<DispatchId>,
+    /// What optimized code relied on beyond its own body and its key,
+    /// whose change frees it at once; nothing for baseline code.
+    dependencies: CopyDependencies,
 }
 
 /// A method's lean body's dispatching entry as installed: the offsets
@@ -3014,6 +3015,68 @@ pub(crate) struct OptimizedMetadata {
 #[cfg(not(ns_jit))]
 pub(crate) struct OptimizedMetadata;
 
+/// What an installed copy of optimized code relied on beyond its own body
+/// and its key, recorded at its install (`docs/design/execution.md`,
+/// "Invalidation"): whatever changes any of it frees the copy at once,
+/// through the path every invalidation takes (`invalidate_copy`), so that
+/// its cells, dispatching rows and machine entry rows are written afresh.
+/// Its key's applications are not repeated here: the key's own rules free
+/// a copy keyed on one (`invalidate_applications`, `forget_freed_copies`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct CopyDependencies {
+    /// The instances guard of every application an arm or a customized
+    /// read relied on: each type-case arm's guard, and each inlined
+    /// scope's receiver's and entered application's -- whose chain, from
+    /// the receiver's level up to the callee's definer, the lookup walked,
+    /// whose layout a slot read takes its offset from and whose outer
+    /// structure a lexical send walks. An install rebuilds every
+    /// application one of whose levels it edits, so that replacing,
+    /// removing or adding a method anywhere on that chain -- an override
+    /// below the definer included -- rebuilds the receiver's application,
+    /// and an edit of any other class none of these
+    /// (`invalidate_applications`). A full collection that frees one
+    /// mints it again for another application, which a type-case would
+    /// take for the dead one (`forget_freed_copies`).
+    pub(crate) applications: Vec<DispatchId>,
+    /// Every inlined method's code id, by which the copy's interrupt
+    /// points name its scopes (`optimizing::metadata::ScopeAtPoint`): a
+    /// full collection that frees one mints it again for another body
+    /// (`forget_copies_of_unnamed_codes`). Each inlined block's id is its
+    /// home's to add once blocks are inlined.
+    pub(crate) code_ids: Vec<CodeId>,
+    /// Every inlined method's feedback base, from which its scope's sends
+    /// address their cells: a slide that moves one leaves the copy reading
+    /// and filling another family's sites (`invalidate_copies_of_moved_bases`).
+    pub(crate) feedback_bases: Vec<FeedbackBase>,
+}
+
+impl CopyDependencies {
+    /// The dependencies of a copy that relied on `relied_on`, its
+    /// applications' guards read from `heap` at the install's safepoint,
+    /// where the tree its plan was made from was taken.
+    #[cfg(ns_jit)]
+    fn of(heap: &Heap<'_>, relied_on: &optimizing::emit::ReliedOn) -> CopyDependencies {
+        let mut applications: Vec<DispatchId> = relied_on.guards.clone();
+        for index in &relied_on.applications {
+            if let Some(application) = heap.application(*index) {
+                let guard = application.dispatch_ids.instances;
+                if guard != DispatchId::NONE && !applications.contains(&guard) {
+                    applications.push(guard);
+                }
+            }
+        }
+        CopyDependencies {
+            applications,
+            code_ids: relied_on
+                .bodies
+                .iter()
+                .map(|(code_id, _)| *code_id)
+                .collect(),
+            feedback_bases: relied_on.bodies.iter().map(|(_, base)| *base).collect(),
+        }
+    }
+}
+
 /// The body an inlined scope runs: held strongly, so that an exit can
 /// write the scope's frame -- its code's row, its method's selector --
 /// however long the copy lives, as a frame of the body would hold it.
@@ -4639,7 +4702,9 @@ fn install_body(
         deepest_extent: optimized
             .as_ref()
             .map_or(0, |optimized| optimized.deepest_extent),
-        guards: optimized.map_or_else(Vec::new, |optimized| optimized.guards),
+        dependencies: optimized.map_or_else(CopyDependencies::default, |optimized| {
+            optimized.dependencies
+        }),
     });
     // Until it is pointed at its row the code spends from the unpointed
     // budget, whose first spend calls the leaf: the word is never one the
@@ -5247,13 +5312,14 @@ fn optimize(
     )
     .and_then(|mut optimized| {
         let metadata = optimized_metadata(&mutator.heap, &mut optimized)?;
+        let dependencies = CopyDependencies::of(&mutator.heap, &optimized.relied_on);
         install_optimized(
             &mut mutator.jit,
             code,
             method.as_ref(),
             (lean, feedback_base, settings, key),
             optimized,
-            metadata,
+            (metadata, dependencies),
         )
     });
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -5339,8 +5405,9 @@ fn defer_optimization(
 /// Installs `optimized`, the optimized code of `code` -- `method`'s body
 /// when it is one's -- beside its lean baseline body at `lean` in
 /// `bodies`, compiled against `feedback_base` under `settings` for `key`
-/// (`None` for the body's one uncustomized copy), answering its index
-/// among the installed bodies. Its call returns are recorded
+/// (`None` for the body's one uncustomized copy), with what it keeps of
+/// its inlining, `metadata`, and what it relied on, `dependencies`,
+/// answering its index among the installed bodies. Its call returns are recorded
 /// as the baseline's are, so that a leaf and the exit's walk find the
 /// send each of its calls returns to; its program-counter map has no
 /// instruction's start, since no frame goes on mid-body in optimized code.
@@ -5356,7 +5423,7 @@ fn install_optimized(
         Option<CustomizationKey>,
     ),
     optimized: optimizing::emit::OptimizedBody,
-    metadata: Option<Rc<OptimizedMetadata>>,
+    (metadata, dependencies): (Option<Rc<OptimizedMetadata>>, CopyDependencies),
 ) -> Result<u32, Refusal> {
     let optimizing::emit::OptimizedBody {
         code: assembled,
@@ -5366,7 +5433,6 @@ fn install_optimized(
         push_entry,
         deepest_chain,
         deepest_extent,
-        guards,
         ..
     } = optimized;
     let mut returns: Vec<CallReturn> = returns
@@ -5404,7 +5470,7 @@ fn install_optimized(
             metadata,
             deepest_chain,
             deepest_extent,
-            guards,
+            dependencies,
         }),
     )
     .inspect_err(|refusal| {
@@ -5429,7 +5495,7 @@ struct OptimizedInstall {
     metadata: Option<Rc<OptimizedMetadata>>,
     deepest_chain: u16,
     deepest_extent: u32,
-    guards: Vec<DispatchId>,
+    dependencies: CopyDependencies,
 }
 
 /// What a copy of `optimized` keeps of its interrupt points inside
@@ -6703,7 +6769,8 @@ fn invalidate_copy(
 /// copies' versions earned (`optimization_budget_after`), so that the next
 /// copy waits for feedback gathered since -- as long as a failure of the
 /// freed one would have it wait, no longer, since an invalidation is no
-/// failure.
+/// failure -- and answers the version whose wait it armed, `None` if it
+/// freed none.
 #[cfg(ns_jit)]
 fn invalidate_copies_of(
     mutator: &mut Mutator<'_>,
@@ -6711,7 +6778,7 @@ fn invalidate_copies_of(
     stale: &dyn Fn(CustomizationKey) -> bool,
     uncustomized: bool,
     entries: &mut Vec<u64>,
-) {
+) -> Option<u8> {
     let keys: Vec<(CustomizationKey, u8)> = code
         .jit
         .copies
@@ -6733,13 +6800,73 @@ fn invalidate_copies_of(
     if let Some(version) = wait {
         rearm_optimization_budget(mutator, code, version);
     }
+    wait
+}
+
+/// Frees each of `copies` -- a body and the key of one of its copies,
+/// `None` for its uncustomized one -- as an invalidation does
+/// (`invalidate_copies_of`), adding the addresses cells may name of them
+/// to `entries`, and answers each body whose copies it freed with the
+/// version whose wait it armed its budget at.
+#[cfg(ns_jit)]
+fn invalidate_dependent_copies(
+    mutator: &mut Mutator<'_>,
+    copies: Vec<(Rc<CompiledCode>, Option<CustomizationKey>)>,
+    entries: &mut Vec<u64>,
+) -> Vec<(Rc<CompiledCode>, u8)> {
+    let mut by_body: Vec<(Rc<CompiledCode>, Vec<CustomizationKey>, bool)> = Vec::new();
+    for (code, key) in copies {
+        let position = match by_body
+            .iter()
+            .position(|(known, _, _)| Rc::ptr_eq(known, &code))
+        {
+            Some(position) => position,
+            None => {
+                by_body.push((code, Vec::new(), false));
+                by_body.len() - 1
+            }
+        };
+        match key {
+            Some(key) => by_body[position].1.push(key),
+            None => by_body[position].2 = true,
+        }
+    }
+    let mut armed = Vec::new();
+    for (code, keys, uncustomized) in by_body {
+        let stale = |key: CustomizationKey| keys.contains(&key);
+        if let Some(version) = invalidate_copies_of(mutator, &code, &stale, uncustomized, entries) {
+            armed.push((code, version));
+        }
+    }
+    armed
+}
+
+/// Records in `carried`, what a full collection carries of each body's
+/// budget to the id it has after it (`budgets_before_collection`), the
+/// arming each body of `armed` was given in the collection, or the
+/// collection would arm a body whose id it frees with what was left
+/// before.
+#[cfg(ns_jit)]
+fn carry_armings(
+    mutator: &Mutator<'_>,
+    armed: Vec<(Rc<CompiledCode>, u8)>,
+    carried: &mut IdentityMap<usize, i64>,
+) {
+    for (code, version) in armed {
+        carried.insert(
+            Rc::as_ptr(&code) as usize,
+            optimization_budget_after(mutator.jit.optimization_budget, version),
+        );
+    }
 }
 
 /// Frees every customized copy whose key names one of `rebuilt` -- the
 /// instances ids of the applications an install replaced
 /// (`Mutator::install_edit`) -- as its receiver's or its entered
 /// application: each was compiled against a layout, a lookup or an outer
-/// structure the install changed. Every other copy stays, and so does
+/// structure the install changed -- and every copy, of any key, whose
+/// dependencies name one (`CopyDependencies::applications`), since an arm
+/// or an inlined scope of it relied on the same. Every other copy stays, and so does
 /// each key's row, whose ids no receiver carries any more once the
 /// install restamped or forwarded every instance; a full collection
 /// drops the rows once it reclaims the ids (`forget_freed_copies`).
@@ -6763,6 +6890,16 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
     for code in mutator.jit.customized_codes() {
         invalidate_copies_of(mutator, &code, &stale, false, &mut entries);
     }
+    // A copy of any key, the uncustomized one too, whose arm or inlined
+    // scope relied on a rebuilt application: what its lookup found, its
+    // layout or its outer structure may have changed.
+    let dependent = mutator.jit.copies_depending(|dependencies| {
+        dependencies
+            .applications
+            .iter()
+            .any(|guard| rebuilt.contains(guard))
+    });
+    invalidate_dependent_copies(mutator, dependent, &mut entries);
     rearm_after_dropped_requests(mutator, dropped, None);
     refresh_cells_entering(mutator, entries);
 }
@@ -6880,17 +7017,29 @@ pub(crate) fn invalidate_optimized_for_stress(mutator: &mut Mutator<'_>) {
 }
 
 impl JitState {
-    /// The body and key of every installed optimized copy one of whose
-    /// type-cases tests one of `guards`.
+    /// How many bodies the installed optimized copies of `code` inlined,
+    /// counted once per copy that inlines each. For tests.
+    pub(crate) fn inlined_bodies(&self, code: &CompiledCode) -> usize {
+        let Some(lean) = self.installed(code).map(|_| code.jit.map.get()) else {
+            return 0;
+        };
+        self.optimized_copies_of(lean)
+            .into_iter()
+            .map(|index| self.bodies[index as usize].dependencies.code_ids.len())
+            .sum()
+    }
+
+    /// The body and key of every installed optimized copy whose
+    /// dependencies `depends` answers true for.
     #[cfg(ns_jit)]
-    fn copies_testing(
+    fn copies_depending(
         &self,
-        guards: &std::collections::HashSet<DispatchId, crate::hash::IdentityBuildHasher>,
+        depends: impl Fn(&CopyDependencies) -> bool,
     ) -> Vec<(Rc<CompiledCode>, Option<CustomizationKey>)> {
         self.bodies
             .iter()
             .filter(|body| !body.free && body.tier == Tier::Optimized)
-            .filter(|body| body.guards.iter().any(|guard| guards.contains(guard)))
+            .filter(|body| depends(&body.dependencies))
             .filter_map(|body| Some((body.code.upgrade()?, body.key)))
             .collect()
     }
@@ -6926,7 +7075,10 @@ impl JitState {
 /// request it dropped has its parked budget armed afresh at the plain
 /// wait (`rearm_after_dropped_requests`), and `carried`, what the
 /// collection carries of each body's budget to the id it has after it
-/// (`budgets_before_collection`), takes the arming too.
+/// (`budgets_before_collection`), takes the arming too. Every copy whose
+/// dependencies name a reclaimed id (`CopyDependencies::applications`)
+/// is freed as well, its key's row staying, and its body's budget armed
+/// as an invalidation arms it, which `carried` takes too.
 #[cfg(ns_jit)]
 pub(crate) fn forget_freed_copies(
     mutator: &mut Mutator<'_>,
@@ -6964,14 +7116,86 @@ pub(crate) fn forget_freed_copies(
     // A type-case's arm tests a guard the collection mints again for
     // another application, which would run the inlined callee of the dead
     // one: its copy goes too, its key's row staying.
-    for (code, key) in mutator.jit.copies_testing(&freed.guards) {
-        invalidate_copy(mutator, &code, key, &mut entries);
-    }
+    let dependent = mutator.jit.copies_depending(|dependencies| {
+        dependencies
+            .applications
+            .iter()
+            .any(|guard| freed.guards.contains(guard))
+    });
+    let armed = invalidate_dependent_copies(mutator, dependent, &mut entries);
+    carry_armings(mutator, armed, carried);
     mutator
         .jit
         .customized
         .retain(|code| code.upgrade().is_some_and(|code| code.jit.has_copies()));
     refresh_cells_entering(mutator, entries);
+}
+
+/// Frees every copy that inlined a body whose code id a full collection
+/// is about to free, `named` holding every id it keeps
+/// (`Heap::free_unnamed_codes`): the id is minted again for another body,
+/// which the copy's interrupt points would name its scope by. Run in the
+/// collection right before the ids are freed, between marking and
+/// compaction, where nothing runs; `carried`, what the collection carries
+/// of each body's budget to the id it has after it
+/// (`budgets_before_collection`), takes the budget's arming. A method
+/// whose every call is inlined is run by no activation, so a collection
+/// between two of its copy's entries frees its id: the copy is compiled
+/// again at its body's next run-out.
+#[cfg(ns_jit)]
+pub(crate) fn forget_copies_of_unnamed_codes(
+    mutator: &mut Mutator<'_>,
+    named: &crate::heap::reclaim::BitSet,
+    carried: &mut IdentityMap<usize, i64>,
+) {
+    let dependent = mutator.jit.copies_depending(|dependencies| {
+        dependencies
+            .code_ids
+            .iter()
+            .any(|code_id| u32::try_from(code_id.index()).map_or(true, |row| !named.contains(row)))
+    });
+    if dependent.is_empty() {
+        return;
+    }
+    let mut entries = Vec::new();
+    let armed = invalidate_dependent_copies(mutator, dependent, &mut entries);
+    carry_armings(mutator, armed, carried);
+    refresh_cells_entering(mutator, entries);
+}
+
+/// Frees every copy that inlined a body compiled against a feedback base
+/// `slide` moved, or one it holds no range for: the inlined scope's sends
+/// address their cells from that base, and would read and fill another
+/// family's sites, as a body compiled against it would
+/// (`JitState::free_bodies_with_moved_bases`, which frees the copies whose
+/// own base moved). Run by a full collection that slid the ranges, after
+/// the caches and the heap took the new bases, between entries.
+#[cfg(ns_jit)]
+pub(crate) fn invalidate_copies_of_moved_bases(
+    mutator: &mut Mutator<'_>,
+    slide: &crate::interpreter::inline_cache::SiteSlide,
+) {
+    let dependent = mutator.jit.copies_depending(|dependencies| {
+        dependencies
+            .feedback_bases
+            .iter()
+            .any(|base| slide.moves(*base))
+    });
+    if dependent.is_empty() {
+        return;
+    }
+    let mut entries = Vec::new();
+    invalidate_dependent_copies(mutator, dependent, &mut entries);
+    refresh_cells_entering(mutator, entries);
+}
+
+/// Without a JIT no copy inlines a body.
+#[cfg(not(ns_jit))]
+pub(crate) fn forget_copies_of_unnamed_codes(
+    _mutator: &mut Mutator<'_>,
+    _named: &crate::heap::reclaim::BitSet,
+    _carried: &mut IdentityMap<usize, i64>,
+) {
 }
 
 /// Without a JIT there is no optimized code to invalidate.
