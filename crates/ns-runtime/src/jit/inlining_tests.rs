@@ -183,10 +183,10 @@ const LEAF_IN_A_CALLEE: &str = indoc! {"
     )
 "};
 
-/// Whether the environment turns the stress mode `mode` on.
-fn the_stress_mode_is_on(mode: &str) -> bool {
-    std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
-        .is_some_and(|value| !value.is_empty() && value != "0")
+/// Whether the zone stress mode is on, as the JIT reads it: in a debug
+/// build only, where the mode exists (`jit::stress_zone_from_env`).
+fn the_zone_stress_mode_is_on() -> bool {
+    crate::jit::stress_zone_from_env()
 }
 
 /// What `run_recording` answers: the run's answer, what was recorded, the
@@ -289,13 +289,6 @@ fn sum_of_indices(addend: i64) -> i64 {
 /// above what counted before the run, whatever a stress mode suspended.
 #[test]
 fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
-    // The zone stress mode compacts the zone at every safepoint, freeing
-    // `outer:`'s optimized code, which the next spend compiles again, and
-    // the deopt countdown set afresh at each of them is spent before the
-    // inlined scope's send: no exit falls inside the scope there.
-    if the_stress_mode_is_on("ZONE") {
-        return;
-    }
     let Recording {
         answer,
         recorder,
@@ -307,6 +300,13 @@ fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
         &[("middle:", "probe:"), ("outer:", "middle:")],
     );
     assert_eq!(answer, sum_of_indices(0));
+    // The zone stress mode compacts the zone at every safepoint: every
+    // other compaction spares optimized code and slides it, but the
+    // freeing at the others is constant enough that no exit falls inside
+    // the inlined scope to observe. The answer is still the interpreter's.
+    if the_zone_stress_mode_is_on() {
+        return;
+    }
     let [(middle, probe_send), (outer, middle_send)] = sends[..] else {
         panic!("two sends");
     };
@@ -353,11 +353,6 @@ fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
 /// answer is the interpreter's.
 #[test]
 fn each_scope_goes_on_in_its_own_baseline_code_after_an_exit() {
-    // Under the zone stress mode no exit falls inside the inlined scope
-    // (`an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames`).
-    if the_stress_mode_is_on("ZONE") {
-        return;
-    }
     let Recording {
         answer,
         recorder,
@@ -369,6 +364,13 @@ fn each_scope_goes_on_in_its_own_baseline_code_after_an_exit() {
         &[("middle:", "probe:"), ("outer:", "middle:")],
     );
     assert_eq!(answer, sum_of_indices(0));
+    // The zone stress mode compacts the zone at every safepoint: every
+    // other compaction spares optimized code and slides it, but the
+    // freeing at the others is constant enough that no exit falls inside
+    // the inlined scope to observe. The answer is still the interpreter's.
+    if the_zone_stress_mode_is_on() {
+        return;
+    }
     let [(_, probe_send), (outer, middle_send)] = sends[..] else {
         panic!("two sends");
     };
@@ -624,14 +626,6 @@ fn an_inlined_site_meeting_an_unseen_receiver_traps_and_is_recompiled_with_its_s
     use crate::jit::optimizing::plan::{plan, FallThrough, Limits};
     use crate::jit::optimizing::tree::SnapshotTree;
 
-    // The zone stress mode's compactions free `outer:at:`'s optimized code
-    // at every safepoint, so that the call that meets the other receiver
-    // runs its baseline code, which never traps: the copy the scenario
-    // needs is not there to meet it.
-    if the_stress_mode_is_on("ZONE") {
-        return;
-    }
-
     let source = indoc! {"
         class Subject = Object new (
           | other = Other new. |
@@ -703,6 +697,15 @@ fn an_inlined_site_meeting_an_unseen_receiver_traps_and_is_recompiled_with_its_s
         })
     };
     assert_eq!(run(&mut interpreter), expected);
+    // The zone stress mode compacts the zone at every safepoint: every
+    // other compaction spares optimized code and slides it, but the
+    // freeing at the others leaves no copy compiled for one receiver to
+    // meet the other and trap. Every answer is still the interpreter's.
+    if the_zone_stress_mode_is_on() {
+        assert_eq!(run(&mut interpreter), expected);
+        assert_eq!(run(&mut interpreter), expected);
+        return;
+    }
     let first = interpreter.jit_statistics();
     let trapped = traps_of_outer(&mut interpreter);
     assert!(trapped >= 1, "the unseen receiver traps: {first:?}");
