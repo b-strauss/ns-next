@@ -9,6 +9,22 @@
 //! a frame that leaves optimized code there goes on in baseline code or
 //! the interpreter at its program counter.
 //!
+//! An inlined scope lies in the physical frame where the interpreter would
+//! push its activation (`docs/design/execution.md`, "Inlining"): around
+//! its frame nodes the frame register moves to the scope's register 0
+//! (`MacroAssembler::shift_frame`), and the template runs there with the
+//! scope's facts (`BodyAssembler::enter_scope`), so that it is the
+//! template the scope's own baseline code runs. Every simple node, move
+//! and write-back addresses the physical frame wherever the frame register
+//! stands; every block is entered with it at the physical register 0, and
+//! every way out of optimized code -- an exit, a trap, a poll's -- leaves
+//! it at the register 0 of the innermost scope the interrupt point stops
+//! in, whose frame the exit's walk and the leaves read. Every address
+//! inside an inlined scope's code that a leaf or an exit is handed, and
+//! every return address of its calls, is recorded with its interrupt
+//! point (`MacroAssembler::set_site`), so that the walk finds the chain of
+//! scopes it stands in (`jit::OptimizedMetadata`).
+//!
 //! A guard that fails traps (`MacroAssembler::trap`), running its
 //! instruction again in the interpreter: its write-back, as a poll's,
 //! lies on its way out alone, laid out after the body (`emit_traps`), so
@@ -27,12 +43,13 @@ use std::collections::HashMap;
 use ns_assembler::{Condition, Label, Register};
 
 use super::allocate::{Allocation, DirtyPoint, Location, Move, PointKind, Spot};
-use super::graph::{BlockId, End, Graph, Node, ValueId, ValueKind};
+use super::graph::{BlockId, ClassStart, End, Graph, Node, ScopeId, ValueId, ValueKind};
 use super::liveness::poll_target;
 use super::metadata::Metadata;
 use super::snapshot::{Snapshot, SnapshotInstruction};
-use crate::heap::Immediate;
-use crate::jit::baseline::{lower, BodyAssembler, TwinTransfer};
+use crate::heap::{CodeId, Heap, Immediate};
+use crate::interpreter::inline_cache::FeedbackBase;
+use crate::jit::baseline::{lower, BodyAssembler, Lowering, ScopeFacts, TwinTransfer};
 use crate::jit::macro_assembler::KnownSmallIntegers;
 use crate::jit::stubs::ExitKind;
 use crate::jit::{closures, sends, Refusal};
@@ -42,25 +59,36 @@ use crate::jit::{closures, sends, Refusal};
 pub(crate) struct OptimizedBody {
     pub(crate) code: ns_assembler::Assembled,
     /// Each send's call's return address, a label bound right after the
-    /// call, and the send's program counter, as `call_send` records them.
+    /// call, and the send's program counter in its own scope, as
+    /// `call_send` records them.
     pub(crate) returns: Vec<(Label, u32)>,
     /// The offsets in the code of its first data word and of the byte past
     /// its last, if it has any (`baseline::BaselineBody::words`).
     pub(crate) words: Option<std::ops::Range<u32>>,
-    /// The transfers into the baseline twin, one per `MakeClosure`
-    /// (`closures::transfer_to_twin`).
+    /// The transfers into the baseline twin, one per `MakeClosure` of the
+    /// body's own scope (`closures::transfer_to_twin`).
     pub(crate) twin_transfers: Vec<TwinTransfer>,
-    /// Each interrupt point's description, which the install drops: no
-    /// frame is rebuilt from it until optimized code holds a value outside
-    /// its frame word.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the deoptimization of frames whose values live outside their words"
-        )
-    )]
+    /// Each interrupt point's description: the install keeps those of the
+    /// points inside an inlined scope, whose scopes the exit's walk writes
+    /// (`jit::materialize`).
     pub(crate) metadata: Metadata,
+    /// Every address inside an inlined scope's code that a leaf or an exit
+    /// is handed, and every return address of a call made there: its
+    /// offset in the code and the index of its interrupt point in
+    /// `metadata`.
+    pub(crate) sites: Vec<(u32, u32)>,
+    /// Each scope's body and the feedback base its sends' cells are found
+    /// from, by its `ScopeId`, the body's own first.
+    pub(crate) scopes: Vec<(CodeId, FeedbackBase)>,
+    /// The most scopes inlined into one another below the body's own, and
+    /// one past the highest physical register any scope's frame reaches
+    /// (`plan::InliningPlan`).
+    pub(crate) deepest_chain: u16,
+    pub(crate) deepest_extent: u32,
+    /// The guards its type-cases test their arms by, each once: a full
+    /// collection that frees one, to mint it again for another
+    /// application, frees the copy (`jit::forget_freed_copies`).
+    pub(crate) guards: Vec<crate::mixin::DispatchId>,
     /// The offset in the code where the run loop's push enters, past the
     /// prologue a compiled call enters at: the body's first block.
     pub(crate) push_entry: u32,
@@ -69,20 +97,35 @@ pub(crate) struct OptimizedBody {
     pub(crate) small_integer_tag_tests: usize,
 }
 
-/// Emits `snapshot`'s optimized code, its `graph` allocated as
-/// `allocation` says, into `body`, which `BodyAssembler::for_optimized`
-/// made; answers the label the run loop's push enters at, past the
-/// prologue.
+/// One scope of the graph as the emitter lowers it: the snapshot of its
+/// body, whose sites name its traps', the facts its templates read, and
+/// the physical register its register 0 lies at.
+pub(crate) struct EmittedScope<'tree> {
+    pub(crate) snapshot: &'tree Snapshot,
+    pub(crate) facts: ScopeFacts,
+    pub(crate) offset: u16,
+}
+
+/// Emits the optimized code of the graph `graph` over `scopes` -- the
+/// body's own first -- allocated as `allocation` says and described by
+/// `metadata`, into `body`, which `BodyAssembler::for_optimized` made;
+/// answers the label the run loop's push enters at, past the prologue.
 pub(in crate::jit) fn emit(
-    snapshot: &Snapshot,
+    scopes: &[EmittedScope<'_>],
     graph: &Graph,
     allocation: &Allocation,
+    metadata: &Metadata,
     body: &mut BodyAssembler,
 ) -> Result<Label, Refusal> {
-    sends::prologue(body, &snapshot.facts);
+    let root = scopes
+        .first()
+        .expect("internal: a compile has the body's own scope");
+    sends::prologue(body, &root.snapshot.facts);
     let mut emitter = Emitter {
         graph,
         allocation,
+        metadata,
+        scopes,
         labels: graph
             .blocks
             .iter()
@@ -91,11 +134,12 @@ pub(in crate::jit) fn emit(
         points: allocation
             .dirty_at
             .iter()
-            .map(|point| (point.position, point))
+            .enumerate()
+            .map(|(index, point)| (point.position, (index, point)))
             .collect(),
         polls: Vec::new(),
         traps: Vec::new(),
-        snapshot,
+        trampolines: Vec::new(),
     };
     let order = &allocation.positions.order;
     let first = *order.first().expect("internal: a graph has an entry block");
@@ -116,24 +160,30 @@ pub(in crate::jit) fn emit(
     }
     emitter.emit_polls(body);
     emitter.emit_traps(body);
+    emitter.emit_trampolines(body);
+    body.macro_assembler.set_site(None);
     body.macro_assembler.hold_values(&[]);
     Ok(push_entry)
 }
 
 /// A back edge's poll, out of line: the label its test jumps to, the
-/// stores it owes the frame there, and the loop head it exits at.
+/// stores it owes the frame there, and its interrupt point, whose
+/// innermost scope it exits in, at the loop head's program counter.
 struct Poll {
     label: Label,
     stores: Vec<(u16, Register)>,
-    program_counter: u32,
+    point: usize,
 }
 
 /// A guard's trap, out of line: the label its failed test jumps to, the
-/// stores it owes the frame there, the instruction it runs again and the
-/// site its speculation rested on.
+/// shift of the frame register there, the stores it owes the frame, its
+/// interrupt point, the instruction it runs again and the site its
+/// speculation rested on.
 struct Trap {
     label: Label,
+    shift: i32,
     stores: Vec<(u16, Register)>,
+    point: usize,
     program_counter: u32,
     site: u32,
 }
@@ -141,14 +191,18 @@ struct Trap {
 struct Emitter<'graph> {
     graph: &'graph Graph,
     allocation: &'graph Allocation,
+    metadata: &'graph Metadata,
+    scopes: &'graph [EmittedScope<'graph>],
     /// Each block's label, by its index.
     labels: Vec<Label>,
-    /// Each interrupt point's write-back, by its position.
-    points: HashMap<u32, &'graph DirtyPoint>,
+    /// Each interrupt point's index and write-back, by its position.
+    points: HashMap<u32, (usize, &'graph DirtyPoint)>,
     polls: Vec<Poll>,
     traps: Vec<Trap>,
-    /// The snapshot, whose sites name each trap's.
-    snapshot: &'graph Snapshot,
+    /// The ways into a block from a template's jump made with the frame
+    /// register at an inlined scope's register 0: the label the template
+    /// jumps to, the shift there, and the block, entered with none.
+    trampolines: Vec<(Label, i32, Label)>,
 }
 
 impl Emitter<'_> {
@@ -173,6 +227,26 @@ impl Emitter<'_> {
         let _ = (body, position);
     }
 
+    /// The scope `scope` names.
+    fn scope(&self, scope: ScopeId) -> &EmittedScope<'_> {
+        &self.scopes[scope.0 as usize]
+    }
+
+    /// The site the code of the interrupt point `point` records its
+    /// addresses with: its index, for a point inside an inlined scope, and
+    /// none for one of the body's own scope, whose addresses name the body.
+    fn site_of(&self, point: usize) -> Option<u32> {
+        (self.metadata.points[point].scopes.len() > 1).then(|| {
+            u32::try_from(point).expect("internal: a body's points are numbered in 32 bits")
+        })
+    }
+
+    /// Moves the frame register to the physical register `offset`.
+    fn shift_to(body: &mut BodyAssembler, offset: u16) {
+        let shift = i32::from(offset) - body.macro_assembler.frame_shift();
+        body.macro_assembler.shift_frame(shift);
+    }
+
     fn block(&mut self, body: &mut BodyAssembler, block_id: BlockId, next: Option<BlockId>) {
         let graph = self.graph;
         let positions = &self.allocation.positions;
@@ -180,6 +254,9 @@ impl Emitter<'_> {
         body.macro_assembler
             .assembler()
             .bind(self.labels[block_id.index()]);
+        // Every way into a block brings the frame register at the physical
+        // register 0.
+        body.macro_assembler.assume_frame_shift(0);
         // A debug build's refusal of a dead register names the instruction
         // being run: the block's first, then each frame node's.
         body.program_counter = block.program_counter;
@@ -207,13 +284,13 @@ impl Emitter<'_> {
         for each in self.allocation.moves_at(position) {
             match *each {
                 Move::Store { from, register, .. } => {
-                    macro_assembler.store_frame_register(register, from);
+                    macro_assembler.store_physical_register(register, from);
                 }
                 // The frame word was written by this code, or is one the
                 // interpreter reads there: never a dead register's, which
                 // a debug build's check would refuse.
                 Move::Load { register, into, .. } => {
-                    macro_assembler.load_frame_register(into, register);
+                    macro_assembler.load_physical_register(into, register);
                 }
                 Move::Transfer { from, into, .. } => {
                     let spot = |spot: Spot| match spot {
@@ -248,7 +325,8 @@ impl Emitter<'_> {
             // word holds it.
             Node::FrameRead { register, value } => {
                 if let Some(target) = defined_in(*value) {
-                    body.macro_assembler.load_frame_register(target, *register);
+                    body.macro_assembler
+                        .load_physical_register(target, *register);
                 }
             }
             Node::Constant { value, word } => {
@@ -256,10 +334,12 @@ impl Emitter<'_> {
                     body.macro_assembler.load_immediate_word(target, *word);
                 }
             }
+            // The body's own receiver: an inlined scope's is its header
+            // binding's.
             Node::Receiver { value } => {
                 if let Some(target) = defined_in(*value) {
-                    let argument_count = body.argument_count;
-                    body.macro_assembler.load_receiver(target, argument_count);
+                    let receiver = Heap::receiver_register(self.scopes[0].facts.argument_count);
+                    body.macro_assembler.load_physical_header(target, receiver);
                 }
             }
             // A binding, which the write-backs store.
@@ -293,11 +373,19 @@ impl Emitter<'_> {
                     self.register_of(*left, use_position),
                     self.register_of(*right, use_position),
                 );
-                // The fast path's failure goes to its fallback, or else to
-                // its trap, whose write-back lies on that way alone.
+                // The fast path's failure goes to its fallback, entered
+                // with the frame register at the physical register 0, or
+                // else to its trap, whose write-back lies on that way
+                // alone.
                 let fallback = match fallback {
-                    Some(fallback) => self.labels[fallback.index()],
-                    None => self.trap_out_of_line(body, use_position, *program_counter),
+                    Some(fallback) => {
+                        Self::shift_to(body, 0);
+                        self.labels[fallback.index()]
+                    }
+                    None => {
+                        let scope = self.graph.block(block_id).scope;
+                        self.trap_out_of_line(body, use_position, *program_counter, scope, None)
+                    }
                 };
                 let macro_assembler = &mut body.macro_assembler;
                 let temporaries = macro_assembler.roles().integer_temporaries();
@@ -329,10 +417,17 @@ impl Emitter<'_> {
             // Its registers are the callee's: what the sender held there
             // is never stored.
             Node::Overlay { .. } => {}
-            Node::CurrentClass { .. } => {
-                panic!("internal: an optimized compile builds no inlined scope")
+            Node::CurrentClass {
+                value,
+                from,
+                start,
+                steps,
+            } => {
+                let from = self.register_of(*from, use_position);
+                self.current_class(body, block_id, defined_in(*value), from, *start, *steps);
             }
             Node::Frame {
+                scope,
                 program_counter,
                 instruction,
                 ..
@@ -340,6 +435,7 @@ impl Emitter<'_> {
                 body,
                 block_id,
                 index,
+                *scope,
                 *program_counter,
                 instruction,
                 use_position,
@@ -347,19 +443,80 @@ impl Emitter<'_> {
         }
     }
 
+    /// An inlined scope's current class into `target`, as a compiled call
+    /// computes its callee's (`sends::send_public`): `steps` superclass
+    /// steps up from the class of the value in `from`, or from the class
+    /// `from` holds; and, where the scope's code addresses its own slots,
+    /// its recorded guard set to none, since no push wrote it: the first
+    /// own-slot access the scope's templates make then takes the cold
+    /// check, which records it as the push would, and no guard a frame
+    /// laid there before left vouches for this scope's entered level.
+    fn current_class(
+        &self,
+        body: &mut BodyAssembler,
+        block_id: BlockId,
+        target: Option<Register>,
+        from: Register,
+        start: ClassStart,
+        steps: u16,
+    ) {
+        let scope = self.scope(self.graph.block(block_id).scope);
+        if scope.snapshot.facts.addresses_own_slots {
+            let (guard, _) = Heap::own_slot_registers(scope.facts.argument_count);
+            let (none_word, _) = Heap::machine_own_slot_words();
+            let none_word =
+                i32::try_from(none_word).expect("internal: the guard none is a small word");
+            body.macro_assembler
+                .store_physical_immediate(scope.offset + guard, none_word);
+        }
+        let Some(target) = target else {
+            return;
+        };
+        let macro_assembler = &mut body.macro_assembler;
+        let temporaries = macro_assembler.roles().integer_temporaries();
+        let (class, level) = (
+            macro_assembler.temporary(temporaries.left),
+            macro_assembler.temporary(temporaries.right),
+        );
+        match start {
+            ClassStart::ClassOf => macro_assembler.load_class(class, from),
+            ClassStart::Class => macro_assembler.move_register(class, from),
+        }
+        if steps > 0 {
+            // The receiver's guard, or the start the plan knows, says the
+            // chain has the level: a walk that fails is a defect.
+            let assembler = macro_assembler.assembler();
+            let (failed, walked) = (assembler.label(), assembler.label());
+            assembler.move_immediate(level, u64::from(steps));
+            macro_assembler.walk_superclasses(class, level, failed);
+            let assembler = macro_assembler.assembler();
+            assembler.jump(walked);
+            assembler.bind(failed);
+            assembler.trap();
+            assembler.bind(walked);
+        }
+        macro_assembler.move_register(target, class);
+    }
+
     /// A frame node: the write-back the allocation owes the frame there,
     /// then the instruction by the template the baseline's arm for it
-    /// emits, with nothing held.
+    /// emits, with nothing held, the frame register at the register 0 of
+    /// the node's scope and the scope's facts.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the node's fields, as the block's walk hands them over"
+    )]
     fn frame_node(
         &mut self,
         body: &mut BodyAssembler,
         block_id: BlockId,
         index: usize,
+        scope: ScopeId,
         program_counter: u32,
         instruction: &SnapshotInstruction,
         use_position: u32,
     ) {
-        let point = self.points[&use_position];
+        let (point_index, point) = self.points[&use_position];
         debug_assert_eq!(
             (point.block, point.kind),
             (block_id, PointKind::Frame { node: index }),
@@ -369,9 +526,15 @@ impl Emitter<'_> {
             let Location::Register(from) = location else {
                 panic!("internal: a value not in its frame word is in a register");
             };
-            body.macro_assembler.store_frame_register(*register, *from);
+            body.macro_assembler
+                .store_physical_register(*register, *from);
         }
         body.macro_assembler.hold_values(&[]);
+        let emitted = self.scope(scope);
+        let (offset, facts, inlined) = (emitted.offset, emitted.facts, scope != ScopeId::ROOT);
+        Self::shift_to(body, offset);
+        body.macro_assembler.set_site(self.site_of(point_index));
+        let own = body.enter_scope(&facts);
         body.program_counter = program_counter;
         body.macro_assembler.set_program_counter(program_counter);
         // Under the deopt stress mode the point may hand its instruction
@@ -390,7 +553,19 @@ impl Emitter<'_> {
             let label = match block.end {
                 End::FrameJump {
                     target: entered, ..
-                } if index + 1 == block.nodes.len() => self.labels[entered.index()],
+                } if index + 1 == block.nodes.len() => {
+                    let entered = self.labels[entered.index()];
+                    // A block is entered with the frame register at the
+                    // physical register 0.
+                    if offset == 0 {
+                        entered
+                    } else {
+                        let trampoline = body.macro_assembler.assembler().label();
+                        self.trampolines
+                            .push((trampoline, i32::from(offset), entered));
+                        trampoline
+                    }
+                }
                 // Only the frame node a `FrameJump` ends on jumps elsewhere:
                 // a mirror send's failure that some later change left
                 // before another node would go on after the template
@@ -408,8 +583,12 @@ impl Emitter<'_> {
         }
         // The one instruction whose snapshot form lacks what its arm reads,
         // the block's code: optimized code never reifies its frame, so its
-        // arm transfers into the twin, as a lean body's does.
+        // arm transfers into the twin, as a lean body's does -- the body's
+        // own frame's twin, which no inlined scope has: in one the
+        // interpreter makes the closure, once the exit has materialized
+        // the scopes.
         let lowering = match instruction {
+            SnapshotInstruction::MakeClosure { .. } if inlined => Lowering::Exit,
             SnapshotInstruction::MakeClosure { .. } => closures::transfer_to_twin(body),
             other => lower(
                 &other
@@ -420,6 +599,8 @@ impl Emitter<'_> {
         };
         body.finish_lowering(lowering);
         body.macro_assembler.assembler().bind(after);
+        body.enter_scope(&own);
+        body.macro_assembler.set_site(None);
     }
 
     fn end(
@@ -438,7 +619,14 @@ impl Emitter<'_> {
                     .jump(labels[target.index()]);
             }
         };
-        match &graph.block(block_id).end {
+        let block = graph.block(block_id);
+        // Every block is entered with the frame register at the physical
+        // register 0; a trap leaves at its scope's, and an end that never
+        // goes on leaves it where its frame node did.
+        if !matches!(block.end, End::Trap { .. } | End::Frame) {
+            Self::shift_to(body, 0);
+        }
+        match &block.end {
             End::Jump(target) => {
                 if let Some(head) = poll_target(graph, block_id) {
                     self.back_edge(body, block_id, head, end_use);
@@ -482,7 +670,13 @@ impl Emitter<'_> {
                         ),
                         None => (
                             vec![(true, *if_true), (false, *if_false)],
-                            self.trap_out_of_line(body, end_use, *program_counter),
+                            self.trap_out_of_line(
+                                body,
+                                end_use,
+                                *program_counter,
+                                block.scope,
+                                None,
+                            ),
                             None,
                         ),
                     };
@@ -507,12 +701,14 @@ impl Emitter<'_> {
                 program_counter,
                 site,
             } => {
+                let (point, _) = self.points[&end_use];
                 let stores = self.trap_stores(end_use);
-                let macro_assembler = &mut body.macro_assembler;
                 for (register, from) in stores {
-                    macro_assembler.store_frame_register(register, from);
+                    body.macro_assembler.store_physical_register(register, from);
                 }
-                macro_assembler.trap(*program_counter, *site);
+                self.leave_at(body, point);
+                body.macro_assembler.trap(*program_counter, *site);
+                body.macro_assembler.set_site(None);
             }
             End::Return { value } => {
                 let value = self.register_of(*value, end_use);
@@ -559,10 +755,58 @@ impl Emitter<'_> {
                 self.moves(body, end_definition);
                 jump_unless_next(body, &self.labels, *fall_through);
             }
-            End::TypeCase { .. } => {
-                panic!("internal: an optimized compile builds no inlined send")
+            End::TypeCase {
+                program_counter,
+                scope,
+                receiver,
+                arms,
+                fall_through,
+                site,
+            } => {
+                debug_assert!(
+                    self.allocation.moves_at(end_definition).is_empty(),
+                    "internal: a type-case's ways need no moves"
+                );
+                // The receiver's guard, as a cell's compare loads it,
+                // tested against each arm's in the cache's order.
+                let receiver = self.register_of(*receiver, end_use);
+                let otherwise = match fall_through {
+                    Some(send) => self.labels[send.index()],
+                    None => {
+                        self.trap_out_of_line(body, end_use, *program_counter, *scope, Some(*site))
+                    }
+                };
+                let macro_assembler = &mut body.macro_assembler;
+                let temporaries = macro_assembler.roles().integer_temporaries();
+                let guard = macro_assembler.temporary(temporaries.left);
+                let expected = macro_assembler.temporary(temporaries.right);
+                macro_assembler.load_guard(guard, receiver);
+                let assembler = macro_assembler.assembler();
+                for (dispatch_id, arm) in arms {
+                    match i32::try_from(dispatch_id.bits()) {
+                        Ok(bits) => assembler.compare_immediate(guard, bits),
+                        Err(_) => {
+                            assembler.move_immediate(expected, u64::from(dispatch_id.bits()));
+                            assembler.compare(guard, expected);
+                        }
+                    }
+                    assembler.jump_if(Condition::Equal, self.labels[arm.index()]);
+                }
+                if fall_through.is_none() || *fall_through != next {
+                    assembler.jump(otherwise);
+                }
             }
         }
+    }
+
+    /// Moves the frame register to the register 0 of the innermost scope
+    /// the interrupt point `point` stops in, and records the addresses of
+    /// the exit that follows with the point: the frame the exit's walk
+    /// materializes the scopes above.
+    fn leave_at(&self, body: &mut BodyAssembler, point: usize) {
+        let innermost = &self.metadata.points[point].scopes[0];
+        Self::shift_to(body, innermost.offset);
+        body.macro_assembler.set_site(self.site_of(point));
     }
 
     /// A back edge's count and poll, whose write-back lies on the way to
@@ -575,11 +819,16 @@ impl Emitter<'_> {
         head: BlockId,
         end_use: u32,
     ) {
-        let point = self.points[&end_use];
+        let (point_index, point) = self.points[&end_use];
         debug_assert_eq!(
             (point.block, point.kind),
             (block_id, PointKind::Poll),
             "internal: a back edge's write-back is its poll's"
+        );
+        debug_assert!(
+            self.metadata.points[point_index].scopes[0].program_counter
+                == self.graph.block(head).taint_point.1,
+            "internal: a poll exits at its loop head"
         );
         let stores = point
             .stores
@@ -600,14 +849,14 @@ impl Emitter<'_> {
         self.polls.push(Poll {
             label,
             stores,
-            program_counter: self.graph.block(head).program_counter,
+            point: point_index,
         });
     }
 
     /// The stores the trap at `position` owes the frame, each from the
     /// register its value is in.
     fn trap_stores(&self, position: u32) -> Vec<(u16, Register)> {
-        let point = self.points[&position];
+        let (_, point) = self.points[&position];
         debug_assert!(
             matches!(point.kind, PointKind::Trap { .. }),
             "internal: a trap's write-back is its own"
@@ -625,22 +874,31 @@ impl Emitter<'_> {
     }
 
     /// The label of the trap at `position`, which runs the instruction at
-    /// `program_counter` again, its write-back and exit laid out after the
-    /// body (`emit_traps`), so that a guard that holds stores nothing.
+    /// `program_counter` of `scope` again, its write-back and exit laid
+    /// out after the body (`emit_traps`), so that a guard that holds
+    /// stores nothing. Its site is `site`, or the one the scope's own
+    /// snapshot records at the instruction.
     fn trap_out_of_line(
         &mut self,
         body: &mut BodyAssembler,
         position: u32,
         program_counter: u32,
+        scope: ScopeId,
+        site: Option<u32>,
     ) -> Label {
         let label = body.macro_assembler.assembler().label();
-        let index = usize::try_from(program_counter).expect("internal: a program counter fits");
-        let site = self.snapshot.sites[index]
-            .expect("internal: a trap rests on a site")
-            .site;
+        let site = site.unwrap_or_else(|| {
+            let index = usize::try_from(program_counter).expect("internal: a program counter fits");
+            self.scope(scope).snapshot.sites[index]
+                .expect("internal: a trap rests on a site")
+                .site
+        });
+        let (point, _) = self.points[&position];
         self.traps.push(Trap {
             label,
+            shift: body.macro_assembler.frame_shift(),
             stores: self.trap_stores(position),
+            point,
             program_counter,
             site,
         });
@@ -650,26 +908,44 @@ impl Emitter<'_> {
     /// Each guard's way to its trap: the write-back, then the trap, which
     /// runs the instruction again in the interpreter.
     fn emit_traps(&mut self, body: &mut BodyAssembler) {
-        let macro_assembler = &mut body.macro_assembler;
         for trap in std::mem::take(&mut self.traps) {
-            macro_assembler.assembler().bind(trap.label);
+            body.macro_assembler.assembler().bind(trap.label);
+            body.macro_assembler.assume_frame_shift(trap.shift);
             for (register, from) in trap.stores {
-                macro_assembler.store_frame_register(register, from);
+                body.macro_assembler.store_physical_register(register, from);
             }
-            macro_assembler.trap(trap.program_counter, trap.site);
+            self.leave_at(body, trap.point);
+            body.macro_assembler.trap(trap.program_counter, trap.site);
+            body.macro_assembler.set_site(None);
         }
     }
 
     /// Each back edge's way to its exit: the write-back, then the exit at
     /// the loop's head, where the interpreter takes the safepoint.
     fn emit_polls(&mut self, body: &mut BodyAssembler) {
-        let macro_assembler = &mut body.macro_assembler;
         for poll in std::mem::take(&mut self.polls) {
-            macro_assembler.assembler().bind(poll.label);
+            body.macro_assembler.assembler().bind(poll.label);
+            body.macro_assembler.assume_frame_shift(0);
             for (register, from) in poll.stores {
-                macro_assembler.store_frame_register(register, from);
+                body.macro_assembler.store_physical_register(register, from);
             }
-            macro_assembler.exit(ExitKind::Safepoint, poll.program_counter);
+            self.leave_at(body, poll.point);
+            let program_counter = self.metadata.points[poll.point].scopes[0].program_counter;
+            body.macro_assembler
+                .exit(ExitKind::Safepoint, program_counter);
+            body.macro_assembler.set_site(None);
+        }
+    }
+
+    /// Each template's jump into a block made with the frame register at
+    /// an inlined scope's register 0: the frame register moved back, then
+    /// the block.
+    fn emit_trampolines(&mut self, body: &mut BodyAssembler) {
+        for (label, shift, block) in std::mem::take(&mut self.trampolines) {
+            body.macro_assembler.assembler().bind(label);
+            body.macro_assembler.assume_frame_shift(shift);
+            body.macro_assembler.shift_frame(-shift);
+            body.macro_assembler.assembler().jump(block);
         }
     }
 }
@@ -1135,6 +1411,35 @@ mod tests {
                 }));
             }
         }
+    }
+
+    /// Every tree of the inlining corpus compiles with its inlined scopes
+    /// -- their type-cases, entries, returns and frame nodes at their
+    /// scopes' offsets -- under AArch64's convention, which no test here
+    /// runs, and every address recorded with an interrupt point lies in
+    /// the code and names a point inside an inlined scope.
+    #[test]
+    fn an_inlined_body_assembles_for_aapcs64() {
+        let mut inlined = 0;
+        for tree in crate::jit::optimizing::inlining_corpus() {
+            let optimized = crate::jit::optimizing::compile_tree(
+                &tree,
+                MacroAssembler::new(Abi::Aapcs64),
+                role_of(&tree.root),
+                false,
+                Speculation::Traps,
+            )
+            .unwrap_or_else(|refusal| panic!("refused: {refusal:?}"));
+            let length = u32::try_from(optimized.code.bytes.len()).expect("small");
+            for (offset, point) in &optimized.sites {
+                assert!(*offset <= length);
+                assert!(optimized.metadata.points[*point as usize].scopes.len() > 1);
+            }
+            if optimized.deepest_chain > 0 {
+                inlined += 1;
+            }
+        }
+        assert!(inlined > 10, "{inlined} trees inline");
     }
 
     /// `r15 := r0 + r1. r16 := r15 < r2. ^r16`, each operation's fallback

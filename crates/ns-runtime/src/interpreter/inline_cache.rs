@@ -176,13 +176,6 @@ pub(crate) enum CacheRule {
 }
 
 /// What one site has cached (`InlineCaches::entries_of`).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "read by the snapshot tree, which no compile takes yet"
-    )
-)]
 pub(crate) enum SiteEntries<'caches> {
     /// The site's one entry.
     Monomorphic(&'caches CacheEntry),
@@ -509,13 +502,6 @@ impl InlineCaches {
     /// had no room for included. The optimizing compiler reads it as the
     /// receivers a send saw and the callees they reached
     /// (`optimizing::tree`); it decides nothing a send runs.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the snapshot tree, which no compile takes yet"
-        )
-    )]
     pub(crate) fn entries_of(
         &self,
         feedback_base: FeedbackBase,

@@ -76,7 +76,9 @@ const FIXED_FIELD_LIMIT: u32 = 1 << 24;
 /// is dropped by building the graph again without it, until no known
 /// Boolean condition is left with one. Under `Speculation::None` the graph
 /// is stage 1's: every fallback, third way and send kept, and every value
-/// of no known kind.
+/// of no known kind. The JIT builds every body as `build_inlined`'s root,
+/// which lays one that inlines nothing out as this does.
+#[cfg(test)]
 pub(crate) fn build(snapshot: &Snapshot, speculation: Speculation) -> Graph {
     build_flat(&Flat::of_snapshot(snapshot), speculation)
 }
@@ -89,13 +91,6 @@ pub(crate) fn build(snapshot: &Snapshot, speculation: Speculation) -> Graph {
 /// A site whose arms the graph does not express yet -- an arm always
 /// inlined, a lexical send's past depth 0, whose receiver the enclosing
 /// object's walk finds -- is its send.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the optimizing compile is to build inlined graphs"
-    )
-)]
 pub(crate) fn build_inlined(
     tree: &SnapshotTree,
     plan: &InliningPlan,
@@ -583,6 +578,7 @@ struct Flat<'snapshot> {
 
 impl<'snapshot> Flat<'snapshot> {
     /// `snapshot`'s body alone: each instruction a step, at its own index.
+    #[cfg(test)]
     fn of_snapshot(snapshot: &'snapshot Snapshot) -> Flat<'snapshot> {
         let steps = snapshot
             .instructions

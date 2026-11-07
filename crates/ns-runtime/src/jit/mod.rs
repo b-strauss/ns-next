@@ -26,6 +26,8 @@ pub(crate) mod baseline;
 pub(crate) mod closures;
 #[cfg(ns_jit)]
 pub(crate) mod cut;
+#[cfg(all(test, ns_jit))]
+mod inlining_tests;
 #[cfg(ns_jit)]
 pub(crate) mod leaves;
 #[cfg(ns_jit)]
@@ -327,6 +329,9 @@ pub struct JitStatistics {
     /// a frame whose call returns into optimized code, or the innermost
     /// one, which left it.
     pub optimized_frames_materialized: u64,
+    /// Frames of inlined scopes of optimized code the exit's walk wrote in
+    /// place: each scope an exit or a call inside it left standing.
+    pub inlined_frames_materialized: u64,
     /// Frames returned to (`resumed`) of a body with optimized code, which
     /// go on in its baseline code: one of `resumed_entries`.
     pub optimized_bodies_resumed: u64,
@@ -1355,6 +1360,17 @@ struct InstalledBody {
     /// A method's lean body's dispatching entry and its data words
     /// (`targets::emit_dispatching_entry`); `None` for every other code.
     dispatching: Option<InstalledDispatching>,
+    /// Optimized code's interrupt points inside its inlined scopes; `None`
+    /// for code that inlines nothing, baseline code among it.
+    metadata: Option<Rc<OptimizedMetadata>>,
+    /// Optimized code's deepest chain of inlined scopes and one past the
+    /// highest physical register they reach, which a push into it holds
+    /// the depth limit and the stack's room to (`entered`); 0 for code
+    /// that inlines nothing.
+    deepest_chain: u16,
+    deepest_extent: u32,
+    /// Optimized code's type-cases' guards (`OptimizedBody::guards`).
+    guards: Vec<DispatchId>,
 }
 
 /// A method's lean body's dispatching entry as installed: the offsets
@@ -1486,6 +1502,15 @@ pub(crate) struct JitState {
     /// instruction, or, for a refused push, the code the caller's call
     /// returns into. Cleared with `walked` before every entry.
     pub(crate) walked_optimized: bool,
+    /// The frame of the optimized copy the last exit left, when the exit
+    /// left it inside an inlined scope, which the walk materialized as the
+    /// innermost frame above it: the frame whose copy the exit counts
+    /// against (`resumption_after_exit`). Cleared with `walked`.
+    pub(crate) exited_physical: Option<ActivationReference>,
+    /// What a test records of every exit's stack and every leaf's frame,
+    /// once it asks (`inlining_tests`).
+    #[cfg(test)]
+    pub(crate) recorder: Option<inlining_tests::Recorder>,
     /// Whether the miss leaf refused the last call for a callee that has
     /// no machine code yet but may still be compiled -- counting its
     /// entries, never compiled or freed by a compaction: a refusal that
@@ -1855,6 +1880,9 @@ impl JitState {
             cut: cut::CutWalk::default(),
             walked: None,
             walked_optimized: false,
+            exited_physical: None,
+            #[cfg(test)]
+            recorder: None,
             refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
             block_stale: true,
@@ -2397,6 +2425,37 @@ impl JitState {
         Some((upgraded(body)?, site.program_counter))
     }
 
+    /// The interrupt point of an inlined scope an address inside optimized
+    /// code belongs to -- an address `body_of` takes, or a call's return
+    /// address -- if it lies in one: what the exit's walk and the leaves
+    /// read of a frame standing for several scopes. Out of line, and asked
+    /// only of optimized code, so that a leaf of baseline code pays
+    /// nothing for it.
+    #[cfg(ns_jit)]
+    #[inline(never)]
+    pub(crate) fn inlined_at(&self, address: usize) -> Option<InlinedAt> {
+        let body = match self.call_return(address) {
+            Some(site) => self.live_body(site.body)?,
+            None => self.installed_body_at(address)?,
+        };
+        let metadata = body.metadata.as_ref()?;
+        let point = metadata.by_address.get(&self.offset_in(body, address)?)?;
+        Some(InlinedAt {
+            metadata: Rc::clone(metadata),
+            point: *point,
+        })
+    }
+
+    /// The offset of `address` from the start of `body`.
+    fn offset_in(&self, body: &InstalledBody, address: usize) -> Option<u32> {
+        let zone = self.zone.as_ref()?;
+        let start = zone
+            .writer
+            .zone()
+            .executable_address(CodeOffset(body.start));
+        u32::try_from(address.checked_sub(start)?).ok()
+    }
+
     /// The send whose call returns to `return_address`, as `returns`
     /// records it.
     pub(crate) fn call_site(&self, return_address: u64) -> Option<CallSiteOperands> {
@@ -2433,9 +2492,11 @@ impl JitState {
         // A call's return address, which every leaf a callee calls hands
         // over, is found without a search.
         if let Some(site) = self.call_return(address) {
-            return upgraded(self.live_body(site.body)?);
+            let body = self.live_body(site.body)?;
+            return upgraded(body);
         }
-        upgraded(self.installed_body_at(address)?)
+        let body = self.installed_body_at(address)?;
+        upgraded(body)
     }
 
     /// The sending frame's register 0 and the program counter of the send
@@ -2854,6 +2915,9 @@ impl JitState {
             cut: cut::CutWalk::default(),
             walked: None,
             walked_optimized: false,
+            exited_physical: None,
+            #[cfg(test)]
+            recorder: None,
             refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
             block_stale: true,
@@ -2901,6 +2965,63 @@ pub(crate) struct Installed {
     pub(crate) reifies: bool,
     /// Whether the code is the body's optimized code (`Tier::Optimized`).
     pub(crate) optimized: bool,
+}
+
+/// An address inside an inlined scope of an installed copy of optimized
+/// code: the copy's metadata, and the index of the interrupt point the
+/// address belongs to.
+#[derive(Clone)]
+pub(crate) struct InlinedAt {
+    pub(crate) metadata: Rc<OptimizedMetadata>,
+    pub(crate) point: usize,
+}
+
+impl InlinedAt {
+    /// The chain of scopes the point stops in, innermost first, the body's
+    /// own last.
+    #[cfg(ns_jit)]
+    pub(crate) fn chain(&self) -> &[optimizing::metadata::ScopeAtPoint] {
+        &self.metadata.points[self.point].scopes
+    }
+
+    /// The body, method and feedback base of the scope `scope` of the copy.
+    #[cfg(ns_jit)]
+    pub(crate) fn scope(&self, scope: optimizing::graph::ScopeId) -> &InlinedScope {
+        self.metadata.scopes[scope.0 as usize]
+            .as_ref()
+            .expect("internal: a point's inlined scope is recorded")
+    }
+}
+
+/// What an installed copy of optimized code that inlines keeps of its
+/// interrupt points (`docs/design/execution.md`, "Inlining"): each point's
+/// chain of scopes, the point every address inside an inlined scope's
+/// code belongs to -- an exit's, a leaf call's and a call's return
+/// address -- by its offset from the copy's start, which a compaction
+/// keeps, and the body each inlined scope runs. An exit there leaves the
+/// physical frame standing for every scope of the chain, each of whose
+/// headers the exit's walk writes in place (`jit::materialize`).
+#[cfg(ns_jit)]
+pub(crate) struct OptimizedMetadata {
+    pub(crate) points: Vec<optimizing::metadata::InterruptPoint>,
+    pub(crate) by_address: std::collections::HashMap<u32, usize>,
+    /// Each scope's body, by its `ScopeId`; `None` for the copy's own,
+    /// which its installed body names.
+    pub(crate) scopes: Vec<Option<InlinedScope>>,
+}
+
+/// Without a JIT no copy inlines.
+#[cfg(not(ns_jit))]
+pub(crate) struct OptimizedMetadata;
+
+/// The body an inlined scope runs: held strongly, so that an exit can
+/// write the scope's frame -- its code's row, its method's selector --
+/// however long the copy lives, as a frame of the body would hold it.
+#[cfg(ns_jit)]
+pub(crate) struct InlinedScope {
+    pub(crate) code: Rc<CompiledCode>,
+    pub(crate) method: Option<Rc<MixinMethod>>,
+    pub(crate) feedback_base: FeedbackBase,
 }
 
 /// How many bodies `BodyLookup` remembers: a power of two.
@@ -3877,14 +3998,31 @@ impl JitState {
     /// Where the run loop's push enters `code`'s optimized code for an
     /// activation with `key`, past its prologue, for an activation with
     /// `feedback_base`, when it has some.
+    #[cfg(test)]
     fn optimized_push_entry(
         &self,
         code: &CompiledCode,
         feedback_base: FeedbackBase,
         key: Option<CustomizationKey>,
     ) -> Option<CodeOffset> {
+        self.optimized_push(code, feedback_base, key)
+            .map(|(entry, _, _)| entry)
+    }
+
+    /// `optimized_push_entry`, with the copy's deepest chain of inlined
+    /// scopes and one past the highest physical register they reach.
+    fn optimized_push(
+        &self,
+        code: &CompiledCode,
+        feedback_base: FeedbackBase,
+        key: Option<CustomizationKey>,
+    ) -> Option<(CodeOffset, u16, u32)> {
         let body = self.optimized_for(code, key)?;
-        (body.feedback_base == feedback_base).then_some(CodeOffset(body.start + body.push_entry))
+        (body.feedback_base == feedback_base).then_some((
+            CodeOffset(body.start + body.push_entry),
+            body.deepest_chain,
+            body.deepest_extent,
+        ))
     }
 
     /// Where the run loop enters `code`'s baseline code at the instruction
@@ -4354,9 +4492,9 @@ fn needed_bytes(body: &baseline::BaselineBody) -> u32 {
 /// one's -- against `feedback_base`, and records its call returns,
 /// answering its index among the installed bodies: `Refusal::TooLarge`
 /// for a body the zone could not hold even with every other body freed,
-/// and `Refusal::ZoneFull` for one the room left does not hold. `baseline`
-/// names the lean body whose optimized code `body` is, `None` for baseline
-/// code.
+/// and `Refusal::ZoneFull` for one the room left does not hold.
+/// `optimized` names the lean body whose optimized code `body` is, and
+/// what the copy keeps of its inlining; `None` for baseline code.
 #[cfg(ns_jit)]
 fn install_body(
     state: &mut JitState,
@@ -4365,8 +4503,12 @@ fn install_body(
     feedback_base: FeedbackBase,
     body: baseline::BaselineBody,
     settings: CompileSettings,
-    baseline: Option<u32>,
+    optimized: Option<OptimizedInstall>,
 ) -> Result<u32, Refusal> {
+    let baseline = optimized.as_ref().map(|optimized| optimized.baseline);
+    let metadata = optimized
+        .as_ref()
+        .and_then(|optimized| optimized.metadata.clone());
     let Some(zone) = state.zone.as_mut() else {
         panic!("internal: the JIT is on without a zone");
     };
@@ -4389,9 +4531,18 @@ fn install_body(
     let offset = install_aligned(zone, &body.code.bytes, body.code.alignment)?;
     let length = u32::try_from(body.code.bytes.len()).map_err(|_| Refusal::ZoneFull)?;
     for call in &body.map.returns {
+        // A call made inside an inlined scope is its scope's body's send.
+        let scope_code = metadata.as_ref().and_then(|metadata| {
+            let point = metadata.by_address.get(&call.machine_offset)?;
+            let scope = metadata.points[*point].scopes[0].scope;
+            metadata.scopes[scope.0 as usize]
+                .as_ref()
+                .map(|scope| Rc::clone(&scope.code))
+        });
+        let call_code = scope_code.as_ref().unwrap_or(code);
         // Every call of a body is a cached send's or an initializer
         // invocation's (`sends`).
-        let Some(slots) = sends::call_slots(code, call.program_counter) else {
+        let Some(slots) = sends::call_slots(call_code, call.program_counter) else {
             unreachable!("internal: a body calls only at a cached send or an initializer's");
         };
         state.returns.insert(
@@ -4481,6 +4632,14 @@ fn install_body(
         optimized_needed: 0,
         key: None,
         dispatching,
+        metadata,
+        deepest_chain: optimized
+            .as_ref()
+            .map_or(0, |optimized| optimized.deepest_chain),
+        deepest_extent: optimized
+            .as_ref()
+            .map_or(0, |optimized| optimized.deepest_extent),
+        guards: optimized.map_or_else(Vec::new, |optimized| optimized.guards),
     });
     // Until it is pointed at its row the code spends from the unpointed
     // budget, whose first spend calls the leaf: the word is never one the
@@ -5061,35 +5220,40 @@ fn optimize(
         Some(optimizing::snapshot::Customization { key, own_slot_base })
     });
     let started = std::time::Instant::now();
-    let snapshot = optimizing::snapshot::Snapshot::take(
+    let tree = optimizing::tree::SnapshotTree::take(
         code,
         &mut mutator.heap,
         &mutator.caches,
         feedback_base,
         customization,
+        &optimizing::plan::Limits::STANDARD,
     );
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
     // Under the invalidate stress mode the countdown's last point leaves
     // for the safepoint that runs its round (`invalidation_due_for_stress`).
-    macro_assembler
-        .set_deoptimize_by_countdown(mutator.jit.deopt_stress || mutator.jit.invalidate_stress);
-    macro_assembler.set_count_down_at_entry(mutator.jit.invalidate_stress);
+    // The entry is a point of the countdown under both: a copy whose
+    // callees are all inlined has no other on a path without a loop.
+    let countdown = mutator.jit.deopt_stress || mutator.jit.invalidate_stress;
+    macro_assembler.set_deoptimize_by_countdown(countdown);
+    macro_assembler.set_count_down_at_entry(countdown);
     let role = baseline::BodyRole::of(code, method.is_some());
-    let installation = optimizing::compile(
-        &snapshot,
+    let installation = optimizing::compile_tree(
+        &tree,
         macro_assembler,
         role,
         settings.futures_exit,
         optimizing::Speculation::at_version(code.jit.optimized_version(key)),
     )
-    .and_then(|optimized| {
+    .and_then(|mut optimized| {
+        let metadata = optimized_metadata(&mutator.heap, &mut optimized)?;
         install_optimized(
             &mut mutator.jit,
             code,
             method.as_ref(),
             (lean, feedback_base, settings, key),
             optimized,
+            metadata,
         )
     });
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -5192,14 +5356,17 @@ fn install_optimized(
         Option<CustomizationKey>,
     ),
     optimized: optimizing::emit::OptimizedBody,
+    metadata: Option<Rc<OptimizedMetadata>>,
 ) -> Result<u32, Refusal> {
     let optimizing::emit::OptimizedBody {
         code: assembled,
         returns,
         words,
         twin_transfers,
-        metadata: _,
         push_entry,
+        deepest_chain,
+        deepest_extent,
+        guards,
         ..
     } = optimized;
     let mut returns: Vec<CallReturn> = returns
@@ -5232,7 +5399,13 @@ fn install_optimized(
         feedback_base,
         body,
         settings,
-        Some(lean),
+        Some(OptimizedInstall {
+            baseline: lean,
+            metadata,
+            deepest_chain,
+            deepest_extent,
+            guards,
+        }),
     )
     .inspect_err(|refusal| {
         // What a compaction must free, and what the body waits for while
@@ -5245,6 +5418,54 @@ fn install_optimized(
     state.bodies[index as usize].push_entry = push_entry;
     state.bodies[index as usize].key = key;
     Ok(index)
+}
+
+/// What an install of optimized code takes beside its code: the lean
+/// body it is the optimized code of, by its index in `bodies`, and what
+/// it keeps of its inlining.
+#[cfg(ns_jit)]
+struct OptimizedInstall {
+    baseline: u32,
+    metadata: Option<Rc<OptimizedMetadata>>,
+    deepest_chain: u16,
+    deepest_extent: u32,
+    guards: Vec<DispatchId>,
+}
+
+/// What a copy of `optimized` keeps of its interrupt points inside
+/// inlined scopes (`OptimizedMetadata`), each scope's body found in
+/// `heap`, which registered it with its method when the tree was taken
+/// at this safepoint; `None` for code that inlines nothing, and for one
+/// whose body `heap` no longer names, which no compile at the tree's
+/// safepoint meets.
+#[cfg(ns_jit)]
+fn optimized_metadata(
+    heap: &Heap<'_>,
+    optimized: &mut optimizing::emit::OptimizedBody,
+) -> Result<Option<Rc<OptimizedMetadata>>, Refusal> {
+    if optimized.sites.is_empty() {
+        return Ok(None);
+    }
+    let mut scopes = vec![None];
+    for (code_id, feedback_base) in optimized.scopes.iter().skip(1) {
+        let (Some(code), Some(method)) = (heap.code(*code_id), heap.code_method(*code_id)) else {
+            return Err(Refusal::Unassembled(None));
+        };
+        scopes.push(Some(InlinedScope {
+            code,
+            method: Some(method),
+            feedback_base: *feedback_base,
+        }));
+    }
+    Ok(Some(Rc::new(OptimizedMetadata {
+        points: std::mem::take(&mut optimized.metadata.points),
+        by_address: optimized
+            .sites
+            .iter()
+            .map(|(offset, point)| (*offset, *point as usize))
+            .collect(),
+        scopes,
+    })))
 }
 
 #[cfg(not(ns_jit))]
@@ -5345,11 +5566,23 @@ pub(crate) fn entered(
     // A push enters the body's optimized code for the frame's key once it
     // has some, unless the frame is reified already, which only the twin,
     // baseline code, keeps (`entry_of_frame`).
+    // A copy whose inlined scopes the depth limit or the stack's room would
+    // not hold above this frame is not entered either: its baseline code
+    // pushes them one by one, and overflows or grows the stack where the
+    // interpreter does, as optimized code's prologue refuses a call for
+    // them (`sends::prologue`).
     let key = activation_key(&mutator.heap, code, activation);
     let optimized = mutator
         .jit
-        .optimized_push_entry(code, feedback_base, key)
-        .filter(|_| mutator.heap.activation_reified(activation).is_none());
+        .optimized_push(code, feedback_base, key)
+        .filter(|_| mutator.heap.activation_reified(activation).is_none())
+        .filter(|(_, chain, extent)| {
+            *chain == 0
+                || mutator
+                    .heap
+                    .machine_frame_fits(register_base, *chain, *extent)
+        })
+        .map(|(entry, _, _)| entry);
     match optimized.or_else(|| entry_of_frame(mutator, activation, code, feedback_base, 0)) {
         Some(entry) => run_machine_code(mutator, activation, register_base, entry),
         None => Resumption::Interpreted {
@@ -5620,6 +5853,7 @@ fn run_machine_code(
     mutator.jit.statistics.machine_entries += 1;
     mutator.jit.walked = None;
     mutator.jit.walked_optimized = false;
+    mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
     let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
@@ -5633,8 +5867,13 @@ fn run_machine_code(
     // compiled frame lay above it.
     let (innermost, optimized) = match mutator.jit.take_walked() {
         Some(walked) => walked,
-        // The entry's own frame exited, in the code the exit names.
-        None => (activation, mutator.jit.exited_optimized(&block)),
+        // The entry's own frame exited, in the code the exit names --
+        // inside an inlined scope of it, whose scopes the exit leaves it
+        // standing for.
+        None => match materialize::materialize_at_entry(mutator, activation, kind) {
+            Some(innermost) => (innermost, true),
+            None => (activation, mutator.jit.exited_optimized(&block)),
+        },
     };
     resumption_after_exit(mutator, &block, kind, innermost, optimized)
 }
@@ -5826,6 +6065,7 @@ fn call_through(
     mutator.jit.statistics.called_entries += 1;
     mutator.jit.walked = None;
     mutator.jit.walked_optimized = false;
+    mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
@@ -6035,6 +6275,9 @@ fn resumption_after_exit(
 
     let exit = stubs::decode_exit(block, kind);
     mutator.jit.statistics.exits += 1;
+    // The frame of the copy the exit left, when the innermost frame is an
+    // inlined scope of it.
+    let physical = mutator.jit.exited_physical.take();
     // The deopt stress mode's forced exits count against no budget, as
     // the exit stress mode's forced polls do not: they say nothing of the
     // code, and counted they would abandon every optimized body within a
@@ -6066,8 +6309,24 @@ fn resumption_after_exit(
     // forced exit it says nothing of the caller's code, and counted it
     // would abandon a hot caller of callees optimized one after another.
     // The interpreter's push, at the safepoint, decides the depth limit.
-    let refused_for_a_request = matches!(exit, MachineExit::PushRefused { at_the_bound: true })
-        && mutator.heap.real_safepoint_requested();
+    let refused_for_a_request = matches!(
+        exit,
+        MachineExit::PushRefused {
+            at_the_bound: true,
+            ..
+        }
+    ) && mutator.heap.real_safepoint_requested();
+    // Nor does a push optimized code's prologue refused for its inlined
+    // scopes alone: the interpreter's push goes on in the callee's
+    // baseline code (`entered`), which overflows only where the
+    // interpreter does.
+    let refused_for_its_inlining = matches!(
+        exit,
+        MachineExit::PushRefused {
+            for_its_inlining: true,
+            ..
+        }
+    );
     // A call the miss leaf refused because its callee has no machine code
     // yet, while the zone has room to compile it, says nothing of the
     // caller's code either: the interpreter's push counts the callee's
@@ -6080,7 +6339,8 @@ fn resumption_after_exit(
             && matches!(
                 exit,
                 MachineExit::PushRefused {
-                    at_the_bound: false
+                    at_the_bound: false,
+                    for_its_inlining: false,
                 }
             );
     // The stress mode enters every body at every push, however often it
@@ -6091,16 +6351,21 @@ fn resumption_after_exit(
     ) && !mutator.jit.install_bodies_exiting_at_once
         && !forced
         && !refused_for_a_request
+        && !refused_for_its_inlining
         && !refused_for_an_uncompiled_callee
     {
-        let code = mutator.heap.activation_code(innermost);
+        // An exit inside an inlined scope is the physical frame's copy's.
+        let physical = physical.unwrap_or(innermost);
+        let code = mutator.heap.activation_code(physical);
         // The copy the frame ran is the one its key names: a copy is
         // entered only where its key holds.
         let key = optimized
-            .then(|| activation_key(&mutator.heap, &code, innermost))
+            .then(|| activation_key(&mutator.heap, &code, physical))
             .flatten();
         count_exit(mutator, &code, optimized, key);
     }
+    #[cfg(test)]
+    inlining_tests::record_exit(mutator, innermost, physical.is_some());
     // The innermost frame goes on interpreted from here: it no longer
     // stands in machine code, which only the frames below it still do.
     mutator.heap.clear_compiled(innermost);
@@ -6119,7 +6384,7 @@ fn resumption_after_exit(
             site,
         } => {
             debug_assert!(optimized, "internal: only optimized code traps");
-            count_trap(mutator, innermost, site);
+            count_trap(mutator, innermost, physical, site);
             Resumption::Interpreted {
                 activation: innermost,
                 program_counter,
@@ -6285,20 +6550,34 @@ fn abandon_optimized(
 /// not that the code exits where it must. Between entries only, as every
 /// retirement is.
 #[cfg(ns_jit)]
-fn count_trap(mutator: &mut Mutator<'_>, innermost: ActivationReference, site: u32) {
+fn count_trap(
+    mutator: &mut Mutator<'_>,
+    innermost: ActivationReference,
+    physical: Option<ActivationReference>,
+    site: u32,
+) {
     mutator.jit.statistics.traps += 1;
-    let code = mutator.heap.activation_code(innermost);
+    // A trap inside an inlined scope counts against the physical frame's
+    // copy, at the site of the scope that trapped, whose bit every compile
+    // inlining its body reads.
+    let frame = physical.unwrap_or(innermost);
+    let code = mutator.heap.activation_code(frame);
     // The copy the frame ran is the one its key names: a copy is entered
     // only where its key holds.
-    let key = activation_key(&mutator.heap, &code, innermost);
+    let key = activation_key(&mutator.heap, &code, frame);
     let Some(body) = mutator.jit.optimized_for(&code, key) else {
         return;
     };
-    let (feedback_base, copy) = (body.feedback_base, body.key);
+    let (mut feedback_base, copy) = (body.feedback_base, body.key);
+    let mut family_size = code.family_size;
+    if physical.is_some() {
+        feedback_base = mutator.heap.activation_feedback_base(innermost);
+        family_size = mutator.heap.activation_code(innermost).family_size;
+    }
     // A site past the family runs uncached and records nothing, as one of
     // a family without a range does, and its bit would be a neighbouring
     // family's: it reads as trapped before, as the snapshot reads it.
-    let trapped_before = site >= code.family_size || mutator.caches.note_trap(feedback_base, site);
+    let trapped_before = site >= family_size || mutator.caches.note_trap(feedback_base, site);
     let traps = code.jit.count_trap(copy);
     if (trapped_before || traps >= TRAP_LIMIT) && retire_optimized(mutator, &code, copy) {
         mutator.jit.statistics.made_not_entrant += 1;
@@ -6594,6 +6873,20 @@ pub(crate) fn invalidate_optimized_for_stress(mutator: &mut Mutator<'_>) {
 impl JitState {
     /// Every live body with optimized code installed, each once.
     #[cfg(ns_jit)]
+    /// The body and key of every installed optimized copy one of whose
+    /// type-cases tests one of `guards`.
+    fn copies_testing(
+        &self,
+        guards: &std::collections::HashSet<DispatchId, crate::hash::IdentityBuildHasher>,
+    ) -> Vec<(Rc<CompiledCode>, Option<CustomizationKey>)> {
+        self.bodies
+            .iter()
+            .filter(|body| !body.free && body.tier == Tier::Optimized)
+            .filter(|body| body.guards.iter().any(|guard| guards.contains(guard)))
+            .filter_map(|body| Some((body.code.upgrade()?, body.key)))
+            .collect()
+    }
+
     fn codes_with_optimized_bodies(&self) -> Vec<Rc<CompiledCode>> {
         let mut codes: Vec<Rc<CompiledCode>> = Vec::new();
         for body in &self.bodies {
@@ -6657,6 +6950,12 @@ pub(crate) fn forget_freed_copies(
             invalidate_copy(mutator, &code, Some(key), &mut entries);
         }
         code.jit.copies.borrow_mut().retain(|copy| !stale(copy.key));
+    }
+    // A type-case's arm tests a guard the collection mints again for
+    // another application, which would run the inlined callee of the dead
+    // one: its copy goes too, its key's row staying.
+    for (code, key) in mutator.jit.copies_testing(&freed.guards) {
+        invalidate_copy(mutator, &code, key, &mut entries);
     }
     mutator
         .jit

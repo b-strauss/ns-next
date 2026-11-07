@@ -15,13 +15,6 @@
 //! and not walked into. The bodies are walked lightest chain first, so
 //! that a body reached by several chains is walked once, from its
 //! lightest, and recursion ends.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the inlining plan reads the tree; no compile takes it yet"
-    )
-)]
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -34,7 +27,7 @@ use crate::interpreter::inline_cache::{
     CacheEntry, FeedbackBase, InlineCaches, SiteEntries, Target,
 };
 use crate::interpreter::resolve::Chain;
-use crate::mixin::{AccessorKind, DispatchId, MethodFastPath};
+use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, MixinMethod};
 
 use super::plan::{weight_with, Limits};
 use super::snapshot::{Customization, Snapshot};
@@ -119,6 +112,21 @@ pub(crate) struct SnapshotTree {
 }
 
 impl SnapshotTree {
+    /// The tree of `root` alone, with no site recorded: what a compile of
+    /// a body that inlines nothing plans on.
+    #[cfg(test)]
+    pub(crate) fn alone(root: Snapshot) -> SnapshotTree {
+        SnapshotTree {
+            root,
+            sites: HashMap::new(),
+            blocks: HashMap::new(),
+            callees: HashMap::new(),
+            budgets: HashMap::new(),
+            root_receiver: None,
+            root_entered: None,
+        }
+    }
+
     /// The snapshot of the body `code_id` names: the root's, a method
     /// callee's or a block's.
     pub(crate) fn snapshot_of(&self, code_id: CodeId) -> Option<&Snapshot> {
@@ -322,7 +330,7 @@ impl Walk<'_> {
                 ..
             } => match method.fast_path {
                 Some(fast_path) => CalleeFacts::FastPath(fast_path),
-                None => self.method(&method.code, *feedback_base, *level, send_site, heap),
+                None => self.method(method, *feedback_base, *level, send_site, heap),
             },
             Target::Slot {
                 field, kind, level, ..
@@ -341,19 +349,23 @@ impl Walk<'_> {
         Some((receiver, callee))
     }
 
-    /// The method callee `code`, whose family's range is at `base`, sent
+    /// The method callee `method`, whose family's range is at `base`, sent
     /// at `send_site`: its snapshot, taken once whatever number of sites reach
     /// it, and the body queued for the walk -- or `Other` when no plan
-    /// could inline it there (the module's comment).
+    /// could inline it there (the module's comment). Its body is
+    /// registered with the method, so that an exit inside its inlined
+    /// scope names the frame it materializes there by its method
+    /// (`jit::materialize`).
     fn method(
         &mut self,
-        code: &Rc<CompiledCode>,
+        method: &Rc<MixinMethod>,
         base: FeedbackBase,
         level: u16,
         send_site: &Site,
         heap: &mut Heap,
     ) -> CalleeFacts {
-        let code_id = heap.code_id(code);
+        let code = &method.code;
+        let code_id = heap.code_id_of_method(method);
         let snapshot = match self.tree.callees.get(&code_id) {
             Some(snapshot) => snapshot.clone(),
             None => {

@@ -220,6 +220,55 @@ pub(super) struct BodyAssembler {
     /// none again -- and whose templates take no backward jump: the graph
     /// gives every way back a block of its own, which polls.
     optimized: bool,
+    /// How many inlined scopes deep the instruction being lowered lies in
+    /// optimized code, 0 in its body's own scope: what a real send there
+    /// adds to the depth count around its call (`call_send`).
+    pub(super) inlined_depth: u16,
+    /// For optimized code, the most scopes its inlining nests below the
+    /// body's own, and one past the highest physical register any of them
+    /// reaches: what its prologue holds the depth limit and the stack's
+    /// room to (`sends::prologue`); 0 for a body that inlines nothing.
+    pub(super) deepest_chain: u16,
+    pub(super) deepest_extent: u32,
+}
+
+/// What the templates read of the body whose instruction is being
+/// lowered, apart from the instruction: optimized code lowers each
+/// inlined scope's frame nodes with its scope's (`BodyAssembler::enter_scope`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScopeFacts {
+    pub(super) argument_count: u16,
+    pub(super) declaration_code: bool,
+    pub(super) feedback_base: FeedbackBase,
+    pub(super) family_size: u32,
+    pub(super) window_end: u16,
+    pub(super) role: BodyRole,
+    pub(super) frame_register_count: usize,
+    pub(super) instruction_count: u32,
+    pub(super) inlined_depth: u16,
+}
+
+impl ScopeFacts {
+    /// The facts of a body of `facts` whose sends' cells are found from
+    /// `feedback_base`, lowered as `role`, `inlined_depth` scopes deep.
+    pub(crate) fn of(
+        facts: &BodyFacts,
+        feedback_base: FeedbackBase,
+        role: BodyRole,
+        inlined_depth: u16,
+    ) -> ScopeFacts {
+        ScopeFacts {
+            argument_count: facts.argument_count,
+            declaration_code: facts.declaration_code,
+            feedback_base,
+            family_size: facts.family_size,
+            window_end: facts.window_end(),
+            role,
+            frame_register_count: facts.frame_register_count,
+            instruction_count: facts.instruction_count,
+            inlined_depth,
+        }
+    }
 }
 
 /// The scratch registers a template uses, by role.
@@ -308,7 +357,47 @@ impl BodyAssembler {
             futures_exit,
             budget_word: None,
             optimized: true,
+            inlined_depth: 0,
+            deepest_chain: 0,
+            deepest_extent: 0,
         })
+    }
+
+    /// Lowers the instructions to come as those of the scope `scope`
+    /// describes -- an inlined scope of optimized code, or the body's own
+    /// again -- and answers the facts it lowered with before. Every
+    /// template reads its scope's argument count, cells and window, with
+    /// the frame register at the scope's register 0 (`MacroAssembler::shift_frame`).
+    pub(super) fn enter_scope(&mut self, scope: &ScopeFacts) -> ScopeFacts {
+        let before = ScopeFacts {
+            argument_count: self.argument_count,
+            declaration_code: self.declaration_code,
+            feedback_base: self.feedback_base,
+            family_size: self.family_size,
+            window_end: self.window_end,
+            role: self.role,
+            frame_register_count: self.frame_register_count,
+            instruction_count: u32::try_from(self.starts.len())
+                .expect("internal: a body's instructions are numbered in 32 bits"),
+            inlined_depth: self.inlined_depth,
+        };
+        self.argument_count = scope.argument_count;
+        self.declaration_code = scope.declaration_code;
+        self.feedback_base = scope.feedback_base;
+        self.family_size = scope.family_size;
+        self.window_end = scope.window_end;
+        self.role = scope.role;
+        self.frame_register_count = scope.frame_register_count;
+        self.inlined_depth = scope.inlined_depth;
+        // Optimized code points each jump's label at the block it enters
+        // before the template that jumps (`set_start`), so a scope longer
+        // than the body only needs the room.
+        let count = scope.instruction_count as usize;
+        while self.starts.len() < count {
+            let label = self.macro_assembler.assembler().label();
+            self.starts.push(label);
+        }
+        before
     }
 
     /// Makes `label` the place a template's jump to the instruction at
@@ -969,10 +1058,20 @@ impl BodyAssembler {
     /// stack finds -- maps back to the send being lowered
     /// (`ProgramCounterMap::program_counter_of_return`). Every call a
     /// send's template emits goes through here, so none is left unmapped.
+    /// A send in an inlined scope of optimized code adds its depth to the
+    /// depth count for the call's length, so that the callee's push
+    /// compares and counts as the interpreter's would with every scope an
+    /// activation (`docs/design/execution.md`, "Safepoints and the depth
+    /// limit"): an exit above the call materializes them, counted already,
+    /// and the call's return takes them off. Clobbers the flags and the
+    /// idiom scratch register when it adds anything.
     pub(super) fn call_send(&mut self, target: Register) {
+        let depth = i32::from(self.inlined_depth);
+        self.macro_assembler.adjust_depth_count(depth);
         let return_address = self.macro_assembler.call_returning(target);
         self.call_returns
             .push((return_address, self.program_counter));
+        self.macro_assembler.adjust_depth_count(-depth);
     }
 
     /// `SendMirror` of a leaf-safe row: the mirror leaf's call, which runs
@@ -1139,6 +1238,9 @@ pub(crate) fn compile(
         futures_exit,
         budget_word: None,
         optimized: false,
+        inlined_depth: 0,
+        deepest_chain: 0,
+        deepest_extent: 0,
     };
     // A method's lean body is entered by a `super` or private lexical
     // send through its dispatching entry once it has copies
@@ -1718,6 +1820,9 @@ mod tests {
             futures_exit: false,
             budget_word: None,
             optimized: false,
+            inlined_depth: 0,
+            deepest_chain: 0,
+            deepest_extent: 0,
         };
         // Each call is followed by more code of its instruction, so that a
         // label bound anywhere but right after the call would show.

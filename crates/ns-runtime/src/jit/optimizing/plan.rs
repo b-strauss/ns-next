@@ -25,13 +25,6 @@
 //! that materializes it reads them there. A value send of a block that is
 //! created after all is sent: its inlined scope is dropped, with every
 //! scope below it, and the decision made again until nothing changes.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the graph builder is to read the plan; no compile makes one yet"
-    )
-)]
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
@@ -123,6 +116,7 @@ impl Limits {
 /// fallback send, a conditional's not-Boolean way up to its send -- costs
 /// an instruction each, so that an inlined conditional or an addition
 /// weighs what it runs.
+#[cfg(test)]
 pub(crate) fn weight(snapshot: &Snapshot) -> u32 {
     weight_with(snapshot, |_| false)
 }

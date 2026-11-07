@@ -195,9 +195,12 @@ pub(crate) enum MachineExit {
     },
     /// `at_the_bound` when the callee's prologue refused it at the depth
     /// limit word (`REFUSED_AT_THE_BOUND`), which a real safepoint request
-    /// lowers to 0.
+    /// lowers to 0; `for_its_inlining` when optimized code's prologue
+    /// refused it within its deepest chain of inlined scopes of the word
+    /// (`REFUSED_WITHIN_THE_INLINED_DEPTH`).
     PushRefused {
         at_the_bound: bool,
+        for_its_inlining: bool,
     },
     Returned {
         value: u64,
@@ -216,6 +219,13 @@ pub(crate) enum MachineExit {
 /// frame.
 pub(crate) const REFUSED_AT_THE_BOUND: u32 = 1;
 
+/// What a `PushRefused` exit's program-counter word holds when optimized
+/// code's prologue refused the call because its deepest chain of inlined
+/// scopes would pass the depth limit word, while the frame itself would
+/// not (`jit::sends::prologue`): no overflow the interpreter would raise,
+/// so it counts against no budget.
+pub(crate) const REFUSED_WITHIN_THE_INLINED_DEPTH: u32 = 2;
+
 /// The exit `kind` and the block an entry left behind describe.
 ///
 /// # Panics
@@ -231,6 +241,7 @@ pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
     if kind == ExitKind::PushRefused as u64 {
         return MachineExit::PushRefused {
             at_the_bound: word == u64::from(REFUSED_AT_THE_BOUND),
+            for_its_inlining: word == u64::from(REFUSED_WITHIN_THE_INLINED_DEPTH),
         };
     }
     let Ok(program_counter) = u32::try_from(word) else {

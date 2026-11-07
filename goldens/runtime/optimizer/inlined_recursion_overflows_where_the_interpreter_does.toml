@@ -1,0 +1,12 @@
+status = 1
+stdout = '''
+20000
+49997
+49997
+49997
+49997
+49997
+'''
+stderr = '''
+Uncaught Newspeak error: stack overflow: recursion too deep
+'''

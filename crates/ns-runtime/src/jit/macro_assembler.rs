@@ -639,7 +639,7 @@ pub(crate) struct MacroAssembler {
     deoptimize_by_countdown: bool,
     /// Whether optimized code's push entry is an interrupt point of the
     /// countdown too (`count_down_at_entry`), as under
-    /// `NS_NEXT_STRESS_INVALIDATE`.
+    /// `NS_NEXT_STRESS_DEOPT` and `NS_NEXT_STRESS_INVALIDATE`.
     count_down_at_entry: bool,
     /// Whether a back edge counts itself (`count_back_edge`).
     count_back_edges: bool,
@@ -657,6 +657,22 @@ pub(crate) struct MacroAssembler {
     /// checked against when `finish` emits it after the straight line.
     #[cfg(debug_assertions)]
     cold_path_holds: Vec<Vec<Register>>,
+    /// The interrupt point of optimized code the code being emitted
+    /// belongs to, where it lies in an inlined scope (`set_site`): every
+    /// address inside the code it hands a leaf or an exit, and every
+    /// return address of its calls, is recorded with it, so that the walk
+    /// and the leaves find the chain of scopes the address stands in.
+    site: Option<u32>,
+    /// Each address recorded so (`site`): a label bound at it, and its
+    /// point.
+    site_addresses: Vec<(Label, u32)>,
+    /// For each cold path, by its index, the site it was queued in, which
+    /// `finish` emits it in.
+    cold_path_sites: Vec<Option<u32>>,
+    /// How many words the frame register stands above the physical
+    /// frame's register 0 (`shift_frame`): optimized code moves it to an
+    /// inlined scope's register 0 around that scope's frame nodes.
+    frame_shift: i32,
     /// The `SmallInteger` tag tests emitted, which the optimizing
     /// compiler's tests count to see a known operand's left out.
     #[cfg(test)]
@@ -688,9 +704,120 @@ impl MacroAssembler {
             values_held: Vec::new(),
             #[cfg(debug_assertions)]
             cold_path_holds: Vec::new(),
+            site: None,
+            site_addresses: Vec::new(),
+            cold_path_sites: Vec::new(),
+            frame_shift: 0,
             #[cfg(test)]
             small_integer_tag_tests: 0,
         }
+    }
+
+    /// Says which interrupt point of optimized code the code emitted next
+    /// belongs to: `Some` for one inside an inlined scope, whose addresses
+    /// are recorded (`finish_with_sites`), `None` for the body's own
+    /// scope, whose addresses name the body alone.
+    pub(crate) fn set_site(&mut self, site: Option<u32>) {
+        self.site = site;
+    }
+
+    /// Records the address the code has reached, if it belongs to a site.
+    fn record_site_address(&mut self) {
+        if let Some(site) = self.site {
+            let label = self.assembler.label();
+            self.assembler.bind(label);
+            self.site_addresses.push((label, site));
+        }
+    }
+
+    /// `target :=` the address of the next instruction, recorded with the
+    /// site the code belongs to.
+    fn load_code_address(&mut self, target: Register) {
+        self.assembler.load_code_address(target);
+        self.record_site_address();
+    }
+
+    /// Moves the frame register `words` registers up (down, for a negative
+    /// count): optimized code's shift to an inlined scope's register 0
+    /// around that scope's frame nodes, so that every template runs
+    /// unchanged there (`docs/design/execution.md`, "Inlining").
+    /// Clobbers the flags.
+    pub(crate) fn shift_frame(&mut self, words: i32) {
+        if words == 0 {
+            return;
+        }
+        self.assembler
+            .add_immediate(self.roles.frame, words * WORD_BYTES);
+        self.frame_shift += words;
+    }
+
+    /// How far the frame register stands above the physical frame's
+    /// register 0, in words.
+    pub(crate) fn frame_shift(&self) -> i32 {
+        self.frame_shift
+    }
+
+    /// Declares the shift the frame register stands at where the code
+    /// emitted next runs: out-of-line code, entered from a place whose
+    /// shift it takes over. Emits nothing.
+    pub(crate) fn assume_frame_shift(&mut self, words: i32) {
+        self.frame_shift = words;
+    }
+
+    /// The physical frame's register `physical`, wherever the frame
+    /// register stands (`shift_frame`).
+    fn physical_slot(&self, physical: u16) -> Memory {
+        Memory {
+            base: self.roles.frame,
+            displacement: (i32::from(physical) - self.frame_shift) * WORD_BYTES,
+        }
+    }
+
+    /// `load_frame_register` of the physical frame's register `physical`,
+    /// wherever the frame register stands.
+    pub(crate) fn load_physical_register(&mut self, target: Register, physical: u16) {
+        let slot = self.physical_slot(physical);
+        self.load_frame_slot(target, slot, physical);
+    }
+
+    /// `store_frame_register` into the physical frame's register
+    /// `physical`, wherever the frame register stands. Keeps the flags.
+    pub(crate) fn store_physical_register(&mut self, physical: u16, source: Register) {
+        let slot = self.physical_slot(physical);
+        self.assembler.store(Width::Word64, slot, source);
+    }
+
+    /// `target :=` the physical frame's header word `physical`, which is
+    /// never dead, wherever the frame register stands. Keeps the flags.
+    pub(crate) fn load_physical_header(&mut self, target: Register, physical: u16) {
+        let slot = self.physical_slot(physical);
+        self.assembler.load(Width::Word64, target, slot);
+    }
+
+    /// The physical frame's word `physical := word`, a word that fits a
+    /// sign-extended 32-bit immediate, wherever the frame register stands.
+    /// Keeps the flags.
+    pub(crate) fn store_physical_immediate(&mut self, physical: u16, word: i32) {
+        let slot = self.physical_slot(physical);
+        self.assembler.store_immediate32(slot, word);
+    }
+
+    /// Adds `delta` to the depth count (`MachineWord::DepthCount`): what a
+    /// real send `delta` inlined scopes deep adds before its call and takes
+    /// off after it, so that the callee's push counts the activations an
+    /// exit would materialize there (`docs/design/execution.md`,
+    /// "Safepoints and the depth limit"). Clobbers the flags and the idiom
+    /// scratch register.
+    pub(crate) fn adjust_depth_count(&mut self, delta: i32) {
+        if delta == 0 {
+            return;
+        }
+        let machine_words = self.roles.idiom_scratch;
+        self.load_machine_words(machine_words);
+        self.assembler.subtract_from_memory(
+            MacroAssembler::machine_word(machine_words, MachineWord::DepthCount),
+            -delta,
+        );
     }
 
     /// How many `SmallInteger` tag tests the code emitted so far holds.
@@ -704,6 +831,7 @@ impl MacroAssembler {
     fn push_cold_path(&mut self, cold_path: ColdPath) {
         #[cfg(debug_assertions)]
         self.cold_path_holds.push(self.values_held.clone());
+        self.cold_path_sites.push(self.site);
         self.cold_paths.push(cold_path);
     }
 
@@ -818,9 +946,10 @@ impl MacroAssembler {
     }
 
     /// Makes the entry of the optimized code emitted from now on an
-    /// interrupt point of the countdown (`true`), as under the invalidate
-    /// stress mode, whose countdown would otherwise never move in a copy
-    /// without a send or a loop, or emits nothing there
+    /// interrupt point of the countdown (`true`), as under the deopt and
+    /// the invalidate stress modes, whose countdown would otherwise never
+    /// move in a copy without a send or a loop -- one whose every callee
+    /// is inlined -- or emits nothing there
     /// (`count_down_at_entry`). Effective only with the countdown on
     /// (`set_deoptimize_by_countdown`).
     pub(crate) fn set_count_down_at_entry(&mut self, count_down_at_entry: bool) {
@@ -905,11 +1034,17 @@ impl MacroAssembler {
     /// an exit of its own at the current program counter. So a template
     /// never relies on the flags across it, in either build.
     pub(crate) fn load_frame_register(&mut self, target: Register, register: u16) {
+        let slot = self.frame_slot(register);
+        self.load_frame_slot(target, slot, register);
+    }
+
+    /// `target :=` the frame word at `slot`, register `register`, refused
+    /// in a debug build as `load_frame_register` refuses a dead one.
+    fn load_frame_slot(&mut self, target: Register, slot: Memory, register: u16) {
         debug_assert_ne!(
             target, self.roles.idiom_scratch,
             "the check of a dead register needs the idiom scratch register"
         );
-        let slot = self.frame_slot(register);
         self.assembler.load(Width::Word64, target, slot);
         #[cfg(debug_assertions)]
         {
@@ -925,6 +1060,8 @@ impl MacroAssembler {
                 program_counter: self.program_counter,
             });
         }
+        #[cfg(not(debug_assertions))]
+        let _ = register;
     }
 
     /// `target :=` the receiver of a frame whose code takes
@@ -1247,7 +1384,7 @@ impl MacroAssembler {
                     );
                 }
                 (Operand::CodeAddress, Place::Register(target)) => {
-                    self.assembler.load_code_address(target);
+                    self.load_code_address(target);
                 }
                 (Operand::BodyWord(index), Place::Register(target)) => {
                     let (label, displacement) = self.body_word(index);
@@ -1265,7 +1402,7 @@ impl MacroAssembler {
                     );
                 }
                 (Operand::CodeAddress, Place::Stack(displacement)) => {
-                    self.assembler.load_code_address(roles.idiom_scratch);
+                    self.load_code_address(roles.idiom_scratch);
                     self.assembler.store(
                         Width::Word64,
                         stack_slot(displacement),
@@ -1310,6 +1447,9 @@ impl MacroAssembler {
         self.assembler.call_register(target);
         let return_address = self.assembler.label();
         self.assembler.bind(return_address);
+        if let Some(site) = self.site {
+            self.site_addresses.push((return_address, site));
+        }
         return_address
     }
 
@@ -1322,7 +1462,7 @@ impl MacroAssembler {
     /// predictor unbalanced on every exit.
     pub(crate) fn exit(&mut self, kind: ExitKind, program_counter: u32) {
         let roles = self.roles;
-        self.assembler.load_code_address(roles.exit_code_address());
+        self.load_code_address(roles.exit_code_address());
         self.assembler
             .move_immediate(roles.exit_kind(), kind as u64);
         self.assembler
@@ -2918,8 +3058,8 @@ impl MacroAssembler {
         });
     }
 
-    /// Under the invalidate stress mode, the countdown at optimized code's
-    /// entry, where the frame is the interpreter's word for word and
+    /// Under the deopt and the invalidate stress modes, the countdown at
+    /// optimized code's entry, where the frame is the interpreter's word for word and
     /// nothing is held in a register: its exit runs the body's first
     /// instruction, at `program_counter`, in the interpreter. Emits nothing
     /// outside the mode. Clobbers the flags and the idiom scratch register.
@@ -2967,10 +3107,24 @@ impl MacroAssembler {
     /// Lays the code out, the cold paths after the straight line, so a
     /// check that passes falls through rather than jumping over its
     /// failure.
-    pub(crate) fn finish(mut self) -> Result<Assembled, AssemblyError> {
+    pub(crate) fn finish(self) -> Result<Assembled, AssemblyError> {
+        self.finish_with_sites().map(|(assembled, _)| assembled)
+    }
+
+    /// `finish`, answering besides the code every address recorded with
+    /// its site (`set_site`), each as a label bound at it.
+    pub(crate) fn finish_with_sites(
+        mut self,
+    ) -> Result<(Assembled, Vec<(Label, u32)>), AssemblyError> {
         #[cfg(debug_assertions)]
         let mut holds = std::mem::take(&mut self.cold_path_holds).into_iter();
+        let mut sites = std::mem::take(&mut self.cold_path_sites).into_iter();
         for cold_path in std::mem::take(&mut self.cold_paths) {
+            // A cold path's addresses are those of the site it was queued
+            // in.
+            self.site = sites
+                .next()
+                .expect("internal: every cold path records its site");
             // A cold path runs where the straight line branched off to it,
             // so it is checked against the values held there.
             #[cfg(debug_assertions)]
@@ -3081,7 +3235,8 @@ impl MacroAssembler {
             // next body starts at the next line.
             self.assembler.align_data(BODY_WORDS_ALIGNMENT);
         }
-        self.assembler.finish()
+        let site_addresses = std::mem::take(&mut self.site_addresses);
+        Ok((self.assembler.finish()?, site_addresses))
     }
 }
 

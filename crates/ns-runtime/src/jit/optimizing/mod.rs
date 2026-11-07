@@ -46,9 +46,29 @@ impl Speculation {
     }
 }
 
-/// The optimized code of `snapshot`'s body, compiled as `role` with
+/// The optimized code of `snapshot`'s body alone, inlining nothing
+/// (`compile_tree`): the passes' tests' compile of a hand-written body.
+#[cfg(all(test, ns_jit))]
+pub(crate) fn compile(
+    snapshot: &snapshot::Snapshot,
+    macro_assembler: crate::jit::macro_assembler::MacroAssembler,
+    role: crate::jit::baseline::BodyRole,
+    futures_exit: bool,
+    speculation: Speculation,
+) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
+    compile_tree(
+        &tree::SnapshotTree::alone(snapshot.clone()),
+        macro_assembler,
+        role,
+        futures_exit,
+        speculation,
+    )
+}
+
+/// The optimized code of `tree`'s root, compiled as `role` with
 /// `macro_assembler` (`docs/design/execution.md`, "Planned: the
-/// optimizing JIT"): its graph built (and, in a debug build, verified),
+/// optimizing JIT"): the callees the inlining plan takes inlined
+/// (`plan::plan`), its graph built (and, in a debug build, verified),
 /// its values allocated to registers and its interrupt points described
 /// (the allocation verified in a debug build), then emitted. A refusal is
 /// one the baseline makes of the same body: too many instructions, or
@@ -57,15 +77,17 @@ impl Speculation {
 /// that both tiers are the same lowering. `speculation` says which sites
 /// the feedback says never ran become guards.
 #[cfg(ns_jit)]
-pub(crate) fn compile(
-    snapshot: &snapshot::Snapshot,
+pub(crate) fn compile_tree(
+    tree: &tree::SnapshotTree,
     macro_assembler: crate::jit::macro_assembler::MacroAssembler,
     role: crate::jit::baseline::BodyRole,
     futures_exit: bool,
     speculation: Speculation,
 ) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
+    use crate::jit::baseline::{BodyRole, ScopeFacts};
     use crate::jit::Refusal;
 
+    let snapshot = &tree.root;
     let roles = macro_assembler.roles();
     let mut body = crate::jit::baseline::BodyAssembler::for_optimized(
         macro_assembler,
@@ -74,9 +96,44 @@ pub(crate) fn compile(
         role,
         futures_exit,
     )?;
-    let graph = build::build(snapshot, speculation);
+    let plan = plan::plan(tree, speculation);
+    body.deepest_chain = plan.deepest_chain;
+    body.deepest_extent = plan.deepest_extent;
+    let graph = build::build_inlined(tree, &plan, speculation);
     let (allocation, metadata) = metadata::allocate_and_describe(&graph, &roles);
-    let push_entry = emit::emit(snapshot, &graph, &allocation, &mut body)?;
+    // Each scope's facts, as its own baseline code would read them: an
+    // inlined scope is a method's, as many scopes deep as its chain.
+    let scopes: Vec<emit::EmittedScope<'_>> = graph
+        .scopes
+        .iter()
+        .enumerate()
+        .map(|(index, scope)| {
+            let scope_snapshot = if index == 0 {
+                snapshot
+            } else {
+                tree.snapshot_of(scope.code_id)
+                    .expect("internal: every inlined scope's body is snapshotted")
+            };
+            let mut depth = 0_u16;
+            let mut parent = scope.parent;
+            while let Some((sender, _)) = parent {
+                depth += 1;
+                parent = graph.scope(sender).parent;
+            }
+            let scope_role = if index == 0 { role } else { BodyRole::Method };
+            emit::EmittedScope {
+                snapshot: scope_snapshot,
+                facts: ScopeFacts::of(
+                    &scope_snapshot.facts,
+                    scope_snapshot.feedback_base,
+                    scope_role,
+                    depth,
+                ),
+                offset: scope.offset,
+            }
+        })
+        .collect();
+    let push_entry = emit::emit(&scopes, &graph, &allocation, &metadata, &mut body)?;
     let returns = body.take_call_returns();
     let words = body.macro_assembler.body_words_label();
     let word_bytes =
@@ -84,25 +141,57 @@ pub(crate) fn compile(
     let twin_transfers = std::mem::take(&mut body.twin_transfers);
     #[cfg(test)]
     let small_integer_tag_tests = body.macro_assembler.small_integer_tag_tests();
-    let code = body
+    let (code, site_labels) = body
         .macro_assembler
-        .finish()
+        .finish_with_sites()
         .map_err(|error| Refusal::Unassembled(Some(error)))?;
     let words = words
         .and_then(|label| code.label_offsets[label.index()])
         .map(|start| start..start + word_bytes);
     let push_entry =
         code.label_offsets[push_entry.index()].expect("internal: the first block is bound");
+    let sites = site_labels
+        .iter()
+        .map(|(label, point)| {
+            let offset =
+                code.label_offsets[label.index()].expect("internal: every site's label is bound");
+            (offset, *point)
+        })
+        .collect();
     Ok(emit::OptimizedBody {
         code,
         returns,
         words,
         twin_transfers,
         metadata,
+        sites,
+        scopes: scopes
+            .iter()
+            .map(|scope| (scope.snapshot.code_id, scope.snapshot.feedback_base))
+            .collect(),
+        deepest_chain: plan.deepest_chain,
+        deepest_extent: plan.deepest_extent,
+        guards: type_case_guards(&graph),
         push_entry,
         #[cfg(test)]
         small_integer_tag_tests,
     })
+}
+
+/// The guards `graph`'s type-cases test their arms by, each once.
+#[cfg(ns_jit)]
+fn type_case_guards(graph: &graph::Graph) -> Vec<crate::mixin::DispatchId> {
+    let mut guards = Vec::new();
+    for block in &graph.blocks {
+        if let graph::End::TypeCase { arms, .. } = &block.end {
+            for (guard, _) in arms {
+                if !guards.contains(guard) {
+                    guards.push(*guard);
+                }
+            }
+        }
+    }
+    guards
 }
 
 /// The snapshot of a method of `instructions`, none of which makes a

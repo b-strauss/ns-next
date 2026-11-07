@@ -100,10 +100,13 @@ pub(super) fn prologue(body: &mut BodyAssembler, facts: &BodyFacts) {
     let machine_words = roles.idiom_scratch;
     let (depth, scratch, end) = (roles.depth_count, roles.frame_extent, roles.stack_end);
     let word = |name| MacroAssembler::machine_word(machine_words, name);
+    // Optimized code's frame reaches as far as its deepest inlined scope's.
     let frame_end_bytes = (i32::from(facts.argument_count)
         + i32::from(HEADER_REGISTERS)
         + register_number(facts.registers_above_header()))
+    .max(register_number(body.deepest_extent as usize))
         * REGISTER_BYTES;
+    let deepest_chain = i32::from(body.deepest_chain);
     let stack_base = macro_assembler.block_word(BlockWord::StackBase);
     // The machine entry is what a compiled call, a stub's tail jump and
     // the call stubs reach.
@@ -117,6 +120,22 @@ pub(super) fn prologue(body: &mut BodyAssembler, facts: &BodyFacts) {
         ExitKind::PushRefused,
         super::stubs::REFUSED_AT_THE_BOUND,
     );
+    // Every inlined scope of optimized code is an activation the
+    // interpreter would push, which an exit inside it materializes: a
+    // frame too deep for its deepest chain is refused, for its body's
+    // baseline code to push them one by one and overflow exactly where the
+    // interpreter does (`jit::entered`).
+    if deepest_chain > 0 {
+        let assembler = macro_assembler.assembler();
+        assembler.move_register(scratch, depth);
+        assembler.add_immediate(scratch, deepest_chain);
+        assembler.compare_memory(scratch, word(MachineWord::DepthLimit));
+        macro_assembler.exit_if(
+            Condition::AboveOrEqual,
+            ExitKind::PushRefused,
+            super::stubs::REFUSED_WITHIN_THE_INLINED_DEPTH,
+        );
+    }
     let assembler = macro_assembler.assembler();
     assembler.move_register(scratch, roles.frame);
     assembler.load(Width::Word64, end, stack_base);

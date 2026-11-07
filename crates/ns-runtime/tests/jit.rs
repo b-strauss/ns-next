@@ -133,6 +133,8 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         optimize_nanoseconds: after.optimize_nanoseconds - before.optimize_nanoseconds,
         optimized_frames_materialized: after.optimized_frames_materialized
             - before.optimized_frames_materialized,
+        inlined_frames_materialized: after.inlined_frames_materialized
+            - before.inlined_frames_materialized,
         optimized_bodies_resumed: after.optimized_bodies_resumed - before.optimized_bodies_resumed,
         optimized_twin_requests: after.optimized_twin_requests - before.optimized_twin_requests,
         customized_copies: after.customized_copies - before.customized_copies,
@@ -2638,7 +2640,9 @@ ns_runtime::for_each_lowering! {
 /// `doesNotUnderstand:`, whose handler machine code leaves to the
 /// interpreter: an exit of the optimized code at every call. The site
 /// ran, so its send is no trap: a send never executed is one, which
-/// counts against no budget.
+/// counts against no budget. `self`'s `probe:` weighs more than the
+/// inlining plan inlines, so that the site stays its send rather than a
+/// type-case whose receiver it never saw traps.
 const EXITING_HOT_LOOP: &str = indoc! {"
     class Subject = Object new (
       | stranger = Stranger new. |
@@ -2652,7 +2656,7 @@ const EXITING_HOT_LOOP: &str = indoc! {"
         ^target probe: value
       )
       public probe: value = (
-        ^value
+        ^value + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0
       )
       public run = (
         |
