@@ -48,6 +48,7 @@ use crate::Symbol;
 
 use super::snapshot::{Snapshot, SnapshotInstruction};
 use super::tree::{CalleeFacts, ReceiverFacts, SnapshotTree};
+use super::Speculation;
 
 /// The weight of an instruction that is no send, closure or non-local
 /// return (Strongtalk's `costModel.cpp`, the start the measurement of
@@ -104,19 +105,47 @@ impl Limits {
 /// an instruction each, so that an inlined conditional or an addition
 /// weighs what it runs.
 pub(crate) fn weight(snapshot: &Snapshot) -> u32 {
+    weight_with(snapshot, |_| false)
+}
+
+/// `weight`, with a send whose site `cheap` says reached only slot
+/// accessors and method fast paths weighing `COST_CHEAP_SEND`, the
+/// accessor send of Strongtalk's cost model: `cheap` is asked the
+/// site's number.
+pub(crate) fn weight_with(snapshot: &Snapshot, cheap: impl Fn(u32) -> bool) -> u32 {
     let fallback = fallback_instructions(&snapshot.instructions);
     snapshot
         .instructions
         .iter()
         .zip(fallback)
-        .map(|(instruction, fallback)| {
+        .zip(&snapshot.sites)
+        .map(|((instruction, fallback), site)| {
             if fallback {
                 COST_INSTRUCTION
+            } else if is_call_site(instruction) && site.is_some_and(|facts| cheap(facts.site)) {
+                COST_CHEAP_SEND
             } else {
                 cost(instruction)
             }
         })
         .fold(0, u32::saturating_add)
+}
+
+/// The weight of `snapshot` with what `tree` recorded of its sites
+/// (`weight_with`): a site whose every cached callee is a slot accessor
+/// or a method fast path is cheap.
+pub(crate) fn weight_in(tree: &SnapshotTree, snapshot: &Snapshot) -> u32 {
+    weight_with(snapshot, |site| {
+        tree.sites
+            .get(&(snapshot.code_id, site))
+            .is_some_and(|candidates| {
+                !candidates.megamorphic
+                    && !candidates.arms.is_empty()
+                    && candidates.arms.iter().all(|(_, callee)| {
+                        matches!(callee, CalleeFacts::Slot { .. } | CalleeFacts::FastPath(_))
+                    })
+            })
+    })
 }
 
 /// What one instruction costs (`weight`).
@@ -326,14 +355,22 @@ pub(crate) enum BlockPlan {
     Created,
 }
 
-/// The plan of `tree` under the standard limits.
-pub(crate) fn plan(tree: &SnapshotTree) -> InliningPlan {
-    plan_with(tree, &Limits::STANDARD)
+/// The plan of `tree` under the standard limits, for a copy that
+/// speculates as `speculation` says.
+pub(crate) fn plan(tree: &SnapshotTree, speculation: Speculation) -> InliningPlan {
+    plan_with(tree, &Limits::STANDARD, speculation)
 }
 
-/// The plan of `tree` under `limits` (the module's comment).
-pub(crate) fn plan_with(tree: &SnapshotTree, limits: &Limits) -> InliningPlan {
-    let mut planner = Planner::new(tree, *limits);
+/// The plan of `tree` under `limits` (the module's comment). A copy that
+/// speculates nothing (`Speculation::None`) has no type-case that traps:
+/// every fall-through is its send, so that no block is eliminated on the
+/// strength of a trap the copy never takes.
+pub(crate) fn plan_with(
+    tree: &SnapshotTree,
+    limits: &Limits,
+    speculation: Speculation,
+) -> InliningPlan {
+    let mut planner = Planner::new(tree, *limits, speculation == Speculation::Traps);
     while let Some(candidate) = planner.queue.pop() {
         planner.take(&candidate);
     }
@@ -345,9 +382,17 @@ pub(crate) fn plan_with(tree: &SnapshotTree, limits: &Limits) -> InliningPlan {
 /// program counter.
 type BlockKey = (ScopeId, u32);
 
-/// The blocks each register may hold before an instruction; a register
-/// absent holds none.
+/// The blocks each register may hold before an instruction, and
+/// `SOMETHING_ELSE` among them where it may hold anything else on some
+/// way; a register absent holds no block of the compile on any way, only
+/// something else. Escape is a question of what a register may hold; a
+/// `value` send is taken without a test only where its receiver must be
+/// one block, a set of that block alone.
 type Holdings = BTreeMap<u16, BTreeSet<BlockKey>>;
+
+/// What a register may hold besides the compile's blocks: `nil`, a
+/// number, a closure made outside the compile, anything a send answered.
+const SOMETHING_ELSE: BlockKey = (ScopeId(u32::MAX), u32::MAX);
 
 /// A scope as the planner keeps it.
 struct Scope<'tree> {
@@ -366,6 +411,9 @@ struct Scope<'tree> {
     /// Each instruction's number of enclosing loops.
     loop_depths: Vec<u32>,
     alive: bool,
+    /// Its weight, which the compile's total gives back when it is
+    /// dropped.
+    weight: u32,
 }
 
 /// What the plan decided at a send so far.
@@ -614,11 +662,22 @@ fn holdings_of(snapshot: &Snapshot, scope: ScopeId, entry: Holdings) -> Vec<Hold
     states.into_iter().map(Option::unwrap_or_default).collect()
 }
 
-/// `into` with `from`'s blocks added; whether anything was.
+/// `into` with `from`'s holdings added; whether anything was. A register
+/// absent on one way holds something else there, so that a register that
+/// holds a block on one way and nothing of the compile's on the other
+/// may hold something else.
 fn merge(into: &mut Holdings, from: &Holdings) -> bool {
     let mut changed = false;
+    for (register, held) in into.iter_mut() {
+        if !from.contains_key(register) {
+            changed |= held.insert(SOMETHING_ELSE);
+        }
+    }
     for (register, blocks) in from {
-        let held = into.entry(*register).or_default();
+        let held = into.entry(*register).or_insert_with(|| {
+            changed = true;
+            BTreeSet::from([SOMETHING_ELSE])
+        });
         for block in blocks {
             changed |= held.insert(*block);
         }
@@ -821,6 +880,8 @@ fn classify<'tree>(receiver: &ReceiverFacts, callee: &'tree CalleeFacts) -> Call
 struct Planner<'tree> {
     tree: &'tree SnapshotTree,
     limits: Limits,
+    /// Whether the copy speculates: whether a type-case may trap.
+    speculates: bool,
     scopes: Vec<Scope<'tree>>,
     total: u32,
     queue: BinaryHeap<Candidate>,
@@ -829,13 +890,14 @@ struct Planner<'tree> {
 }
 
 impl<'tree> Planner<'tree> {
-    fn new(tree: &'tree SnapshotTree, limits: Limits) -> Planner<'tree> {
+    fn new(tree: &'tree SnapshotTree, limits: Limits, speculates: bool) -> Planner<'tree> {
         let root = &tree.root;
         let mut planner = Planner {
             tree,
             limits,
+            speculates,
             scopes: Vec::new(),
-            total: weight(root),
+            total: weight_in(tree, root),
             queue: BinaryHeap::new(),
             found: 0,
             decisions: HashMap::new(),
@@ -898,6 +960,7 @@ impl<'tree> Planner<'tree> {
             holdings,
             loop_depths: loop_depths(&snapshot.instructions),
             alive: true,
+            weight: weight_in(self.tree, snapshot),
         });
         self.gather(id);
         id
@@ -1132,7 +1195,11 @@ impl<'tree> Planner<'tree> {
         let block_arguments = send
             .sources
             .iter()
-            .filter(|source| sender.holdings[index].contains_key(source))
+            .filter(|source| {
+                sender.holdings[index]
+                    .get(source)
+                    .is_some_and(|held| held.iter().any(|block| *block != SOMETHING_ELSE))
+            })
             .count();
         let bonus = self
             .limits
@@ -1200,7 +1267,7 @@ impl<'tree> Planner<'tree> {
                 )
             }
         };
-        let callee_weight = weight(snapshot);
+        let callee_weight = weight_in(tree, snapshot);
         if callee_weight > limit || self.total.saturating_add(callee_weight) > self.limits.compile {
             return;
         }
@@ -1356,6 +1423,7 @@ impl<'tree> Planner<'tree> {
                     }
                 }
                 self.scopes[index].alive = false;
+                self.total = self.total.saturating_sub(self.scopes[index].weight);
             }
         }
     }
@@ -1466,15 +1534,17 @@ impl<'tree> Planner<'tree> {
         }
     }
 
-    /// Whether the site `key`'s speculation trapped before.
+    /// Whether the site `key` may not trap: the copy speculates nothing,
+    /// or the site's speculation trapped before.
     fn trapped(&self, (scope, program_counter): (ScopeId, u32)) -> bool {
-        self.scopes[scope.index()]
-            .snapshot
-            .sites
-            .get(program_counter as usize)
-            .copied()
-            .flatten()
-            .is_none_or(|facts| facts.trapped)
+        !self.speculates
+            || self.scopes[scope.index()]
+                .snapshot
+                .sites
+                .get(program_counter as usize)
+                .copied()
+                .flatten()
+                .is_none_or(|facts| facts.trapped)
     }
 
     /// Whether a register `block` copied a value from may be written while
@@ -1733,13 +1803,14 @@ mod tests {
     use indoc::indoc;
 
     use super::{
-        plan, plan_with, weight, ArmPlan, BlockPlan, EliminatedId, FallThrough, InliningPlan,
-        Limits, ScopeId, BLOCK_ARGUMENT_BONUS, METHOD_LIMIT,
+        plan, plan_with, weight, weight_in, ArmPlan, BlockPlan, EliminatedId, FallThrough,
+        InliningPlan, Limits, ScopeId, BLOCK_ARGUMENT_BONUS, METHOD_LIMIT,
     };
     use crate::heap::CodeId;
     use crate::interpreter::inline_cache::MethodSide;
     use crate::jit::optimizing::snapshot::{Snapshot, SnapshotInstruction};
     use crate::jit::optimizing::tree::{CalleeFacts, SnapshotTree};
+    use crate::jit::optimizing::Speculation;
     use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
 
     fn expect_ok(result: HostResult, what: &str) -> Root {
@@ -1903,7 +1974,7 @@ mod tests {
     fn a_small_monomorphic_callee_is_inlined() {
         let (mut interpreter, class) = run(MONOMORPHIC);
         let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         let send = send_of(&tree.root, "helper:");
         assert_eq!(plan.scopes.len(), 2);
         assert_eq!(inlined_at(&plan, ScopeId::ROOT, send), ScopeId(1));
@@ -1933,7 +2004,7 @@ mod tests {
     fn an_inlined_scope_lies_on_its_sender_s_argument_slots() {
         let (mut interpreter, class) = run(MONOMORPHIC);
         let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         let send = send_of(&tree.root, "helper:");
         let root_send_argument_base = argument_base_of(&tree.root, send);
         assert_eq!(plan.scopes[1].offset, root_send_argument_base);
@@ -1985,9 +2056,9 @@ mod tests {
     fn a_callee_over_its_limit_is_sent() {
         let (mut interpreter, class) = run(HEAVY);
         let callee = tree_of(&mut interpreter, &class, "heavy:", &Limits::STANDARD);
-        assert!(weight(&callee.root) > METHOD_LIMIT);
+        assert!(weight_in(&callee, &callee.root) > METHOD_LIMIT);
         let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         let site = &plan.sites[&(ScopeId::ROOT, send_of(&tree.root, "heavy:"))];
         assert!(site.arms.is_empty(), "{site:?}");
         assert_eq!(site.fall_through, FallThrough::Send);
@@ -1997,9 +2068,11 @@ mod tests {
     const BONUS: &str = indoc! {"
         class Bonus = () (
           public tick = (
-            ^0
+            ^3 + 4
           )
           public apply: aBlock = (
+            self tick.
+            self tick.
             self tick.
             self tick.
             self tick.
@@ -2019,14 +2092,14 @@ mod tests {
     fn a_block_argument_raises_the_callee_s_limit() {
         let (mut interpreter, class) = run(BONUS);
         let callee = tree_of(&mut interpreter, &class, "apply:", &Limits::STANDARD);
-        let callee_weight = weight(&callee.root);
+        let callee_weight = weight_in(&callee, &callee.root);
         assert!(
             callee_weight > METHOD_LIMIT && callee_weight <= METHOD_LIMIT + BLOCK_ARGUMENT_BONUS,
             "the callee weighs {callee_weight}"
         );
         let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
         let send = send_of(&tree.root, "apply:");
-        let with_bonus = plan(&tree);
+        let with_bonus = plan(&tree, Speculation::Traps);
         let inlined = inlined_at(&with_bonus, ScopeId::ROOT, send);
         assert_eq!(scope(&with_bonus, inlined).code_id, callee.root.code_id);
         let without = plan_with(
@@ -2035,8 +2108,21 @@ mod tests {
                 block_argument_bonus: 0,
                 ..Limits::STANDARD
             },
+            Speculation::Traps,
         );
         assert!(without.sites[&(ScopeId::ROOT, send)].arms.is_empty());
+    }
+
+    #[test]
+    fn a_send_reaching_only_a_fast_path_weighs_as_an_accessor_send() {
+        let (mut interpreter, class) = run(BONUS);
+        let callee = tree_of(&mut interpreter, &class, "apply:", &Limits::STANDARD);
+        // `aBlock value` reached `Closure`'s fast path: the one send of
+        // the body that weighs `COST_CHEAP_SEND` where its cache is read.
+        assert_eq!(
+            weight(&callee.root) - weight_in(&callee, &callee.root),
+            super::COST_SEND - super::COST_CHEAP_SEND
+        );
     }
 
     const RECURSION: &str = indoc! {"
@@ -2055,7 +2141,7 @@ mod tests {
     fn recursion_is_unrolled_once() {
         let (mut interpreter, class) = run(RECURSION);
         let tree = tree_of(&mut interpreter, &class, "count:", &Limits::STANDARD);
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         let send = send_of(&tree.root, "count:");
         let once = inlined_at(&plan, ScopeId::ROOT, send);
         assert_eq!(scope(&plan, once).code_id, tree.root.code_id);
@@ -2094,7 +2180,7 @@ mod tests {
             ),
             "{candidates:?}"
         );
-        let plan = plan_with(&tree, &generous);
+        let plan = plan_with(&tree, &generous, Speculation::Traps);
         assert!(plan.sites[&(ScopeId::ROOT, send)].arms.is_empty());
         assert_eq!(plan.scopes.len(), 1);
 
@@ -2108,7 +2194,7 @@ mod tests {
                 }
             }
         }
-        let plan = super::plan(&tree);
+        let plan = super::plan(&tree, Speculation::Traps);
         let send = send_of(&tree.root, "helper:");
         assert!(plan.sites[&(ScopeId::ROOT, send)].arms.is_empty());
         assert_eq!(plan.scopes.len(), 1);
@@ -2143,15 +2229,15 @@ mod tests {
             .snapshot_of(code_id_of(&mut interpreter, &class, "helper:"))
             .expect("helper:'s snapshot");
         let room_for_one = Limits {
-            compile: weight(&tree.root) + weight(helper),
+            compile: weight_in(&tree, &tree.root) + weight_in(&tree, helper),
             ..Limits::STANDARD
         };
-        let plan = plan_with(&tree, &room_for_one);
+        let plan = plan_with(&tree, &room_for_one, Speculation::Traps);
         assert_eq!(plan.scopes.len(), 2);
         assert_eq!(plan.scopes[1].parent, Some((ScopeId::ROOT, inside)));
         assert!(plan.sites[&(ScopeId::ROOT, outside)].arms.is_empty());
         // With room for both, both are taken, the loop's first.
-        let both = super::plan(&tree);
+        let both = super::plan(&tree, Speculation::Traps);
         assert_eq!(both.scopes.len(), 3);
         assert_eq!(both.scopes[1].parent, Some((ScopeId::ROOT, inside)));
         assert_eq!(both.scopes[2].parent, Some((ScopeId::ROOT, outside)));
@@ -2166,7 +2252,7 @@ mod tests {
             .as_mut()
             .expect("a site")
             .trapped = true;
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         assert_eq!(inlined_at(&plan, ScopeId::ROOT, send), ScopeId(1));
         assert_eq!(
             plan.sites[&(ScopeId::ROOT, send)].fall_through,
@@ -2217,7 +2303,7 @@ mod tests {
         let site_number = tree.root.sites[send as usize].expect("a site").site;
         let candidates = &tree.sites[&(tree.root.code_id, site_number)];
         assert_eq!(candidates.arms.len(), 2, "both receivers cached");
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         let site = &plan.sites[&(ScopeId::ROOT, send)];
         let [(guard, application, ArmPlan::Inline { callee })] = site.arms[..] else {
             panic!("only the light receiver's arm: {site:?}");
@@ -2228,25 +2314,52 @@ mod tests {
         assert_eq!(site.fall_through, FallThrough::Send);
     }
 
+    const MEGAMORPHIC: &str = indoc! {"
+        class Receivers = () (
+          class A = () (
+            public answer = (
+              ^3 + 4
+            )
+          )
+          class B = () (
+            public answer = (
+              ^3 + 4
+            )
+          )
+          class C = () (
+            public answer = (
+              ^3 + 4
+            )
+          )
+          class D = () (
+            public answer = (
+              ^3 + 4
+            )
+          )
+          class E = () (
+            public answer = (
+              ^3 + 4
+            )
+          )
+          public probe: object = (
+            ^object answer
+          )
+          public run = (
+            self probe: A new.
+            self probe: B new.
+            self probe: C new.
+            self probe: D new.
+            self probe: E new.
+            ^0
+          )
+        )
+    "};
+
     #[test]
     fn a_megamorphic_site_gets_no_type_case() {
-        let names = ["A", "B", "C", "D", "E"];
-        let classes: String = names
-            .iter()
-            .map(|name| {
-                format!("  class {name} = () (\n    public answer = (\n      ^3 + 4\n    )\n  )\n")
-            })
-            .collect();
-        let probes: String = names
-            .iter()
-            .map(|name| format!("    self probe: {name} new.\n"))
-            .collect();
-        let source = format!(
-            "class Receivers = () (\n{classes}  public probe: object = (\n    ^object answer\n  )\n  public run = (\n{probes}    ^0\n  )\n)\n"
-        );
-        let (mut interpreter, class) = run(&source);
+        let (mut interpreter, class) = run(MEGAMORPHIC);
         let tree = tree_of(&mut interpreter, &class, "probe:", &Limits::STANDARD);
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         let site = &plan.sites[&(ScopeId::ROOT, send_of(&tree.root, "answer"))];
         assert!(site.arms.is_empty());
         assert_eq!(site.fall_through, FallThrough::Send);
@@ -2267,7 +2380,7 @@ mod tests {
     fn a_block_passed_to_an_inlined_callee_that_only_values_it_is_eliminated() {
         let (mut interpreter, class) = run(VALUES);
         let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         let closure = closure_of(&tree.root);
         assert_eq!(
             plan.blocks[&(ScopeId::ROOT, closure)],
@@ -2337,7 +2450,7 @@ mod tests {
     fn a_block_stored_or_passed_on_is_created() {
         let (mut interpreter, class) = run(ESCAPES);
         let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         // Both callees are inlined, so that each block reaches its use.
         inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "keep:"));
         inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "pass:"));
@@ -2368,7 +2481,7 @@ mod tests {
         let mut tree = tree_of(&mut interpreter, &class, "go:", &Limits::STANDARD);
         let closure = closure_of(&tree.root);
         assert_eq!(
-            plan(&tree).blocks[&(ScopeId::ROOT, closure)],
+            plan(&tree, Speculation::Traps).blocks[&(ScopeId::ROOT, closure)],
             BlockPlan::Eliminated(EliminatedId(0)),
             "a block whose copied source stays unwritten"
         );
@@ -2397,7 +2510,7 @@ mod tests {
         {
             *destination = source;
         }
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         inlined_at(&plan, ScopeId::ROOT, send);
         assert_eq!(plan.blocks[&(ScopeId::ROOT, closure)], BlockPlan::Created);
     }
@@ -2424,7 +2537,7 @@ mod tests {
     fn a_super_send_is_inlined_unguarded_where_its_receiver_is_known() {
         let (mut interpreter, class) = run(SUPERS);
         let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
-        let plan = plan(&tree);
+        let plan = plan(&tree, Speculation::Traps);
         let derived = inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "step:"));
         let derived_snapshot = tree
             .snapshot_of(scope(&plan, derived).code_id)
@@ -2436,5 +2549,207 @@ mod tests {
         assert_eq!(base.receiver, scope(&plan, derived).receiver);
         assert_ne!(base.entered, scope(&plan, derived).entered);
         assert_eq!(base.entered, Some(site.arms[0].1), "S, the superclass");
+    }
+
+    /// Whether `plan` inlines a block's body at the send at
+    /// `program_counter` of `scope_id`.
+    fn values_a_block_at(plan: &InliningPlan, scope_id: ScopeId, program_counter: u32) -> bool {
+        plan.sites[&(scope_id, program_counter)]
+            .arms
+            .iter()
+            .any(|(_, _, arm)| {
+                matches!(arm, ArmPlan::Inline { callee } if scope(plan, *callee).block_of.is_some())
+            })
+    }
+
+    const ONE_WAY: &str = indoc! {"
+        class OneWay = () (
+          public pick: flag = (
+            | b |
+            flag ifTrue: [b:: [1]].
+            ^b value
+          )
+          public run = (
+            ^self pick: true
+          )
+        )
+    "};
+
+    #[test]
+    fn a_block_held_on_one_way_only_is_no_known_receiver() {
+        let (mut interpreter, class) = run(ONE_WAY);
+        let tree = tree_of(&mut interpreter, &class, "pick:", &Limits::STANDARD);
+        let plan = plan(&tree, Speculation::Traps);
+        // On the way that skips the assignment `b` is nil, whose `value`
+        // is a send of its own: the block's body is no arm taken untested.
+        let value = send_of(&tree.root, "value");
+        let site = &plan.sites[&(ScopeId::ROOT, value)];
+        assert_ne!(site.fall_through, FallThrough::Unguarded, "{site:?}");
+        assert!(!values_a_block_at(&plan, ScopeId::ROOT, value));
+        let block = closures_of(&tree.root)[0];
+        assert_eq!(plan.blocks[&(ScopeId::ROOT, block)], BlockPlan::Created);
+    }
+
+    const PARAMETER_WAY: &str = indoc! {"
+        class ParameterWay = () (
+          public apply: aBlock = (
+            ^aBlock value
+          )
+          public choose: flag = (
+            ^self apply: (flag ifTrue: [[1]] ifFalse: [nil])
+          )
+          public run = (
+            ^self choose: true
+          )
+        )
+    "};
+
+    #[test]
+    fn a_parameter_that_may_hold_something_else_is_no_known_receiver() {
+        let (mut interpreter, class) = run(PARAMETER_WAY);
+        let tree = tree_of(&mut interpreter, &class, "choose:", &Limits::STANDARD);
+        let plan = plan(&tree, Speculation::Traps);
+        let apply = inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "apply:"));
+        let apply_snapshot = tree
+            .snapshot_of(scope(&plan, apply).code_id)
+            .expect("apply:'s snapshot");
+        let value = send_of(apply_snapshot, "value");
+        let site = &plan.sites[&(apply, value)];
+        assert_ne!(site.fall_through, FallThrough::Unguarded, "{site:?}");
+        assert!(!values_a_block_at(&plan, apply, value));
+        let block = closures_of(&tree.root)[0];
+        assert_eq!(plan.blocks[&(ScopeId::ROOT, block)], BlockPlan::Created);
+    }
+
+    #[test]
+    fn a_trapping_type_case_lets_its_argument_block_be_eliminated_only_in_a_speculating_copy() {
+        let (mut interpreter, class) = run(VALUES);
+        let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
+        let closure = closure_of(&tree.root);
+        let apply = send_of(&tree.root, "apply:");
+        let speculating = plan(&tree, Speculation::Traps);
+        assert_eq!(
+            speculating.sites[&(ScopeId::ROOT, apply)].fall_through,
+            FallThrough::Trap
+        );
+        assert_eq!(
+            speculating.blocks[&(ScopeId::ROOT, closure)],
+            BlockPlan::Eliminated(EliminatedId(0))
+        );
+        let cautious = plan(&tree, Speculation::None);
+        assert_eq!(
+            cautious.sites[&(ScopeId::ROOT, apply)].fall_through,
+            FallThrough::Send
+        );
+        assert_eq!(inlined_at(&cautious, ScopeId::ROOT, apply), ScopeId(1));
+        assert_eq!(
+            cautious.blocks[&(ScopeId::ROOT, closure)],
+            BlockPlan::Created
+        );
+        assert_eq!(
+            cautious.scopes.len(),
+            2,
+            "the created block's value scope is dropped"
+        );
+        assert!(cautious
+            .sites
+            .values()
+            .all(|site| site.fall_through != FallThrough::Trap));
+    }
+
+    const REFERENCE: &str = indoc! {"
+        class Reference = () (
+          public apply: aBlock = (
+            ^aBlock value
+          )
+          public go: flag = (
+            | b |
+            b:: [1].
+            flag ifTrue: [b value].
+            ^self apply: b
+          )
+          public run = (
+            ^self go: true
+          )
+        )
+    "};
+
+    #[test]
+    fn a_block_a_nested_block_reaches_by_reference_escapes() {
+        let (mut interpreter, class) = run(REFERENCE);
+        let tree = tree_of(&mut interpreter, &class, "go:", &Limits::STANDARD);
+        let held = closures_of(&tree.root)[0];
+        // The not-Boolean way of `ifTrue:` makes a block that reads `b`
+        // in its home's register, by reference.
+        let readers: Vec<&Snapshot> = closures_of(&tree.root)[1..]
+            .iter()
+            .filter_map(|closure| match &tree.root.instructions[*closure as usize] {
+                SnapshotInstruction::MakeClosure { block, .. } => tree.blocks.get(block),
+                _ => None,
+            })
+            .filter(|block| {
+                block.instructions.iter().any(|instruction| {
+                    matches!(
+                        instruction,
+                        SnapshotInstruction::LoadOuterLocal { depth: 1, .. }
+                    )
+                })
+            })
+            .collect();
+        assert!(!readers.is_empty(), "{:#?}", tree.root.instructions);
+        let plan = plan(&tree, Speculation::Traps);
+        inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "apply:"));
+        assert_eq!(plan.blocks[&(ScopeId::ROOT, held)], BlockPlan::Created);
+    }
+
+    const COPIED_INTO: &str = indoc! {"
+        class CopiedInto = () (
+          public apply: aBlock = (
+            ^aBlock value
+          )
+          public twice: inner = (
+            ^self apply: [inner value]
+          )
+          public run = (
+            ^self twice: [1]
+          )
+        )
+    "};
+
+    #[test]
+    fn a_block_copied_into_an_eliminated_block_is_eliminated() {
+        let (mut interpreter, class) = run(COPIED_INTO);
+        let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
+        let plan = plan(&tree, Speculation::Traps);
+        let outer = closure_of(&tree.root);
+        assert!(matches!(
+            plan.blocks[&(ScopeId::ROOT, outer)],
+            BlockPlan::Eliminated(_)
+        ));
+        let twice = inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "twice:"));
+        let twice_snapshot = tree
+            .snapshot_of(scope(&plan, twice).code_id)
+            .expect("twice:'s snapshot");
+        let copying = closure_of(twice_snapshot);
+        let SnapshotInstruction::MakeClosure { copied, .. } =
+            &twice_snapshot.instructions[copying as usize]
+        else {
+            panic!("a closure");
+        };
+        assert_eq!(copied, &vec![0], "the block copies twice:'s parameter");
+        assert!(matches!(
+            plan.blocks[&(twice, copying)],
+            BlockPlan::Eliminated(_)
+        ));
+        // The outer block's body is inlined inside the copying block's.
+        let copying_scope = plan
+            .scopes
+            .iter()
+            .position(|plan_scope| plan_scope.block_of == Some(twice))
+            .expect("the copying block's scope");
+        assert!(plan.scopes.iter().any(|plan_scope| {
+            plan_scope.block_of == Some(ScopeId::ROOT)
+                && plan_scope.parent.map(|(parent, _)| parent.0 as usize) == Some(copying_scope)
+        }));
     }
 }

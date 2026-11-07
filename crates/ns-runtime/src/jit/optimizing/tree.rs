@@ -28,7 +28,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
-use crate::bytecode::{CompiledCode, Instruction, HEADER_REGISTERS};
+use crate::bytecode::{CallSite, CompiledCode, Instruction, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId, Heap};
 use crate::interpreter::inline_cache::{
     CacheEntry, FeedbackBase, InlineCaches, SiteEntries, Target,
@@ -36,7 +36,7 @@ use crate::interpreter::inline_cache::{
 use crate::interpreter::resolve::Chain;
 use crate::mixin::{AccessorKind, DispatchId, MethodFastPath};
 
-use super::plan::{weight, Limits};
+use super::plan::{weight_with, Limits};
 use super::snapshot::{Customization, Snapshot};
 
 /// What a cache entry's guard says of the receivers it was filled for:
@@ -173,7 +173,7 @@ impl SnapshotTree {
         limits: &Limits,
     ) -> SnapshotTree {
         let root = Snapshot::take(code, heap, caches, feedback_base, customization);
-        let root_weight = weight(&root);
+        let root_weight = cached_weight(caches, &root);
         let root_receiver = customization
             .and_then(|customization| receiver_facts(heap, customization.key.receiver));
         let root_entered =
@@ -244,7 +244,9 @@ impl Walk<'_> {
                 if self.walked.insert(block_id) {
                     // A block's sends are sites of its home's family.
                     let snapshot = Snapshot::take(block, heap, self.caches, base, None);
-                    let block_weight = pending.chain_weight.saturating_add(weight(&snapshot));
+                    let block_weight = pending
+                        .chain_weight
+                        .saturating_add(cached_weight(self.caches, &snapshot));
                     self.record_budget(block, block_id, heap);
                     self.tree.blocks.insert(block_id, snapshot);
                     if block_weight <= self.limits.compile {
@@ -309,10 +311,7 @@ impl Walk<'_> {
             Target::Method { chain, .. }
             | Target::Slot { chain, .. }
             | Target::Primitive { chain, .. }
-                if matches!(
-                    chain,
-                    Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand
-                ) =>
+                if does_not_understand(*chain) =>
             {
                 CalleeFacts::Other
             }
@@ -364,7 +363,7 @@ impl Walk<'_> {
                 snapshot
             }
         };
-        let callee_weight = weight(&snapshot);
+        let callee_weight = cached_weight(self.caches, &snapshot);
         let limit = self.limits.method.saturating_add(
             self.limits
                 .block_argument_bonus
@@ -429,6 +428,45 @@ fn block_registers(body: &CompiledCode, instructions: &[Instruction]) -> HashSet
     let copied_start = body.argument_count.saturating_add(HEADER_REGISTERS);
     registers.extend(copied_start..copied_start.saturating_add(body.copied_count));
     registers
+}
+
+/// `snapshot`'s weight as the plan weighs it (`plan::weight_in`): a send
+/// whose site's cache reached only slot accessors and method fast paths
+/// is cheap.
+fn cached_weight(caches: &InlineCaches, snapshot: &Snapshot) -> u32 {
+    let cheap = |entry: &CacheEntry| match &entry.target {
+        Target::Method { method, chain, .. } => {
+            method.fast_path.is_some() && !does_not_understand(*chain)
+        }
+        Target::Slot { chain, .. } => !does_not_understand(*chain),
+        _ => false,
+    };
+    weight_with(snapshot, |site| {
+        match caches.entries_of(
+            snapshot.feedback_base,
+            snapshot.facts.family_size,
+            CallSite { number: site },
+        ) {
+            SiteEntries::Monomorphic(entry) => cheap(entry),
+            SiteEntries::Polymorphic(slots) => {
+                let live: Vec<&CacheEntry> = slots
+                    .iter()
+                    .filter(|slot| !matches!(slot.target, Target::Vacant))
+                    .collect();
+                !live.is_empty() && live.into_iter().all(cheap)
+            }
+            SiteEntries::Megamorphic | SiteEntries::Vacant => false,
+        }
+    })
+}
+
+/// Whether `chain` is a `doesNotUnderstand:` lookup's, whose target the
+/// plan never takes.
+fn does_not_understand(chain: Chain) -> bool {
+    matches!(
+        chain,
+        Chain::DoesNotUnderstand | Chain::SuperDoesNotUnderstand
+    )
 }
 
 /// Whether `target` stands at a private lexical site (§5.9), whose guard
