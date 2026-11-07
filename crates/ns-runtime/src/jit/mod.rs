@@ -2697,29 +2697,6 @@ impl JitState {
         self.write_dispatching_rows(index);
     }
 
-    /// Writes vacant the block of every lean body whose code died, at the
-    /// start of the pass after a full collection
-    /// (`point_budget_words_after_collection`): the pass points such a
-    /// body's word at the vacant block, and the full collection then
-    /// frees its copies (`free_dead_bodies`), so that its block would
-    /// keep rows naming freed code that no word names any more. Before
-    /// the pass mints any id afresh, a dead body's block is no live
-    /// body's: the block of an id belongs to the one code the id names.
-    #[cfg(ns_jit)]
-    fn vacate_dead_dispatching_blocks(&mut self) {
-        let Some(table) = self.optimized_copies.as_mut() else {
-            return;
-        };
-        for body in self.bodies.iter().filter(|body| !body.free) {
-            let Some(dispatching) = body.dispatching else {
-                continue;
-            };
-            if body.code.strong_count() == 0 {
-                table.write(dispatching.rows, &[]);
-            }
-        }
-    }
-
     /// Writes the dispatching rows of the lean body at `lean` from the
     /// optimized copies its slot names beside it, at most
     /// `DISPATCHING_ROWS` of them, in the block its word names: the one
@@ -4684,7 +4661,7 @@ pub(crate) fn point_budget_words_after_collection(
     carried: &IdentityMap<usize, i64>,
 ) {
     mutator.jit.budget_words_to_point.clear();
-    mutator.jit.vacate_dead_dispatching_blocks();
+    vacate_released_dispatching_blocks(mutator);
     let unpointed = mutator.jit.unpointed_budget_address();
     for index in 0..mutator.jit.bodies.len() {
         let index = u32::try_from(index).expect("internal: a body's index fits a u32");
@@ -4693,6 +4670,36 @@ pub(crate) fn point_budget_words_after_collection(
             // A dead body's word may name a block whose id was minted for
             // another body.
             mutator.jit.point_dispatching_rows(index, None);
+        }
+    }
+}
+
+/// Writes vacant, at the start of the pass after a full collection
+/// (`point_budget_words_after_collection`), the block of every lean body
+/// whose code died or had its code id freed by the collection: the pass
+/// points such a body's word at the vacant block, or at the block of the
+/// id minted for it afresh, and the collection frees a dead body's
+/// copies (`free_dead_bodies`), so that the old block would keep rows
+/// naming its copies that no word names any more -- rows that only the
+/// next owner's writing would clear. Before the pass mints any id, such
+/// a block is no live body's: the block of an id belongs to the one code
+/// the id names.
+#[cfg(ns_jit)]
+fn vacate_released_dispatching_blocks(mutator: &mut Mutator<'_>) {
+    let jit = &mut mutator.jit;
+    let Some(table) = jit.optimized_copies.as_mut() else {
+        return;
+    };
+    for body in jit.bodies.iter().filter(|body| !body.free) {
+        let Some(dispatching) = body.dispatching else {
+            continue;
+        };
+        let released = body
+            .code
+            .upgrade()
+            .is_none_or(|code| !mutator.heap.has_code_id(&code));
+        if released {
+            table.write(dispatching.rows, &[]);
         }
     }
 }

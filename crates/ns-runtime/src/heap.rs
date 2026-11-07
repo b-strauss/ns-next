@@ -6871,6 +6871,16 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Whether `code` has a code id, without registering one: a full
+    /// collection's `reclaim_ids` may have freed it
+    /// (`jit::point_budget_words_after_collection`).
+    #[cfg(ns_jit)]
+    pub(crate) fn has_code_id(&self, code: &CompiledCode) -> bool {
+        self.tables
+            .code_ids
+            .contains_key(&(std::ptr::from_ref(code) as usize))
+    }
+
     /// What is left of `code`'s optimization budget, if it has a code id
     /// and its row is armed: what a full collection carries over to the
     /// row of the id the body has after it (`jit::budgets_before_collection`).

@@ -11658,9 +11658,9 @@ through to the baseline code with nothing to test. A block is written
 only from the copies of the body whose word names it
 (`JitState::write_dispatching_rows`), afresh wherever a copy is
 installed, retired, invalidated or moved, and written vacant once that
-body is freed or its code dies, since no copy's freeing writes it
+body is freed, its code dies or its code id is freed, since no copy's freeing writes it
 again then (`JitState::vacate_dispatching_block`,
-`vacate_dead_dispatching_blocks`), and a compaction of the zone
+`vacate_released_dispatching_blocks`), and a compaction of the zone
 remaps every row's entry; its committed pages are given back after a
 full collection as the machine entry table's are
 ([memory.md](memory.md), "Giving committed memory back"). A copy past
