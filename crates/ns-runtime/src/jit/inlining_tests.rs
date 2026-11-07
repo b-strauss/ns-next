@@ -183,16 +183,30 @@ const LEAF_IN_A_CALLEE: &str = indoc! {"
     )
 "};
 
-/// `source`'s `run`, every body compiled at its first entry and optimized
-/// at its first spend -- and, under `deopt`, its optimized code leaving
-/// at every n-th interrupt point -- with the recorder on: the answer, what
-/// was recorded, and the code ids and the program counter of the one send
-/// of each of `sends`, a selector of a body and the selector it sends.
-fn run_recording(
-    source: &str,
-    deopt: bool,
-    sends: &[(&str, &str)],
-) -> (i64, Recorder, Vec<(CodeId, usize)>) {
+/// Whether the environment turns the stress mode `mode` on.
+fn the_stress_mode_is_on(mode: &str) -> bool {
+    std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
+        .is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// What `run_recording` answers: the run's answer, what was recorded, the
+/// code id and program counter of each send asked for, and the
+/// activations the depth limit counted before the run.
+struct Recording {
+    answer: i64,
+    recorder: Recorder,
+    sends: Vec<(CodeId, usize)>,
+    counted_before: usize,
+}
+
+/// `source`'s `run`, the JIT on whatever the environment says, every body
+/// compiled at its first entry and optimized at its first spend -- and,
+/// under `deopt`, its optimized code leaving at every n-th interrupt
+/// point -- with the recorder on: the answer, what was recorded, the code
+/// ids and the program counter of the one send of each of `sends`, a
+/// selector of a body and the selector it sends, and the counted depth
+/// before the run.
+fn run_recording(source: &str, deopt: bool, sends: &[(&str, &str)]) -> Recording {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = crate::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
         .unwrap_or_else(|_| panic!("the module resolves"));
@@ -201,6 +215,7 @@ fn run_recording(
     // would vacate it at the runs' safepoints.
     #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     if deopt {
         interpreter.set_deopt_stress(true);
@@ -209,7 +224,10 @@ fn run_recording(
     }
     let class = interpreter.load_module(&resolved);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    interpreter.enter(|mutator| mutator.jit.recorder = Some(Recorder::default()));
+    let counted_before = interpreter.enter(|mutator| {
+        mutator.jit.recorder = Some(Recorder::default());
+        mutator.heap.counted_depth()
+    });
     let answer = expect_ok(
         interpreter.send(&instance, Symbol::intern("run"), &[]),
         "run",
@@ -246,7 +264,12 @@ fn run_recording(
             .collect();
         (recorder, sends)
     });
-    (answer, recorder, sends)
+    Recording {
+        answer,
+        recorder,
+        sends,
+        counted_before,
+    }
 }
 
 /// The sum `NESTED` and `LEAF_IN_A_CALLEE` answer, `addend` added to
@@ -261,13 +284,24 @@ fn sum_of_indices(addend: i64) -> i64 {
 /// one physical frame, each read as an interpreter's -- `middle:` the
 /// innermost, at its `probe:` send, its caller `outer:`, at its `middle:`
 /// send, each its own body -- and the heap counts every activation the
-/// stack holds, the scope among them, live and against the depth limit
-/// alike: every exit's stack holds as many uncounted activations, the
-/// host's, inside an inlined scope as anywhere else, as the interpreter's
-/// would.
+/// stack holds, the scope among them: live, and against the depth limit
+/// exactly as the interpreter counts there, `run`, `outer:` and `middle:`
+/// above what counted before the run, whatever a stress mode suspended.
 #[test]
 fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
-    let (answer, recorder, sends) = run_recording(
+    // The zone stress mode compacts the zone at every safepoint, freeing
+    // `outer:`'s optimized code, which the next spend compiles again, and
+    // the deopt countdown set afresh at each of them is spent before the
+    // inlined scope's send: no exit falls inside the scope there.
+    if the_stress_mode_is_on("ZONE") {
+        return;
+    }
+    let Recording {
+        answer,
+        recorder,
+        sends,
+        counted_before,
+    } = run_recording(
         NESTED,
         true,
         &[("middle:", "probe:"), ("outer:", "middle:")],
@@ -302,14 +336,10 @@ fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
             exit.frames.len(),
             "every activation of the stack is live, the scope among them"
         );
-    }
-    let uncounted = |exit: &RecordedExit| exit.frames.len() - exit.counted;
-    let first = uncounted(&recorder.exits[0]);
-    for exit in &recorder.exits {
         assert_eq!(
-            uncounted(exit),
-            first,
-            "the depth limit counts every activation, an inlined scope's among them"
+            exit.counted,
+            counted_before + 3,
+            "the depth limit counts `run`, `outer:` and the scope `middle:`"
         );
     }
 }
@@ -323,7 +353,17 @@ fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
 /// answer is the interpreter's.
 #[test]
 fn each_scope_goes_on_in_its_own_baseline_code_after_an_exit() {
-    let (answer, recorder, sends) = run_recording(
+    // Under the zone stress mode no exit falls inside the inlined scope
+    // (`an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames`).
+    if the_stress_mode_is_on("ZONE") {
+        return;
+    }
+    let Recording {
+        answer,
+        recorder,
+        sends,
+        ..
+    } = run_recording(
         NESTED,
         true,
         &[("middle:", "probe:"), ("outer:", "middle:")],
@@ -344,15 +384,15 @@ fn each_scope_goes_on_in_its_own_baseline_code_after_an_exit() {
         }
         assert_eq!(exit.frames[0].program_counter, probe_send);
         assert!(exit.frames[1].compiled, "`outer:` stands in machine code");
-        // The next resumption after this exit is `outer:`'s, past its send.
-        let resumed = recorder
-            .resumptions
-            .iter()
-            .find(|(exits, _, _)| *exits > index)
-            .expect("a frame resumed after the exit");
-        assert_eq!(
-            (resumed.1, resumed.2),
-            (outer, after_send),
+        // A resumption after this exit is `outer:`'s, past its send; a
+        // stress mode's collections and suspensions resume other frames
+        // between.
+        assert!(
+            recorder
+                .resumptions
+                .iter()
+                .any(|(exits, code, program_counter)| *exits > index
+                    && (*code, *program_counter) == (outer, after_send)),
             "`outer:` goes on in its own baseline code past its send"
         );
         checked += 1;
@@ -366,7 +406,12 @@ fn each_scope_goes_on_in_its_own_baseline_code_after_an_exit() {
 /// counter, never `outer:`'s, and the answer is the interpreter's.
 #[test]
 fn a_leaf_called_from_an_inlined_scope_reads_that_scope() {
-    let (answer, recorder, sends) = run_recording(LEAF_IN_A_CALLEE, false, &[("middle:", "size")]);
+    let Recording {
+        answer,
+        recorder,
+        sends,
+        ..
+    } = run_recording(LEAF_IN_A_CALLEE, false, &[("middle:", "size")]);
     assert_eq!(answer, sum_of_indices(3));
     let [(middle, size_send)] = sends[..] else {
         panic!("one send");
@@ -579,6 +624,14 @@ fn an_inlined_site_meeting_an_unseen_receiver_traps_and_is_recompiled_with_its_s
     use crate::jit::optimizing::plan::{plan, FallThrough, Limits};
     use crate::jit::optimizing::tree::SnapshotTree;
 
+    // The zone stress mode's compactions free `outer:at:`'s optimized code
+    // at every safepoint, so that the call that meets the other receiver
+    // runs its baseline code, which never traps: the copy the scenario
+    // needs is not there to meet it.
+    if the_stress_mode_is_on("ZONE") {
+        return;
+    }
+
     let source = indoc! {"
         class Subject = Object new (
           | other = Other new. |
@@ -616,6 +669,7 @@ fn an_inlined_site_meeting_an_unseen_receiver_traps_and_is_recompiled_with_its_s
     let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
     #[cfg(debug_assertions)]
     interpreter.set_stress_caches(false);
+    interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
     interpreter.set_optimize_stress(true);
     let class = interpreter.load_module(&resolved);

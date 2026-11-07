@@ -5578,9 +5578,11 @@ pub(crate) fn entered(
         .filter(|_| mutator.heap.activation_reified(activation).is_none())
         .filter(|(_, chain, extent)| {
             *chain == 0
-                || mutator
-                    .heap
-                    .machine_frame_fits(register_base, *chain, *extent)
+                || mutator.heap.machine_frame_fits(
+                    Heap::register_base_words(register_base),
+                    *chain,
+                    *extent,
+                )
         })
         .map(|(entry, _, _)| entry);
     match optimized.or_else(|| entry_of_frame(mutator, activation, code, feedback_base, 0)) {

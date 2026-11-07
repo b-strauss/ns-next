@@ -9729,29 +9729,24 @@ impl<'gc> Heap<'gc> {
 
     /// Where `base`'s registers start, in words from the activation
     /// stack's base (`jit::stubs::BlockWord::RegisterBase`).
-    #[cfg(ns_jit)]
     pub(crate) fn register_base_words(base: RegisterBase) -> u64 {
         u64::from(base.index)
     }
 
-    /// Whether the frame whose registers start at `register_base`, pushed
+    /// Whether the frame whose registers start `register_base` words into
+    /// the stack, pushed
     /// and counted, has room for `chain` more counted activations within
     /// the depth limit word, and its registers up to `extent` within the
     /// ordinary stack's end: what optimized code whose inlined scopes nest
     /// `chain` deep and reach `extent` needs of the frame it is entered
     /// for (`jit::entered`), as its prologue compares them for a call.
-    pub(crate) fn machine_frame_fits(
-        &self,
-        register_base: RegisterBase,
-        chain: u16,
-        extent: u32,
-    ) -> bool {
+    pub(crate) fn machine_frame_fits(&self, register_base: u64, chain: u16, extent: u32) -> bool {
         let words = &self.machine_words;
         let depth = words.get(MachineWord::DepthCount);
         let limit = words.get(MachineWord::DepthLimit);
         let end = words.get(MachineWord::OrdinaryStackEnd);
         depth.saturating_add(u64::from(chain)) <= limit
-            && u64::from(register_base.index).saturating_add(u64::from(extent)) <= end
+            && register_base.saturating_add(u64::from(extent)) <= end
     }
 
     /// The register number machine code reads a frame's current class at:
@@ -19787,6 +19782,28 @@ mod tests {
         assert_eq!(
             heap.machine_word(MachineWord::DepthLimit),
             (MAX_ACTIVATION_DEPTH + DEPTH_RESERVE) as u64
+        );
+    }
+
+    /// A frame fits optimized code that inlines only where both its
+    /// deepest chain of scopes stays within the depth limit word and its
+    /// deepest register within the ordinary stack's end: either failing,
+    /// the push goes on in baseline code (`jit::entered`).
+    #[test]
+    fn a_frame_fits_its_inlining_within_both_the_depth_and_the_room() {
+        let heap = Heap::new();
+        heap.machine_words.set(MachineWord::DepthCount, 10);
+        heap.machine_words.set(MachineWord::DepthLimit, 13);
+        heap.machine_words.set(MachineWord::OrdinaryStackEnd, 1000);
+        assert!(heap.machine_frame_fits(900, 3, 100), "both at their bounds");
+        assert!(!heap.machine_frame_fits(900, 4, 100), "one scope too deep");
+        assert!(
+            !heap.machine_frame_fits(900, 3, 101),
+            "one register past the room"
+        );
+        assert!(
+            !heap.machine_frame_fits(901, 3, 100),
+            "the frame one word higher"
         );
     }
 

@@ -1513,6 +1513,7 @@ ns_runtime::for_each_lowering! {
 /// instance's first field; over `Wide`, whose three slots hold 100, its
 /// fourth. Every `Box` makes its own class object of `Cell`, and the
 /// application over a base dies with the last of them.
+#[cfg(debug_assertions)]
 const ONE_MIXIN_OVER_TWO_BASES: &str = indoc! {"
     class Subject = Object new () (
       class Narrow = Object new () ()
