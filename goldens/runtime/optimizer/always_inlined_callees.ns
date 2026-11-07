@@ -2,9 +2,11 @@
 /// a lazy slot's getter, a quick method, `==`, `class` and an Array's and a
 /// ByteArray's `at:` and `at:put:` -- sent from methods hot enough to be
 /// optimized: each answers what its send answers. A check such a callee
-/// makes that fails -- a lazy slot not yet filled, two boxed floats whose
-/// bits decide their identity, an index or a byte out of range -- runs the
-/// send again in the interpreter, which answers it or raises its own error.
+/// makes that fails -- a lazy slot not yet filled, an index or a byte out
+/// of range -- runs the send again in the interpreter, which answers it or
+/// raises its own error. A number's `==` is `Value`'s, `=`, an inlined
+/// method rather than the identity: two boxed floats of the same bits are
+/// `==` because they are `=`.
 class AlwaysInlinedCallees = Object new () (
   class Cell = Object new (
     |

@@ -4847,6 +4847,71 @@ fn an_array_at_put_out_of_bounds_traps_and_raises_the_interpreter_s_error() {
     }
 }
 
+/// `same:as:`'s `==`, run hot on a `Thing` and then once against an
+/// unresolved future of that `Thing`, which the identity's leaf declines
+/// for and the interpreter sees through.
+const IDENTITY_AND_A_FUTURE: &str = indoc! {"
+    class Subject usingPlatform: platform = Object new (
+      |
+        Future = platform kernel Future.
+        thing = Thing new.
+      |
+    ) (
+      class Thing = Object new () ()
+
+      same: left as: right = (
+        ^left == right.
+      )
+
+      public run = (
+        |
+          index ::= 0.
+          count ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          (same: thing as: thing) ifTrue: [count:: count + 1].
+          (same: thing as: nil) ifTrue: [count:: count + 1000].
+          index:: index + 1.
+        ].
+        ^count.
+      )
+
+      public sameAsFuture = (
+        ^(same: thing as: (Future computing: [thing])) ifTrue: [1] ifFalse: [0].
+      )
+    ) : ()
+"};
+
+/// `IDENTITY_AND_A_FUTURE`'s answer to `sameAsFuture` once `run` has
+/// optimized `same:as:`, whose copy inlines `Thing`'s `==` -- with the JIT
+/// on or off -- and how many traps that send took.
+fn identity_with_a_future(jit: bool) -> (i64, u64) {
+    let (mut interpreter, class) = load_customizing(IDENTITY_AND_A_FUTURE, Lowering::Optimized);
+    interpreter.set_jit_enabled(jit);
+    let subject = subject_using_platform(&mut interpreter, &class);
+    assert_eq!(send_unary(&mut interpreter, &subject, "run"), 1000);
+    let before = interpreter.jit_statistics().traps;
+    let answer = send_unary(&mut interpreter, &subject, "sameAsFuture");
+    (answer, interpreter.jit_statistics().traps - before)
+}
+
+/// The inlined `==` cannot answer `false` for a future, which may stand
+/// for its receiver: it traps, and the interpreter's leaf declines, sees
+/// through the future and answers what it stands for -- `true` here, the
+/// interpreter's answer.
+#[test]
+fn an_inlined_identity_with_a_future_traps_and_answers_the_interpreter_s_result() {
+    let (compiled, traps) = identity_with_a_future(true);
+    let (interpreted, _) = identity_with_a_future(false);
+    assert_eq!(compiled, interpreted);
+    assert_eq!(compiled, 1);
+    if a_copy_runs_to_its_trap() {
+        // The future's forcing may meet another speculation; the `==`
+        // traps at least.
+        assert!(traps >= 1, "the inlined `==` traps at the future");
+    }
+}
+
 /// The rows marked leaf-safe -- `MachineCall::Leaf`, or `Stub` with a
 /// stub of their own -- are exactly those this list names, each with why
 /// its leaf is leaf-safe: a row marked without being read

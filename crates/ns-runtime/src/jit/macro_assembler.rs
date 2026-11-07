@@ -2124,13 +2124,14 @@ impl MacroAssembler {
     }
 
     /// Jumps to `undecided` where `left == right`, two different words,
-    /// is not `false` by the words alone, as `object_class::identical` and
-    /// `future::declines_for_a_future` decide it: where both name objects
-    /// and `left`'s has a number's payload -- a boxed `Float` is identical
-    /// to another of its bits -- or where either names a future, for which
-    /// the leaf declines. Two different immediates are never identical:
-    /// a `SmallFloat`'s word is its bits, rotated. `left` and `right` are
-    /// kept; clobbers the flags, `scratch` and `machine_words`.
+    /// is not `false` by the words alone, as `future::declines_for_a_future`
+    /// decides it: where either names a future, for which the leaf
+    /// declines. `object_class::identical` answers `true` for two different
+    /// words only for two boxed floats of the same bits, and no float
+    /// reaches this row's `==` on its left: every number is a `Value`, whose
+    /// `==` is `=` (`Kernel.ns`). Two different immediates are never
+    /// identical. `left` and `right` are kept; clobbers the flags,
+    /// `scratch` and `machine_words`.
     pub(crate) fn jump_if_identity_undecided(
         &mut self,
         (left, right): (Register, Register),
@@ -2141,34 +2142,10 @@ impl MacroAssembler {
             distinct(&[left, right, scratch, machine_words]),
             "internal: an identity's registers are distinct"
         );
-        let layout = crate::heap::Heap::machine_layout();
-        let object_space = self.roles.object_space;
-        let (no_number, right_checked, decided) = (
-            self.assembler.label(),
-            self.assembler.label(),
-            self.assembler.label(),
-        );
+        let (right_checked, decided) = (self.assembler.label(), self.assembler.label());
         self.load_machine_words(machine_words);
         let future_class = MacroAssembler::machine_word(machine_words, MachineWord::FutureClass);
         self.jump_unless_object_word(left, right_checked);
-        let assembler = &mut self.assembler;
-        assembler.move_register(scratch, left);
-        assembler.add(scratch, object_space);
-        assembler.load(
-            Width::Word64,
-            scratch,
-            Memory {
-                base: scratch,
-                displacement: layout.header_displacement,
-            },
-        );
-        assembler.and_immediate(scratch, layout.instance_format_bits);
-        assembler.compare_immediate(scratch, layout.number_format);
-        assembler.jump_if(Condition::NotEqual, no_number);
-        // A number's payload: the bits decide where `right` names an object.
-        self.jump_unless_object_word(right, no_number);
-        self.assembler.jump(undecided);
-        self.assembler.bind(no_number);
         self.jump_if_future(left, scratch, future_class, undecided);
         self.assembler.bind(right_checked);
         self.jump_unless_object_word(right, decided);

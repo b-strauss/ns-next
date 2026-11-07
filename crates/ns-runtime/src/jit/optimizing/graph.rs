@@ -353,8 +353,9 @@ pub(crate) enum Node {
     /// where they differ and the words alone decide it -- as
     /// `object_class::identical` and its decline for a future decide it
     /// -- and a trap, running the send at `program_counter` again, where
-    /// they do not: two objects the first of which may be a boxed number,
-    /// whose bits decide, or either a future, for which the leaf declines.
+    /// they do not: either a future, for which the leaf declines. No
+    /// number reaches it on its left, whose bits would decide: every
+    /// number is a `Value`, whose `==` is `=`.
     IdentityCompare {
         value: ValueId,
         left: ValueId,

@@ -469,8 +469,9 @@ pub(crate) fn tree_of_run(source: &str, selector: &str) -> tree::SnapshotTree {
 /// recorded a callee of the corpus that takes as many arguments -- one,
 /// or for every third site two, and for every fifth of at most two
 /// arguments two arms always inlined beside them: a unary one's slot
-/// getter and `class`, a one-argument one's setter and `==`, and a
-/// two-argument one's `at:put:` of an `Array` and of a `ByteArray` --
+/// getter and `class` or a lazy slot's getter, a one-argument one's
+/// setter and `==` or an `Array`'s `at:` and a `SmallInteger`'s `+`, and
+/// a two-argument one's `at:put:` of an `Array` and of a `ByteArray` --
 /// each its own guard's, all of one application, so that a `super` or
 /// lexical send in an inlined scope is taken without a test; and every
 /// seventh site left never run; walked from the root three callees deep. The inlining passes' sweeps
@@ -481,7 +482,7 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
     use std::collections::{HashMap, HashSet};
 
     use crate::builtins::primitive::{
-        BytePrimitive, CollectionPrimitive, ObjectPrimitive, Primitive,
+        BytePrimitive, CollectionPrimitive, IntegerPrimitive, ObjectPrimitive, Primitive,
     };
     use crate::bytecode::CodeKind;
     use crate::heap::CodeId;
@@ -490,6 +491,21 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
     use tree::CalleeFacts;
 
     let bodies = corpus_of_bodies();
+    // A lazy slot's getter, its own slot 0 filled with 1 when empty: a
+    // callee the plan always inlines as a load and a test.
+    let mut lazy_getter = test_snapshot(vec![
+        crate::bytecode::Instruction::ReturnSlotIfFilled { own_index: 0 },
+        crate::bytecode::Instruction::LoadLiteral {
+            destination: 13,
+            literal: crate::bytecode::Literal::SmallInteger(1),
+        },
+        crate::bytecode::Instruction::InitializeSlot {
+            source: 13,
+            own_index: 0,
+        },
+        crate::bytecode::Instruction::Return { register: 13 },
+    ]);
+    lazy_getter.code_id = CodeId::from_raw(u32::MAX - 1);
     let by_id: HashMap<CodeId, &Snapshot> =
         bodies.iter().map(|body| (body.code_id, body)).collect();
     let mut methods: HashMap<u16, Vec<CodeId>> = HashMap::new();
@@ -538,7 +554,11 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
                 arms.push(pick(1));
             }
             ran_site(&mut fed, index, facts.site);
-            sites.push((facts.site, arms, (seed % 5 == 0).then_some(arity)));
+            sites.push((
+                facts.site,
+                arms,
+                (seed % 5 == 0).then_some((arity, seed % 2 == 0)),
+            ));
         }
         (fed, sites)
     };
@@ -573,15 +593,28 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
                         level: crate::heap::ApplicationIndex::from_raw(0),
                     };
                     let always = match accessor {
-                        Some(0) => vec![
+                        Some((0, true)) => vec![
                             slot(AccessorKind::Getter),
                             CalleeFacts::Primitive(Primitive::Object(ObjectPrimitive::Class)),
                         ],
-                        Some(1) => vec![
+                        Some((0, false)) => vec![
+                            slot(AccessorKind::Getter),
+                            CalleeFacts::Method {
+                                snapshot: Box::new(lazy_getter.clone()),
+                                level: 0,
+                            },
+                        ],
+                        Some((1, true)) => vec![
                             slot(AccessorKind::Setter),
                             CalleeFacts::Primitive(Primitive::Object(ObjectPrimitive::Identical)),
                         ],
-                        Some(2) => vec![
+                        Some((1, false)) => vec![
+                            CalleeFacts::Primitive(Primitive::Collection(
+                                CollectionPrimitive::ElementAt,
+                            )),
+                            CalleeFacts::Primitive(Primitive::Integer(IntegerPrimitive::Add)),
+                        ],
+                        Some((2, _)) => vec![
                             CalleeFacts::Primitive(Primitive::Collection(
                                 CollectionPrimitive::ElementAtPut,
                             )),

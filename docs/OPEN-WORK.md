@@ -918,10 +918,8 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       are inlined; and every arm with a check in a copy that speculates
       nothing or at a site that trapped (`build::Laying::expressed`).
     - *Traps that recur*: a lazy slot's getter traps for every instance
-      whose slot is still empty, and `==` for every pair whose first is
-      an object with a number's payload -- a `LargeInteger` too, whose
-      identity no bits decide -- or that holds a future; such a site
-      is sent once its trap retired the copy.
+      whose slot is still empty, and `==` for every pair that holds a
+      future; such a site is sent once its trap retired the copy.
     - *Costs*: the barrier of a setter and of an `Array`'s `at:put:`
       calls the remembering leaf out of line, so that every value live
       across either leaves the registers the call clobbers -- moved into

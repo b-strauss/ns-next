@@ -1892,4 +1892,154 @@ mod tests {
             }
         }
     }
+
+    /// A tree whose root, taking two arguments, sends `selector` to its
+    /// argument 0 with `arguments` of its own, its site 0 cached for each
+    /// of `cached`: a guard number of `test_receiver` and the callee it
+    /// reached, an arm always inlined.
+    fn always_inlined_tree(
+        selector: &str,
+        arguments: Vec<u16>,
+        cached: Vec<(u32, crate::jit::optimizing::tree::CalleeFacts)>,
+    ) -> crate::jit::optimizing::tree::SnapshotTree {
+        let mut root = test_snapshot_with_arguments(
+            vec![
+                Instruction::SendPublic {
+                    selector: crate::Symbol::intern(selector),
+                    receiver_register: 0,
+                    argument_base: 20,
+                    argument_sources: arguments,
+                    destination: 14,
+                    call_site: crate::bytecode::CallSite { number: 0 },
+                },
+                Instruction::Return { register: 14 },
+            ],
+            2,
+        );
+        crate::jit::optimizing::ran_site(&mut root, 0, 0);
+        let code_id = root.code_id;
+        crate::jit::optimizing::test_tree(
+            root,
+            vec![(
+                code_id,
+                0,
+                cached
+                    .into_iter()
+                    .map(|(guard, callee)| {
+                        (crate::jit::optimizing::test_receiver(guard, 1, 0), callee)
+                    })
+                    .collect(),
+            )],
+            Vec::new(),
+        )
+    }
+
+    /// The dispatch id `test_receiver(guard, ..)` names, as a guard word.
+    fn guard_word(guard: u32) -> u64 {
+        u64::from(guard + crate::mixin::DispatchId::FIRST_MINTED)
+    }
+
+    /// `tree` compiled for the host and run from the push's entry on a
+    /// frame whose arguments are `first` and `second`, every immediate of
+    /// `immediates` -- its index and the guard and class words the machine
+    /// words hold for it -- set.
+    fn run_tree(
+        tree: &crate::jit::optimizing::tree::SnapshotTree,
+        (first, second): (u64, u64),
+        immediates: &[(u64, u64, u64)],
+    ) -> MachineExit {
+        use crate::heap::machine_words::MachineWord;
+        let optimized = crate::jit::optimizing::compile_tree(
+            tree,
+            MacroAssembler::new(Abi::host()),
+            BodyRole::Method,
+            false,
+            Speculation::Traps,
+        )
+        .unwrap_or_else(|refusal| panic!("refused: {refusal:?}"));
+        let mut machine = Machine::new();
+        for (index, guard, class) in immediates {
+            let index = usize::try_from(*index).expect("small");
+            machine.set_machine_word(MachineWord::ImmediateGuard(index), *guard);
+            machine.set_machine_word(MachineWord::ImmediateClass(index), *class);
+        }
+        let start = machine.install(&optimized.code);
+        let entry = ns_memory::CodeOffset(start.0 + optimized.push_entry);
+        let mut frame = [0u64; 64];
+        frame[0] = first;
+        frame[1] = second;
+        machine.run(entry, &mut frame, 0, false, &mut (), &[]).0
+    }
+
+    /// A `SmallInteger`'s `+` always inlined at a send that is no fast
+    /// path's fallback -- which no lowering of this compiler emits, only an
+    /// image's code can hold -- answers the sum, and traps at the send,
+    /// running it again in the interpreter, on an overflow and on an
+    /// argument that is no `SmallInteger`.
+    #[test]
+    fn an_inlined_integer_arm_answers_and_traps_at_its_send() {
+        use crate::builtins::primitive::{IntegerPrimitive, Primitive};
+        let tree = always_inlined_tree(
+            "+",
+            vec![1],
+            vec![(
+                1,
+                crate::jit::optimizing::tree::CalleeFacts::Primitive(Primitive::Integer(
+                    IntegerPrimitive::Add,
+                )),
+            )],
+        );
+        let index = crate::heap::Heap::machine_layout().small_integer_index;
+        let integers = [(index, guard_word(1), 0)];
+        assert_eq!(
+            run_tree(&tree, (small_integer(37), small_integer(5)), &integers),
+            MachineExit::Returned {
+                value: small_integer(42)
+            }
+        );
+        let trap = MachineExit::Trap {
+            program_counter: 0,
+            site: 0,
+        };
+        assert_eq!(
+            run_tree(
+                &tree,
+                (small_integer(SMALL_INTEGER_MAX), small_integer(1)),
+                &integers
+            ),
+            trap
+        );
+        assert_eq!(
+            run_tree(&tree, (small_integer(1), Immediate::NIL.bits()), &integers),
+            trap
+        );
+    }
+
+    /// `class` always inlined answers an immediate's class from the machine
+    /// words, a `SmallInteger`'s and a `SmallFloat`'s each its own -- the
+    /// immediates this VM has besides the constants -- with no leaf.
+    #[test]
+    fn an_inlined_class_of_an_immediate_reads_the_machine_words() {
+        use crate::builtins::primitive::{ObjectPrimitive, Primitive};
+        let class = || {
+            crate::jit::optimizing::tree::CalleeFacts::Primitive(Primitive::Object(
+                ObjectPrimitive::Class,
+            ))
+        };
+        let tree = always_inlined_tree("class", Vec::new(), vec![(1, class()), (2, class())]);
+        let layout = crate::heap::Heap::machine_layout();
+        let immediates = [
+            (layout.small_integer_index, guard_word(1), 0x1110),
+            (layout.small_float_index, guard_word(2), 0x2220),
+        ];
+        assert_eq!(
+            run_tree(&tree, (small_integer(3), 0), &immediates),
+            MachineExit::Returned { value: 0x1110 }
+        );
+        let float = Immediate::small_float(1.5).expect("a SmallFloat").bits();
+        assert_eq!(
+            run_tree(&tree, (float, 0), &immediates),
+            MachineExit::Returned { value: 0x2220 }
+        );
+    }
 }

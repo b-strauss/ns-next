@@ -2930,7 +2930,6 @@ impl<'flat> Builder<'flat> {
                     right: argument(0),
                     fallback: None,
                 });
-                self.bind(state, always.destination, value);
                 value
             }
         };
@@ -5440,15 +5439,18 @@ pub(crate) mod inlining_tests {
         else {
             panic!("the class: {graph:#?}");
         };
-        // `class` is protected, so its receiver is `self`, read afresh.
-        assert!(
-            is_receiver(&graph, *object, tested(&graph, send))
-                || matches!(
-                    graph.definition(*object),
+        // `class` is protected, so its send is a lexical one to `self`, the
+        // root's receiver, which the type-case reads from the header and
+        // the arm reads again.
+        for read in [*object, tested(&graph, send)] {
+            assert!(
+                matches!(
+                    graph.definition(read),
                     Definition::Node(Node::Receiver { .. })
                 ),
-            "{graph:#?}"
-        );
+                "{graph:#?}"
+            );
+        }
     }
 
     #[test]
@@ -5571,7 +5573,7 @@ pub(crate) mod inlining_tests {
         let mut inlined = 0;
         let mut type_cases = 0;
         // Each kind of node an arm always inlined becomes.
-        let mut always = [0; 5];
+        let mut always = [0; 8];
         for tree in inlining_corpus() {
             for speculation in [Speculation::Traps, Speculation::None] {
                 let plan = plan_with(&tree, &SWEEP_LIMITS, speculation);
@@ -5589,16 +5591,33 @@ pub(crate) mod inlining_tests {
                     .iter()
                     .filter(|block| matches!(block.end, End::TypeCase { .. }))
                     .count();
-                for node in graph.blocks.iter().flat_map(|block| &block.nodes) {
-                    let kind = match node {
-                        Node::FieldLoad { .. } => 0,
-                        Node::FieldStore { .. } => 1,
-                        Node::ClassOf { .. } => 2,
-                        Node::IdentityCompare { .. } => 3,
-                        Node::IndexedStore { .. } => 4,
-                        _ => continue,
-                    };
-                    always[kind] += 1;
+                for block in &graph.blocks {
+                    let snapshot = tree
+                        .snapshot_of(graph.scope(block.scope).code_id)
+                        .expect("every scope's body is snapshotted");
+                    for node in &block.nodes {
+                        let kind = match node {
+                            Node::FieldLoad { .. } => 0,
+                            Node::FieldStore { .. } => 1,
+                            Node::ClassOf { .. } => 2,
+                            Node::IdentityCompare { .. } => 3,
+                            Node::IndexedStore { .. } => 4,
+                            Node::IndexedLoad { .. } => 5,
+                            Node::TrapIfNil { .. } => 6,
+                            // An arm's arithmetic, at a send rather than at
+                            // an `IntegerBinary` of the body's own.
+                            Node::IntegerBinary {
+                                program_counter, ..
+                            } if snapshot.instructions[*program_counter as usize]
+                                .argument_slots()
+                                .is_some() =>
+                            {
+                                7
+                            }
+                            _ => continue,
+                        };
+                        always[kind] += 1;
+                    }
                 }
             }
         }
