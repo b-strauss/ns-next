@@ -40,6 +40,7 @@ use ns_assembler::Register;
 
 use super::graph::{BlockId, Graph, Node, ValueId};
 use super::liveness::{bind, poll_target, Binding, Intervals, Positions};
+use super::plan::EliminatedId;
 use crate::jit::macro_assembler::Roles;
 
 /// Where a value is at a position.
@@ -48,6 +49,13 @@ pub(crate) enum Location {
     Register(Register),
     /// The frame word of every bytecode register bound to the value.
     FrameWord,
+    /// A block the compile never creates, which an exit that finds it
+    /// live materializes (`docs/design/execution.md`, "Inlining").
+    #[expect(
+        dead_code,
+        reason = "the plan eliminates no block until the exit can materialize one"
+    )]
+    EliminatedBlock(EliminatedId),
 }
 
 /// A place a move reads or writes.
@@ -182,7 +190,7 @@ impl Allocation {
                 let value = ValueId(u32::try_from(index).expect("internal: a value id fits a u32"));
                 match self.location_of(value, position) {
                     Location::Register(register) => Some(register),
-                    Location::FrameWord => None,
+                    Location::FrameWord | Location::EliminatedBlock(_) => None,
                 }
             })
             .collect()
@@ -527,7 +535,9 @@ impl Allocator<'_> {
                     register: exit.frame_word_of(value),
                     into: *into,
                 }),
-                None => panic!("internal: a value live into a merge is placed on every way in"),
+                Some(Location::EliminatedBlock(_)) | None => {
+                    panic!("internal: a value live into a merge is placed on every way in")
+                }
             }
         }
         moves.extend(sequence(transfers));
@@ -640,7 +650,9 @@ impl Allocator<'_> {
                 self.state.placed.insert(value, Location::Register(into));
                 self.record(value, position, Location::Register(into));
             }
-            None => panic!("internal: {value:?} is used where it is not placed"),
+            Some(Location::EliminatedBlock(_)) | None => {
+                panic!("internal: {value:?} is used where it is not placed")
+            }
         }
     }
 
@@ -679,13 +691,14 @@ impl Allocator<'_> {
         self.free_dead(use_position);
         let mut moves = Vec::new();
         let operands = match node {
-            Node::Copy { source, .. } => vec![*source],
+            Node::Copy { source, .. } | Node::CurrentClass { from: source, .. } => vec![*source],
             Node::OwnSlotLoad { receiver, .. } => vec![*receiver],
             Node::IntegerBinary { left, right, .. } => vec![*left, *right],
             Node::FrameRead { .. }
             | Node::Constant { .. }
             | Node::Receiver { .. }
-            | Node::Frame { .. } => Vec::new(),
+            | Node::Frame { .. }
+            | Node::Overlay { .. } => Vec::new(),
         };
         for operand in &operands {
             self.ensure_register(*operand, use_position, &operands, &mut moves);

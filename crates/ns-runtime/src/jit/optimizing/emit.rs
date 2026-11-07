@@ -157,7 +157,7 @@ impl Emitter<'_> {
     fn register_of(&self, value: ValueId, position: u32) -> Register {
         match self.allocation.location_of(value, position) {
             Location::Register(register) => register,
-            Location::FrameWord => {
+            Location::FrameWord | Location::EliminatedBlock(_) => {
                 panic!("internal: {value:?} is read in a register at {position}")
             }
         }
@@ -241,7 +241,7 @@ impl Emitter<'_> {
         let definition = use_position + 1;
         let defined_in = |value: ValueId| match self.allocation.location_of(value, definition) {
             Location::Register(register) => Some(register),
-            Location::FrameWord => None,
+            Location::FrameWord | Location::EliminatedBlock(_) => None,
         };
         match node {
             // A read only a frame node takes is not loaded: the frame
@@ -325,6 +325,12 @@ impl Emitter<'_> {
                 if let Some(target) = defined_in(*value) {
                     macro_assembler.move_register(target, result);
                 }
+            }
+            // Its registers are the callee's: what the sender held there
+            // is never stored.
+            Node::Overlay { .. } => {}
+            Node::CurrentClass { .. } => {
+                panic!("internal: an optimized compile builds no inlined scope")
             }
             Node::Frame {
                 program_counter,
@@ -553,6 +559,9 @@ impl Emitter<'_> {
                 self.moves(body, end_definition);
                 jump_unless_next(body, &self.labels, *fall_through);
             }
+            End::TypeCase { .. } => {
+                panic!("internal: an optimized compile builds no inlined send")
+            }
         }
     }
 
@@ -577,7 +586,7 @@ impl Emitter<'_> {
             .iter()
             .map(|(register, _, location)| match location {
                 Location::Register(from) => (*register, *from),
-                Location::FrameWord => {
+                Location::FrameWord | Location::EliminatedBlock(_) => {
                     panic!("internal: a value not in its frame word is in a register")
                 }
             })
@@ -608,7 +617,7 @@ impl Emitter<'_> {
             .iter()
             .map(|(register, _, location)| match location {
                 Location::Register(from) => (*register, *from),
-                Location::FrameWord => {
+                Location::FrameWord | Location::EliminatedBlock(_) => {
                     panic!("internal: a value not in its frame word is in a register")
                 }
             })
@@ -1122,7 +1131,7 @@ mod tests {
                     "a transfer per closure at most, an unreachable one making none"
                 );
                 assert!(optimized.metadata.points.iter().all(|point| {
-                    (point.program_counter as usize) < snapshot.instructions.len()
+                    (point.scopes[0].program_counter as usize) < snapshot.instructions.len()
                 }));
             }
         }

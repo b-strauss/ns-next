@@ -9,9 +9,13 @@
 //! frame, so after one every register is read again from its frame word
 //! (`Node::FrameRead`). Every node but a frame node is register
 //! arithmetic that emits no call.
-use crate::bytecode::IntegerOperation;
-use crate::heap::Immediate;
+use std::ops::Range;
 
+use crate::bytecode::{IntegerOperation, HEADER_REGISTERS};
+use crate::heap::{CodeId, Immediate};
+use crate::mixin::DispatchId;
+
+pub(crate) use super::plan::ScopeId;
 use super::snapshot::SnapshotInstruction;
 
 /// A block of the graph: its index in `Graph::blocks`.
@@ -39,12 +43,75 @@ impl ValueId {
     }
 }
 
-/// A body's graph: its blocks, block 0 the entry, and where each value is
-/// defined.
+/// A body's graph: its blocks, block 0 the entry, where each value is
+/// defined, and the scopes its blocks belong to -- the body's own, and
+/// each body inlined into it -- `ScopeId::ROOT` the body's; empty for a
+/// graph made by hand, which says nothing of the leftover analysis.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Graph {
     pub(crate) blocks: Vec<Block>,
     pub(crate) values: Vec<ValueDefinition>,
+    pub(crate) scopes: Vec<GraphScope>,
+}
+
+/// One scope of a graph, where it lies in the physical frame
+/// (`docs/design/execution.md`, "Inlining"): its register `r` is the
+/// physical frame's register `offset + r`, so that every frame word is the
+/// one the interpreter's activation of it would hold, its header among
+/// them. An inlined scope's receiver and current class are the bindings of
+/// its header's first two words (`HeaderBinding`), which every interrupt
+/// point inside it writes back like any register's; its other header
+/// words are the exit's to write, and no node reads or writes them.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GraphScope {
+    pub(crate) code_id: CodeId,
+    /// The scope that sends it and the program counter of the send;
+    /// `None` for the root.
+    pub(crate) parent: Option<(ScopeId, u32)>,
+    pub(crate) offset: u16,
+    pub(crate) argument_count: u16,
+    /// How many registers the body names (`Snapshot::register_count`).
+    pub(crate) register_count: u16,
+    /// The registers the leftover analysis taints before each of the
+    /// body's instructions, in its own numbering
+    /// (`Snapshot::tainted_before`).
+    pub(crate) tainted_before: Vec<Vec<Range<u16>>>,
+}
+
+/// A header word of an inlined scope that is a binding of the allocation
+/// like a register's: written back before every interrupt point inside
+/// the scope, since the exit writes the header's other words only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HeaderBinding {
+    Receiver,
+    CurrentClass,
+}
+
+impl GraphScope {
+    /// The physical register of the header word `binding` names.
+    pub(crate) fn header_register(&self, binding: HeaderBinding) -> u16 {
+        let word = match binding {
+            HeaderBinding::Receiver => 0,
+            HeaderBinding::CurrentClass => 1,
+        };
+        self.offset + self.argument_count + word
+    }
+
+    /// The physical registers of the header words the exit writes, past
+    /// the two that are bindings: none for the root, whose header is its
+    /// frame's own.
+    pub(crate) fn exit_words(&self) -> Range<u16> {
+        if self.parent.is_none() {
+            return 0..0;
+        }
+        let header = self.offset + self.argument_count;
+        header + 2..header + HEADER_REGISTERS
+    }
+
+    /// One past the highest physical register the scope's body names.
+    pub(crate) fn top(&self) -> u16 {
+        self.offset.saturating_add(self.register_count)
+    }
 }
 
 /// Where a value is defined: a phi or a node of a block, by its index in
@@ -119,9 +186,12 @@ pub(crate) enum Definition<'graph> {
 /// A straight run of nodes, entered only at its top.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Block {
-    /// The index of the block's first instruction. The entry block a body
-    /// whose first instruction is a loop's head is given holds no
-    /// instruction and names 0 as well.
+    /// The scope the block's instructions belong to: a block holds one
+    /// scope's alone.
+    pub(crate) scope: ScopeId,
+    /// The index of the block's first instruction in its scope's body.
+    /// The entry block a body whose first instruction is a loop's head is
+    /// given holds no instruction and names 0 as well.
     pub(crate) program_counter: u32,
     pub(crate) phis: Vec<Phi>,
     pub(crate) nodes: Vec<Node>,
@@ -199,8 +269,12 @@ pub(crate) enum Node {
         receiver: ValueId,
         absolute_index: u32,
     },
-    /// Every other instruction, emitted by the baseline's template, its
-    /// result in its frame word. Before it, every register binding not yet
+    /// Every other instruction, of the scope `scope`, emitted by the
+    /// baseline's template with the frame register at the scope's
+    /// register 0, its result in its frame word. `instruction` is as the
+    /// scope's body holds it, numbered from the scope's register 0, and
+    /// `program_counter` its index there; `reads` and `written` name
+    /// physical registers. Before it, every register binding not yet
     /// stored -- each `Copy`, fast path and phi whose value its register's
     /// frame word does not hold yet, the operands' and every other
     /// register's alike -- is written back, since the instruction may run
@@ -210,11 +284,41 @@ pub(crate) enum Node {
     /// pairs each register `registers_read` names with the value it holds;
     /// `written` is the register `register_written` names.
     Frame {
+        scope: ScopeId,
         program_counter: u32,
         instruction: SnapshotInstruction,
         reads: Vec<(u16, ValueId)>,
         written: Option<u16>,
     },
+    /// The current class of an inlined scope, as a compiled call computes
+    /// its callee's (`sends::send_public`): `steps` superclass steps up
+    /// from the class `start` names of `from`. Emits no call.
+    CurrentClass {
+        value: ValueId,
+        from: ValueId,
+        start: ClassStart,
+        steps: u16,
+    },
+    /// The physical registers an inlined callee's frame is laid over, at
+    /// its entry, or that it leaves, at its return: their bindings end
+    /// unwritten, every one a register the leftover analysis taints there
+    /// -- the callee's scratch, its sender's registers past its slots and
+    /// the header words the exit writes -- so that no value the sender
+    /// held there is ever written into the callee's frame, nor read after
+    /// the callee returns. Emits nothing.
+    Overlay { ranges: Vec<Range<u16>> },
+}
+
+/// Where a `Node::CurrentClass` starts its steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClassStart {
+    /// The class of the object `from`: a public or a lexical send's
+    /// receiver.
+    ClassOf,
+    /// The class `from` is: the sender's current class, at which a
+    /// private lexical send's lookup starts and one step below which a
+    /// `super` send's does.
+    Class,
 }
 
 /// How a block ends. A `Jump` or `Branch` edge to a block at or before
@@ -265,6 +369,20 @@ pub(crate) enum End {
         program_counter: u32,
         site: u32,
     },
+    /// The send at `program_counter` of `scope`, its call site `site`,
+    /// lowered with its receivers' callees inlined: `receiver`'s guard
+    /// tested against each arm's in the cache's order, each arm's block the
+    /// entry of its callee's scope; for any other receiver `fall_through`,
+    /// the block holding the send itself, or, for `None`, a trap that runs
+    /// the send again in the interpreter.
+    TypeCase {
+        program_counter: u32,
+        scope: ScopeId,
+        receiver: ValueId,
+        arms: Vec<(DispatchId, BlockId)>,
+        fall_through: Option<BlockId>,
+        site: u32,
+    },
 }
 
 impl Node {
@@ -275,8 +393,9 @@ impl Node {
             | Node::Constant { value, .. }
             | Node::Receiver { value }
             | Node::IntegerBinary { value, .. }
-            | Node::OwnSlotLoad { value, .. } => Some(*value),
-            Node::Copy { .. } | Node::Frame { .. } => None,
+            | Node::OwnSlotLoad { value, .. }
+            | Node::CurrentClass { value, .. } => Some(*value),
+            Node::Copy { .. } | Node::Frame { .. } | Node::Overlay { .. } => None,
         }
     }
 
@@ -289,7 +408,9 @@ impl Node {
             | Node::Receiver { .. }
             | Node::Copy { .. }
             | Node::OwnSlotLoad { .. }
-            | Node::Frame { .. } => ValueKind::Unknown,
+            | Node::Frame { .. }
+            | Node::CurrentClass { .. }
+            | Node::Overlay { .. } => ValueKind::Unknown,
         }
     }
 
@@ -318,15 +439,20 @@ impl Node {
             | Node::Copy { .. }
             | Node::IntegerBinary { .. }
             | Node::OwnSlotLoad { .. }
-            | Node::Frame { .. } => false,
+            | Node::Frame { .. }
+            | Node::CurrentClass { .. }
+            | Node::Overlay { .. } => false,
         }
     }
 
     /// The values the node reads, in operand order.
     pub(crate) fn uses(&self) -> Vec<ValueId> {
         match self {
-            Node::FrameRead { .. } | Node::Constant { .. } | Node::Receiver { .. } => Vec::new(),
-            Node::Copy { source, .. } => vec![*source],
+            Node::FrameRead { .. }
+            | Node::Constant { .. }
+            | Node::Receiver { .. }
+            | Node::Overlay { .. } => Vec::new(),
+            Node::Copy { source, .. } | Node::CurrentClass { from: source, .. } => vec![*source],
             Node::OwnSlotLoad { receiver, .. } => vec![*receiver],
             Node::IntegerBinary { left, right, .. } => vec![*left, *right],
             Node::Frame { reads, .. } => reads.iter().map(|(_, value)| *value).collect(),
@@ -350,6 +476,13 @@ impl End {
                 .collect(),
             End::Return { .. } | End::Frame | End::Trap { .. } => Vec::new(),
             End::FrameJump { next, target } => vec![*next, *target],
+            End::TypeCase {
+                arms, fall_through, ..
+            } => arms
+                .iter()
+                .map(|(_, block)| *block)
+                .chain(*fall_through)
+                .collect(),
         };
         let mut successors = Vec::with_capacity(listed.len());
         for block in listed {
@@ -364,6 +497,7 @@ impl End {
     pub(crate) fn uses(&self) -> Option<ValueId> {
         match self {
             End::Branch { condition, .. } => Some(*condition),
+            End::TypeCase { receiver, .. } => Some(*receiver),
             End::Return { value } | End::ReturnUnlessNil { value, .. } => Some(*value),
             End::Jump(_) | End::Frame | End::FrameJump { .. } | End::Trap { .. } => None,
         }
@@ -433,9 +567,72 @@ impl Graph {
                 definition.expect("internal: every value id up to the last is defined")
             })
             .collect();
-        let mut graph = Graph { blocks, values };
+        let mut graph = Graph {
+            blocks,
+            values,
+            scopes: Vec::new(),
+        };
         graph.find_phi_kinds();
         graph
+    }
+
+    /// `from_blocks`, its blocks belonging to `scopes`.
+    pub(crate) fn with_scopes(blocks: Vec<Block>, scopes: Vec<GraphScope>) -> Graph {
+        let mut graph = Graph::from_blocks(blocks);
+        graph.scopes = scopes;
+        graph
+    }
+
+    /// The scope `id` names.
+    pub(crate) fn scope(&self, id: ScopeId) -> &GraphScope {
+        &self.scopes[id.0 as usize]
+    }
+
+    /// The physical registers the leftover analysis taints before the
+    /// instruction at `program_counter` of `scope` (`tainted_at`); none
+    /// for a graph that knows no scope.
+    pub(crate) fn tainted_at(&self, scope: ScopeId, program_counter: u32) -> Vec<Range<u16>> {
+        if self.scopes.is_empty() {
+            return Vec::new();
+        }
+        tainted_at(&self.scopes, scope, program_counter)
+    }
+
+    /// The physical registers the leftover analysis taints at the top of
+    /// `block`: before its first instruction, or, for the block an inlined
+    /// scope's entry begins, before the send it is inlined at -- the
+    /// scope's frame is not laid yet. That block, or the one on the way
+    /// into it, is the scope's one block at its first instruction that no
+    /// block of the scope leads to: its sender enters it, and its own
+    /// loop back to that instruction enters the block after the entry.
+    pub(crate) fn tainted_at_top(&self, block: BlockId) -> Vec<Range<u16>> {
+        let top = self.block(block);
+        if self.scopes.is_empty() {
+            return Vec::new();
+        }
+        if let Some((sender, call)) = self.scope(top.scope).parent {
+            let entered = top.program_counter == 0
+                && top
+                    .predecessors
+                    .iter()
+                    .all(|predecessor| self.block(*predecessor).scope != top.scope);
+            if entered {
+                return tainted_at(&self.scopes, sender, call);
+            }
+        }
+        tainted_at(&self.scopes, top.scope, top.program_counter)
+    }
+
+    /// `scope` and every scope it is inlined into, innermost first.
+    #[cfg(test)]
+    pub(crate) fn chain(&self, scope: ScopeId) -> Vec<ScopeId> {
+        let mut chain = vec![scope];
+        let mut next = self.scope(scope).parent;
+        while let Some((parent, _)) = next {
+            chain.push(parent);
+            next = self.scope(parent).parent;
+        }
+        chain
     }
 
     /// Each phi's kind: the one its every input has, found optimistically
@@ -517,6 +714,11 @@ impl Graph {
                 not_boolean: None,
                 ..
             } if self.kind(condition) != ValueKind::Boolean => Some(program_counter),
+            End::TypeCase {
+                program_counter,
+                fall_through: None,
+                ..
+            } => Some(program_counter),
             _ => None,
         }
     }
@@ -545,4 +747,46 @@ impl Graph {
             .filter(|(_, block)| block.loop_head)
             .map(|(index, _)| BlockId::of_index(index))
     }
+}
+
+/// The physical registers the leftover analysis taints before the
+/// instruction at `program_counter` of `scope`, one of `scopes`: the
+/// scope's own there, and every register past the highest it names,
+/// where no frame lies -- what a callee inlined there left, past the
+/// sender's own; for each scope it is inlined
+/// into, that scope's own at the send it is inlined at, among the
+/// registers below the slots the send lays it on, the rest being the
+/// callee's; and the header words the exit writes of every inlined scope
+/// of the chain, which no instruction reads.
+pub(crate) fn tainted_at(
+    scopes: &[GraphScope],
+    scope: ScopeId,
+    program_counter: u32,
+) -> Vec<Range<u16>> {
+    let shifted = |owner: &GraphScope, program_counter: u32, limit: u16| {
+        owner
+            .tainted_before
+            .get(program_counter as usize)
+            .into_iter()
+            .flatten()
+            .map(move |range| {
+                range.start.saturating_add(owner.offset)
+                    ..range.end.saturating_add(owner.offset).min(limit)
+            })
+            .filter(|range| !range.is_empty())
+            .collect::<Vec<_>>()
+    };
+    let innermost = &scopes[scope.0 as usize];
+    let mut tainted = shifted(innermost, program_counter, u16::MAX);
+    tainted.push(innermost.top()..u16::MAX);
+    tainted.push(innermost.exit_words());
+    let mut child = innermost;
+    while let Some((parent, call)) = child.parent {
+        let owner = &scopes[parent.0 as usize];
+        tainted.extend(shifted(owner, call, child.offset));
+        tainted.push(owner.exit_words());
+        child = owner;
+    }
+    tainted.retain(|range| !range.is_empty());
+    tainted
 }

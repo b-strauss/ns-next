@@ -12,13 +12,34 @@
 //! dead register's word may be one a callee left -- and which registers a
 //! loop may change, so that its head takes a phi for each of those it
 //! needs before its back edges are seen.
+//!
+//! **Inlined scopes.** A compile that inlines (`build_inlined`) lays its
+//! scopes' instructions out as one body before the pass (`Flat`): at a
+//! send the plan inlines, each arm's callee's instructions follow the
+//! send's type-case, their registers numbered physically -- register `r`
+//! of a scope at `offset` is the frame's `offset + r`, where the
+//! interpreter would push its activation -- each preceded by the scope's
+//! entry, which binds its parameters to the send's arguments, its receiver
+//! and current class (`HeaderBinding`) and its named temporaries to `nil`,
+//! and each `Return` a jump to the instruction after the send that binds
+//! the send's destination, where the returns meet in a phi. The pass then
+//! runs over that body as over any other, so every rule above holds of
+//! the physical frame.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::bytecode::IntegerOperation;
+use crate::heap::Immediate;
+use crate::mixin::DispatchId;
 
-use super::graph::{Block, BlockId, End, Graph, Node, Phi, ValueId, ValueKind};
+use super::graph::{
+    tainted_at, Block, BlockId, ClassStart, End, Graph, GraphScope, HeaderBinding, Node, Phi,
+    ScopeId, ValueId, ValueKind,
+};
+use super::plan::{ArmPlan, FallThrough, InliningPlan};
 use super::snapshot::{Snapshot, SnapshotInstruction};
+use super::tree::SnapshotTree;
 use super::verify::immediate_dominators;
 use super::Speculation;
 
@@ -57,14 +78,50 @@ const FIXED_FIELD_LIMIT: u32 = 1 << 24;
 /// is stage 1's: every fallback, third way and send kept, and every value
 /// of no known kind.
 pub(crate) fn build(snapshot: &Snapshot, speculation: Speculation) -> Graph {
-    let count = snapshot.instructions.len();
+    build_flat(&Flat::of_snapshot(snapshot), speculation)
+}
+
+/// The graph of `tree`'s root with the scopes `plan` inlines
+/// (`docs/design/execution.md`, "Inlining"), laid out as one body
+/// (`Flat::of_plan`) and built as `build` builds one. `speculation` is the
+/// one the plan was made under: a type-case falls through to a trap only
+/// where the plan says, which it says only for a copy that speculates.
+/// A site whose arms the graph does not express yet -- an arm always
+/// inlined, a lexical send's past depth 0, whose receiver the enclosing
+/// object's walk finds -- is its send.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the optimizing compile is to build inlined graphs"
+    )
+)]
+pub(crate) fn build_inlined(
+    tree: &SnapshotTree,
+    plan: &InliningPlan,
+    speculation: Speculation,
+) -> Graph {
+    debug_assert!(
+        speculation == Speculation::Traps
+            || plan
+                .sites
+                .values()
+                .all(|site| site.fall_through != FallThrough::Trap),
+        "internal: a copy that speculates nothing is planned with no trap"
+    );
+    build_flat(&Flat::of_plan(tree, plan, speculation), speculation)
+}
+
+/// The graph of `flat`, built as `build` says.
+fn build_flat(flat: &Flat<'_>, speculation: Speculation) -> Graph {
+    let count = flat.steps.len();
     let mut forced = None;
     // The conditionals built without their third way, their condition
     // being a known Boolean; and those a build refuted, which keep it.
     let mut known_boolean = vec![false; count];
     let mut refuted_boolean = vec![false; count];
     let graph = loop {
-        let mut builder = Builder::new(snapshot, speculation, &known_boolean);
+        let mut builder = Builder::new(flat, speculation, &known_boolean);
         if let Some(forced) = forced.take() {
             builder.forced_phis = forced;
         }
@@ -80,20 +137,20 @@ pub(crate) fn build(snapshot: &Snapshot, speculation: Speculation) -> Graph {
             graph.forget_kinds();
             break graph;
         }
-        let (more, refuted) = drop_boolean_third_ways(&mut graph, &known_boolean, &guards);
+        let (more, refuted) = drop_boolean_third_ways(&mut graph, flat, &known_boolean, &guards);
         let more: Vec<usize> = more
             .into_iter()
-            .filter(|program_counter| !refuted_boolean[*program_counter])
+            .filter(|index| !refuted_boolean[*index])
             .collect();
         if more.is_empty() && refuted.is_empty() {
             break graph;
         }
-        for program_counter in more {
-            known_boolean[program_counter] = true;
+        for index in more {
+            known_boolean[index] = true;
         }
-        for program_counter in refuted {
-            known_boolean[program_counter] = false;
-            refuted_boolean[program_counter] = true;
+        for index in refuted {
+            known_boolean[index] = false;
+            refuted_boolean[index] = true;
         }
         // The blocks are laid out afresh, so the phis an earlier build
         // forced name other blocks.
@@ -109,8 +166,8 @@ pub(crate) fn build(snapshot: &Snapshot, speculation: Speculation) -> Graph {
 
 /// Drops the third way of every branch of `graph` whose condition is a
 /// known Boolean: in place where it is one of the other two ways, which
-/// leaves the edges as they are. Answers the program counters of the
-/// `JumpIfNotBoolean`s whose third way is a block of its own, which the
+/// leaves the edges as they are. Answers the steps of `flat` -- the
+/// `JumpIfNotBoolean`s -- whose third way is a block of its own, which the
 /// next build lays out without it, and of those `known_boolean` built
 /// without one whose condition is no known Boolean after all and which no
 /// guard of theirs (`guards`) traps for, which the next build gives it
@@ -118,6 +175,7 @@ pub(crate) fn build(snapshot: &Snapshot, speculation: Speculation) -> Graph {
 /// next lays out differently.
 fn drop_boolean_third_ways(
     graph: &mut Graph,
+    flat: &Flat<'_>,
     known_boolean: &[bool],
     guards: &[Guard],
 ) -> (Vec<usize>, Vec<usize>) {
@@ -125,6 +183,7 @@ fn drop_boolean_third_ways(
     let mut more = Vec::new();
     let mut refuted = Vec::new();
     for block in &mut graph.blocks {
+        let scope = block.scope;
         let End::Branch {
             program_counter,
             condition,
@@ -135,8 +194,7 @@ fn drop_boolean_third_ways(
         else {
             continue;
         };
-        let index =
-            usize::try_from(*program_counter).expect("internal: a program counter fits a usize");
+        let index = flat.index_of(scope, *program_counter);
         let boolean = kinds[condition.index()] == ValueKind::Boolean;
         match *not_boolean {
             Some(third) if boolean => {
@@ -167,9 +225,10 @@ pub(crate) fn build_speculating(snapshot: &Snapshot) -> Graph {
 /// (`docs/design/execution.md`, "Speculation", "Guards and traps"): only at a
 /// site that neither ran nor trapped (`SiteFacts`), and only under
 /// `Speculation::Traps`.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Guard {
     /// The instruction keeps every way stage 1 gives it.
+    #[default]
     None,
     /// An integer fast path whose fallback never ran: its failure traps.
     Fallback,
@@ -180,7 +239,7 @@ enum Guard {
     Send { site: u32 },
 }
 
-/// What an instruction becomes in the graph.
+/// What a step becomes in the graph.
 enum Kind {
     Constant {
         destination: u16,
@@ -229,6 +288,12 @@ enum Kind {
         site: u32,
     },
     Frame,
+    /// An inlined send's type-case (`Step::TypeCase`).
+    TypeCase,
+    /// An inlined scope's entry (`Step::Enter`).
+    Enter,
+    /// An inlined scope's return (`Step::Return`).
+    InlinedReturn,
 }
 
 /// The outcome of a Boolean test a branch instruction jumps for.
@@ -239,7 +304,7 @@ enum Outcome {
     NotBoolean,
 }
 
-/// What `instruction`, at `program_counter`, becomes. Every instruction
+/// What `instruction`, the step at `index`, becomes. Every instruction
 /// not named is a frame node, emitted by the baseline's template for it,
 /// which is right for any instruction; a simple node is a choice made
 /// here, one instruction at a time.
@@ -262,7 +327,7 @@ enum Outcome {
 /// all (`Choice::known_boolean`).
 fn kind_of(
     instruction: &SnapshotInstruction,
-    program_counter: usize,
+    index: usize,
     choice: Choice,
     own_slot_base: Option<u32>,
 ) -> Kind {
@@ -321,15 +386,13 @@ fn kind_of(
             left,
             right,
             target,
-        } if usize::try_from(*target).ok() != program_counter.checked_add(1) => {
-            Kind::IntegerBinary {
-                operation: *operation,
-                destination: *destination,
-                left: *left,
-                right: *right,
-                trap: choice.guard == Guard::Fallback,
-            }
-        }
+        } if usize::try_from(*target).ok() != index.checked_add(1) => Kind::IntegerBinary {
+            operation: *operation,
+            destination: *destination,
+            left: *left,
+            right: *right,
+            trap: choice.guard == Guard::Fallback,
+        },
         SnapshotInstruction::Return { register }
         | SnapshotInstruction::ImplicitReturn { register } => Kind::Return {
             register: *register,
@@ -364,26 +427,8 @@ fn own_slot_index(own_slot_base: Option<u32>, own_index: u32) -> Option<u32> {
         .filter(|index| *index < FIXED_FIELD_LIMIT)
 }
 
-/// Whether `instruction`'s kind ends its block, whether or not it falls
-/// through or has a jump target the graph keeps: a customized copy's
-/// `ReturnSlotIfFilled`, whose block ends in the slot's return
-/// (`End::ReturnUnlessNil`), and every branch, whose block ends in its
-/// test -- what decides for a `JumpIfNotBoolean` built without its third
-/// way, which keeps no jump target, while any other branch ends its block
-/// by its target as well.
-fn ends_block(
-    instruction: &SnapshotInstruction,
-    choice: Choice,
-    own_slot_base: Option<u32>,
-) -> bool {
-    matches!(
-        kind_of(instruction, 0, choice, own_slot_base),
-        Kind::ReturnUnlessNil { .. } | Kind::Branch { .. }
-    )
-}
-
 /// What decides an instruction's kind beside the instruction itself.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Choice {
     /// Whether its fast path is lowered to its fallback alone
     /// (`Snapshot::fallback_taken`).
@@ -438,6 +483,939 @@ fn guard_of(snapshot: &Snapshot, index: usize, send_only: bool, speculation: Spe
         | SnapshotInstruction::SendInlinable { .. }
         | SnapshotInstruction::SendSuper { .. } => Guard::Send { site: facts.site },
         _ => Guard::None,
+    }
+}
+
+/// Where an inlined send's receiver is: in a physical register, or, for
+/// a send to `self`, the receiver of the scope that sends it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverOf {
+    Register(u16),
+    SelfOf(ScopeId),
+}
+
+/// An inlined scope's entry (`Step::Enter`): what it binds before its
+/// first instruction, every register physical.
+#[derive(Debug, Clone, PartialEq)]
+struct Entry {
+    receiver: ReceiverOf,
+    /// Each parameter's register and the sender's register its argument
+    /// is in, the send's argument source.
+    arguments: Vec<(u16, u16)>,
+    /// Where its current class's steps start: at the class of the
+    /// receiver, or at the sender's current class, in the register given.
+    class_start: ClassStart,
+    sender_class: Option<u16>,
+    class_steps: u16,
+    receiver_register: u16,
+    class_register: u16,
+    /// The named temporaries, which a push fills with `nil`.
+    temporaries: Range<u16>,
+    /// What the callee's frame lays over that it binds nothing in
+    /// (`Node::Overlay`).
+    overlay: Vec<Range<u16>>,
+}
+
+/// One step of a flat body (`Flat`).
+#[derive(Debug, Clone, PartialEq)]
+enum Step {
+    /// An instruction of the step's scope: `physical` numbers its
+    /// registers physically and its jump targets as steps, `original` is
+    /// as the scope's body holds it.
+    Instruction {
+        physical: SnapshotInstruction,
+        original: SnapshotInstruction,
+    },
+    /// A send lowered as its arms' callees inlined (`End::TypeCase`): the
+    /// step of each arm's entry, and of the send itself, `None` for a trap.
+    TypeCase {
+        receiver: ReceiverOf,
+        arms: Vec<(DispatchId, usize)>,
+        fall_through: Option<usize>,
+        site: u32,
+    },
+    /// An inlined scope's entry; it goes on at its first instruction.
+    Enter(Box<Entry>),
+    /// An inlined scope's `Return`: `source`'s value bound to the send's
+    /// `destination`, the registers from `slot_end` on but that one left
+    /// to the sender as the callee leaves them, and on at `continuation`,
+    /// the step of the instruction after the send.
+    Return {
+        source: u16,
+        destination: u16,
+        slot_end: u16,
+        continuation: usize,
+    },
+}
+
+/// A step and where it comes from: its scope, and its program counter in
+/// the scope's body -- an entry's is 0, a type-case's its send's.
+#[derive(Debug, Clone, PartialEq)]
+struct FlatStep {
+    scope: ScopeId,
+    program_counter: u32,
+    step: Step,
+}
+
+/// One scope of a flat body: its snapshot and the own-slot base its
+/// receiver's application fixes, if it is known.
+struct FlatScope<'snapshot> {
+    snapshot: &'snapshot Snapshot,
+    own_slot_base: Option<u32>,
+}
+
+/// A compile's scopes laid out as one body of steps, every register
+/// physical, which the builder builds as it builds one body: a body
+/// alone is its instructions; a plan's scopes are laid out at their sends
+/// (`of_plan`).
+struct Flat<'snapshot> {
+    steps: Vec<FlatStep>,
+    scopes: Vec<FlatScope<'snapshot>>,
+    graph_scopes: Vec<GraphScope>,
+    /// Each scope's step of each of its instructions, `usize::MAX` for one
+    /// not laid out.
+    steps_of: Vec<Vec<usize>>,
+    /// The physical registers the leftover analysis taints before each
+    /// step (`graph::tainted_at`).
+    tainted: Vec<Vec<Range<u16>>>,
+    register_count: usize,
+}
+
+impl<'snapshot> Flat<'snapshot> {
+    /// `snapshot`'s body alone: each instruction a step, at its own index.
+    fn of_snapshot(snapshot: &'snapshot Snapshot) -> Flat<'snapshot> {
+        let steps = snapshot
+            .instructions
+            .iter()
+            .enumerate()
+            .map(|(index, instruction)| FlatStep {
+                scope: ScopeId::ROOT,
+                program_counter: u32::try_from(index)
+                    .expect("internal: an instruction index fits a u32"),
+                step: Step::Instruction {
+                    physical: instruction.clone(),
+                    original: instruction.clone(),
+                },
+            })
+            .collect();
+        let register_count = snapshot.register_count();
+        Flat {
+            steps,
+            scopes: vec![FlatScope {
+                snapshot,
+                own_slot_base: snapshot
+                    .customization
+                    .map(|customization| customization.own_slot_base),
+            }],
+            graph_scopes: vec![graph_scope_of(snapshot, None, 0)],
+            steps_of: vec![(0..snapshot.instructions.len()).collect()],
+            // A test's snapshot may name fewer sets than instructions: the
+            // rest taint nothing.
+            tainted: (0..snapshot.instructions.len())
+                .map(|index| {
+                    snapshot
+                        .tainted_before
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect(),
+            register_count,
+        }
+    }
+
+    /// The scopes of `plan` over `tree` laid out as one body: each scope's
+    /// instructions in order, and at a send the plan inlines its type-case,
+    /// then each arm's entry and callee, then the send itself if the
+    /// type-case falls through to it, and then the instruction after the
+    /// send, where every return of every arm goes on. A send taken
+    /// without a test lays its one callee out right where it stands.
+    fn of_plan(
+        tree: &'snapshot SnapshotTree,
+        plan: &InliningPlan,
+        speculation: Speculation,
+    ) -> Flat<'snapshot> {
+        let snapshots: Vec<&Snapshot> = plan
+            .scopes
+            .iter()
+            .map(|scope| {
+                tree.snapshot_of(scope.code_id)
+                    .expect("internal: the tree holds every planned scope's snapshot")
+            })
+            .collect();
+        let graph_scopes: Vec<GraphScope> = plan
+            .scopes
+            .iter()
+            .zip(&snapshots)
+            .map(|(scope, snapshot)| graph_scope_of(snapshot, scope.parent, scope.offset))
+            .collect();
+        let mut laying = Laying {
+            tree,
+            plan,
+            speculation,
+            snapshots: &snapshots,
+            graph_scopes: &graph_scopes,
+            steps: Vec::new(),
+            steps_of: snapshots
+                .iter()
+                .map(|snapshot| vec![usize::MAX; snapshot.instructions.len()])
+                .collect(),
+            entries: vec![usize::MAX; snapshots.len()],
+            sends: HashMap::new(),
+        };
+        laying.lay_out();
+        let Laying {
+            steps,
+            steps_of,
+            entries,
+            sends,
+            ..
+        } = laying;
+        let steps: Vec<FlatStep> = steps
+            .into_iter()
+            .map(|(scope, program_counter, pending)| {
+                let step_of = |program_counter: u32| {
+                    let step = steps_of[scope.0 as usize][program_counter as usize];
+                    debug_assert_ne!(step, usize::MAX, "internal: a jump target is laid out");
+                    u32::try_from(step).expect("internal: a compile's steps number fewer than 2^32")
+                };
+                let step = match pending {
+                    Pending::Instruction {
+                        mut physical,
+                        original,
+                    } => {
+                        retarget(&mut physical, step_of);
+                        Step::Instruction { physical, original }
+                    }
+                    Pending::TypeCase {
+                        receiver,
+                        arms,
+                        sent,
+                        site,
+                    } => Step::TypeCase {
+                        receiver,
+                        arms: arms
+                            .into_iter()
+                            .map(|(guard, callee)| (guard, entries[callee.0 as usize]))
+                            .collect(),
+                        fall_through: sent.then(|| sends[&(scope, program_counter)]),
+                        site,
+                    },
+                    Pending::Enter(entry) => Step::Enter(entry),
+                    Pending::Return {
+                        source,
+                        destination,
+                        slot_end,
+                        sender,
+                        call,
+                    } => Step::Return {
+                        source,
+                        destination,
+                        slot_end,
+                        continuation: steps_of[sender.0 as usize][call as usize + 1],
+                    },
+                };
+                FlatStep {
+                    scope,
+                    program_counter,
+                    step,
+                }
+            })
+            .collect();
+        // An entry's is its sender's at the send: the scope's frame is not
+        // laid before it (`Graph::tainted_at_top`).
+        let tainted = steps
+            .iter()
+            .map(
+                |step| match (&step.step, graph_scopes[step.scope.0 as usize].parent) {
+                    (Step::Enter(_), Some((sender, call))) => {
+                        tainted_at(&graph_scopes, sender, call)
+                    }
+                    _ => tainted_at(&graph_scopes, step.scope, step.program_counter),
+                },
+            )
+            .collect();
+        let register_count = graph_scopes
+            .iter()
+            .map(|scope| usize::from(scope.top()))
+            .max()
+            .unwrap_or(0);
+        Flat {
+            steps,
+            scopes: plan
+                .scopes
+                .iter()
+                .zip(&snapshots)
+                .map(|(scope, snapshot)| FlatScope {
+                    snapshot,
+                    own_slot_base: scope.own_slot_base,
+                })
+                .collect(),
+            graph_scopes,
+            steps_of,
+            tainted,
+            register_count,
+        }
+    }
+
+    /// The step of the instruction at `program_counter` of `scope`.
+    fn index_of(&self, scope: ScopeId, program_counter: u32) -> usize {
+        self.steps_of[scope.0 as usize][program_counter as usize]
+    }
+
+    /// The scope `scope` names.
+    fn scope(&self, scope: ScopeId) -> &FlatScope<'snapshot> {
+        &self.scopes[scope.0 as usize]
+    }
+}
+
+/// The graph's scope of `snapshot`'s body at `offset`, sent from `parent`.
+fn graph_scope_of(snapshot: &Snapshot, parent: Option<(ScopeId, u32)>, offset: u16) -> GraphScope {
+    GraphScope {
+        code_id: snapshot.code_id,
+        parent,
+        offset,
+        argument_count: snapshot.facts.argument_count,
+        register_count: u16::try_from(snapshot.register_count())
+            .expect("internal: a body names at most u16::MAX registers"),
+        tainted_before: snapshot.tainted_before.clone(),
+    }
+}
+
+/// A step laid out whose targets are not numbered yet: they name a
+/// scope's instruction, entry or send.
+enum Pending {
+    Instruction {
+        physical: SnapshotInstruction,
+        original: SnapshotInstruction,
+    },
+    TypeCase {
+        receiver: ReceiverOf,
+        arms: Vec<(DispatchId, ScopeId)>,
+        sent: bool,
+        site: u32,
+    },
+    Enter(Box<Entry>),
+    Return {
+        source: u16,
+        destination: u16,
+        slot_end: u16,
+        sender: ScopeId,
+        call: u32,
+    },
+}
+
+/// What is left to lay out: a scope's instructions from one on, or the
+/// send a type-case falls through to.
+enum Work {
+    Scope {
+        scope: ScopeId,
+        program_counter: u32,
+    },
+    Send {
+        scope: ScopeId,
+        program_counter: u32,
+    },
+}
+
+/// How a send the plan inlines is laid out.
+enum Lowered {
+    /// Its one callee, taken without a test.
+    Unguarded(ScopeId),
+    /// A type-case over its arms' callees, falling through to the send
+    /// itself if `sent`, to a trap otherwise.
+    TypeCase {
+        receiver: ReceiverOf,
+        arms: Vec<(DispatchId, ScopeId)>,
+        sent: bool,
+    },
+}
+
+/// `Flat::of_plan`'s work.
+struct Laying<'plan, 'snapshot> {
+    tree: &'plan SnapshotTree,
+    plan: &'plan InliningPlan,
+    speculation: Speculation,
+    snapshots: &'plan [&'snapshot Snapshot],
+    graph_scopes: &'plan [GraphScope],
+    steps: Vec<(ScopeId, u32, Pending)>,
+    steps_of: Vec<Vec<usize>>,
+    /// Each inlined scope's entry step.
+    entries: Vec<usize>,
+    /// The step of each send a type-case falls through to.
+    sends: HashMap<(ScopeId, u32), usize>,
+}
+
+impl Laying<'_, '_> {
+    /// Lays every scope out, from the root's first instruction, by a
+    /// stack of what is left rather than a recursion, which the chain of
+    /// inlined scopes could take deeper than the native stack allows.
+    fn lay_out(&mut self) {
+        let mut work = vec![Work::Scope {
+            scope: ScopeId::ROOT,
+            program_counter: 0,
+        }];
+        while let Some(item) = work.pop() {
+            match item {
+                Work::Send {
+                    scope,
+                    program_counter,
+                } => {
+                    self.sends
+                        .insert((scope, program_counter), self.steps.len());
+                    let pending = self.instruction(scope, program_counter);
+                    self.steps.push((scope, program_counter, pending));
+                }
+                Work::Scope {
+                    scope,
+                    program_counter,
+                } => {
+                    let snapshot = self.snapshots[scope.0 as usize];
+                    if program_counter == 0 && scope != ScopeId::ROOT {
+                        self.entries[scope.0 as usize] = self.steps.len();
+                        let entry = self.entry(scope);
+                        self.steps.push((scope, 0, Pending::Enter(Box::new(entry))));
+                    }
+                    let index = program_counter as usize;
+                    if index == snapshot.instructions.len() {
+                        assert!(
+                            index == 0 || !snapshot.instructions[index - 1].falls_through(),
+                            "internal: a body does not run off its end"
+                        );
+                        continue;
+                    }
+                    self.steps_of[scope.0 as usize][index] = self.steps.len();
+                    work.push(Work::Scope {
+                        scope,
+                        program_counter: program_counter + 1,
+                    });
+                    match self.lowered(scope, program_counter) {
+                        None => {
+                            let pending = self.instruction(scope, program_counter);
+                            self.steps.push((scope, program_counter, pending));
+                        }
+                        Some(Lowered::Unguarded(callee)) => work.push(Work::Scope {
+                            scope: callee,
+                            program_counter: 0,
+                        }),
+                        Some(Lowered::TypeCase {
+                            receiver,
+                            arms,
+                            sent,
+                        }) => {
+                            let site = snapshot.sites[index]
+                                .expect("internal: a planned send names its site")
+                                .site;
+                            if sent {
+                                work.push(Work::Send {
+                                    scope,
+                                    program_counter,
+                                });
+                            }
+                            for (_, callee) in arms.iter().rev() {
+                                work.push(Work::Scope {
+                                    scope: *callee,
+                                    program_counter: 0,
+                                });
+                            }
+                            self.steps.push((
+                                scope,
+                                program_counter,
+                                Pending::TypeCase {
+                                    receiver,
+                                    arms,
+                                    sent,
+                                    site,
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// How the send at `program_counter` of `scope` is laid out, if the
+    /// plan inlines it and the graph expresses its arms: an arm always
+    /// inlined is not expressed yet, so a site with one falls through to
+    /// its send; a lexical send past depth 0, whose receiver the walk out
+    /// to its enclosing object finds, a frame node's, is sent.
+    fn lowered(&self, scope: ScopeId, program_counter: u32) -> Option<Lowered> {
+        let site = self.plan.sites.get(&(scope, program_counter))?;
+        let mut arms = Vec::with_capacity(site.arms.len());
+        for (guard, _, arm) in &site.arms {
+            if let ArmPlan::Inline { callee } = arm {
+                if self.plan.scopes[callee.0 as usize].block_of.is_none() {
+                    arms.push((*guard, *callee));
+                }
+            }
+        }
+        if arms.is_empty() {
+            return None;
+        }
+        let every_arm = arms.len() == site.arms.len();
+        if site.fall_through == FallThrough::Unguarded {
+            return every_arm.then(|| Lowered::Unguarded(arms[0].1));
+        }
+        let offset = self.graph_scopes[scope.0 as usize].offset;
+        let instruction = &self.snapshots[scope.0 as usize].instructions[program_counter as usize];
+        let receiver = match instruction {
+            SnapshotInstruction::SendPublic {
+                receiver_register, ..
+            }
+            | SnapshotInstruction::SendInlinable {
+                receiver_register, ..
+            } => ReceiverOf::Register(offset + receiver_register),
+            SnapshotInstruction::SendLexical { depth: 0, .. } => ReceiverOf::SelfOf(scope),
+            _ => return None,
+        };
+        Some(Lowered::TypeCase {
+            receiver,
+            arms,
+            sent: !(site.fall_through == FallThrough::Trap
+                && every_arm
+                && self.speculation == Speculation::Traps),
+        })
+    }
+
+    /// The instruction at `program_counter` of `scope` as a step: its
+    /// registers physical, a `Return` of an inlined scope the scope's
+    /// return to its sender, and its `LoadSelf` a read of the receiver its
+    /// header binds.
+    fn instruction(&self, scope: ScopeId, program_counter: u32) -> Pending {
+        let owner = &self.graph_scopes[scope.0 as usize];
+        let original =
+            self.snapshots[scope.0 as usize].instructions[program_counter as usize].clone();
+        if let Some((sender, call)) = owner.parent {
+            match original {
+                SnapshotInstruction::Return { register }
+                | SnapshotInstruction::ImplicitReturn { register } => {
+                    let sent = &self.snapshots[sender.0 as usize].instructions[call as usize];
+                    let destination = sent
+                        .register_written()
+                        .expect("internal: an inlined send writes its destination");
+                    return Pending::Return {
+                        source: owner.offset + register,
+                        destination: self.graph_scopes[sender.0 as usize].offset + destination,
+                        slot_end: owner.offset + owner.argument_count,
+                        sender,
+                        call,
+                    };
+                }
+                SnapshotInstruction::ReturnSlotIfFilled { .. }
+                | SnapshotInstruction::NonLocalReturn { .. } => {
+                    panic!("internal: an inlined method returns only by a `Return`")
+                }
+                _ => {}
+            }
+        }
+        let receiver = owner
+            .parent
+            .map(|_| owner.header_register(HeaderBinding::Receiver));
+        Pending::Instruction {
+            physical: relocate(&original, owner.offset, receiver),
+            original,
+        }
+    }
+
+    /// The entry of the inlined scope `scope`: its parameters bound to the
+    /// send's arguments, its receiver to the send's, its current class to
+    /// the one the send's lookup found its method at -- `level` steps up
+    /// from the receiver's class for a public or lexical send, from the
+    /// sender's current class for a private one, and one step more for a
+    /// `super` send, which starts at the superclass -- and its named
+    /// temporaries to `nil`, as the interpreter's push does.
+    fn entry(&self, scope: ScopeId) -> Entry {
+        let callee = &self.graph_scopes[scope.0 as usize];
+        let planned = &self.plan.scopes[scope.0 as usize];
+        let (sender, call) = planned
+            .parent
+            .expect("internal: an inlined scope has a sender");
+        let sender_scope = &self.graph_scopes[sender.0 as usize];
+        let sender_snapshot = self.snapshots[sender.0 as usize];
+        let sent = &sender_snapshot.instructions[call as usize];
+        let (_, sources) = sent
+            .argument_slots()
+            .expect("internal: an inlined send lays its arguments on slots");
+        let level = planned.level.unwrap_or(0);
+        let private = sender_snapshot
+            .sites
+            .get(call as usize)
+            .copied()
+            .flatten()
+            .and_then(|facts| self.tree.sites.get(&(sender_snapshot.code_id, facts.site)))
+            .is_some_and(|candidates| candidates.private);
+        let sender_class = sender_scope.header_register(HeaderBinding::CurrentClass);
+        let (receiver, class_start, sender_class, class_steps) = match sent {
+            SnapshotInstruction::SendPublic {
+                receiver_register, ..
+            }
+            | SnapshotInstruction::SendInlinable {
+                receiver_register, ..
+            } => (
+                ReceiverOf::Register(sender_scope.offset + receiver_register),
+                ClassStart::ClassOf,
+                None,
+                level,
+            ),
+            SnapshotInstruction::SendLexical { .. } if private => (
+                ReceiverOf::SelfOf(sender),
+                ClassStart::Class,
+                Some(sender_class),
+                level,
+            ),
+            SnapshotInstruction::SendLexical { .. } => {
+                (ReceiverOf::SelfOf(sender), ClassStart::ClassOf, None, level)
+            }
+            SnapshotInstruction::SendSuper { .. } => (
+                ReceiverOf::SelfOf(sender),
+                ClassStart::Class,
+                Some(sender_class),
+                level
+                    .checked_add(1)
+                    .expect("internal: a level fits a u16 with a step to spare"),
+            ),
+            _ => panic!("internal: only a send is inlined"),
+        };
+        let facts = &self.snapshots[scope.0 as usize].facts;
+        let named_start = callee.argument_count + crate::bytecode::HEADER_REGISTERS;
+        let named_end = facts.local_count.max(named_start);
+        Entry {
+            receiver,
+            arguments: (0_u16..)
+                .zip(sources)
+                .map(|(index, source)| (callee.offset + index, sender_scope.offset + source))
+                .collect(),
+            class_start,
+            sender_class,
+            class_steps,
+            receiver_register: callee.header_register(HeaderBinding::Receiver),
+            class_register: callee.header_register(HeaderBinding::CurrentClass),
+            temporaries: callee.offset + named_start..callee.offset + named_end,
+            overlay: vec![callee.exit_words(), callee.offset + named_end..u16::MAX],
+        }
+    }
+}
+
+/// `instruction` of a scope at `offset`, its registers numbered
+/// physically; a `LoadSelf` of an inlined scope, whose receiver is the
+/// binding of its header word `receiver`, a read of that word. Jump
+/// targets stay the scope's (`retarget`), and so does an outer local's
+/// index, a register of another frame.
+fn relocate(
+    instruction: &SnapshotInstruction,
+    offset: u16,
+    receiver: Option<u16>,
+) -> SnapshotInstruction {
+    let moved = |register: u16| {
+        register
+            .checked_add(offset)
+            .expect("internal: a scope's registers fit the physical frame")
+    };
+    let all = |registers: &[u16]| registers.iter().map(|register| moved(*register)).collect();
+    match instruction.clone() {
+        SnapshotInstruction::LoadSelf { destination } => match receiver {
+            Some(receiver) => SnapshotInstruction::Move {
+                destination: moved(destination),
+                source: receiver,
+            },
+            None => SnapshotInstruction::LoadSelf {
+                destination: moved(destination),
+            },
+        },
+        SnapshotInstruction::LoadLiteral {
+            destination,
+            literal,
+        } => SnapshotInstruction::LoadLiteral {
+            destination: moved(destination),
+            literal,
+        },
+        SnapshotInstruction::LoadEnclosingObject { destination, depth } => {
+            SnapshotInstruction::LoadEnclosingObject {
+                destination: moved(destination),
+                depth,
+            }
+        }
+        SnapshotInstruction::Move {
+            destination,
+            source,
+        } => SnapshotInstruction::Move {
+            destination: moved(destination),
+            source: moved(source),
+        },
+        SnapshotInstruction::StoreLocal { source, slot } => SnapshotInstruction::StoreLocal {
+            source: moved(source),
+            slot: moved(slot),
+        },
+        SnapshotInstruction::LoadOuterLocal {
+            destination,
+            depth,
+            index,
+        } => SnapshotInstruction::LoadOuterLocal {
+            destination: moved(destination),
+            depth,
+            index,
+        },
+        SnapshotInstruction::StoreOuterLocal {
+            source,
+            depth,
+            index,
+        } => SnapshotInstruction::StoreOuterLocal {
+            source: moved(source),
+            depth,
+            index,
+        },
+        SnapshotInstruction::SendLexical {
+            depth,
+            selector,
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+        } => SnapshotInstruction::SendLexical {
+            depth,
+            selector,
+            argument_base: moved(argument_base),
+            argument_sources: all(&argument_sources),
+            destination: moved(destination),
+            call_site,
+        },
+        SnapshotInstruction::SendPublic {
+            selector,
+            receiver_register,
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+        } => SnapshotInstruction::SendPublic {
+            selector,
+            receiver_register: moved(receiver_register),
+            argument_base: moved(argument_base),
+            argument_sources: all(&argument_sources),
+            destination: moved(destination),
+            call_site,
+        },
+        SnapshotInstruction::SendInlinable {
+            selector,
+            receiver_register,
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+        } => SnapshotInstruction::SendInlinable {
+            selector,
+            receiver_register: moved(receiver_register),
+            argument_base: moved(argument_base),
+            argument_sources: all(&argument_sources),
+            destination: moved(destination),
+            call_site,
+        },
+        SnapshotInstruction::SendSuper {
+            selector,
+            argument_base,
+            argument_sources,
+            destination,
+            call_site,
+        } => SnapshotInstruction::SendSuper {
+            selector,
+            argument_base: moved(argument_base),
+            argument_sources: all(&argument_sources),
+            destination: moved(destination),
+            call_site,
+        },
+        SnapshotInstruction::SendMirror {
+            primitive,
+            mirror_register,
+            subject_register,
+            argument_base,
+            argument_sources,
+            destination,
+            failure,
+        } => SnapshotInstruction::SendMirror {
+            primitive,
+            mirror_register: moved(mirror_register),
+            subject_register: moved(subject_register),
+            argument_base: moved(argument_base),
+            argument_sources: all(&argument_sources),
+            destination: moved(destination),
+            failure,
+        },
+        SnapshotInstruction::MakeArray {
+            destination,
+            element_registers,
+        } => SnapshotInstruction::MakeArray {
+            destination: moved(destination),
+            element_registers: all(&element_registers),
+        },
+        SnapshotInstruction::MakeVector { destination, size } => SnapshotInstruction::MakeVector {
+            destination: moved(destination),
+            size,
+        },
+        SnapshotInstruction::LoadVector {
+            destination,
+            vector,
+            index,
+        } => SnapshotInstruction::LoadVector {
+            destination: moved(destination),
+            vector: moved(vector),
+            index,
+        },
+        SnapshotInstruction::StoreVector {
+            vector,
+            index,
+            source,
+        } => SnapshotInstruction::StoreVector {
+            vector: moved(vector),
+            index,
+            source: moved(source),
+        },
+        SnapshotInstruction::InitializeSlot { source, own_index } => {
+            SnapshotInstruction::InitializeSlot {
+                source: moved(source),
+                own_index,
+            }
+        }
+        SnapshotInstruction::ReturnSlotIfFilled { own_index } => {
+            SnapshotInstruction::ReturnSlotIfFilled { own_index }
+        }
+        SnapshotInstruction::MakeFuture {
+            destination,
+            closure,
+        } => SnapshotInstruction::MakeFuture {
+            destination: moved(destination),
+            closure: moved(closure),
+        },
+        SnapshotInstruction::ResolveFuture {
+            destination,
+            source,
+        } => SnapshotInstruction::ResolveFuture {
+            destination: moved(destination),
+            source: moved(source),
+        },
+        SnapshotInstruction::LoadOwnSlot {
+            destination,
+            own_index,
+        } => SnapshotInstruction::LoadOwnSlot {
+            destination: moved(destination),
+            own_index,
+        },
+        SnapshotInstruction::InitializeSlotProvisionally { source, own_index } => {
+            SnapshotInstruction::InitializeSlotProvisionally {
+                source: moved(source),
+                own_index,
+            }
+        }
+        SnapshotInstruction::Return { register } => SnapshotInstruction::Return {
+            register: moved(register),
+        },
+        SnapshotInstruction::ImplicitReturn { register } => SnapshotInstruction::ImplicitReturn {
+            register: moved(register),
+        },
+        SnapshotInstruction::NonLocalReturn { register } => SnapshotInstruction::NonLocalReturn {
+            register: moved(register),
+        },
+        SnapshotInstruction::SignalNonBoolean { register } => {
+            SnapshotInstruction::SignalNonBoolean {
+                register: moved(register),
+            }
+        }
+        SnapshotInstruction::Jump { target } => SnapshotInstruction::Jump { target },
+        SnapshotInstruction::JumpIfNotBoolean { register, target } => {
+            SnapshotInstruction::JumpIfNotBoolean {
+                register: moved(register),
+                target,
+            }
+        }
+        SnapshotInstruction::BranchIfFalse { register, target } => {
+            SnapshotInstruction::BranchIfFalse {
+                register: moved(register),
+                target,
+            }
+        }
+        SnapshotInstruction::BranchIfTrue { register, target } => {
+            SnapshotInstruction::BranchIfTrue {
+                register: moved(register),
+                target,
+            }
+        }
+        SnapshotInstruction::IntegerBinary {
+            operation,
+            destination,
+            left,
+            right,
+            target,
+        } => SnapshotInstruction::IntegerBinary {
+            operation,
+            destination: moved(destination),
+            left: moved(left),
+            right: moved(right),
+            target,
+        },
+        SnapshotInstruction::AllocateInstance { destination } => {
+            SnapshotInstruction::AllocateInstance {
+                destination: moved(destination),
+            }
+        }
+        SnapshotInstruction::InitializeInstance {
+            instance,
+            destination,
+        } => SnapshotInstruction::InitializeInstance {
+            instance: moved(instance),
+            destination: moved(destination),
+        },
+        SnapshotInstruction::CheckAppliedClause { steps, selector } => {
+            SnapshotInstruction::CheckAppliedClause { steps, selector }
+        }
+        SnapshotInstruction::InitializeSuperclass {
+            steps,
+            selector,
+            argument_base,
+            argument_sources,
+            destination,
+        } => SnapshotInstruction::InitializeSuperclass {
+            steps,
+            selector,
+            argument_base: moved(argument_base),
+            argument_sources: all(&argument_sources),
+            destination: moved(destination),
+        },
+        SnapshotInstruction::InitializeAppliedLevel {
+            steps,
+            argument_base,
+            argument_sources,
+            destination,
+        } => SnapshotInstruction::InitializeAppliedLevel {
+            steps,
+            argument_base: moved(argument_base),
+            argument_sources: all(&argument_sources),
+            destination: moved(destination),
+        },
+        SnapshotInstruction::MakeClosure {
+            destination,
+            block,
+            parameter_count,
+            copied,
+        } => SnapshotInstruction::MakeClosure {
+            destination: moved(destination),
+            block,
+            parameter_count,
+            copied: all(&copied),
+        },
+    }
+}
+
+/// Renumbers `instruction`'s jump target, if it has one, by `step_of`.
+fn retarget(instruction: &mut SnapshotInstruction, step_of: impl Fn(u32) -> u32) {
+    match instruction {
+        SnapshotInstruction::Jump { target }
+        | SnapshotInstruction::JumpIfNotBoolean { target, .. }
+        | SnapshotInstruction::BranchIfFalse { target, .. }
+        | SnapshotInstruction::BranchIfTrue { target, .. }
+        | SnapshotInstruction::IntegerBinary { target, .. }
+        | SnapshotInstruction::SendMirror {
+            failure: target, ..
+        } => *target = step_of(*target),
+        _ => {}
     }
 }
 
@@ -506,22 +1484,46 @@ struct LoopFacts {
     natural: bool,
 }
 
-/// A block before its nodes are built: the instructions it holds, empty
-/// for an entry block or an edge block, and where control goes after it.
+/// Where control goes from a step: on, after the step's writes, at
+/// `next` -- the following step, or a return's continuation; without them
+/// at `target`, its jump target; and at each of `others`, a type-case's
+/// arms and fall-through. `ends_block` says whether the step's kind ends
+/// its block whatever follows it, and `starts_block` whether it begins
+/// one: an inlined scope's entry, so that a block holds one scope's steps.
+struct Edges {
+    next: Option<usize>,
+    target: Option<usize>,
+    others: Vec<usize>,
+    ends_block: bool,
+    starts_block: bool,
+}
+
+/// A block before its nodes are built: the steps it holds, empty for an
+/// entry block or an edge block, and where control goes after it.
 struct Shape {
+    scope: ScopeId,
     program_counter: u32,
     instructions: Range<usize>,
-    /// The block the last instruction falls through to; for a block with
-    /// no instruction, the block it leads to.
+    /// The step whose leftover analysis holds at the block's top: its
+    /// first, or, for a block with none, that of the block it leads to.
+    top: usize,
+    /// The block the last step falls through to; for a block with no
+    /// step, the block it leads to.
     next: Option<usize>,
-    /// The block the last instruction's jump target is.
+    /// The block the last step's jump target is.
     target: Option<usize>,
+    /// The blocks a type-case the block ends in leads to.
+    others: Vec<usize>,
 }
 
 impl Shape {
     fn successors(&self) -> Vec<usize> {
-        let mut successors = Vec::with_capacity(2);
-        for block in [self.next, self.target].into_iter().flatten() {
+        let mut successors = Vec::with_capacity(2 + self.others.len());
+        for block in [self.next, self.target]
+            .into_iter()
+            .flatten()
+            .chain(self.others.iter().copied())
+        {
             if !successors.contains(&block) {
                 successors.push(block);
             }
@@ -577,22 +1579,18 @@ impl std::ops::IndexMut<usize> for State {
     }
 }
 
-struct Builder<'snapshot> {
-    instructions: &'snapshot [SnapshotInstruction],
-    /// The entered application's own slot base of a customized copy
-    /// (`Snapshot::customization`).
-    own_slot_base: Option<u32>,
-    /// What decides each instruction's kind beside it (`kind_of`).
+struct Builder<'flat> {
+    flat: &'flat Flat<'flat>,
+    /// What decides each step's kind beside it (`kind_of`).
     choices: Vec<Choice>,
-    /// Each instruction's guard, as `choices` holds it.
+    /// Each step's guard, as `choices` holds it.
     guards: Vec<Guard>,
-    /// The registers the leftover analysis taints before each instruction
-    /// (`Snapshot::tainted_before`).
-    tainted_before: &'snapshot [Vec<Range<u16>>],
     reads: Vec<Vec<u16>>,
-    written: Vec<Option<u16>>,
+    written: Vec<Vec<u16>>,
     register_count: usize,
     shapes: Vec<Shape>,
+    /// The block each run of steps begins, by its first step.
+    block_at: HashMap<usize, usize>,
     blocks: Vec<Block>,
     live_in: Vec<RegisterSet>,
     /// For each loop head, what a pass around a loop through it may do
@@ -623,31 +1621,38 @@ struct Builder<'snapshot> {
     refuted: Vec<(usize, usize)>,
 }
 
-impl<'snapshot> Builder<'snapshot> {
+impl<'flat> Builder<'flat> {
     fn new(
-        snapshot: &'snapshot Snapshot,
+        flat: &'flat Flat<'flat>,
         speculation: Speculation,
         known_boolean: &[bool],
-    ) -> Builder<'snapshot> {
-        let instructions = snapshot.instructions.as_slice();
+    ) -> Builder<'flat> {
+        let steps = &flat.steps;
         assert!(
-            !instructions.is_empty(),
+            !steps.is_empty(),
             "internal: a body holds at least one instruction"
         );
-        let choices: Vec<Choice> = instructions
+        let choices: Vec<Choice> = steps
             .iter()
             .enumerate()
-            .map(|(index, instruction)| {
-                let send_only = matches!(instruction, SnapshotInstruction::IntegerBinary { .. })
-                    && snapshot.fallback_taken.get(index).copied().unwrap_or(false);
+            .map(|(index, step)| {
+                let Step::Instruction { physical, .. } = &step.step else {
+                    return Choice::default();
+                };
+                let snapshot = flat.scope(step.scope).snapshot;
+                let program_counter = step.program_counter as usize;
+                let send_only = matches!(physical, SnapshotInstruction::IntegerBinary { .. })
+                    && snapshot
+                        .fallback_taken
+                        .get(program_counter)
+                        .copied()
+                        .unwrap_or(false);
                 Choice {
                     send_only,
-                    guard: guard_of(snapshot, index, send_only, speculation),
+                    guard: guard_of(snapshot, program_counter, send_only, speculation),
                     // Only a `JumpIfNotBoolean`'s third way is a jump target.
-                    known_boolean: matches!(
-                        instruction,
-                        SnapshotInstruction::JumpIfNotBoolean { .. }
-                    ) && known_boolean.get(index).copied().unwrap_or(false),
+                    known_boolean: matches!(physical, SnapshotInstruction::JumpIfNotBoolean { .. })
+                        && known_boolean.get(index).copied().unwrap_or(false),
                 }
             })
             .collect();
@@ -655,44 +1660,31 @@ impl<'snapshot> Builder<'snapshot> {
         // fallback send reads the operands. A send that traps writes
         // nothing either; it reads what the interpreter's send, run again,
         // reads.
-        let reads: Vec<Vec<u16>> = instructions
+        let reads: Vec<Vec<u16>> = steps
             .iter()
             .zip(&choices)
-            .map(|(instruction, choice)| {
-                if choice.send_only {
-                    Vec::new()
-                } else {
-                    instruction.registers_read()
-                }
-            })
+            .map(|(step, choice)| step_reads(flat, step, *choice))
             .collect();
-        let written: Vec<Option<u16>> = instructions
+        let written: Vec<Vec<u16>> = steps
             .iter()
             .zip(&choices)
-            .map(|(instruction, choice)| {
-                if choice.may_fall_through() {
-                    instruction.register_written()
-                } else {
-                    None
-                }
-            })
+            .map(|(step, choice)| step_writes(step, *choice))
             .collect();
-        let register_count = snapshot.register_count();
-        let own_slot_base = snapshot
-            .customization
-            .map(|customization| customization.own_slot_base);
-        let shapes = shapes_of(instructions, &choices, own_slot_base);
+        let register_count = flat.register_count;
+        let edges: Vec<Edges> = (0..steps.len())
+            .map(|index| edges_of(flat, index, choices[index]))
+            .collect();
+        let (shapes, block_at) = shapes_of(flat, &edges);
         let block_count = shapes.len();
         let mut builder = Builder {
-            instructions,
-            own_slot_base,
+            flat,
             guards: choices.iter().map(|choice| choice.guard).collect(),
             choices,
-            tainted_before: &snapshot.tainted_before,
             reads,
             written,
             register_count,
             shapes,
+            block_at,
             blocks: Vec::with_capacity(block_count),
             live_in: Vec::new(),
             loops: Vec::new(),
@@ -709,6 +1701,22 @@ impl<'snapshot> Builder<'snapshot> {
         builder.live_in = builder.liveness();
         builder.loops = builder.loops();
         builder
+    }
+
+    /// What the step at `index` becomes.
+    fn kind(&self, index: usize) -> Kind {
+        let step = &self.flat.steps[index];
+        match &step.step {
+            Step::Instruction { physical, .. } => kind_of(
+                physical,
+                index,
+                self.choices[index],
+                self.flat.scope(step.scope).own_slot_base,
+            ),
+            Step::TypeCase { .. } => Kind::TypeCase,
+            Step::Enter(_) => Kind::Enter,
+            Step::Return { .. } => Kind::InlinedReturn,
+        }
     }
 
     /// The graph, or, when a back edge refuted a register its loop head
@@ -730,7 +1738,10 @@ impl<'snapshot> Builder<'snapshot> {
                 .all(|block| block.phis.iter().all(|phi| !phi.inputs.contains(&UNFILLED))),
             "internal: every back edge filled its head's phis"
         );
-        Ok(Graph::from_blocks(self.blocks))
+        Ok(Graph::with_scopes(
+            self.blocks,
+            self.flat.graph_scopes.clone(),
+        ))
     }
 
     /// The blocks, each with its predecessors and whether it heads a
@@ -747,6 +1758,7 @@ impl<'snapshot> Builder<'snapshot> {
                 .iter()
                 .any(|predecessor| predecessor.index() >= block);
             self.blocks.push(Block {
+                scope: shape.scope,
                 program_counter: shape.program_counter,
                 phis: Vec::new(),
                 nodes: Vec::new(),
@@ -782,16 +1794,16 @@ impl<'snapshot> Builder<'snapshot> {
                         if let Some(next) = shape.next {
                             live.union_with(&live_in[next]);
                         }
-                        if let Some(written) = self.written[last] {
-                            live.remove(usize::from(written));
+                        for written in &self.written[last] {
+                            live.remove(usize::from(*written));
                         }
-                        if let Some(target) = shape.target {
-                            live.union_with(&live_in[target]);
+                        for other in shape.target.iter().chain(&shape.others) {
+                            live.union_with(&live_in[*other]);
                         }
                         self.add_reads(&mut live, last);
                         for index in instructions {
-                            if let Some(written) = self.written[index] {
-                                live.remove(usize::from(written));
+                            for written in &self.written[index] {
+                                live.remove(usize::from(*written));
                             }
                             self.add_reads(&mut live, index);
                         }
@@ -875,19 +1887,11 @@ impl<'snapshot> Builder<'snapshot> {
                         continue;
                     }
                     for index in self.shapes[member].instructions.clone() {
-                        if matches!(
-                            kind_of(
-                                &self.instructions[index],
-                                index,
-                                self.choices[index],
-                                self.own_slot_base
-                            ),
-                            Kind::Frame
-                        ) {
+                        if matches!(self.kind(index), Kind::Frame) {
                             facts.frame_node = true;
                         }
-                        if let Some(written) = self.written[index] {
-                            facts.written.insert(usize::from(written));
+                        for written in &self.written[index] {
+                            facts.written.insert(usize::from(*written));
                         }
                     }
                 }
@@ -933,6 +1937,21 @@ impl<'snapshot> Builder<'snapshot> {
         let register = usize::from(destination);
         state.generations[register] = self.new_generation();
         state[register] = Some(value);
+    }
+
+    /// Ends the bindings of the registers `ranges` names, past which their
+    /// words are an inlined callee's (`Node::Overlay`), and begins a new
+    /// generation of each: what the callee writes there is no read made
+    /// before.
+    fn overlay(&mut self, block: usize, state: &mut State, ranges: Vec<Range<u16>>) {
+        for range in &ranges {
+            let end = usize::from(range.end).min(self.register_count);
+            for register in usize::from(range.start)..end {
+                state[register] = None;
+                state.generations[register] = self.new_generation();
+            }
+        }
+        self.blocks[block].nodes.push(Node::Overlay { ranges });
     }
 
     /// Whether `binding` of `register`, on a path in `generation` of the
@@ -1030,6 +2049,8 @@ impl<'snapshot> Builder<'snapshot> {
         }
         let live: Vec<usize> = self.live_in[block].registers().collect();
         let loop_head = self.loops[block].is_some();
+        let flat = self.flat;
+        let tainted_here = &flat.tainted[self.shapes[block].top];
         for register in live {
             let bindings: Vec<Option<ValueId>> = forward
                 .iter()
@@ -1070,13 +2091,8 @@ impl<'snapshot> Builder<'snapshot> {
             // A register the leftover analysis taints at the head may hold
             // a word no way in writes back (`Binding::STALE`), so it keeps
             // its phi.
-            let tainted = self
-                .tainted_before
-                .get(self.blocks[block].program_counter as usize)
-                .is_some_and(|ranges| {
-                    u16::try_from(register)
-                        .is_ok_and(|register| ranges.iter().any(|range| range.contains(&register)))
-                });
+            let tainted = u16::try_from(register)
+                .is_ok_and(|register| tainted_here.iter().any(|range| range.contains(&register)));
             if natural
                 && (frame_words || loop_changes)
                 && !tainted
@@ -1180,14 +2196,39 @@ impl<'snapshot> Builder<'snapshot> {
         value
     }
 
+    /// The receiver of `scope` at this point of the block: the root's read
+    /// from its frame's header, an inlined scope's its header binding.
+    fn receiver_of(&mut self, block: usize, state: &mut State, scope: ScopeId) -> ValueId {
+        if scope == ScopeId::ROOT {
+            let value = self.new_value(None);
+            self.blocks[block].nodes.push(Node::Receiver { value });
+            return value;
+        }
+        let register =
+            self.flat.graph_scopes[scope.0 as usize].header_register(HeaderBinding::Receiver);
+        self.read(block, state, register)
+    }
+
+    /// The value of an inlined send's receiver at this point of the block.
+    fn receiver_value(&mut self, block: usize, state: &mut State, receiver: ReceiverOf) -> ValueId {
+        match receiver {
+            ReceiverOf::Register(register) => self.read(block, state, register),
+            ReceiverOf::SelfOf(scope) => self.receiver_of(block, state, scope),
+        }
+    }
+
     /// The receiver's field at `absolute_index`, read by a new
-    /// `Node::OwnSlotLoad` at the end of `block`.
-    fn own_slot_load(&mut self, block: usize, absolute_index: u32) -> ValueId {
-        let receiver = self.new_value(None);
+    /// `Node::OwnSlotLoad` at the end of `block`, the receiver `scope`'s.
+    fn own_slot_load(
+        &mut self,
+        block: usize,
+        state: &mut State,
+        scope: ScopeId,
+        absolute_index: u32,
+    ) -> ValueId {
+        let receiver = self.receiver_of(block, state, scope);
         let value = self.new_value(None);
-        let nodes = &mut self.blocks[block].nodes;
-        nodes.push(Node::Receiver { value: receiver });
-        nodes.push(Node::OwnSlotLoad {
+        self.blocks[block].nodes.push(Node::OwnSlotLoad {
             value,
             receiver,
             absolute_index,
@@ -1223,7 +2264,7 @@ impl<'snapshot> Builder<'snapshot> {
         }
     }
 
-    /// Lowers the instruction at `index`, the last of its block only if it
+    /// Lowers the step at `index`, the last of its block only if it
     /// answers an end other than a fall into `next`.
     fn lower(
         &mut self,
@@ -1233,10 +2274,11 @@ impl<'snapshot> Builder<'snapshot> {
         next: Option<BlockId>,
         target: Option<BlockId>,
     ) -> Option<End> {
-        let instruction = &self.instructions[index];
-        let program_counter =
-            u32::try_from(index).expect("internal: an instruction index fits a u32");
-        match kind_of(instruction, index, self.choices[index], self.own_slot_base) {
+        let flat = self.flat;
+        let step = &flat.steps[index];
+        let scope = step.scope;
+        let program_counter = step.program_counter;
+        match self.kind(index) {
             Kind::Constant { destination, word } => {
                 let value = self.new_value(None);
                 let nodes = &mut self.blocks[block].nodes;
@@ -1249,10 +2291,8 @@ impl<'snapshot> Builder<'snapshot> {
                 None
             }
             Kind::Receiver { destination } => {
-                let value = self.new_value(None);
-                let nodes = &mut self.blocks[block].nodes;
-                nodes.push(Node::Receiver { value });
-                nodes.push(Node::Copy {
+                let value = self.receiver_of(block, state, scope);
+                self.blocks[block].nodes.push(Node::Copy {
                     destination_register: destination,
                     source: value,
                 });
@@ -1309,7 +2349,7 @@ impl<'snapshot> Builder<'snapshot> {
                 destination,
                 absolute_index,
             } => {
-                let value = self.own_slot_load(block, absolute_index);
+                let value = self.own_slot_load(block, state, scope, absolute_index);
                 self.blocks[block].nodes.push(Node::Copy {
                     destination_register: destination,
                     source: value,
@@ -1318,7 +2358,7 @@ impl<'snapshot> Builder<'snapshot> {
                 None
             }
             Kind::ReturnUnlessNil { absolute_index } => {
-                let value = self.own_slot_load(block, absolute_index);
+                let value = self.own_slot_load(block, state, scope, absolute_index);
                 Some(End::ReturnUnlessNil {
                     value,
                     next: next.expect("internal: a lazy slot's getter goes on to its initializer"),
@@ -1354,18 +2394,21 @@ impl<'snapshot> Builder<'snapshot> {
                 site,
             }),
             Kind::Frame => {
+                let Step::Instruction { physical, original } = &step.step else {
+                    unreachable!("internal: only an instruction is a frame node");
+                };
                 let registers = self.reads[index].clone();
                 let reads = registers
                     .into_iter()
                     .map(|register| (register, self.read(block, state, register)))
                     .collect();
-                let instruction = self.instructions[index].clone();
-                let falls_through = instruction.falls_through();
+                let falls_through = physical.falls_through();
                 self.blocks[block].nodes.push(Node::Frame {
+                    scope,
                     program_counter,
-                    instruction,
+                    instruction: original.clone(),
                     reads,
-                    written: self.written[index],
+                    written: self.written[index].first().copied(),
                 });
                 // What the instruction ran may have written any of the
                 // frame's registers by reference, or moved what a value
@@ -1379,54 +2422,261 @@ impl<'snapshot> Builder<'snapshot> {
                     _ => None,
                 }
             }
+            Kind::TypeCase => {
+                let Step::TypeCase {
+                    receiver,
+                    arms,
+                    fall_through,
+                    site,
+                } = &step.step
+                else {
+                    unreachable!("internal: a type-case's kind is its step's");
+                };
+                let receiver = self.receiver_value(block, state, *receiver);
+                let block_of = |step: usize| BlockId::of_index(self.block_at[&step]);
+                Some(End::TypeCase {
+                    program_counter,
+                    scope,
+                    receiver,
+                    arms: arms
+                        .iter()
+                        .map(|(guard, step)| (*guard, block_of(*step)))
+                        .collect(),
+                    fall_through: fall_through.map(block_of),
+                    site: *site,
+                })
+            }
+            Kind::Enter => {
+                let Step::Enter(entry) = &step.step else {
+                    unreachable!("internal: an entry's kind is its step's");
+                };
+                self.enter(block, state, entry);
+                None
+            }
+            Kind::InlinedReturn => {
+                let Step::Return {
+                    source,
+                    destination,
+                    slot_end,
+                    ..
+                } = &step.step
+                else {
+                    unreachable!("internal: a return's kind is its step's");
+                };
+                let value = self.read(block, state, *source);
+                self.blocks[block].nodes.push(Node::Copy {
+                    destination_register: *destination,
+                    source: value,
+                });
+                self.bind(state, *destination, value);
+                // What the callee left past its slots is the sender's to
+                // write before it reads it, the destination apart.
+                let mut ranges = Vec::with_capacity(2);
+                if destination >= slot_end {
+                    ranges.push(*slot_end..*destination);
+                    ranges.push(destination + 1..u16::MAX);
+                } else {
+                    ranges.push(*slot_end..u16::MAX);
+                }
+                ranges.retain(|range| !range.is_empty());
+                self.overlay(block, state, ranges);
+                None
+            }
         }
+    }
+
+    /// An inlined scope's entry (`Entry`): the values its sender hands it
+    /// read first, then bound to its parameters, its header's receiver and
+    /// current class and its named temporaries, and the rest of what its
+    /// frame lays over left unbound.
+    fn enter(&mut self, block: usize, state: &mut State, entry: &Entry) {
+        let receiver = self.receiver_value(block, state, entry.receiver);
+        let arguments: Vec<(u16, ValueId)> = entry
+            .arguments
+            .iter()
+            .map(|(parameter, source)| (*parameter, self.read(block, state, *source)))
+            .collect();
+        let from = match entry.sender_class {
+            Some(register) => self.read(block, state, register),
+            None => receiver,
+        };
+        let class = self.new_value(None);
+        self.blocks[block].nodes.push(Node::CurrentClass {
+            value: class,
+            from,
+            start: entry.class_start,
+            steps: entry.class_steps,
+        });
+        let mut bindings = arguments;
+        bindings.push((entry.receiver_register, receiver));
+        bindings.push((entry.class_register, class));
+        if !entry.temporaries.is_empty() {
+            let nil = self.new_value(None);
+            self.blocks[block].nodes.push(Node::Constant {
+                value: nil,
+                word: Immediate::NIL.bits(),
+            });
+            bindings.extend(entry.temporaries.clone().map(|register| (register, nil)));
+        }
+        for (register, value) in bindings {
+            self.blocks[block].nodes.push(Node::Copy {
+                destination_register: register,
+                source: value,
+            });
+            self.bind(state, register, value);
+        }
+        self.overlay(block, state, entry.overlay.clone());
     }
 }
 
-/// The blocks of `instructions`: one for every run that starts at the
-/// first instruction, a jump target or after an instruction that jumps or
-/// stops and is reachable from the first, in order; an entry block of
-/// its own before them when the first instruction heads a loop; and an
-/// edge block, with no instruction, for each way out of a block with two
+/// The physical registers the step reads, as the builder's liveness
+/// counts them.
+fn step_reads(flat: &Flat<'_>, step: &FlatStep, choice: Choice) -> Vec<u16> {
+    match &step.step {
+        Step::Instruction { .. } if choice.send_only => Vec::new(),
+        Step::Instruction { physical, .. } => physical.registers_read(),
+        Step::TypeCase { receiver, .. } => receiver_reads(flat, *receiver),
+        Step::Enter(entry) => {
+            let mut reads = receiver_reads(flat, entry.receiver);
+            reads.extend(entry.arguments.iter().map(|(_, source)| *source));
+            reads.extend(entry.sender_class);
+            reads
+        }
+        Step::Return { source, .. } => vec![*source],
+    }
+}
+
+/// The register an inlined send's receiver is read from, if it is one:
+/// an inlined sender's `self` is its header's binding.
+fn receiver_reads(flat: &Flat<'_>, receiver: ReceiverOf) -> Vec<u16> {
+    match receiver {
+        ReceiverOf::Register(register) => vec![register],
+        ReceiverOf::SelfOf(scope) if scope != ScopeId::ROOT => {
+            vec![flat.graph_scopes[scope.0 as usize].header_register(HeaderBinding::Receiver)]
+        }
+        ReceiverOf::SelfOf(_) => Vec::new(),
+    }
+}
+
+/// The physical registers the step writes on its way to the next.
+fn step_writes(step: &FlatStep, choice: Choice) -> Vec<u16> {
+    match &step.step {
+        Step::Instruction { physical, .. } if choice.may_fall_through() => {
+            physical.register_written().into_iter().collect()
+        }
+        Step::Instruction { .. } | Step::TypeCase { .. } => Vec::new(),
+        Step::Enter(entry) => {
+            let mut written: Vec<u16> = entry.arguments.iter().map(|(slot, _)| *slot).collect();
+            written.push(entry.receiver_register);
+            written.push(entry.class_register);
+            written.extend(entry.temporaries.clone());
+            written
+        }
+        Step::Return { destination, .. } => vec![*destination],
+    }
+}
+
+/// Where control goes from the step at `index` of `flat` (`Edges`).
+fn edges_of(flat: &Flat<'_>, index: usize, choice: Choice) -> Edges {
+    let step = &flat.steps[index];
+    match &step.step {
+        Step::Instruction { physical, .. } => {
+            // A jump to the fallback does not fall through, nor a send
+            // that traps; and a fast path whose failure traps, or a
+            // conditional with no third way, has no jump target
+            // (`kind_of`).
+            let falls_through = choice.may_fall_through() && physical.falls_through();
+            let kind = kind_of(
+                physical,
+                index,
+                choice,
+                flat.scope(step.scope).own_slot_base,
+            );
+            Edges {
+                next: falls_through.then_some(index + 1),
+                target: physical
+                    .jump_target()
+                    .filter(|_| choice.keeps_target())
+                    .map(|target| usize::try_from(target).expect("internal: a step fits a usize")),
+                others: Vec::new(),
+                // A customized copy's `ReturnSlotIfFilled` ends its block
+                // in the slot's return, and every branch in its test --
+                // what decides for a `JumpIfNotBoolean` built without its
+                // third way, which keeps no jump target.
+                ends_block: matches!(kind, Kind::ReturnUnlessNil { .. } | Kind::Branch { .. }),
+                starts_block: false,
+            }
+        }
+        Step::TypeCase {
+            arms, fall_through, ..
+        } => Edges {
+            next: None,
+            target: None,
+            others: arms
+                .iter()
+                .map(|(_, step)| *step)
+                .chain(*fall_through)
+                .collect(),
+            ends_block: true,
+            starts_block: false,
+        },
+        Step::Enter(_) => Edges {
+            next: Some(index + 1),
+            target: None,
+            others: Vec::new(),
+            ends_block: false,
+            starts_block: true,
+        },
+        Step::Return { continuation, .. } => Edges {
+            next: Some(*continuation),
+            target: None,
+            others: Vec::new(),
+            ends_block: true,
+            starts_block: false,
+        },
+    }
+}
+
+/// A run of steps, the run its last step falls through to, the run its
+/// jump target begins, and the runs a type-case leads to.
+type Run = (Range<usize>, Option<usize>, Option<usize>, Vec<usize>);
+
+/// The blocks of `flat`'s steps: one for every run that starts at the
+/// first step, a jump target, an inlined scope's entry or after a step
+/// that jumps or stops and is reachable from the first, in order; an
+/// entry block of its own before them when the first step heads a loop;
+/// and an edge block, with no step, for each way out of a block with two
 /// ways out -- a branch, an integer fast path, a mirror send -- into a
 /// block other ways enter too, or back to a block at or before it. Only
 /// such a block's top can take a phi, and a phi's input may need a read
 /// of a frame word placed on its way alone: on the other way the register
 /// may be dead, its word one a callee left, and a mirror send's template
 /// jumps for its failure itself, leaving no room after it on one way only.
-/// A customized copy's `ReturnSlotIfFilled` ends its run too
-/// (`ends_block`), its block ending in the slot's return.
-fn shapes_of(
-    instructions: &[SnapshotInstruction],
-    choices: &[Choice],
-    own_slot_base: Option<u32>,
-) -> Vec<Shape> {
-    let count = instructions.len();
-    let index_of = |target: u32| {
-        let target = usize::try_from(target).expect("internal: a jump target fits a usize");
-        assert!(target < count, "internal: a jump target lies in its body");
-        target
-    };
-    // A jump to the fallback does not fall through, nor a send that
-    // traps; and a fast path whose failure traps, or a conditional with no
-    // third way, has no jump target (`kind_of`).
-    let falls_through =
-        |index: usize| choices[index].may_fall_through() && instructions[index].falls_through();
-    let jump_target = |index: usize| {
-        instructions[index]
-            .jump_target()
-            .filter(|_| choices[index].keeps_target())
+/// A type-case's ways out each enter a block only it enters: an arm's
+/// entry, or the send it falls through to. A customized copy's
+/// `ReturnSlotIfFilled` ends its run too (`Edges::ends_block`), its block
+/// ending in the slot's return. Answers the shapes and, for each run, the
+/// block it begins by its first step.
+fn shapes_of(flat: &Flat<'_>, edges: &[Edges]) -> (Vec<Shape>, HashMap<usize, usize>) {
+    let count = edges.len();
+    let checked = |step: usize| {
+        assert!(step < count, "internal: a jump target lies in its body");
+        step
     };
     let mut starts = vec![false; count];
     starts[0] = true;
-    for (index, instruction) in instructions.iter().enumerate() {
-        let target = jump_target(index);
-        if let Some(target) = target {
-            starts[index_of(target)] = true;
+    for (index, edge) in edges.iter().enumerate() {
+        if edge.starts_block {
+            starts[index] = true;
         }
-        if (target.is_some()
-            || !falls_through(index)
-            || ends_block(instruction, choices[index], own_slot_base))
+        for target in edge.target.iter().chain(&edge.others) {
+            starts[checked(*target)] = true;
+        }
+        let falls_on = edge.next == Some(index + 1);
+        if let Some(next) = edge.next.filter(|_| !falls_on) {
+            starts[checked(next)] = true;
+        }
+        if (edge.target.is_some() || !edge.others.is_empty() || !falls_on || edge.ends_block)
             && index + 1 < count
         {
             starts[index + 1] = true;
@@ -1434,13 +2684,13 @@ fn shapes_of(
     }
     // The runs, each with the runs it may go to.
     let mut run_of = vec![usize::MAX; count];
-    let mut runs: Vec<(Range<usize>, Option<usize>, Option<usize>)> = Vec::new();
+    let mut runs: Vec<Run> = Vec::new();
     for index in 0..count {
         if starts[index] {
-            runs.push((index..index + 1, None, None));
+            runs.push((index..index + 1, None, None, Vec::new()));
         } else {
             runs.last_mut()
-                .expect("internal: the first instruction starts a run")
+                .expect("internal: the first step starts a run")
                 .0
                 .end = index + 1;
         }
@@ -1448,20 +2698,16 @@ fn shapes_of(
     }
     for run in &mut runs {
         let last = run.0.end - 1;
-        let target = jump_target(last).map(|target| run_of[index_of(target)]);
-        let next = if falls_through(last) {
-            assert!(
-                last + 1 < count,
-                "internal: a body does not run off its end"
-            );
-            Some(run_of[last + 1])
-        } else {
-            None
-        };
-        // An instruction whose target is the next instruction goes on
-        // there either way.
+        let edge = &edges[last];
+        let target = edge.target.map(|target| run_of[target]);
+        let next = edge.next.map(|next| {
+            assert!(next < count, "internal: a body does not run off its end");
+            run_of[next]
+        });
+        // A step whose target is the next goes on there either way.
         run.1 = next;
         run.2 = if target == next { None } else { target };
+        run.3 = edge.others.iter().map(|other| run_of[*other]).collect();
     }
     // The runs reachable from the first.
     let mut reachable = vec![false; runs.len()];
@@ -1471,11 +2717,16 @@ fn shapes_of(
             continue;
         }
         pending.extend([runs[run].1, runs[run].2].into_iter().flatten());
+        pending.extend(runs[run].3.iter().copied());
     }
     let mut entered = vec![0usize; runs.len()];
-    for (run, (_, next, target)) in runs.iter().enumerate() {
+    for (run, (_, next, target, others)) in runs.iter().enumerate() {
         if reachable[run] {
-            for successor in [*next, *target].into_iter().flatten() {
+            for successor in [*next, *target]
+                .into_iter()
+                .flatten()
+                .chain(others.iter().copied())
+            {
                 entered[successor] += 1;
             }
         }
@@ -1489,10 +2740,16 @@ fn shapes_of(
     let mut block_of_run = vec![usize::MAX; runs.len()];
     let mut block_count = usize::from(entry_block);
     let mut edge_blocks: Vec<(usize, [bool; 2])> = Vec::new();
-    for (run, (_, next, target)) in runs.iter().enumerate() {
+    for (run, (_, next, target, others)) in runs.iter().enumerate() {
         if !reachable[run] {
             continue;
         }
+        debug_assert!(
+            others
+                .iter()
+                .all(|other| entered[*other] == 1 && *other > run),
+            "internal: a type-case's every way enters a block only it enters"
+        );
         block_of_run[run] = block_count;
         block_count += 1;
         let forks = target.is_some() && next.is_some();
@@ -1505,28 +2762,38 @@ fn shapes_of(
             block_count += split.iter().filter(|split| **split).count();
         }
     }
+    let place = |run: usize| {
+        let step = &flat.steps[runs[run].0.start];
+        (step.scope, step.program_counter)
+    };
     let mut shapes = Vec::with_capacity(block_count);
     if entry_block {
         shapes.push(Shape {
+            scope: ScopeId::ROOT,
             program_counter: 0,
             instructions: 0..0,
+            top: 0,
             next: Some(block_of_run[0]),
             target: None,
+            others: Vec::new(),
         });
     }
+    let mut block_at = HashMap::new();
     let mut edge_blocks = edge_blocks.into_iter().peekable();
-    for (run, (range, next, target)) in runs.iter().enumerate() {
+    for (run, (range, next, target, others)) in runs.iter().enumerate() {
         if !reachable[run] {
             continue;
         }
-        let program_counter = |run: usize| {
-            u32::try_from(runs[run].0.start).expect("internal: an instruction index fits a u32")
-        };
+        let (scope, program_counter) = place(run);
+        block_at.insert(range.start, shapes.len());
         let mut shape = Shape {
-            program_counter: program_counter(run),
+            scope,
+            program_counter,
             instructions: range.clone(),
+            top: range.start,
             next: next.map(|next| block_of_run[next]),
             target: target.map(|target| block_of_run[target]),
+            others: others.iter().map(|other| block_of_run[*other]).collect(),
         };
         let mut edges = Vec::new();
         if edge_blocks
@@ -1541,11 +2808,15 @@ fn shapes_of(
             ] {
                 if way {
                     let to_run = to_run.expect("internal: a split way exists");
+                    let (scope, program_counter) = place(to_run);
                     edges.push(Shape {
-                        program_counter: program_counter(to_run),
+                        scope,
+                        program_counter,
                         instructions: range.end..range.end,
+                        top: runs[to_run].0.start,
                         next: Some(block_of_run[to_run]),
                         target: None,
+                        others: Vec::new(),
                     });
                     *successor = Some(following);
                     following += 1;
@@ -1555,7 +2826,7 @@ fn shapes_of(
         shapes.push(shape);
         shapes.extend(edges);
     }
-    shapes
+    (shapes, block_at)
 }
 
 #[cfg(test)]
@@ -2744,5 +4015,596 @@ mod tests {
                 .count();
         }
         assert!(traps > 0);
+    }
+}
+
+/// The builder's inlined scopes, built from trees of real runs and from
+/// trees made by hand.
+#[cfg(test)]
+pub(crate) mod inlining_tests {
+    use indoc::indoc;
+
+    use super::build_inlined;
+    use crate::bytecode::{CallSite, Instruction, Literal};
+    use crate::heap::{CodeId, Immediate};
+    use crate::jit::optimizing::graph::{
+        BlockId, Definition, End, Graph, HeaderBinding, Node, ScopeId, ValueId,
+    };
+    use crate::jit::optimizing::plan::{plan, plan_with, ArmPlan, FallThrough, InliningPlan};
+    use crate::jit::optimizing::snapshot::{Snapshot, SnapshotInstruction};
+    use crate::jit::optimizing::tree::{CalleeFacts, SnapshotTree};
+    use crate::jit::optimizing::verify::verify;
+    use crate::jit::optimizing::{
+        inlining_corpus, ran_site, test_receiver, test_snapshot_with_arguments, test_tree,
+        tree_of_run, Speculation, SWEEP_LIMITS,
+    };
+    use crate::Symbol;
+
+    /// The plan of `tree` and its graph, speculating.
+    fn built(tree: &SnapshotTree) -> (InliningPlan, Graph) {
+        let plan = plan(tree, Speculation::Traps);
+        let graph = build_inlined(tree, &plan, Speculation::Traps);
+        assert_eq!(verify(&graph), Ok(()));
+        (plan, graph)
+    }
+
+    /// The one send of `selector` in `snapshot`.
+    fn send_of(snapshot: &Snapshot, selector: &str) -> u32 {
+        let sends: Vec<u32> = snapshot
+            .instructions
+            .iter()
+            .enumerate()
+            .filter(|(_, instruction)| match instruction {
+                SnapshotInstruction::SendPublic { selector: sent, .. }
+                | SnapshotInstruction::SendLexical { selector: sent, .. }
+                | SnapshotInstruction::SendSuper { selector: sent, .. } => {
+                    *sent == Symbol::intern(selector)
+                }
+                _ => false,
+            })
+            .map(|(index, _)| u32::try_from(index).expect("a small body"))
+            .collect();
+        let [send] = sends[..] else {
+            panic!("one send of {selector}: {:#?}", snapshot.instructions);
+        };
+        send
+    }
+
+    /// The block ending in the type-case of `scope`'s send at
+    /// `program_counter`.
+    fn type_case(graph: &Graph, scope: ScopeId, program_counter: u32) -> &End {
+        graph
+            .blocks
+            .iter()
+            .map(|block| &block.end)
+            .find(|end| {
+                matches!(end, End::TypeCase { scope: sender, program_counter: counter, .. }
+                    if *sender == scope && *counter == program_counter)
+            })
+            .expect("the send's type-case")
+    }
+
+    /// The root's one return's value.
+    fn returned(graph: &Graph) -> ValueId {
+        let returns: Vec<ValueId> = graph
+            .blocks
+            .iter()
+            .filter_map(|block| match block.end {
+                End::Return { value } => Some(value),
+                _ => None,
+            })
+            .collect();
+        let [value] = returns[..] else {
+            panic!("one return: {graph:#?}");
+        };
+        value
+    }
+
+    const MONOMORPHIC: &str = indoc! {"
+        class Monomorphic = () (
+          public run = (
+            ^self helper: 3
+          )
+          public helper: number = (
+            ^number + 1
+          )
+        )
+    "};
+
+    #[test]
+    fn an_inlined_method_s_return_binds_the_send_s_destination() {
+        let tree = tree_of_run(MONOMORPHIC, "run");
+        let (plan, graph) = built(&tree);
+        assert_eq!(plan.scopes.len(), 2);
+        let send = send_of(&tree.root, "helper:");
+        let destination = tree.root.instructions[send as usize]
+            .register_written()
+            .expect("the send's destination");
+        // The root returns what the callee's `number + 1` answered, with no
+        // send between: the callee's return bound the send's destination.
+        let value = returned(&graph);
+        let defining = graph.values[value.index()].block;
+        assert_eq!(graph.block(defining).scope, ScopeId(1));
+        assert!(matches!(
+            graph.definition(value),
+            Definition::Node(Node::IntegerBinary { .. })
+        ));
+        assert!(graph
+            .blocks
+            .iter()
+            .filter(|block| block.scope == ScopeId(1))
+            .flat_map(|block| &block.nodes)
+            .any(|node| matches!(
+                node,
+                Node::Copy { destination_register, source }
+                    if *destination_register == destination && *source == value
+            )));
+        assert!(graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .all(|node| !matches!(node, Node::Frame { .. })));
+    }
+
+    const TWO_RETURNS: &str = indoc! {"
+        class TwoReturns = () (
+          public run = (
+            ^self pick: true
+          )
+          public pick: flag = (
+            flag ifTrue: [^1].
+            ^2
+          )
+        )
+    "};
+
+    #[test]
+    fn two_returns_of_an_inlined_method_meet_in_a_phi() {
+        let tree = tree_of_run(TWO_RETURNS, "run");
+        let (_, graph) = built(&tree);
+        let send = send_of(&tree.root, "pick:");
+        let destination = tree.root.instructions[send as usize]
+            .register_written()
+            .expect("the send's destination");
+        let value = returned(&graph);
+        let Definition::Phi(phi) = graph.definition(value) else {
+            panic!("the returns meet in a phi: {graph:#?}");
+        };
+        assert_eq!(phi.register, destination);
+        let merge = graph.block(graph.values[value.index()].block);
+        assert_eq!(
+            (merge.scope, merge.program_counter),
+            (ScopeId::ROOT, send + 1)
+        );
+        let mut words: Vec<u64> = phi
+            .inputs
+            .iter()
+            .map(|input| match graph.definition(*input) {
+                Definition::Node(Node::Constant { word, .. }) => *word,
+                other => panic!("a returned constant: {other:?}"),
+            })
+            .collect();
+        words.sort_unstable();
+        let small = |integer: i64| {
+            Immediate::small_integer(integer)
+                .expect("a SmallInteger")
+                .bits()
+        };
+        let mut expected = vec![small(1), small(2)];
+        expected.sort_unstable();
+        assert_eq!(words, expected);
+        for predecessor in &merge.predecessors {
+            assert_eq!(graph.block(*predecessor).scope, ScopeId(1));
+        }
+    }
+
+    /// A method of `instructions` taking `argument_count` arguments, its
+    /// code id `code_id`.
+    fn method(code_id: u32, argument_count: u16, instructions: Vec<Instruction>) -> Snapshot {
+        let mut snapshot = test_snapshot_with_arguments(instructions, argument_count);
+        snapshot.code_id = CodeId::from_raw(code_id);
+        snapshot
+    }
+
+    /// `receiver selector` with `sources` as its arguments, laid from
+    /// `argument_base`, its site 0.
+    fn send(
+        selector: &str,
+        receiver: u16,
+        argument_base: u16,
+        sources: Vec<u16>,
+        destination: u16,
+    ) -> Instruction {
+        Instruction::SendPublic {
+            selector: Symbol::intern(selector),
+            receiver_register: receiver,
+            argument_base,
+            argument_sources: sources,
+            destination,
+            call_site: CallSite { number: 0 },
+        }
+    }
+
+    /// A root whose send at `program_counter`, its site 0, is
+    /// monomorphic over `callee`, its receiver's own slots from
+    /// `own_slot_base`.
+    fn monomorphic(
+        mut root: Snapshot,
+        program_counter: usize,
+        callee: Snapshot,
+        own_slot_base: u32,
+    ) -> SnapshotTree {
+        ran_site(&mut root, program_counter, 0);
+        let code_id = root.code_id;
+        test_tree(
+            root,
+            vec![(
+                code_id,
+                0,
+                vec![(
+                    test_receiver(1, 1, own_slot_base),
+                    CalleeFacts::Method {
+                        snapshot: Box::new(callee.clone()),
+                        level: 0,
+                    },
+                )],
+            )],
+            vec![callee],
+        )
+    }
+
+    fn literal(destination: u16, value: i64) -> Instruction {
+        Instruction::LoadLiteral {
+            destination,
+            literal: Literal::SmallInteger(value),
+        }
+    }
+
+    /// `r14 := 2. r25 := 7. r21 := r13 foo: 5`, the argument laid at
+    /// r20, `r15 := r14. r16 := r25. ^r21`: the callee answers its
+    /// argument.
+    #[test]
+    fn an_inlined_callee_overlays_the_caller_s_scratch_registers_only() {
+        let root = method(
+            0,
+            0,
+            vec![
+                Instruction::LoadSelf { destination: 13 },
+                literal(14, 2),
+                literal(25, 7),
+                literal(20, 5),
+                send("foo:", 13, 20, vec![20], 21),
+                Instruction::Move {
+                    destination: 15,
+                    source: 14,
+                },
+                Instruction::Move {
+                    destination: 16,
+                    source: 25,
+                },
+                Instruction::Return { register: 21 },
+            ],
+        );
+        let callee = method(1, 1, vec![Instruction::Return { register: 0 }]);
+        let tree = monomorphic(root, 4, callee, 0);
+        let (plan, graph) = built(&tree);
+        assert_eq!(plan.scopes[1].offset, 20);
+        let copied = |register: u16| {
+            graph
+                .blocks
+                .iter()
+                .filter(|block| block.scope == ScopeId::ROOT)
+                .flat_map(|block| &block.nodes)
+                .find_map(|node| match node {
+                    Node::Copy {
+                        destination_register,
+                        source,
+                    } if *destination_register == register => Some(*source),
+                    _ => None,
+                })
+                .expect("the copy")
+        };
+        // Below the send's argument base the caller's binding holds across.
+        assert!(matches!(
+            graph.definition(copied(15)),
+            Definition::Node(Node::Constant { word, .. })
+                if *word == Immediate::small_integer(2).expect("small").bits()
+        ));
+        // At or above it the callee's frame lay: the caller's 7 is gone,
+        // and its register is read again from its word.
+        assert!(matches!(
+            graph.definition(copied(16)),
+            Definition::Node(Node::FrameRead { register: 25, .. })
+        ));
+        // The callee's argument, which it answers, is the caller's 5.
+        assert!(matches!(
+            graph.definition(returned(&graph)),
+            Definition::Node(Node::Constant { word, .. })
+                if *word == Immediate::small_integer(5).expect("small").bits()
+        ));
+        let overlays: Vec<&Node> = graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .filter(|node| matches!(node, Node::Overlay { .. }))
+            .collect();
+        assert_eq!(overlays.len(), 2, "one at the entry, one at the return");
+        for overlay in overlays {
+            let Node::Overlay { ranges } = overlay else {
+                unreachable!();
+            };
+            assert!(ranges.iter().all(|range| range.start >= 21));
+        }
+    }
+
+    const POLYMORPHIC: &str = indoc! {"
+        class Polymorphic = () (
+          class First = () (
+            public answer = (
+              ^1 + 1
+            )
+          )
+          class Second = () (
+            public answer = (
+              ^2 + 2
+            )
+          )
+          public ask: thing = (
+            ^thing answer
+          )
+          public run = (
+            ^(self ask: First new) + (self ask: Second new)
+          )
+        )
+    "};
+
+    #[test]
+    fn a_type_case_tests_its_arms_in_the_cache_s_order() {
+        let tree = tree_of_run(POLYMORPHIC, "ask:");
+        let (plan, graph) = built(&tree);
+        let send = send_of(&tree.root, "answer");
+        let site = tree.root.sites[send as usize].expect("a site").site;
+        let cached: Vec<_> = tree.sites[&(tree.root.code_id, site)]
+            .arms
+            .iter()
+            .map(|(receiver, _)| receiver.dispatch_id)
+            .collect();
+        assert_eq!(cached.len(), 2, "First, then Second");
+        let End::TypeCase {
+            receiver,
+            arms,
+            fall_through,
+            ..
+        } = type_case(&graph, ScopeId::ROOT, send)
+        else {
+            unreachable!();
+        };
+        let tested: Vec<_> = arms.iter().map(|(guard, _)| *guard).collect();
+        assert_eq!(tested, cached);
+        assert_eq!(*fall_through, None);
+        // Each arm enters its own callee's scope.
+        let planned = &plan.sites[&(ScopeId::ROOT, send)];
+        for ((_, block), (_, _, arm)) in arms.iter().zip(&planned.arms) {
+            let ArmPlan::Inline { callee } = arm else {
+                panic!("an inlined arm");
+            };
+            assert_eq!(graph.block(*block).scope, *callee);
+            assert_eq!(graph.block(*block).program_counter, 0);
+        }
+        // The receiver tested is `thing`, the root's argument.
+        assert!(matches!(
+            graph.definition(*receiver),
+            Definition::Node(Node::FrameRead { register: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn a_type_case_whose_site_never_trapped_traps_past_its_arms() {
+        let tree = tree_of_run(MONOMORPHIC, "run");
+        let (plan, graph) = built(&tree);
+        let send = send_of(&tree.root, "helper:");
+        assert_eq!(
+            plan.sites[&(ScopeId::ROOT, send)].fall_through,
+            FallThrough::Trap
+        );
+        let block = graph
+            .blocks
+            .iter()
+            .position(|block| matches!(block.end, End::TypeCase { .. }))
+            .expect("the type-case");
+        let End::TypeCase {
+            arms, fall_through, ..
+        } = &graph.blocks[block].end
+        else {
+            unreachable!();
+        };
+        assert_eq!(arms.len(), 1);
+        assert_eq!(*fall_through, None);
+        assert_eq!(graph.end_trap(BlockId::of_index(block)), Some(send));
+    }
+
+    #[test]
+    fn a_type_case_after_a_trap_falls_through_to_the_send() {
+        let mut tree = tree_of_run(MONOMORPHIC, "run");
+        let send = send_of(&tree.root, "helper:");
+        tree.root.sites[send as usize]
+            .as_mut()
+            .expect("a site")
+            .trapped = true;
+        let (_, graph) = built(&tree);
+        let End::TypeCase {
+            arms, fall_through, ..
+        } = type_case(&graph, ScopeId::ROOT, send)
+        else {
+            unreachable!();
+        };
+        assert_eq!(arms.len(), 1);
+        let sent = graph.block(fall_through.expect("the send"));
+        assert_eq!((sent.scope, sent.program_counter), (ScopeId::ROOT, send));
+        assert!(sent.nodes.iter().any(|node| matches!(
+            node,
+            Node::Frame {
+                scope: ScopeId::ROOT,
+                instruction: SnapshotInstruction::SendLexical { .. },
+                program_counter,
+                ..
+            } if *program_counter == send
+        )));
+        // The send and the arm's return meet after it.
+        let End::Jump(after) = sent.end else {
+            panic!("the send goes on");
+        };
+        assert_eq!(graph.block(after).predecessors.len(), 2);
+    }
+
+    /// `r13 := self. r20 := 5. r14 := r13 foo: r20. ^r14`, its `foo:` a
+    /// callee that makes an array of its argument.
+    pub(crate) fn a_callee_with_a_frame_node() -> SnapshotTree {
+        let root = method(
+            0,
+            0,
+            vec![
+                Instruction::LoadSelf { destination: 13 },
+                literal(20, 5),
+                send("foo:", 13, 20, vec![20], 14),
+                Instruction::Return { register: 14 },
+            ],
+        );
+        let callee = method(
+            1,
+            1,
+            vec![
+                Instruction::MakeArray {
+                    destination: 14,
+                    element_registers: vec![0],
+                },
+                Instruction::Return { register: 14 },
+            ],
+        );
+        monomorphic(root, 2, callee, 0)
+    }
+
+    #[test]
+    fn an_inlined_scope_s_frame_node_names_its_scope() {
+        let tree = a_callee_with_a_frame_node();
+        let (_, graph) = built(&tree);
+        let (block, scope, program_counter, instruction, reads, written) = graph
+            .blocks
+            .iter()
+            .flat_map(|block| block.nodes.iter().map(move |node| (block, node)))
+            .find_map(|(block, node)| match node {
+                Node::Frame {
+                    scope,
+                    program_counter,
+                    instruction,
+                    reads,
+                    written,
+                } => Some((block, scope, program_counter, instruction, reads, written)),
+                _ => None,
+            })
+            .expect("the callee's frame node");
+        assert_eq!(*scope, ScopeId(1));
+        assert_eq!(block.scope, ScopeId(1));
+        assert_eq!(*program_counter, 0);
+        // The template's instruction as the callee holds it; the graph's
+        // reads and write in the physical frame, 20 registers up.
+        assert_eq!(
+            *instruction,
+            SnapshotInstruction::MakeArray {
+                destination: 14,
+                element_registers: vec![0],
+            }
+        );
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].0, 20);
+        assert_eq!(*written, Some(34));
+        assert!(matches!(
+            graph.definition(reads[0].1),
+            Definition::Node(Node::Constant { .. })
+        ));
+    }
+
+    /// `r13 := self. r14 := r13 slot. ^r14`, its `slot` a method that
+    /// reads its receiver's own slot 1.
+    #[test]
+    fn an_inlined_arm_reads_its_receiver_s_own_slot_at_a_fixed_offset() {
+        let root = method(
+            0,
+            0,
+            vec![
+                Instruction::LoadSelf { destination: 13 },
+                send("slot", 13, 20, Vec::new(), 14),
+                Instruction::Return { register: 14 },
+            ],
+        );
+        let callee = method(
+            1,
+            0,
+            vec![
+                Instruction::LoadOwnSlot {
+                    destination: 13,
+                    own_index: 1,
+                },
+                Instruction::Return { register: 13 },
+            ],
+        );
+        let tree = monomorphic(root, 1, callee, 5);
+        let (plan, graph) = built(&tree);
+        assert_eq!(plan.scopes[1].own_slot_base, Some(5));
+        let End::TypeCase { receiver, .. } = type_case(&graph, ScopeId::ROOT, 1) else {
+            unreachable!();
+        };
+        let Definition::Node(Node::OwnSlotLoad {
+            receiver: read_from,
+            absolute_index,
+            ..
+        }) = graph.definition(returned(&graph))
+        else {
+            panic!("the callee's slot read: {graph:#?}");
+        };
+        assert_eq!(*absolute_index, 6);
+        assert_eq!(read_from, receiver, "the type-case's receiver");
+        // The callee's receiver is its header's binding.
+        let header = graph
+            .scope(ScopeId(1))
+            .header_register(HeaderBinding::Receiver);
+        assert_eq!(header, 20);
+        assert!(graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .any(|node| matches!(
+                node,
+                Node::Copy { destination_register, source }
+                    if *destination_register == header && source == receiver
+            )));
+    }
+
+    /// Every graph the inlining corpus's trees plan, speculating and not,
+    /// verifies, every frame node's registers its own scope's.
+    #[test]
+    fn every_inlined_graph_verifies() {
+        let mut inlined = 0;
+        let mut type_cases = 0;
+        for tree in inlining_corpus() {
+            for speculation in [Speculation::Traps, Speculation::None] {
+                let plan = plan_with(&tree, &SWEEP_LIMITS, speculation);
+                let graph = build_inlined(&tree, &plan, speculation);
+                if let Err(error) = verify(&graph) {
+                    panic!("{error:?} in {plan:#?}\n{graph:#?}");
+                }
+                inlined += graph
+                    .blocks
+                    .iter()
+                    .filter(|block| block.scope != ScopeId::ROOT)
+                    .count();
+                type_cases += graph
+                    .blocks
+                    .iter()
+                    .filter(|block| matches!(block.end, End::TypeCase { .. }))
+                    .count();
+            }
+        }
+        assert!(inlined > 0 && type_cases > 0);
     }
 }

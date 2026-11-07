@@ -79,7 +79,10 @@ pub(crate) const LOOP_WEIGHT: u32 = 8;
 /// body whose budget says it barely ran still orders by its loops.
 const LEAST_BUDGET_SHARE: f64 = 1.0 / 64.0;
 
-/// The limits a plan is made under: the constants above, and a test's own.
+/// The limits a plan is made under: the constants above, and a test's own;
+/// and whether blocks are inlined at all. Until an exit can materialize an
+/// eliminated block, none is: every block is created, and a `value` send
+/// of one is sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Limits {
     pub(crate) method: u32,
@@ -87,6 +90,7 @@ pub(crate) struct Limits {
     pub(crate) block_argument_bonus: u32,
     pub(crate) compile: u32,
     pub(crate) recursion: u32,
+    pub(crate) inline_blocks: bool,
 }
 
 impl Limits {
@@ -96,6 +100,15 @@ impl Limits {
         block_argument_bonus: BLOCK_ARGUMENT_BONUS,
         compile: COMPILE_LIMIT,
         recursion: RECURSION_LIMIT,
+        inline_blocks: false,
+    };
+
+    /// `STANDARD` with blocks inlined and eliminated: what the plan's
+    /// tests of blocks hold it to.
+    #[cfg(test)]
+    pub(crate) const WITH_BLOCKS: Limits = Limits {
+        inline_blocks: true,
+        ..Limits::STANDARD
     };
 }
 
@@ -762,6 +775,21 @@ fn is_observed(snapshot: &Snapshot) -> bool {
         })
 }
 
+/// Whether `snapshot`'s method body leaves its activation other than by
+/// a `Return`: a lazy slot's getter past its first instruction or a
+/// non-local return, which no lowering puts in a method body but an
+/// image could. An inlined scope's return is a jump to its sender's next
+/// instruction, which neither is.
+fn returns_otherwise(snapshot: &Snapshot) -> bool {
+    snapshot.instructions.iter().any(|instruction| {
+        matches!(
+            instruction,
+            SnapshotInstruction::ReturnSlotIfFilled { .. }
+                | SnapshotInstruction::NonLocalReturn { .. }
+        )
+    })
+}
+
 /// Whether the graph expresses the leaf `primitive` inline.
 fn expressed(primitive: Primitive) -> bool {
     matches!(
@@ -833,7 +861,7 @@ fn classify<'tree>(receiver: &ReceiverFacts, callee: &'tree CalleeFacts) -> Call
                         Callee::Always(AlwaysInlined::LazyGetter { field })
                     });
             }
-            if is_observed(snapshot) {
+            if is_observed(snapshot) || returns_otherwise(snapshot) {
                 Callee::Not
             } else {
                 Callee::Method {
@@ -1002,9 +1030,12 @@ impl<'tree> Planner<'tree> {
             let candidates = tree.sites.get(&(snapshot.code_id, facts.site));
             let decision = match send.shape {
                 SendShape::Public { receiver } => {
-                    if let Some(decision) =
+                    let block_value = if self.limits.inline_blocks {
                         self.block_value(scope, index, &send, receiver, candidates)
-                    {
+                    } else {
+                        None
+                    };
+                    if let Some(decision) = block_value {
                         decision
                     } else {
                         self.type_case(scope, program_counter, candidates)
@@ -1373,6 +1404,9 @@ impl<'tree> Planner<'tree> {
     /// with the scopes inlined for its `value` sends, until none does.
     fn decide_blocks(&mut self) -> BTreeSet<BlockKey> {
         let mut eliminated: BTreeSet<BlockKey> = BTreeSet::new();
+        if !self.limits.inline_blocks {
+            return eliminated;
+        }
         for (index, scope) in self.scopes.iter().enumerate() {
             for (program_counter, instruction) in scope.snapshot.instructions.iter().enumerate() {
                 if matches!(instruction, SnapshotInstruction::MakeClosure { .. }) {
@@ -1803,8 +1837,8 @@ mod tests {
     use indoc::indoc;
 
     use super::{
-        plan, plan_with, weight, weight_in, ArmPlan, BlockPlan, EliminatedId, FallThrough,
-        InliningPlan, Limits, ScopeId, BLOCK_ARGUMENT_BONUS, METHOD_LIMIT,
+        weight, weight_in, ArmPlan, BlockPlan, EliminatedId, FallThrough, InliningPlan, Limits,
+        ScopeId, BLOCK_ARGUMENT_BONUS, METHOD_LIMIT,
     };
     use crate::heap::CodeId;
     use crate::interpreter::inline_cache::MethodSide;
@@ -1812,6 +1846,24 @@ mod tests {
     use crate::jit::optimizing::tree::{CalleeFacts, SnapshotTree};
     use crate::jit::optimizing::Speculation;
     use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
+
+    /// The plan of `tree` with blocks inlined, which most of these tests
+    /// are about.
+    fn plan(tree: &SnapshotTree, speculation: Speculation) -> InliningPlan {
+        super::plan_with(tree, &Limits::WITH_BLOCKS, speculation)
+    }
+
+    /// `super::plan_with` with blocks inlined.
+    fn plan_with(tree: &SnapshotTree, limits: &Limits, speculation: Speculation) -> InliningPlan {
+        super::plan_with(
+            tree,
+            &Limits {
+                inline_blocks: true,
+                ..*limits
+            },
+            speculation,
+        )
+    }
 
     fn expect_ok(result: HostResult, what: &str) -> Root {
         match result {
@@ -2411,6 +2463,26 @@ mod tests {
             scope(&plan, apply).offset + argument_base_of(apply_snapshot, value)
         );
         assert_eq!(plan.deepest_chain, 2);
+    }
+
+    /// The standard limits inline no block: the block is created, the
+    /// callee it is passed to still inlined, and its `value:` sent.
+    #[test]
+    fn without_block_inlining_every_block_is_created_and_its_value_sent() {
+        let (mut interpreter, class) = run(VALUES);
+        let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
+        let plan = super::plan(&tree, Speculation::Traps);
+        let closure = closure_of(&tree.root);
+        assert_eq!(plan.blocks[&(ScopeId::ROOT, closure)], BlockPlan::Created);
+        let apply = inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "apply:"));
+        let apply_snapshot = tree
+            .snapshot_of(scope(&plan, apply).code_id)
+            .expect("apply:'s snapshot");
+        let value = &plan.sites[&(apply, send_of(apply_snapshot, "value:"))];
+        assert!(value.arms.is_empty());
+        assert_eq!(value.fall_through, FallThrough::Send);
+        assert!(plan.scopes.iter().all(|scope| scope.block_of.is_none()));
+        assert_eq!(plan.scopes.len(), 2);
     }
 
     const ESCAPES: &str = indoc! {"

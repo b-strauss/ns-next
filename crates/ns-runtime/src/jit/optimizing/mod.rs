@@ -75,7 +75,7 @@ pub(crate) fn compile(
         futures_exit,
     )?;
     let graph = build::build(snapshot, speculation);
-    let (allocation, metadata) = metadata::allocate_and_describe(snapshot, &graph, &roles);
+    let (allocation, metadata) = metadata::allocate_and_describe(&graph, &roles);
     let push_entry = emit::emit(snapshot, &graph, &allocation, &mut body)?;
     let returns = body.take_call_returns();
     let words = body.macro_assembler.body_words_label();
@@ -185,6 +185,272 @@ pub(crate) fn test_send(
         call_site: crate::bytecode::CallSite { number: 0 },
     }
 }
+
+/// Records the site of `snapshot`'s instruction at `index` as `site`, run
+/// and never trapped: a send the plan may inline.
+#[cfg(test)]
+pub(crate) fn ran_site(snapshot: &mut snapshot::Snapshot, index: usize, site: u32) {
+    snapshot.sites[index] = Some(snapshot::SiteFacts {
+        site,
+        executed: true,
+        trapped: false,
+    });
+}
+
+/// What a cache entry of the passes' tests records of a receiver: the
+/// guard `guard`, of the application `application`, whose own slots
+/// start at `own_slot_base` at its own level and its superclass's -- the
+/// same application again, so that a `super` send of one of its methods
+/// finds a cached arm.
+#[cfg(test)]
+pub(crate) fn test_receiver(
+    guard: u32,
+    application: u32,
+    own_slot_base: u32,
+) -> tree::ReceiverFacts {
+    let application = crate::heap::ApplicationIndex::from_raw(application);
+    tree::ReceiverFacts {
+        dispatch_id: crate::mixin::DispatchId::from_counter(
+            crate::mixin::DispatchId::FIRST_MINTED + guard,
+        ),
+        application,
+        applications: vec![application, application],
+        own_slot_bases: vec![own_slot_base, own_slot_base],
+    }
+}
+
+/// A site of `test_tree`: its body's code id, its number and its arms.
+#[cfg(test)]
+pub(crate) type TestSite = (
+    crate::heap::CodeId,
+    u32,
+    Vec<(tree::ReceiverFacts, tree::CalleeFacts)>,
+);
+
+/// The tree of `root` whose sites hold `sites` -- each the body's code
+/// id, the site's number and its arms -- over the method bodies
+/// `callees`, as the passes' tests make one by hand.
+#[cfg(test)]
+pub(crate) fn test_tree(
+    root: snapshot::Snapshot,
+    sites: Vec<TestSite>,
+    callees: Vec<snapshot::Snapshot>,
+) -> tree::SnapshotTree {
+    tree::SnapshotTree {
+        root,
+        sites: sites
+            .into_iter()
+            .map(|(code_id, site, arms)| {
+                (
+                    (code_id, site),
+                    tree::SiteCandidates {
+                        site,
+                        megamorphic: false,
+                        private: false,
+                        arms,
+                    },
+                )
+            })
+            .collect(),
+        blocks: std::collections::HashMap::new(),
+        callees: callees
+            .into_iter()
+            .map(|callee| (callee.code_id, callee))
+            .collect(),
+        budgets: std::collections::HashMap::new(),
+        root_receiver: None,
+        root_entered: None,
+    }
+}
+
+/// The tree of `selector`'s body on the instance side of the class
+/// `source` declares, taken after one run of its `run`, so that the
+/// caches hold that run's feedback.
+#[cfg(test)]
+pub(crate) fn tree_of_run(source: &str, selector: &str) -> tree::SnapshotTree {
+    use crate::interpreter::inline_cache::MethodSide;
+    use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
+
+    fn expect_ok(result: HostResult, what: &str) -> Root {
+        match result {
+            Ok(root) => root,
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => {
+                panic!("{what}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = crate::resolve(module, source.into(), SourceOrigin::File("tree.ns".into()))
+        .unwrap_or_else(|_| panic!("the module resolves"));
+    let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+    // The run's feedback is what the tree reads: the cache stress mode
+    // would vacate it at the run's safepoints.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_caches(false);
+    let class = interpreter.load_module(&resolved);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("run"), &[]),
+        "run",
+    );
+    interpreter.enter(|mutator| {
+        let code = crate::interpreter::method_code(
+            mutator,
+            &class,
+            MethodSide::Instance,
+            Symbol::intern(selector),
+        )
+        .expect("the method");
+        let base = mutator.caches.known_base(&code).expect("it ran");
+        tree::SnapshotTree::take(
+            &code,
+            &mut mutator.heap,
+            &mutator.caches,
+            base,
+            None,
+            &plan::Limits::STANDARD,
+        )
+    })
+}
+
+/// A tree over every body of `corpus_of_bodies()` as its root, with
+/// synthetic feedback: each send of each body walked a site whose cache
+/// recorded a callee of the corpus that takes as many arguments -- one,
+/// or for every third site two, or for every fifth unary one a slot
+/// accessor beside it, an arm always inlined -- each its own guard's, all
+/// of one application, so that a `super` or lexical send in an inlined
+/// scope is taken without a test; and every seventh site left never run;
+/// walked from the root three callees deep. The inlining passes' sweeps
+/// hold every scope, return, type-case and trap such trees make to their
+/// checks.
+#[cfg(test)]
+pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
+    use std::collections::{HashMap, HashSet};
+
+    use crate::bytecode::CodeKind;
+    use crate::heap::CodeId;
+    use crate::mixin::AccessorKind;
+    use snapshot::Snapshot;
+    use tree::CalleeFacts;
+
+    let bodies = corpus_of_bodies();
+    let by_id: HashMap<CodeId, &Snapshot> =
+        bodies.iter().map(|body| (body.code_id, body)).collect();
+    let mut methods: HashMap<u16, Vec<CodeId>> = HashMap::new();
+    for body in &bodies {
+        if body.facts.kind == CodeKind::Method {
+            methods
+                .entry(body.facts.argument_count)
+                .or_default()
+                .push(body.code_id);
+        }
+    }
+    let raw = |code_id: CodeId| {
+        u32::try_from(code_id.index()).expect("internal: a test's code ids are few")
+    };
+    // Each body's sends, each with the callees its synthetic cache
+    // recorded, and the body with those sites run.
+    let fed = |body: &Snapshot| {
+        let mut fed = body.clone();
+        let mut sites = Vec::new();
+        for (index, instruction) in body.instructions.iter().enumerate() {
+            let Some((_, sources)) = instruction.argument_slots() else {
+                continue;
+            };
+            let Some(facts) = body.sites[index] else {
+                continue;
+            };
+            if matches!(
+                instruction,
+                snapshot::SnapshotInstruction::SendMirror { .. }
+                    | snapshot::SnapshotInstruction::InitializeSuperclass { .. }
+                    | snapshot::SnapshotInstruction::InitializeAppliedLevel { .. }
+            ) {
+                continue;
+            }
+            let seed = raw(body.code_id) * 31 + facts.site;
+            if seed % 7 == 6 {
+                continue;
+            }
+            let arity = u16::try_from(sources.len()).expect("a send's arguments fit a u16");
+            let Some(pool) = methods.get(&arity) else {
+                continue;
+            };
+            let pick = |turn: u32| pool[(seed + turn) as usize % pool.len()];
+            let mut arms = vec![pick(0)];
+            if seed % 3 == 0 {
+                arms.push(pick(1));
+            }
+            ran_site(&mut fed, index, facts.site);
+            sites.push((facts.site, arms, seed % 5 == 0 && arity == 0));
+        }
+        (fed, sites)
+    };
+    bodies
+        .iter()
+        .map(|root| {
+            let (fed_root, root_sites) = fed(root);
+            let mut tree_sites = Vec::new();
+            let mut callees: Vec<Snapshot> = Vec::new();
+            let mut walked: HashSet<CodeId> = HashSet::from([root.code_id]);
+            let mut pending = vec![(root.code_id, root_sites, 0)];
+            while let Some((code_id, sites, depth)) = pending.pop() {
+                for (site, arms, accessor) in sites {
+                    let mut facts = Vec::new();
+                    for (turn, callee) in (0_u32..).zip(&arms) {
+                        let (fed_callee, callee_sites) = fed(by_id[callee]);
+                        if depth < 3 && walked.insert(*callee) {
+                            pending.push((*callee, callee_sites, depth + 1));
+                            callees.push(fed_callee.clone());
+                        }
+                        facts.push((
+                            test_receiver(raw(*callee) * 4 + turn, 0, 2),
+                            CalleeFacts::Method {
+                                snapshot: Box::new(fed_callee),
+                                level: 0,
+                            },
+                        ));
+                    }
+                    if accessor {
+                        facts.push((
+                            test_receiver(raw(code_id) * 4 + 3, 0, 2),
+                            CalleeFacts::Slot {
+                                field: 2,
+                                kind: AccessorKind::Getter,
+                                level: crate::heap::ApplicationIndex::from_raw(0),
+                            },
+                        ));
+                    }
+                    tree_sites.push((code_id, site, facts));
+                }
+            }
+            // An arm whose callee lies past the walk is snapshotted but not
+            // walked: the plan takes it, and its own sends trap.
+            for (_, _, arms) in &tree_sites {
+                for (_, callee) in arms {
+                    if let CalleeFacts::Method { snapshot, .. } = callee {
+                        if walked.insert(snapshot.code_id) {
+                            callees.push((**snapshot).clone());
+                        }
+                    }
+                }
+            }
+            test_tree(fed_root, tree_sites, callees)
+        })
+        .collect()
+}
+
+/// The limits the inlining sweeps plan under: room for more of the
+/// corpus's callees than the standard method limit leaves, and a compile
+/// small enough that a sweep over every body stays quick.
+#[cfg(test)]
+pub(crate) const SWEEP_LIMITS: plan::Limits = plan::Limits {
+    method: 200,
+    compile: 600,
+    ..plan::Limits::STANDARD
+};
 
 /// The snapshot of every method and block body of the modules under
 /// `goldens/runtime/jit/`, compiled with the optimized lowering: the
@@ -414,7 +680,7 @@ mod tests {
         assert_eq!(integer_paths, 2, "`iteration < 50` and `iteration + 1`");
         let roles =
             crate::jit::macro_assembler::Roles::of(crate::jit::macro_assembler::Abi::host());
-        let (allocation, _) = super::metadata::allocate_and_describe(&snapshot, &graph, &roles);
+        let (allocation, _) = super::metadata::allocate_and_describe(&graph, &roles);
         // The four locals the float operations write: each is stored once
         // before the loop, on its way in, and once in the loop, right where
         // the interpreter's `StoreLocal` writes it, and reloaded only on

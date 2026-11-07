@@ -198,7 +198,11 @@ pub(crate) fn named_registers(graph: &Graph) -> usize {
                         note(*written);
                     }
                 }
-                Node::Constant { .. } | Node::Receiver { .. } | Node::OwnSlotLoad { .. } => {}
+                Node::Constant { .. }
+                | Node::Receiver { .. }
+                | Node::OwnSlotLoad { .. }
+                | Node::CurrentClass { .. }
+                | Node::Overlay { .. } => {}
             }
         }
     }
@@ -207,7 +211,8 @@ pub(crate) fn named_registers(graph: &Graph) -> usize {
 
 /// What `node` does to the bindings, past its code: the frame node's
 /// write-back and its leaving every register to its frame word, a frame
-/// read's clean binding, a `Copy`'s and a fast path's dirty one.
+/// read's clean binding, a `Copy`'s and a fast path's dirty one, and an
+/// overlay's ending its registers' bindings unwritten (`Binding::STALE`).
 pub(crate) fn bind(bindings: &mut [Binding], node: &Node) {
     match node {
         Node::FrameRead { register, value } => {
@@ -239,7 +244,18 @@ pub(crate) fn bind(bindings: &mut [Binding], node: &Node) {
             };
         }
         Node::Frame { .. } => bindings.fill(Binding::FRAME_WORD),
-        Node::Constant { .. } | Node::Receiver { .. } | Node::OwnSlotLoad { .. } => {}
+        Node::Overlay { ranges } => {
+            for range in ranges {
+                let end = usize::from(range.end).min(bindings.len());
+                for binding in bindings.iter_mut().take(end).skip(usize::from(range.start)) {
+                    *binding = Binding::STALE;
+                }
+            }
+        }
+        Node::Constant { .. }
+        | Node::Receiver { .. }
+        | Node::OwnSlotLoad { .. }
+        | Node::CurrentClass { .. } => {}
     }
 }
 
@@ -307,15 +323,29 @@ pub(crate) fn join(
 
 /// The bindings at each block's top, `None` for a block not in the
 /// order, found by iterating the joins to their fixed point: a loop's
-/// head is first joined from its ways in from before it. `tainted_before`
-/// is the snapshot's, if known.
+/// head is first joined from its ways in from before it. `knowing` says
+/// whether the leftover analysis the graph's scopes carry is read.
 pub(crate) fn entry_bindings(
     graph: &Graph,
     positions: &Positions,
     register_count: usize,
-    tainted_before: Option<&[Vec<Range<u16>>]>,
+    knowing: bool,
 ) -> Vec<Option<Vec<Binding>>> {
     let count = graph.blocks.len();
+    // Each block's top's tainted registers, found once: the fixed point
+    // joins at each top many times.
+    let tainted_at_top: Vec<Vec<Range<u16>>> = graph
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            if knowing {
+                graph.tainted_at_top(BlockId::of_index(index))
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
     let mut entries: Vec<Option<Vec<Binding>>> = vec![None; count];
     // For each block, what it leaves each successor with.
     let mut exits: Vec<Vec<(BlockId, Vec<Binding>)>> = vec![Vec::new(); count];
@@ -336,12 +366,13 @@ pub(crate) fn entry_bindings(
                             .map(|(_, bindings)| bindings.as_slice())
                     })
                     .collect();
-                let tainted = tainted_before
-                    .and_then(|sets| {
-                        sets.get(usize::try_from(graph.block(*block).program_counter).ok()?)
-                    })
-                    .map_or(&[][..], Vec::as_slice);
-                join(graph, *block, &incoming, register_count, tainted)
+                join(
+                    graph,
+                    *block,
+                    &incoming,
+                    register_count,
+                    &tainted_at_top[block.index()],
+                )
             };
             if entries[block.index()].as_ref() != Some(&entry) {
                 changed = true;
@@ -470,20 +501,21 @@ impl Intervals {
 /// binding a merge does not carry on is written back on its way in.
 #[cfg(test)]
 pub(crate) fn intervals(graph: &Graph, order: &[BlockId]) -> Intervals {
-    intervals_knowing(graph, order, None)
+    intervals_with(graph, order, false)
 }
 
 /// `intervals`, with the registers the leftover analysis taints before
-/// each instruction, a snapshot's `tainted_before`: a binding a merge
-/// does not carry on is not written back if the merge's top taints it.
-pub(crate) fn intervals_knowing(
-    graph: &Graph,
-    order: &[BlockId],
-    tainted_before: Option<&[Vec<Range<u16>>]>,
-) -> Intervals {
+/// each instruction of each of the graph's scopes (`Graph::tainted_at`):
+/// a binding a merge does not carry on is not written back if the
+/// merge's top taints it.
+pub(crate) fn intervals_knowing(graph: &Graph, order: &[BlockId]) -> Intervals {
+    intervals_with(graph, order, true)
+}
+
+fn intervals_with(graph: &Graph, order: &[BlockId], knowing: bool) -> Intervals {
     let positions = Positions::of(graph, order);
     let register_count = named_registers(graph);
-    let entry_bindings = entry_bindings(graph, &positions, register_count, tainted_before);
+    let entry_bindings = entry_bindings(graph, &positions, register_count, knowing);
     let value_count = graph.values.len();
 
     // Every read of a value in each block, write-backs included, and the
@@ -521,12 +553,18 @@ pub(crate) fn intervals_knowing(
                 Node::Copy { source, .. }
                 | Node::OwnSlotLoad {
                     receiver: source, ..
-                } => reads.push((position, *source, Need::Register)),
+                }
+                | Node::CurrentClass { from: source, .. } => {
+                    reads.push((position, *source, Need::Register));
+                }
                 Node::IntegerBinary { left, right, .. } => {
                     reads.push((position, *left, Need::Register));
                     reads.push((position, *right, Need::Register));
                 }
-                Node::FrameRead { .. } | Node::Constant { .. } | Node::Receiver { .. } => {}
+                Node::FrameRead { .. }
+                | Node::Constant { .. }
+                | Node::Receiver { .. }
+                | Node::Overlay { .. } => {}
             }
             // A trap leaves the frame as the interpreter's, as a frame
             // node does, on the way its fast path fails.
