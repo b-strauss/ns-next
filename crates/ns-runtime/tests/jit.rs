@@ -9539,3 +9539,77 @@ ns_runtime::for_each_lowering! {
         }
     }
 }
+
+/// A module whose `make` answers an instance of a nested class whose
+/// application only that instance's class object names: once the
+/// instance is dropped, a full collection reclaims the application and
+/// its dispatch id.
+const DISPATCH_ID_TABLE: &str = indoc! {"
+    class Outer = () (
+      class Inner = () ()
+      public make = (
+        ^Inner new
+      )
+    )
+"};
+
+/// The dispatch id of `value`'s class's application, and that
+/// application's index.
+fn dispatch_id_and_application(
+    interpreter: &mut Interpreter,
+    value: &Root,
+) -> (ns_runtime::DispatchId, ns_runtime::ApplicationIndex) {
+    interpreter.enter(|mutator| {
+        let value = mutator.fetch(value);
+        let class = mutator.class_of(value);
+        (
+            mutator.heap().dispatch_id(value),
+            mutator
+                .heap()
+                .class_application_index(class)
+                .expect("an application"),
+        )
+    })
+}
+
+/// The table from dispatch id back to application answers, for the id an
+/// application was minted, that application: what the optimizing
+/// compiler's snapshot of a callee's receiver reads.
+#[test]
+fn a_minted_dispatch_id_answers_its_application() {
+    let (mut interpreter, class) = load_with(DISPATCH_ID_TABLE, Lowering::Optimized);
+    let outer = expect_ok(interpreter.instantiate(&class, &[]), "an Outer");
+    let inner = expect_ok(
+        interpreter.send(&outer, Symbol::intern("make"), &[]),
+        "make",
+    );
+    for value in [&outer, &inner] {
+        let (id, application) = dispatch_id_and_application(&mut interpreter, value);
+        assert_eq!(
+            interpreter.application_of_dispatch_id(id),
+            Some(application)
+        );
+    }
+}
+
+/// A full collection that reclaims an application clears its id's row,
+/// so that an id minted again never answers the application it named
+/// before.
+#[test]
+fn a_reclaimed_dispatch_id_answers_none() {
+    let (mut interpreter, class) = load_with(DISPATCH_ID_TABLE, Lowering::Optimized);
+    let outer = expect_ok(interpreter.instantiate(&class, &[]), "an Outer");
+    let inner = expect_ok(
+        interpreter.send(&outer, Symbol::intern("make"), &[]),
+        "make",
+    );
+    let (id, application) = dispatch_id_and_application(&mut interpreter, &inner);
+    assert_eq!(
+        interpreter.application_of_dispatch_id(id),
+        Some(application)
+    );
+    drop(inner);
+    drop(outer);
+    interpreter.collect_now();
+    assert_eq!(interpreter.application_of_dispatch_id(id), None);
+}

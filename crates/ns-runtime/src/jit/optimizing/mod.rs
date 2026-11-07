@@ -13,6 +13,7 @@ pub(crate) mod liveness;
 #[cfg(ns_jit)]
 pub(crate) mod metadata;
 pub(crate) mod snapshot;
+pub(crate) mod tree;
 pub(crate) mod verify;
 
 /// How far a compile speculates (`docs/design/execution.md`, "Speculation",

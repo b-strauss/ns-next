@@ -5715,7 +5715,49 @@ impl<'gc> Heap<'gc> {
         let application = Rc::new(application);
         self.tables.applications[row] = Some(application.clone());
         self.record_application_row(row, Self::application_row(Some(&application)));
+        self.record_dispatch_id_application(application.dispatch_ids.instances, Some(index));
         application
+    }
+
+    /// Records `application` as what `id` names (`Tables::dispatch_id_applications`),
+    /// or clears its row with `None`; a reserved id -- `NONE`, which an
+    /// application without an id of its own carries -- names no one
+    /// application and has no row.
+    fn record_dispatch_id_application(
+        &mut self,
+        id: DispatchId,
+        application: Option<ApplicationIndex>,
+    ) {
+        if id.bits() < DispatchId::FIRST_MINTED {
+            return;
+        }
+        let row = id.bits() as usize;
+        let rows = &mut self.tables.dispatch_id_applications;
+        if rows.len() <= row {
+            if application.is_none() {
+                return;
+            }
+            rows.resize(row + 1, None);
+        }
+        // An id is minted again only after its application left the table.
+        debug_assert!(
+            application.is_none() || rows[row].is_none(),
+            "internal: dispatch id {} minted for two live applications",
+            id.bits()
+        );
+        rows[row] = application;
+    }
+
+    /// The application the dispatch id `id` was minted for, while it is
+    /// registered; `None` for a reserved id and for one a collection gave
+    /// back. A cache entry's guard names its receiver's application
+    /// through it (`optimizing::tree`).
+    pub(crate) fn application_of_dispatch_id(&self, id: DispatchId) -> Option<ApplicationIndex> {
+        self.tables
+            .dispatch_id_applications
+            .get(id.bits() as usize)
+            .copied()
+            .flatten()
     }
 
     /// What the application id table records of `application`, or of a row
@@ -5775,7 +5817,9 @@ impl<'gc> Heap<'gc> {
     /// Whether the application id table records, for every row of the
     /// application table and nothing past it, that row's instances id, own
     /// slot base and flags -- zeros for a free row -- and the machine words
-    /// its address and bound.
+    /// its address and bound; and whether every dispatch id a registered
+    /// application carries, and no other, answers that application
+    /// (`application_of_dispatch_id`).
     #[cfg(all(test, debug_assertions))]
     pub(crate) fn verify_application_ids(&self) -> Result<(), String> {
         let rows = self.tables.applications.len();
@@ -5799,6 +5843,37 @@ impl<'gc> Heap<'gc> {
         }
         if self.application_ids.row_words(rows).is_some() {
             return Err("the table records a row past its bound".to_owned());
+        }
+        // The table from dispatch id back to application names exactly the
+        // registered applications with an id of their own.
+        let mut minted = 0;
+        for (row, application) in self.tables.applications.iter().enumerate() {
+            let Some(application) = application else {
+                continue;
+            };
+            let id = application.dispatch_ids.instances;
+            if id.bits() < DispatchId::FIRST_MINTED {
+                continue;
+            }
+            minted += 1;
+            if self.application_of_dispatch_id(id) != ApplicationIndex::from_index(row) {
+                return Err(format!(
+                    "dispatch id {} answers {:?}, its application is row {row}",
+                    id.bits(),
+                    self.application_of_dispatch_id(id)
+                ));
+            }
+        }
+        let recorded = self
+            .tables
+            .dispatch_id_applications
+            .iter()
+            .flatten()
+            .count();
+        if recorded != minted {
+            return Err(format!(
+                "{recorded} dispatch ids name an application, {minted} applications carry one"
+            ));
         }
         Ok(())
     }
@@ -11018,6 +11093,7 @@ impl<'gc> Heap<'gc> {
             code_ids: self.tables.codes.len(),
             mixin_rows: self.tables.mixins.len(),
             application_rows: self.tables.applications.len(),
+            dispatch_id_rows: self.tables.dispatch_id_applications.len(),
             program_symbols: self.program_symbols.len(),
             stack_committed_bytes: self.stack.frames.committed_words() * 8,
             stack_used_bytes: self.stack.frames.top() * 8,

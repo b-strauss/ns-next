@@ -632,6 +632,11 @@ fn a_churn_of_method_edits_collects_without_old_space_growth() {
             short.application_rows,
             long.application_rows,
         ),
+        (
+            "dispatch id rows",
+            short.dispatch_id_rows,
+            long.dispatch_id_rows,
+        ),
         ("code ids", short.code_ids, long.code_ids),
         ("mixin rows", short.mixin_rows, long.mixin_rows),
         ("sites", short.sites, long.sites),

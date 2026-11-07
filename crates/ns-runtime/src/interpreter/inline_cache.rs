@@ -175,6 +175,27 @@ pub(crate) enum CacheRule {
     Super,
 }
 
+/// What one site has cached (`InlineCaches::entries_of`).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "read by the snapshot tree, which no compile takes yet"
+    )
+)]
+pub(crate) enum SiteEntries<'caches> {
+    /// The site's one entry.
+    Monomorphic(&'caches CacheEntry),
+    /// The slots of the site's polymorphic block, in the order their
+    /// receivers were first seen; a slot whose target is `Vacant` caches
+    /// nothing.
+    Polymorphic(&'caches [CacheEntry]),
+    /// More receivers than a block holds: no entry records them.
+    Megamorphic,
+    /// Nothing cached.
+    Vacant,
+}
+
 pub(crate) const POLYMORPHIC_WIDTH: usize = 4;
 pub(crate) const GLOBAL_CACHE_ENTRIES: usize = 1024;
 
@@ -476,6 +497,46 @@ impl InlineCaches {
                 })
             }
             _ => entry.guard == guard,
+        }
+    }
+
+    /// What `site`, in the range at `feedback_base` of a family of
+    /// `family_size`, has cached: its one entry, the four slots of its
+    /// polymorphic block in the order their receivers were first seen --
+    /// a slot a collection vacated among them (`forget_freed`) -- or
+    /// neither, for a megamorphic site, whose receivers no entry records,
+    /// and a vacant one, a site past the family or of a family the table
+    /// had no room for included. The optimizing compiler reads it as the
+    /// receivers a send saw and the callees they reached
+    /// (`optimizing::tree`); it decides nothing a send runs.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the snapshot tree, which no compile takes yet"
+        )
+    )]
+    pub(crate) fn entries_of(
+        &self,
+        feedback_base: FeedbackBase,
+        family_size: u32,
+        site: CallSite,
+    ) -> SiteEntries<'_> {
+        let Some(entry) =
+            site_index(feedback_base, family_size, site).and_then(|index| self.sites.get(index))
+        else {
+            return SiteEntries::Vacant;
+        };
+        match entry.target {
+            Target::Vacant => SiteEntries::Vacant,
+            Target::Megamorphic { .. } => SiteEntries::Megamorphic,
+            Target::Polymorphic { block, .. } => self
+                .pool
+                .get(block as usize)
+                .map_or(SiteEntries::Vacant, |slots| {
+                    SiteEntries::Polymorphic(slots.as_slice())
+                }),
+            _ => SiteEntries::Monomorphic(entry),
         }
     }
 

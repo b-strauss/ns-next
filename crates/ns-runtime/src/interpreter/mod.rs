@@ -955,6 +955,16 @@ impl Interpreter {
         })
     }
 
+    /// The application the dispatch id `id` was minted for, while it is
+    /// registered (`Heap::application_of_dispatch_id`). A test hook.
+    #[doc(hidden)]
+    pub fn application_of_dispatch_id(
+        &mut self,
+        id: crate::mixin::DispatchId,
+    ) -> Option<crate::heap::ApplicationIndex> {
+        self.enter(|mutator| mutator.heap.application_of_dispatch_id(id))
+    }
+
     /// The feedback base the closure `closure` holds, raw, or `None` when
     /// it is no closure: what a slide of the site ranges rewrites
     /// (`InlineCaches::plan_slide`). A test hook.
