@@ -78,8 +78,10 @@ pub(crate) struct OptimizedBody {
     /// `metadata`.
     pub(crate) sites: Vec<(u32, u32)>,
     /// Each scope's body and the feedback base its sends' cells are found
-    /// from, by its `ScopeId`, the body's own first.
-    pub(crate) scopes: Vec<(CodeId, FeedbackBase)>,
+    /// from, by its `ScopeId`, the body's own first; `None` for a scope
+    /// the plan made that the graph lays out no code for, which is no
+    /// scope of the copy's (`optimizing::laid_out_scopes`).
+    pub(crate) scopes: Vec<Option<(CodeId, FeedbackBase)>>,
     /// The most scopes inlined into one another below the body's own, and
     /// one past the highest physical register any scope's frame reaches
     /// (`plan::InliningPlan`).

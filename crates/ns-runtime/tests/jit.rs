@@ -1489,10 +1489,9 @@ ns_runtime::for_each_lowering! {
 /// inlined into `run:`'s copy, and the edits and collections the copies'
 /// dependencies answer to: `replaceInBase` and `overrideInA` give
 /// `helper:` another body at its definer and below it, `editD` gives the
-/// unrelated `D` another method, `collect` asks for a full collection,
-/// and `helper: -1`, sent from outside, asks for one while an activation
-/// of `helper:` runs. `victim` and `editVictim` give the collection after
-/// them a thousand freed sites to slide the ranges over. `run: 100`
+/// unrelated `D` another method, and `collect` asks for a full
+/// collection. `victim` and `editVictim` give the collection after them a
+/// thousand freed sites to slide the ranges over. `run: 100`
 /// answers 5050 with `helper:`'s first body, 5250 with `replaceInBase`'s
 /// and 5150 with `overrideInA`'s.
 const AN_INLINED_CALLEE_AND_ITS_EDITS: &str = indoc! {"
@@ -1504,7 +1503,6 @@ const AN_INLINED_CALLEE_AND_ITS_EDITS: &str = indoc! {"
     ) (
       class Base = Object new () (
         public helper: value = (
-          value < 0 ifTrue: [kernel garbageCollect].
           ^value + 1.
         )
       )
@@ -1521,10 +1519,6 @@ const AN_INLINED_CALLEE_AND_ITS_EDITS: &str = indoc! {"
         public answer = (
           ^self yourself yourself yourself yourself yourself yourself yourself yourself yourself yourself.
         )
-      )
-
-      public anA = (
-        ^A new.
       )
 
       public baseClass = (
@@ -1618,23 +1612,224 @@ fn run_until_inlined(
     lowering: Lowering,
     expected: i64,
 ) -> bool {
+    run_until_inlining(interpreter, class, subject, lowering, ("run:", expected), 1)
+}
+
+/// `run_until_inlined` for the loop `selector` names, answering
+/// `expected` for 100, whose copy inlines at least `bodies` bodies.
+fn run_until_inlining(
+    interpreter: &mut Interpreter,
+    class: &Root,
+    subject: &Root,
+    lowering: Lowering,
+    (selector, expected): (&str, i64),
+    bodies: usize,
+) -> bool {
     for _ in 0..3 {
-        assert_eq!(send_integer(interpreter, subject, "run:", 100), expected);
+        assert_eq!(send_integer(interpreter, subject, selector, 100), expected);
     }
     if lowering != Lowering::Optimized || !counts_the_copies() {
         return false;
     }
-    let run = Symbol::intern("run:");
+    let symbol = Symbol::intern(selector);
     assert_eq!(
-        interpreter.jit_customized_copies(class, MethodSide::Instance, run),
+        interpreter.jit_customized_copies(class, MethodSide::Instance, symbol),
         1,
-        "`run:` runs as a copy"
+        "`{selector}` runs as a copy"
     );
+    let inlined = interpreter.jit_inlined_bodies(class, MethodSide::Instance, symbol);
     assert!(
-        interpreter.jit_inlined_bodies(class, MethodSide::Instance, run) >= 1,
-        "`run:`'s copy inlines `helper:`"
+        inlined >= bodies,
+        "`{selector}`'s copy inlines {inlined} bodies"
     );
     true
+}
+
+/// `run:` and `runLexical:`, summing `helper:` and `lexical:` of an `A`
+/// over `0` to `count - 1`, whose copies inline more than one scope deep:
+/// `A>>helper:` sends `super helper:`, taken without a test, and
+/// `Base>>helper:` the private `step:`, a lexical send at depth 0, taken
+/// without a test too; `Base>>lexical:` sends `outerTwice:`, the
+/// enclosing module's, a lexical send at depth 1 that the copy sends.
+/// `run: 100` answers 10100, 15050 once `replaceStep` makes `step:`
+/// triple, and 15150 once `replaceHelper` then makes `Base>>helper:` add
+/// 2; `runLexical: 100` answers 10000, and 10100 once `replaceLexical`
+/// makes `lexical:` add 2.
+const NESTED_INLINES: &str = indoc! {"
+    class Subject usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+        kernel = platform kernel.
+      |
+    ) (
+      class Base = Object new () (
+        public helper: value = (
+          ^(step: value) + 1.
+        )
+
+        private step: value = (
+          ^value + value.
+        )
+
+        public lexical: value = (
+          ^(outerTwice: value) + 1.
+        )
+      )
+
+      class A = Base new () (
+        public helper: value = (
+          ^(super helper: value) + 1.
+        )
+      )
+
+      outerTwice: value = (
+        ^value * 2.
+      )
+
+      public run: count = (
+        |
+          receiver = A new.
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (receiver helper: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+
+      public runLexical: count = (
+        |
+          receiver = A new.
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (receiver lexical: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+
+      public collect = (
+        kernel garbageCollect.
+        ^0.
+      )
+
+      public replaceStep = (
+        | builder |
+        builder:: (ClassMirror reflecting: Base) mixin declaration asBuilder.
+        builder instanceSide methods addFromSource: 'private step: value = ( ^value + value + value )'.
+        builder install.
+        ^0.
+      )
+
+      public replaceHelper = (
+        | builder |
+        builder:: (ClassMirror reflecting: Base) mixin declaration asBuilder.
+        builder instanceSide methods addFromSource: 'public helper: value = ( ^(step: value) + 2 )'.
+        builder install.
+        ^0.
+      )
+
+      public replaceLexical = (
+        | builder |
+        builder:: (ClassMirror reflecting: Base) mixin declaration asBuilder.
+        builder instanceSide methods addFromSource: 'public lexical: value = ( ^(outerTwice: value) + 2 )'.
+        builder install.
+        ^0.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A copy whose inlined callee sends outward -- `lexical:`'s
+    /// `outerTwice:`, a lexical send at depth 1, which the copy sends
+    /// rather than inlines -- keeps only the scopes it laid out, so that a
+    /// full collection keeps the copy and a debug build's check that no
+    /// id a live copy inlined was freed holds
+    /// (`jit::verify_inlined_code_ids`). An edit of `lexical:` frees the
+    /// copy, and the program answers what the edit says.
+    fn an_inlined_callee_sending_outward_keeps_its_copy_until_an_edit_of_it(lowering) {
+        let (mut interpreter, class) = load_customizing(NESTED_INLINES, lowering);
+        let subject = subject_using_platform(&mut interpreter, &class);
+        let run = Symbol::intern("runLexical:");
+        let pinned = run_until_inlining(
+            &mut interpreter,
+            &class,
+            &subject,
+            lowering,
+            ("runLexical:", 10000),
+            1,
+        );
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "collect"), 0);
+        let collected = since(interpreter.jit_statistics(), before);
+        if pinned {
+            assert_eq!(collected.invalidated_copies, 0, "{collected:?}");
+            assert_eq!(
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, run),
+                1,
+                "the collection keeps the copy"
+            );
+        }
+        assert_eq!(
+            send_integer(&mut interpreter, &subject, "runLexical:", 100),
+            10000
+        );
+        assert_eq!(send_unary(&mut interpreter, &subject, "replaceLexical"), 0);
+        if pinned {
+            assert_eq!(
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, run),
+                0,
+                "the edit frees the copy"
+            );
+        }
+        assert_eq!(
+            send_integer(&mut interpreter, &subject, "runLexical:", 100),
+            10100
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// An edit of a method inlined without a test inside an inlined
+    /// callee frees the copy: `step:`, which `Base>>helper:`'s private
+    /// lexical send reaches, and then `Base>>helper:`, which
+    /// `A>>helper:`'s `super` send reaches, each replaced in turn, the
+    /// copy compiled again between them, after a collection run while it
+    /// lives. The program answers what each edit says.
+    fn an_edit_of_a_super_or_private_inline_inside_an_inlined_callee_frees_the_copy(lowering) {
+        let (mut interpreter, class) = load_customizing(NESTED_INLINES, lowering);
+        let subject = subject_using_platform(&mut interpreter, &class);
+        let run = Symbol::intern("run:");
+        let pinned =
+            run_until_inlining(&mut interpreter, &class, &subject, lowering, ("run:", 10100), 3);
+        assert_eq!(send_unary(&mut interpreter, &subject, "collect"), 0);
+        for (edit, expected) in [("replaceStep", 15050), ("replaceHelper", 15150)] {
+            let before = interpreter.jit_statistics();
+            assert_eq!(send_unary(&mut interpreter, &subject, edit), 0);
+            let edited = since(interpreter.jit_statistics(), before);
+            if pinned {
+                assert_eq!(
+                    interpreter.jit_customized_copies(&class, MethodSide::Instance, run),
+                    0,
+                    "{edit}: `run:`'s copy is freed"
+                );
+                assert!(edited.invalidated_copies >= 1, "{edit}: {edited:?}");
+            }
+            let inlined_again = run_until_inlining(
+                &mut interpreter,
+                &class,
+                &subject,
+                lowering,
+                ("run:", expected),
+                3,
+            );
+            assert_eq!(inlined_again, pinned, "{edit}: `run:` is optimized again");
+        }
+    }
 }
 
 ns_runtime::for_each_lowering! {
@@ -1759,9 +1954,9 @@ ns_runtime::for_each_lowering! {
     /// the copy, whose inlined scope's sends address their cells from the
     /// old base: `run:`'s range is minted before `Victim`'s thousand sites,
     /// `helper:`'s after them, so the collection after `editVictim` slides
-    /// `helper:`'s down and leaves `run:`'s. The collection is the one an
-    /// activation of `helper:` asks for, while `run:`'s copy is entered by
-    /// none, so that it frees the copy at the slide, never at a frame.
+    /// `helper:`'s down and leaves `run:`'s. The copy keeps `helper:`'s
+    /// code id named across the collection (`jit::inlined_code_ids`), so
+    /// that only the slide can free it.
     fn a_slide_of_an_inlined_callee_s_feedback_base_frees_the_copy(lowering) {
         let (mut interpreter, class) = load_customizing(&an_inlined_callee_and_a_victim(), lowering);
         let subject = subject_using_platform(&mut interpreter, &class);
@@ -1769,10 +1964,9 @@ ns_runtime::for_each_lowering! {
         assert_eq!(send_unary(&mut interpreter, &subject, "victim"), 0);
         let pinned = run_until_inlined(&mut interpreter, &class, &subject, lowering, 5050);
         assert_eq!(send_unary(&mut interpreter, &subject, "editVictim"), 0);
-        let receiver = class_answered(&mut interpreter, &subject, "anA");
         let slides = interpreter.cache_statistics().site_slides;
         let before = interpreter.jit_statistics();
-        assert_eq!(send_integer(&mut interpreter, &receiver, "helper:", -1), 0);
+        assert_eq!(send_unary(&mut interpreter, &subject, "collect"), 0);
         let collected = since(interpreter.jit_statistics(), before);
         if pinned {
             assert!(

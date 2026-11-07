@@ -5505,7 +5505,9 @@ struct OptimizedInstall {
 /// What a copy of `optimized` keeps of its interrupt points inside
 /// inlined scopes (`OptimizedMetadata`), each scope's body found in
 /// `heap`, which registered it with its method when the tree was taken
-/// at this safepoint; `None` for code that inlines nothing, and for one
+/// at this safepoint, and `None` for each scope the graph laid no code out
+/// for (`optimizing::laid_out_scopes`); `None` for code that inlines
+/// nothing, and for one
 /// whose body `heap` no longer names, which no compile at the tree's
 /// safepoint meets.
 #[cfg(ns_jit)]
@@ -5517,7 +5519,13 @@ fn optimized_metadata(
         return Ok(None);
     }
     let mut scopes = vec![None];
-    for (code_id, feedback_base) in optimized.scopes.iter().skip(1) {
+    for scope in optimized.scopes.iter().skip(1) {
+        // A scope the graph laid no code out for has no point to name it,
+        // and the copy holds no body for it.
+        let Some((code_id, feedback_base)) = scope else {
+            scopes.push(None);
+            continue;
+        };
         let (Some(code), Some(method)) = (heap.code(*code_id), heap.code_method(*code_id)) else {
             return Err(Refusal::Unassembled(None));
         };

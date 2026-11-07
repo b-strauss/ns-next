@@ -134,6 +134,10 @@ pub(crate) fn compile_tree(
         })
         .collect();
     let push_entry = emit::emit(&scopes, &graph, &allocation, &metadata, &mut body)?;
+    // The one answer to which scopes the copy inlined: what it keeps of
+    // them, what it names in a collection and what it depends on are all
+    // read off it, so that none of them can name a scope the others miss.
+    let laid_out = laid_out_scopes(&graph);
     let returns = body.take_call_returns();
     let words = body.macro_assembler.body_words_label();
     let word_bytes =
@@ -167,34 +171,52 @@ pub(crate) fn compile_tree(
         sites,
         scopes: scopes
             .iter()
-            .map(|scope| (scope.snapshot.code_id, scope.snapshot.feedback_base))
+            .zip(&laid_out)
+            .map(|(scope, laid_out)| {
+                laid_out.then_some((scope.snapshot.code_id, scope.snapshot.feedback_base))
+            })
             .collect(),
         deepest_chain: plan.deepest_chain,
         deepest_extent: plan.deepest_extent,
-        relied_on: relied_on(&plan, &graph, &scopes),
+        relied_on: relied_on(&plan, &graph, &scopes, &laid_out),
         push_entry,
         #[cfg(test)]
         small_integer_tag_tests,
     })
 }
 
+/// Whether `graph` lays out code for each of its scopes, by its index:
+/// the root always, an inlined scope only where some block holds its
+/// instructions. A scope the plan made whose site the graph sends instead
+/// -- a lexical send past depth 0, an arm the graph does not express --
+/// is no scope of the copy: it has no interrupt point, and the copy
+/// relies on its body no more than on any send's.
+#[cfg(ns_jit)]
+fn laid_out_scopes(graph: &graph::Graph) -> Vec<bool> {
+    let mut laid_out = vec![false; graph.scopes.len()];
+    if let Some(root) = laid_out.first_mut() {
+        *root = true;
+    }
+    for block in &graph.blocks {
+        laid_out[block.scope.0 as usize] = true;
+    }
+    laid_out
+}
+
 /// What the code `graph` lays out relied on (`emit::ReliedOn`): the
-/// guards its type-cases test, and of every method scope it lays out
-/// code for -- not those the plan made whose site the graph sends, which
-/// the copy relies on no more than on any send -- the receiver's and
-/// entered applications `plan` customized it to and its body and feedback
-/// base, as `scopes` emitted it. A block scope's body is its home's to
-/// rely on.
+/// guards its type-cases test, and of every inlined scope `laid_out`
+/// says it lays out the receiver's and entered applications `plan`
+/// customized it to and its body and feedback base, as `scopes` emitted
+/// it.
 #[cfg(ns_jit)]
 fn relied_on(
     plan: &plan::InliningPlan,
     graph: &graph::Graph,
     scopes: &[emit::EmittedScope<'_>],
+    laid_out: &[bool],
 ) -> emit::ReliedOn {
     let mut relied_on = emit::ReliedOn::default();
-    let mut laid_out = vec![false; graph.scopes.len()];
     for block in &graph.blocks {
-        laid_out[block.scope.0 as usize] = true;
         if let graph::End::TypeCase { arms, .. } = &block.end {
             for (guard, _) in arms {
                 if !relied_on.guards.contains(guard) {
@@ -204,7 +226,7 @@ fn relied_on(
         }
     }
     for (index, scope_plan) in plan.scopes.iter().enumerate().skip(1) {
-        if !laid_out[index] || scope_plan.block_of.is_some() {
+        if !laid_out[index] {
             continue;
         }
         for application in [scope_plan.receiver, scope_plan.entered]
