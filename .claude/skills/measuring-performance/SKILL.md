@@ -95,7 +95,19 @@ the re-entries moved", has the full measurement protocol and its history.
    Build Tools; not on `PATH`) must show no `vm::run::closure` and no
    `run_stretch` as a function of its own (`execution.md`, "What the inline
    caches moved", "What the loop over locals moved").
-7. **Report** the per-build numbers, the pooled result and the spread, and
+7. **Pin every timed process to the performance cores.** On this machine's
+   Core Ultra 9 285K, Windows moves a process that runs for a few seconds
+   onto an efficiency core: a whole sitting of road step 9's second stage
+   was invalid for it, Mandelbrot +4.1% on unchanged code. Start each
+   timed `ns-next` with the affinity of the eight performance cores, mask
+   `0xC03C03` (in PowerShell `Start-Process` and then
+   `$process.ProcessorAffinity = 0xC03C03`, or `cmd /c start /affinity
+   C03C03 /wait …`), on both sides, and say so in the report.
+8. **Never time with `--jit-statistics`.** The flag switches the JIT's
+   counting on, which compiles other machine code -- counted stubs and
+   counted dispatching tails -- so a timed run with it measures that code.
+   Take the statistics in runs of their own, beside the timed ones.
+9. **Report** the per-build numbers, the pooled result and the spread, and
    name what the measurement did not cover before drawing a design
    conclusion from it.
 
@@ -112,5 +124,8 @@ the re-entries moved", has the full measurement protocol and its history.
 - A single build per side for a source known to be build-sensitive.
 - Three builds a side told apart by `-C metadata` alone, which pool one
   layout of `vm::run` three times.
+- Timing without the affinity to the performance cores, so the scheduler's
+  move to an efficiency core shows up as a regression.
+- Timing a run with `--jit-statistics`, whose counting changes the code.
 - Timing a send-path change without the `dumpbin` check, so an outlined
   `run_stretch` shows up as the change's cost.

@@ -2700,9 +2700,13 @@ impl JitState {
     /// Writes the dispatching rows of the lean body at `lean` from the
     /// optimized copies its slot names beside it, at most
     /// `DISPATCHING_ROWS` of them, in the block its word names: the one
-    /// way a block is written, called wherever a copy is installed or
-    /// freed and after a compaction moved the copies. Nothing is written
-    /// for a body its slot does not name, nor into the vacant block.
+    /// way a block's rows are filled, called wherever a copy is installed
+    /// or freed and after a compaction moved the copies; a block is
+    /// emptied only when its body's code is freed
+    /// (`JitState::vacate_dispatching_block`) or a collection frees its code
+    /// id (`vacate_released_dispatching_blocks`). Nothing is
+    /// written for a body its slot does not name, nor into the vacant
+    /// block.
     #[cfg(ns_jit)]
     fn write_dispatching_rows(&mut self, lean: u32) {
         let Some(body) = self.live_body(lean) else {
