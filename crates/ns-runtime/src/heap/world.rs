@@ -92,7 +92,10 @@ fn split<'state, 'gc>(
 /// heap (`StepRoots`), then vacates every inline cache, whose entries were
 /// decided for receivers that are now forwarders. Inside a step: nothing
 /// moves, so no handle a caller holds goes stale but one naming an object
-/// of `old`, and the VM mirror's leaf holds none.
+/// of `old`, and the VM mirror's leaf holds none. The optimized code the
+/// forward makes stale is the caller's to invalidate: the mirror leaf
+/// frees all of it (`jit::invalidate_all_optimized`), an install only the
+/// copies of the classes it rebuilt (`jit::invalidate_applications`).
 pub(crate) fn forward_identity<'gc>(
     mutator: &mut Mutator<'gc>,
     old: &[ObjectReference<'gc>],
@@ -204,11 +207,18 @@ impl World {
         self.mutator.jit.compaction_requested()
     }
 
-    /// Sets the deopt stress mode's countdown to its rotation's next, at
+    /// Sets the deopt stress mode's countdown to the next it draws, at
     /// the run loop's safepoint (`JitState::rotate_deoptimization_countdown`);
     /// nothing outside the mode.
     pub(crate) fn rotate_deoptimization_countdown(&mut self) {
         self.mutator.jit.rotate_deoptimization_countdown();
+    }
+
+    /// The invalidate stress mode's round, when the countdown its
+    /// optimized code spends says one is due
+    /// (`jit::invalidate_optimized_for_stress`). Nothing outside the mode.
+    pub(crate) fn invalidate_optimized_for_stress(&mut self) {
+        crate::jit::invalidate_optimized_for_stress(&mut self.mutator);
     }
 
     /// Whether a body's optimization budget ran out since the last
@@ -392,8 +402,8 @@ impl World {
         // After the prune, whose survivors keep their mixins, and before
         // the compaction, while the mark bits still say what lives.
         // Before `reclaim_ids` clears the rows of the ids it frees.
-        let budgets = crate::jit::budgets_before_collection(&self.mutator);
-        self.mutator.reclaim_ids(gathered);
+        let mut budgets = crate::jit::budgets_before_collection(&self.mutator);
+        self.mutator.reclaim_ids(gathered, &mut budgets);
         // After `reclaim_ids`, which may have freed the code ids budget
         // rows are indexed by, and before `shrink_committed_memory` gives
         // the rows past the code table back: every body's machine code
@@ -455,6 +465,15 @@ impl World {
         let bytes = self.mutator.jit.shrink_zone(pairs.code_zone, pairs.damped);
         self.mutator.heap.count_decommit(bytes);
         self.mutator.heap.shrink_reservations();
+        // After `point_budget_words_after_collection`, which pointed every
+        // body's dispatching word at a block below the code table's ids.
+        let code_ids = self.mutator.heap.table_sizes().code_ids;
+        let bytes = self.mutator.jit.shrink_optimized_copies(
+            code_ids,
+            pairs.optimized_copies,
+            pairs.damped,
+        );
+        self.mutator.heap.count_decommit(bytes);
         let bytes = self.mutator.caches.shrink_cells(pairs.cells, pairs.damped);
         self.mutator.heap.count_decommit(bytes);
     }
@@ -480,6 +499,7 @@ impl World {
             zone_returns,
             zone_committed_bytes: mutator.jit.zone_committed_bytes(),
             cells_committed_bytes: mutator.caches.cells_committed_bytes(),
+            optimized_copies_committed_bytes: mutator.jit.optimized_copies_committed_bytes(),
             ..mutator.heap.table_sizes()
         }
     }

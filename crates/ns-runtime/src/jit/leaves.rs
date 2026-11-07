@@ -457,7 +457,7 @@ fn initializer_in(
             let base = mutator.feedback_base_for(&code);
             jit::note_entry_by_call(&mut mutator.jit, &code, base, None);
             jit::after_compile_trigger(mutator);
-            let Some(address) = jit::machine_entry_address(&mutator.jit, &code, base) else {
+            let Some(address) = jit::machine_entry_address(&mutator.jit, &code, base, None) else {
                 return 0;
             };
             mutator.heap.hand_machine_initializer(receiver, level, body);
@@ -522,7 +522,9 @@ fn forcing_in(
             let base = mutator.feedback_base_for(&method.code);
             jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
             jit::after_compile_trigger(mutator);
-            let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base) else {
+            let key = jit::entry_key(&mutator.heap, &method.code, receiver, Some(defining_class));
+            let Some(address) = jit::machine_entry_address(&mutator.jit, &method.code, base, key)
+            else {
                 return 0;
             };
             mutator.heap.hand_machine_callee(receiver, defining_class);
@@ -888,25 +890,23 @@ fn twin(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// The budget leaf, which a spend of a body's optimization budget calls
 /// (`MacroAssembler::spend_budget`) with the address it spent from,
 /// `arguments[0]` -- the unpointed budget for a data word not pointed at
-/// a row yet -- the program counter of the spend, `arguments[1]`, and an
-/// address inside the body, `arguments[2]`: once the row the address
-/// names ran out, records the body's optimization request, parks the row
-/// and requests a safepoint; otherwise points the data word at the
-/// body's row, armed (`jit::budget_spent`). It runs no Newspeak code,
-/// cannot collect, reads no frame and compiles nothing: only the request
-/// list, the budget table, a code id's registration and the body's data
-/// word change, none of which the code that called it reads before the
-/// next spend. Answers 0.
+/// a row yet -- the address of the spending frame's register 0,
+/// `arguments[1]`, and an address inside the body, `arguments[2]`: once
+/// the row the address names ran out, records the body's optimization
+/// request -- for a method's body, the copy for the frame's key -- parks
+/// the row and requests a safepoint; otherwise points the data word at
+/// the body's row, armed (`jit::budget_spent`). It runs no Newspeak code,
+/// cannot collect, reads of a frame only its own header's receiver and
+/// current class, which its call wrote, and compiles nothing: only the
+/// request list, the body's rows of copies, the budget table, a code id's
+/// registration and the body's data word change, none of which the code
+/// that called it reads before the next spend. Answers 0.
 fn budget(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
-    // The program counter is passed for the on-stack replacement into
-    // optimized code (road step 9, stage 6), which requests the compile of
-    // the frame's body with an entry at the loop whose back jump spent the
-    // budget; nothing reads it before then.
-    let [spent_from, _program_counter, code_address] = arguments;
+    let [spent_from, frame_address, code_address] = arguments;
     let Ok(code_address) = usize::try_from(code_address) else {
         unreachable!("internal: an address fits the pointer width");
     };
-    jit::budget_spent(mutator, spent_from, code_address);
+    jit::budget_spent(mutator, spent_from, frame_address, code_address);
     DONE
 }
 

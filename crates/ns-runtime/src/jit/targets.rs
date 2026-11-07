@@ -271,6 +271,107 @@ pub(crate) fn assemble_megamorphic_stub(abi: Abi) -> Assembled {
     finish_stub(macro_assembler)
 }
 
+/// The shared tail of every method body's dispatching entry
+/// (`emit_dispatching_entry`), which a `super` or private lexical send's
+/// cell names once the body has optimized copies (`jit::cell_entry`): such
+/// a cell's guard is S's or N's application word, which tells nothing of
+/// the receiver, so the cell cannot name the copy customized for it.
+/// Entered by the entry's jump, the call's return address already saved
+/// as a callee's prologue expects it, the receiver in `callee_receiver`,
+/// the current class the send found in `callee_class`, the body's rows in
+/// `Roles::dispatching_rows` and its machine entry in
+/// `Roles::dispatching_baseline`: compares the receiver's dispatch id and
+/// the current class's application word with each row
+/// (`heap/optimized_copies.rs`) -- the key a copy was customized for, as
+/// `CustomizationKey::of` reads it off the frame the prologue writes --
+/// and goes on in the first copy whose row holds both, or in the body's
+/// baseline code when none does. A vacant row's receiver word is no
+/// dispatch id, so no row is tested for vacancy.
+///
+/// The current class's application word is compared, not its instances
+/// dispatch id, which the cell's guard compare reads the same way: one
+/// load from the class object, where the id would take the application
+/// id table's bound check and two loads more.
+///
+/// The zone holds two: one that, when `counting`, counts each call it
+/// enters a copy by (`JitStatistics::dispatched_calls`), which a body
+/// compiled while the JIT counts jumps to, and one that counts nothing,
+/// so that a body compiled while nobody counts pays nothing for it.
+pub(crate) fn assemble_dispatching_stub(abi: Abi, counting: bool) -> Assembled {
+    use crate::heap::optimized_copies::{RowWord, DISPATCHING_ROWS, ROW_BYTES};
+    let mut macro_assembler = MacroAssembler::new(abi);
+    macro_assembler.set_count_back_edges(counting);
+    let roles = macro_assembler.roles();
+    let (rows, baseline) = (roles.dispatching_rows(), roles.dispatching_baseline());
+    let (receiver, class) = (roles.callee_receiver(), roles.callee_class());
+    let (guard, word, entry) = (roles.lookup_rule, roles.lookup_hash, roles.send_entry);
+    let assembler = macro_assembler.assembler();
+    let unmatched = assembler.label();
+    macro_assembler.jump_unless_object(class, unmatched);
+    macro_assembler.load_guard(guard, receiver);
+    macro_assembler.load_application_word(word, class);
+    let row_word = |row: i32, word: RowWord| Memory {
+        base: rows,
+        displacement: row * ROW_BYTES + word.displacement(),
+    };
+    let rows_count = i32::try_from(DISPATCHING_ROWS).expect("internal: eight rows");
+    for row in 0..rows_count {
+        let assembler = macro_assembler.assembler();
+        let next = assembler.label();
+        assembler.compare_memory(guard, row_word(row, RowWord::Receiver));
+        assembler.jump_if(Condition::NotEqual, next);
+        assembler.compare_memory(word, row_word(row, RowWord::Entered));
+        assembler.jump_if(Condition::NotEqual, next);
+        macro_assembler.count_dispatched_call();
+        let assembler = macro_assembler.assembler();
+        assembler.load(Width::Word64, entry, row_word(row, RowWord::Entry));
+        assembler.jump_into_called(entry);
+        assembler.bind(next);
+    }
+    let assembler = macro_assembler.assembler();
+    assembler.bind(unmatched);
+    assembler.jump_into_called(baseline);
+    finish_stub(macro_assembler)
+}
+
+/// A method body's dispatching entry, at `entry`, which `jit::cell_entry`
+/// names for a `super` or private lexical site once the body has
+/// optimized copies: entered as the body's prologue is, it hands the
+/// shared tail
+/// (`assemble_dispatching_stub`) the address of the body's dispatching
+/// rows from its data word `rows_word` and the body's own machine entry,
+/// `start`, and jumps to the tail, whose address is its data word
+/// `tail_word`. Both words are the body's own, written through the zone's
+/// one writer: the rows' address names the vacant block until the JIT
+/// points it at the block of the body's code id, and afresh after every
+/// full collection, which may free that id and mint it for another body
+/// (`jit::point_budget_word`); the tail lies among the stubs, which never
+/// move: the counting tail for a body compiled while the JIT counts. The
+/// machine entry is reached relative to the code, which a compaction
+/// moves whole.
+pub(crate) fn emit_dispatching_entry(
+    macro_assembler: &mut MacroAssembler,
+    entry: Label,
+    start: Label,
+    rows_word: usize,
+    tail_word: usize,
+) {
+    let roles = macro_assembler.roles();
+    let (rows, baseline, tail) = (
+        roles.dispatching_rows(),
+        roles.dispatching_baseline(),
+        roles.send_entry,
+    );
+    let assembler = macro_assembler.assembler();
+    assembler.bind(entry);
+    assembler.enter_called();
+    macro_assembler.load_body_word(rows, rows_word);
+    macro_assembler.load_body_word(tail, tail_word);
+    let assembler = macro_assembler.assembler();
+    assembler.load_label_address(baseline, start, 0);
+    assembler.jump_register(tail);
+}
+
 /// `lookup_rule :=` the rule's tag, the low bits of `send_key`, which
 /// keeps them. Clobbers the flags.
 fn split_rule_tag(macro_assembler: &mut MacroAssembler) {
@@ -1337,11 +1438,109 @@ mod tests {
     use ns_assembler::Memory;
 
     use super::emit_group;
+    use crate::heap::optimized_copies::{DISPATCHING_ROWS, ROW_WORDS, VACANT};
     use crate::interpreter::inline_cache::{rule_word, CacheRule, GlobalCache};
+    use crate::jit::macro_assembler::Abi;
     use crate::jit::stubs::testing::Machine;
-    use crate::jit::stubs::{ExitKind, MachineExit};
+    use crate::jit::stubs::{BlockWord, ExitKind, MachineExit};
     use crate::mixin::DispatchId;
     use crate::Symbol;
+
+    /// The dispatching stub is whole instructions under both encoders:
+    /// every method body's dispatching entry jumps into it on x64 and on
+    /// AArch64 alike.
+    #[test]
+    fn the_dispatching_stub_assembles_on_both_architectures() {
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            for counting in [false, true] {
+                let assembled = super::assemble_dispatching_stub(abi, counting);
+                assert!(!assembled.bytes.is_empty(), "{abi:?}");
+                if abi == Abi::Aapcs64 {
+                    assert_eq!(assembled.bytes.len() % 4, 0, "whole instructions");
+                }
+            }
+        }
+    }
+
+    /// The dispatching stub enters the copy whose row holds the
+    /// receiver's dispatch id and the current class's application word,
+    /// and the body's baseline code when no row holds both -- a row with
+    /// the receiver's id but another application, a vacant block -- each
+    /// of the three fakes exiting at a program counter of its own; its
+    /// counting form counts exactly the calls it entered a copy by.
+    #[test]
+    fn the_dispatching_stub_enters_the_copy_whose_row_matches() {
+        let layout = crate::heap::Heap::machine_layout();
+        let mut machine = Machine::new();
+        let tail = machine.install(&super::assemble_dispatching_stub(Abi::host(), true));
+        // A callee entered as a cell's call enters it, exiting at
+        // `program_counter`.
+        let mut callee = |program_counter: u32| {
+            let body = machine.body(|macro_assembler| {
+                macro_assembler.assembler().enter_called();
+                macro_assembler.exit(ExitKind::Reexecute, program_counter);
+            });
+            machine.executable_address(body)
+        };
+        let (first_copy, second_copy, baseline_address) = (callee(1), callee(2), callee(3));
+        let tail_address = machine.executable_address(tail);
+        // An object space of two objects: the receiver, its header's guard
+        // 77, and the class, holding application word 0x51.
+        let mut space = vec![0u64; 64];
+        let word_index = |handle: i64, displacement: i32| {
+            usize::try_from((handle + i64::from(displacement)) / 8).expect("inside the space")
+        };
+        let (receiver, class) = (64i64, 192i64);
+        space[word_index(receiver, layout.header_displacement)] = 77;
+        space[word_index(class, layout.application_displacement)] = 0x51;
+        machine.set_block_word(
+            BlockWord::ObjectSpaceBase,
+            space.as_mut_ptr().expose_provenance() as u64,
+        );
+        let block = |rows: &[[u64; ROW_WORDS]]| {
+            let mut words = vec![VACANT; DISPATCHING_ROWS * ROW_WORDS];
+            for (index, row) in rows.iter().enumerate() {
+                words[index * ROW_WORDS..(index + 1) * ROW_WORDS].copy_from_slice(row);
+            }
+            words
+        };
+        let cases = [
+            (block(&[[77, 0x50, first_copy], [77, 0x51, second_copy]]), 2),
+            (block(&[[78, 0x51, first_copy]]), 3),
+            (block(&[[77, 0x41, first_copy]]), 3),
+            (block(&[]), 3),
+        ];
+        for (rows, expected) in cases {
+            let rows_address = rows.as_ptr().expose_provenance() as u64;
+            let entry = machine.body(|macro_assembler| {
+                let roles = macro_assembler.roles();
+                // Entered by the entry stub's call, which saves the return
+                // address as a dispatching entry's `enter_called` leaves it.
+                let assembler = macro_assembler.assembler();
+                assembler.move_immediate(roles.callee_receiver(), receiver.cast_unsigned());
+                assembler.move_immediate(roles.callee_class(), class.cast_unsigned());
+                assembler.move_immediate(roles.dispatching_rows(), rows_address);
+                assembler.move_immediate(roles.dispatching_baseline(), baseline_address);
+                assembler.move_immediate(roles.send_entry, tail_address);
+                assembler.jump_register(roles.send_entry);
+            });
+            let mut frame = [0u64; 8];
+            let (exit, block) = machine.run(entry, &mut frame, 0, false, &mut (), &[]);
+            assert_eq!(
+                exit,
+                MachineExit::Reexecute {
+                    program_counter: expected
+                }
+            );
+            // The counting tail counts the calls it enters a copy by, and
+            // no other.
+            assert_eq!(
+                block[BlockWord::DispatchedCalls.index()],
+                u64::from(expected == 2),
+                "counted as matched"
+            );
+        }
+    }
 
     /// The megamorphic stub's hash (`emit_group`) is the global cache's
     /// (`GlobalCache::group`), whose hasher's constants it shares

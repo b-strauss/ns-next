@@ -46,6 +46,8 @@ pub(crate) mod mark;
 mod object;
 #[cfg(ns_jit)]
 mod optimization_budgets;
+#[cfg(ns_jit)]
+pub(crate) mod optimized_copies;
 mod pending;
 pub(crate) mod reclaim;
 mod records;
@@ -959,7 +961,7 @@ pub(crate) struct MachineEntryLayout {
 
 /// What a parked optimization budget row holds
 /// (`optimization_budgets.rs`).
-#[cfg(all(ns_jit, test))]
+#[cfg(ns_jit)]
 pub(crate) const OPTIMIZATION_BUDGET_PARKED: i64 = optimization_budgets::PARKED;
 
 /// A body's optimization budget as the budget leaf finds it
@@ -6869,6 +6871,16 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Whether `code` has a code id, without registering one: a full
+    /// collection's `reclaim_ids` may have freed it
+    /// (`jit::point_budget_words_after_collection`).
+    #[cfg(ns_jit)]
+    pub(crate) fn has_code_id(&self, code: &CompiledCode) -> bool {
+        self.tables
+            .code_ids
+            .contains_key(&(std::ptr::from_ref(code) as usize))
+    }
+
     /// What is left of `code`'s optimization budget, if it has a code id
     /// and its row is armed: what a full collection carries over to the
     /// row of the id the body has after it (`jit::budgets_before_collection`).
@@ -10377,6 +10389,39 @@ impl<'gc> Heap<'gc> {
             .filter(|index| *index < self.stack.frames.committed_words())
             .map(|index| self.stack.frames.committed_word(index));
         word.map(|bits| self.load(Word::from_bits(bits)))
+    }
+
+    /// The receiver and the current class of the frame machine code runs
+    /// whose register 0 lies at `frame_address`, a body taking
+    /// `argument_count` arguments: the header words its call wrote
+    /// (`frame_header::RECEIVER`, `frame_header::CURRENT_CLASS`), which
+    /// the budget leaf reads for the key of the frame that ran its body's
+    /// budget out (`jit::budget_spent`). `None` for an address outside the
+    /// stack's committed words.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_frame_receiver_and_current_class(
+        &self,
+        frame_address: u64,
+        argument_count: u16,
+    ) -> Option<(Value<'gc>, Option<ClassReference<'gc>>)> {
+        let base = self.stack.frames.base_address() as u64;
+        let word_at = |register: u16| {
+            let index = frame_address
+                .checked_sub(base)
+                .filter(|bytes| bytes % 8 == 0)
+                .and_then(|bytes| usize::try_from(bytes / 8).ok())?
+                .checked_add(usize::from(register))?;
+            (index < self.stack.frames.committed_words())
+                .then(|| Word::from_bits(self.stack.frames.committed_word(index)))
+        };
+        let receiver = word_at(Self::receiver_register(argument_count))?;
+        let current_class = word_at(Self::current_class_register(argument_count))?;
+        Some((
+            self.load(receiver),
+            current_class
+                .object_offset()
+                .map(|class| self.object_handle(class)),
+        ))
     }
 
     /// The value machine code answered as the word `bits`

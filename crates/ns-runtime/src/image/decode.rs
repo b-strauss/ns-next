@@ -734,6 +734,24 @@ pub enum DecodeError {
     ShippedInstanceBody {
         body: u8,
     },
+    /// An instance of a program class -- one that is no builtin and whose
+    /// chain does not reach `Behavior` -- carries a field count other than
+    /// its class's application's slot count. Every such instance is
+    /// allocated with exactly that count, and an install that changes a
+    /// layout migrates every instance to the new one, so no encoder writes
+    /// another; a customized copy reads its own slots at fixed fields with
+    /// no check (`jit::optimizing::graph::Node::OwnSlotLoad`), past the end
+    /// of an object that has fewer.
+    ProgramInstanceFieldCount {
+        expected: usize,
+        found: usize,
+    },
+    /// An object of a program class that is not an instance record: an
+    /// array, a string, a closure or a class under the header of a class
+    /// whose instances are all ordinary instances with slots, which its
+    /// code -- a customized copy's unchecked slot reads above all -- would
+    /// read as what it is not.
+    ProgramInstanceBody,
     /// A `LargeInteger`, as a value or a literal, in an encoding the encoder
     /// never writes: one that fits `i64` (which travels as an `i64`), a zero
     /// top digit, or a negative zero. Accepting one would give an integer a
@@ -1244,6 +1262,16 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a record of a shipped class has object body {body}, but an instance of that \
                  class is an instance record"
+            ),
+            DecodeError::ProgramInstanceFieldCount { expected, found } => write!(
+                f,
+                "an instance of a program class carries {found} field(s), but its class lays \
+                 its instances out with {expected}"
+            ),
+            DecodeError::ProgramInstanceBody => write!(
+                f,
+                "an object of a program class is not an instance record, but every instance \
+                 of that class is one"
             ),
             DecodeError::NonCanonicalInteger => {
                 write!(f, "an integer is not in its one canonical encoding")
@@ -4140,6 +4168,49 @@ fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
         .collect()
 }
 
+/// Every object of a class that is no builtin and whose chain does not
+/// reach `Behavior` -- whose instances are class objects, which
+/// `check_class_references` holds -- is an instance record of exactly its
+/// class's application's slot count, as every such instance is allocated
+/// (`instantiate::allocate_for_factory`). The shipped classes' records
+/// were held to it as they were read; a program class's application
+/// exists only once `rebuild_applications` has run, so its instances are
+/// checked here, after it. What the check guards: a customized copy reads
+/// its receiver's own slots at fixed fields with no check
+/// (`jit::optimizing::graph::Node::OwnSlotLoad`).
+fn check_program_instances<'gc>(
+    heap: &Heap<'gc>,
+    objects: &[ObjectReference<'gc>],
+) -> Result<(), DecodeError> {
+    for object in objects {
+        let class = heap.object_class(*object);
+        if heap.class_builtin(class).is_some() {
+            continue;
+        }
+        let application = heap.class_application(class);
+        let class_object_class = application.as_ref().is_some_and(|application| {
+            matches!(
+                application.instantiation_refusal,
+                Some(crate::mixin::InstantiationRefusal::ClassObject)
+            )
+        });
+        if class_object_class {
+            continue;
+        }
+        let found = match heap.object_shape(*object) {
+            crate::heap::ObjectShape::Instance => heap
+                .instance_field_count(*object)
+                .ok_or(DecodeError::ProgramInstanceBody)?,
+            _ => return Err(DecodeError::ProgramInstanceBody),
+        };
+        let expected = application.map_or(0, |application| application.slot_count);
+        if found != expected {
+            return Err(DecodeError::ProgramInstanceFieldCount { expected, found });
+        }
+    }
+    Ok(())
+}
+
 /// Every field the format types as a class reference really names a class
 /// object, and a class object's own `class` is its metaclass or, for a
 /// metaclass, `Metaclass`.
@@ -5244,6 +5315,7 @@ pub fn decode_graph_section<'gc>(
         decode_frame(&mut body_reader, context, &tables, symbols, *frame)?;
     }
     check_class_references(&context.mutator.heap, &objects, &frames)?;
+    check_program_instances(&context.mutator.heap, &objects)?;
     let roots = decode_values(reader, context, &tables)?;
     Ok(DecodedGraph {
         roots,

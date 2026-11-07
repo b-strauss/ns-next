@@ -24,15 +24,13 @@ use crate::heap::machine_words::MachineWord;
 /// entry to the next, only when the block is stale
 /// (`JitState::mark_block_stale`) -- the exit stub the
 /// outputs (`ExitProgramCounter`, `ExitKind`, and `ExitRegister` for a
-/// dead register's exit), a leaf call `LeafStackPointer`, the cut its
+/// dead register's exit, `ExitTrapSite` for a trap's), a leaf call `LeafStackPointer`, the cut its
 /// answer (`CutStackPointer`, `CutFrameRegister`, `CutValue`), and code
 /// that counts its back edges `BackEdges`; the entry and the call stub
 /// each write `EnteredByCall`.
 ///
-/// Word 23 is free, kept for what the later stages enter machine code
-/// with, so the three words only a debug build or a test uses sit at the
-/// top. It named the closure sites until they moved into the code zone
-/// beside their bodies (`jit::closures`); nothing reads or writes it.
+/// Code that counts writes `DispatchedCalls`, word 23, as it writes
+/// `CompiledCalls` and `BackEdges`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BlockWord {
     /// The leaf shim's address, which `call_leaf` calls. Words 0, 2 and 3,
@@ -104,6 +102,10 @@ pub(crate) enum BlockWord {
     /// word (`Heap::eden_cursor_address`), which an allocation in machine
     /// code bumps in place (`MacroAssembler::bump_allocate`).
     EdenCursor = 22,
+    /// The calls through a body's dispatching entry that entered a copy,
+    /// counted by the tail a body compiled to count jumps to
+    /// (`JitStatistics::dispatched_calls`).
+    DispatchedCalls = 23,
     /// The address of the machine entry table's row 0
     /// (`Heap::machine_entries_address`), where a closure stub finds the
     /// machine entry of the block a closure's code id names
@@ -129,6 +131,10 @@ pub(crate) enum BlockWord {
     /// The backward jumps code compiled to count them took since the entry
     /// (`JitStatistics::machine_back_edges`).
     BackEdges = 31,
+    /// The call site a trap's speculation rested on, which the trap
+    /// writes before its exit (`MacroAssembler::trap`) and the run loop
+    /// reads for an exit of kind `ExitKind::Trap` alone.
+    ExitTrapSite = 32,
 }
 
 impl BlockWord {
@@ -143,7 +149,7 @@ impl BlockWord {
     }
 }
 
-const _: () = assert!((BlockWord::BackEdges as usize) < ENTRY_BLOCK_WORDS);
+const _: () = assert!((BlockWord::ExitTrapSite as usize) < ENTRY_BLOCK_WORDS);
 
 /// Why machine code left, as the exit stub answers it in `ExitKind`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -167,6 +173,11 @@ pub(crate) enum ExitKind {
     /// The frame the entry stub called returned: its value is in the
     /// block's `ExitProgramCounter`.
     Returned = 4,
+    /// A speculation failed (`MacroAssembler::trap`): the interpreter
+    /// re-executes the instruction at the exit's program counter, as for
+    /// `Reexecute`, and the run loop counts the trap of the site in the
+    /// block's `ExitTrapSite` against no exit budget.
+    Trap = 5,
 }
 
 /// An exit, decoded from the block and the kind `enter` answered.
@@ -190,6 +201,10 @@ pub(crate) enum MachineExit {
     },
     Returned {
         value: u64,
+    },
+    Trap {
+        program_counter: u32,
+        site: u32,
     },
 }
 
@@ -223,6 +238,15 @@ pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
     };
     if kind == ExitKind::Reexecute as u64 {
         MachineExit::Reexecute { program_counter }
+    } else if kind == ExitKind::Trap as u64 {
+        let word = block.get(BlockWord::ExitTrapSite.index());
+        let Ok(site) = u32::try_from(word) else {
+            panic!("internal: machine code trapped at site {word}");
+        };
+        MachineExit::Trap {
+            program_counter,
+            site,
+        }
     } else if kind == ExitKind::Safepoint as u64 {
         MachineExit::Safepoint { program_counter }
     } else if kind == ExitKind::DeadRegister as u64 {
@@ -715,6 +739,11 @@ pub(super) mod testing {
         /// what a body under test reads of the heap there.
         pub(crate) fn set_machine_word(&mut self, word: MachineWord, value: u64) {
             self.machine_words.push((word, value));
+        }
+
+        /// The executable address of the code installed at `offset`.
+        pub(crate) fn executable_address(&self, offset: CodeOffset) -> u64 {
+            self.zone.zone().executable_address(offset) as u64
         }
 
         /// Installs the body `build` writes and finishes.

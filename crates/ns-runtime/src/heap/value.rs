@@ -224,6 +224,20 @@ impl Immediate {
         self.0
     }
 
+    /// Whether `word`, an immediate's, is a `SmallInteger`'s: what the
+    /// optimizing compiler knows of a constant, so that it tests its tag
+    /// no more.
+    #[cfg_attr(
+        not(any(ns_jit, test)),
+        expect(
+            dead_code,
+            reason = "without a JIT only the optimizing compiler's tests build a graph"
+        )
+    )]
+    pub(crate) const fn is_small_integer_word(word: u64) -> bool {
+        word & SMALL_INTEGER_TAG == SMALL_INTEGER_TAG
+    }
+
     /// `true` or `false`, as an immediate word.
     pub const fn boolean(value: bool) -> Immediate {
         Immediate(if value { TRUE_WORD } else { FALSE_WORD })

@@ -1,0 +1,65 @@
+/// Conditions that answer a non-Boolean only after their bodies were
+/// optimized. `countLeading:` counts the `true`s an Array starts with, in
+/// an inlined `whileTrue:`, and `countMarked:` counts all its `true`s, in
+/// an inlined `ifTrue:`; each pass of 3000 runs both over 99 `true`s and
+/// a `false`, which answer 99 each. Pass 2000 finds 7 at position 50 and
+/// pass 2400 finds nil there; every other pass finds the Array as it was.
+/// The loop's condition signals the `NonBooleanReceiver` error, with the
+/// condition's answer in its text; the `ifTrue:`'s not-Boolean path sends
+/// the real message, which neither 7 nor nil understands. The copy of
+/// `countMarked:` compiled from the first passes never saw that send run,
+/// so it speculates on Booleans and traps, and its second trap makes it
+/// not entrant. Each pass catches its errors, and the last line is the
+/// sum of the 2998 passes that answered 99 twice: 593604.
+class NonBooleanAfterWarmUp = Object new () (
+  countLeading: flags = (
+    |
+      index ::= 1.
+    |
+    [flags at: index] whileTrue: [index:: index + 1].
+    ^index - 1.
+  )
+
+  countMarked: flags = (
+    |
+      count ::= 0.
+      index ::= 1.
+    |
+    [index <= 100] whileTrue: [
+      (flags at: index) ifTrue: [count:: count + 1].
+      index:: index + 1.
+    ].
+    ^count.
+  )
+
+  outcome: block at: pass on: transcript = (
+    ^block on: Error do: [:error |
+      transcript
+          show: 'pass ' , pass printString , ': ' , error messageText;
+          newLine.
+      0.
+    ].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      flags = Array new: 100.
+      sum ::= 0.
+      pass ::= 1.
+    |
+    1 to: 99 do: [:index | flags at: index put: true].
+    flags at: 100 put: false.
+    [pass <= 3000] whileTrue: [
+      pass = 2000 ifTrue: [flags at: 50 put: 7].
+      pass = 2400 ifTrue: [flags at: 50 put: nil].
+      sum:: sum + (outcome: [self countLeading: flags] at: pass on: transcript).
+      sum:: sum + (outcome: [self countMarked: flags] at: pass on: transcript).
+      flags at: 50 put: true.
+      pass:: pass + 1.
+    ].
+    transcript
+        show: sum printString;
+        newLine.
+  )
+)

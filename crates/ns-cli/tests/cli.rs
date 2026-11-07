@@ -239,7 +239,8 @@ fn ns_next_without_a_code_zone() -> Command {
         .env_remove("NS_NEXT_STRESS_EXIT")
         .env_remove("NS_NEXT_STRESS_ZONE")
         .env_remove("NS_NEXT_STRESS_OPTIMIZE")
-        .env_remove("NS_NEXT_STRESS_DEOPT");
+        .env_remove("NS_NEXT_STRESS_DEOPT")
+        .env_remove("NS_NEXT_STRESS_INVALIDATE");
     command
 }
 
@@ -466,7 +467,10 @@ fn jit_statistics_print_one_line_to_stderr() {
         shape,
         "jit: # bodies, # twins compiled in # ms; # back-edge switches, \
          # resumptions after a safepoint, # exits; optimizer: # requests, \
-         # bodies optimized in # ms, # optimized exits (# forced), # abandoned"
+         # bodies optimized (# customized copies) in # ms, \
+         # optimized exits (# forced, # traps), # abandoned, \
+         # made not entrant, # refused for good, # invalidated copies, \
+         # dispatched calls"
     );
 }
 
@@ -500,6 +504,7 @@ fn benchmark_collector_statistics_reports_to_stderr() {
         .env_remove("NS_NEXT_STRESS_ZONE")
         .env_remove("NS_NEXT_STRESS_OPTIMIZE")
         .env_remove("NS_NEXT_STRESS_DEOPT")
+        .env_remove("NS_NEXT_STRESS_INVALIDATE")
         .output()
         .unwrap();
     assert_eq!(

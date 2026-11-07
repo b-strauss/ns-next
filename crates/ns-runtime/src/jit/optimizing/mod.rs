@@ -15,6 +15,35 @@ pub(crate) mod metadata;
 pub(crate) mod snapshot;
 pub(crate) mod verify;
 
+/// How far a compile speculates (`docs/design/execution.md`, "Speculation",
+/// "Guards and traps", "Versions and the refusal for good").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Speculation {
+    /// Every site the feedback says never ran is a guard that traps: an
+    /// integer fast path with no fallback, a conditional with no third
+    /// way, a send that exits before it is made (`build::build`).
+    Traps,
+    /// No guard: every fast path keeps its fallback send, every
+    /// conditional its third way and every send its call, and no value
+    /// is of a known kind -- stage 1's code, which can never trap, for a
+    /// copy past its last version.
+    None,
+}
+
+impl Speculation {
+    /// How far a copy at `version` speculates: with traps up to
+    /// `jit::LAST_VERSION`, without past it, so that the copy a key ends
+    /// with can never be made not entrant (`docs/design/execution.md`,
+    /// "Speculation", "Versions and the refusal for good").
+    pub(crate) fn at_version(version: u8) -> Speculation {
+        if version <= crate::jit::LAST_VERSION {
+            Speculation::Traps
+        } else {
+            Speculation::None
+        }
+    }
+}
+
 /// The optimized code of `snapshot`'s body, compiled as `role` with
 /// `macro_assembler` (`docs/design/execution.md`, "Planned: the
 /// optimizing JIT"): its graph built (and, in a debug build, verified),
@@ -23,13 +52,15 @@ pub(crate) mod verify;
 /// one the baseline makes of the same body: too many instructions, or
 /// code the assembler cannot lay out. `futures_exit` is the setting its
 /// baseline code was compiled under (`JitState::set_futures_exit`), so
-/// that both tiers are the same lowering.
+/// that both tiers are the same lowering. `speculation` says which sites
+/// the feedback says never ran become guards.
 #[cfg(ns_jit)]
 pub(crate) fn compile(
     snapshot: &snapshot::Snapshot,
     macro_assembler: crate::jit::macro_assembler::MacroAssembler,
     role: crate::jit::baseline::BodyRole,
     futures_exit: bool,
+    speculation: Speculation,
 ) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
     use crate::jit::Refusal;
 
@@ -41,7 +72,7 @@ pub(crate) fn compile(
         role,
         futures_exit,
     )?;
-    let graph = build::build(snapshot);
+    let graph = build::build(snapshot, speculation);
     let (allocation, metadata) = metadata::allocate_and_describe(snapshot, &graph, &roles);
     let push_entry = emit::emit(snapshot, &graph, &allocation, &mut body)?;
     let returns = body.take_call_returns();
@@ -49,6 +80,8 @@ pub(crate) fn compile(
     let word_bytes =
         u32::try_from(body.macro_assembler.body_word_count() * 8).map_err(|_| Refusal::ZoneFull)?;
     let twin_transfers = std::mem::take(&mut body.twin_transfers);
+    #[cfg(test)]
+    let small_integer_tag_tests = body.macro_assembler.small_integer_tag_tests();
     let code = body
         .macro_assembler
         .finish()
@@ -65,6 +98,8 @@ pub(crate) fn compile(
         twin_transfers,
         metadata,
         push_entry,
+        #[cfg(test)]
+        small_integer_tag_tests,
     })
 }
 
@@ -104,7 +139,31 @@ pub(crate) fn test_snapshot_with_arguments(
             .collect(),
         tainted_before: snapshot::tainted_before_each(&code),
         fallback_taken: vec![false; code.instructions().len()],
+        sites: vec![None; code.instructions().len()],
+        customization: None,
     }
+}
+
+/// Records every site `snapshot`'s speculations rest on as never run, so
+/// that under `Speculation::Traps` each is a guard: the passes' tests
+/// build every trap the corpus can have.
+#[cfg(test)]
+pub(crate) fn unrun_every_site(snapshot: &mut snapshot::Snapshot) {
+    for facts in snapshot.sites.iter_mut().flatten() {
+        facts.executed = false;
+        facts.trapped = false;
+    }
+}
+
+/// Records the site the speculation of `snapshot`'s instruction at
+/// `index` rests on as `site`, never run.
+#[cfg(test)]
+pub(crate) fn unrun_site(snapshot: &mut snapshot::Snapshot, index: usize, site: u32) {
+    snapshot.sites[index] = Some(snapshot::SiteFacts {
+        site,
+        executed: false,
+        trapped: false,
+    });
 }
 
 /// `receiver new: argument` into `destination`, a send for the passes'
@@ -187,6 +246,7 @@ fn snapshots_of(modules: &[std::rc::Rc<crate::ResolvedModule>]) -> Vec<snapshot:
                     &mut mutator.heap,
                     &mutator.caches,
                     FeedbackBase::NOT_ASSIGNED,
+                    None,
                 )
             })
             .collect()
@@ -334,7 +394,7 @@ mod tests {
             )
             .expect("the method");
             let base = mutator.caches.known_base(&code).expect("it ran");
-            super::snapshot::Snapshot::take(&code, &mut mutator.heap, &mutator.caches, base)
+            super::snapshot::Snapshot::take(&code, &mut mutator.heap, &mutator.caches, base, None)
         });
         let taken = snapshot
             .fallback_taken
@@ -342,7 +402,7 @@ mod tests {
             .filter(|taken| **taken)
             .count();
         assert_eq!(taken, 9, "the nine float operations, not the counter's two");
-        let graph = super::build::build(&snapshot);
+        let graph = super::build::build(&snapshot, super::Speculation::Traps);
         let integer_paths = graph
             .blocks
             .iter()
@@ -366,9 +426,10 @@ mod tests {
             .iter()
             .flat_map(|block| &block.nodes)
             .filter_map(|node| match node {
-                Node::IntegerBinary { fallback, .. } => {
-                    Some(allocation.positions.end_definition(*fallback))
-                }
+                Node::IntegerBinary {
+                    fallback: Some(fallback),
+                    ..
+                } => Some(allocation.positions.end_definition(*fallback)),
                 _ => None,
             })
             .collect();
@@ -391,6 +452,8 @@ mod tests {
             let write_backs = allocation
                 .dirty_at
                 .iter()
+                // A trap's write-back lies on its cold way alone.
+                .filter(|point| !matches!(point.kind, super::allocate::PointKind::Trap { .. }))
                 .filter(|point| {
                     point
                         .stores

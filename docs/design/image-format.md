@@ -1255,6 +1255,22 @@ over one is bounded by the limits as a compiled one is
 `an_image_with_a_send_of_256_arguments_is_refused`,
 `an_image_applying_1025_mixins_is_refused`).
 
+**A program class's instances hold to its layout.** Every object of a
+class that is no builtin and whose chain does not reach `Behavior` --
+whose instances are class objects, which the class-reference checks
+hold -- must be an instance record (`ProgramInstanceBody`) of exactly
+its class's application's slot count (`ProgramInstanceFieldCount`), as
+every such instance is allocated and as an install migrates every
+instance to its new layout, so no encoder writes another. A program
+class's application exists only once the applications are rebuilt, so
+the check (`check_program_instances`) runs after that, before any
+decoded code runs. It is what a customized copy's own-slot reads rest
+on: they load fixed fields with no check, which would read past the end
+of an object with fewer, or an array or a string as what it is not
+([execution.md](execution.md), "Speculation", "Own slots at fixed
+offsets"; `a_record_of_a_program_class_carries_exactly_its_layout`,
+`a_record_of_a_program_class_with_another_body_is_refused`).
+
 **The loader builds before the graph, and only what the binary has.** After
 the first passes and before the tenure, the loader builds the shipped modules
 and classes the shipped-name section names that the boot did not

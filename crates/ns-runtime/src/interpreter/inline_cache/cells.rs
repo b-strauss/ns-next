@@ -574,7 +574,7 @@ mod tests {
         };
         let written = Cell {
             guard: u64::from(guard.bits()),
-            entry: crate::jit::cell_entry(&jit, &target),
+            entry: crate::jit::cell_entry_for(&jit, guard, &target),
             level: 0,
             chain_start: ChainStart::ReceiverClass as u64,
         };

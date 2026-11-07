@@ -80,6 +80,11 @@ impl Interpreter {
             )
         )]
         let mut rebuilt = false;
+        // Under the invalidate stress mode, once optimized code spent its
+        // countdown, the copies installed at earlier safepoints are freed,
+        // but a backing-off body's, before this one installs the next
+        // (`jit::invalidate_optimized_for_stress`).
+        self.world.invalidate_optimized_for_stress();
         // A body's budget ran out: its optimized code is compiled and
         // installed first, here, between two stretches, where no return
         // address into the zone exists (`jit::optimize_requested`), so
@@ -88,8 +93,8 @@ impl Interpreter {
             self.enter(crate::jit::optimize_requested);
         }
         // Under the deopt stress mode, one of the points optimized code
-        // passes from here on leaves: the first, second, third, fifth and
-        // so on up to the 987th, in turn at successive safepoints, so that
+        // passes from here on leaves: the first, second, third, fifth or
+        // so on up to the 987th, drawn afresh at every safepoint, so that
         // every point of a short stretch is met and deep points of a long
         // one too (`jit::DEOPTIMIZATION_ROTATION`).
         self.world.rotate_deoptimization_countdown();
@@ -433,6 +438,7 @@ impl Interpreter {
                 stack: one_page,
                 cells: one_page,
                 machine_entries: one_page,
+                optimized_copies: one_page,
                 application_ids: one_page,
                 code_zone: one_page,
                 damped: false,

@@ -181,7 +181,8 @@ fn edit<'gc>(
 
 /// `elementsOf:forwardIdentityToElementsOf:ifFail:`: forwards every
 /// object of the subject, an `Array`, to the object of the argument, an
-/// `Array`, at the same index, and answers `nil`
+/// `Array`, at the same index, invalidates all optimized code
+/// (`jit::invalidate_all_optimized`), and answers `nil`
 /// (`heap::world::forward_identity`). Declined, with nothing changed,
 /// when either is no `Array`, when an element of either may not be
 /// forwarded (`may_be_forwarded`), and when the heap refuses the pairs:
@@ -198,6 +199,10 @@ fn forward_identity<'gc>(
     let old = forwardable_elements(mutator, subject)?;
     let new = forwardable_elements(mutator, arguments.first(&mutator.heap)?)?;
     crate::heap::forward_identity(mutator, &old, &new).ok()?;
+    // Any forwarded object may be what an optimized copy was verified for
+    // or reached, so every copy goes; an install's own migration frees
+    // only those of the classes it rebuilt (`Mutator::install_edit`).
+    crate::jit::invalidate_all_optimized(mutator);
     Some(Value::nil())
 }
 
@@ -1838,6 +1843,45 @@ mod tests {
             );
             let answer = interpreter.enter(|mutator| render(mutator, mutator.fetch(&answer)));
             assert_eq!(answer, "{3. 60. 60. true}");
+        }
+    }
+
+    #[cfg(ns_jit)]
+    crate::for_each_lowering! {
+        /// The bulk forward frees every optimized copy there is: run under
+        /// the optimize stress mode, `swap:` and the `sum`s it sends have
+        /// copies by its third run, every one of which its forward frees,
+        /// the answers unchanged.
+        fn the_leaf_invalidates_all_optimized_code(lowering) {
+            let (mut interpreter, fixture) = a_forward_fixture(lowering);
+            interpreter.set_jit_enabled(true);
+            interpreter.set_jit_stress(true);
+            interpreter.set_optimize_stress(true);
+            let mirror = the_vm_mirror(&mut interpreter);
+            let mut invalidated = 0;
+            for _ in 0..4 {
+                let before = interpreter.jit_statistics();
+                let answer = expect_ok(
+                    interpreter.send(&fixture, Symbol::intern("swap:"), std::slice::from_ref(&mirror)),
+                    "swap:",
+                );
+                let answer =
+                    interpreter.enter(|mutator| render(mutator, mutator.fetch(&answer)));
+                assert_eq!(answer, "{3. 60. 60. true}");
+                invalidated += interpreter.jit_statistics().invalidated_copies
+                    - before.invalidated_copies;
+            }
+            // A stress mode that frees or recompiles code at its own
+            // safepoints may leave the forward nothing to free.
+            let freeing_stress = ["MOVES", "CACHES", "COLLECT", "SCAVENGE", "SUSPEND", "EXIT", "ZONE"]
+                .iter()
+                .any(|mode| {
+                    std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
+                        .is_some_and(|value| !value.is_empty() && value != "0")
+                });
+            if !freeing_stress {
+                assert!(invalidated >= 1, "the forwards freed the copies installed before them");
+            }
         }
     }
 

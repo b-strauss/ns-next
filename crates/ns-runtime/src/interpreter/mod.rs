@@ -1126,6 +1126,78 @@ impl Interpreter {
         })
     }
 
+    /// How many customized copies of `method`'s body -- one per receiver
+    /// application and entered application it was optimized for -- have
+    /// optimized code in this interpreter's zone. A test hook.
+    #[doc(hidden)]
+    pub fn jit_customized_copies(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> usize {
+        self.enter(|mutator| {
+            method_code(mutator, class, side, method)
+                .map_or(0, |code| mutator.jit.customized_copies(&code))
+        })
+    }
+
+    /// The machine entries the dispatching rows of `method`'s body name, in
+    /// the rows' order, and those of the customized copies of it this
+    /// interpreter's zone holds, sorted: what a `super` or private lexical
+    /// send of it enters through its dispatching entry. A test hook.
+    #[doc(hidden)]
+    pub fn jit_dispatching_entries(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> (Vec<u64>, Vec<u64>) {
+        #[cfg(ns_jit)]
+        {
+            self.enter(|mutator| {
+                method_code(mutator, class, side, method)
+                    .map(|code| mutator.jit.dispatching_entries(&code))
+                    .unwrap_or_default()
+            })
+        }
+        #[cfg(not(ns_jit))]
+        {
+            let _ = (class, side, method);
+            (Vec::new(), Vec::new())
+        }
+    }
+
+    /// For each block `method` makes, in order: whether its body has
+    /// optimized code in this interpreter's zone, and how many customized
+    /// copies of it there are, which a block never has. A test hook.
+    #[doc(hidden)]
+    pub fn jit_block_tiers(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> Vec<(bool, usize)> {
+        self.enter(|mutator| {
+            let Some(code) = method_code(mutator, class, side, method) else {
+                return Vec::new();
+            };
+            code.instructions()
+                .iter()
+                .filter_map(|instruction| match instruction {
+                    crate::bytecode::Instruction::MakeClosure { code: block, .. } => Some(block),
+                    _ => None,
+                })
+                .map(|block| {
+                    (
+                        mutator.jit.optimized_offset(block).is_some(),
+                        mutator.jit.customized_copies(block),
+                    )
+                })
+                .collect()
+        })
+    }
+
     /// The data words of `method`'s body's machine code -- its transfer
     /// words, which name its twin's code -- as the zone holds them. A test
     /// hook.
@@ -1269,6 +1341,24 @@ impl Interpreter {
         });
     }
 
+    /// Turns the invalidate stress mode (`NS_NEXT_STRESS_INVALIDATE`) on
+    /// or off for this interpreter: on, with the optimize stress mode, the
+    /// optimized code compiled from now on leaves for a safepoint at every
+    /// tenth interrupt point it passes, which frees the copies of every
+    /// body but those backing off before it installs what was requested
+    /// since; off, the optimize stress mode left on. A test hook, set
+    /// before the code it is meant for runs.
+    #[doc(hidden)]
+    pub fn set_invalidate_stress(&mut self, stress: bool) {
+        self.enter(|mutator| {
+            let budget = mutator.jit.set_invalidate_stress(stress);
+            #[cfg(ns_jit)]
+            mutator.heap.rearm_optimization_budgets(budget);
+            #[cfg(not(ns_jit))]
+            let _ = budget;
+        });
+    }
+
     /// Makes the JIT lower `MakeFuture` to an exit in the bodies it
     /// compiles from now on, so that a body that makes a future at once
     /// exits at once and is never compiled, while it still returns as
@@ -1279,9 +1369,12 @@ impl Interpreter {
         self.enter(|mutator| mutator.jit.set_futures_exit(futures_exit));
     }
 
-    /// Makes machine code count its backward jumps
-    /// (`JitStatistics::machine_back_edges`), which it otherwise leaves
-    /// uncounted so that a loop pays nothing for the count. A test hook.
+    /// Makes machine code compiled from now on count its backward jumps,
+    /// its compiled calls and its calls through a dispatching entry
+    /// (`JitStatistics::machine_back_edges`, `compiled_calls`,
+    /// `dispatched_calls`), which it otherwise leaves uncounted so that a
+    /// loop or a call pays nothing for the count. A test hook, and
+    /// `--jit-statistics`'s.
     #[doc(hidden)]
     pub fn set_jit_counting(&mut self, counting: bool) {
         self.enter(|mutator| mutator.jit.set_counting(counting));

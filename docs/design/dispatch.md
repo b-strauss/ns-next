@@ -1203,12 +1203,19 @@ id, for every rule, since that is what `GlobalCache::group` hashes),
 selector, rule word (`rule_word`: the rule's two-bit tag, a `Lexical`
 rule's N id above it), entry, level, chain start -- in the order of the
 entries, so the megamorphic stub probes the group the cache would. A
-cell's entry address is a function of its entry's `Target` and the JIT's
-state alone ([execution.md](execution.md), "Sends, returns and the exit
-that materializes"), so a cell copies what the lookup decided and decides
-nothing; when the JIT's state changes under an entry -- its callee
-compiled since the cell was written, found never to be compiled, or a
-body abandoned or revived -- the cells it
+cell's entry address is a function of its entry -- its guard and its
+`Target` -- and the JIT's state alone ([execution.md](execution.md),
+"Sends, returns and the exit that materializes"): the guard, since a
+cell guarded by the receiver's dispatch id names the optimized copy
+customized for that receiver's application at the target's level, and
+a `super` or private lexical cell, whose guard says nothing of the
+receiver, the body's dispatching entry once it has a copy
+([execution.md](execution.md), "Speculation", "The key and the
+copies", "The dispatching entry"). So a cell copies what the lookup
+decided and decides nothing; when the JIT's state changes under an
+entry -- its callee compiled since the cell was written, found never to
+be compiled, a body abandoned or revived, a copy installed, retired or
+invalidated -- the cells it
 reached are written afresh from their entries (`refresh_cells`,
 `refresh_cells_entering`, `refresh_all_cells`), and when its machine code
 is freed or moved, the cells that named it: a compaction of the code zone

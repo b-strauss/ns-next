@@ -20,12 +20,19 @@ impl Mutator<'_> {
     /// family nothing runs any more. Runs in a full
     /// collection between marking and compaction (`World::collect`):
     /// `gathered` is what the marked objects name, and nothing here moves
-    /// or allocates an object.
+    /// or allocates an object; `carried_budgets` is what the collection
+    /// carries of each body's optimization budget across the ids it frees
+    /// (`jit::budgets_before_collection`), which a dropped request's
+    /// re-arming updates (`jit::forget_freed_copies`).
     ///
     /// The steps run in order, each releasing the `Rc`s the next one
     /// counts: the applications, the caches that hold them, the mixins
     /// the applications applied, the code ids, and the feedback ranges.
-    pub(crate) fn reclaim_ids(&mut self, mut gathered: GatheredIds) {
+    pub(crate) fn reclaim_ids(
+        &mut self,
+        mut gathered: GatheredIds,
+        carried_budgets: &mut IdentityMap<usize, i64>,
+    ) {
         let stack = self.heap.stack_roots();
         // A running activation names its body by id, beside the marked
         // closures and frames: step 3 asks which bodies run, step 4 frees
@@ -106,6 +113,9 @@ impl Mutator<'_> {
                     && superclass.is_none_or(|superclass| !freed.applications.contains(&superclass))
             });
             self.caches.forget_freed(&freed);
+            // The copies keyed on a freed guard go with it, their rows
+            // too: the guard is minted again for another application.
+            crate::jit::forget_freed_copies(self, &freed, carried_budgets);
         }
         // No other holder may outlive the scrub: an index freed while an
         // `Rc` still names it would alias the next application minted

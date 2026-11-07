@@ -13,6 +13,7 @@ pub(crate) mod cells;
 use super::Arguments;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
+use std::ops::Range;
 use std::rc::Rc;
 
 use crate::builtins::primitive::Primitive;
@@ -239,9 +240,82 @@ impl FreeRanges {
     }
 }
 
+/// One bit per site of the table, indexed as `InlineCaches::sites` is and
+/// sized with it: a bit past the table's length is always clear, so a
+/// range the table grows into again starts with every bit clear.
+#[derive(Default)]
+struct SiteBits {
+    words: Vec<u64>,
+}
+
+impl SiteBits {
+    const WORD_BITS: usize = u64::BITS as usize;
+
+    fn contains(&self, index: usize) -> bool {
+        self.words
+            .get(index / Self::WORD_BITS)
+            .is_some_and(|word| word & (1 << (index % Self::WORD_BITS)) != 0)
+    }
+
+    /// Sets `index`'s bit, answering whether it was set before; an index
+    /// past the words the table's length took sets nothing.
+    fn insert(&mut self, index: usize) -> bool {
+        let Some(word) = self.words.get_mut(index / Self::WORD_BITS) else {
+            return false;
+        };
+        let bit = 1 << (index % Self::WORD_BITS);
+        let before = *word & bit != 0;
+        *word |= bit;
+        before
+    }
+
+    fn remove(&mut self, index: usize) {
+        if let Some(word) = self.words.get_mut(index / Self::WORD_BITS) {
+            *word &= !(1 << (index % Self::WORD_BITS));
+        }
+    }
+
+    fn clear(&mut self, range: Range<usize>) {
+        for index in range {
+            self.remove(index);
+        }
+    }
+
+    /// Sizes the set for a table of `length` sites, every bit at or past
+    /// `length` clear.
+    fn resize(&mut self, length: usize) {
+        let held = self.words.len() * Self::WORD_BITS;
+        self.clear(length..held.max(length));
+        self.words.resize(length.div_ceil(Self::WORD_BITS), 0);
+    }
+
+    /// Moves `source`'s bit to `destination`, clearing `source`: a slide's
+    /// move of one site.
+    fn move_bit(&mut self, source: usize, destination: usize) {
+        let set = self.contains(source);
+        self.remove(source);
+        if set {
+            self.insert(destination);
+        } else {
+            self.remove(destination);
+        }
+    }
+}
+
 pub(crate) struct InlineCaches {
     /// Every call site of every family that has run, `VACANT` until filled.
     sites: Vec<CacheEntry>,
+    /// The sites an entry was ever written at (`advance`): the optimizing
+    /// compiler's "never executed", read by `site_executed`. An
+    /// invalidation or a scrub that vacates a site keeps its bit -- the
+    /// send ran, and a speculation that it never runs would trap at once
+    /// -- and only `forget_families`, which frees the range, clears it.
+    /// Set on the slow path alone, so a hit pays nothing for it.
+    executed: SiteBits,
+    /// The sites a speculation resting on them has trapped at
+    /// (`note_trap`), kept and cleared as `executed` is: a site that
+    /// trapped is not speculated on again.
+    trapped: SiteBits,
     /// Polymorphic blocks, four entries each in the order first seen --
     /// V8's width, Strongtalk's shape.
     pool: Vec<[CacheEntry; POLYMORPHIC_WIDTH]>,
@@ -313,6 +387,8 @@ impl InlineCaches {
         cells.vacate_global_rows(0..GLOBAL_CACHE_ENTRIES);
         InlineCaches {
             sites: Vec::new(),
+            executed: SiteBits::default(),
+            trapped: SiteBits::default(),
             pool: Vec::new(),
             free_blocks: Vec::new(),
             free_ranges: FreeRanges::default(),
@@ -403,6 +479,45 @@ impl InlineCaches {
         }
     }
 
+    /// The index of `site` in the range at `feedback_base`, or `None` for
+    /// a family the table had no room for, whose sends run uncached and
+    /// leave no record.
+    fn bit_index(feedback_base: FeedbackBase, site: u32) -> Option<usize> {
+        (feedback_base != FeedbackBase::NOT_ASSIGNED).then(|| feedback_base.index() + site as usize)
+    }
+
+    /// Whether a send ever filled `site` of the range at `feedback_base`
+    /// (`executed`), even if an invalidation has vacated it since: what
+    /// the optimizing compiler's speculation that a send never runs rests
+    /// on (`optimizing::snapshot::Snapshot::take`). A site the table holds
+    /// no record of -- a family it had no room for -- answers true, so
+    /// that nothing is speculated on it.
+    pub(crate) fn site_executed(&self, feedback_base: FeedbackBase, site: u32) -> bool {
+        Self::bit_index(feedback_base, site).is_none_or(|index| self.executed.contains(index))
+    }
+
+    /// Whether a speculation resting on `site` of the range at
+    /// `feedback_base` has trapped there (`note_trap`); true, as
+    /// `site_executed` answers, for a site the table holds no record of.
+    pub(crate) fn site_trapped(&self, feedback_base: FeedbackBase, site: u32) -> bool {
+        Self::bit_index(feedback_base, site).is_none_or(|index| self.trapped.contains(index))
+    }
+
+    /// Records that a speculation resting on `site` of the range at
+    /// `feedback_base` trapped, answering whether one had trapped there
+    /// before -- true for a site the table holds no record of, which can
+    /// record none.
+    #[cfg_attr(
+        not(any(ns_jit, test)),
+        expect(dead_code, reason = "only machine code traps")
+    )]
+    pub(crate) fn note_trap(&mut self, feedback_base: FeedbackBase, site: u32) -> bool {
+        match Self::bit_index(feedback_base, site) {
+            Some(index) => self.trapped.insert(index),
+            None => true,
+        }
+    }
+
     /// Whether a new range has grown the sites to their growth limit since
     /// the last collection: the caches have no heap, so the mutator that
     /// minted the range requests the collection (`Mutator::feedback_base_for`,
@@ -489,6 +604,8 @@ impl InlineCaches {
         });
         let InlineCaches {
             sites,
+            executed,
+            trapped,
             pool,
             free_blocks,
             free_ranges,
@@ -513,6 +630,9 @@ impl InlineCaches {
                 }
                 *entry = CacheEntry::vacant();
             }
+            // The next family the range serves has run none of its sends.
+            executed.clear(range.clone());
+            trapped.clear(range.clone());
             cells.vacate_sites(range);
             free_ranges.free(base.raw(), size);
         }
@@ -521,6 +641,8 @@ impl InlineCaches {
             end = start;
         }
         sites.truncate(end as usize);
+        executed.resize(sites.len());
+        trapped.resize(sites.len());
     }
 
     /// A range of `size` sites: the first free one that fits, else a new one
@@ -540,6 +662,8 @@ impl InlineCaches {
         {
             Some(end) if end < FeedbackBase::NOT_ASSIGNED.0 => {
                 self.sites.resize(end as usize, CacheEntry::vacant());
+                self.executed.resize(self.sites.len());
+                self.trapped.resize(self.sites.len());
                 self.cells.vacate_sites(start..end as usize);
                 self.check_site_limit();
                 // `end` fits 32 bits, and `start` lies `size` below it.
@@ -652,10 +776,14 @@ impl InlineCaches {
                     std::mem::replace(&mut self.sites[source], CacheEntry::vacant());
                 let cell = self.cells.site(source);
                 self.cells.write_site(destination, cell);
+                self.executed.move_bit(source, destination);
+                self.trapped.move_bit(source, destination);
             }
             self.sites_moved += u64::from(range.size);
         }
         self.sites.truncate(slide.end as usize);
+        self.executed.resize(self.sites.len());
+        self.trapped.resize(self.sites.len());
         self.cells.vacate_sites(slide.end as usize..old_end);
         self.free_ranges = FreeRanges::default();
         self.site_slides += 1;
@@ -785,7 +913,7 @@ impl InlineCaches {
                     slots
                         .iter()
                         .position(|slot| slot.guard == guard)
-                        .map(|position| (position, jit::cell_entry(jit, &slots[position].target)))
+                        .map(|position| (position, jit::cell_entry(jit, &slots[position])))
                 });
                 if let Some((position, address)) = slot {
                     let cell = Cell {
@@ -797,7 +925,7 @@ impl InlineCaches {
             }
             _ if entry.guard == guard => {
                 let cell = Cell {
-                    entry: jit::cell_entry(jit, &entry.target),
+                    entry: jit::cell_entry(jit, entry),
                     ..self.cells.site(index)
                 };
                 self.cells.write_site(index, cell);
@@ -836,7 +964,7 @@ impl InlineCaches {
         for (index, entry) in self.sites.iter().enumerate() {
             let cell = self.cells.site(index);
             if named(cell.entry) {
-                let entry = jit::cell_entry(jit, &entry.target);
+                let entry = jit::cell_entry(jit, entry);
                 self.cells.write_site(index, Cell { entry, ..cell });
             }
         }
@@ -844,7 +972,7 @@ impl InlineCaches {
             for (position, slot) in slots.iter().enumerate() {
                 let cell = self.cells.block_cell(block, position);
                 if named(cell.entry) {
-                    let entry = jit::cell_entry(jit, &slot.target);
+                    let entry = jit::cell_entry(jit, slot);
                     self.cells
                         .write_block_cell(block, position, Cell { entry, ..cell });
                 }
@@ -943,6 +1071,9 @@ impl InlineCaches {
         {
             return;
         }
+        // Every arm below writes a non-vacant entry or keeps one that is
+        // already there.
+        self.executed.insert(index);
         match entry.target {
             Target::Vacant => {
                 *entry = CacheEntry { guard, target };
@@ -1004,7 +1135,7 @@ impl InlineCaches {
                 // entry address follows the JIT's state, which may have
                 // changed since the site's cell was written.
                 let first_cell = Cell {
-                    entry: jit::cell_entry(jit, &first.target),
+                    entry: jit::cell_entry(jit, &first),
                     ..self.cells.site(index)
                 };
                 let slots = &mut self.pool[block as usize];
@@ -1455,7 +1586,11 @@ impl GlobalCache {
                 cells.write_global_row(
                     row,
                     GlobalRow {
-                        entry: jit::cell_entry(jit, &self.entries[row].target),
+                        entry: jit::cell_entry_for(
+                            jit,
+                            self.entries[row].guard,
+                            &self.entries[row].target,
+                        ),
                         ..found
                     },
                 );
@@ -1472,7 +1607,7 @@ impl GlobalCache {
                 cells.write_global_row(
                     row,
                     GlobalRow {
-                        entry: jit::cell_entry(jit, &entry.target),
+                        entry: jit::cell_entry_for(jit, entry.guard, &entry.target),
                         ..found
                     },
                 );
@@ -2642,11 +2777,12 @@ pub(crate) fn decide_at<'gc>(
         let base = mutator.feedback_base_for(code);
         jit::note_entry(&mut mutator.jit, code, base, None);
         jit::after_compile_trigger(mutator);
-        let address = jit::machine_entry_address(&mutator.jit, code, base);
+        let address = jit::machine_entry_address(&mutator.jit, code, base, None);
         mutator
             .caches
             .refresh_cells(index, guard, global_key, &mutator.jit);
         let Some(address) = address else {
+            jit::note_call_refused(&mut mutator.jit, code);
             return MissAnswer::Refuse;
         };
         mutator.heap.hand_machine_callee(receiver, *level);
@@ -2708,7 +2844,10 @@ pub(crate) fn decide_at<'gc>(
     };
     jit::note_entry_by_call(&mut mutator.jit, &method.code, base, Some(&method));
     jit::after_compile_trigger(mutator);
-    let address = jit::machine_entry_address(&mutator.jit, &method.code, base);
+    // The callee entered at its copy for its key, which a cell names only
+    // behind a guard that is the receiver's own id.
+    let key = jit::entry_key(&mutator.heap, &method.code, receiver, Some(defining_class));
+    let address = jit::machine_entry_address(&mutator.jit, &method.code, base, key);
     // The cells the decision went through follow the JIT's state either
     // way: the callee's machine entry once it has one, the refusing stub
     // once it never will -- refused or exiting at once -- so that the
@@ -2718,6 +2857,7 @@ pub(crate) fn decide_at<'gc>(
         .caches
         .refresh_cells(index, guard, global_key, &mutator.jit);
     let Some(address) = address else {
+        jit::note_call_refused(&mut mutator.jit, &method.code);
         return MissAnswer::Refuse;
     };
     mutator.heap.hand_machine_callee(receiver, defining_class);
@@ -2838,7 +2978,7 @@ fn cell_for<'gc>(mutator: &Mutator<'gc>, key: SendKey<'_, 'gc>, target: &Target)
     };
     Cell {
         guard,
-        entry: jit::cell_entry(&mutator.jit, target),
+        entry: jit::cell_entry_for(&mutator.jit, key.guard, target),
         level: cell_level(target),
         chain_start: chain_start_word(chain_start, target),
     }
@@ -2868,7 +3008,7 @@ fn chain_start_word(chain_start: ChainStart, target: &Target) -> u64 {
 fn site_state_cell(jit: &JitState, target: &Target, chain_start: u64) -> Cell {
     Cell {
         guard: VACANT_GUARD,
-        entry: jit::cell_entry(jit, target),
+        entry: jit::cell_entry_for(jit, DispatchId::VACANT, target),
         level: cell_level(target),
         chain_start,
     }
@@ -3244,6 +3384,7 @@ fn expected_cell(
         | Target::Factory { chain, .. } => *chain,
     };
     let chain_start = chain_start_of(chain);
+    let entry_guard = guard;
     let guard = match chain_start {
         ChainStart::ReceiverClass => u64::from(guard.bits()),
         ChainStart::LexicalClass | ChainStart::Superclass => {
@@ -3259,7 +3400,7 @@ fn expected_cell(
     };
     Ok(Some(Cell {
         guard,
-        entry: jit::expected_cell_entry(jit, target),
+        entry: jit::expected_cell_entry(jit, entry_guard, target),
         level: cell_level(target),
         chain_start: chain_start_word(chain_start, target),
     }))
@@ -3362,7 +3503,7 @@ mod tests {
     pub(super) fn public_cell(guard: DispatchId, target: &Target, jit: &JitState) -> Cell {
         Cell {
             guard: u64::from(guard.bits()),
-            entry: jit::cell_entry(jit, target),
+            entry: jit::cell_entry_for(jit, guard, target),
             level: cell_level(target),
             chain_start: ChainStart::ReceiverClass as u64,
         }
@@ -3974,6 +4115,117 @@ mod tests {
         // second payload to any rule and this catches it silently doubling
         // the cache's footprint instead of a passing test hiding it.
         assert_eq!(std::mem::size_of::<GlobalEntry>(), 32);
+    }
+
+    /// A slot target, for the tests of the executed and trapped bits,
+    /// which read nothing of it.
+    fn any_slot() -> Target {
+        Target::Slot {
+            field: 0,
+            kind: AccessorKind::Getter,
+            chain: Chain::Public,
+            level: ApplicationIndex::UNREGISTERED,
+            recorded_guard: DispatchId::NONE,
+        }
+    }
+
+    /// An invalidation vacates a site but does not make it one that never
+    /// ran: a speculation that it never runs would trap at once.
+    #[test]
+    fn a_site_filled_once_stays_executed_through_an_invalidation() {
+        let mut caches = InlineCaches::new();
+        let jit = JitState::new();
+        let base = caches.fresh_range(3);
+        let site = 1;
+        let guard = DispatchId::from_counter(DispatchId::FIRST_MINTED);
+        assert!(!caches.site_executed(base, site));
+        caches.advance_public(base.index() + 1, guard, any_slot(), false, &jit);
+        assert!(caches.site_executed(base, site));
+        assert!(!caches.site_executed(base, 0), "its neighbour never ran");
+        caches.invalidate();
+        assert!(matches!(
+            caches.sites[base.index() + 1].target,
+            Target::Vacant
+        ));
+        assert!(caches.site_executed(base, site));
+        let mut freed = FreedIds::default();
+        freed.guards.insert(guard);
+        caches.advance_public(base.index() + 1, guard, any_slot(), false, &jit);
+        caches.forget_freed(&freed);
+        assert!(caches.site_executed(base, site));
+    }
+
+    /// A family a collection drops gives its range to the next family,
+    /// whose sends have not run: the range's bits go with the family.
+    #[test]
+    fn a_forgotten_family_forgets_that_its_sites_ran() {
+        let mut caches = InlineCaches::new();
+        let jit = JitState::new();
+        let (forgotten, held) = (body(2), body(1));
+        let base = caches.base_for(&forgotten);
+        caches.base_for(&held);
+        let site = 1;
+        let guard = DispatchId::from_counter(DispatchId::FIRST_MINTED);
+        caches.advance_public(base.index() + 1, guard, any_slot(), false, &jit);
+        assert!(!caches.note_trap(base, site));
+        assert!(caches.site_executed(base, site));
+        drop(forgotten);
+        caches.forget_families(&BTreeSet::new());
+        assert!(!caches.site_executed(base, site));
+        assert!(!caches.site_trapped(base, site));
+        // The range, inside the table, serves the next family afresh.
+        assert_eq!(caches.base_for(&body(2)), base);
+        assert!(!caches.site_executed(base, site));
+        drop(held);
+    }
+
+    /// The bits stay with their family's sites as a slide moves them, and
+    /// the free tail a truncation cut off grows back clear.
+    #[test]
+    fn a_slide_carries_the_executed_and_trapped_bits() {
+        let mut caches = InlineCaches::new();
+        let jit = JitState::new();
+        let (dropped, moved) = (body(2), body(2));
+        caches.base_for(&dropped);
+        let old_base = caches.base_for(&moved);
+        let guard = DispatchId::from_counter(DispatchId::FIRST_MINTED);
+        caches.advance_public(old_base.index() + 1, guard, any_slot(), false, &jit);
+        caches.note_trap(old_base, 0);
+        drop(dropped);
+        caches.forget_families(&BTreeSet::new());
+        let slide = caches.plan_slide().expect("half the table is free");
+        caches.apply_slide(&slide);
+        let new_base = slide.remap_base(old_base);
+        assert_eq!(new_base.index(), 0);
+        assert!(caches.site_executed(new_base, 1));
+        assert!(!caches.site_executed(new_base, 0));
+        assert!(caches.site_trapped(new_base, 0));
+        assert!(!caches.site_trapped(new_base, 1));
+        let fresh = caches.fresh_range(2);
+        assert_eq!(fresh.index(), 2);
+        assert!(!caches.site_executed(fresh, 1));
+        assert!(!caches.site_trapped(fresh, 0));
+        drop(moved);
+    }
+
+    /// The first trap at a site says it is the first; every later one
+    /// that it trapped before. A family the table had no room for keeps
+    /// no record, and reads as executed and trapped so that nothing is
+    /// speculated on it.
+    #[test]
+    fn a_second_trap_at_a_site_says_it_trapped_before() {
+        let mut caches = InlineCaches::new();
+        let base = caches.fresh_range(2);
+        let site = 1;
+        assert!(!caches.site_trapped(base, site));
+        assert!(!caches.note_trap(base, site));
+        assert!(caches.site_trapped(base, site));
+        assert!(caches.note_trap(base, site));
+        assert!(!caches.site_trapped(base, 0));
+        let unassigned = FeedbackBase::NOT_ASSIGNED;
+        assert!(caches.site_executed(unassigned, 0));
+        assert!(caches.site_trapped(unassigned, 0));
+        assert!(caches.note_trap(unassigned, 0));
     }
 
     /// A factory entry records the body the lookup found, and a hit hands

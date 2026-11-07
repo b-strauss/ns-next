@@ -41,7 +41,7 @@ pub(crate) mod stubs;
 pub(crate) mod targets;
 pub(crate) mod zone;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use ns_memory::{CodeOffset, CodeWriter, EntryBlock};
@@ -50,7 +50,7 @@ use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
 use crate::heap::{ActivationReference, ClassReference, CodeId, Heap, RegisterBase, Value};
 use crate::interpreter::{FeedbackBase, Mutator, DEPTH_RESERVE, MAX_ACTIVATION_DEPTH};
-use crate::mixin::MixinMethod;
+use crate::mixin::{DispatchId, MixinApplication, MixinMethod};
 
 /// The code zone's size unless a test asks for another. A first guess
 /// within the 128 MiB bound: the size is chosen by measurement once
@@ -300,11 +300,22 @@ pub struct JitStatistics {
     /// compiler thread of its own would take off the mutator.
     pub compile_nanoseconds: u64,
     /// Bodies whose optimization budget ran out in baseline machine code,
-    /// each requested once while its request is pending
+    /// each requested once per key while its request is pending
     /// (`JitState::optimization_requests`).
     pub optimization_requests: u64,
-    /// Bodies compiled to optimized machine code.
+    /// Bodies compiled to optimized machine code, each customized copy
+    /// of a method's body among them.
     pub optimized_bodies: u64,
+    /// The customized copies of method bodies compiled
+    /// (`CustomizedCopy`): of `optimized_bodies`.
+    pub customized_copies: u64,
+    /// Calls through a method body's dispatching entry -- a `super` or
+    /// private lexical send's, and an interpreted send's (`jit::called`),
+    /// once the body has a customized copy
+    /// (`targets::emit_dispatching_entry`) -- that entered the copy whose
+    /// row matched: counted by the bodies compiled while the JIT counts, as
+    /// `compiled_calls` is.
+    pub dispatched_calls: u64,
     /// Exits of optimized machine code.
     pub optimized_exits: u64,
     /// Bodies whose optimized machine code was abandoned for its exits.
@@ -323,12 +334,32 @@ pub struct JitStatistics {
     /// transfer found its baseline body's twin not compiled yet.
     pub optimized_twin_requests: u64,
     /// Exits of optimized code the deopt stress mode forced at an
-    /// interrupt point: of `optimized_exits`.
+    /// interrupt point, and the invalidate stress mode at the last point
+    /// of its countdown: of `optimized_exits`.
     pub forced_exits: u64,
     /// The largest countdown a forced exit came at: how many interrupt
     /// points optimized code had passed since the safepoint that set it,
     /// the exiting one included.
     pub deepest_forced_exit: u64,
+    /// Exits of optimized code at a failed speculation
+    /// (`stubs::ExitKind::Trap`): of `optimized_exits`, counted against no
+    /// exit budget.
+    pub traps: u64,
+    /// Optimized copies made not entrant for their traps (`count_trap`):
+    /// a second trap at a site, or `TRAP_LIMIT` traps of one copy.
+    pub made_not_entrant: u64,
+    /// Keys -- or a body's one uncustomized copy -- left in baseline code
+    /// for good, their copy past `LAST_VERSION` made not entrant or
+    /// abandoned all the same (`retire_optimized`).
+    pub refused_for_good: u64,
+    /// Optimized copies freed because what they were compiled against
+    /// changed: the copies keyed on an application an install rebuilt
+    /// (`invalidate_applications`) or whose id a full collection reclaimed
+    /// (`forget_freed_copies`), every copy at a bulk forward
+    /// (`invalidate_all_optimized`), and those the invalidate stress mode's
+    /// rounds free (`invalidate_optimized_for_stress`). Neither a trap nor
+    /// an exit: no version is raised for them.
+    pub invalidated_copies: u64,
 }
 
 impl JitStatistics {
@@ -431,6 +462,25 @@ const MAXIMUM_REVIVAL_DOUBLINGS: u32 = 4;
 /// states a slot has (`FIRST_ABANDONED`).
 const MAXIMUM_REVIVAL_WAIT: u32 = REVIVAL_ENTRIES << MAXIMUM_REVIVAL_DOUBLINGS;
 
+/// The traps an optimized copy may take before it is made not entrant
+/// (`count_trap`), though no site of it trapped twice: Strongtalk's
+/// `UncommonRecompileLimit`, measured and kept: 3 and 10 changed nothing
+/// (`docs/design/execution.md`, "What speculation moved"). A copy whose
+/// traps are all at sites never seen to trap is still recompiled, so
+/// that one trap at each of many sites does not run on in code whose
+/// feedback is stale everywhere.
+pub(crate) const TRAP_LIMIT: u8 = 5;
+
+/// The last version of a copy compiled with traps
+/// (`optimizing::Speculation::at_version`): its recompile after one more
+/// failure compiles none, and so can never be made not entrant again,
+/// and an abandonment of that one leaves the key in baseline code for
+/// good (`retire_optimized`). Strongtalk's `MaxVersions`, as
+/// `TRAP_LIMIT` is its limit, and measured and kept as it is. Public,
+/// since it bounds what `JitStatistics::made_not_entrant` counts of one
+/// copy.
+pub const LAST_VERSION: u8 = 3;
+
 /// The interpreted entries a body abandoned for the `abandonments`th time
 /// waits before it is revived: `base` -- `REVIVAL_ENTRIES` but in a test
 /// (`JitState::set_revival_entries`) -- doubled at each abandonment after
@@ -503,22 +553,121 @@ pub(crate) struct JitSlot {
     /// this zone, beside which it lives (`optimize_requested`), so that
     /// every change of the baseline code's state forgets it.
     optimized: Cell<u32>,
-    /// How many times the JIT abandoned the body's optimized code
-    /// (`abandon_optimized`), which doubles the budget its next
-    /// optimization waits for (`optimization_budget_after`).
-    optimized_abandonments: Cell<u32>,
+    /// The version of the body's one uncustomized copy, as a copy's row
+    /// holds its key's (`CustomizedCopy::version`).
+    optimized_version: Cell<u8>,
+    /// The traps the body's one uncustomized copy took, as a copy's row
+    /// counts its key's (`CustomizedCopy::traps`).
+    optimized_traps: Cell<u8>,
     /// Whether the optimizing compiler refused the body for a reason no
-    /// compaction removes -- too large for the zone, or unassembled -- so
-    /// that it is never requested nor compiled again: a recompile of its
+    /// compaction removes -- too large for the zone, or unassembled -- or
+    /// its uncustomized copy failed past `LAST_VERSION`
+    /// (`JitSlot::raise_version`), so that it is never requested nor
+    /// compiled again: a recompile of its
     /// baseline code, after an abandonment or a compaction that freed it,
     /// arms a full budget, which would otherwise ask for the same refusal
     /// once per budget for the rest of the run. Kept, as `twin_refused`
     /// is, across every change of the baseline code's state.
     optimized_refused: Cell<bool>,
+    /// A method's body's optimized copies, one row per key it was
+    /// requested for (`CustomizationKey`), each beside the slot's baseline
+    /// code as `optimized` is: a row's `body` is set only while the
+    /// baseline code is `COMPILED` in this zone, so that every change of
+    /// its state forgets it, while the row itself stays, so that what it
+    /// says of its key -- its version, its traps, its refusal -- outlives
+    /// its code. Empty for every other body, whose one copy is
+    /// `optimized` (`docs/design/execution.md`, "Speculation", "The key and
+    /// the copies").
+    copies: RefCell<Vec<CustomizedCopy>>,
 }
 
-/// What `JitSlot::optimized` holds for a body without optimized code.
+/// What `JitSlot::optimized` and a copy's row hold for a body without
+/// optimized code.
 const NO_BODY: u32 = u32::MAX;
+
+/// What a method body's optimized copy is compiled for and entered
+/// where: the receiver's application, by its instances id, and the
+/// application the body is entered at -- the current class's, which the
+/// call writes into the frame -- by its instances id too. One body runs
+/// at two levels of one receiver's chain when a mixin is applied twice in
+/// it, so the receiver alone does not tell its copies apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct CustomizationKey {
+    pub(crate) receiver: DispatchId,
+    pub(crate) entered: DispatchId,
+}
+
+impl CustomizationKey {
+    /// The key of an activation on `receiver` at `current_class`; `None`
+    /// where either has no application with a minted id -- a class object
+    /// only a crafted image makes -- which no copy is made for.
+    fn of<'gc>(
+        heap: &Heap<'gc>,
+        receiver: Value<'gc>,
+        current_class: Option<ClassReference<'gc>>,
+    ) -> Option<CustomizationKey> {
+        let receiver = heap.dispatch_id(receiver);
+        let entered = heap.class_dispatch_ids(current_class?).instances;
+        let minted = |id: DispatchId| id.bits() >= DispatchId::FIRST_MINTED;
+        (minted(receiver) && minted(entered)).then_some(CustomizationKey { receiver, entered })
+    }
+}
+
+/// A method body's row for one key (`JitSlot::copies`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CustomizedCopy {
+    pub(crate) key: CustomizationKey,
+    /// The copy's optimized code, by its index in `bodies`; `NO_BODY` while
+    /// it has none -- requested and not yet installed, freed, or refused.
+    pub(crate) body: u32,
+    /// How many times the key's copy was made not entrant for its traps
+    /// or abandoned for its exits (`retire_optimized`): what its next
+    /// compile waits for (`optimization_budget_after`) and whether it
+    /// speculates (`optimizing::Speculation::at_version`). Never decays,
+    /// so that a copy that keeps failing reaches its last version.
+    pub(crate) version: u8,
+    /// The traps the key's current copy took, from none at each install,
+    /// halved at every decay (`JitSlot::decay_exits`): at `TRAP_LIMIT` the
+    /// copy is made not entrant.
+    pub(crate) traps: u8,
+    /// Whether the optimizing compiler refused the key's copy for a reason
+    /// no compaction removes, so that the key is never requested again.
+    pub(crate) refused: bool,
+    /// The superclass steps from the receiver's class to the class the
+    /// key's body is entered at, `None` where the walk did not find it: a
+    /// cell guarded by the receiver's id names the copy whose key its
+    /// target's level reaches (`entry_of_target`), since a cell knows the
+    /// receiver's application by its id alone, and the entered
+    /// application only as a level above it.
+    pub(crate) level: Option<u16>,
+    /// The application word of the class the key's body is entered at
+    /// (`Heap::class_application_word`), read off the frame whose spend
+    /// made the row: what the dispatching stub compares a `super` or
+    /// private lexical send's current class with (`heap/optimized_copies.rs`).
+    pub(crate) entered_word: u64,
+}
+
+/// A body whose optimization budget ran out, for the optimizing compile
+/// at the next safepoint (`optimize_requested`): held weakly, as the
+/// installed bodies are, with the key of the frame whose spend ran it out,
+/// `None` for a body that is not customized, and the application the
+/// frame was entered at.
+pub(crate) struct OptimizationRequest {
+    pub(crate) code: Weak<CompiledCode>,
+    pub(crate) key: Option<CustomizationKey>,
+    pub(crate) entered: Weak<MixinApplication>,
+}
+
+impl OptimizationRequest {
+    /// The request of `code`'s one copy, which is not customized.
+    pub(crate) fn uncustomized(code: &Rc<CompiledCode>) -> OptimizationRequest {
+        OptimizationRequest {
+            code: Rc::downgrade(code),
+            key: None,
+            entered: Weak::new(),
+        }
+    }
+}
 
 impl Default for JitSlot {
     fn default() -> JitSlot {
@@ -534,8 +683,10 @@ impl Default for JitSlot {
             twin_refused: Cell::new(false),
             back_jumps: Cell::new(0),
             optimized: Cell::new(NO_BODY),
-            optimized_abandonments: Cell::new(0),
+            optimized_version: Cell::new(0),
+            optimized_traps: Cell::new(0),
             optimized_refused: Cell::new(false),
+            copies: RefCell::new(Vec::new()),
         }
     }
 }
@@ -655,20 +806,159 @@ impl JitSlot {
     /// Halves the count of the body's exits and of its abandonments
     /// (`JitState::decay_exits`), answering the exits: in a run that
     /// allocates, the wait of its next revival by entries shrinks again as
-    /// its exits decay (`revival_entries`).
+    /// its exits decay (`revival_entries`). Halves each copy's traps too,
+    /// so that traps far apart in a long run do not add up to
+    /// `TRAP_LIMIT`, as Strongtalk's sweeper decays its uncommon-trap
+    /// counters; a copy's version never decays, or a copy that keeps
+    /// failing would never reach its last.
     fn decay_exits(&self) -> u32 {
         let exits = self.exits.get() / 2;
         self.exits.set(exits);
         self.abandonments.set(self.abandonments.get() / 2);
-        self.optimized_abandonments
-            .set(self.optimized_abandonments.get() / 2);
+        self.optimized_traps.set(self.optimized_traps.get() / 2);
+        for copy in self.copies.borrow_mut().iter_mut() {
+            copy.traps /= 2;
+        }
         exits
+    }
+
+    /// The version of the copy for `key` -- the row's for a key, the
+    /// slot's own for the uncustomized copy, `None` -- 0 for a key with
+    /// no row yet.
+    fn optimized_version(&self, key: Option<CustomizationKey>) -> u8 {
+        match key {
+            Some(key) => self.copy_row(key).map_or(0, |row| row.version),
+            None => self.optimized_version.get(),
+        }
+    }
+
+    /// Counts a trap of the copy for `key`, answering its traps now.
+    fn count_trap(&self, key: Option<CustomizationKey>) -> u8 {
+        let raise = |traps: u8| traps.saturating_add(1);
+        match key {
+            Some(key) => self.with_copy_row(key, |copy| {
+                copy.traps = raise(copy.traps);
+                copy.traps
+            }),
+            None => {
+                let traps = raise(self.optimized_traps.get());
+                self.optimized_traps.set(traps);
+                traps
+            }
+        }
+    }
+
+    /// Raises the version of the copy for `key`, its traps counted from
+    /// none at the new one, answering the version raised to; or, for a
+    /// copy already past `LAST_VERSION`, which compiled without a trap and
+    /// failed all the same, refuses the key for good and answers `None`.
+    fn raise_version(&self, key: Option<CustomizationKey>) -> Option<u8> {
+        let raise = |version: u8, traps: &mut u8, refused: &mut bool| {
+            *traps = 0;
+            if version > LAST_VERSION {
+                *refused = true;
+                return None;
+            }
+            Some(version + 1)
+        };
+        match key {
+            Some(key) => self.with_copy_row(key, |copy| {
+                let raised = raise(copy.version, &mut copy.traps, &mut copy.refused);
+                copy.version = raised.unwrap_or(copy.version);
+                raised
+            }),
+            None => {
+                let (mut traps, mut refused) = (0, self.optimized_refused.get());
+                let raised = raise(self.optimized_version.get(), &mut traps, &mut refused);
+                self.optimized_traps.set(traps);
+                self.optimized_refused.set(refused);
+                if let Some(version) = raised {
+                    self.optimized_version.set(version);
+                }
+                raised
+            }
+        }
+    }
+
+    /// Runs `change` on the row for `key`, which exists.
+    fn with_copy_row<T>(
+        &self,
+        key: CustomizationKey,
+        change: impl FnOnce(&mut CustomizedCopy) -> T,
+    ) -> T {
+        let mut copies = self.copies.borrow_mut();
+        let Some(copy) = copies.iter_mut().find(|copy| copy.key == key) else {
+            unreachable!("internal: a copy's row is made with its request");
+        };
+        change(copy)
     }
 
     fn settle(&self, state: u32) {
         self.state.set(state);
         self.zone.set(0);
+        self.forget_optimized();
+    }
+
+    /// Forgets the body's optimized code, its one copy and every
+    /// customized one, keeping each copy's row (`JitSlot::copies`).
+    fn forget_optimized(&self) {
         self.optimized.set(NO_BODY);
+        for copy in self.copies.borrow_mut().iter_mut() {
+            copy.body = NO_BODY;
+        }
+    }
+
+    /// Whether the body has a row for some key: only then is a key worth
+    /// computing for an entry into it.
+    pub(crate) fn has_copies(&self) -> bool {
+        !self.copies.borrow().is_empty()
+    }
+
+    /// Whether some key's row names an installed copy: only then can the
+    /// key of an entry change which code it enters, so that an entry into
+    /// a body whose copies are all requested, freed or refused pays for
+    /// no key, and an interpreted send into it enters its baseline code
+    /// directly (`jit::called`).
+    #[inline]
+    fn has_installed_copy(&self) -> bool {
+        self.copies.borrow().iter().any(|copy| copy.body != NO_BODY)
+    }
+
+    /// How many keys' rows name an installed copy, a freed one whose row
+    /// still names it included: at most `DISPATCHING_ROWS` of them stand
+    /// in the body's dispatching rows.
+    #[inline]
+    fn installed_copies(&self) -> usize {
+        self.copies
+            .borrow()
+            .iter()
+            .filter(|copy| copy.body != NO_BODY)
+            .count()
+    }
+
+    /// The row for `key`, copied out.
+    fn copy_row(&self, key: CustomizationKey) -> Option<CustomizedCopy> {
+        self.copies
+            .borrow()
+            .iter()
+            .find(|copy| copy.key == key)
+            .copied()
+    }
+
+    /// Records the refusal of the copy for `key`, whose row exists.
+    fn refuse_copy(&self, key: CustomizationKey) {
+        self.with_copy_row(key, |copy| copy.refused = true);
+    }
+
+    /// Sets the body of the row for `key`, which exists; an installed
+    /// one counts its traps from none, however its predecessor was freed.
+    fn set_copy_body(&self, key: CustomizationKey, body: u32) {
+        self.with_copy_row(key, |copy| {
+            copy.body = body;
+            if body != NO_BODY {
+                copy.traps = 0;
+            }
+        });
     }
 
     /// Puts the body back to counting its entries, from none, its exits
@@ -710,7 +1000,7 @@ impl JitSlot {
         self.first_instruction.set(first_instruction.0);
         self.map.set(map);
         self.needed.set(0);
-        self.optimized.set(NO_BODY);
+        self.forget_optimized();
     }
 
     /// Records the body's machine code moved by a compaction's slide
@@ -855,6 +1145,12 @@ struct Zone {
     /// The stub a megamorphic site's cell names
     /// (`targets::assemble_megamorphic_stub`).
     megamorphic_stub: CodeOffset,
+    /// The shared tail of every method body's dispatching entry
+    /// (`targets::assemble_dispatching_stub`), and the tail that counts
+    /// the calls it enters a copy by, which a body compiled while the JIT
+    /// counts jumps to.
+    dispatching_stub: CodeOffset,
+    counting_dispatching_stub: CodeOffset,
     /// The stubs a cell names for a target that is no method with code
     /// (`targets::assemble_accessor_stubs`).
     accessors: AccessorStubs,
@@ -1052,6 +1348,26 @@ struct InstalledBody {
     /// did, as `JitSlot::needed` is the lean body's own and `twin_needed`
     /// its twin's. Unused but for a lean body.
     optimized_needed: u32,
+    /// The key a customized copy was compiled for, whose row in its
+    /// slot's `copies` names it while it is current; `None` for baseline
+    /// code and for a body's one uncustomized copy.
+    key: Option<CustomizationKey>,
+    /// A method's lean body's dispatching entry and its data words
+    /// (`targets::emit_dispatching_entry`); `None` for every other code.
+    dispatching: Option<InstalledDispatching>,
+}
+
+/// A method's lean body's dispatching entry as installed: the offsets
+/// from the body's start of the entry and of its two data words, which a
+/// compaction keeps, and the address of the dispatching rows the rows'
+/// word names (`heap/optimized_copies.rs`): the vacant block's until the
+/// JIT points it at the block of the body's code id.
+#[derive(Clone, Copy, Debug)]
+struct InstalledDispatching {
+    entry: u32,
+    rows_word: u32,
+    tail_word: u32,
+    rows: u64,
 }
 
 /// Which of the JIT's two compilers made a body's machine code
@@ -1170,6 +1486,12 @@ pub(crate) struct JitState {
     /// instruction, or, for a refused push, the code the caller's call
     /// returns into. Cleared with `walked` before every entry.
     pub(crate) walked_optimized: bool,
+    /// Whether the miss leaf refused the last call for a callee that has
+    /// no machine code yet but may still be compiled -- counting its
+    /// entries, never compiled or freed by a compaction: a refusal that
+    /// says nothing of the caller's code (`resumption_after_exit`).
+    /// Cleared with `walked` before every entry.
+    pub(crate) refused_for_an_uncompiled_callee: bool,
     /// The block every entry hands machine code (`stubs::BlockWord`), kept
     /// from one entry to the next: an entry writes only the words that
     /// name its frame and its code, the others when `block_stale` says
@@ -1242,10 +1564,10 @@ pub(crate) struct JitState {
     /// revival: `REVIVAL_ENTRIES`, but in a test that lowers it
     /// (`set_revival_entries`).
     revival_base: u32,
-    /// The bodies whose optimization budget ran out, each once, held
-    /// weakly as the installed bodies are: what the optimizing compile at
-    /// the next safepoint takes up.
-    pub(crate) optimization_requests: Vec<Weak<CompiledCode>>,
+    /// The bodies whose optimization budget ran out, each once per key,
+    /// held weakly as the installed bodies are: what the optimizing
+    /// compile at the next safepoint takes up.
+    pub(crate) optimization_requests: Vec<OptimizationRequest>,
     /// The installed bodies, by index in `bodies`, whose budget word is
     /// still to be pointed at their row, which only a caller holding the
     /// heap can do (`after_compile_trigger`). Emptied by a compaction,
@@ -1271,8 +1593,28 @@ pub(crate) struct JitState {
     /// optimized code compiled meanwhile counts its interrupt points down
     /// to a forced exit (`MachineWord::DeoptCountdown`).
     deopt_stress: bool,
-    /// Where the next safepoint's countdown lies in `DEOPTIMIZATION_ROTATION`.
-    deoptimization_rotation: usize,
+    /// Whether the invalidate stress mode is on (`NS_NEXT_STRESS_INVALIDATE`,
+    /// `set_invalidate_stress`), which implies the optimize stress mode:
+    /// once optimized code has passed `STRESS_INVALIDATION_POINTS`
+    /// interrupt points, it leaves for a safepoint, which frees every
+    /// body's copies but those of the bodies backing off
+    /// (`invalidate_optimized_for_stress`).
+    invalidate_stress: bool,
+    /// Each body's back-off under the invalidate stress mode, by its
+    /// address, checked against the `Weak` it holds.
+    #[cfg(ns_jit)]
+    stress_back_offs: IdentityMap<usize, StressBackOff>,
+    /// The method bodies that have a key's row (`JitSlot::copies`), held
+    /// weakly as the installed bodies are: what an invalidation by
+    /// application (`invalidate_applications`, `forget_freed_copies`)
+    /// walks, since a row outlives its copy's code and its baseline code
+    /// alike, and a row keyed on a reclaimed id must be dropped wherever
+    /// it lies.
+    #[cfg(ns_jit)]
+    customized: Vec<Weak<CompiledCode>>,
+    /// The state of the sequence that draws the next safepoint's
+    /// countdown from `DEOPTIMIZATION_ROTATION` (`DEOPTIMIZATION_SEED`).
+    deoptimization_draw: u64,
     /// The countdown the last safepoint set, which a forced exit came at
     /// (`JitStatistics::deepest_forced_exit`).
     deoptimization_countdown: u64,
@@ -1282,6 +1624,12 @@ pub(crate) struct JitState {
     /// is made (`share_machine_words`), or a state's own in a test that
     /// has no heap.
     machine_words: crate::heap::machine_words::MachineWords,
+    /// The dispatching rows of the method bodies' optimized copies, by
+    /// code id (`heap/optimized_copies.rs`), reserved at the first install
+    /// of a method body: what the bodies' dispatching entries compare a
+    /// `super` or private lexical send's receiver and current class with.
+    #[cfg(ns_jit)]
+    optimized_copies: Option<crate::heap::optimized_copies::OptimizedCopies>,
 }
 
 /// Whether `NS_NEXT_STRESS_JIT` asks for the JIT stress mode: set, and
@@ -1330,16 +1678,18 @@ pub(crate) fn stress_zone_from_env() -> bool {
 }
 
 /// Whether `NS_NEXT_STRESS_OPTIMIZE` asks for the optimize stress mode:
-/// set, and neither empty nor `0`, or the deopt stress mode, which implies
-/// it. Debug builds only; read once per process. Every body is then
-/// optimized as early as it can be: compiled to baseline code at its first
-/// entry or interpreted backward jump, its budget armed at 0, so that its
-/// first spend requests its optimization, which the next safepoint
-/// compiles -- V8's `stress_maglev` (`docs/design/execution.md`,
-/// "Verification"). It forces the JIT on where it is available.
+/// set, and neither empty nor `0`, or the deopt or the invalidate stress
+/// mode, which imply it. Debug builds only; read once per process. Every
+/// body is then optimized as early as it can be: compiled to baseline code
+/// at its first entry or interpreted backward jump, its budget armed at 0,
+/// so that its first spend requests its optimization, which the next
+/// safepoint compiles -- V8's `stress_maglev` (`docs/design/execution.md`,
+/// "The optimizing tier's foundation", "Verification"). It forces the JIT
+/// on where it is available.
 pub(crate) fn stress_optimize_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     stress_deopt_from_env()
+        || stress_invalidate_from_env()
         || (cfg!(debug_assertions)
             && *REQUESTED.get_or_init(|| {
                 std::env::var_os("NS_NEXT_STRESS_OPTIMIZE")
@@ -1350,10 +1700,11 @@ pub(crate) fn stress_optimize_from_env() -> bool {
 /// Whether `NS_NEXT_STRESS_DEOPT` asks for the deopt stress mode: set, and
 /// neither empty nor `0`. Debug builds only; read once per process. It
 /// implies the optimize stress mode, and optimized code leaves at every
-/// n-th interrupt point it passes, n rotating over
-/// `DEOPTIMIZATION_ROTATION` at successive safepoints, so that every point
-/// is met -- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`
-/// (`docs/design/execution.md`, "Verification").
+/// n-th interrupt point it passes, n drawn from
+/// `DEOPTIMIZATION_ROTATION` afresh at every safepoint, so that every
+/// point is met -- V8's `deopt_every_n_times`, HotSpot's `DeoptimizeALot`
+/// (`docs/design/execution.md`, "The optimizing tier's foundation",
+/// "Verification").
 pub(crate) fn stress_deopt_from_env() -> bool {
     static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     cfg!(debug_assertions)
@@ -1363,7 +1714,80 @@ pub(crate) fn stress_deopt_from_env() -> bool {
         })
 }
 
-/// The countdowns the deopt stress mode's safepoints set in turn
+/// Whether `NS_NEXT_STRESS_INVALIDATE` asks for the invalidate stress
+/// mode: set, and neither empty nor `0`. Debug builds only; read once per
+/// process. It implies the optimize stress mode, and optimized code counts
+/// its interrupt points: at the `STRESS_INVALIDATION_POINTS`th since the
+/// last round it leaves for a safepoint, which frees the copies of every
+/// body but those backing off (`invalidate_optimized_for_stress`) before
+/// it installs what was requested since, so that every copy freed has had
+/// a stretch to run, and its body is optimized afresh at its next run-out
+/// (`docs/design/execution.md`, "Speculation", "Verification").
+pub(crate) fn stress_invalidate_from_env() -> bool {
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    cfg!(debug_assertions)
+        && *REQUESTED.get_or_init(|| {
+            std::env::var_os("NS_NEXT_STRESS_INVALIDATE")
+                .is_some_and(|value| !value.is_empty() && value != "0")
+        })
+}
+
+/// The interrupt points optimized code passes between two rounds of the
+/// invalidate stress mode (`JitState::arm_invalidation_count`): enough
+/// that the copies installed since the last round run past their entry
+/// before they are freed, few enough that a program whose optimized code
+/// runs at all -- a golden's few sends -- meets a round, as a hundred did
+/// not for most goldens. A body freed often backs off on its own
+/// (`StressBackOff`).
+const STRESS_INVALIDATION_POINTS: u64 = 10;
+
+/// The most rounds of the invalidate stress mode one body sits out
+/// between two invalidations of its copies, as a power of two
+/// (`StressBackOff`): a body freed at a round sits out the next one, then
+/// two, then four, up to 2 to this power, as an abandoned body's revival
+/// backs off (`revival_entries`), so that a body every round would
+/// recompile -- a hundred-send body takes a debug build seconds to
+/// optimize -- is recompiled a number of times that grows with the
+/// logarithm of the run's length until the cap, and every body is still
+/// invalidated now and then in a long run.
+const MAXIMUM_STRESS_BACK_OFF_DOUBLINGS: u32 = 10;
+
+/// One body's back-off under the invalidate stress mode
+/// (`MAXIMUM_STRESS_BACK_OFF_DOUBLINGS`): how many times a round freed its
+/// copies, and how many rounds it has sat out since the last.
+#[cfg(ns_jit)]
+struct StressBackOff {
+    code: Weak<CompiledCode>,
+    invalidations: u32,
+    rounds_sat_out: u32,
+}
+
+#[cfg(ns_jit)]
+impl StressBackOff {
+    /// Whether this round frees the body's copies, counting the round
+    /// either way: the first round always does, and each after waits
+    /// twice as many rounds as the last, up to the cap.
+    fn take_round(&mut self) -> bool {
+        let doublings = self
+            .invalidations
+            .saturating_sub(1)
+            .min(MAXIMUM_STRESS_BACK_OFF_DOUBLINGS);
+        let wait = if self.invalidations == 0 {
+            0
+        } else {
+            1_u32 << doublings
+        };
+        if self.rounds_sat_out < wait {
+            self.rounds_sat_out += 1;
+            return false;
+        }
+        self.invalidations = self.invalidations.saturating_add(1);
+        self.rounds_sat_out = 0;
+        true
+    }
+}
+
+/// The countdowns the deopt stress mode's safepoints draw from
 /// (`MachineWord::DeoptCountdown`), the Fibonacci numbers up to 987:
 /// small ones, so that the exit falls on every point of a short stretch
 /// of optimized code, and large ones, so that it falls deep in a long
@@ -1375,6 +1799,16 @@ pub(crate) fn stress_deopt_from_env() -> bool {
 /// where the values its back edge carries are written back.
 const DEOPTIMIZATION_ROTATION: [u64; 15] =
     [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987];
+
+/// The seed of the xorshift sequence that draws each safepoint's
+/// countdown from `DEOPTIMIZATION_ROTATION`
+/// (`JitState::rotate_deoptimization_countdown`), set afresh whenever the
+/// mode is turned on, so that a run's forced exits reproduce. Drawn, not
+/// walked in order: an order of fixed period locks in step with any
+/// activation that spans a multiple of its safepoints, which then starts
+/// at the same countdown every time and is never forced at the points
+/// the others name.
+const DEOPTIMIZATION_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 impl JitState {
     /// The state of a new interpreter: a zone of `DEFAULT_ZONE_BYTES`,
@@ -1421,6 +1855,7 @@ impl JitState {
             cut: cut::CutWalk::default(),
             walked: None,
             walked_optimized: false,
+            refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -1445,9 +1880,16 @@ impl JitState {
             budget_set: OPTIMIZATION_BUDGET,
             optimize_stress,
             deopt_stress: stress_deopt_from_env(),
-            deoptimization_rotation: 0,
+            invalidate_stress: stress_invalidate_from_env(),
+            #[cfg(ns_jit)]
+            stress_back_offs: IdentityMap::default(),
+            #[cfg(ns_jit)]
+            customized: Vec::new(),
+            deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
+            #[cfg(ns_jit)]
+            optimized_copies: None,
         }
     }
 
@@ -1568,6 +2010,11 @@ impl JitState {
     /// JIT off never revives one.
     pub(crate) fn replace_zone(&mut self, bytes: usize) {
         self.bodies.clear();
+        // Every row's entry lies in the old zone.
+        #[cfg(ns_jit)]
+        if let Some(table) = self.optimized_copies.as_mut() {
+            table.clear_all();
+        }
         self.returns.clear();
         self.budget_words_to_point.clear();
         self.compaction_requested = false;
@@ -1598,6 +2045,7 @@ impl JitState {
         );
         self.machine_words = words;
         self.rotate_deoptimization_countdown();
+        self.arm_invalidation_count();
     }
 
     /// The unpointed budget's address (`MachineWord::UnpointedBudget`).
@@ -1620,11 +2068,12 @@ impl JitState {
     /// Turns the optimize stress mode on or off for this state, as
     /// `NS_NEXT_STRESS_OPTIMIZE` does at its creation, answering the
     /// budget every row is armed with from now on; turning it off turns
-    /// the deopt stress mode off too, which implies it. Set before the
-    /// code it is meant for runs.
+    /// the deopt and the invalidate stress modes off too, which imply it.
+    /// Set before the code it is meant for runs.
     pub(crate) fn set_optimize_stress(&mut self, stress: bool) -> i64 {
         self.optimize_stress = stress;
         self.deopt_stress = self.deopt_stress && stress;
+        self.invalidate_stress = self.invalidate_stress && stress;
         self.compile_at_entry = if stress || self.install_bodies_exiting_at_once {
             1
         } else {
@@ -1636,7 +2085,7 @@ impl JitState {
 
     /// Turns the deopt stress mode on or off for this state, as
     /// `NS_NEXT_STRESS_DEOPT` does at its creation: on, with the optimize
-    /// stress mode and the countdown at the rotation's start; off, the
+    /// stress mode and the countdown drawn from its seed; off, the
     /// optimize stress mode left as it is. Optimized code compiled before
     /// keeps its points uncounted. Answers the budget every row is armed
     /// with from now on.
@@ -1647,9 +2096,103 @@ impl JitState {
             self.optimization_budget
         };
         self.deopt_stress = stress;
-        self.deoptimization_rotation = 0;
+        self.deoptimization_draw = DEOPTIMIZATION_SEED;
         self.rotate_deoptimization_countdown();
+        self.arm_invalidation_count();
         budget
+    }
+
+    /// Turns the invalidate stress mode on or off for this state, as
+    /// `NS_NEXT_STRESS_INVALIDATE` does at its creation: on, with the
+    /// optimize stress mode; off, the optimize stress mode left as it is.
+    /// Answers the budget every row is armed with from now on.
+    pub(crate) fn set_invalidate_stress(&mut self, stress: bool) -> i64 {
+        let budget = if stress {
+            self.set_optimize_stress(true)
+        } else {
+            self.optimization_budget
+        };
+        self.invalidate_stress = stress;
+        self.arm_invalidation_count();
+        budget
+    }
+
+    /// Whether the invalidate stress mode is on, under which optimized code
+    /// leaves for a round of invalidation at every
+    /// `STRESS_INVALIDATION_POINTS`th interrupt point it passes.
+    pub(crate) fn invalidate_stress(&self) -> bool {
+        self.invalidate_stress
+    }
+
+    /// Whether the invalidate stress mode's safepoint runs a round now:
+    /// once the code compiled under the mode has spent the countdown the
+    /// last round armed (`arm_invalidation_count`), whose last point left
+    /// for this safepoint (`take_forced_exit`) -- or, under the deopt
+    /// stress mode too, which sets the countdown at every safepoint, once
+    /// it passed any point since the last. So every copy freed has had the
+    /// chance to run: a round at every safepoint a run-out requests would
+    /// free each copy before a frame entered it, and every body would ask
+    /// for its copy again at its next spend, compiling at every safepoint
+    /// for ever.
+    pub(crate) fn invalidation_due_for_stress(&self) -> bool {
+        use crate::heap::machine_words::MachineWord;
+        let countdown = self.machine_words.get(MachineWord::DeoptCountdown);
+        if self.deopt_stress {
+            return countdown != self.deoptimization_countdown;
+        }
+        // Spent: at zero, or past it -- `take_forced_exit` sets it to
+        // `u64::MAX`, below which every later point counts.
+        countdown == 0 || countdown > self.deoptimization_countdown
+    }
+
+    /// Under the invalidate stress mode alone, arms the countdown at
+    /// `STRESS_INVALIDATION_POINTS`, so that the point that spends it
+    /// leaves for the next round (`take_forced_exit`): at the mode's start
+    /// and after each round. Under the deopt stress mode too, its
+    /// safepoints set the countdown themselves
+    /// (`rotate_deoptimization_countdown`), and every one that follows a
+    /// point passed runs a round.
+    pub(crate) fn arm_invalidation_count(&mut self) {
+        use crate::heap::machine_words::MachineWord;
+        if self.invalidate_stress && !self.deopt_stress {
+            self.deoptimization_countdown = STRESS_INVALIDATION_POINTS;
+            self.machine_words
+                .set(MachineWord::DeoptCountdown, STRESS_INVALIDATION_POINTS);
+        }
+    }
+
+    /// Whether the invalidate stress mode's round frees `code`'s copies,
+    /// counting the round in its back-off (`StressBackOff`).
+    #[cfg(ns_jit)]
+    fn stress_round_frees(&mut self, code: &Rc<CompiledCode>) -> bool {
+        let key = Rc::as_ptr(code) as usize;
+        let back_off = self
+            .stress_back_offs
+            .entry(key)
+            .or_insert_with(|| StressBackOff {
+                code: Rc::downgrade(code),
+                invalidations: 0,
+                rounds_sat_out: 0,
+            });
+        // Another body at the address of a dead one starts afresh.
+        if !std::ptr::eq(back_off.code.as_ptr(), Rc::as_ptr(code))
+            || back_off.code.strong_count() == 0
+        {
+            *back_off = StressBackOff {
+                code: Rc::downgrade(code),
+                invalidations: 0,
+                rounds_sat_out: 0,
+            };
+        }
+        back_off.take_round()
+    }
+
+    /// The live method bodies that have a key's row, the dead ones
+    /// forgotten (`JitState::customized`).
+    #[cfg(ns_jit)]
+    fn customized_codes(&mut self) -> Vec<Rc<CompiledCode>> {
+        self.customized.retain(|code| code.strong_count() > 0);
+        self.customized.iter().filter_map(Weak::upgrade).collect()
     }
 
     /// Whether the optimize stress mode is on, under which a body's budget
@@ -1658,34 +2201,44 @@ impl JitState {
         self.optimize_stress
     }
 
-    /// Under the deopt stress mode, sets the countdown to the rotation's
-    /// next (`DEOPTIMIZATION_ROTATION`): what the run loop's safepoint
-    /// does, so that of the points passed until the next safepoint the
-    /// one the countdown names leaves. Nothing outside the mode.
+    /// Under the deopt stress mode, sets the countdown to the next value
+    /// drawn from `DEOPTIMIZATION_ROTATION` by a xorshift sequence from
+    /// `DEOPTIMIZATION_SEED`, whose period of 2^64 - 1 draws every value
+    /// again and again: what the run loop's safepoint does, so that of
+    /// the points passed until the next safepoint the one the countdown
+    /// names leaves. Nothing outside the mode.
     pub(crate) fn rotate_deoptimization_countdown(&mut self) {
         use crate::heap::machine_words::MachineWord;
         if !self.deopt_stress {
             return;
         }
-        let countdown = DEOPTIMIZATION_ROTATION[self.deoptimization_rotation];
-        self.deoptimization_rotation =
-            (self.deoptimization_rotation + 1) % DEOPTIMIZATION_ROTATION.len();
+        let mut draw = self.deoptimization_draw;
+        draw ^= draw << 13;
+        draw ^= draw >> 7;
+        draw ^= draw << 17;
+        self.deoptimization_draw = draw;
+        let index = usize::try_from(draw % DEOPTIMIZATION_ROTATION.len() as u64)
+            .expect("internal: an index into the rotation fits a usize");
+        let countdown = DEOPTIMIZATION_ROTATION[index];
         self.deoptimization_countdown = countdown;
         self.machine_words
             .set(MachineWord::DeoptCountdown, countdown);
     }
 
-    /// Whether the exit just taken was the deopt stress mode's own: the
-    /// countdown at zero, which only the point that brought it there, and
-    /// exited at once, leaves it at, since the safepoint sets it afresh
-    /// to at least 1. The countdown is then spent past zero, so that no
-    /// later exit is taken for one, and the safepoint request held, so
-    /// that the stretch the exit goes on in leaves for the safepoint that
-    /// sets the next countdown.
+    /// Whether the exit just taken was the deopt or the invalidate stress
+    /// mode's own: the countdown at zero, which only the point that
+    /// brought it there, and exited at once, leaves it at, since the
+    /// safepoint sets it afresh to at least 1. The countdown is then spent
+    /// past zero, so that no later exit is taken for one, and the
+    /// safepoint request held, so that the stretch the exit goes on in
+    /// leaves for the safepoint that sets the next countdown -- under the
+    /// invalidate stress mode, the one that runs its round
+    /// (`invalidation_due_for_stress`).
     #[cfg(ns_jit)]
     fn take_forced_exit(&mut self, heap: &mut crate::heap::Heap) -> bool {
         use crate::heap::machine_words::MachineWord;
-        if !self.deopt_stress || self.machine_words.get(MachineWord::DeoptCountdown) != 0 {
+        let counting = self.deopt_stress || self.invalidate_stress;
+        if !counting || self.machine_words.get(MachineWord::DeoptCountdown) != 0 {
             return false;
         }
         self.machine_words
@@ -1998,20 +2551,229 @@ impl JitState {
     /// optimized code beside it, if it has some (`write_transfer_words`).
     pub(super) fn write_pair_transfer_words(&mut self, lean: u32) {
         self.write_transfer_words(lean);
-        if let Some(optimized) = self.optimized_of(lean) {
+        for optimized in self.optimized_copies_of(lean) {
             self.write_transfer_words(optimized);
         }
     }
 
-    /// The index in `bodies` of the optimized code beside the lean body at
-    /// `lean`, while its slot names both.
-    pub(super) fn optimized_of(&self, lean: u32) -> Option<u32> {
-        let code = self.bodies.get(lean as usize)?.code.upgrade()?;
+    /// The indices in `bodies` of the optimized code beside the lean body
+    /// at `lean` -- its one copy, or a method's customized copies -- while
+    /// its slot names them and it.
+    pub(super) fn optimized_copies_of(&self, lean: u32) -> Vec<u32> {
+        let Some(code) = self
+            .bodies
+            .get(lean as usize)
+            .and_then(|body| body.code.upgrade())
+        else {
+            return Vec::new();
+        };
         if self.named_body(&code) != Some(lean as usize) {
-            return None;
+            return Vec::new();
         }
-        let optimized = code.jit.optimized.get();
-        (optimized != NO_BODY && self.live_body(optimized).is_some()).then_some(optimized)
+        let live = |index: &u32| *index != NO_BODY && self.live_body(*index).is_some();
+        let copies = code.jit.copies.borrow();
+        std::iter::once(code.jit.optimized.get())
+            .chain(copies.iter().map(|copy| copy.body))
+            .filter(live)
+            .collect()
+    }
+
+    /// The table of dispatching rows, reserved at its first use.
+    #[cfg(ns_jit)]
+    fn copies_table(&mut self) -> &mut crate::heap::optimized_copies::OptimizedCopies {
+        self.optimized_copies
+            .get_or_insert_with(crate::heap::optimized_copies::OptimizedCopies::new)
+    }
+
+    /// The bytes of the dispatching rows' reservation committed, 0 before
+    /// its first use (`Interpreter::table_sizes`).
+    pub(crate) fn optimized_copies_committed_bytes(&self) -> usize {
+        #[cfg(ns_jit)]
+        {
+            self.optimized_copies.as_ref().map_or(
+                0,
+                crate::heap::optimized_copies::OptimizedCopies::committed_bytes,
+            )
+        }
+        #[cfg(not(ns_jit))]
+        0
+    }
+
+    /// Gives back the dispatching rows' committed pages above the blocks
+    /// of `code_ids` ids, the code table's length after a full collection,
+    /// as `shrink` and `damped` say (`OptimizedCopies::shrink`), answering
+    /// the bytes given back. Called at the end of the collection, after
+    /// every body's word was pointed afresh
+    /// (`point_budget_words_after_collection`), so that none names a
+    /// block given back, which a debug build checks.
+    pub(crate) fn shrink_optimized_copies(
+        &mut self,
+        code_ids: usize,
+        shrink: crate::heap::limits::Shrink,
+        damped: bool,
+    ) -> usize {
+        #[cfg(ns_jit)]
+        {
+            let Some(table) = self.optimized_copies.as_mut() else {
+                return 0;
+            };
+            let bytes = table.shrink(code_ids, shrink, damped);
+            #[cfg(debug_assertions)]
+            for body in self.bodies.iter().filter(|body| !body.free) {
+                if let Some(dispatching) = body.dispatching {
+                    assert!(
+                        table.is_committed(dispatching.rows),
+                        "internal: a dispatching word names a block given back"
+                    );
+                }
+            }
+            bytes
+        }
+        #[cfg(not(ns_jit))]
+        {
+            let _ = (code_ids, shrink, damped);
+            0
+        }
+    }
+
+    /// Writes the dispatching entry's data words of the lean body at
+    /// `index` that are given -- the address of its rows, the tail's --
+    /// through the zone's one writer, as every data word is written.
+    #[cfg(ns_jit)]
+    fn write_dispatching_words(&mut self, index: u32, rows: Option<u64>, tail: Option<u64>) {
+        let Some(dispatching) = self.live_body(index).and_then(|body| body.dispatching) else {
+            return;
+        };
+        let start = self.bodies[index as usize].start;
+        if let Some(rows) = rows {
+            self.bodies[index as usize].dispatching = Some(InstalledDispatching {
+                rows,
+                ..dispatching
+            });
+        }
+        let Some(zone) = self.zone.as_mut() else {
+            unreachable!("internal: an installed body lies in a zone");
+        };
+        for (offset, word) in [(dispatching.rows_word, rows), (dispatching.tail_word, tail)] {
+            let Some(word) = word else {
+                continue;
+            };
+            if zone
+                .writer
+                .write(CodeOffset(start + offset), &word.to_le_bytes())
+                .is_err()
+            {
+                unreachable!("internal: an installed body's words lie in the committed zone");
+            }
+        }
+    }
+
+    /// Points the dispatching rows' word of the body at `index`, if it is
+    /// a method's lean body, at the block of `id`, the code id its body
+    /// has now -- or, given none, at the vacant block -- and writes the
+    /// block from the body's copies (`write_dispatching_rows`): with its
+    /// budget word, at install and afresh after every full collection,
+    /// which may have freed the id the block was the block of and minted
+    /// it for another body. Only the lean body its slot names takes the
+    /// block, so that no other body's word writes a block the named one
+    /// owns.
+    #[cfg(ns_jit)]
+    fn point_dispatching_rows(&mut self, index: u32, id: Option<usize>) {
+        let Some(body) = self.live_body(index) else {
+            return;
+        };
+        if body.dispatching.is_none() {
+            return;
+        }
+        let named = body
+            .code
+            .upgrade()
+            .is_some_and(|code| self.named_body(&code) == Some(index as usize));
+        let rows = match id.filter(|_| named) {
+            Some(id) => self.copies_table().block_address(id),
+            None => self.copies_table().vacant_address(),
+        };
+        self.write_dispatching_words(index, Some(rows), None);
+        self.write_dispatching_rows(index);
+    }
+
+    /// Writes the dispatching rows of the lean body at `lean` from the
+    /// optimized copies its slot names beside it, at most
+    /// `DISPATCHING_ROWS` of them, in the block its word names: the one
+    /// way a block's rows are filled, called wherever a copy is installed
+    /// or freed and after a compaction moved the copies; a block is
+    /// emptied only when its body's code is freed
+    /// (`JitState::vacate_dispatching_block`) or a collection frees its code
+    /// id (`vacate_released_dispatching_blocks`). Nothing is
+    /// written for a body its slot does not name, nor into the vacant
+    /// block.
+    #[cfg(ns_jit)]
+    fn write_dispatching_rows(&mut self, lean: u32) {
+        let Some(body) = self.live_body(lean) else {
+            return;
+        };
+        let Some(address) = body.dispatching.map(|dispatching| dispatching.rows) else {
+            return;
+        };
+        // A body its slot no longer names may still name the block of the
+        // body that took its place, whose rows are that body's to write.
+        let named = body
+            .code
+            .upgrade()
+            .is_some_and(|code| self.named_body(&code) == Some(lean as usize));
+        if !named {
+            return;
+        }
+        let rows = self.dispatching_rows_of(lean);
+        self.copies_table().write(address, &rows);
+    }
+
+    /// What the dispatching rows of the lean body at `lean` should hold:
+    /// for each customized copy its slot names beside it, in order, the
+    /// receiver's dispatch id and entered application word of its key and
+    /// its machine entry.
+    #[cfg(ns_jit)]
+    fn dispatching_rows_of(&self, lean: u32) -> Vec<crate::heap::optimized_copies::Row> {
+        let Some(zone) = self.zone.as_ref() else {
+            return Vec::new();
+        };
+        let Some(code) = self
+            .bodies
+            .get(lean as usize)
+            .and_then(|body| body.code.upgrade())
+        else {
+            return Vec::new();
+        };
+        self.optimized_copies_of(lean)
+            .into_iter()
+            .filter_map(|index| {
+                let body = &self.bodies[index as usize];
+                let row = code.jit.copy_row(body.key?)?;
+                Some([
+                    u64::from(row.key.receiver.bits()),
+                    row.entered_word,
+                    zone.writer
+                        .zone()
+                        .executable_address(CodeOffset(body.start)) as u64,
+                ])
+            })
+            .take(crate::heap::optimized_copies::DISPATCHING_ROWS)
+            .collect()
+    }
+
+    /// The address of the dispatching entry of `code`'s lean body, when
+    /// it has machine code here and is a method's.
+    #[cfg(ns_jit)]
+    fn dispatching_entry_address(&self, code: &CompiledCode) -> Option<u64> {
+        let index = self.named_body(code)?;
+        let body = &self.bodies[index];
+        let entry = body.dispatching?.entry;
+        let zone = self.zone.as_ref()?;
+        Some(
+            zone.writer
+                .zone()
+                .executable_address(CodeOffset(body.start + entry)) as u64,
+        )
     }
 
     /// The innermost frame the last exit's walk materialized, taken, and
@@ -2092,6 +2854,7 @@ impl JitState {
             cut: cut::CutWalk::default(),
             walked: None,
             walked_optimized: false,
+            refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
             block_stale: true,
             compaction_requested: false,
@@ -2112,9 +2875,16 @@ impl JitState {
             budget_set: OPTIMIZATION_BUDGET,
             optimize_stress: false,
             deopt_stress: false,
-            deoptimization_rotation: 0,
+            invalidate_stress: false,
+            #[cfg(ns_jit)]
+            stress_back_offs: IdentityMap::default(),
+            #[cfg(ns_jit)]
+            customized: Vec::new(),
+            deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
+            #[cfg(ns_jit)]
+            optimized_copies: None,
         }
     }
 }
@@ -2290,6 +3060,8 @@ fn zone_with_paddings(
         cut_stub: CodeOffset(0),
         polymorphic_stub: CodeOffset(0),
         megamorphic_stub: CodeOffset(0),
+        dispatching_stub: CodeOffset(0),
+        counting_dispatching_stub: CodeOffset(0),
         accessors: AccessorStubs {
             getters: Vec::new(),
             setters: Vec::new(),
@@ -2329,6 +3101,16 @@ fn zone_with_paddings(
     zone.megamorphic_stub = install(
         &mut zone,
         &targets::assemble_megamorphic_stub(Abi::host()).bytes,
+    )
+    .ok()?;
+    zone.dispatching_stub = install(
+        &mut zone,
+        &targets::assemble_dispatching_stub(Abi::host(), false).bytes,
+    )
+    .ok()?;
+    zone.counting_dispatching_stub = install(
+        &mut zone,
+        &targets::assemble_dispatching_stub(Abi::host(), true).bytes,
     )
     .ok()?;
     let (accessors, entries) = targets::assemble_accessor_stubs(Abi::host());
@@ -2450,7 +3232,14 @@ fn install_aligned(zone: &mut Zone, bytes: &[u8], alignment: u32) -> Result<Code
 /// this zone compiled against the entry's feedback base -- its optimized
 /// code's once it has some (`JitState::entered_body`), whose install
 /// writes every cell that named the baseline code afresh
-/// (`optimize_requested`) -- and through the
+/// (`optimize_requested`): behind a guard that is the receiver's own id,
+/// the copy customized for the receiver's application and the one the
+/// target's level names above it, once there is one
+/// (`receiver_guarded_copy`), and the body's baseline code before; behind
+/// a `super` or private lexical guard, S's or N's application word, the
+/// body's dispatching entry once it has a customized copy, which finds
+/// the receiver's (`dispatching_entry`); behind any other guard the
+/// baseline code -- and through the
 /// miss stub while its body may still be compiled, which compiles it and
 /// rewrites the site's cell (`inline_cache::decide_at`). A factory's
 /// body is reached the same way.
@@ -2464,25 +3253,148 @@ fn install_aligned(zone: &mut Zone, bytes: &[u8], alignment: u32) -> Result<Code
 /// nothing for the count, as Cog raises it only when it links a send.
 pub(crate) fn cell_entry(
     state: &JitState,
-    target: &crate::interpreter::inline_cache::Target,
+    entry: &crate::interpreter::inline_cache::CacheEntry,
 ) -> u64 {
-    entry_of_target(state, target, true)
+    entry_of_target(state, entry.guard, &entry.target, true)
 }
 
-/// `cell_entry` as a check of a cell reads it, raising no body's usage:
-/// the verification of the cells (`InlineCaches::verify_cells`) must not
-/// change which bodies a compaction frees.
+/// `cell_entry` of the entry whose guard is `guard` and whose target is
+/// `target`, for a holder that keeps the two apart: a global row, and a
+/// cell made before its entry.
+pub(crate) fn cell_entry_for(
+    state: &JitState,
+    guard: DispatchId,
+    target: &crate::interpreter::inline_cache::Target,
+) -> u64 {
+    entry_of_target(state, guard, target, true)
+}
+
+/// `cell_entry_for` as a check of a cell reads it, raising no body's
+/// usage: the verification of the cells (`InlineCaches::verify_cells`)
+/// must not change which bodies a compaction frees.
 pub(crate) fn expected_cell_entry(
     state: &JitState,
+    guard: DispatchId,
     target: &crate::interpreter::inline_cache::Target,
 ) -> u64 {
-    entry_of_target(state, target, false)
+    entry_of_target(state, guard, target, false)
 }
 
-/// `cell_entry`, raising the usage of the body it answers the machine
-/// entry of when `noting`.
+/// The copy of `code` a cell guarded by `guard` names for a method target
+/// found on `chain`, `level` superclass steps above the chain's start:
+/// only a chain that starts at the receiver's class has the receiver's
+/// own id as its guard, and so a receiver's application and, `level`
+/// above it, the entered one -- the key's two halves. A `super` or
+/// private lexical site's guard is the application of the class its
+/// chain starts at, which tells nothing of the receiver.
+fn receiver_guarded_copy<'state>(
+    state: &'state JitState,
+    code: &CompiledCode,
+    guard: DispatchId,
+    chain: crate::interpreter::resolve::Chain,
+    level: u16,
+) -> Option<&'state InstalledBody> {
+    use crate::interpreter::resolve::Chain;
+    if !matches!(chain, Chain::Public | Chain::Protected) || !code.jit.has_copies() {
+        return None;
+    }
+    let key = code
+        .jit
+        .copies
+        .borrow()
+        .iter()
+        .find(|copy| copy.key.receiver == guard && copy.level == Some(level))
+        .map(|copy| copy.key)?;
+    state.copy_of(code, key)
+}
+
+/// The dispatching entry of `code`'s lean body that a cell guarded on
+/// `chain` names for a method target found against `feedback_base`,
+/// raising the body's usage when `noting`: only
+/// a `super` or private lexical chain's guard is the application word of
+/// the class its chain starts at, which tells nothing of the receiver, so
+/// such a cell names the entry once the body has a customized copy, and
+/// its baseline code before (`targets::assemble_dispatching_stub`). The
+/// entry lies in the lean body, whose usage the cell raises as a cell
+/// naming its start does, and which a compaction moves it with.
+#[cfg(ns_jit)]
+fn dispatching_entry(
+    state: &JitState,
+    code: &CompiledCode,
+    (chain, feedback_base): (crate::interpreter::resolve::Chain, FeedbackBase),
+    noting: bool,
+) -> Option<u64> {
+    use crate::interpreter::resolve::Chain;
+    if !matches!(chain, Chain::Private | Chain::Super) || !code.jit.has_copies() {
+        return None;
+    }
+    let lean = state.installed(code)?;
+    if lean.feedback_base != feedback_base || lean.dispatching.is_none() {
+        return None;
+    }
+    // `copy_of` for each row, the body installed already: a row names
+    // its own copy.
+    let has_a_copy = code
+        .jit
+        .copies
+        .borrow()
+        .iter()
+        .any(|copy| copy.body != NO_BODY && state.live_body(copy.body).is_some());
+    if !has_a_copy {
+        return None;
+    }
+    if noting {
+        lean.note_linked();
+    }
+    state.dispatching_entry_address(code)
+}
+
+/// The dispatching entry `called` enters `code`'s lean body at, compiled
+/// against `feedback_base`, while one to `DISPATCHING_ROWS` keys' rows
+/// name an installed copy, so that every installed copy stands in a
+/// dispatching row: no row is looked at further, since a row whose copy
+/// is gone stands in no dispatching row and so sends the call to the
+/// baseline code, which is what the call would enter without it. A body
+/// with more copies is called through the key's lookup instead, which
+/// reaches every copy (`called`). No cell is written from it.
+#[cfg(ns_jit)]
+fn called_dispatching_entry(
+    state: &JitState,
+    code: &CompiledCode,
+    feedback_base: FeedbackBase,
+) -> Option<u64> {
+    let copies = code.jit.installed_copies();
+    if copies == 0 || copies > crate::heap::optimized_copies::DISPATCHING_ROWS {
+        return None;
+    }
+    let lean = state.installed(code)?;
+    let dispatching = lean
+        .dispatching
+        .filter(|_| lean.feedback_base == feedback_base)?;
+    let zone = state.zone.as_ref()?;
+    Some(
+        zone.writer
+            .zone()
+            .executable_address(CodeOffset(lean.start + dispatching.entry)) as u64,
+    )
+}
+
+/// No body has a dispatching entry without a JIT.
+#[cfg(not(ns_jit))]
+fn dispatching_entry(
+    _state: &JitState,
+    _code: &CompiledCode,
+    _target: (crate::interpreter::resolve::Chain, FeedbackBase),
+    _noting: bool,
+) -> Option<u64> {
+    None
+}
+
+/// `cell_entry_for`, raising the usage of the body it answers the
+/// machine entry of when `noting`.
 fn entry_of_target(
     state: &JitState,
+    guard: DispatchId,
     target: &crate::interpreter::inline_cache::Target,
     noting: bool,
 ) -> u64 {
@@ -2499,10 +3411,15 @@ fn entry_of_target(
             method,
             feedback_base,
             chain,
-            ..
+            level,
         } if runs_in_machine_code(method, *chain) => {
-            let body = state
-                .entered_body(&method.code)
+            if let Some(entry) =
+                dispatching_entry(state, &method.code, (*chain, *feedback_base), noting)
+            {
+                return entry;
+            }
+            let body = receiver_guarded_copy(state, &method.code, guard, *chain, *level)
+                .or_else(|| state.entered_body(&method.code, None))
                 .filter(|body| body.feedback_base == *feedback_base);
             return match body {
                 Some(body) => {
@@ -2544,7 +3461,7 @@ fn entry_of_target(
         // with a cell places that many, since a body numbers its
         // registers, and so its sends' slots, in 16 bits.
         Target::Factory { code, .. } => {
-            return match state.entered_body(code) {
+            return match state.entered_body(code, None) {
                 Some(body) => {
                     if noting {
                         body.note_linked();
@@ -2807,6 +3724,29 @@ impl JitState {
         })
     }
 
+    /// The address of the shared tail of every method body's dispatching
+    /// entry (`targets::assemble_dispatching_stub`), 0 where there is no
+    /// zone.
+    pub(crate) fn dispatching_stub_address(&self) -> u64 {
+        self.zone.as_ref().map_or(0, |zone| {
+            zone.writer.zone().executable_address(zone.dispatching_stub) as u64
+        })
+    }
+
+    /// The address of the dispatching entry's tail a body compiled with
+    /// `counting` jumps to: the one that counts the calls it enters a copy
+    /// by, or the shared tail; 0 where there is no zone.
+    pub(crate) fn dispatching_tail_address(&self, counting: bool) -> u64 {
+        if !counting {
+            return self.dispatching_stub_address();
+        }
+        self.zone.as_ref().map_or(0, |zone| {
+            zone.writer
+                .zone()
+                .executable_address(zone.counting_dispatching_stub) as u64
+        })
+    }
+
     /// The address of the miss stub, 0 where there is no zone.
     pub(crate) fn miss_stub_address(&self) -> u64 {
         self.zone.as_ref().map_or(0, |zone| {
@@ -2823,8 +3763,8 @@ impl JitState {
         compiled.then(|| self.live_body(slot.map.get())).flatten()
     }
 
-    /// The optimized code installed beside the baseline code `installed`
-    /// answers for `code`, if it has some.
+    /// The one uncustomized copy of optimized code installed beside the
+    /// baseline code `installed` answers for `code`, if it has one.
     fn optimized(&self, code: &CompiledCode) -> Option<&InstalledBody> {
         self.installed(code)?;
         let index = code.jit.optimized.get();
@@ -2840,35 +3780,110 @@ impl JitState {
         Some(body)
     }
 
-    /// The machine code a push, a compiled call and a machine entry row
-    /// enter `code` at: its optimized code once it has some, its baseline
-    /// code otherwise. Both start with the same prologue and take the same
-    /// frame, so that whoever enters at the start needs no other change.
-    fn entered_body(&self, code: &CompiledCode) -> Option<&InstalledBody> {
-        self.optimized(code).or_else(|| self.installed(code))
+    /// The customized copy of `code`'s optimized code installed for
+    /// `key` beside the baseline code `installed` answers for it, if it
+    /// has one.
+    fn copy_of(&self, code: &CompiledCode, key: CustomizationKey) -> Option<&InstalledBody> {
+        self.installed(code)?;
+        let index = code.jit.copy_row(key)?.body;
+        if index == NO_BODY {
+            return None;
+        }
+        let body = self.live_body(index)?;
+        debug_assert!(
+            body.tier == Tier::Optimized && body.key == Some(key),
+            "internal: a copy's row names its key's optimized code"
+        );
+        Some(body)
     }
 
-    /// Where a compiled call enters `code`'s machine code -- its prologue,
-    /// the body's first byte, its optimized code's once it has some --
-    /// when it has machine code in this zone compiled against
-    /// `feedback_base`.
+    /// The optimized code an activation of `code` with `key` -- `None`
+    /// for one whose key is not asked -- runs: the copy for its key once
+    /// it has one, the body's one uncustomized copy otherwise, if it has
+    /// that.
+    fn optimized_for(
+        &self,
+        code: &CompiledCode,
+        key: Option<CustomizationKey>,
+    ) -> Option<&InstalledBody> {
+        key.and_then(|key| self.copy_of(code, key))
+            .or_else(|| self.optimized(code))
+    }
+
+    /// Whether `code` has optimized code of any kind here.
+    fn has_optimized_code(&self, code: &CompiledCode) -> bool {
+        self.optimized(code).is_some()
+            || code
+                .jit
+                .copies
+                .borrow()
+                .iter()
+                .any(|copy| copy.body != NO_BODY && self.copy_of(code, copy.key).is_some())
+    }
+
+    /// The machine code a push, a compiled call and a machine entry row
+    /// enter `code` at for an activation with `key`: its optimized code for
+    /// the key once it has some (`optimized_for`), its baseline code
+    /// otherwise. Each starts with the same prologue and takes the same
+    /// frame, so that whoever enters at the start needs no other change.
+    /// Inline, since an interpreted send into machine code asks it on
+    /// every call (`jit::called`), almost always without a key: a call
+    /// out of line took 0.4% of CD's samples, a body without copies
+    /// included.
+    #[inline]
+    fn entered_body(
+        &self,
+        code: &CompiledCode,
+        key: Option<CustomizationKey>,
+    ) -> Option<&InstalledBody> {
+        match key {
+            None => self.optimized(code).or_else(|| self.installed(code)),
+            Some(key) => self.entered_copy(code, key),
+        }
+    }
+
+    /// `entered_body` for `key`: `optimized_for`'s answer, else
+    /// `installed`'s, with the slot's state read once.
+    #[inline(never)]
+    fn entered_copy(&self, code: &CompiledCode, key: CustomizationKey) -> Option<&InstalledBody> {
+        let baseline = self.installed(code)?;
+        let copy = code.jit.copy_row(key).map_or(NO_BODY, |row| row.body);
+        let optimized = [copy, code.jit.optimized.get()]
+            .into_iter()
+            .filter(|&index| index != NO_BODY)
+            .find_map(|index| self.live_body(index));
+        debug_assert!(
+            optimized.is_none_or(|body| body.tier == Tier::Optimized),
+            "internal: a slot's optimized code is optimized"
+        );
+        Some(optimized.unwrap_or(baseline))
+    }
+
+    /// Where a compiled call enters `code`'s machine code for an
+    /// activation with `key` -- its prologue, the body's first byte, its
+    /// optimized code's for the key once it has some -- when it has
+    /// machine code in this zone compiled against `feedback_base`.
+    #[inline]
     fn machine_entry_of(
         &self,
         code: &CompiledCode,
         feedback_base: FeedbackBase,
+        key: Option<CustomizationKey>,
     ) -> Option<CodeOffset> {
-        let body = self.entered_body(code)?;
+        let body = self.entered_body(code, key)?;
         (body.feedback_base == feedback_base).then_some(CodeOffset(body.start))
     }
 
-    /// Where the run loop's push enters `code`'s optimized code, past its
-    /// prologue, for an activation with `feedback_base`, when it has some.
+    /// Where the run loop's push enters `code`'s optimized code for an
+    /// activation with `key`, past its prologue, for an activation with
+    /// `feedback_base`, when it has some.
     fn optimized_push_entry(
         &self,
         code: &CompiledCode,
         feedback_base: FeedbackBase,
+        key: Option<CustomizationKey>,
     ) -> Option<CodeOffset> {
-        let body = self.optimized(code)?;
+        let body = self.optimized_for(code, key)?;
         (body.feedback_base == feedback_base).then_some(CodeOffset(body.start + body.push_entry))
     }
 
@@ -3021,16 +4036,51 @@ pub(crate) fn machine_entry(state: &JitState, code: &CompiledCode) -> Option<Cod
     state.installed(code).map(|body| CodeOffset(body.start))
 }
 
-/// The address a compiled call enters `code` at, its machine entry, when
-/// it has machine code in this zone compiled against `feedback_base`.
+/// The address a compiled call enters `code` at for an activation with
+/// `key` (`entry_key`), its machine entry, when it has machine code in
+/// this zone compiled against `feedback_base`. Inline, as `entered_body`
+/// is, for the interpreted sends into machine code (`called`,
+/// `called_closure`).
+#[inline]
 pub(crate) fn machine_entry_address(
     state: &JitState,
     code: &CompiledCode,
     feedback_base: FeedbackBase,
+    key: Option<CustomizationKey>,
 ) -> Option<u64> {
-    let entry = state.machine_entry_of(code, feedback_base)?;
+    let entry = state.machine_entry_of(code, feedback_base, key)?;
     let zone = state.zone.as_ref()?;
     Some(zone.writer.zone().executable_address(entry) as u64)
+}
+
+/// The key an entry into `code` on `receiver` at `current_class` asks
+/// its copies for: `None` for a body with no copy installed for any key
+/// (`JitSlot::has_installed_copy`), whose entry answers the same whatever
+/// the key, so that only an entry into a customized body pays for the
+/// lookups.
+pub(crate) fn entry_key<'gc>(
+    heap: &Heap<'gc>,
+    code: &CompiledCode,
+    receiver: Value<'gc>,
+    current_class: Option<ClassReference<'gc>>,
+) -> Option<CustomizationKey> {
+    if !code.jit.has_installed_copy() {
+        return None;
+    }
+    CustomizationKey::of(heap, receiver, current_class)
+}
+
+/// `entry_key` for `activation`, read off its frame's header.
+fn activation_key(
+    heap: &Heap<'_>,
+    code: &CompiledCode,
+    activation: ActivationReference,
+) -> Option<CustomizationKey> {
+    if !code.jit.has_installed_copy() {
+        return None;
+    }
+    let (receiver, current_class) = heap.activation_receiver_and_current_class(activation);
+    CustomizationKey::of(heap, receiver, current_class)
 }
 
 /// Counts an entry into `code`, an activation with `feedback_base` of
@@ -3115,6 +4165,26 @@ pub(crate) fn note_entry_by_call(
     if compiles {
         note_entry(state, code, feedback_base, method);
     }
+}
+
+/// Notes that the miss leaf refuses a compiled call to `code`, which has
+/// no machine code to enter: a refusal that says nothing of the caller's
+/// code when `code` is counting its entries, or compiled into another
+/// zone, and the zone has room to compile it at an entry to come, which
+/// the exit then counts against no budget (`resumption_after_exit`).
+/// Every other refusal counts: a callee compiled here against another
+/// feedback base, which no call compiles again, and one whose compile the
+/// exhausted zone holds, whose retries back off for many entries -- a hot
+/// caller of either would exit at every call, and its abandonment is what
+/// stops that, and gives the exhausted zone its room back.
+pub(crate) fn note_call_refused(state: &mut JitState, code: &CompiledCode) {
+    let slot = &code.jit;
+    let counting = match slot.state.get() {
+        COMPILED => slot.zone.get() != state.zone_identity(),
+        entries => entries < COMPILED,
+    };
+    state.refused_for_an_uncompiled_callee =
+        state.enabled && counting && state.may_compile_now(slot);
 }
 
 /// Compiles `code` into the zone and records the outcome in its slot and
@@ -3365,6 +4435,22 @@ fn install_body(
     });
     let unpointed = budget_word.map(|_| state.unpointed_budget_address());
     let push_entry = body.map.machine_offset(0).unwrap_or(0);
+    let word_offset = |word: usize| {
+        let Some(offset) = u32::try_from(word)
+            .ok()
+            .and_then(|word| word.checked_mul(8))
+            .and_then(|bytes| bytes.checked_add(words))
+        else {
+            unreachable!("internal: a body's data words lie within its bytes");
+        };
+        offset
+    };
+    let dispatching = body.dispatching.map(|dispatching| InstalledDispatching {
+        entry: dispatching.entry,
+        rows_word: word_offset(dispatching.rows_word),
+        tail_word: word_offset(dispatching.tail_word),
+        rows: 0,
+    });
     state.bodies.push(InstalledBody {
         code: Rc::downgrade(code),
         method: method.map(Rc::downgrade),
@@ -3393,6 +4479,8 @@ fn install_body(
         push_entry,
         exits: Cell::new(0),
         optimized_needed: 0,
+        key: None,
+        dispatching,
     });
     // Until it is pointed at its row the code spends from the unpointed
     // budget, whose first spend calls the leaf: the word is never one the
@@ -3400,6 +4488,14 @@ fn install_body(
     if let Some(unpointed) = unpointed {
         state.write_budget_word(map, unpointed);
         state.budget_words_to_point.push(map);
+    }
+    // Likewise its dispatching entry finds no copy until its word is
+    // pointed with the budget's (`point_budget_word`); the tail never
+    // moves.
+    if dispatching.is_some() {
+        let vacant = state.copies_table().vacant_address();
+        let tail = state.dispatching_tail_address(settings.counting);
+        state.write_dispatching_words(map, Some(vacant), Some(tail));
     }
     Ok(map)
 }
@@ -3569,11 +4665,45 @@ pub(crate) fn point_budget_words_after_collection(
     carried: &IdentityMap<usize, i64>,
 ) {
     mutator.jit.budget_words_to_point.clear();
+    vacate_released_dispatching_blocks(mutator);
     let unpointed = mutator.jit.unpointed_budget_address();
     for index in 0..mutator.jit.bodies.len() {
         let index = u32::try_from(index).expect("internal: a body's index fits a u32");
         if !point_budget_word(mutator, index, Some(carried)) {
             mutator.jit.write_budget_word(index, unpointed);
+            // A dead body's word may name a block whose id was minted for
+            // another body.
+            mutator.jit.point_dispatching_rows(index, None);
+        }
+    }
+}
+
+/// Writes vacant, at the start of the pass after a full collection
+/// (`point_budget_words_after_collection`), the block of every lean body
+/// whose code died or had its code id freed by the collection: the pass
+/// points such a body's word at the vacant block, or at the block of the
+/// id minted for it afresh, and the collection frees a dead body's
+/// copies (`free_dead_bodies`), so that the old block would keep rows
+/// naming its copies that no word names any more -- rows that only the
+/// next owner's writing would clear. Before the pass mints any id, such
+/// a block is no live body's: the block of an id belongs to the one code
+/// the id names.
+#[cfg(ns_jit)]
+fn vacate_released_dispatching_blocks(mutator: &mut Mutator<'_>) {
+    let jit = &mut mutator.jit;
+    let Some(table) = jit.optimized_copies.as_mut() else {
+        return;
+    };
+    for body in jit.bodies.iter().filter(|body| !body.free) {
+        let Some(dispatching) = body.dispatching else {
+            continue;
+        };
+        let released = body
+            .code
+            .upgrade()
+            .is_none_or(|code| !mutator.heap.has_code_id(&code));
+        if released {
+            table.write(dispatching.rows, &[]);
         }
     }
 }
@@ -3589,7 +4719,9 @@ pub(crate) fn point_budget_words_after_collection(
 /// Points the budget word of the body at `index` in `bodies` at the row
 /// of the id its body has now -- the sink for an id past the table --
 /// arming the row unless it is armed already: with what `carried` keeps
-/// for the body across a collection, or else the state's budget. Answers
+/// for the body across a collection, or else the state's budget; and a
+/// method's lean body's dispatching rows' word at the block of the same
+/// id (`JitState::point_dispatching_rows`), for the same reason. Answers
 /// whether the body lives to have a row.
 #[cfg(ns_jit)]
 fn point_budget_word(
@@ -3613,6 +4745,9 @@ fn point_budget_word(
         mutator.heap.arm_optimization_budget(budget.id, left);
     }
     mutator.jit.write_budget_word(index, budget.address);
+    mutator
+        .jit
+        .point_dispatching_rows(index, Some(budget.id.index()));
     true
 }
 
@@ -3626,8 +4761,18 @@ fn point_budget_word(
 /// negative, or a row cleared since, and the word is pointed at the
 /// body's row, armed afresh; the sink an id past the table spends from is
 /// parked again.
+///
+/// A method's body is optimized per key (`CustomizationKey`), its budget
+/// still one per body: a run-out requests the copy for the key of the
+/// spending frame, at `frame_address`, read off the header its call
+/// wrote (`request_copy`).
 #[cfg(ns_jit)]
-pub(crate) fn budget_spent(mutator: &mut Mutator<'_>, spent_from: u64, code_address: usize) {
+pub(crate) fn budget_spent(
+    mutator: &mut Mutator<'_>,
+    spent_from: u64,
+    frame_address: u64,
+    code_address: usize,
+) {
     let Some(index) = mutator.jit.installed_index_at(code_address) else {
         unreachable!("internal: a budget is spent by an installed body");
     };
@@ -3654,17 +4799,170 @@ pub(crate) fn budget_spent(mutator: &mut Mutator<'_>, spent_from: u64, code_addr
         return;
     }
     mutator.heap.park_optimization_budget(budget.id);
-    if code.jit.optimized_refused.get() {
+    let customized = code.kind == crate::bytecode::CodeKind::Method
+        && mutator
+            .jit
+            .live_body(index)
+            .is_some_and(|body| body.method.is_some());
+    if customized && request_copy(mutator, &code, frame_address) {
         return;
     }
-    let requested = Rc::as_ptr(&code);
+    if code.jit.optimized_refused.get() {
+        rearm_for_other_pairs(mutator, &code);
+        return;
+    }
+    request(mutator, OptimizationRequest::uncustomized(&code));
+}
+
+/// After a run-out by a frame of a pair refused for good -- a key's row,
+/// or the body's one uncustomized copy -- whose budget `budget_spent`
+/// parked: the budget is one per body, so that parked it would starve
+/// every other pair of the body for good -- a key waiting for the
+/// recompile of a copy made not entrant, and a key that has no copy yet.
+/// Armed afresh at the plain wait while the body has a pair not refused,
+/// since the run-out says that what any waiting pair waited for was
+/// spent; left parked only once the body's one uncustomized copy is
+/// refused as well as every key's row, so that a body refused throughout
+/// calls no leaf once per budget for the rest of the run. A method body
+/// whose uncustomized copy was never refused -- a frame without a key
+/// never asked for it -- counts as a pair not refused, and so keeps its
+/// budget armed, however many of its keys are.
+#[cfg(ns_jit)]
+fn rearm_for_other_pairs(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+    let any_left = !code.jit.optimized_refused.get()
+        || code.jit.copies.borrow().iter().any(|copy| !copy.refused);
+    if any_left {
+        rearm_optimization_budget(mutator, code, 0);
+    }
+}
+
+/// Records `request` unless one for its body and key is pending, and
+/// requests the safepoint that takes it up.
+#[cfg(ns_jit)]
+fn request(mutator: &mut Mutator<'_>, request: OptimizationRequest) {
     let requests = &mut mutator.jit.optimization_requests;
-    requests.retain(|request| request.strong_count() > 0);
-    if !requests.iter().any(|request| request.as_ptr() == requested) {
-        requests.push(Rc::downgrade(&code));
+    requests.retain(|pending| pending.code.strong_count() > 0);
+    let pending = requests.iter().any(|pending| {
+        std::ptr::eq(pending.code.as_ptr(), request.code.as_ptr()) && pending.key == request.key
+    });
+    if !pending {
+        requests.push(request);
         mutator.jit.statistics.optimization_requests += 1;
         mutator.heap.request_safepoint();
     }
+}
+
+/// The run-out of `code`'s budget by the frame at `frame_address`, a
+/// method's activation in baseline code: requests the copy for the
+/// frame's key -- its receiver's application and the one the frame was
+/// entered at, read off the header the call wrote, never another
+/// activation's -- unless the key has a copy, whose frames ran baseline
+/// code only where no entry could ask for the key (a `super` or private
+/// lexical send, a frame switched into its loop), or a refused row. A key
+/// with a copy has the budget armed afresh, so that another key's
+/// run-out compiles that key's copy; a refused one leaves it parked, as a
+/// refused body's is. A key first requested gets its row, which records
+/// the level the frame was entered at above the receiver's class.
+/// Answers whether the frame had a key: a frame without one -- its
+/// receiver or its class of an application with no minted id -- is
+/// requested the body's one uncustomized copy.
+#[cfg(ns_jit)]
+fn request_copy(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, frame_address: u64) -> bool {
+    let Some((receiver, current_class)) = mutator
+        .heap
+        .machine_frame_receiver_and_current_class(frame_address, code.argument_count)
+    else {
+        unreachable!("internal: a budget is spent by a frame in the activation stack");
+    };
+    let Some(key) = CustomizationKey::of(&mutator.heap, receiver, current_class) else {
+        return false;
+    };
+    match code.jit.copy_row(key) {
+        Some(row) if row.refused => {
+            rearm_for_other_pairs(mutator, code);
+            return true;
+        }
+        // The next run-out is another key's, which has failed nothing:
+        // the plain wait.
+        Some(_) if mutator.jit.copy_of(code, key).is_some() => {
+            rearm_optimization_budget(mutator, code, 0);
+            return true;
+        }
+        Some(_) => {}
+        None => {
+            let level = current_class.and_then(|class| levels_to(mutator, receiver, class));
+            // A key exists only for a class of an application, whose
+            // class objects hold its word.
+            let entered_word = current_class
+                .and_then(|class| mutator.heap.class_application_word(class))
+                .unwrap_or(crate::heap::optimized_copies::VACANT);
+            if !code.jit.has_copies() {
+                mutator.jit.customized.push(Rc::downgrade(code));
+            }
+            code.jit.copies.borrow_mut().push(CustomizedCopy {
+                key,
+                body: NO_BODY,
+                version: 0,
+                traps: 0,
+                refused: false,
+                level,
+                entered_word,
+            });
+        }
+    }
+    let entered = current_class
+        .and_then(|class| mutator.heap.class_application(class))
+        .map_or_else(Weak::new, |application| Rc::downgrade(&application));
+    request(
+        mutator,
+        OptimizationRequest {
+            code: Rc::downgrade(code),
+            key: Some(key),
+            entered,
+        },
+    );
+    true
+}
+
+/// How many superclass steps from `receiver`'s class reach `class`, as a
+/// cache entry counts its target's level from a receiver's class
+/// (`inline_cache::levels_between`); `None` past `u16::MAX` or off the
+/// chain.
+#[cfg(ns_jit)]
+fn levels_to<'gc>(
+    mutator: &Mutator<'gc>,
+    receiver: Value<'gc>,
+    class: ClassReference<'gc>,
+) -> Option<u16> {
+    let mut current = mutator.class_of(receiver);
+    for steps in 0..=u16::MAX {
+        if current.same(class) {
+            return Some(steps);
+        }
+        current = mutator.heap.class_superclass(current)?;
+    }
+    None
+}
+
+/// Arms `code`'s budget afresh at the wait a copy at `version` earned
+/// (`optimization_budget_after`). The budget is one per body, shared by
+/// its pairs, and an arming replaces what is left of the last: a re-arm
+/// at the plain wait for another key -- after a keyed install, or a
+/// run-out by a frame of a key with a copy or of a refused pair
+/// (`rearm_for_other_pairs`) -- can cut short a retired key's wait of 4
+/// to its version. Mostly it cuts nothing: a run-out parked the budget,
+/// so the wait it held was spent, by whichever pair's frames. Only an
+/// install of a request still pending when another key's copy retired
+/// shortens a wait, by its arming. Keeping the longer of the two instead
+/// would keep a wait that is no retired key's too -- a cache fill raises a
+/// running body's budget for its feedback to settle
+/// (`Heap::raise_running_optimization_budget`) -- and hold back the next
+/// key's first copy behind it.
+#[cfg(ns_jit)]
+fn rearm_optimization_budget(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, version: u8) {
+    let budget = mutator.heap.optimization_budget_of(code);
+    let armed = optimization_budget_after(mutator.jit.optimization_budget, version);
+    mutator.heap.arm_optimization_budget(budget.id, armed);
 }
 
 /// Compiles the optimized code of every body whose budget ran out since
@@ -3677,8 +4975,8 @@ pub(crate) fn budget_spent(mutator: &mut Mutator<'_>, spent_from: u64, code_addr
 #[cfg(ns_jit)]
 pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
     for request in std::mem::take(&mut mutator.jit.optimization_requests) {
-        if let Some(code) = request.upgrade() {
-            optimize(mutator, &code);
+        if let Some(code) = request.code.upgrade() {
+            optimize(mutator, &code, request.key, &request.entered);
         }
     }
 }
@@ -3699,11 +4997,35 @@ pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
 /// (`JitSlot::optimized_refused`), so that it is not requested again,
 /// whatever becomes of its baseline code; one whose code the zone has no
 /// room for asks for a compaction and has its budget armed afresh.
+///
+/// A request with a key compiles the copy for it, entered at `entered`,
+/// into the key's row (`JitSlot::copies`), unless the row has a copy or
+/// a refusal: its refusal is the row's, and once it is installed the
+/// body's budget is armed afresh, so that the next run-out, by another
+/// key, compiles that key's copy.
 #[cfg(ns_jit)]
-fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
-    if code.jit.optimized_refused.get() || mutator.jit.optimized(code).is_some() {
+fn optimize(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+    entered: &Weak<MixinApplication>,
+) {
+    let done = match key {
+        None => code.jit.optimized_refused.get() || mutator.jit.optimized(code).is_some(),
+        Some(key) => code
+            .jit
+            .copy_row(key)
+            .is_none_or(|row| row.refused || mutator.jit.copy_of(code, key).is_some()),
+    };
+    if done {
         return;
     }
+    debug_assert!(
+        entered.upgrade().is_none_or(|application| {
+            key.is_some_and(|key| key.entered == application.dispatch_ids.instances)
+        }),
+        "internal: a request's entered application is its key's"
+    );
     let Some(body) = mutator.jit.installed(code) else {
         return;
     };
@@ -3720,7 +5042,7 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     // budget: the request is held, as a baseline compile's is.
     if !mutator.jit.may_compile_needing(needed) {
         mutator.jit.hold_compile();
-        defer_optimization(mutator, code);
+        defer_optimization(mutator, code, key);
         return;
     }
     let method = match &body.method {
@@ -3730,27 +5052,46 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
         },
         None => None,
     };
+    // A copy whose entered application is gone, or whose slot base no
+    // index holds, is compiled as the shared body is: its own-slot
+    // instructions keep their templates, which find the base and check
+    // the guard, and are right for any key.
+    let customization = key.and_then(|key| {
+        let own_slot_base = u32::try_from(entered.upgrade()?.own_slot_base).ok()?;
+        Some(optimizing::snapshot::Customization { key, own_slot_base })
+    });
     let started = std::time::Instant::now();
     let snapshot = optimizing::snapshot::Snapshot::take(
         code,
         &mut mutator.heap,
         &mutator.caches,
         feedback_base,
+        customization,
     );
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
-    macro_assembler.set_deoptimize_by_countdown(mutator.jit.deopt_stress);
+    // Under the invalidate stress mode the countdown's last point leaves
+    // for the safepoint that runs its round (`invalidation_due_for_stress`).
+    macro_assembler
+        .set_deoptimize_by_countdown(mutator.jit.deopt_stress || mutator.jit.invalidate_stress);
+    macro_assembler.set_count_down_at_entry(mutator.jit.invalidate_stress);
     let role = baseline::BodyRole::of(code, method.is_some());
-    let installation = optimizing::compile(&snapshot, macro_assembler, role, settings.futures_exit)
-        .and_then(|optimized| {
-            install_optimized(
-                &mut mutator.jit,
-                code,
-                method.as_ref(),
-                (lean, feedback_base, settings),
-                optimized,
-            )
-        });
+    let installation = optimizing::compile(
+        &snapshot,
+        macro_assembler,
+        role,
+        settings.futures_exit,
+        optimizing::Speculation::at_version(code.jit.optimized_version(key)),
+    )
+    .and_then(|optimized| {
+        install_optimized(
+            &mut mutator.jit,
+            code,
+            method.as_ref(),
+            (lean, feedback_base, settings, key),
+            optimized,
+        )
+    });
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let statistics = &mut mutator.jit.statistics;
     statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
@@ -3767,16 +5108,31 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
                 mutator.jit.compaction_requested = true;
                 mutator.jit.zone_exhausted = true;
             }
-            defer_optimization(mutator, code);
+            defer_optimization(mutator, code, key);
             return;
         }
         Err(_) => {
-            code.jit.optimized_refused.set(true);
+            match key {
+                None => code.jit.optimized_refused.set(true),
+                Some(key) => code.jit.refuse_copy(key),
+            }
             return;
         }
     };
     mutator.jit.bodies[lean as usize].optimized_needed = 0;
-    code.jit.optimized.set(index);
+    match key {
+        // An installed copy counts its traps from none, whether its
+        // predecessor was retired or freed with its baseline code.
+        None => {
+            code.jit.optimized.set(index);
+            code.jit.optimized_traps.set(0);
+        }
+        Some(key) => {
+            code.jit.set_copy_body(key, index);
+            mutator.jit.statistics.customized_copies += 1;
+            mutator.jit.write_dispatching_rows(lean);
+        }
+    }
     mutator.jit.statistics.optimized_bodies += 1;
     // Its transfers go into the twin, which the baseline body may have.
     mutator.jit.write_transfer_words(index);
@@ -3792,30 +5148,35 @@ fn optimize(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
     if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
         note_block_entry(mutator, id, code);
     }
+    // As for a key that has its copy (`request_copy`), the next run-out
+    // is another key's.
+    if key.is_some() {
+        rearm_optimization_budget(mutator, code, 0);
+    }
 }
 
 /// Puts off `code`'s optimization, which found no room or knows it would
 /// not: a compaction asked for is passed on to the heap, and the body's
 /// budget armed afresh, so that it is requested again once it has run as
-/// long -- as long as its abandoned optimized code's back-off says
+/// long -- as long as the version of the copy for `key` says
 /// (`optimization_budget_after`), which a full zone does not reset.
 #[cfg(ns_jit)]
-fn defer_optimization(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
+fn defer_optimization(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+) {
     if mutator.jit.compaction_requested {
         mutator.heap.request_safepoint();
     }
-    let budget = mutator.heap.optimization_budget_of(code);
-    let armed = optimization_budget_after(
-        mutator.jit.optimization_budget,
-        code.jit.optimized_abandonments.get(),
-    );
-    mutator.heap.arm_optimization_budget(budget.id, armed);
+    rearm_optimization_budget(mutator, code, code.jit.optimized_version(key));
 }
 
 /// Installs `optimized`, the optimized code of `code` -- `method`'s body
 /// when it is one's -- beside its lean baseline body at `lean` in
-/// `bodies`, compiled against `feedback_base` under `settings`, answering
-/// its index among the installed bodies. Its call returns are recorded
+/// `bodies`, compiled against `feedback_base` under `settings` for `key`
+/// (`None` for the body's one uncustomized copy), answering its index
+/// among the installed bodies. Its call returns are recorded
 /// as the baseline's are, so that a leaf and the exit's walk find the
 /// send each of its calls returns to; its program-counter map has no
 /// instruction's start, since no frame goes on mid-body in optimized code.
@@ -3824,7 +5185,12 @@ fn install_optimized(
     state: &mut JitState,
     code: &Rc<CompiledCode>,
     method: Option<&Rc<MixinMethod>>,
-    (lean, feedback_base, settings): (u32, FeedbackBase, CompileSettings),
+    (lean, feedback_base, settings, key): (
+        u32,
+        FeedbackBase,
+        CompileSettings,
+        Option<CustomizationKey>,
+    ),
     optimized: optimizing::emit::OptimizedBody,
 ) -> Result<u32, Refusal> {
     let optimizing::emit::OptimizedBody {
@@ -3834,6 +5200,7 @@ fn install_optimized(
         twin_transfers,
         metadata: _,
         push_entry,
+        ..
     } = optimized;
     let mut returns: Vec<CallReturn> = returns
         .iter()
@@ -3855,6 +5222,7 @@ fn install_optimized(
         words,
         twin_transfers,
         budget_word: None,
+        dispatching: None,
     };
     let needed = needed_bytes(&body);
     let index = install_body(
@@ -3875,6 +5243,7 @@ fn install_optimized(
         }
     })?;
     state.bodies[index as usize].push_entry = push_entry;
+    state.bodies[index as usize].key = key;
     Ok(index)
 }
 
@@ -3973,12 +5342,13 @@ pub(crate) fn entered(
         ),
         "internal: machine code is entered for a top-level activation"
     );
-    // A push enters the body's optimized code once it has some, unless
-    // the frame is reified already, which only the twin, baseline code,
-    // keeps (`entry_of_frame`).
+    // A push enters the body's optimized code for the frame's key once it
+    // has some, unless the frame is reified already, which only the twin,
+    // baseline code, keeps (`entry_of_frame`).
+    let key = activation_key(&mutator.heap, code, activation);
     let optimized = mutator
         .jit
-        .optimized_push_entry(code, feedback_base)
+        .optimized_push_entry(code, feedback_base, key)
         .filter(|_| mutator.heap.activation_reified(activation).is_none());
     match optimized.or_else(|| entry_of_frame(mutator, activation, code, feedback_base, 0)) {
         Some(entry) => run_machine_code(mutator, activation, register_base, entry),
@@ -4069,7 +5439,7 @@ pub(crate) fn resumed(
     match entry_of_frame(mutator, activation, code, feedback_base, program_counter) {
         Some(entry) if native_stack_has_room() => {
             mutator.jit.statistics.resumed_entries += 1;
-            if mutator.jit.optimized(code).is_some() {
+            if mutator.jit.has_optimized_code(code) {
                 mutator.jit.statistics.optimized_bodies_resumed += 1;
             }
             run_machine_code(mutator, activation, register_base, entry)
@@ -4250,6 +5620,7 @@ fn run_machine_code(
     mutator.jit.statistics.machine_entries += 1;
     mutator.jit.walked = None;
     mutator.jit.walked_optimized = false;
+    mutator.jit.refused_for_an_uncompiled_callee = false;
     let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
     // was materialized, none goes on interpreted and nothing exited.
@@ -4321,7 +5692,17 @@ pub(crate) fn called<'gc>(
     code: &Rc<CompiledCode>,
     feedback_base: FeedbackBase,
 ) -> Called {
-    let Some(machine_entry) = machine_entry_address(&mutator.jit, code, feedback_base) else {
+    // A body with a customized copy is called at its dispatching entry,
+    // whose rows find the receiver's copy in machine code, as a `super` or
+    // private lexical site's cell does: the key's lookups on this side
+    // took 1.4% of CD's samples, on its interpreted sends alone. A body
+    // with more copies than its rows hold takes the lookup, which reaches
+    // every copy, and a body with none enters its code without a key.
+    let machine_entry = called_dispatching_entry(&mutator.jit, code, feedback_base).or_else(|| {
+        let key = entry_key(&mutator.heap, code, receiver, Some(defining_class));
+        machine_entry_address(&mutator.jit, code, feedback_base, key)
+    });
+    let Some(machine_entry) = machine_entry else {
         return Called::Refused;
     };
     if !native_stack_has_room() {
@@ -4374,7 +5755,7 @@ pub(crate) fn called_closure<'gc>(
     feedback_base: FeedbackBase,
     counted: bool,
 ) -> Called {
-    let Some(machine_entry) = machine_entry_address(&mutator.jit, code, feedback_base) else {
+    let Some(machine_entry) = machine_entry_address(&mutator.jit, code, feedback_base, None) else {
         return Called::Refused;
     };
     if !native_stack_has_room() {
@@ -4445,6 +5826,7 @@ fn call_through(
     mutator.jit.statistics.called_entries += 1;
     mutator.jit.walked = None;
     mutator.jit.walked_optimized = false;
+    mutator.jit.refused_for_an_uncompiled_callee = false;
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
         // No exit took the seed.
@@ -4535,7 +5917,7 @@ pub(crate) fn note_block_entry(mutator: &mut Mutator<'_>, id: CodeId, code: &Com
     if !cfg!(debug_assertions) && recorded {
         return;
     }
-    let Some(body) = mutator.jit.entered_body(code) else {
+    let Some(body) = mutator.jit.entered_body(code, None) else {
         return;
     };
     if body.feedback_base == FeedbackBase::NOT_ASSIGNED {
@@ -4597,6 +5979,7 @@ fn prepared_block(
     if mutator.jit.counting {
         block.set(BlockWord::BackEdges.index(), 0);
         block.set(BlockWord::CompiledCalls.index(), 0);
+        block.set(BlockWord::DispatchedCalls.index(), 0);
     }
     block
 }
@@ -4630,6 +6013,7 @@ fn enter_block(
     if mutator.jit.counting {
         mutator.jit.statistics.machine_back_edges += block.get(BlockWord::BackEdges.index());
         mutator.jit.statistics.compiled_calls += block.get(BlockWord::CompiledCalls.index());
+        mutator.jit.statistics.dispatched_calls += block.get(BlockWord::DispatchedCalls.index());
     }
     kind
 }
@@ -4684,6 +6068,21 @@ fn resumption_after_exit(
     // The interpreter's push, at the safepoint, decides the depth limit.
     let refused_for_a_request = matches!(exit, MachineExit::PushRefused { at_the_bound: true })
         && mutator.heap.real_safepoint_requested();
+    // A call the miss leaf refused because its callee has no machine code
+    // yet, while the zone has room to compile it, says nothing of the
+    // caller's code either: the interpreter's push counts the callee's
+    // entry, and an entry to come compiles it (`note_call_refused`).
+    // Counted, a caller whose callees a compaction frees -- each counting
+    // its entries again -- would spend a refusal on every callee every
+    // compaction freed, and be abandoned for what the zone did.
+    let refused_for_an_uncompiled_callee =
+        std::mem::take(&mut mutator.jit.refused_for_an_uncompiled_callee)
+            && matches!(
+                exit,
+                MachineExit::PushRefused {
+                    at_the_bound: false
+                }
+            );
     // The stress mode enters every body at every push, however often it
     // leaves.
     if matches!(
@@ -4692,9 +6091,15 @@ fn resumption_after_exit(
     ) && !mutator.jit.install_bodies_exiting_at_once
         && !forced
         && !refused_for_a_request
+        && !refused_for_an_uncompiled_callee
     {
         let code = mutator.heap.activation_code(innermost);
-        count_exit(mutator, &code, optimized);
+        // The copy the frame ran is the one its key names: a copy is
+        // entered only where its key holds.
+        let key = optimized
+            .then(|| activation_key(&mutator.heap, &code, innermost))
+            .flatten();
+        count_exit(mutator, &code, optimized, key);
     }
     // The innermost frame goes on interpreted from here: it no longer
     // stands in machine code, which only the frames below it still do.
@@ -4707,6 +6112,19 @@ fn resumption_after_exit(
             activation: innermost,
             program_counter,
         },
+        // A trap runs its instruction again, as a template's exit does,
+        // which widens the feedback the speculation failed on.
+        MachineExit::Trap {
+            program_counter,
+            site,
+        } => {
+            debug_assert!(optimized, "internal: only optimized code traps");
+            count_trap(mutator, innermost, site);
+            Resumption::Interpreted {
+                activation: innermost,
+                program_counter,
+            }
+        }
         // The innermost frame is the caller, stopped at the send the walk
         // wrote as its program counter: it runs the send again.
         MachineExit::PushRefused { .. } => {
@@ -4807,7 +6225,8 @@ fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
 }
 
 /// Counts an exit that handed `code`'s frame to the interpreter, which
-/// stood in `code`'s optimized code if `optimized`, and gives up what
+/// stood in `code`'s optimized code for `key` if `optimized`, and gives
+/// up what
 /// keeps exiting: a body whose twin the compiler refused is refused for
 /// good, whichever code exited, since every copy exits where it makes a
 /// closure; an exit of optimized code counts against the optimized
@@ -4816,14 +6235,19 @@ fn abandon(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
 /// baseline code against the slot's, which, spent, abandons the body --
 /// baseline and optimized code alike (`abandon`). Between entries only.
 #[cfg(ns_jit)]
-fn count_exit(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, optimized: bool) {
+fn count_exit(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    optimized: bool,
+    key: Option<CustomizationKey>,
+) {
     if code.jit.twin_refused.get() {
         refuse_for_its_twin(mutator, code);
         return;
     }
     if optimized {
-        if mutator.jit.note_optimized_exit(code) {
-            abandon_optimized(mutator, code);
+        if mutator.jit.note_optimized_exit(code, key) {
+            abandon_optimized(mutator, code, key);
         }
         return;
     }
@@ -4832,52 +6256,444 @@ fn count_exit(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, optimized: boo
     }
 }
 
-/// Abandons `code`'s optimized code, which has spent its `EXIT_BUDGET`:
-/// it alone is freed (`JitState::free_optimized`), and the body goes on
-/// in its baseline code, which every cell and the machine entry row that
-/// entered the optimized code are written afresh to enter -- as the
-/// optimized code's install wrote them to enter it -- while its exits and
-/// its usage stay what they were. Its optimization budget is armed again
-/// at the budget doubled for each of its abandonments
-/// (`optimization_budget_after`), so that a body whose optimized code
-/// keeps exiting is optimized again ever more rarely, as Strongtalk backs
-/// off a recompilation after uncommon traps
-/// (`docs/design/execution.md`, "Speculation and its failure"). Between
-/// entries only,
-/// where no return address into the zone exists; a frame an exit left
-/// stopped in optimized code goes on in baseline code, as every frame
-/// returned to does.
+/// Abandons `code`'s optimized code for `key`, which has spent its
+/// `EXIT_BUDGET` -- the templates' exits, never its traps: retired as a
+/// copy made not entrant is (`retire_optimized`), since an abandonment is
+/// a version too, so that code with no trap that keeps exiting backs off
+/// as a trap's recompile does, and is left in baseline code for good past
+/// its last version, as HotSpot stays interpreted past
+/// `PerMethodRecompilationCutoff` (`docs/design/execution.md`, "Speculation
+/// and its failure"). Its exits and its usage stay what they were.
 #[cfg(ns_jit)]
-fn abandon_optimized(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>) {
-    let Some(start) = mutator.jit.free_optimized(code) else {
+fn abandon_optimized(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+) {
+    if retire_optimized(mutator, code, key) {
+        mutator.jit.statistics.abandoned_optimized_bodies += 1;
+    }
+}
+
+/// Counts a trap of the optimized code the innermost frame of an exit,
+/// `innermost`, ran, at a speculation resting on `site`: the site's
+/// trapped bit is set, so that the next compile gives it its slow path,
+/// and the copy is made not entrant (`retire_optimized`) when the site
+/// had trapped before -- the same speculation failed again, in code that
+/// will go on failing it -- or the copy's traps reach `TRAP_LIMIT`.
+/// Counted against no exit budget: a trap says the feedback has widened,
+/// not that the code exits where it must. Between entries only, as every
+/// retirement is.
+#[cfg(ns_jit)]
+fn count_trap(mutator: &mut Mutator<'_>, innermost: ActivationReference, site: u32) {
+    mutator.jit.statistics.traps += 1;
+    let code = mutator.heap.activation_code(innermost);
+    // The copy the frame ran is the one its key names: a copy is entered
+    // only where its key holds.
+    let key = activation_key(&mutator.heap, &code, innermost);
+    let Some(body) = mutator.jit.optimized_for(&code, key) else {
         return;
     };
-    let abandonments = code.jit.optimized_abandonments.get().saturating_add(1);
-    code.jit.optimized_abandonments.set(abandonments);
-    mutator.jit.statistics.abandoned_optimized_bodies += 1;
-    if let Some(zone) = mutator.jit.zone.as_ref() {
-        let entry = zone.writer.zone().executable_address(CodeOffset(start)) as u64;
-        mutator.caches.refresh_cells_entering(entry, &mutator.jit);
+    let (feedback_base, copy) = (body.feedback_base, body.key);
+    // A site past the family runs uncached and records nothing, as one of
+    // a family without a range does, and its bit would be a neighbouring
+    // family's: it reads as trapped before, as the snapshot reads it.
+    let trapped_before = site >= code.family_size || mutator.caches.note_trap(feedback_base, site);
+    let traps = code.jit.count_trap(copy);
+    if (trapped_before || traps >= TRAP_LIMIT) && retire_optimized(mutator, &code, copy) {
+        mutator.jit.statistics.made_not_entrant += 1;
     }
+}
+
+/// Retires `code`'s optimized code for `key` (`JitState::optimized_for`),
+/// made not entrant for its traps or abandoned for its exits, answering
+/// whether it had some: it alone is freed (`JitState::free_optimized`) --
+/// the body's other copies staying -- and the body goes on in its baseline
+/// code, which every cell, dispatching row and machine entry row that
+/// entered the copy is written afresh to enter, as the copy's install
+/// wrote them to enter it. Its version is raised (`JitSlot::raise_version`)
+/// and the body's budget armed at the new version's wait
+/// (`optimization_budget_after`), so that a copy that keeps failing is
+/// compiled again ever more rarely, as Strongtalk backs off a
+/// recompilation, and past `LAST_VERSION` without a trap; one that fails
+/// past it is refused for good, its key never requested again, and the
+/// budget left as it is for the body's other keys -- and re-armed for
+/// them whenever a frame of the refused pair runs it out
+/// (`rearm_for_other_pairs`). Between entries only,
+/// where no return address into the zone exists; a frame an exit left
+/// stopped in the copy goes on in baseline code, as every frame returned
+/// to does.
+#[cfg(ns_jit)]
+fn retire_optimized(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+) -> bool {
+    let mut entries = Vec::new();
+    let Some(copy) = unlink_optimized(mutator, code, key, &mut entries) else {
+        return false;
+    };
+    refresh_cells_entering(mutator, entries);
+    match code.jit.raise_version(copy) {
+        Some(version) => rearm_optimization_budget(mutator, code, version),
+        None => mutator.jit.statistics.refused_for_good += 1,
+    }
+    true
+}
+
+/// Frees `code`'s optimized code for `key` (`JitState::free_optimized`)
+/// and writes afresh the machine entry row that named it, answering the
+/// key it was compiled for, `None` for the uncustomized copy, and adding
+/// to `entries` the addresses a cell may name of it -- its start, and the
+/// body's dispatching entry, which a `super` or private lexical cell
+/// names only while the body has a copy -- for the caller to write the
+/// cells naming them afresh, once for every copy it frees
+/// (`refresh_cells_entering`). Its dispatching rows are written afresh by
+/// the free itself. Between entries only.
+#[cfg(ns_jit)]
+fn unlink_optimized(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+    entries: &mut Vec<u64>,
+) -> Option<Option<CustomizationKey>> {
+    let (start, copy) = mutator.jit.free_optimized(code, key)?;
+    if let Some(zone) = mutator.jit.zone.as_ref() {
+        entries.push(zone.writer.zone().executable_address(CodeOffset(start)) as u64);
+    }
+    entries.extend(mutator.jit.dispatching_entry_address(code));
     if let Some(id) = mutator.heap.clear_machine_entry_row(code) {
         note_block_entry(mutator, id, code);
     }
-    let budget = mutator.heap.optimization_budget_of(code);
-    let armed = optimization_budget_after(mutator.jit.optimization_budget, abandonments);
-    mutator.heap.arm_optimization_budget(budget.id, armed);
+    Some(copy)
 }
 
-/// The budget a body whose optimized code was abandoned `abandonments`
-/// times -- none for one never abandoned -- is armed with: `budget`
-/// doubled at each abandonment, at most `MAXIMUM_REVIVAL_DOUBLINGS` times,
-/// as an abandoned body's revival backs off (`revival_entries`), so that a
-/// body whose optimized code always exits is compiled at most once per
-/// sixteen budgets once the cap is reached; and decay halves the
-/// abandonments (`JitSlot::decay_exits`), so that the wait shrinks again in
-/// a run that allocates.
+/// Writes afresh from its entry every cell that names one of `entries`
+/// (`InlineCaches::refresh_cells_entering_any`): one walk of the cells for
+/// all the copies an invalidation freed.
 #[cfg(ns_jit)]
-fn optimization_budget_after(budget: i64, abandonments: u32) -> i64 {
-    budget.saturating_mul(1 << abandonments.min(MAXIMUM_REVIVAL_DOUBLINGS))
+fn refresh_cells_entering(mutator: &mut Mutator<'_>, mut entries: Vec<u64>) {
+    if entries.is_empty() {
+        return;
+    }
+    entries.sort_unstable();
+    entries.dedup();
+    mutator
+        .caches
+        .refresh_cells_entering_any(&entries, &mutator.jit);
+}
+
+/// Frees exactly `code`'s optimized code for `key` -- the key's copy, or
+/// for `None` the body's one uncustomized copy, never the one an
+/// activation of the key would run in its place -- as an invalidation
+/// does, counting it (`JitStatistics::invalidated_copies`), and answers
+/// whether it had some. No version is raised and no trap counted: what
+/// the copy was compiled against changed, which says nothing of its
+/// speculations (`docs/design/execution.md`, "Speculation", "Invalidation").
+#[cfg(ns_jit)]
+fn invalidate_copy(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    key: Option<CustomizationKey>,
+    entries: &mut Vec<u64>,
+) -> bool {
+    let exists = match key {
+        Some(key) => mutator.jit.copy_of(code, key).is_some(),
+        None => mutator.jit.optimized(code).is_some(),
+    };
+    if !exists || unlink_optimized(mutator, code, key, entries).is_none() {
+        return false;
+    }
+    mutator.jit.statistics.invalidated_copies += 1;
+    true
+}
+
+/// Frees every customized copy of `code` whose key `stale` says is stale,
+/// and the body's one uncustomized copy too when `uncustomized` is set, adding
+/// the addresses cells may name of them to `entries`; then, if any was
+/// freed, arms the body's budget afresh at the longest wait the freed
+/// copies' versions earned (`optimization_budget_after`), so that the next
+/// copy waits for feedback gathered since -- as long as a failure of the
+/// freed one would have it wait, no longer, since an invalidation is no
+/// failure.
+#[cfg(ns_jit)]
+fn invalidate_copies_of(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    stale: &dyn Fn(CustomizationKey) -> bool,
+    uncustomized: bool,
+    entries: &mut Vec<u64>,
+) {
+    let keys: Vec<(CustomizationKey, u8)> = code
+        .jit
+        .copies
+        .borrow()
+        .iter()
+        .filter(|copy| stale(copy.key))
+        .map(|copy| (copy.key, copy.version))
+        .collect();
+    let mut wait: Option<u8> = None;
+    let mut note = |version: u8| wait = Some(wait.map_or(version, |longest| longest.max(version)));
+    if uncustomized && invalidate_copy(mutator, code, None, entries) {
+        note(code.jit.optimized_version(None));
+    }
+    for (key, version) in keys {
+        if invalidate_copy(mutator, code, Some(key), entries) {
+            note(version);
+        }
+    }
+    if let Some(version) = wait {
+        rearm_optimization_budget(mutator, code, version);
+    }
+}
+
+/// Frees every customized copy whose key names one of `rebuilt` -- the
+/// instances ids of the applications an install replaced
+/// (`Mutator::install_edit`) -- as its receiver's or its entered
+/// application: each was compiled against a layout, a lookup or an outer
+/// structure the install changed. Every other copy stays, and so does
+/// each key's row, whose ids no receiver carries any more once the
+/// install restamped or forwarded every instance; a full collection
+/// drops the rows once it reclaims the ids (`forget_freed_copies`).
+/// Freed at once, with their cells, dispatching rows and machine entry
+/// rows written afresh: an install runs after an exit, where no return
+/// address into the zone exists and every frame goes on in its baseline
+/// code (`docs/design/execution.md`, "Speculation", "Invalidation"). No
+/// version is raised (`invalidate_copy`).
+#[cfg(ns_jit)]
+pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[DispatchId]) {
+    if rebuilt.is_empty() {
+        return;
+    }
+    let rebuilt: std::collections::HashSet<DispatchId, crate::hash::IdentityBuildHasher> =
+        rebuilt.iter().copied().collect();
+    let stale =
+        |key: CustomizationKey| rebuilt.contains(&key.receiver) || rebuilt.contains(&key.entered);
+    // A request still pending would compile a copy for the old layout.
+    let dropped = drop_stale_requests(mutator, &stale);
+    let mut entries = Vec::new();
+    for code in mutator.jit.customized_codes() {
+        invalidate_copies_of(mutator, &code, &stale, false, &mut entries);
+    }
+    rearm_after_dropped_requests(mutator, dropped, None);
+    refresh_cells_entering(mutator, entries);
+}
+
+/// Drops every pending request whose key `stale` says is stale, answering
+/// each body a request was dropped for, once, with the longest wait its
+/// dropped keys' rows earned (`CustomizedCopy::version`).
+#[cfg(ns_jit)]
+fn drop_stale_requests(
+    mutator: &mut Mutator<'_>,
+    stale: &dyn Fn(CustomizationKey) -> bool,
+) -> Vec<(Rc<CompiledCode>, u8)> {
+    let mut dropped: Vec<(Rc<CompiledCode>, u8)> = Vec::new();
+    mutator.jit.optimization_requests.retain(|request| {
+        let Some(key) = request.key.filter(|key| stale(*key)) else {
+            return true;
+        };
+        if let Some(code) = request.code.upgrade() {
+            let version = code.jit.copy_row(key).map_or(0, |row| row.version);
+            match dropped
+                .iter_mut()
+                .find(|(known, _)| Rc::ptr_eq(known, &code))
+            {
+                Some((_, longest)) => *longest = (*longest).max(version),
+                None => dropped.push((code, version)),
+            }
+        }
+        false
+    });
+    dropped
+}
+
+/// Arms afresh, at the wait `dropped` names for it, the budget of each
+/// body whose pending request `drop_stale_requests` dropped, unless a
+/// request for the body is still pending or something armed the budget
+/// since: the run-out that made the request parked the budget, which only
+/// the request's install or refusal would have armed again, so that a
+/// body left parked with nothing pending would never be requested again,
+/// for any key, until a compaction cleared its row. A body whose copies
+/// the same invalidation freed keeps the arming that freeing gave it.
+///
+/// In a full collection, `carried` is what the collection carries of each
+/// body's budget to the id it has after it (`budgets_before_collection`),
+/// read before this arming: it takes the arming too, or a body whose id
+/// the collection frees would be parked again at its new id.
+#[cfg(ns_jit)]
+fn rearm_after_dropped_requests(
+    mutator: &mut Mutator<'_>,
+    dropped: Vec<(Rc<CompiledCode>, u8)>,
+    mut carried: Option<&mut IdentityMap<usize, i64>>,
+) {
+    for (code, version) in dropped {
+        let pending = mutator
+            .jit
+            .optimization_requests
+            .iter()
+            .any(|request| std::ptr::eq(request.code.as_ptr(), Rc::as_ptr(&code)));
+        let parked = mutator.heap.armed_optimization_budget(&code)
+            == Some(crate::heap::OPTIMIZATION_BUDGET_PARKED);
+        if pending || !parked {
+            continue;
+        }
+        rearm_optimization_budget(mutator, &code, version);
+        if let Some(carried) = carried.as_deref_mut() {
+            carried.insert(
+                Rc::as_ptr(&code) as usize,
+                optimization_budget_after(mutator.jit.optimization_budget, version),
+            );
+        }
+    }
+}
+
+/// Frees every optimized copy there is, customized or not: what a bulk
+/// forward (`elementsOf:forwardIdentityToElementsOf:ifFail:`) does, since
+/// a forwarded object may be the receiver a copy was verified for or
+/// reached through any of its slots; the invalidate stress mode's rounds
+/// free the same, but for the bodies backing off
+/// (`invalidate_optimized_for_stress`). Freed at once, as
+/// `invalidate_applications` frees: the forward is a mirror leaf run
+/// after an exit.
+/// No version is raised (`invalidate_copy`).
+#[cfg(ns_jit)]
+pub(crate) fn invalidate_all_optimized(mutator: &mut Mutator<'_>) {
+    let mut entries = Vec::new();
+    for code in mutator.jit.codes_with_optimized_bodies() {
+        invalidate_copies_of(mutator, &code, &|_| true, true, &mut entries);
+    }
+    refresh_cells_entering(mutator, entries);
+}
+
+/// The invalidate stress mode's round (`NS_NEXT_STRESS_INVALIDATE`), at
+/// the run loop's safepoint once optimized code has spent the countdown
+/// (`JitState::invalidation_due_for_stress`), before what was requested
+/// since the last one is installed: frees every body's copies as
+/// `invalidate_all_optimized` does, but those of a body that sits this
+/// round out (`StressBackOff`), and arms the countdown afresh. Nothing
+/// outside the mode, or before the countdown is spent.
+#[cfg(ns_jit)]
+pub(crate) fn invalidate_optimized_for_stress(mutator: &mut Mutator<'_>) {
+    if !mutator.jit.invalidate_stress() || !mutator.jit.invalidation_due_for_stress() {
+        return;
+    }
+    let mut entries = Vec::new();
+    for code in mutator.jit.codes_with_optimized_bodies() {
+        if mutator.jit.stress_round_frees(&code) {
+            invalidate_copies_of(mutator, &code, &|_| true, true, &mut entries);
+        }
+    }
+    refresh_cells_entering(mutator, entries);
+    mutator
+        .jit
+        .stress_back_offs
+        .retain(|_, back_off| back_off.code.strong_count() > 0);
+    mutator.jit.arm_invalidation_count();
+}
+
+impl JitState {
+    /// Every live body with optimized code installed, each once.
+    #[cfg(ns_jit)]
+    fn codes_with_optimized_bodies(&self) -> Vec<Rc<CompiledCode>> {
+        let mut codes: Vec<Rc<CompiledCode>> = Vec::new();
+        for body in &self.bodies {
+            if body.free || body.tier != Tier::Optimized {
+                continue;
+            }
+            if let Some(code) = body.code.upgrade() {
+                if !codes.iter().any(|known| Rc::ptr_eq(known, &code)) {
+                    codes.push(code);
+                }
+            }
+        }
+        codes
+    }
+}
+
+/// Drops every key's row whose receiver's or entered application's id a
+/// full collection reclaimed (`Mutator::reclaim_ids`), with its copy and
+/// every pending request for it: the id is minted again for another
+/// application, of another layout, which must meet neither the copy nor
+/// what the row says of the dead one -- a refusal that would block the
+/// new key for good, a version that would hold back its first copy, the
+/// level and the application word its cells and dispatching rows would
+/// match it by. Run in the collection, between marking and compaction,
+/// where nothing runs; it allocates nothing and moves nothing. No version
+/// is raised: the row it would be raised in is gone. A body whose pending
+/// request it dropped has its parked budget armed afresh at the plain
+/// wait (`rearm_after_dropped_requests`), and `carried`, what the
+/// collection carries of each body's budget to the id it has after it
+/// (`budgets_before_collection`), takes the arming too.
+#[cfg(ns_jit)]
+pub(crate) fn forget_freed_copies(
+    mutator: &mut Mutator<'_>,
+    freed: &crate::heap::reclaim::FreedIds,
+    carried: &mut IdentityMap<usize, i64>,
+) {
+    if freed.guards.is_empty() {
+        return;
+    }
+    let stale = |key: CustomizationKey| {
+        freed.guards.contains(&key.receiver) || freed.guards.contains(&key.entered)
+    };
+    // The dropped key's row goes too, so its version is no wait of the
+    // body's any more: the plain one.
+    let dropped = drop_stale_requests(mutator, &stale)
+        .into_iter()
+        .map(|(code, _)| (code, 0))
+        .collect();
+    rearm_after_dropped_requests(mutator, dropped, Some(carried));
+    let mut entries = Vec::new();
+    for code in mutator.jit.customized_codes() {
+        let keys: Vec<CustomizationKey> = code
+            .jit
+            .copies
+            .borrow()
+            .iter()
+            .map(|copy| copy.key)
+            .filter(|key| stale(*key))
+            .collect();
+        for key in keys {
+            invalidate_copy(mutator, &code, Some(key), &mut entries);
+        }
+        code.jit.copies.borrow_mut().retain(|copy| !stale(copy.key));
+    }
+    mutator
+        .jit
+        .customized
+        .retain(|code| code.upgrade().is_some_and(|code| code.jit.has_copies()));
+    refresh_cells_entering(mutator, entries);
+}
+
+/// Without a JIT there is no optimized code to invalidate.
+#[cfg(not(ns_jit))]
+pub(crate) fn invalidate_applications(_mutator: &mut Mutator<'_>, _rebuilt: &[DispatchId]) {}
+
+/// Without a JIT there is no optimized code to invalidate.
+#[cfg(not(ns_jit))]
+pub(crate) fn invalidate_all_optimized(_mutator: &mut Mutator<'_>) {}
+
+/// Without a JIT there is no optimized code to invalidate.
+#[cfg(not(ns_jit))]
+pub(crate) fn invalidate_optimized_for_stress(_mutator: &mut Mutator<'_>) {}
+
+/// Without a JIT no body has a key's row.
+#[cfg(not(ns_jit))]
+pub(crate) fn forget_freed_copies(
+    _mutator: &mut Mutator<'_>,
+    _freed: &crate::heap::reclaim::FreedIds,
+    _carried: &mut IdentityMap<usize, i64>,
+) {
+}
+
+/// The budget a body is armed with for a copy at `version`: `budget` times
+/// 4 to the version, saturating, Strongtalk's wait before a recompile
+/// (`docs/design/execution.md`, "Speculation", "Versions and the refusal
+/// for good"), so that a
+/// copy compiled at its first run-out waits the plain budget and each
+/// failure quadruples the next wait.
+fn optimization_budget_after(budget: i64, version: u8) -> i64 {
+    budget.saturating_mul(4_i64.saturating_pow(u32::from(version)))
 }
 
 impl JitState {
@@ -4893,11 +6709,11 @@ impl JitState {
             .is_some_and(|installed| installed.optimized)
     }
 
-    /// Counts an exit of `code`'s optimized code against its own budget,
-    /// answering whether it has just spent its `EXIT_BUDGET`.
+    /// Counts an exit of `code`'s optimized code for `key` against its own
+    /// budget, answering whether it has just spent its `EXIT_BUDGET`.
     #[cfg(ns_jit)]
-    fn note_optimized_exit(&self, code: &CompiledCode) -> bool {
-        let Some(body) = self.optimized(code) else {
+    fn note_optimized_exit(&self, code: &CompiledCode, key: Option<CustomizationKey>) -> bool {
+        let Some(body) = self.optimized_for(code, key) else {
             return false;
         };
         let exits = body.exits.get().saturating_add(1);
@@ -4905,32 +6721,52 @@ impl JitState {
         exits >= EXIT_BUDGET
     }
 
-    /// Frees `code`'s optimized code alone, if it has some here, and
-    /// forgets it in the slot, answering its start for the cells that
-    /// named it: its baseline code, its twin and their exits stay.
+    /// Frees `code`'s optimized code for `key` alone (`optimized_for`), if
+    /// it has some here, and forgets it in the slot -- the key's row
+    /// staying -- answering its start for the cells that named it and the
+    /// key it was compiled for, `None` for the uncustomized copy: its
+    /// baseline code, its other copies, its twin and their exits stay.
     #[cfg(ns_jit)]
-    fn free_optimized(&mut self, code: &CompiledCode) -> Option<u32> {
-        let index = code.jit.optimized.get();
-        let start = self.optimized(code)?.start;
+    fn free_optimized(
+        &mut self,
+        code: &CompiledCode,
+        key: Option<CustomizationKey>,
+    ) -> Option<(u32, Option<CustomizationKey>)> {
+        let body = self.optimized_for(code, key)?;
+        let (start, copy) = (body.start, body.key);
+        let index = match copy {
+            Some(copy) => code.jit.copy_row(copy).map(|row| row.body),
+            None => Some(code.jit.optimized.get()),
+        };
+        let Some(index) = index else {
+            unreachable!("internal: a live copy has its row");
+        };
         self.free_one(index);
-        code.jit.optimized.set(NO_BODY);
-        Some(start)
+        match copy {
+            Some(copy) => code.jit.set_copy_body(copy, NO_BODY),
+            None => code.jit.optimized.set(NO_BODY),
+        }
+        Some((start, copy))
     }
 
-    /// Frees `code`'s baseline code and the optimized code beside it, if it
-    /// has machine code here (`JitState::free_body`), answering the
-    /// addresses a cell may name of them -- each copy's start, sorted --
-    /// for the caller to write afresh once the slot says what it says now.
+    /// Frees `code`'s baseline code and the optimized code beside it -- its
+    /// one copy and every customized one -- if it has machine code here
+    /// (`JitState::free_body`), answering the addresses a cell may name of
+    /// them -- each copy's start, sorted -- for the caller to write afresh
+    /// once the slot says what it says now.
     #[cfg(ns_jit)]
     fn free_entered_code(&mut self, code: &CompiledCode) -> Vec<u64> {
-        let starts: Vec<u32> = [self.installed(code), self.optimized(code)]
-            .into_iter()
-            .flatten()
-            .map(|body| body.start)
-            .collect();
-        if starts.is_empty() {
+        let Some(lean) = self.installed(code).map(|_| code.jit.map.get()) else {
             return Vec::new();
-        }
+        };
+        let dispatching = self.bodies[lean as usize]
+            .dispatching
+            .map(|dispatching| self.bodies[lean as usize].start + dispatching.entry);
+        let starts: Vec<u32> = std::iter::once(lean)
+            .chain(self.optimized_copies_of(lean))
+            .map(|index| self.bodies[index as usize].start)
+            .chain(dispatching)
+            .collect();
         self.free_body(code.jit.map.get());
         let Some(zone) = self.zone.as_ref() else {
             return Vec::new();
@@ -5058,6 +6894,99 @@ mod tests {
             16_384,
             "the third abandonment's wait, after the halving"
         );
+    }
+
+    #[test]
+    fn the_wait_grows_as_four_to_the_version() {
+        use super::optimization_budget_after;
+        assert_eq!(optimization_budget_after(240_000, 0), 240_000);
+        assert_eq!(optimization_budget_after(240_000, 2), 3_840_000);
+        assert_eq!(
+            optimization_budget_after(0, 4),
+            0,
+            "the optimize stress mode's"
+        );
+        assert_eq!(
+            optimization_budget_after(i64::MAX / 2, 3),
+            i64::MAX,
+            "saturating"
+        );
+    }
+
+    /// A row for one key, as a run-out makes it.
+    fn row_of_a_key() -> (JitSlot, super::CustomizationKey) {
+        use crate::mixin::DispatchId;
+        let key = super::CustomizationKey {
+            receiver: DispatchId::from_counter(DispatchId::FIRST_MINTED),
+            entered: DispatchId::from_counter(DispatchId::FIRST_MINTED + 1),
+        };
+        let slot = JitSlot::default();
+        slot.copies.borrow_mut().push(super::CustomizedCopy {
+            key,
+            body: super::NO_BODY,
+            version: 0,
+            traps: 0,
+            refused: false,
+            level: Some(0),
+            entered_word: 0,
+        });
+        (slot, key)
+    }
+
+    #[test]
+    fn a_decay_halves_a_copy_s_traps() {
+        let (slot, key) = row_of_a_key();
+        for traps in 1..=4 {
+            assert_eq!(slot.count_trap(Some(key)), traps);
+            assert_eq!(slot.count_trap(None), traps);
+        }
+        slot.raise_version(Some(key));
+        slot.raise_version(None);
+        for _ in 0..4 {
+            slot.count_trap(Some(key));
+            slot.count_trap(None);
+        }
+        slot.decay_exits();
+        let row = slot.copy_row(key).expect("the row");
+        assert_eq!(row.traps, 2);
+        assert_eq!(slot.optimized_traps.get(), 2);
+        assert_eq!(row.version, 1, "a version never decays");
+        assert_eq!(slot.optimized_version.get(), 1);
+    }
+
+    /// A key's versions climb to one past `LAST_VERSION`, each counting
+    /// its traps from none, and a failure there refuses the key for good,
+    /// as it refuses the uncustomized copy.
+    #[test]
+    fn a_failure_past_the_last_version_refuses_for_good() {
+        use super::LAST_VERSION;
+        let (slot, key) = row_of_a_key();
+        for version in 1..=LAST_VERSION + 1 {
+            slot.count_trap(Some(key));
+            slot.count_trap(None);
+            assert_eq!(slot.raise_version(Some(key)), Some(version));
+            assert_eq!(slot.raise_version(None), Some(version));
+            assert_eq!(slot.copy_row(key).expect("the row").traps, 0);
+            assert_eq!(slot.optimized_traps.get(), 0);
+        }
+        assert_eq!(slot.optimized_version(Some(key)), LAST_VERSION + 1);
+        assert!(!slot.copy_row(key).expect("the row").refused);
+        assert!(!slot.optimized_refused.get());
+        assert_eq!(slot.raise_version(Some(key)), None);
+        assert_eq!(slot.raise_version(None), None);
+        let row = slot.copy_row(key).expect("the row");
+        assert!(row.refused);
+        assert_eq!(row.version, LAST_VERSION + 1, "kept where it failed");
+        assert!(slot.optimized_refused.get());
+    }
+
+    #[test]
+    fn a_copy_speculates_up_to_its_last_version() {
+        use super::optimizing::Speculation;
+        use super::LAST_VERSION;
+        assert_eq!(Speculation::at_version(0), Speculation::Traps);
+        assert_eq!(Speculation::at_version(LAST_VERSION), Speculation::Traps);
+        assert_eq!(Speculation::at_version(LAST_VERSION + 1), Speculation::None);
     }
 
     #[test]
@@ -5628,14 +7557,14 @@ mod tests {
                         .executable_address(CodeOffset(body.start + 1))
                 };
                 let unpointed = mutator.jit.unpointed_budget_address();
-                crate::jit::budget_spent(mutator, unpointed, inside);
+                crate::jit::budget_spent(mutator, unpointed, 0, inside);
                 assert!(
                     mutator.jit.optimization_requests.is_empty(),
                     "a spend from the unpointed budget"
                 );
                 assert_eq!(word(mutator), row, "pointed again");
-                crate::jit::budget_spent(mutator, row, inside);
-                crate::jit::budget_spent(mutator, row, inside);
+                crate::jit::budget_spent(mutator, row, 0, inside);
+                crate::jit::budget_spent(mutator, row, 0, inside);
                 assert_eq!(mutator.jit.optimization_requests.len(), 1);
                 assert_eq!(mutator.jit.statistics.optimization_requests, 1, "once");
                 assert_eq!(
@@ -5643,7 +7572,7 @@ mod tests {
                     Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
                 );
                 mutator.heap.forget_optimization_budget(&code);
-                crate::jit::budget_spent(mutator, row, inside);
+                crate::jit::budget_spent(mutator, row, 0, inside);
                 assert_eq!(
                     mutator.heap.armed_optimization_budget(&code),
                     Some(crate::jit::OPTIMIZATION_BUDGET),
@@ -5671,10 +7600,13 @@ mod tests {
                 let baseline_push = mutator.jit.interpreter_entry(&code, base, 0);
                 assert!(mutator.jit.optimized(&code).is_none());
                 assert_eq!(
-                    mutator.jit.machine_entry_of(&code, base),
+                    mutator.jit.machine_entry_of(&code, base, None),
                     Some(CodeOffset(baseline_start))
                 );
-                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
                 crate::jit::optimize_requested(mutator);
                 assert!(mutator.jit.optimization_requests.is_empty());
                 assert_eq!(mutator.jit.statistics.optimized_bodies, 1);
@@ -5684,12 +7616,12 @@ mod tests {
                 assert_eq!(body.baseline, Some(lean));
                 let optimized_start = body.start;
                 assert_eq!(
-                    mutator.jit.machine_entry_of(&code, base),
+                    mutator.jit.machine_entry_of(&code, base, None),
                     Some(CodeOffset(optimized_start)),
                     "a compiled call enters the optimized prologue"
                 );
                 assert_eq!(
-                    mutator.jit.optimized_push_entry(&code, base),
+                    mutator.jit.optimized_push_entry(&code, base, None),
                     Some(CodeOffset(optimized_start + body.push_entry)),
                     "a push enters the optimized code past its prologue"
                 );
@@ -5699,7 +7631,10 @@ mod tests {
                     "a frame that goes on mid-body, at the loop's head, enters baseline code"
                 );
                 // A second request finds the optimized code installed.
-                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
                 crate::jit::optimize_requested(mutator);
                 assert_eq!(mutator.jit.statistics.optimized_bodies, 1);
                 // Freed whenever its baseline body is.
@@ -5731,7 +7666,10 @@ mod tests {
                 zone.limit = zone.next_offset;
                 let budget = mutator.heap.optimization_budget_of(&hot);
                 mutator.heap.park_optimization_budget(budget.id);
-                mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&hot));
                 crate::jit::optimize_requested(mutator);
                 assert_eq!(mutator.jit.statistics.optimized_bodies, 0);
                 assert!(mutator.jit.optimized(&hot).is_none());
@@ -5761,7 +7699,10 @@ mod tests {
                 let zone = mutator.jit.zone.as_mut().expect("a zone");
                 zone.limit = zone.next_offset;
                 let lean = hot.jit.map.get();
-                mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&hot));
                 crate::jit::optimize_requested(mutator);
                 let needed = mutator.jit.bodies[lean as usize].optimized_needed;
                 assert!(needed > 0, "what it needed is recorded");
@@ -5772,7 +7713,10 @@ mod tests {
                 );
                 let budget = mutator.heap.optimization_budget_of(&hot);
                 mutator.heap.park_optimization_budget(budget.id);
-                mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&hot));
                 crate::jit::optimize_requested(mutator);
                 assert_eq!(mutator.jit.held_compiles, held + 1, "held");
                 assert_eq!(
@@ -5787,7 +7731,10 @@ mod tests {
                 // With the room it needed, it is compiled.
                 let zone = mutator.jit.zone.as_mut().expect("a zone");
                 zone.limit = zone.next_offset + needed;
-                mutator.jit.optimization_requests.push(Rc::downgrade(&hot));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&hot));
                 crate::jit::optimize_requested(mutator);
                 assert!(mutator.jit.optimized(&hot).is_some());
                 assert_eq!(mutator.jit.bodies[lean as usize].optimized_needed, 0);
@@ -5808,7 +7755,10 @@ mod tests {
                 crate::jit::after_compile_trigger(mutator);
                 let zone = mutator.jit.zone.as_mut().expect("a zone");
                 zone.limit = zone.bodies_start + 1;
-                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
                 crate::jit::optimize_requested(mutator);
                 assert!(mutator.jit.optimized(&code).is_none());
                 assert!(code.jit.optimized_refused.get(), "the refusal is recorded");
@@ -5823,14 +7773,14 @@ mod tests {
                 };
                 let row = mutator.heap.optimization_budget_of(&code).address;
                 mutator.heap.forget_optimization_budget(&code);
-                crate::jit::budget_spent(mutator, row, inside);
+                crate::jit::budget_spent(mutator, row, 0, inside);
                 assert_eq!(
                     mutator.heap.armed_optimization_budget(&code),
                     Some(crate::jit::OPTIMIZATION_BUDGET),
                     "armed afresh"
                 );
                 let requests = mutator.jit.statistics.optimization_requests;
-                crate::jit::budget_spent(mutator, row, inside);
+                crate::jit::budget_spent(mutator, row, 0, inside);
                 assert!(mutator.jit.optimization_requests.is_empty());
                 assert_eq!(
                     mutator.jit.statistics.optimization_requests, requests,
@@ -5841,7 +7791,10 @@ mod tests {
                     Some(crate::heap::OPTIMIZATION_BUDGET_PARKED),
                     "parked"
                 );
-                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
                 crate::jit::optimize_requested(mutator);
                 assert_eq!(
                     mutator.jit.statistics.optimize_nanoseconds, spent,
@@ -5850,11 +7803,111 @@ mod tests {
             });
         }
 
+        /// The keyed request for `code` its budget's run-out would record,
+        /// after parking the budget, for the key of `receiver` and
+        /// `entered`.
+        fn park_with_a_keyed_request(
+            mutator: &mut crate::interpreter::Mutator<'_>,
+            code: &Rc<CompiledCode>,
+            receiver: crate::mixin::DispatchId,
+            entered: crate::mixin::DispatchId,
+        ) {
+            let budget = mutator.heap.optimization_budget_of(code);
+            mutator.heap.park_optimization_budget(budget.id);
+            mutator
+                .jit
+                .optimization_requests
+                .push(crate::jit::OptimizationRequest {
+                    code: Rc::downgrade(code),
+                    key: Some(crate::jit::CustomizationKey { receiver, entered }),
+                    entered: std::rc::Weak::new(),
+                });
+        }
+
+        /// An install that drops a body's pending request for a key it
+        /// rebuilt arms the budget the run-out parked afresh, so that the
+        /// body is requested again; while another request for the body
+        /// stays pending, the budget stays parked for it.
+        #[test]
+        fn an_install_that_drops_a_pending_request_rearms_the_budget() {
+            use crate::mixin::DispatchId;
+            let mut interpreter = pinning_the_budget();
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                let (rebuilt, kept) = (DispatchId::from_counter(40), DispatchId::from_counter(41));
+                park_with_a_keyed_request(mutator, &code, rebuilt, rebuilt);
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest {
+                        code: Rc::downgrade(&code),
+                        key: Some(crate::jit::CustomizationKey {
+                            receiver: kept,
+                            entered: kept,
+                        }),
+                        entered: std::rc::Weak::new(),
+                    });
+                crate::jit::invalidate_applications(mutator, &[rebuilt]);
+                assert_eq!(mutator.jit.optimization_requests.len(), 1);
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::heap::OPTIMIZATION_BUDGET_PARKED),
+                    "parked for the request still pending"
+                );
+                crate::jit::invalidate_applications(mutator, &[kept]);
+                assert!(mutator.jit.optimization_requests.is_empty());
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::jit::OPTIMIZATION_BUDGET),
+                    "armed afresh once nothing is pending"
+                );
+            });
+        }
+
+        /// A reclaim that drops a body's pending request for a key whose
+        /// id it freed arms the budget the run-out parked afresh, at the
+        /// plain wait, and what the collection carries of the budget
+        /// across the ids it frees takes the arming too.
+        #[test]
+        fn a_reclaim_that_drops_a_pending_request_rearms_the_budget() {
+            use crate::mixin::DispatchId;
+            let mut interpreter = pinning_the_budget();
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                let freed_id = DispatchId::from_counter(40);
+                park_with_a_keyed_request(mutator, &code, freed_id, freed_id);
+                let mut carried = crate::jit::budgets_before_collection(mutator);
+                let key = Rc::as_ptr(&code) as usize;
+                assert_eq!(
+                    carried.get(&key).copied(),
+                    Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
+                );
+                let mut freed = crate::heap::reclaim::FreedIds::default();
+                freed.guards.insert(freed_id);
+                crate::jit::forget_freed_copies(mutator, &freed, &mut carried);
+                assert!(mutator.jit.optimization_requests.is_empty());
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::jit::OPTIMIZATION_BUDGET)
+                );
+                assert_eq!(
+                    carried.get(&key).copied(),
+                    Some(crate::jit::OPTIMIZATION_BUDGET),
+                    "carried across the collection"
+                );
+            });
+        }
+
         /// Optimized code that spends its exit budget is abandoned alone:
         /// its exits are its own, never the baseline code's, its baseline
-        /// code stays installed and entered at its start again, and its
-        /// budget is armed at twice the last for each abandonment, up to
-        /// the cap.
+        /// code stays installed and entered at its start again, and each
+        /// abandonment raises its version, the budget armed at four times
+        /// the last; abandoned past its last version, it is refused for
+        /// good, and a request compiles nothing.
         #[test]
         fn optimized_code_that_keeps_exiting_is_abandoned_alone_and_backs_off() {
             let mut interpreter = pinning_the_budget();
@@ -5866,45 +7919,64 @@ mod tests {
                 let lean = code.jit.map.get();
                 let baseline_start = mutator.jit.bodies[lean as usize].start;
                 let budget = crate::jit::OPTIMIZATION_BUDGET;
-                for abandonments in 1..=crate::jit::MAXIMUM_REVIVAL_DOUBLINGS + 1 {
-                    mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                let last = crate::jit::LAST_VERSION;
+                for abandonments in 1..=last + 2 {
+                    mutator
+                        .jit
+                        .optimization_requests
+                        .push(crate::jit::OptimizationRequest::uncustomized(&code));
                     crate::jit::optimize_requested(mutator);
                     let optimized = code.jit.optimized.get();
                     assert_ne!(optimized, crate::jit::NO_BODY, "optimized again");
                     for _ in 0..crate::jit::EXIT_BUDGET - 1 {
-                        crate::jit::count_exit(mutator, &code, true);
+                        crate::jit::count_exit(mutator, &code, true, None);
                     }
                     assert!(mutator.jit.optimized(&code).is_some(), "not yet");
-                    crate::jit::count_exit(mutator, &code, true);
+                    crate::jit::count_exit(mutator, &code, true, None);
                     assert!(mutator.jit.bodies[optimized as usize].free);
                     assert!(mutator.jit.optimized(&code).is_none());
                     assert_eq!(code.jit.optimized.get(), crate::jit::NO_BODY);
                     assert!(!mutator.jit.bodies[lean as usize].free, "baseline stays");
                     assert_eq!(code.jit.exits.get(), 0, "the baseline's exits untouched");
                     assert_eq!(
-                        mutator.jit.machine_entry_of(&code, base),
+                        mutator.jit.machine_entry_of(&code, base, None),
                         Some(CodeOffset(baseline_start)),
                         "a compiled call enters the baseline code again"
                     );
-                    let doublings = abandonments.min(crate::jit::MAXIMUM_REVIVAL_DOUBLINGS);
-                    assert_eq!(
-                        mutator.heap.armed_optimization_budget(&code),
-                        Some(budget << doublings),
-                        "abandonment {abandonments}"
-                    );
+                    if abandonments <= last + 1 {
+                        assert_eq!(
+                            mutator.heap.armed_optimization_budget(&code),
+                            Some(budget * 4_i64.pow(u32::from(abandonments))),
+                            "abandonment {abandonments}"
+                        );
+                        assert!(!code.jit.optimized_refused.get());
+                    }
                     assert_eq!(
                         mutator.jit.statistics.abandoned_optimized_bodies,
                         u64::from(abandonments)
                     );
                 }
+                assert!(code.jit.optimized_refused.get(), "refused for good");
+                assert_eq!(mutator.jit.statistics.refused_for_good, 1);
+                let spent = mutator.jit.statistics.optimize_nanoseconds;
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
+                crate::jit::optimize_requested(mutator);
+                assert_eq!(
+                    mutator.jit.statistics.optimize_nanoseconds, spent,
+                    "nothing compiled"
+                );
                 assert_eq!(mutator.jit.statistics.abandoned_bodies, 0);
             });
         }
 
         /// An optimization put off for want of room keeps the back-off
         /// its body's abandoned optimized code earned: the budget is armed
-        /// afresh at twice the plain one after one abandonment, both when
-        /// the install finds no room and when the exhausted zone holds it.
+        /// afresh at four times the plain one after one abandonment, both
+        /// when the install finds no room and when the exhausted zone
+        /// holds it.
         #[test]
         fn a_deferred_optimization_keeps_its_back_off() {
             let mut interpreter = pinning_the_budget();
@@ -5912,19 +7984,25 @@ mod tests {
                 let code = body_with_a_loop();
                 enter_twice(&mut mutator.jit, &code);
                 crate::jit::after_compile_trigger(mutator);
-                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
                 crate::jit::optimize_requested(mutator);
                 for _ in 0..crate::jit::EXIT_BUDGET {
-                    crate::jit::count_exit(mutator, &code, true);
+                    crate::jit::count_exit(mutator, &code, true, None);
                 }
-                assert_eq!(code.jit.optimized_abandonments.get(), 1);
-                let backed_off = Some(crate::jit::OPTIMIZATION_BUDGET << 1);
+                assert_eq!(code.jit.optimized_version.get(), 1);
+                let backed_off = Some(crate::jit::OPTIMIZATION_BUDGET * 4);
                 let zone = mutator.jit.zone.as_mut().expect("a zone");
                 zone.limit = zone.next_offset;
                 for held in [false, true] {
                     let budget = mutator.heap.optimization_budget_of(&code);
                     mutator.heap.park_optimization_budget(budget.id);
-                    mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                    mutator
+                        .jit
+                        .optimization_requests
+                        .push(crate::jit::OptimizationRequest::uncustomized(&code));
                     crate::jit::optimize_requested(mutator);
                     assert!(mutator.jit.optimized(&code).is_none());
                     assert_eq!(
@@ -5948,12 +8026,15 @@ mod tests {
                 enter_twice(&mut mutator.jit, &code);
                 crate::jit::after_compile_trigger(mutator);
                 let lean = code.jit.map.get();
-                mutator.jit.optimization_requests.push(Rc::downgrade(&code));
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
                 crate::jit::optimize_requested(mutator);
                 let optimized = code.jit.optimized.get();
                 assert_ne!(optimized, crate::jit::NO_BODY);
                 for _ in 0..crate::jit::EXIT_BUDGET {
-                    crate::jit::count_exit(mutator, &code, false);
+                    crate::jit::count_exit(mutator, &code, false, None);
                 }
                 assert!(mutator.jit.bodies[lean as usize].free);
                 assert!(mutator.jit.bodies[optimized as usize].free);
@@ -5962,6 +8043,403 @@ mod tests {
                 assert!(mutator.jit.optimized(&code).is_none());
                 assert_eq!(mutator.jit.statistics.abandoned_bodies, 1);
                 assert_eq!(mutator.jit.statistics.abandoned_optimized_bodies, 0);
+            });
+        }
+
+        /// `total`, a method of `A`, run on an `A` by `runA` and on a `B`,
+        /// a subclass of `A`, by `runB`.
+        const ONE_METHOD_ON_TWO_APPLICATIONS: &str = indoc::indoc! {"
+            class Subject = Object new () (
+              class A = Object new (
+                |
+                  step = 2.
+                |
+              ) (
+                public total = (
+                  |
+                    sum ::= 0.
+                    index ::= 0.
+                  |
+                  [index < 100] whileTrue: [
+                    sum:: sum + step.
+                    index:: index + 1.
+                  ].
+                  ^sum.
+                )
+              )
+
+              class B = A new () ()
+
+              public aClass = (
+                ^A.
+              )
+
+              public bClass = (
+                ^B.
+              )
+
+              public runA = (
+                ^A new total.
+              )
+
+              public runB = (
+                ^B new total.
+              )
+            ) : ()
+        "};
+
+        /// Whether the environment turns on a stress mode that may free
+        /// the copies a run made before the test reads them.
+        fn a_stress_mode_frees_copies() -> bool {
+            [
+                "ZONE",
+                "COLLECT",
+                "SCAVENGE",
+                "MOVES",
+                "SUSPEND",
+                "EXIT",
+                "CACHES",
+                "INVALIDATE",
+            ]
+            .iter()
+            .any(|mode| {
+                std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
+                    .is_some_and(|value| !value.is_empty() && value != "0")
+            })
+        }
+
+        /// The answer of `subject`'s unary `selector`.
+        fn sent(
+            interpreter: &mut Interpreter,
+            subject: &crate::Root,
+            selector: &str,
+        ) -> crate::Root {
+            match interpreter.send(subject, crate::Symbol::intern(selector), &[]) {
+                Ok(root) => root,
+                Err(_) => panic!("{selector}: an error"),
+            }
+        }
+
+        /// A cell guarded by the receiver's own id names the copy whose key
+        /// its guard and its target's level make -- the receiver's
+        /// application and the application the level reaches above it --
+        /// and the baseline code while that key has no copy; a `super`
+        /// cell, whose guard tells nothing of the receiver, names the
+        /// body's dispatching entry once it has a copy.
+        #[test]
+        fn a_receiver_guarded_cell_names_its_copy() {
+            use crate::interpreter::inline_cache::{CacheEntry, Target};
+            use crate::interpreter::resolve::Chain;
+            use crate::jit::{cell_entry, CustomizationKey};
+
+            let source = ONE_METHOD_ON_TWO_APPLICATIONS;
+            let module = ns_syntax::parse(source).expect("parse");
+            let resolved = crate::resolve(
+                module,
+                Rc::from(source),
+                crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+            )
+            .expect("resolve");
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.set_jit_stress(true);
+            interpreter.set_optimize_stress(true);
+            let class = interpreter.load_module(&resolved);
+            let Ok(subject) = interpreter.instantiate(&class, &[]) else {
+                panic!("instantiate: an error");
+            };
+            sent(&mut interpreter, &subject, "runA");
+            let base_class = sent(&mut interpreter, &subject, "aClass");
+            let subclass = sent(&mut interpreter, &subject, "bClass");
+            let check = |interpreter: &mut Interpreter, subclass_has_a_copy: bool| {
+                interpreter.enter(|mutator| {
+                    let base_object = mutator.fetch(&base_class).as_object().expect("a class");
+                    let subclass_object = mutator.fetch(&subclass).as_object().expect("a class");
+                    let (base_id, subclass_id) = (
+                        mutator.heap.class_dispatch_ids(base_object).instances,
+                        mutator.heap.class_dispatch_ids(subclass_object).instances,
+                    );
+                    let application = mutator
+                        .heap
+                        .class_application(base_object)
+                        .expect("applied");
+                    let method = application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern("total"))
+                        .expect("total")
+                        .clone();
+                    let code = Rc::clone(&method.code);
+                    let feedback_base = mutator.feedback_base_for(&code);
+                    let entry = |guard, level, chain| CacheEntry {
+                        guard,
+                        target: Target::Method {
+                            method: Rc::clone(&method),
+                            feedback_base,
+                            level,
+                            chain,
+                        },
+                    };
+                    let jit = &mutator.jit;
+                    let zone = jit.zone.as_ref().expect("a zone");
+                    let address = |start: u32| {
+                        zone.writer.zone().executable_address(CodeOffset(start)) as u64
+                    };
+                    let baseline = address(jit.installed(&code).expect("compiled").start);
+                    let copy = |receiver| {
+                        let key = CustomizationKey {
+                            receiver,
+                            entered: base_id,
+                        };
+                        jit.copy_of(&code, key).map(|body| address(body.start))
+                    };
+                    let base_copy = copy(base_id).expect("A's copy");
+                    assert_eq!(
+                        cell_entry(jit, &entry(base_id, 0, Chain::Public)),
+                        base_copy
+                    );
+                    // A `super` cell's guard says nothing of the receiver:
+                    // it names the body's dispatching entry, which the
+                    // receiver's copy is reached through.
+                    assert_eq!(
+                        Some(cell_entry(jit, &entry(base_id, 0, Chain::Super))),
+                        jit.dispatching_entry_address(&code),
+                        "a super cell names the dispatching entry"
+                    );
+                    match copy(subclass_id) {
+                        Some(subclass_copy) => {
+                            assert!(subclass_has_a_copy);
+                            assert_ne!(subclass_copy, base_copy);
+                            assert_eq!(
+                                cell_entry(jit, &entry(subclass_id, 1, Chain::Public)),
+                                subclass_copy
+                            );
+                        }
+                        None => {
+                            assert!(!subclass_has_a_copy);
+                            assert_eq!(
+                                cell_entry(jit, &entry(subclass_id, 1, Chain::Public)),
+                                baseline,
+                                "B's baseline code before B's copy exists"
+                            );
+                        }
+                    }
+                });
+            };
+            if a_stress_mode_frees_copies() {
+                return;
+            }
+            check(&mut interpreter, false);
+            sent(&mut interpreter, &subject, "runB");
+            check(&mut interpreter, true);
+        }
+
+        /// Freeing a method's lean body, which frees its copies with it,
+        /// leaves its block of dispatching rows vacant: the lean body is
+        /// freed first, so that no copy's freeing writes the block again,
+        /// and a row naming a freed copy would enter whatever the zone
+        /// holds there after the next compaction.
+        #[test]
+        fn a_freed_lean_body_leaves_its_dispatching_rows_vacant() {
+            let source = ONE_METHOD_ON_TWO_APPLICATIONS;
+            let module = ns_syntax::parse(source).expect("parse");
+            let resolved = crate::resolve(
+                module,
+                Rc::from(source),
+                crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+            )
+            .expect("resolve");
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.set_jit_stress(true);
+            interpreter.set_optimize_stress(true);
+            let class = interpreter.load_module(&resolved);
+            let Ok(subject) = interpreter.instantiate(&class, &[]) else {
+                panic!("instantiate: an error");
+            };
+            sent(&mut interpreter, &subject, "runA");
+            sent(&mut interpreter, &subject, "runB");
+            let base_class = sent(&mut interpreter, &subject, "aClass");
+            if a_stress_mode_frees_copies() {
+                return;
+            }
+            interpreter.enter(|mutator| {
+                let base_object = mutator.fetch(&base_class).as_object().expect("a class");
+                let application = mutator
+                    .heap
+                    .class_application(base_object)
+                    .expect("applied");
+                let code = Rc::clone(
+                    &application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern("total"))
+                        .expect("total")
+                        .code,
+                );
+                let lean = code.jit.map.get();
+                let block = mutator.jit.bodies[lean as usize]
+                    .dispatching
+                    .expect("a method's lean body has a dispatching entry")
+                    .rows;
+                let rows = |mutator: &crate::interpreter::Mutator<'_>| {
+                    mutator
+                        .jit
+                        .optimized_copies
+                        .as_ref()
+                        .expect("a table")
+                        .rows(block)
+                };
+                assert!(!rows(mutator).is_empty(), "the copies' rows");
+                mutator.jit.free_body(lean);
+                assert!(rows(mutator).is_empty(), "vacant once the body is freed");
+                #[cfg(debug_assertions)]
+                mutator.jit.verify_dispatching_rows();
+            });
+        }
+
+        /// `M`'s private lazy slot `step`, read by `total` in a loop, `M`
+        /// applied twice in `Twice`'s chain, its slot holding 10 at the
+        /// upper level and 1 at the lower one.
+        const ONE_MIXIN_APPLIED_TWICE: &str = indoc::indoc! {"
+            class Subject = Object new () (
+              class Base = Object new () ()
+
+              class M step: value = Object new (
+                |
+                  private seed = value.
+                |
+              ) (
+                lazy private step = seed.
+
+                public total = (
+                  |
+                    sum ::= 0.
+                    index ::= 0.
+                  |
+                  [index < 100] whileTrue: [
+                    sum:: sum + step.
+                    index:: index + 1.
+                  ].
+                  ^sum.
+                )
+              )
+
+              class Middle = Object new () (
+                public lowerTotal = (
+                  ^super total.
+                )
+              )
+
+              class Twice = Base new <: M step: 1 <: Middle <: M step: 10.
+
+              public mixinClass = (
+                ^M.
+              )
+
+              public twiceClass = (
+                ^Twice.
+              )
+
+              public run = (
+                |
+                  twice = Twice new.
+                |
+                ^twice total + twice lowerTotal.
+              )
+            ) : ()
+        "};
+
+        /// A mixin applied twice has a copy of its lazy slot's getter per
+        /// level, each reading its own level's field, and a cell guarded by
+        /// the receiver's id names, at each level, that level's copy: the
+        /// level reaches the entered application the copy's key names.
+        #[test]
+        fn a_receiver_guarded_cell_at_each_level_names_that_level_s_copy() {
+            use crate::interpreter::inline_cache::{CacheEntry, Target};
+            use crate::interpreter::resolve::Chain;
+            use crate::jit::{cell_entry, CustomizationKey};
+
+            let source = ONE_MIXIN_APPLIED_TWICE;
+            let module = ns_syntax::parse(source).expect("parse");
+            let resolved = crate::resolve(
+                module,
+                Rc::from(source),
+                crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+            )
+            .expect("resolve");
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.set_jit_stress(true);
+            interpreter.set_optimize_stress(true);
+            let class = interpreter.load_module(&resolved);
+            let Ok(subject) = interpreter.instantiate(&class, &[]) else {
+                panic!("instantiate: an error");
+            };
+            for _ in 0..3 {
+                let answer = sent(&mut interpreter, &subject, "run");
+                let answer = interpreter.enter(|mutator| mutator.fetch(&answer).as_small_integer());
+                assert_eq!(answer, Some(1100), "each level reads its own slot");
+            }
+            if a_stress_mode_frees_copies() {
+                return;
+            }
+            let mixin_class = sent(&mut interpreter, &subject, "mixinClass");
+            let twice_class = sent(&mut interpreter, &subject, "twiceClass");
+            interpreter.enter(|mutator| {
+                let mixin_object = mutator.fetch(&mixin_class).as_object().expect("a class");
+                let twice_object = mutator.fetch(&twice_class).as_object().expect("a class");
+                let mixin = Rc::clone(
+                    &mutator
+                        .heap
+                        .class_application(mixin_object)
+                        .expect("applied")
+                        .mixin,
+                );
+                let method = mixin
+                    .compiled_method(crate::Symbol::intern("step"))
+                    .expect("the getter")
+                    .clone();
+                let code = Rc::clone(&method.code);
+                let feedback_base = mutator.feedback_base_for(&code);
+                let receiver = mutator.heap.class_dispatch_ids(twice_object).instances;
+                // The levels of `Twice`'s chain that apply `M`, by their
+                // steps from `Twice`, and the id each is entered at.
+                let mut levels = Vec::new();
+                let mut current = Some(twice_object);
+                let mut steps: u16 = 0;
+                while let Some(level) = current {
+                    if let Some(application) = mutator.heap.class_application(level) {
+                        if Rc::ptr_eq(&application.mixin, &mixin) {
+                            levels.push((steps, application.dispatch_ids.instances));
+                        }
+                    }
+                    current = mutator.heap.class_superclass(level);
+                    steps += 1;
+                }
+                assert_eq!(levels.len(), 2, "M is applied twice");
+                let jit = &mutator.jit;
+                let zone = jit.zone.as_ref().expect("a zone");
+                let address =
+                    |start: u32| zone.writer.zone().executable_address(CodeOffset(start)) as u64;
+                let mut copies = Vec::new();
+                for (level, entered) in levels {
+                    let key = CustomizationKey { receiver, entered };
+                    let copy = jit
+                        .copy_of(&code, key)
+                        .map(|body| address(body.start))
+                        .expect("the level's copy");
+                    let entry = CacheEntry {
+                        guard: receiver,
+                        target: Target::Method {
+                            method: Rc::clone(&method),
+                            feedback_base,
+                            level,
+                            chain: Chain::Public,
+                        },
+                    };
+                    assert_eq!(cell_entry(jit, &entry), copy, "level {level}");
+                    copies.push(copy);
+                }
+                assert_ne!(copies[0], copies[1], "a copy per level");
             });
         }
 
@@ -6612,6 +9090,14 @@ mod cross_assembly_tests {
             ("refusing", stubs::assemble_refusing_stub(abi)),
             ("polymorphic", targets::assemble_polymorphic_stub(abi)),
             ("megamorphic", targets::assemble_megamorphic_stub(abi)),
+            (
+                "dispatching",
+                targets::assemble_dispatching_stub(abi, false),
+            ),
+            (
+                "counting dispatching",
+                targets::assemble_dispatching_stub(abi, true),
+            ),
         ];
         for (name, assembled) in &stubs {
             assert_instructions(name, &assembled.bytes);

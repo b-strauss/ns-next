@@ -61,7 +61,7 @@ Rust 1.98.0, edition 2021, seven crates:
   `execution.md`, "The baseline JIT's foundation", "Sends, returns and
   the exit that materializes", "The entry at a send", "Stage 4: closures,
   non-local return, allocation and the barrier", "The code zone"), the
-  optimizing JIT's first stage beside it (`jit/optimizing/`: a body whose
+  optimizing JIT's first two stages beside it (`jit/optimizing/`: a body whose
   budget -- a row per code id in `heap/optimization_budgets.rs`, which
   its baseline code spends through a data word of each copy's -- runs
   out is snapshotted at the next safepoint (`snapshot.rs`), built into
@@ -70,7 +70,18 @@ Rust 1.98.0, edition 2021, seven crates:
   `metadata.rs`) and emitted through the baseline's templates
   (`emit.rs`), installed beside its baseline code, entered at a push or
   a compiled call and left for the baseline code wherever a frame goes
-  on mid-body; `execution.md`, "The optimizing tier's foundation") and
+  on mid-body; a method's body optimized a copy per receiver
+  application and entered application (`jit/mod.rs`'s
+  `CustomizationKey`, `JitSlot::copies`), entered by a receiver-guarded
+  cell, the push and, for a `super`, a private lexical or an
+  interpreted send, the body's dispatching entry and the shared
+  dispatching stub (`jit/targets.rs`) over the rows of
+  `heap/optimized_copies.rs`; its own slots read at fixed offsets, a
+  site the caches' executed and trapped bits say never ran a guard that
+  traps, a copy that keeps trapping or exiting retired with its version
+  raised, past the last compiled without traps, and the copies an edit,
+  a bulk forward or a reclaimed id makes stale freed at once;
+  `execution.md`, "The optimizing tier's foundation", "Speculation") and
   the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
@@ -401,7 +412,14 @@ forward replaced is written in the old layout at exit status 0. A guard
 is recorded only for a receiver verified to have the level (the push,
 and a cache fill, walk for it), and a nested class's hidden cache slot is
 looked up again after its superclass clause ran
-(`object-model.md`, "What a slot access checks").
+(`object-model.md`, "What a slot access checks"). A customized copy's
+own-slot reads (`Node::OwnSlotLoad`, `End::ReturnUnlessNil`) need no
+guard: the copy's entry verified the receiver's application, any
+forward of the receiver runs in a mirror leaf machine code exits for,
+which ends the frame's optimized code, and the decoder holds every
+instance of a program class to its application's slot count
+(`execution.md`, "Speculation", "Own slots at fixed offsets";
+`image-format.md`, "Verification").
 
 **`outer` walks the *lexical* declaration chain, never the receiver's dynamic
 class** — `current_class`, then each class object's declaring-class field
@@ -483,7 +501,8 @@ and the forcing leaf compile and install a callee, and the twin leaf
 the running body's twin -- the budget leaf only records a body's
 optimization request, which the run loop's safepoint compiles and
 installs (`jit::optimize_requested`), or points its own body's budget
-word; and a leaf answers "re-execute" only
+word and dispatching word, the latter at its code id's block of
+dispatching rows (`jit::point_budget_word`); and a leaf answers "re-execute" only
 before it changed anything but a send's argument slots, which the mirror
 leaf places as the interpreter does and which nothing reads after the
 send but the send re-executed. Every body compiles lean, and its
@@ -530,7 +549,8 @@ stale (`JitState::mark_block_stale`; only a debug build's check at every
 entry catches a missed mark), the frame's and the code's words at each
 entry, and it holds no handle. A cache cell is written only from its
 entry -- beside it, or afresh when the JIT's state under it changes --
-its entry address a function of the entry's target and the JIT's state,
+its entry address a function of the entry -- its guard and its target
+-- and the JIT's state,
 and a stub does what `Mutator::act_with_base` does for its target and
 nothing more. A row of the machine entry table, which the closure stubs
 jump through (`heap/machine_entries.rs`), is written only from the
@@ -538,10 +558,17 @@ body its code id names, and cleared wherever that stops naming its
 machine code: the id freed, the body abandoned or freed by a
 compaction or a slide of its feedback base, the zone replaced, the
 JIT switched on or off -- a stale row is a jump into another body's
-code.
+code. A method body's dispatching rows (`heap/optimized_copies.rs`),
+which the dispatching stub jumps through, are written only from the
+copies of the body whose dispatching word names them
+(`JitState::write_dispatching_rows`), each row from the copy its key
+names, written afresh at every install and wherever a copy stops
+naming its machine code -- retired, invalidated, freed or moved by a
+compaction -- and cleared when the zone is replaced; a stale row is a
+jump into another copy's code.
 The code zone is compacted only at the run loop's safepoint, when no
 return address into it exists. A compaction remaps every cell, machine
-entry row and record that names an address in it, and a body holds no
+entry row, dispatching row and record that names an address in it, and a body holds no
 address of its own but those relative to `rip`.
 No word machine code reads or writes between two leaf calls lives inline
 in `Mutator`: frame registers and object fields lie in the activation
@@ -621,7 +648,7 @@ every one runs on 18 threads.
 | `memory` | `ns-memory`'s clippy for `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin` | a commit touching `crates/ns-memory` |
 | `benchmarks` | the benchmark programs verified at full size, and their Java counterparts; needs a JDK (`JAVA_HOME` or `PATH`); profile `benchmarks-verify`; it measures nothing and never runs under a stress mode (`execution.md`, "The Are We Fast Yet benchmarks") | when benchmarking; the end of a batch that changed the runtime |
 | `release-checks` | the suite built without debug assertions, profile `release-checks` of `Cargo.toml` (release without its fat LTO), which runs the size tests (below); `ns-runtime`'s clippy, warning-free, for `aarch64-pc-windows-msvc`, a target without a JIT, where no `cfg(ns_jit)` code is compiled, and for `aarch64-apple-darwin`, Apple's JIT (`rustup target add` both) | when a change touches a type a size test pins; the end of a batch that changed the runtime |
-| `stress` | the suite under the eleven stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
+| `stress` | the suite under the twelve stress modes and once with `NS_NEXT_NO_JIT=1`, all at once, each into `.temp/stress-<MODE>.log` (`NO_JIT` the last's), then `run-corpus` plain and under each mode (`docs/design/README.md`, "Gates") | the end of a batch that changed the runtime |
 | `codegen` | `cargo asm` (`cargo install cargo-show-asm --locked`) over `ns-runtime`'s lib in the `release` profile for `x86_64-pc-windows-msvc`, into `target/codegen`: each hot function of the send, push and return path held to a budget of instructions and of wide stack loads over narrower stores (`xtask/src/codegen.rs`; `execution.md`, "Keeping the hot path in registers") | a commit touching `vm.rs`, `interpreter/mod.rs`, `interpreter/sends.rs`, `heap.rs`, `heap/frames.rs` or `bytecode/compact.rs` (under `crates/ns-runtime/src/`); the end of a batch that changed the runtime |
 | `linux` | in Docker, in an x86_64 container of the image `ns-next-gates` (`xtask/docker/Dockerfile`, built first, cached by Docker), the checkout mounted read-only and rsynced into a working-copy volume of its own, `ns-next-gates-<hash of the checkout's path>-work` (what a `.gitignore` names and `prior-art` excluded; `target` and cargo's registry volumes of their own, so a second run builds incrementally and two checkouts never share one; a linked worktree's git metadata mounted read-only instead of copied): `cargo xtask shipped-code`, `cargo clippy --workspace --all-targets` warning-free, the default suite on as many threads as the container has CPUs, the doctests, and the benchmark programs with their Java counterparts (profile `benchmarks-verify`, as `benchmarks` runs them; the image has a JDK), all for `x86_64-unknown-linux-gnu` | the end of a batch that changed the runtime |
 | `aarch64` | in Docker, the same image and copy, then the shipped code, clippy for `aarch64-unknown-linux-gnu` warning-free, and the suite cross-compiled for it, run through the image's own `qemu-aarch64`, a pinned QEMU release, as the target's runner, which also starts every `ns-next` and `ns-next-analyzer` a test starts (`aarch64-linux-gnu-gcc` the linker, `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64`, `QEMU_LD_PREFIX=/usr/aarch64-linux-gnu`, `RUST_MIN_STACK=8388608`), no doctests (`docs/design/execution.md`, "Tests"); about 8.5 minutes | the end of a batch that changed the runtime |

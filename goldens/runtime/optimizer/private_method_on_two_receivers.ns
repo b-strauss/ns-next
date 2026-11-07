@@ -1,0 +1,69 @@
+/// A private method run hot on receivers of two classes: `run:` sends
+/// `weigh:` to its own receiver as a private lexical send (newspeak-spec.pdf
+/// 5.9), which reaches `Tally`'s private `weigh:` whatever the receiver,
+/// even a `Heavy`, which declares a public `weigh:` of its own. So
+/// `weigh:` runs on a `Tally` and on a `Heavy`, two receiver
+/// applications entered at one level: two optimized copies, which the
+/// private send reaches through the body's dispatching entry. Each reads
+/// its receiver's own slot `base` and its argument: `weigh: 100` answers
+/// 100 * base + 5050, 5150 for the `Tally` of base 1 and 5250 for the
+/// `Heavy` of base 2. The lines sum 2000 runs of each, then send the
+/// `Heavy` its public `weigh:`, which answers its `extra`, 1000.
+class PrivateMethodOnTwoReceivers = Object new () (
+  class Tally seed: value = Object new (
+    |
+      base = value.
+    |
+  ) (
+    private weigh: count = (
+      |
+        total ::= 0.
+        index ::= 1.
+      |
+      [index <= count] whileTrue: [
+        total:: total + base + index.
+        index:: index + 1.
+      ].
+      ^total.
+    )
+
+    public run: count = (
+      ^weigh: count.
+    )
+  )
+
+  class Heavy seed: value = Tally seed: value (
+    |
+      extra = 1000.
+    |
+  ) (
+    public weigh: count = (
+      ^extra.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      tally = Tally seed: 1.
+      heavy = Heavy seed: 2.
+      light ::= 0.
+      weighty ::= 0.
+      round ::= 0.
+    |
+    [round < 2000] whileTrue: [
+      light:: light + (tally run: 100).
+      weighty:: weighty + (heavy run: 100).
+      round:: round + 1.
+    ].
+    transcript
+        show: light printString;
+        newLine.
+    transcript
+        show: weighty printString;
+        newLine.
+    transcript
+        show: (heavy weigh: 100) printString;
+        newLine.
+  )
+)

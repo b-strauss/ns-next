@@ -1208,9 +1208,9 @@ layout, generations and inline allocation that compiled code builds on.
   [execution.md](execution.md), "The baseline JIT's foundation").
 - **Tier 2 — optimizing JIT.** Speculative inlining driven by IC feedback, escape
   analysis, unboxing, guarded by deopt (road step 9, designed, its
-  first stage, the foundation without speculation, built;
-  [execution.md](execution.md), "Planned: the optimizing JIT", "The
-  optimizing tier's foundation").
+  first two stages, the foundation and speculation without inlining,
+  built; [execution.md](execution.md), "Planned: the optimizing JIT",
+  "The optimizing tier's foundation", "Speculation").
 - **Deopt metadata** — safepoint ↔ machine-code position ↔ abstract interpreter
   state, under the contract of [execution.md](execution.md), "Planned: the
   deoptimization contract": every observer runs after machine code's exit to

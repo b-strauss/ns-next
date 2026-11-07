@@ -1,7 +1,7 @@
 //! The interrupt points' metadata (`docs/design/execution.md`, "Planned:
 //! the deoptimization contract", "Optimized frames"): for every point at
 //! which an observer may read optimized code's frame -- every frame node,
-//! every back edge's poll -- its program counter, which of the two ways a
+//! every back edge's poll, every trap -- its program counter, which of the two ways a
 //! frame resumes there, and where the value of each register the leftover
 //! analysis does not taint is. In stage 1 that is always its frame word:
 //! the point's write-back (`allocate::DirtyPoint`) stores every binding
@@ -29,9 +29,9 @@ pub(crate) enum Resumes {
     /// counter, with the same frame words, so the point's locations hold
     /// for either way.
     Deliver,
-    /// The instruction at the point runs again: a poll's loop head, and
-    /// every other frame node, whose template hands its instruction to
-    /// the interpreter when it exits.
+    /// The instruction at the point runs again: a poll's loop head, a
+    /// trap's instruction, and every other frame node, whose template
+    /// hands its instruction to the interpreter when it exits.
     Reexecute,
 }
 
@@ -93,6 +93,19 @@ fn point_of(graph: &Graph, block: BlockId, kind: PointKind) -> (u32, Resumes) {
         PointKind::Poll => {
             let head = poll_target(graph, block).expect("internal: a poll's block jumps back");
             (graph.block(head).program_counter, Resumes::Reexecute)
+        }
+        // A trap runs its instruction again in the interpreter.
+        PointKind::Trap { node: Some(node) } => {
+            let program_counter = graph.block(block).nodes[node]
+                .trap()
+                .expect("internal: a trap point's node traps");
+            (program_counter, Resumes::Reexecute)
+        }
+        PointKind::Trap { node: None } => {
+            let program_counter = graph
+                .end_trap(block)
+                .expect("internal: a trap point's end traps");
+            (program_counter, Resumes::Reexecute)
         }
     }
 }
@@ -200,7 +213,10 @@ fn replay(
         return Err(VerifyError::Unaligned);
     }
     let lives = intervals_knowing(graph, order, Some(&snapshot.tainted_before));
-    let register_count = snapshot.register_count().max(lives.register_count);
+    // Counted once: the count walks every instruction, and every
+    // interrupt point compares each register with it.
+    let named_registers = snapshot.register_count();
+    let register_count = named_registers.max(lives.register_count);
     let survivors = &allocation.allocatable[..allocation.survive_leaf_calls];
     let mut points = allocation.dirty_at.iter().zip(&metadata.points);
     let mut replay = Replay {
@@ -252,7 +268,15 @@ fn replay(
                 }
                 let mut stopped = replay.clone();
                 write_back(&mut stopped, &point.stores, use_position)?;
-                interrupt(&stopped, graph, *block, point.kind, described, snapshot)?;
+                interrupt(
+                    &stopped,
+                    graph,
+                    *block,
+                    point.kind,
+                    described,
+                    snapshot,
+                    named_registers,
+                )?;
                 for (register, value) in reads {
                     let register = usize::from(*register);
                     if stopped.interpreter[register] != Some(*value) || !stopped.in_sync(register) {
@@ -278,10 +302,36 @@ fn replay(
                     });
                 }
             }
-            if let Node::IntegerBinary { fallback, .. } = node {
+            if let Node::IntegerBinary {
+                fallback: Some(fallback),
+                ..
+            } = node
+            {
                 if graph.block(*block).exit_position(*fallback) == Some(index) {
                     enters(&replay, graph, allocation, snapshot, *block, *fallback)?;
                 }
+            }
+            // The trap's cold write-back, replayed on its way out.
+            if node.trap().is_some() {
+                let Some((point, described)) = points.next() else {
+                    return Err(VerifyError::Unaligned);
+                };
+                if point.position != use_position
+                    || point.kind != (PointKind::Trap { node: Some(index) })
+                {
+                    return Err(VerifyError::Unaligned);
+                }
+                let mut stopped = replay.clone();
+                write_back(&mut stopped, &point.stores, use_position)?;
+                interrupt(
+                    &stopped,
+                    graph,
+                    *block,
+                    point.kind,
+                    described,
+                    snapshot,
+                    named_registers,
+                )?;
             }
             if leaf_calls.binary_search(&use_position).is_ok() {
                 let clobbered: Vec<(Spot, ValueId)> = replay
@@ -341,7 +391,10 @@ fn replay(
                     value,
                     ..
                 } => replay.interpreter[usize::from(*destination_register)] = Some(*value),
-                Node::Constant { .. } | Node::Receiver { .. } | Node::Frame { .. } => {}
+                Node::Constant { .. }
+                | Node::Receiver { .. }
+                | Node::OwnSlotLoad { .. }
+                | Node::Frame { .. } => {}
             }
             apply(&mut replay, allocation, definition)?;
         }
@@ -359,7 +412,34 @@ fn replay(
             }
             let mut stopped = replay.clone();
             write_back(&mut stopped, &point.stores, end_use)?;
-            interrupt(&stopped, graph, *block, point.kind, described, snapshot)?;
+            interrupt(
+                &stopped,
+                graph,
+                *block,
+                point.kind,
+                described,
+                snapshot,
+                named_registers,
+            )?;
+        }
+        if graph.end_trap(*block).is_some() {
+            let Some((point, described)) = points.next() else {
+                return Err(VerifyError::Unaligned);
+            };
+            if point.position != end_use || point.kind != (PointKind::Trap { node: None }) {
+                return Err(VerifyError::Unaligned);
+            }
+            let mut stopped = replay.clone();
+            write_back(&mut stopped, &point.stores, end_use)?;
+            interrupt(
+                &stopped,
+                graph,
+                *block,
+                point.kind,
+                described,
+                snapshot,
+                named_registers,
+            )?;
         }
         apply(&mut replay, allocation, positions.end_definition(*block))?;
         for successor in graph.block(*block).end.successors() {
@@ -464,7 +544,8 @@ fn write_back(
 
 /// Checks the frame at an interrupt point, after its write-back: every
 /// register the leftover analysis does not taint holds the interpreter's
-/// value in its frame word, and the metadata says it is there.
+/// value in its frame word, and the metadata says it is there, for each
+/// of the `named_registers` the body names (`Snapshot::register_count`).
 fn interrupt(
     stopped: &Replay,
     graph: &Graph,
@@ -472,6 +553,7 @@ fn interrupt(
     kind: PointKind,
     described: &InterruptPoint,
     snapshot: &Snapshot,
+    named_registers: usize,
 ) -> Result<(), VerifyError> {
     let (program_counter, resumes) = point_of(graph, block, kind);
     if described.program_counter != program_counter || described.resumes != resumes {
@@ -493,7 +575,7 @@ fn interrupt(
                 program_counter,
             });
         }
-        if register < snapshot.register_count()
+        if register < named_registers
             && described_registers.next() != Some(&(number, Location::FrameWord))
         {
             return Err(VerifyError::MetadataDisagrees { program_counter });

@@ -16,11 +16,12 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
-    leftovers, CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
-    HEADER_REGISTERS,
+    falls_through, jump_target, leftovers, CallSite, CodeKind, CompiledCode, Instruction,
+    IntegerOperation, Literal, HEADER_REGISTERS,
 };
 use crate::heap::{CodeId, Heap};
 use crate::interpreter::inline_cache::{FeedbackBase, InlineCaches};
+use crate::jit::CustomizationKey;
 use crate::Symbol;
 
 /// What a body says of itself apart from its instructions: the numbers
@@ -910,6 +911,32 @@ fn convert(
     })
 }
 
+/// The call site a speculation of one instruction rests on, and what the
+/// caches recorded of it when the snapshot was taken: whether a send ever
+/// filled its cache (`InlineCaches::site_executed`) and whether a
+/// speculation on it trapped before (`InlineCaches::site_trapped`). The
+/// executed bit records a recorded entry, not every run: a send resolved
+/// to `doesNotUnderstand:` fills no cache -- a non-Boolean's conditional
+/// fallback, `nil + 1` -- so a site that ran so reads as never executed,
+/// and only its trapped bit, which the trap sets, says it ran. A site
+/// speculates only when neither is set (`build::build`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SiteFacts {
+    pub(crate) site: u32,
+    pub(crate) executed: bool,
+    pub(crate) trapped: bool,
+}
+
+/// What a customized copy is compiled for (`docs/design/execution.md`,
+/// "Speculation", "Own slots at fixed offsets"): its key, and the own
+/// slot base of the application the key enters at, which fixes the
+/// absolute index of every own slot the body addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Customization {
+    pub(crate) key: CustomizationKey,
+    pub(crate) own_slot_base: u32,
+}
+
 /// A body as the optimizing compiler reads it, taken at a safepoint.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snapshot {
@@ -934,6 +961,20 @@ pub(crate) struct Snapshot {
     /// Feedback read as layout only: the send answers a `SmallInteger`'s
     /// operation too.
     pub(crate) fallback_taken: Vec<bool>,
+    /// For each instruction, the site a speculation of it rests on: a
+    /// send's own, an `IntegerBinary`'s fallback send's and a
+    /// `JumpIfNotBoolean`'s first send at its not-Boolean target
+    /// (`fallback_site`) -- the send that runs where the speculation
+    /// fails, so that the site's executed bit says whether a send there
+    /// ever filled its cache, which a send that ran unrecorded, resolved
+    /// to `doesNotUnderstand:`, did not, and its trapped bit whether a
+    /// speculation on it trapped (`SiteFacts`). `None` for every other
+    /// instruction.
+    pub(crate) sites: Vec<Option<SiteFacts>>,
+    /// The copy's key and entered level, for a customized copy; `None`
+    /// for a body's one uncustomized copy, whose own-slot instructions
+    /// keep their templates, which find the slot base and check the guard.
+    pub(crate) customization: Option<Customization>,
 }
 
 /// The registers tainted before each instruction of `code`, as
@@ -971,13 +1012,14 @@ impl Snapshot {
     }
 
     /// The snapshot of `code`, its sends' cells found from
-    /// `feedback_base`; the body and its blocks are registered with `heap`
-    /// if they were not yet.
+    /// `feedback_base`, for the copy `customization` names; the body and
+    /// its blocks are registered with `heap` if they were not yet.
     pub(crate) fn take(
         code: &Rc<CompiledCode>,
         heap: &mut Heap,
         caches: &InlineCaches,
         feedback_base: FeedbackBase,
+        customization: Option<Customization>,
     ) -> Snapshot {
         let instructions = code.instructions();
         let float = heap.float_dispatch_id();
@@ -1004,7 +1046,57 @@ impl Snapshot {
                 .collect(),
             tainted_before: tainted_before_each(code),
             fallback_taken,
+            sites: Self::sites_of(&instructions, code.family_size, caches, feedback_base),
+            customization,
         }
+    }
+
+    /// The site each instruction's speculation rests on, with what the
+    /// caches recorded of it (`sites`). A site past the family, which runs
+    /// uncached and so leaves no record, reads as executed and trapped,
+    /// as one of a family without a range does, so that nothing is
+    /// speculated on it.
+    fn sites_of(
+        instructions: &[Instruction],
+        family_size: u32,
+        caches: &InlineCaches,
+        feedback_base: FeedbackBase,
+    ) -> Vec<Option<SiteFacts>> {
+        instructions
+            .iter()
+            .map(|instruction| {
+                let site = match instruction {
+                    Instruction::IntegerBinary { target, .. }
+                    | Instruction::JumpIfNotBoolean { target, .. } => {
+                        Self::fallback_site(instructions, *target)
+                    }
+                    _ => instruction.call_site().map(|site| site.number),
+                }?;
+                let recorded = site < family_size;
+                Some(SiteFacts {
+                    site,
+                    executed: !recorded || caches.site_executed(feedback_base, site),
+                    trapped: !recorded || caches.site_trapped(feedback_base, site),
+                })
+            })
+            .collect()
+    }
+
+    /// The call site of the first send at or after `target`, before any
+    /// instruction that jumps or ends the path: the send a fallback path
+    /// runs -- an `IntegerBinary`'s at its target, a conditional's past
+    /// the closures and moves its not-Boolean path lowers first.
+    pub(crate) fn fallback_site(instructions: &[Instruction], target: u32) -> Option<u32> {
+        let start = usize::try_from(target).ok()?;
+        for instruction in instructions.get(start..)? {
+            if let Some(site) = instruction.call_site() {
+                return Some(site.number);
+            }
+            if jump_target(instruction).is_some() || !falls_through(instruction) {
+                return None;
+            }
+        }
+        None
     }
 }
 
@@ -1058,7 +1150,13 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
         interpreter.enter(|mutator| {
             let heap = &mut mutator.heap;
-            let snapshot = Snapshot::take(&code, heap, &mutator.caches, FeedbackBase::NOT_ASSIGNED);
+            let snapshot = Snapshot::take(
+                &code,
+                heap,
+                &mutator.caches,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+            );
             assert_eq!(snapshot.instructions.len(), code.instruction_count());
             assert!(matches!(
                 snapshot.instructions[1],
@@ -1097,7 +1195,13 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
         interpreter.enter(|mutator| {
             let heap = &mut mutator.heap;
-            let snapshot = Snapshot::take(&code, heap, &mutator.caches, FeedbackBase::NOT_ASSIGNED);
+            let snapshot = Snapshot::take(
+                &code,
+                heap,
+                &mutator.caches,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+            );
             let SnapshotInstruction::MakeClosure {
                 block: block_id,
                 parameter_count,
@@ -1111,6 +1215,134 @@ mod tests {
             assert_eq!(*parameter_count, 1);
             assert_eq!(copied, &vec![14]);
         });
+    }
+
+    /// A body with a send, an integer operation whose fallback is a send,
+    /// and an inlined `ifTrue:ifFalse:` whose not-Boolean fallback reaches
+    /// its send past a move: each names the site its speculation rests on.
+    fn a_body_of_three_speculations() -> Vec<Instruction> {
+        use crate::bytecode::CallSite;
+        vec![
+            Instruction::LoadSelf { destination: 14 },
+            Instruction::SendPublic {
+                selector: Symbol::intern("count"),
+                receiver_register: 14,
+                argument_base: 15,
+                argument_sources: Vec::new(),
+                destination: 15,
+                call_site: CallSite { number: 0 },
+            },
+            Instruction::IntegerBinary {
+                operation: IntegerOperation::Add,
+                destination: 16,
+                left: 15,
+                right: 15,
+                target: 4,
+            },
+            Instruction::Jump { target: 5 },
+            Instruction::SendPublic {
+                selector: Symbol::intern("+"),
+                receiver_register: 15,
+                argument_base: 17,
+                argument_sources: vec![15],
+                destination: 16,
+                call_site: CallSite { number: 1 },
+            },
+            Instruction::JumpIfNotBoolean {
+                register: 16,
+                target: 9,
+            },
+            Instruction::BranchIfFalse {
+                register: 16,
+                target: 8,
+            },
+            Instruction::Jump { target: 11 },
+            Instruction::Jump { target: 11 },
+            Instruction::Move {
+                destination: 17,
+                source: 16,
+            },
+            Instruction::SendInlinable {
+                selector: Symbol::intern("ifTrue:ifFalse:"),
+                receiver_register: 17,
+                argument_base: 18,
+                argument_sources: vec![14, 14],
+                destination: 16,
+                call_site: CallSite { number: 2 },
+            },
+            Instruction::Return { register: 16 },
+        ]
+    }
+
+    #[test]
+    fn a_snapshot_names_the_site_each_speculation_rests_on() {
+        let (load_self_index, send_index, integer_index, jump_if_not_boolean_index) = (0, 1, 2, 5);
+        let (send_site, fallback_send_site, conditional_fallback_site) = (0, 1, 2);
+        let code = body(CodeKind::Method, a_body_of_three_speculations(), 0);
+        let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+        interpreter.enter(|mutator| {
+            let base = mutator.caches.base_for(&code);
+            assert!(!mutator.caches.note_trap(base, fallback_send_site));
+            let snapshot = Snapshot::take(&code, &mut mutator.heap, &mutator.caches, base, None);
+            assert_eq!(snapshot.sites.len(), code.instruction_count());
+            assert_eq!(
+                snapshot.sites[send_index].map(|facts| facts.site),
+                Some(send_site)
+            );
+            assert_eq!(
+                snapshot.sites[integer_index].map(|facts| facts.site),
+                Some(fallback_send_site)
+            );
+            assert_eq!(
+                snapshot.sites[jump_if_not_boolean_index].map(|facts| facts.site),
+                Some(conditional_fallback_site)
+            );
+            assert!(snapshot.sites[load_self_index].is_none());
+            let facts = |index: usize| snapshot.sites[index].expect("a speculation's site");
+            // Nothing has run the body: no send at all has filled a site.
+            assert!(!facts(send_index).executed);
+            assert!(!facts(integer_index).executed);
+            assert!(facts(integer_index).trapped);
+            assert!(!facts(jump_if_not_boolean_index).trapped);
+            // Every instruction that is no speculation's names no site.
+            for (index, facts) in snapshot.sites.iter().enumerate() {
+                let speculates = [send_index, integer_index, 4, jump_if_not_boolean_index, 10];
+                assert_eq!(facts.is_some(), speculates.contains(&index), "{index}");
+            }
+        });
+    }
+
+    /// A body without a range keeps no record of its sites: every one
+    /// reads as executed and trapped, so that nothing is speculated on.
+    #[test]
+    fn a_body_without_a_range_speculates_on_no_site() {
+        let code = body(CodeKind::Method, a_body_of_three_speculations(), 0);
+        let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+        interpreter.enter(|mutator| {
+            let snapshot = Snapshot::take(
+                &code,
+                &mut mutator.heap,
+                &mutator.caches,
+                FeedbackBase::NOT_ASSIGNED,
+                None,
+            );
+            for facts in snapshot.sites.iter().flatten() {
+                assert!(facts.executed && facts.trapped, "site {}", facts.site);
+            }
+        });
+    }
+
+    /// The fallback's send is the first at or after the target; a jump,
+    /// a branch or a return before any send leaves it without one.
+    #[test]
+    fn the_fallback_site_is_the_first_send_before_any_jump() {
+        let instructions = a_body_of_three_speculations();
+        assert_eq!(Snapshot::fallback_site(&instructions, 9), Some(2));
+        assert_eq!(Snapshot::fallback_site(&instructions, 4), Some(1));
+        assert_eq!(Snapshot::fallback_site(&instructions, 2), None);
+        assert_eq!(Snapshot::fallback_site(&instructions, 7), None);
+        assert_eq!(Snapshot::fallback_site(&instructions, 11), None);
+        assert_eq!(Snapshot::fallback_site(&instructions, 12), None);
     }
 
     /// One of every `Instruction`, each field a distinct number, so that a

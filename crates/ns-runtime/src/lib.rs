@@ -95,6 +95,8 @@ pub use interpreter::{
     HostResult, HostSignal, Interpreter, MethodSide, Mutator,
 };
 pub use jit::JitStatistics;
+#[doc(hidden)]
+pub use jit::LAST_VERSION;
 pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
 pub use resolver::{resolve, resolve_for_editor, root_class_is_value};
 pub use symbol::Symbol;

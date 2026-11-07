@@ -15,7 +15,7 @@
 //! a `Copy`, a fast path's result or a phi; the binding is *dirty* from
 //! then until its value is stored into the register's frame word, and
 //! decision 2 of the optimizing JIT leaves no store out: before every
-//! interrupt point -- a frame node, a back edge's poll -- every dirty
+//! interrupt point -- a frame node, a back edge's poll, a trap -- every dirty
 //! binding is written back, and where control from several blocks meets
 //! and a register's binding does not carry on -- the register is dead
 //! there, or bound differently without a phi -- the binding is written
@@ -198,7 +198,7 @@ pub(crate) fn named_registers(graph: &Graph) -> usize {
                         note(*written);
                     }
                 }
-                Node::Constant { .. } | Node::Receiver { .. } => {}
+                Node::Constant { .. } | Node::Receiver { .. } | Node::OwnSlotLoad { .. } => {}
             }
         }
     }
@@ -239,7 +239,7 @@ pub(crate) fn bind(bindings: &mut [Binding], node: &Node) {
             };
         }
         Node::Frame { .. } => bindings.fill(Binding::FRAME_WORD),
-        Node::Constant { .. } | Node::Receiver { .. } => {}
+        Node::Constant { .. } | Node::Receiver { .. } | Node::OwnSlotLoad { .. } => {}
     }
 }
 
@@ -362,7 +362,11 @@ fn block_exits(graph: &Graph, block: BlockId, entry: &[Binding]) -> Vec<(BlockId
     let mut bindings = entry.to_vec();
     let mut exits = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
-        if let Node::IntegerBinary { fallback, .. } = node {
+        if let Node::IntegerBinary {
+            fallback: Some(fallback),
+            ..
+        } = node
+        {
             if graph.block(block).exit_position(*fallback) == Some(index) {
                 exits.push((*fallback, bindings.clone()));
             }
@@ -514,12 +518,20 @@ pub(crate) fn intervals_knowing(
                     frames.push(position);
                     write_back(&bindings, position, reads);
                 }
-                Node::Copy { source, .. } => reads.push((position, *source, Need::Register)),
+                Node::Copy { source, .. }
+                | Node::OwnSlotLoad {
+                    receiver: source, ..
+                } => reads.push((position, *source, Need::Register)),
                 Node::IntegerBinary { left, right, .. } => {
                     reads.push((position, *left, Need::Register));
                     reads.push((position, *right, Need::Register));
                 }
                 Node::FrameRead { .. } | Node::Constant { .. } | Node::Receiver { .. } => {}
+            }
+            // A trap leaves the frame as the interpreter's, as a frame
+            // node does, on the way its fast path fails.
+            if node.trap().is_some() {
+                write_back(&bindings, position, reads);
             }
             if node.calls_leaf() {
                 leaf_calls.push(position);
@@ -532,6 +544,9 @@ pub(crate) fn intervals_knowing(
         }
         if poll_target(graph, *block).is_some() {
             polls.push(end_use);
+            write_back(&bindings, end_use, reads);
+        }
+        if graph.end_trap(*block).is_some() {
             write_back(&bindings, end_use, reads);
         }
         // A merge's way in: the phis' inputs, and every dirty binding the
@@ -687,7 +702,7 @@ pub(crate) fn intervals_knowing(
 mod tests {
     use super::{block_order, intervals};
     use crate::bytecode::{Instruction, Literal};
-    use crate::jit::optimizing::build::build;
+    use crate::jit::optimizing::build::build_speculating as build;
     use crate::jit::optimizing::graph::{BlockId, Node};
     use crate::jit::optimizing::{corpus_of_bodies, test_snapshot};
 

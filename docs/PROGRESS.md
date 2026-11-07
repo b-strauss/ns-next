@@ -62,7 +62,7 @@ first.
 | Doc comments: a block of `///` lines coloured and rendered in place as Markdown, a hover with a declaration's signature and doc comment, Java-style tags (`@param`, `@answers`, `@signals`, `@see`, `@factory`, `{@summary}`) as sections with the server's warnings, and the whole core library documented with them | Complete | 2026-11-01 | [doc-comment-tags](superpowers/plans/2026-11-01-1608-doc-comment-tags.md) |
 | Identity and equality documented: the contract of `==`, `=`, `hash` and `identityHash` at `Object`, what a value's identity is, and every class's own | Complete | 2026-11-01 | — |
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
-| Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes | In progress | 2026-11-06 (stage 1) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md) |
+| Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md) |
 
 ## Notes
 
@@ -7009,3 +7009,98 @@ budget,
 `bench_recursion`'s depth-count chain, DeltaBlueTon80's mispredicting
 stubs, the budget a compaction forgets, the reviews' smaller items, and
 road step 9's second stage, speculation, next.
+
+## Speculation, road step 9's second stage (2026-11-07)
+
+Optimized code that speculates ([execution.md](design/execution.md),
+"Speculation"). A method body's optimized code is a copy per key, the
+receiver's application and the application the body is entered at --
+two, so that a mixin applied twice in one chain runs a copy per level
+-- requested by the frame whose spend ran the body's one budget out and
+installed beside its baseline code and its other copies; a block's,
+an initializer's, a factory's and a clause's body keeps one copy
+(decided with the user on 2026-11-06). A receiver-guarded cell, a
+polymorphic entry and a global row name the copy for their guard at
+their target's level, the push looks the key up, and a `super` or
+private lexical send, whose guard says nothing of the receiver, enters
+the body's dispatching entry, a shared stub over eight rows per body in a
+reservation of its own (`heap/optimized_copies.rs`; decided with the
+user on 2026-11-06), which an interpreted send into a body with one to
+eight copies enters too. A copy reads its own slots at the fixed field
+its entered application's slot base gives, with no guard, since its
+entry verified the receiver and any forward ends its frame's optimized
+code, and the decoder now holds every instance of a program class to
+its layout. The caches keep an executed and a trapped bit per site; a
+site neither set is a guard -- an integer fast path with no fallback, a
+conditional with no third way, a send never executed -- whose failure
+writes the frame back and exits to run the instruction again, a trap,
+counted against its copy and never an exit budget. A second trap at a
+site or the fifth trap makes the copy not entrant, and an abandonment
+retires it alike (decided with the user on 2026-11-06): its version is
+raised, the next copy waits four times longer, the version past the
+third compiles without traps, and one more failure refuses the pair for
+good, the budget kept armed for the body's other pairs. An install
+frees the copies of the applications it rebuilds, the bulk forward
+every copy, and a full collection the rows of the ids it reclaims, all
+at once, since each runs after an exit or at a safepoint.
+`NS_NEXT_STRESS_INVALIDATE` frees every body's copies every tenth
+interrupt point, backing off per body, and joins the `stress` group,
+twelve modes now; eight goldens under `goldens/runtime/optimizer/` pin
+a speculation's failure. Measured against `master` at `0ada2ebb`, every
+process held to the performance cores: -3.17% on the geometric mean of
+the twenty-seven sources, each of the branch's builds below each of
+`master`'s, `bench_recursion`'s `fib:` 24.4% faster, Bounce, Queens,
+Richards, RichardsTon80, Json, Havlak and five microbenchmarks 1.7% to
+8.1% faster with their builds apart, and none slower; the limits, 5
+traps and 3 versions, measured and kept ("What speculation moved").
+
+Every end-of-batch group passed: `images` (1,046 tests), `caches` (523),
+`benchmarks` (139), `release-checks` (4,682, and both lints), `codegen`,
+`stress` -- the suite under each of the twelve modes and without the
+JIT, 4,849 tests each, and `run-corpus` "ran 6, failed 0, skipped 205"
+plain and under each mode -- `linux` (4,848 tests, the 139 benchmark
+programs) and `aarch64` (4,848 tests under QEMU). The first runs found
+three tests of this batch wrong in a gate's configuration, none in the
+runtime, which `4deabcec` fixes: one turned on the zone stress mode,
+which only a debug build has, in the release-checks build; one's
+`cfg(ns_jit)` inside `for_each_lowering!` left an import unused on a
+target without a JIT; and one held a run to no refused body, where under
+`NS_NEXT_NO_JIT=1` the bootstrap refuses the bodies it enters.
+
+- `dec43097`, `d2e39f51` -- the stage's three questions, decided with
+  the user, and the plan, with the key and the dispatching entry.
+- `476c4551` -- the executed and trapped bits.
+- `80e2b66b` -- copies per receiver and entered application.
+- `601f750d`, `3114955d` -- the dispatching entry and its rows' pages.
+- `488a7b40`, `80773fb5` -- own slots at fixed offsets, and the
+  decoder's check they rest on.
+- `44503d50` -- guards and traps.
+- `07b219c6`, `383bcb3f` -- versions, the refusal for good and the
+  budget it leaves armed for the other pairs.
+- `c83ea39b`, `52960bef` -- the invalidation and its stress mode.
+- `7096a52e`, `e5fb65f5`, `d0e8f458`, `40b420a4` -- what the stress
+  modes' pairs found: the allocation's verification cubic in a body's
+  size, a refused call to a callee not compiled yet counted against its
+  caller, the deopt countdown's rotation locked in step with a long
+  activation, and the exemption narrowed to a callee the zone has room
+  for.
+- `55ec5c1c` -- the speculation's goldens.
+- `b993155f`, `4d17d968` -- the measurement, and the interpreted send
+  through the dispatching entry it led to, past the rows by the lookup.
+- `4deabcec` -- the speculation's tests in every gate's configuration.
+- The documents' commits after them.
+- `2eb46405`, `40e5168a` -- what the whole branch's review found: a
+  dropped pending request re-arms its body's budget, and a block of
+  dispatching rows is vacated when its lean body is freed and when a
+  collection frees its body's code id, which the stricter verification
+  of the rows found under the optimize, deopt and invalidate modes. The
+  end-of-batch groups passed again after them: `release-checks` 4,685
+  tests, `linux` and `aarch64` 4,851 each, every stress mode.
+
+What the stage leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "What
+the second stage left": the table from dispatch id to application and
+the budget leaf's program counter, for stages 3 and 6; a copy past the
+dispatching rows; the inlined loop condition's non-Boolean exit; the
+budget and the trapped bit shared by a body's keys; the linear search
+of keys; and the stress modes' pairs, which no gate runs. Road step 9's
+third stage, inlining, is next.

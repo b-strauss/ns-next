@@ -135,8 +135,14 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
             - before.optimized_frames_materialized,
         optimized_bodies_resumed: after.optimized_bodies_resumed - before.optimized_bodies_resumed,
         optimized_twin_requests: after.optimized_twin_requests - before.optimized_twin_requests,
+        customized_copies: after.customized_copies - before.customized_copies,
+        dispatched_calls: after.dispatched_calls - before.dispatched_calls,
         forced_exits: after.forced_exits - before.forced_exits,
         deepest_forced_exit: after.deepest_forced_exit,
+        traps: after.traps - before.traps,
+        made_not_entrant: after.made_not_entrant - before.made_not_entrant,
+        refused_for_good: after.refused_for_good - before.refused_for_good,
+        invalidated_copies: after.invalidated_copies - before.invalidated_copies,
     }
 }
 
@@ -826,6 +832,11 @@ ns_runtime::for_each_lowering! {
     fn a_hot_loop_requests_its_body_s_optimization(lowering) {
         let (answer, statistics) = run_spending(HOT_LOOP, lowering);
         assert_eq!(answer, 20_000_100_000);
+        // The invalidate stress mode frees the copies the requests made,
+        // and each body asks for its copy again at its next spend.
+        if the_stress_mode_is_on("INVALIDATE") {
+            return;
+        }
         let requested = match lowering {
             Lowering::Optimized => 1,
             Lowering::Reference => 2,
@@ -1016,9 +1027,21 @@ fn pins_the_tiers(lowering: Lowering) -> bool {
 /// optimizing every body at once, or by leaving machine code at every
 /// poll or interrupt point -- the cache stress mode among them, since it
 /// holds the safepoint request, which every poll takes, and vacates the
-/// caches there. The wide stress mode changes no machine code's decision.
-const MODES_THAT_CHANGE_THE_COPY: [&str; 10] = [
-    "MOVES", "COLLECT", "SCAVENGE", "SUSPEND", "ZONE", "JIT", "EXIT", "OPTIMIZE", "DEOPT", "CACHES",
+/// caches there -- and by freeing the copies at every tenth interrupt
+/// point optimized code passes, the invalidate stress mode. The wide
+/// stress mode changes no machine code's decision.
+const MODES_THAT_CHANGE_THE_COPY: [&str; 11] = [
+    "MOVES",
+    "COLLECT",
+    "SCAVENGE",
+    "SUSPEND",
+    "ZONE",
+    "JIT",
+    "EXIT",
+    "OPTIMIZE",
+    "DEOPT",
+    "CACHES",
+    "INVALIDATE",
 ];
 
 /// The squares of 1 to 100,000 summed in one loop: `run`'s back jumps
@@ -1097,6 +1120,989 @@ ns_runtime::for_each_lowering! {
             return;
         }
         assert!(statistics.optimized_bodies >= 1, "{statistics:?}");
+    }
+}
+
+/// Whether the copies a test counts are pinned here: under no stress mode
+/// that frees or compiles again the code a run made -- by its
+/// compactions, collections, suspensions and moves, or by leaving machine
+/// code at every poll -- beside the optimize, JIT and deopt stress modes,
+/// which these tests set or which change no copy's key.
+fn counts_the_copies() -> bool {
+    !MODES_THAT_CHANGE_THE_COPY
+        .iter()
+        .filter(|mode| !matches!(**mode, "OPTIMIZE" | "JIT" | "DEOPT"))
+        .any(|mode| the_stress_mode_is_on(mode))
+}
+
+/// `source` loaded under `lowering` with every body compiled at its first
+/// entry, installed whatever it exits at, and optimized at the first
+/// spend of its budget, so that a body's every key is optimized once it
+/// has run.
+fn load_customizing(source: &str, lowering: Lowering) -> (Interpreter, Root) {
+    let (mut interpreter, class) = load_with(source, lowering);
+    interpreter.set_jit_stress(true);
+    interpreter.set_optimize_stress(true);
+    (interpreter, class)
+}
+
+/// The class `subject`'s unary `selector` answers.
+fn class_answered(interpreter: &mut Interpreter, subject: &Root, selector: &str) -> Root {
+    expect_ok(
+        interpreter.send(subject, Symbol::intern(selector), &[]),
+        selector,
+    )
+}
+
+/// `total`, a method of `A`, summing `A`'s slot in a loop, run on an `A`
+/// and on a `B`, a subclass of `A` with a slot of its own: one body, run
+/// on two receivers' applications and entered at `A`'s for both.
+const ONE_METHOD_ON_TWO_APPLICATIONS: &str = indoc! {"
+    class Subject = Object new () (
+      class A step: value = Object new (
+        |
+          step = value.
+        |
+      ) (
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      class B = A step: 3 (
+        |
+          own = 5.
+        |
+      ) ()
+
+      public aClass = (
+        ^A.
+      )
+
+      public run = (
+        ^(A step: 2) total + B new total.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A method body run on receivers of two applications has a copy for
+    /// each: its key is the receiver's application and the one it was
+    /// entered at, and the copy made for an `A` is never entered for a
+    /// `B`, which runs the baseline code until its own copy is made.
+    fn a_method_run_on_two_applications_has_two_copies(lowering) {
+        let (mut interpreter, class) = load_customizing(ONE_METHOD_ON_TWO_APPLICATIONS, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        if !counts_the_copies() {
+            return;
+        }
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
+        let total = Symbol::intern("total");
+        assert_eq!(
+            interpreter.jit_customized_copies(&base_class, MethodSide::Instance, total),
+            2
+        );
+        assert!(interpreter.jit_statistics().customized_copies >= 2);
+    }
+}
+
+/// `M`'s `total` summing `M`'s private lazy slot in a loop, `M` applied
+/// twice in `Twice`'s chain: sent publicly it runs at the upper level,
+/// whose slot holds 10, and sent by `super` from `Middle` at the lower
+/// one, whose slot holds 1 -- one body on one receiver at two levels, and
+/// one getter, which reads its level's own field.
+const ONE_MIXIN_APPLIED_TWICE: &str = indoc! {"
+    class Subject = Object new () (
+      class Base = Object new () ()
+
+      class M step: value = Object new (
+        |
+          private seed = value.
+        |
+      ) (
+        lazy private step = seed.
+
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      class Middle = Object new () (
+        public lowerTotal = (
+          ^super total.
+        )
+      )
+
+      class Twice = Base new <: M step: 1 <: Middle <: M step: 10.
+
+      public mClass = (
+        ^M.
+      )
+
+      public run = (
+        |
+          twice = Twice new.
+        |
+        ^twice total + twice lowerTotal.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A mixin applied twice in one chain runs its method's one body on
+    /// one receiver at two levels, and each level has a copy of its own:
+    /// the key's entered application tells them apart, so that neither
+    /// level runs the copy made for the other. The lazy slot's getter
+    /// reads its slot at the field its copy's level fixes, so a level that
+    /// ran the other's copy would read the other's slot: the sum of 100
+    /// tens and 100 ones holds at every run only if each runs its own.
+    fn a_mixin_applied_twice_has_a_copy_per_level(lowering) {
+        let (mut interpreter, class) = load_customizing(ONE_MIXIN_APPLIED_TWICE, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 1100);
+        }
+        if !counts_the_copies() {
+            return;
+        }
+        let mixin_class = class_answered(&mut interpreter, &subject, "mClass");
+        for selector in ["total", "step"] {
+            assert_eq!(
+                interpreter.jit_customized_copies(
+                    &mixin_class,
+                    MethodSide::Instance,
+                    Symbol::intern(selector)
+                ),
+                2,
+                "{selector}: a copy per level"
+            );
+        }
+    }
+}
+
+/// `run` reading `Holder`'s lazy slot a hundred times: its getter, whose
+/// initializer counts its evaluations, computes it at the first read and
+/// answers the slot's value at every later one.
+const A_LAZY_SLOT_READ_IN_A_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      class Holder = Object new (
+        |
+          public evaluations ::= 0.
+        |
+      ) (
+        lazy public cached = count.
+
+        count = (
+          evaluations:: evaluations + 1.
+          ^evaluations * 7.
+        )
+      )
+
+      public holderClass = (
+        ^Holder.
+      )
+
+      public run = (
+        |
+          holder = Holder new.
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + holder cached.
+          index:: index + 1.
+        ].
+        ^sum * 1000 + holder evaluations.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A lazy slot's getter run as a customized copy, which reads the
+    /// slot at a fixed field with no guard, computes the slot once and
+    /// answers its value from then on: a hundred reads of 7, one
+    /// evaluation.
+    fn a_lazy_slot_read_by_a_copy_answers_its_value_once_filled(lowering) {
+        let (mut interpreter, class) = load_customizing(A_LAZY_SLOT_READ_IN_A_LOOP, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 700_001);
+        }
+        if !counts_the_copies() {
+            return;
+        }
+        let holder_class = class_answered(&mut interpreter, &subject, "holderClass");
+        assert_eq!(
+            interpreter.jit_customized_copies(
+                &holder_class,
+                MethodSide::Instance,
+                Symbol::intern("cached")
+            ),
+            1,
+            "the getter runs as a copy"
+        );
+    }
+}
+
+/// `A` and an unrelated `D`, each summing its slot in its `total`, and
+/// `edit`, which adds a slot to `A` through a MirrorBuilder and gives
+/// `step` another initial value: `run` sums both totals of fresh
+/// instances, 500 before the edit and 700 after it.
+const AN_EDIT_OF_ONE_OF_TWO_CLASSES: &str = indoc! {"
+    class Subject usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class A = Object new (
+        |
+          public step ::= 2.
+        |
+      ) (
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      class D = Object new (
+        |
+          public step ::= 3.
+        |
+      ) (
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      public aClass = (
+        ^A.
+      )
+
+      public dClass = (
+        ^D.
+      )
+
+      public run = (
+        ^A new total + D new total.
+      )
+
+      public edit = (
+        | builder |
+        builder:: (ClassMirror reflecting: A) mixin declaration asBuilder.
+        builder header source: 'class A = Object new (| public added ::= 5. public step ::= 4. |)'.
+        builder install.
+        ^0.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An install frees the copies keyed on the applications it rebuilds,
+    /// and only those: `A`'s `total` has its copy freed, `D`'s keeps its
+    /// own, and the program answers what the edit says.
+    fn an_edit_frees_the_copies_of_the_applications_it_rebuilds(lowering) {
+        let (mut interpreter, class) = load_customizing(AN_EDIT_OF_ONE_OF_TWO_CLASSES, lowering);
+        let platform = interpreter.platform();
+        let subject = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        }
+        let total = Symbol::intern("total");
+        let d_class = class_answered(&mut interpreter, &subject, "dClass");
+        let counted = counts_the_copies();
+        if counted {
+            let a_class = class_answered(&mut interpreter, &subject, "aClass");
+            assert_eq!(
+                interpreter.jit_customized_copies(&a_class, MethodSide::Instance, total),
+                1
+            );
+            assert_eq!(
+                interpreter.jit_customized_copies(&d_class, MethodSide::Instance, total),
+                1
+            );
+        }
+        // Only the statistic shows the copy freed: no receiver carries the
+        // old application's id after the install, so a copy left keyed on
+        // it would never be entered again. `invalidate_applications` frees
+        // its memory early; it prevents no wrong answer, which the
+        // reclaim's dropping of the rows does
+        // (`a_copy_keyed_on_a_reclaimed_id_is_freed`).
+        let statistics_before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "edit"), 0);
+        let statistics_after = since(interpreter.jit_statistics(), statistics_before);
+        if counted {
+            assert_eq!(statistics_after.invalidated_copies, 1, "{statistics_after:?}");
+            assert_eq!(
+                interpreter.jit_customized_copies(&d_class, MethodSide::Instance, total),
+                1,
+                "`D`'s copy stays"
+            );
+        }
+        let expected_after_edit = 700;
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), expected_after_edit);
+        }
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Under the invalidate stress mode optimized code leaves for a
+    /// safepoint at every tenth interrupt point it passes, which frees
+    /// the copies before it installs what was requested since, and the
+    /// bodies are optimized afresh at their next run-out: copies are
+    /// installed and freed run after run, and the answers hold.
+    fn under_the_invalidate_stress_copies_are_freed_and_the_answer_holds(lowering) {
+        let (mut interpreter, class) = load_with(ONE_METHOD_ON_TWO_APPLICATIONS, lowering);
+        interpreter.set_jit_stress(true);
+        interpreter.set_invalidate_stress(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..5 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        }
+        if counts_the_copies() {
+            let statistics = interpreter.jit_statistics();
+            assert!(statistics.customized_copies >= 2, "{statistics:?}");
+            assert!(statistics.invalidated_copies >= 1, "{statistics:?}");
+            assert_eq!(statistics.made_not_entrant, 0, "{statistics:?}");
+        }
+    }
+}
+
+/// `Cell`'s lazy slot `step`, whose getter reads the slot and fills it
+/// with 2 when it is nil, `Cell` applied over whichever class `Box`'s
+/// factory is given: over `Narrow`, which has no slot, the slot is the
+/// instance's first field; over `Wide`, whose three slots hold 100, its
+/// fourth. Every `Box` makes its own class object of `Cell`, and the
+/// application over a base dies with the last of them.
+const ONE_MIXIN_OVER_TWO_BASES: &str = indoc! {"
+    class Subject = Object new () (
+      class Narrow = Object new () ()
+
+      class Wide = Object new (
+        |
+          public first ::= 100.
+          public second ::= 100.
+          public third ::= 100.
+        |
+      ) ()
+
+      class Box on: base = Object new (
+        |
+          base = base.
+        |
+      ) (
+        public class Cell = base new () (
+          lazy public step = 2.
+        )
+      )
+
+      public bases = (
+        ^Narrow == Wide ifTrue: [1] ifFalse: [0].
+      )
+
+      public narrow = (
+        ^(Box on: Narrow) Cell new.
+      )
+
+      public wide = (
+        ^(Box on: Wide) Cell new.
+      )
+
+      public sumOf: cell = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + cell step.
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// `subject`'s `sumOf:` of `cell`, a `SmallInteger`.
+#[cfg(debug_assertions)]
+fn sum_of(interpreter: &mut Interpreter, subject: &Root, cell: &Root) -> i64 {
+    let answer = expect_ok(
+        interpreter.send(
+            subject,
+            Symbol::intern("sumOf:"),
+            std::slice::from_ref(cell),
+        ),
+        "sumOf:",
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("sumOf:: expected a small integer"),
+    })
+}
+
+#[cfg(debug_assertions)]
+ns_runtime::for_each_lowering! {
+    /// A full collection that reclaims the id of an application frees
+    /// the copies keyed on it and drops their rows: `Cell` over `Narrow`
+    /// has a copy of `step`'s getter, which reads its slot at the first
+    /// field; the application dies with its last `Box`, the collection
+    /// frees its id, and `Cell` over `Wide` is minted it again -- a copy
+    /// left keyed on it would answer `Wide`'s first slot, 100, for
+    /// `Cell`'s 2.
+    fn a_copy_keyed_on_a_reclaimed_id_is_freed(lowering) {
+        let (mut interpreter, class) = load_customizing(ONE_MIXIN_OVER_TWO_BASES, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        // Both bases' applications minted before either `Cell`'s, and the
+        // ids that died before collected, so that `Cell` over `Narrow`
+        // takes the smallest free id, which its death frees for `Cell`
+        // over `Wide` to take (`DispatchIdAllocator::mint`).
+        assert_eq!(send_unary(&mut interpreter, &subject, "bases"), 0);
+        interpreter.collect_now();
+        for _ in 0..3 {
+            let cell = class_answered(&mut interpreter, &subject, "narrow");
+            assert_eq!(sum_of(&mut interpreter, &subject, &cell), 200);
+        }
+        interpreter.collect_now();
+        let expected_of_the_new_class = 200;
+        for _ in 0..3 {
+            let cell = class_answered(&mut interpreter, &subject, "wide");
+            assert_eq!(
+                sum_of(&mut interpreter, &subject, &cell),
+                expected_of_the_new_class
+            );
+        }
+    }
+}
+
+/// `total`, a method of `A`, adding `A`'s slot in a block it hands
+/// `repeat:`, which runs it a hundred times: one block body, run by the
+/// closures of an `A` and of a `B`.
+const ONE_BLOCK_ON_TWO_RECEIVERS: &str = indoc! {"
+    class Subject = Object new () (
+      class A step: value = Object new (
+        |
+          step = value.
+        |
+      ) (
+        repeat: block = (
+          |
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            block value.
+            index:: index + 1.
+          ].
+        )
+
+        public total = (
+          |
+            sum ::= 0.
+          |
+          self repeat: [sum:: sum + step].
+          ^sum.
+        )
+      )
+
+      class B = A step: 3 (
+        |
+          own = 5.
+        |
+      ) ()
+
+      public aClass = (
+        ^A.
+      )
+
+      public run = (
+        ^(A step: 2) total + B new total.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A block body has one optimized copy whatever its closures'
+    /// receivers: it is never customized, so that the block `total`
+    /// makes, run by an `A`'s closure and a `B`'s, is optimized once and
+    /// has no copies.
+    fn a_block_has_one_copy_whatever_its_receivers(lowering) {
+        let (mut interpreter, class) = load_customizing(ONE_BLOCK_ON_TWO_RECEIVERS, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 500);
+        if !counts_the_copies() {
+            return;
+        }
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
+        let total = Symbol::intern("total");
+        let blocks = interpreter.jit_block_tiers(&base_class, MethodSide::Instance, total);
+        assert_eq!(blocks, vec![(true, 0)], "optimized once, no copies");
+        assert!(interpreter.jit_statistics().optimized_bodies >= 1);
+    }
+}
+
+/// `sum`, a private method of `A` summing `A`'s slot in a loop, sent
+/// lexically ten times by the public `total`, run on an `A` and on a `B`,
+/// a subclass of `A` with a slot of its own: a private lexical site,
+/// whose cell's guard is `A`'s application word, reaching one body on two
+/// receivers' applications.
+const A_PRIVATE_METHOD_ON_TWO_APPLICATIONS: &str = indoc! {"
+    class Subject = Object new () (
+      class A step: value = Object new (
+        |
+          step = value.
+        |
+      ) (
+        private sum = (
+          |
+            total ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            total:: total + step.
+            index:: index + 1.
+          ].
+          ^total.
+        )
+
+        public total = (
+          |
+            result ::= 0.
+            index ::= 0.
+          |
+          [index < 10] whileTrue: [
+            result:: result + sum.
+            index:: index + 1.
+          ].
+          ^result.
+        )
+      )
+
+      class B = A step: 3 (
+        |
+          own = 5.
+        |
+      ) ()
+
+      public aClass = (
+        ^A.
+      )
+
+      public run = (
+        ^(A step: 2) total + B new total.
+      )
+    ) : ()
+"};
+
+/// The machine entries `selector`'s body's dispatching rows name, and
+/// those of its customized copies, sorted alike, for a comparison of the
+/// two sets.
+fn dispatching_entries(
+    interpreter: &mut Interpreter,
+    class: &Root,
+    selector: &str,
+) -> (Vec<u64>, Vec<u64>) {
+    let (mut rows, copies) =
+        interpreter.jit_dispatching_entries(class, MethodSide::Instance, Symbol::intern(selector));
+    rows.sort_unstable();
+    (rows, copies)
+}
+
+ns_runtime::for_each_lowering! {
+    /// A private method sent lexically reaches each receiver's copy: the
+    /// site's cell, guarded by `A`'s application word, names the body's
+    /// dispatching entry once it has a copy, whose rows hold the copy of
+    /// an `A`'s and of a `B`'s.
+    fn a_private_method_reaches_each_receiver_s_copy(lowering) {
+        let (mut interpreter, class) =
+            load_customizing(A_PRIVATE_METHOD_ON_TWO_APPLICATIONS, lowering);
+        interpreter.set_jit_counting(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
+        }
+        if !counts_the_copies() {
+            return;
+        }
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
+        assert_eq!(
+            interpreter.jit_customized_copies(&base_class, MethodSide::Instance, Symbol::intern("sum")),
+            2
+        );
+        let (rows, copies) = dispatching_entries(&mut interpreter, &base_class, "sum");
+        assert_eq!(copies.len(), 2);
+        assert_eq!(rows, copies, "a row for each copy");
+        // The optimized lowering's cell names the entry; the reference
+        // lowering's sends are uncached, and its interpreted send enters
+        // the entry through the call stub (`jit::called`).
+        assert!(interpreter.jit_statistics().dispatched_calls > 0);
+    }
+}
+
+/// `total`, a method of `A` summing `A`'s slot in a loop, which `B`, a
+/// subclass of `A` with a slot of its own, overrides by a `super` send:
+/// the `super` site's cell, guarded by `A`'s application word, reaches
+/// `A`'s body on a `B`, whose copy is customized for a `B` entered at `A`.
+const A_SUPER_SEND_ON_A_SUBCLASS: &str = indoc! {"
+    class Subject = Object new () (
+      class A step: value = Object new (
+        |
+          step = value.
+        |
+      ) (
+        public total = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          [index < 100] whileTrue: [
+            sum:: sum + step.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+      )
+
+      class B = A step: 3 (
+        |
+          own = 5.
+        |
+      ) (
+        public total = (
+          ^super total + 1.
+        )
+      )
+
+      public aClass = (
+        ^A.
+      )
+
+      public run = (
+        |
+          b = B new.
+          result ::= 0.
+          index ::= 0.
+        |
+        [index < 10] whileTrue: [
+          result:: result + b total.
+          index:: index + 1.
+        ].
+        ^(A step: 2) total + result.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A `super` send reaches its copy: `A`'s `total` run on a `B` by
+    /// `B`'s `super total` has the copy for a `B` entered at `A`, which the
+    /// body's dispatching rows name, as they name an `A`'s own.
+    fn a_super_send_reaches_its_copy(lowering) {
+        let (mut interpreter, class) = load_customizing(A_SUPER_SEND_ON_A_SUBCLASS, lowering);
+        interpreter.set_jit_counting(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 3210);
+        }
+        if !counts_the_copies() {
+            return;
+        }
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
+        let (rows, copies) = dispatching_entries(&mut interpreter, &base_class, "total");
+        assert!(!copies.is_empty(), "the body has a copy");
+        assert_eq!(rows, copies, "a row for each copy");
+        // The optimized lowering's cell names the entry; the reference
+        // lowering's sends are uncached, and its interpreted send enters
+        // the entry through the call stub (`jit::called`).
+        assert!(interpreter.jit_statistics().dispatched_calls > 0);
+    }
+}
+
+/// `pick:`, a method of `A` that answers `other` when its argument is
+/// `true` and sums a loop otherwise, run on `B1` to `B9`, nine subclasses
+/// of `A` and so nine receivers' applications: each its own copy, whose
+/// `other` site, never executed while the argument was `false`, traps.
+/// A method entered once, its first entry interpreted, sends `pick:` as
+/// an interpreted send, which calls the body through the call stub
+/// (`jit::called`); so does every send under the reference lowering,
+/// whose sends are uncached.
+const PICK_ON_NINE_APPLICATIONS: &str = indoc! {"
+    class Subject = Object new (
+      |
+        receivers = {B1 new. B2 new. B3 new. B4 new. B5 new. B6 new. B7 new. B8 new. B9 new}.
+        chosen ::= 1.
+      |
+    ) (
+      class A = Object new () (
+        public pick: flag = (
+          |
+            sum ::= 0.
+            index ::= 0.
+          |
+          flag ifTrue: [^self other].
+          [index < 100] whileTrue: [
+            sum:: sum + index.
+            index:: index + 1.
+          ].
+          ^sum.
+        )
+
+        public other = (
+          ^7.
+        )
+      )
+
+      class B1 = A new () ()
+
+      class B2 = A new () ()
+
+      class B3 = A new () ()
+
+      class B4 = A new () ()
+
+      class B5 = A new () ()
+
+      class B6 = A new () ()
+
+      class B7 = A new () ()
+
+      class B8 = A new () ()
+
+      class B9 = A new () ()
+
+      class C = A new () ()
+
+      public aClass = (
+        ^A.
+      )
+
+      public pickTwo = (
+        ^((receivers at: 1) pick: false) + ((receivers at: 2) pick: false).
+      )
+
+      public pickAll = (
+        ^pickEach: false.
+      )
+
+      public choose: index = (
+        chosen:: index.
+      )
+
+      public pickChosenTaking = (
+        ^(receivers at: chosen) pick: true.
+      )
+
+      public pickFirstTaking = (
+        ^(receivers at: 1) pick: true.
+      )
+
+      public pickOnAnother = (
+        ^C new pick: true.
+      )
+
+      pickEach: flag = (
+        |
+          total ::= 0.
+          index ::= 1.
+        |
+        [index <= receivers size] whileTrue: [
+          total:: total + ((receivers at: index) pick: flag).
+          index:: index + 1.
+        ].
+        ^total.
+      )
+    ) : ()
+"};
+
+/// Whether a copy's trap is what a send that runs it takes: no stress
+/// mode changes the copy, and none forces the exits that would leave it
+/// before its trap.
+fn a_copy_runs_to_its_trap() -> bool {
+    counts_the_copies() && !the_stress_mode_is_on("DEOPT")
+}
+
+/// Ends `load_customizing`'s stress once its copies are made: no key is
+/// optimized from here on, and a body is compiled at its second entry
+/// again, so that a method entered once runs interpreted.
+fn stop_customizing(interpreter: &mut Interpreter) {
+    interpreter.set_optimize_stress(false);
+    interpreter.set_jit_stress(false);
+}
+
+/// An interpreted send into a body with a copy for its receiver enters
+/// the body's dispatching entry, whose rows find the copy: the answer
+/// holds, and the calls through the entry are counted.
+#[test]
+fn an_interpreted_send_reaches_its_copy_through_the_dispatching_entry() {
+    let (mut interpreter, class) = load_customizing(PICK_ON_NINE_APPLICATIONS, Lowering::Reference);
+    interpreter.set_jit_counting(true);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for _ in 0..3 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "pickTwo"), 9900);
+    }
+    if !counts_the_copies() {
+        return;
+    }
+    let base_class = class_answered(&mut interpreter, &subject, "aClass");
+    assert_eq!(
+        interpreter.jit_customized_copies(
+            &base_class,
+            MethodSide::Instance,
+            Symbol::intern("pick:")
+        ),
+        2
+    );
+    let before = interpreter.jit_statistics().dispatched_calls;
+    assert_eq!(send_unary(&mut interpreter, &subject, "pickTwo"), 9900);
+    assert!(
+        interpreter.jit_statistics().dispatched_calls >= before + 2,
+        "each interpreted send enters its copy through the entry"
+    );
+}
+
+/// An interpreted send whose receiver has no copy of a body that has
+/// copies for others finds no row and runs the baseline code, with the
+/// right answer, so that no copy traps at its `other` site; one whose
+/// receiver has a copy runs it to that trap.
+#[test]
+fn an_interpreted_send_without_a_copy_runs_the_baseline_code() {
+    let (mut interpreter, class) = load_customizing(PICK_ON_NINE_APPLICATIONS, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    for _ in 0..3 {
+        assert_eq!(send_unary(&mut interpreter, &subject, "pickTwo"), 9900);
+    }
+    // No copy is made for a `C`, whose first send spends no budget now.
+    stop_customizing(&mut interpreter);
+    let before = interpreter.jit_statistics().traps;
+    assert_eq!(send_unary(&mut interpreter, &subject, "pickOnAnother"), 7);
+    let between = interpreter.jit_statistics().traps;
+    assert_eq!(send_unary(&mut interpreter, &subject, "pickFirstTaking"), 7);
+    if !a_copy_runs_to_its_trap() {
+        return;
+    }
+    let base_class = class_answered(&mut interpreter, &subject, "aClass");
+    assert_eq!(
+        interpreter.jit_customized_copies(
+            &base_class,
+            MethodSide::Instance,
+            Symbol::intern("pick:")
+        ),
+        2
+    );
+    assert_eq!(between, before, "no copy ran the send on a `C`");
+    assert_eq!(
+        interpreter.jit_statistics().traps,
+        between + 1,
+        "a `B1`'s copy ran the send on a `B1`"
+    );
+}
+
+/// A body with more copies than its dispatching rows hold: an interpreted
+/// send reaches every receiver's copy all the same, the one past the
+/// eighth row too, by the key's lookup. Each receiver is tried in an
+/// interpreter of its own, with all nine copies installed, since a
+/// second trap at the `other` site makes the copy that takes it not
+/// entrant: the copy runs to its trap there, which the baseline code a
+/// send past the rows would run does not take.
+#[test]
+fn an_interpreted_send_reaches_a_copy_past_the_dispatching_rows() {
+    for index in 1..=9 {
+        let (mut interpreter, class) =
+            load_customizing(PICK_ON_NINE_APPLICATIONS, Lowering::Optimized);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "pickAll"), 44550);
+        }
+        stop_customizing(&mut interpreter);
+        let chosen = interpreter.enter(|mutator| mutator.stash(Value::small_integer(index)));
+        expect_ok(
+            interpreter.send(&subject, Symbol::intern("choose:"), &[chosen]),
+            "choose:",
+        );
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
+        let copies = interpreter.jit_customized_copies(
+            &base_class,
+            MethodSide::Instance,
+            Symbol::intern("pick:"),
+        );
+        let before = interpreter.jit_statistics().traps;
+        assert_eq!(
+            send_unary(&mut interpreter, &subject, "pickChosenTaking"),
+            7
+        );
+        if !a_copy_runs_to_its_trap() {
+            continue;
+        }
+        assert_eq!(copies, 9, "a copy for each receiver");
+        assert_eq!(
+            interpreter.jit_statistics().traps,
+            before + 1,
+            "the send on receiver {index} ran its copy"
+        );
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A compaction of the code zone moves the copies a body's
+    /// dispatching rows name, and the rows move with them: under the zone
+    /// stress mode, which compacts at its safepoints, the program's answer
+    /// holds at every run, and after a compaction between runs the rows
+    /// still name exactly the copies the zone holds. Debug builds only,
+    /// where the zone stress mode exists.
+    #[cfg(debug_assertions)]
+    fn a_compaction_remaps_the_dispatching_rows(lowering) {
+        let (mut interpreter, class) =
+            load_customizing(A_PRIVATE_METHOD_ON_TWO_APPLICATIONS, lowering);
+        interpreter.set_stress_zone(true);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..4 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
+        }
+        interpreter.set_stress_zone(false);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
+        let base_class = class_answered(&mut interpreter, &subject, "aClass");
+        let before = dispatching_entries(&mut interpreter, &base_class, "sum");
+        interpreter.compact_jit_zone();
+        let (rows, copies) = dispatching_entries(&mut interpreter, &base_class, "sum");
+        assert_eq!(rows, copies, "the rows name the copies where they lie now");
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 5000);
+        if counts_the_copies() {
+            assert!(!before.1.is_empty(), "the body had copies before the compaction");
+        }
     }
 }
 
@@ -1215,15 +2221,23 @@ const LONG_OPTIMIZED_LOOP: &str = indoc! {"
 /// The deopt stress mode forces exits deep in one long activation of
 /// optimized code, not only within its first few points: a forced exit
 /// leaves the activation's optimized code for good, so that its n-th
-/// point is forced only by a countdown of n, and the rotation reaches
+/// point is forced only by a countdown of n, and the draw reaches
 /// 987 -- the 247th turn of `sweep:`'s loop, past many a write-back of the
 /// values its back edge carries. The optimized lowering's, which inlines
 /// the loop's blocks into `sweep:`.
+/// A first run, with nothing optimized, records every site, so that the
+/// optimized code speculates on none: compiled at its first spend, before
+/// its sends ran, it would trap at the first, and each activation would
+/// leave it at its first turn.
 #[test]
 fn the_deopt_stress_forces_exits_deep_in_a_long_optimized_activation() {
     let (mut interpreter, class) = load_with(LONG_OPTIMIZED_LOOP, Lowering::Optimized);
-    interpreter.set_deopt_stress(true);
+    // Whatever stress mode the environment sets, the first run optimizes
+    // nothing.
+    interpreter.set_optimize_stress(false);
     let turn = (0..300).sum::<i64>() + 3 * 300;
+    assert_eq!(run(&mut interpreter, &class), 100 * turn);
+    interpreter.set_deopt_stress(true);
     assert_eq!(run(&mut interpreter, &class), 100 * turn);
     let statistics = interpreter.jit_statistics();
     assert!(statistics.forced_exits > 0, "no forced exit");
@@ -1334,6 +2348,176 @@ fn a_caller_whose_callees_keep_requesting_optimization_is_not_abandoned() {
     assert!(statistics.pushes_refused > 64, "{statistics:?}");
     assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
     assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
+}
+
+/// `sweep:`, compiled by its first two calls, whose loops turn no turn,
+/// then called once more to turn `CALLEES` turns, each of which sends a
+/// callee it never sent before: every one of those calls finds a callee
+/// that has no machine code yet, and every refusal leaves `sweep:`'s
+/// frame to the interpreter until its loop's back edge enters the
+/// machine code again.
+fn a_caller_of_callees_never_compiled() -> String {
+    let callees: String = (0..CALLEES)
+        .map(|index| {
+            formatdoc! {"
+                  callee{index}: value = (
+                    ^value + {index}
+                  )
+            "}
+        })
+        .collect();
+    let sends: String = (0..CALLEES)
+        .map(|index| {
+            format!(
+                "      index = {index} ifTrue: [sum:: sum + (self callee{index}: 1)].
+"
+            )
+        })
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+        {callees}  sweep: turns = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < turns] whileTrue: [
+        {sends}      index:: index + 1.
+            ].
+            ^sum
+          )
+          public run = (
+            ^(self sweep: 0) + (self sweep: 0) + (self sweep: {CALLEES})
+          )
+        ) : ()
+    "}
+}
+
+/// A call the miss leaf refuses because its callee has no machine code
+/// yet -- never compiled, or freed by a compaction and counting its
+/// entries again -- is not counted against the caller, whose code it
+/// says nothing of: a caller of more such callees than its exit budget
+/// is not abandoned. Under the zone stress mode, whose compactions free
+/// every callee between two of its caller's calls, every call of a loop
+/// was refused this way, and the loop's body abandoned.
+#[test]
+fn a_caller_of_callees_never_compiled_is_not_abandoned() {
+    let source = a_caller_of_callees_never_compiled();
+    let (mut interpreter, class) = load_with(&source, Lowering::Optimized);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let expected: i64 = (0..CALLEES).map(|index| 1 + index).sum();
+    assert_eq!(send_unary(&mut interpreter, &subject, "run"), expected);
+    let statistics = interpreter.jit_statistics();
+    // The zone stress mode alone frees every callee between two calls,
+    // the very case the rule is for.
+    if !a_stress_mode_is_on() || only_the_zone_stress_mode_is_on() {
+        assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
+    }
+    if a_stress_mode_is_on() {
+        return;
+    }
+    assert!(statistics.pushes_refused >= 64, "{statistics:?}");
+}
+
+/// Whether the zone stress mode is the one stress mode the environment
+/// turns on.
+fn only_the_zone_stress_mode_is_on() -> bool {
+    the_zone_stress_mode_is_on()
+        && std::env::vars_os().all(|(name, value)| {
+            let name = name.to_string_lossy();
+            !name.starts_with("NS_NEXT_STRESS_")
+                || name == "NS_NEXT_STRESS_ZONE"
+                || value.is_empty()
+                || value == "0"
+        })
+}
+
+/// `sweep:`, compiled by its first two calls, whose loops turn no turn,
+/// then called once more to turn `TURNS_PAST_THE_BUDGET` turns, each of
+/// which calls `large:`, a body of many additions and no send to compile
+/// beside it; `measureSweep` and `measureLarge` compile only `sweep:` and
+/// only `large:`, which the second of their two calls compiles.
+fn a_caller_of_a_callee_the_zone_cannot_hold() -> String {
+    let additions: String = (0..200)
+        .map(|index| format!("    sum:: sum + value + {index}.\n"))
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+          large: value = (
+            | sum ::= 0. |
+        {additions}    ^sum
+          )
+          sweep: turns = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < turns] whileTrue: [
+              sum:: sum + (self large: index).
+              index:: index + 1.
+            ].
+            ^sum
+          )
+          public measureSweep = (
+            ^(self sweep: 0) + (self sweep: 0)
+          )
+          public measureLarge = (
+            ^(self large: 0) + (self large: 0)
+          )
+          public run = (
+            ^(self sweep: 0) + (self sweep: 0) + (self sweep: {TURNS_PAST_THE_BUDGET})
+          )
+        ) : ()
+    "}
+}
+
+/// More turns than a body's `EXIT_BUDGET` of 64 exits.
+const TURNS_PAST_THE_BUDGET: i64 = 200;
+
+/// How many bytes of a fresh zone `selector` leaves used past its stubs,
+/// sent to a fresh instance of `source`'s class.
+fn zone_bytes_compiled_by(source: &str, selector: &str) -> usize {
+    let (mut interpreter, class) = load_with(source, Lowering::Optimized);
+    interpreter.set_jit_zone_bytes(1 << 20);
+    let stubs = interpreter.table_sizes().zone_used_bytes;
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    send_unary(&mut interpreter, &subject, selector);
+    interpreter.table_sizes().zone_used_bytes - stubs
+}
+
+/// A call refused for a callee whose compile the exhausted zone holds is
+/// counted against its caller: the zone retries the compile only after a
+/// growing number of held ones, so that a hot caller would exit at every
+/// call, and its abandonment stops that, and gives the zone room back.
+/// The zone holds its stubs, `large:` and half of `sweep:`: `large:`
+/// fits the zone emptied -- a body larger than that is refused for good,
+/// and its calls refused by the refusing stub -- but not beside
+/// `sweep:`, which the compaction keeps while it runs.
+#[test]
+fn a_caller_of_a_callee_the_exhausted_zone_holds_is_abandoned() {
+    let source = a_caller_of_a_callee_the_zone_cannot_hold();
+    let expected: i64 = (0..TURNS_PAST_THE_BUDGET)
+        .map(|value| (0..200).map(|index| value + index).sum::<i64>())
+        .sum();
+    let sweep_bytes = zone_bytes_compiled_by(&source, "measureSweep");
+    let large_bytes = zone_bytes_compiled_by(&source, "measureLarge");
+    let (mut interpreter, class) = load_with(&source, Lowering::Optimized);
+    interpreter.set_jit_zone_bytes(1 << 20);
+    let stubs = interpreter.table_sizes().zone_used_bytes;
+    let checked = !a_stress_mode_is_on();
+    if checked {
+        interpreter.set_jit_zone_bytes(stubs + large_bytes + sweep_bytes / 2);
+    }
+    // Under `NS_NEXT_NO_JIT=1` the bootstrap ran with the JIT off, which
+    // refused the bodies it entered: the run refuses none.
+    let refused_before = interpreter.jit_statistics().refused_bodies;
+    assert_eq!(run(&mut interpreter, &class), expected);
+    if !checked {
+        return;
+    }
+    let statistics = interpreter.jit_statistics();
+    assert!(statistics.abandoned_bodies >= 1, "{statistics:?}");
+    assert_eq!(statistics.refused_bodies, refused_before, "{statistics:?}");
 }
 
 /// Holds `statistics` to some body optimized -- but under a stress mode
@@ -1447,19 +2631,28 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// A loop calling `step:` 3,100 times, whose budget runs out after a few
-/// hundred calls, so that the loop's calls enter its optimized code; from
-/// the 3,001st call on `step:` sends a message its class answers in its
-/// own `doesNotUnderstand:`, whose handler machine code leaves to the
-/// interpreter: an exit of the optimized code at every call.
+/// A loop calling `step:at:` 3,100 times, whose budget runs out after a
+/// few hundred calls, so that the loop's calls enter its optimized code;
+/// from the 3,001st call on `step:at:` sends `probe:`, a site that ran on
+/// `self` alone, to a `Stranger`, which answers it in its own
+/// `doesNotUnderstand:`, whose handler machine code leaves to the
+/// interpreter: an exit of the optimized code at every call. The site
+/// ran, so its send is no trap: a send never executed is one, which
+/// counts against no budget.
 const EXITING_HOT_LOOP: &str = indoc! {"
-    class Subject = Object new () (
-      step: value = (
-        value < 3000 ifTrue: [^value].
-        ^self missing
+    class Subject = Object new (
+      | stranger = Stranger new. |
+    ) (
+      class Stranger = () (
+        public doesNotUnderstand: message = (
+          ^1
+        )
       )
-      public doesNotUnderstand: message = (
-        ^1
+      step: target at: value = (
+        ^target probe: value
+      )
+      public probe: value = (
+        ^value
       )
       public run = (
         |
@@ -1467,7 +2660,7 @@ const EXITING_HOT_LOOP: &str = indoc! {"
           index ::= 0.
         |
         [index < 3100] whileTrue: [
-          sum:: sum + (self step: index).
+          sum:: sum + (self step: (index < 3000 ifTrue: [self] ifFalse: [stranger]) at: index).
           index:: index + 1.
         ].
         ^sum
@@ -1491,7 +2684,7 @@ fn run_abandoning(source: &str, lowering: Lowering) -> (i64, JitStatistics) {
 }
 
 ns_runtime::for_each_lowering! {
-    /// `step:`'s optimized code exits at each of the last hundred calls:
+    /// `step:at:`'s optimized code exits at each of the last hundred calls:
     /// the exits count against its own budget, never its baseline code's,
     /// so that at the sixty-fourth its optimized code alone is abandoned
     /// and the rest of the calls run its baseline code, whose thirty-six
@@ -1505,6 +2698,7 @@ ns_runtime::for_each_lowering! {
             assert_eq!(statistics.optimized_exits, 64, "{statistics:?}");
             assert_eq!(statistics.abandoned_optimized_bodies, 1, "{statistics:?}");
             assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
+            assert_eq!(statistics.traps, 0, "{statistics:?}");
         }
     }
 }
@@ -6168,11 +7362,11 @@ ns_runtime::for_each_lowering! {
         let offset = |interpreter: &mut Interpreter, selector: &str| {
             interpreter.jit_body_offset(&class, MethodSide::Instance, Symbol::intern(selector))
         };
-        let a_before = offset(&mut interpreter, "a");
-        let b_before = offset(&mut interpreter, "b");
+        let freed_offset_before = offset(&mut interpreter, "a");
+        let moved_offset_before = offset(&mut interpreter, "b");
         abandon_a(&mut interpreter, &subject);
         interpreter.compact_jit_zone();
-        let b_after = offset(&mut interpreter, "b");
+        let moved_offset_after = offset(&mut interpreter, "b");
         if let Err(message) = interpreter.verify_cells() {
             panic!("after the compaction: {message}");
         }
@@ -6184,15 +7378,19 @@ ns_runtime::for_each_lowering! {
         // among them, so that its bodies exit at their first send and are
         // never compiled.
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            let (Some(a_before), Some(b_before), Some(b_after)) = (a_before, b_before, b_after)
+            let (
+                Some(freed_offset_before),
+                Some(moved_offset_before),
+                Some(moved_offset_after),
+            ) = (freed_offset_before, moved_offset_before, moved_offset_after)
             else {
                 panic!("`a` and `b` were compiled, and `b` survives");
             };
-            assert!(a_before < b_before, "`a` compiled first");
+            assert!(freed_offset_before < moved_offset_before, "`a` compiled first");
             assert_eq!(offset(&mut interpreter, "a"), None, "`a` is freed");
             assert!(
-                b_after < b_before,
-                "`b` moved down: {b_before:#x} to {b_after:#x}"
+                moved_offset_after < moved_offset_before,
+                "`b` moved down: {moved_offset_before:#x} to {moved_offset_after:#x}"
             );
             assert!(
                 done.called_entries >= 1,
@@ -7923,6 +9121,421 @@ ns_runtime::for_each_lowering! {
                 done.back_edge_stretch_exits <= 10,
                 "not at every turn of the 30,000: {done:?}"
             );
+        }
+    }
+}
+
+/// Three methods `warm` runs a thousand times on `SmallInteger`s and
+/// Booleans alone, so that each is optimized with its fast paths'
+/// fallbacks and its conditional's non-Boolean way never run; each of
+/// the others then gives one of them, once, what it never saw.
+const SPECULATED: &str = indoc! {"
+    class Subject = Object new () (
+      class Maybe = () (
+        public ifTrue: trueBlock ifFalse: falseBlock = (
+          ^3
+        )
+      )
+      total: step = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 100] whileTrue: [
+          sum:: sum + step.
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      double: number = (
+        ^number + number
+      )
+      choose: flag = (
+        ^flag ifTrue: [1] ifFalse: [2]
+      )
+      public warm = (
+        |
+          sum ::= 0.
+          index ::= 1.
+        |
+        [index <= 1000] whileTrue: [
+          sum:: sum + (self total: 1) + (self double: index) + (self choose: index < 500).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public withFloat = (
+        ^((self total: 0.5) * 2) asInteger
+      )
+      public withOverflow = (
+        | big |
+        big:: 1152921504606846975.
+        ^(self double: big) - big - big + 7
+      )
+      public withNonBoolean = (
+        ^self choose: Maybe new
+      )
+    ) : ()
+"};
+
+/// The budget `SPECULATED`'s methods are armed with: each runs out
+/// within `warm`'s thousand calls.
+const SPECULATING_BUDGET: i64 = 1_000;
+
+/// `SPECULATED` warmed up under `lowering`, then sent `selector`:
+/// its answer, and what the JIT did while it ran.
+fn after_warm_up(lowering: Lowering, selector: &str) -> (i64, JitStatistics) {
+    let (mut interpreter, class) = load_spending_with(SPECULATED, lowering);
+    interpreter.set_optimization_budget(SPECULATING_BUDGET);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    // 100 for `total: 1`, twice the index for `double:`, and 1 or 2 for
+    // `choose:`, over a thousand indices.
+    assert_eq!(send_unary(&mut interpreter, &subject, "warm"), 1_102_501);
+    let before = interpreter.jit_statistics();
+    let answer = send_unary(&mut interpreter, &subject, selector);
+    (answer, since(interpreter.jit_statistics(), before))
+}
+
+/// That `statistics` counts one trap where the tiers are pinned, and
+/// none under the reference lowering, whose sends run uncached and so
+/// record no site to speculate on.
+fn assert_trapped_once(statistics: &JitStatistics, lowering: Lowering) {
+    if pins_the_tiers(lowering) {
+        assert_eq!(statistics.traps, 1, "{statistics:?}");
+        assert_eq!(
+            statistics.abandoned_optimized_bodies, 0,
+            "a trap counts against no exit budget"
+        );
+    } else if lowering == Lowering::Reference {
+        assert_eq!(statistics.traps, 0, "{statistics:?}");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// `total:`'s sum, optimized on `SmallInteger`s, given a `Float`:
+    /// the fast path's failure traps, and the interpreter, running the
+    /// operation again, sends it, so that the sum is right.
+    fn a_float_after_warm_up_traps_once_and_answers_right(lowering) {
+        let (answer, statistics) = after_warm_up(lowering, "withFloat");
+        assert_eq!(answer, 100);
+        assert_trapped_once(&statistics, lowering);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// `double:`, optimized on `SmallInteger`s that never overflowed,
+    /// given the largest: the overflow traps, and the interpreter's
+    /// send answers the `LargeInteger`.
+    fn an_overflow_after_warm_up_traps_once_and_answers_right(lowering) {
+        let (answer, statistics) = after_warm_up(lowering, "withOverflow");
+        assert_eq!(answer, 7);
+        assert_trapped_once(&statistics, lowering);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// `choose:`, optimized on Booleans, given an object with an
+    /// `ifTrue:ifFalse:` of its own: the conditional traps, and the
+    /// interpreter sends it.
+    fn a_non_boolean_after_warm_up_traps_once_and_answers_right(lowering) {
+        let (answer, statistics) = after_warm_up(lowering, "withNonBoolean");
+        assert_eq!(answer, 3);
+        assert_trapped_once(&statistics, lowering);
+    }
+}
+
+/// `over:and:and:and:and:and:` sums each of its six arguments a hundred
+/// times into an accumulator of its own, so that each sum is a site of
+/// its own; `phase:` calls it fifty times with every argument 1 but the
+/// one `phase` names, which is 0.5. Phase 0 gives none a `Float`.
+const ONE_FLOAT_A_PHASE: &str = indoc! {"
+    class Subject = Object new () (
+      over: first and: second and: third and: fourth and: fifth and: sixth = (
+        |
+          one ::= 0.
+          two ::= 0.
+          three ::= 0.
+          four ::= 0.
+          five ::= 0.
+          six ::= 0.
+          index ::= 1.
+        |
+        [index <= 100] whileTrue: [
+          one:: one + first.
+          two:: two + second.
+          three:: three + third.
+          four:: four + fourth.
+          five:: five + fifth.
+          six:: six + sixth.
+          index:: index + 1.
+        ].
+        ^one asInteger + two asInteger + three asInteger + four asInteger
+          + five asInteger + six asInteger
+      )
+      argument: position in: phase = (
+        ^position = phase ifTrue: [0.5] ifFalse: [1]
+      )
+      public phase: phase = (
+        |
+          total ::= 0.
+          index ::= 1.
+        |
+        [index <= 50] whileTrue: [
+          total:: total
+            + (self
+              over: (self argument: 1 in: phase)
+              and: (self argument: 2 in: phase)
+              and: (self argument: 3 in: phase)
+              and: (self argument: 4 in: phase)
+              and: (self argument: 5 in: phase)
+              and: (self argument: 6 in: phase)).
+          index:: index + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Each phase of `ONE_FLOAT_A_PHASE` after the first feeds a `Float`
+    /// to one more of `over:and:and:and:and:and:`'s sums, each long
+    /// enough for the copy made not entrant to be compiled again: each
+    /// phase's site traps twice and makes the copy not entrant, until the
+    /// copy past the last version, compiled without a trap, takes the
+    /// remaining phases as they come. The bound holds whatever the stress
+    /// mode; where the tiers are pinned it is reached.
+    fn alternating_types_settle_within_the_last_version(lowering) {
+        let (mut interpreter, class) = load_spending_with(ONE_FLOAT_A_PHASE, lowering);
+        interpreter.set_optimization_budget(SPECULATING_BUDGET);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let before = interpreter.jit_statistics();
+        for phase in 0..=6 {
+            // Every sum is 100 but the one fed 0.5, which is 50.
+            let expected = if phase == 0 { 50 * 600 } else { 50 * 550 };
+            for round in 0..10 {
+                assert_eq!(
+                    send_number(&mut interpreter, &subject, "phase:", phase),
+                    expected,
+                    "phase {phase}, round {round}"
+                );
+            }
+        }
+        let statistics = since(interpreter.jit_statistics(), before);
+        let last = u64::from(ns_runtime::LAST_VERSION);
+        assert!(statistics.made_not_entrant <= last + 1, "{statistics:?}");
+        assert_eq!(statistics.refused_for_good, 0, "{statistics:?}");
+        if pins_the_tiers(lowering) {
+            assert_eq!(statistics.made_not_entrant, last + 1, "{statistics:?}");
+            assert_eq!(statistics.traps, 2 * (last + 1), "{statistics:?}");
+            assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
+        }
+    }
+}
+
+/// `step:at:` sends `probe:` to a `Stranger`, which answers it in its
+/// own `doesNotUnderstand:`, whose handler machine code leaves to the
+/// interpreter: an exit of its optimized code at every call, and of its
+/// baseline code too. The site ran, so its send is no trap.
+const ALWAYS_EXITING: &str = indoc! {"
+    class Subject = Object new (
+      | stranger = Stranger new. |
+    ) (
+      class Stranger = () (
+        public doesNotUnderstand: message = (
+          ^1
+        )
+      )
+      step: target at: value = (
+        ^target probe: value
+      )
+      public run: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (self step: stranger at: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `step:at:`'s optimized code, compiled again after each
+    /// abandonment for its exits, is abandoned at every version up to one
+    /// past the last, which leaves its key in baseline code for good: a
+    /// second run enters no optimized code of it, and so leaves none.
+    fn a_copy_abandoned_past_its_last_version_stays_in_baseline_code(lowering) {
+        let (mut interpreter, class) = load_spending_with(ALWAYS_EXITING, lowering);
+        interpreter.set_optimization_budget(100);
+        interpreter.set_jit_revival_entries(64);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "run:", 40_000), 40_000);
+        let statistics = since(interpreter.jit_statistics(), before);
+        assert!(statistics.refused_for_good <= 1, "{statistics:?}");
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "run:", 1_000), 1_000);
+        let again = since(interpreter.jit_statistics(), before);
+        if pins_the_tiers(lowering) {
+            let last = u64::from(ns_runtime::LAST_VERSION);
+            assert_eq!(statistics.refused_for_good, 1, "{statistics:?}");
+            assert_eq!(
+                statistics.abandoned_optimized_bodies,
+                last + 2,
+                "{statistics:?}"
+            );
+            assert_eq!(statistics.traps, 0, "{statistics:?}");
+            assert_eq!(again.optimized_exits, 0, "{again:?}");
+            assert_eq!(again.refused_for_good, 0, "{again:?}");
+        }
+    }
+}
+
+/// `step:with:probing:`, a method of `A`, sums `number` twenty times
+/// and adds what `target` answers `probe: value`: on an `A` it is given a `Stranger`,
+/// which answers in its own `doesNotUnderstand:`, an exit at every call;
+/// on a `B`, a subclass of `A`, a `Prober`, which answers 1 with no
+/// exit, `value` itself: a `Float` sum only where `runBFloat:` gives
+/// one, and a `Float` answer only where `probeB:` gives one. `quietA:`
+/// gives an `A` the `Prober` too, so that its frames run its baseline
+/// code with no exit, spending the body's budget.
+const ONE_KEY_REFUSED: &str = indoc! {"
+    class Subject = Object new (
+      |
+        stranger = Stranger new.
+        prober = Prober new.
+        a = A new.
+        b = B new.
+      |
+    ) (
+      class Stranger = () (
+        public doesNotUnderstand: message = (
+          ^1
+        )
+      )
+      class Prober = () (
+        public probe: value = (
+          ^value
+        )
+      )
+      class A = () (
+        public step: target with: number probing: value = (
+          |
+            sum ::= 0.
+            index ::= 1.
+          |
+          [index <= 20] whileTrue: [
+            sum:: sum + number.
+            index:: index + 1.
+          ].
+          ^(sum asInteger + (target probe: value)) asInteger
+        )
+      )
+      class B = A () ()
+      public runA: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (a step: stranger with: 1 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public runB: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (b step: prober with: 1 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public runBFloat: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (b step: prober with: 0.5 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public probeB: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (b step: prober with: 1 probing: 0.5).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public quietA: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (a step: prober with: 1 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public mixed: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (self quietA: 10) + (b step: prober with: 1 probing: 1).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `step:with:probing:`'s copy for an `A` is refused for good, and
+    /// its copy for a `B`, made not entrant by a trap at its sum
+    /// afterwards, is compiled again while the frames on an `A`, ten for
+    /// each on a `B` and none exiting, spend most of the body's budget: a
+    /// run-out of the refused pair's leaves the budget armed for the
+    /// other key's recompile, never parked. The recompiled copy is there
+    /// to trap at the probe's sum, which it still speculates on.
+    fn a_key_refused_for_good_does_not_starve_another_key(lowering) {
+        let (mut interpreter, class) = load_spending_with(ONE_KEY_REFUSED, lowering);
+        interpreter.set_optimization_budget(100);
+        interpreter.set_jit_revival_entries(64);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let start = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "runA:", 40_000), 40_000 * 21);
+        let refused = since(interpreter.jit_statistics(), start);
+        assert_eq!(send_number(&mut interpreter, &subject, "runB:", 2_000), 2_000 * 21);
+        assert_eq!(send_number(&mut interpreter, &subject, "runBFloat:", 3), 3 * 11);
+        let retired = since(interpreter.jit_statistics(), start);
+        assert_eq!(
+            send_number(&mut interpreter, &subject, "mixed:", 5_000),
+            5_000 * (10 * 21 + 21)
+        );
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_number(&mut interpreter, &subject, "probeB:", 3), 3 * 20);
+        let probed = since(interpreter.jit_statistics(), before);
+        let after = since(interpreter.jit_statistics(), start);
+        if pins_the_tiers(lowering) {
+            assert_eq!(refused.refused_for_good, 1, "{refused:?}");
+            assert_eq!(retired.made_not_entrant, 1, "{retired:?}");
+            assert!(probed.traps >= 1, "the B copy compiled again: {probed:?}");
+            assert_eq!(after.refused_for_good, 1, "{after:?}");
         }
     }
 }

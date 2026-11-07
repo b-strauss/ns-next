@@ -83,6 +83,7 @@ fn benchmark_entry(
         eprintln!("error: the JIT is off, and a benchmark would time the interpreter: {reason}");
         return Err(ExitCode::FAILURE);
     }
+    entry::count_jit_if(&mut loaded.interpreter, jit_statistics);
     let arguments = entry::main_arguments(&mut loaded.interpreter, program_arguments);
 
     // Warm-up: discarded. It exercises the same allocation and lookup
