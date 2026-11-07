@@ -1527,6 +1527,10 @@ const AN_INLINED_CALLEE_AND_ITS_EDITS: &str = indoc! {"
         ^A new.
       )
 
+      public baseClass = (
+        ^Base.
+      )
+
       public run: count = (
         |
           receiver = A new.
@@ -1686,26 +1690,67 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A full collection that frees the code id of a body a copy inlined
-    /// frees the copy: no activation of `helper:` runs, every one of its
-    /// calls being inlined, so `collect`'s collection frees its id, which
-    /// may be minted again for another body.
-    fn a_reclaimed_inlined_code_id_frees_the_copy(lowering) {
+    /// A full collection keeps an inlining copy and the code ids of the
+    /// bodies it inlined: no activation of `helper:` runs, every one of its
+    /// calls being inlined, but the copy names its id, so `collect`'s
+    /// collection frees neither -- the id stays the one `helper:` had --
+    /// and the next run enters the copy with no compile. Once an edit
+    /// frees the copy -- `overrideInA` puts `A`'s own `helper:` below
+    /// `Base`'s -- no copy names an id any more, and the next collection
+    /// may free them. A debug build checks at every collection that no id
+    /// a live copy names was freed (`jit::verify_inlined_code_ids`).
+    fn a_full_collection_keeps_an_inlining_copy_and_its_inlined_code_ids(lowering) {
         let (mut interpreter, class) = load_customizing(AN_INLINED_CALLEE_AND_ITS_EDITS, lowering);
         let subject = subject_using_platform(&mut interpreter, &class);
+        let base = class_answered(&mut interpreter, &subject, "baseClass");
+        let run = Symbol::intern("run:");
+        let helper = Symbol::intern("helper:");
         let pinned = run_until_inlined(&mut interpreter, &class, &subject, lowering, 5050);
+        let helper_id = interpreter.jit_code_id(&base, MethodSide::Instance, helper);
         let before = interpreter.jit_statistics();
         assert_eq!(send_unary(&mut interpreter, &subject, "collect"), 0);
         let collected = since(interpreter.jit_statistics(), before);
         if pinned {
+            assert!(helper_id.is_some(), "`helper:` has a code id");
+            assert!(interpreter.jit_code_id_named_by_a_copy(&base, MethodSide::Instance, helper));
+            assert_eq!(collected.invalidated_copies, 0, "{collected:?}");
             assert_eq!(
-                interpreter.jit_customized_copies(&class, MethodSide::Instance, Symbol::intern("run:")),
-                0,
-                "`run:`'s copy is freed"
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, run),
+                1,
+                "`run:`'s copy stays"
             );
-            assert!(collected.invalidated_copies >= 1, "{collected:?}");
+            assert_eq!(
+                interpreter.jit_code_id(&base, MethodSide::Instance, helper),
+                helper_id,
+                "`helper:`'s code id stays its own"
+            );
         }
+        let before = interpreter.jit_statistics();
         assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 5050);
+        let rerun = since(interpreter.jit_statistics(), before);
+        if pinned {
+            assert_eq!(rerun.optimized_bodies, 0, "no compile: {rerun:?}");
+            assert!(rerun.machine_entries > 0, "the copy is entered: {rerun:?}");
+            assert_eq!(
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, run),
+                1,
+                "`run:`'s copy is the one entered"
+            );
+        }
+        assert_eq!(send_unary(&mut interpreter, &subject, "overrideInA"), 0);
+        if pinned {
+            assert_eq!(
+                interpreter.jit_customized_copies(&class, MethodSide::Instance, run),
+                0,
+                "the edit freed `run:`'s copy"
+            );
+            assert!(
+                !interpreter.jit_code_id_named_by_a_copy(&base, MethodSide::Instance, helper),
+                "no copy names `helper:`'s id any more"
+            );
+        }
+        assert_eq!(send_unary(&mut interpreter, &subject, "collect"), 0);
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 5150);
     }
 }
 
@@ -1714,9 +1759,9 @@ ns_runtime::for_each_lowering! {
     /// the copy, whose inlined scope's sends address their cells from the
     /// old base: `run:`'s range is minted before `Victim`'s thousand sites,
     /// `helper:`'s after them, so the collection after `editVictim` slides
-    /// `helper:`'s down and leaves `run:`'s. The collection runs inside an
-    /// activation of `helper:`, which keeps its code id named, so that the
-    /// slide alone frees the copy.
+    /// `helper:`'s down and leaves `run:`'s. The collection is the one an
+    /// activation of `helper:` asks for, while `run:`'s copy is entered by
+    /// none, so that it frees the copy at the slide, never at a frame.
     fn a_slide_of_an_inlined_callee_s_feedback_base_frees_the_copy(lowering) {
         let (mut interpreter, class) = load_customizing(&an_inlined_callee_and_a_victim(), lowering);
         let subject = subject_using_platform(&mut interpreter, &class);

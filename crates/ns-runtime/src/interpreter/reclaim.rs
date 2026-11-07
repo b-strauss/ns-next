@@ -38,6 +38,9 @@ impl Mutator<'_> {
         // closures and frames: step 3 asks which bodies run, step 4 frees
         // the rest.
         gathered.running_codes(&stack.codes);
+        // And a live copy of optimized code names every body it inlined,
+        // which no activation may run (`jit::inlined_code_ids`).
+        gathered.running_codes(&crate::jit::inlined_code_ids(self));
         // Step 1: applications. Live: what a marked class object names,
         // what an activation was entered at, the application whose guard
         // an activation recorded -- a receiver forwarded under it must
@@ -146,10 +149,11 @@ impl Mutator<'_> {
         self.heap.truncate_application_rows();
         self.reclaim_mixins(&gathered);
         // Step 4: codes. The marked closures and frames and the running
-        // activations are every holder of one. A copy that inlined a body
-        // whose id goes is freed first, while the id still names the body.
-        crate::jit::forget_copies_of_unnamed_codes(self, &gathered.codes, carried_budgets);
+        // activations, with the live copies of optimized code, are every
+        // holder of one.
         self.heap.free_unnamed_codes(&gathered.codes);
+        #[cfg(all(ns_jit, debug_assertions))]
+        crate::jit::verify_inlined_code_ids(self);
         // Step 5: feedback ranges. Whether or not anything above was freed:
         // a body steps 3 and 4 let go of can end a family on its own.
         let mut live_bases = gathered.feedback_bases;

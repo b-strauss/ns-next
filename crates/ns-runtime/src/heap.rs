@@ -6958,9 +6958,16 @@ impl<'gc> Heap<'gc> {
     /// (`jit::point_budget_words_after_collection`).
     #[cfg(ns_jit)]
     pub(crate) fn has_code_id(&self, code: &CompiledCode) -> bool {
+        self.minted_code_id(code).is_some()
+    }
+
+    /// `code`'s code id, if it has one now, without minting one.
+    #[cfg(ns_jit)]
+    pub(crate) fn minted_code_id(&self, code: &CompiledCode) -> Option<CodeId> {
         self.tables
             .code_ids
-            .contains_key(&(std::ptr::from_ref(code) as usize))
+            .get(&(std::ptr::from_ref(code) as usize))
+            .copied()
     }
 
     /// What is left of `code`'s optimization budget, if it has a code id

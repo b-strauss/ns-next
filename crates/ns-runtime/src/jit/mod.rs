@@ -3019,7 +3019,10 @@ pub(crate) struct OptimizedMetadata;
 /// and its key, recorded at its install (`docs/design/execution.md`,
 /// "Invalidation"): whatever changes any of it frees the copy at once,
 /// through the path every invalidation takes (`invalidate_copy`), so that
-/// its cells, dispatching rows and machine entry rows are written afresh.
+/// its cells, dispatching rows and machine entry rows are written afresh;
+/// what the copy holds instead of relying on -- its inlined bodies' code
+/// ids, which a full collection keeps named while it lives -- never
+/// changes under it.
 /// Its key's applications are not repeated here: the key's own rules free
 /// a copy keyed on one (`invalidate_applications`, `forget_freed_copies`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -3040,9 +3043,10 @@ pub(crate) struct CopyDependencies {
     pub(crate) applications: Vec<DispatchId>,
     /// Every inlined method's code id, by which the copy's interrupt
     /// points name its scopes (`optimizing::metadata::ScopeAtPoint`): a
-    /// full collection that frees one mints it again for another body
-    /// (`forget_copies_of_unnamed_codes`). Each inlined block's id is its
-    /// home's to add once blocks are inlined.
+    /// full collection names it while the copy lives, so that it is never
+    /// freed and minted again for another body under it
+    /// (`inlined_code_ids`). Each inlined block's id is its home's to add
+    /// once blocks are inlined.
     pub(crate) code_ids: Vec<CodeId>,
     /// Every inlined method's feedback base, from which its scope's sends
     /// address their cells: a slide that moves one leaves the copy reading
@@ -7131,36 +7135,51 @@ pub(crate) fn forget_freed_copies(
     refresh_cells_entering(mutator, entries);
 }
 
-/// Frees every copy that inlined a body whose code id a full collection
-/// is about to free, `named` holding every id it keeps
-/// (`Heap::free_unnamed_codes`): the id is minted again for another body,
-/// which the copy's interrupt points would name its scope by. Run in the
-/// collection right before the ids are freed, between marking and
-/// compaction, where nothing runs; `carried`, what the collection carries
-/// of each body's budget to the id it has after it
-/// (`budgets_before_collection`), takes the budget's arming. A method
-/// whose every call is inlined is run by no activation, so a collection
-/// between two of its copy's entries frees its id: the copy is compiled
-/// again at its body's next run-out.
+/// The code ids every live copy of optimized code inlined
+/// (`CopyDependencies::code_ids`), which a full collection names beside
+/// the running activations' (`Mutator::reclaim_ids`): an inlined method
+/// may be run by no activation, every call of it inlined, and freeing its
+/// id at every collection would free the copy that names its scopes by
+/// it, throwing the tier's work away. Named, the id cannot go stale while
+/// the copy lives; once the copy is freed -- by its applications, its
+/// feedback bases or its key -- nothing names the id, and a later
+/// collection frees it.
 #[cfg(ns_jit)]
-pub(crate) fn forget_copies_of_unnamed_codes(
-    mutator: &mut Mutator<'_>,
-    named: &crate::heap::reclaim::BitSet,
-    carried: &mut IdentityMap<usize, i64>,
-) {
-    let dependent = mutator.jit.copies_depending(|dependencies| {
-        dependencies
-            .code_ids
-            .iter()
-            .any(|code_id| u32::try_from(code_id.index()).map_or(true, |row| !named.contains(row)))
-    });
-    if dependent.is_empty() {
-        return;
+pub(crate) fn inlined_code_ids(mutator: &Mutator<'_>) -> Vec<CodeId> {
+    let mut code_ids = Vec::new();
+    for body in &mutator.jit.bodies {
+        if !body.free && body.tier == Tier::Optimized {
+            code_ids.extend_from_slice(&body.dependencies.code_ids);
+        }
     }
-    let mut entries = Vec::new();
-    let armed = invalidate_dependent_copies(mutator, dependent, &mut entries);
-    carry_armings(mutator, armed, carried);
-    refresh_cells_entering(mutator, entries);
+    code_ids
+}
+
+/// A debug build's check, after a full collection freed the code ids
+/// nothing named, that every live copy's inlined code ids still name the
+/// bodies it inlined (`inlined_code_ids`): a freed one would be minted
+/// again for another body.
+#[cfg(all(ns_jit, debug_assertions))]
+pub(crate) fn verify_inlined_code_ids(mutator: &Mutator<'_>) {
+    for body in &mutator.jit.bodies {
+        if body.free || body.tier != Tier::Optimized {
+            continue;
+        }
+        let Some(metadata) = &body.metadata else {
+            continue;
+        };
+        for scope in metadata.scopes.iter().flatten() {
+            assert!(
+                body.dependencies.code_ids.iter().any(|code_id| {
+                    mutator
+                        .heap
+                        .code(*code_id)
+                        .is_some_and(|code| Rc::ptr_eq(&code, &scope.code))
+                }),
+                "internal: a live copy's inlined code id was reclaimed"
+            );
+        }
+    }
 }
 
 /// Frees every copy that inlined a body compiled against a feedback base
@@ -7191,11 +7210,8 @@ pub(crate) fn invalidate_copies_of_moved_bases(
 
 /// Without a JIT no copy inlines a body.
 #[cfg(not(ns_jit))]
-pub(crate) fn forget_copies_of_unnamed_codes(
-    _mutator: &mut Mutator<'_>,
-    _named: &crate::heap::reclaim::BitSet,
-    _carried: &mut IdentityMap<usize, i64>,
-) {
+pub(crate) fn inlined_code_ids(_mutator: &Mutator<'_>) -> Vec<CodeId> {
+    Vec::new()
 }
 
 /// Without a JIT there is no optimized code to invalidate.
