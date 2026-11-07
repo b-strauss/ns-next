@@ -402,8 +402,8 @@ impl World {
         // After the prune, whose survivors keep their mixins, and before
         // the compaction, while the mark bits still say what lives.
         // Before `reclaim_ids` clears the rows of the ids it frees.
-        let budgets = crate::jit::budgets_before_collection(&self.mutator);
-        self.mutator.reclaim_ids(gathered);
+        let mut budgets = crate::jit::budgets_before_collection(&self.mutator);
+        self.mutator.reclaim_ids(gathered, &mut budgets);
         // After `reclaim_ids`, which may have freed the code ids budget
         // rows are indexed by, and before `shrink_committed_memory` gives
         // the rows past the code table back: every body's machine code

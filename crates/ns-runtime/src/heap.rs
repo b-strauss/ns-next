@@ -961,7 +961,7 @@ pub(crate) struct MachineEntryLayout {
 
 /// What a parked optimization budget row holds
 /// (`optimization_budgets.rs`).
-#[cfg(all(ns_jit, test))]
+#[cfg(ns_jit)]
 pub(crate) const OPTIMIZATION_BUDGET_PARKED: i64 = optimization_budgets::PARKED;
 
 /// A body's optimization budget as the budget leaf finds it

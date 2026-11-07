@@ -2697,6 +2697,29 @@ impl JitState {
         self.write_dispatching_rows(index);
     }
 
+    /// Writes vacant the block of every lean body whose code died, at the
+    /// start of the pass after a full collection
+    /// (`point_budget_words_after_collection`): the pass points such a
+    /// body's word at the vacant block, and the full collection then
+    /// frees its copies (`free_dead_bodies`), so that its block would
+    /// keep rows naming freed code that no word names any more. Before
+    /// the pass mints any id afresh, a dead body's block is no live
+    /// body's: the block of an id belongs to the one code the id names.
+    #[cfg(ns_jit)]
+    fn vacate_dead_dispatching_blocks(&mut self) {
+        let Some(table) = self.optimized_copies.as_mut() else {
+            return;
+        };
+        for body in self.bodies.iter().filter(|body| !body.free) {
+            let Some(dispatching) = body.dispatching else {
+                continue;
+            };
+            if body.code.strong_count() == 0 {
+                table.write(dispatching.rows, &[]);
+            }
+        }
+    }
+
     /// Writes the dispatching rows of the lean body at `lean` from the
     /// optimized copies its slot names beside it, at most
     /// `DISPATCHING_ROWS` of them, in the block its word names: the one
@@ -4661,6 +4684,7 @@ pub(crate) fn point_budget_words_after_collection(
     carried: &IdentityMap<usize, i64>,
 ) {
     mutator.jit.budget_words_to_point.clear();
+    mutator.jit.vacate_dead_dispatching_blocks();
     let unpointed = mutator.jit.unpointed_budget_address();
     for index in 0..mutator.jit.bodies.len() {
         let index = u32::try_from(index).expect("internal: a body's index fits a u32");
@@ -6435,15 +6459,81 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
     let stale =
         |key: CustomizationKey| rebuilt.contains(&key.receiver) || rebuilt.contains(&key.entered);
     // A request still pending would compile a copy for the old layout.
-    mutator
-        .jit
-        .optimization_requests
-        .retain(|request| request.key.is_none_or(|key| !stale(key)));
+    let dropped = drop_stale_requests(mutator, &stale);
     let mut entries = Vec::new();
     for code in mutator.jit.customized_codes() {
         invalidate_copies_of(mutator, &code, &stale, false, &mut entries);
     }
+    rearm_after_dropped_requests(mutator, dropped, None);
     refresh_cells_entering(mutator, entries);
+}
+
+/// Drops every pending request whose key `stale` says is stale, answering
+/// each body a request was dropped for, once, with the longest wait its
+/// dropped keys' rows earned (`CustomizedCopy::version`).
+#[cfg(ns_jit)]
+fn drop_stale_requests(
+    mutator: &mut Mutator<'_>,
+    stale: &dyn Fn(CustomizationKey) -> bool,
+) -> Vec<(Rc<CompiledCode>, u8)> {
+    let mut dropped: Vec<(Rc<CompiledCode>, u8)> = Vec::new();
+    mutator.jit.optimization_requests.retain(|request| {
+        let Some(key) = request.key.filter(|key| stale(*key)) else {
+            return true;
+        };
+        if let Some(code) = request.code.upgrade() {
+            let version = code.jit.copy_row(key).map_or(0, |row| row.version);
+            match dropped
+                .iter_mut()
+                .find(|(known, _)| Rc::ptr_eq(known, &code))
+            {
+                Some((_, longest)) => *longest = (*longest).max(version),
+                None => dropped.push((code, version)),
+            }
+        }
+        false
+    });
+    dropped
+}
+
+/// Arms afresh, at the wait `dropped` names for it, the budget of each
+/// body whose pending request `drop_stale_requests` dropped, unless a
+/// request for the body is still pending or something armed the budget
+/// since: the run-out that made the request parked the budget, which only
+/// the request's install or refusal would have armed again, so that a
+/// body left parked with nothing pending would never be requested again,
+/// for any key, until a compaction cleared its row. A body whose copies
+/// the same invalidation freed keeps the arming that freeing gave it.
+///
+/// In a full collection, `carried` is what the collection carries of each
+/// body's budget to the id it has after it (`budgets_before_collection`),
+/// read before this arming: it takes the arming too, or a body whose id
+/// the collection frees would be parked again at its new id.
+#[cfg(ns_jit)]
+fn rearm_after_dropped_requests(
+    mutator: &mut Mutator<'_>,
+    dropped: Vec<(Rc<CompiledCode>, u8)>,
+    mut carried: Option<&mut IdentityMap<usize, i64>>,
+) {
+    for (code, version) in dropped {
+        let pending = mutator
+            .jit
+            .optimization_requests
+            .iter()
+            .any(|request| std::ptr::eq(request.code.as_ptr(), Rc::as_ptr(&code)));
+        let parked = mutator.heap.armed_optimization_budget(&code)
+            == Some(crate::heap::OPTIMIZATION_BUDGET_PARKED);
+        if pending || !parked {
+            continue;
+        }
+        rearm_optimization_budget(mutator, &code, version);
+        if let Some(carried) = carried.as_deref_mut() {
+            carried.insert(
+                Rc::as_ptr(&code) as usize,
+                optimization_budget_after(mutator.jit.optimization_budget, version),
+            );
+        }
+    }
 }
 
 /// Frees every optimized copy there is, customized or not: what a bulk
@@ -6518,11 +6608,16 @@ impl JitState {
 /// level and the application word its cells and dispatching rows would
 /// match it by. Run in the collection, between marking and compaction,
 /// where nothing runs; it allocates nothing and moves nothing. No version
-/// is raised and no budget armed: the row it would be raised in is gone.
+/// is raised: the row it would be raised in is gone. A body whose pending
+/// request it dropped has its parked budget armed afresh at the plain
+/// wait (`rearm_after_dropped_requests`), and `carried`, what the
+/// collection carries of each body's budget to the id it has after it
+/// (`budgets_before_collection`), takes the arming too.
 #[cfg(ns_jit)]
 pub(crate) fn forget_freed_copies(
     mutator: &mut Mutator<'_>,
     freed: &crate::heap::reclaim::FreedIds,
+    carried: &mut IdentityMap<usize, i64>,
 ) {
     if freed.guards.is_empty() {
         return;
@@ -6530,10 +6625,13 @@ pub(crate) fn forget_freed_copies(
     let stale = |key: CustomizationKey| {
         freed.guards.contains(&key.receiver) || freed.guards.contains(&key.entered)
     };
-    mutator
-        .jit
-        .optimization_requests
-        .retain(|request| request.key.is_none_or(|key| !stale(key)));
+    // The dropped key's row goes too, so its version is no wait of the
+    // body's any more: the plain one.
+    let dropped = drop_stale_requests(mutator, &stale)
+        .into_iter()
+        .map(|(code, _)| (code, 0))
+        .collect();
+    rearm_after_dropped_requests(mutator, dropped, Some(carried));
     let mut entries = Vec::new();
     for code in mutator.jit.customized_codes() {
         let keys: Vec<CustomizationKey> = code
@@ -6573,6 +6671,7 @@ pub(crate) fn invalidate_optimized_for_stress(_mutator: &mut Mutator<'_>) {}
 pub(crate) fn forget_freed_copies(
     _mutator: &mut Mutator<'_>,
     _freed: &crate::heap::reclaim::FreedIds,
+    _carried: &mut IdentityMap<usize, i64>,
 ) {
 }
 
@@ -7693,6 +7792,105 @@ mod tests {
             });
         }
 
+        /// The keyed request for `code` its budget's run-out would record,
+        /// after parking the budget, for the key of `receiver` and
+        /// `entered`.
+        fn park_with_a_keyed_request(
+            mutator: &mut crate::interpreter::Mutator<'_>,
+            code: &Rc<CompiledCode>,
+            receiver: crate::mixin::DispatchId,
+            entered: crate::mixin::DispatchId,
+        ) {
+            let budget = mutator.heap.optimization_budget_of(code);
+            mutator.heap.park_optimization_budget(budget.id);
+            mutator
+                .jit
+                .optimization_requests
+                .push(crate::jit::OptimizationRequest {
+                    code: Rc::downgrade(code),
+                    key: Some(crate::jit::CustomizationKey { receiver, entered }),
+                    entered: std::rc::Weak::new(),
+                });
+        }
+
+        /// An install that drops a body's pending request for a key it
+        /// rebuilt arms the budget the run-out parked afresh, so that the
+        /// body is requested again; while another request for the body
+        /// stays pending, the budget stays parked for it.
+        #[test]
+        fn an_install_that_drops_a_pending_request_rearms_the_budget() {
+            use crate::mixin::DispatchId;
+            let mut interpreter = pinning_the_budget();
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                let (rebuilt, kept) = (DispatchId::from_counter(40), DispatchId::from_counter(41));
+                park_with_a_keyed_request(mutator, &code, rebuilt, rebuilt);
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest {
+                        code: Rc::downgrade(&code),
+                        key: Some(crate::jit::CustomizationKey {
+                            receiver: kept,
+                            entered: kept,
+                        }),
+                        entered: std::rc::Weak::new(),
+                    });
+                crate::jit::invalidate_applications(mutator, &[rebuilt]);
+                assert_eq!(mutator.jit.optimization_requests.len(), 1);
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::heap::OPTIMIZATION_BUDGET_PARKED),
+                    "parked for the request still pending"
+                );
+                crate::jit::invalidate_applications(mutator, &[kept]);
+                assert!(mutator.jit.optimization_requests.is_empty());
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::jit::OPTIMIZATION_BUDGET),
+                    "armed afresh once nothing is pending"
+                );
+            });
+        }
+
+        /// A reclaim that drops a body's pending request for a key whose
+        /// id it freed arms the budget the run-out parked afresh, at the
+        /// plain wait, and what the collection carries of the budget
+        /// across the ids it frees takes the arming too.
+        #[test]
+        fn a_reclaim_that_drops_a_pending_request_rearms_the_budget() {
+            use crate::mixin::DispatchId;
+            let mut interpreter = pinning_the_budget();
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                let freed_id = DispatchId::from_counter(40);
+                park_with_a_keyed_request(mutator, &code, freed_id, freed_id);
+                let mut carried = crate::jit::budgets_before_collection(mutator);
+                let key = Rc::as_ptr(&code) as usize;
+                assert_eq!(
+                    carried.get(&key).copied(),
+                    Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
+                );
+                let mut freed = crate::heap::reclaim::FreedIds::default();
+                freed.guards.insert(freed_id);
+                crate::jit::forget_freed_copies(mutator, &freed, &mut carried);
+                assert!(mutator.jit.optimization_requests.is_empty());
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::jit::OPTIMIZATION_BUDGET)
+                );
+                assert_eq!(
+                    carried.get(&key).copied(),
+                    Some(crate::jit::OPTIMIZATION_BUDGET),
+                    "carried across the collection"
+                );
+            });
+        }
+
         /// Optimized code that spends its exit budget is abandoned alone:
         /// its exits are its own, never the baseline code's, its baseline
         /// code stays installed and entered at its start again, and each
@@ -8022,6 +8220,69 @@ mod tests {
             check(&mut interpreter, false);
             sent(&mut interpreter, &subject, "runB");
             check(&mut interpreter, true);
+        }
+
+        /// Freeing a method's lean body, which frees its copies with it,
+        /// leaves its block of dispatching rows vacant: the lean body is
+        /// freed first, so that no copy's freeing writes the block again,
+        /// and a row naming a freed copy would enter whatever the zone
+        /// holds there after the next compaction.
+        #[test]
+        fn a_freed_lean_body_leaves_its_dispatching_rows_vacant() {
+            let source = ONE_METHOD_ON_TWO_APPLICATIONS;
+            let module = ns_syntax::parse(source).expect("parse");
+            let resolved = crate::resolve(
+                module,
+                Rc::from(source),
+                crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+            )
+            .expect("resolve");
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            interpreter.set_jit_enabled(true);
+            interpreter.set_jit_stress(true);
+            interpreter.set_optimize_stress(true);
+            let class = interpreter.load_module(&resolved);
+            let Ok(subject) = interpreter.instantiate(&class, &[]) else {
+                panic!("instantiate: an error");
+            };
+            sent(&mut interpreter, &subject, "runA");
+            sent(&mut interpreter, &subject, "runB");
+            let base_class = sent(&mut interpreter, &subject, "aClass");
+            if a_stress_mode_frees_copies() {
+                return;
+            }
+            interpreter.enter(|mutator| {
+                let base_object = mutator.fetch(&base_class).as_object().expect("a class");
+                let application = mutator
+                    .heap
+                    .class_application(base_object)
+                    .expect("applied");
+                let code = Rc::clone(
+                    &application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern("total"))
+                        .expect("total")
+                        .code,
+                );
+                let lean = code.jit.map.get();
+                let block = mutator.jit.bodies[lean as usize]
+                    .dispatching
+                    .expect("a method's lean body has a dispatching entry")
+                    .rows;
+                let rows = |mutator: &crate::interpreter::Mutator<'_>| {
+                    mutator
+                        .jit
+                        .optimized_copies
+                        .as_ref()
+                        .expect("a table")
+                        .rows(block)
+                };
+                assert!(!rows(mutator).is_empty(), "the copies' rows");
+                mutator.jit.free_body(lean);
+                assert!(rows(mutator).is_empty(), "vacant once the body is freed");
+                #[cfg(debug_assertions)]
+                mutator.jit.verify_dispatching_rows();
+            });
         }
 
         /// `M`'s private lazy slot `step`, read by `total` in a loop, `M`

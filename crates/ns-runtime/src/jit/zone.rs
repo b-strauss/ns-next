@@ -361,6 +361,7 @@ impl JitState {
         body.free = true;
         let size = body.size();
         let customized_beside = body.key.and(body.baseline);
+        let own_block = body.dispatching.map(|dispatching| dispatching.rows);
         self.statistics.count_freed(body.lean.is_some());
         if freed_by == FreedBy::BetweenCompactions {
             self.bytes_freed_since_compaction =
@@ -372,9 +373,39 @@ impl JitState {
         if let Some(lean) = customized_beside {
             self.write_dispatching_rows(lean);
         }
+        // Nor may a freed lean body's own block keep its copies' rows:
+        // freed with it, or before it, their rows are written by no one
+        // once the lean body is free (`write_dispatching_rows`), and only
+        // that no word names the block would keep them from being entered.
+        #[cfg(ns_jit)]
+        if let Some(block) = own_block {
+            self.vacate_dispatching_block(index, block);
+        }
         #[cfg(not(ns_jit))]
-        let _ = customized_beside;
+        let _ = (customized_beside, own_block);
         true
+    }
+
+    /// Writes the block at `block`, the dispatching rows the lean body at
+    /// `index` just freed names, vacant -- unless the body its code's slot
+    /// names now, which took its place, names the same block, whose rows
+    /// are that body's: one block per code id, and the id is the code's.
+    #[cfg(ns_jit)]
+    fn vacate_dispatching_block(&mut self, index: u32, block: u64) {
+        let owned_by_another = self.bodies[index as usize]
+            .code
+            .upgrade()
+            .and_then(|code| self.named_body(&code))
+            .filter(|named| *named != index as usize)
+            .and_then(|named| self.live_body(u32::try_from(named).unwrap_or(u32::MAX)))
+            .and_then(|named| named.dispatching)
+            .is_some_and(|dispatching| dispatching.rows == block);
+        if owned_by_another {
+            return;
+        }
+        if let Some(table) = self.optimized_copies.as_mut() {
+            table.write(block, &[]);
+        }
     }
 
     /// Whether the body at `index` is still what its code's slot names:
@@ -749,6 +780,30 @@ impl JitState {
                 table.map(|table| table.rows(dispatching.rows)),
                 Some(self.dispatching_rows_of(lean)),
                 "internal: a body's dispatching rows are its copies' after a compaction or a slide"
+            );
+        }
+        // A freed lean body's block holds no row, unless a live body names
+        // it now: the body that took its place, or one its id was minted
+        // for again.
+        let Some(table) = self.optimized_copies.as_ref() else {
+            return;
+        };
+        let named_blocks: std::collections::HashSet<u64> = self
+            .bodies
+            .iter()
+            .filter(|body| !body.free)
+            .filter_map(|body| body.dispatching.map(|dispatching| dispatching.rows))
+            .collect();
+        for body in self.bodies.iter().filter(|body| body.free) {
+            let Some(block) = body.dispatching.map(|dispatching| dispatching.rows) else {
+                continue;
+            };
+            if named_blocks.contains(&block) {
+                continue;
+            }
+            assert!(
+                table.rows(block).is_empty(),
+                "internal: a freed lean body's dispatching rows are vacant"
             );
         }
     }
