@@ -69,7 +69,13 @@ pub(crate) const BLOCK_LIMIT: u32 = 70;
 /// in the compile, which is then inlined into it.
 pub(crate) const BLOCK_ARGUMENT_BONUS: u32 = 35;
 /// The heaviest compile: the root and every scope inlined into it.
-pub(crate) const COMPILE_LIMIT: u32 = 12_000;
+/// Strongtalk's 12,000 bounds the size of the machine code it emits;
+/// this counts instructions of the bytecode's kind, each of which may
+/// emit a template many machine instructions long, and every scope's
+/// registers and values pass through liveness, allocation and, in a debug
+/// build, the replay that verifies them. A start the measurement of the
+/// limits refines.
+pub(crate) const COMPILE_LIMIT: u32 = 2_000;
 /// How many times a body may be inlined into a chain it already runs in.
 pub(crate) const RECURSION_LIMIT: u32 = 1;
 /// How much more often a send runs for each loop around it.

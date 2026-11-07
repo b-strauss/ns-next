@@ -35,7 +35,7 @@ use crate::mixin::DispatchId;
 
 use super::graph::{
     tainted_at, Block, BlockId, ClassStart, End, Graph, GraphScope, HeaderBinding, Node, Phi,
-    ScopeId, ValueId, ValueKind,
+    ScopeId, ValueId, ValueKind, FRAME_BOUND,
 };
 use super::plan::{ArmPlan, FallThrough, InliningPlan};
 use super::snapshot::{Snapshot, SnapshotInstruction};
@@ -722,18 +722,12 @@ impl<'snapshot> Flat<'snapshot> {
                 }
             })
             .collect();
-        // An entry's is its sender's at the send: the scope's frame is not
-        // laid before it (`Graph::tainted_at_top`).
         let tainted = steps
             .iter()
-            .map(
-                |step| match (&step.step, graph_scopes[step.scope.0 as usize].parent) {
-                    (Step::Enter(_), Some((sender, call))) => {
-                        tainted_at(&graph_scopes, sender, call)
-                    }
-                    _ => tainted_at(&graph_scopes, step.scope, step.program_counter),
-                },
-            )
+            .map(|step| {
+                let (scope, program_counter) = taint_point_of(&graph_scopes, step);
+                tainted_at(&graph_scopes, scope, program_counter)
+            })
             .collect();
         let register_count = graph_scopes
             .iter()
@@ -758,6 +752,13 @@ impl<'snapshot> Flat<'snapshot> {
         }
     }
 
+    /// The scope and instruction whose leftover analysis holds before the
+    /// step at `index` (`Block::taint_point`): an inlined scope's entry's
+    /// is its sender's send, its frame not laid yet.
+    fn taint_point(&self, index: usize) -> (ScopeId, u32) {
+        taint_point_of(&self.graph_scopes, &self.steps[index])
+    }
+
     /// The step of the instruction at `program_counter` of `scope`.
     fn index_of(&self, scope: ScopeId, program_counter: u32) -> usize {
         self.steps_of[scope.0 as usize][program_counter as usize]
@@ -766,6 +767,19 @@ impl<'snapshot> Flat<'snapshot> {
     /// The scope `scope` names.
     fn scope(&self, scope: ScopeId) -> &FlatScope<'snapshot> {
         &self.scopes[scope.0 as usize]
+    }
+}
+
+/// The physical register `register` of a scope at `offset`.
+fn physical(offset: u16, register: u16) -> u16 {
+    offset.checked_add(register).expect(FRAME_BOUND)
+}
+
+/// `Flat::taint_point` of `step`, among `scopes`.
+fn taint_point_of(scopes: &[GraphScope], step: &FlatStep) -> (ScopeId, u32) {
+    match (&step.step, scopes[step.scope.0 as usize].parent) {
+        (Step::Enter(_), Some(sent_at)) => sent_at,
+        _ => (step.scope, step.program_counter),
     }
 }
 
@@ -965,7 +979,7 @@ impl Laying<'_, '_> {
             }
             | SnapshotInstruction::SendInlinable {
                 receiver_register, ..
-            } => ReceiverOf::Register(offset + receiver_register),
+            } => ReceiverOf::Register(physical(offset, *receiver_register)),
             SnapshotInstruction::SendLexical { depth: 0, .. } => ReceiverOf::SelfOf(scope),
             _ => return None,
         };
@@ -995,9 +1009,12 @@ impl Laying<'_, '_> {
                         .register_written()
                         .expect("internal: an inlined send writes its destination");
                     return Pending::Return {
-                        source: owner.offset + register,
-                        destination: self.graph_scopes[sender.0 as usize].offset + destination,
-                        slot_end: owner.offset + owner.argument_count,
+                        source: physical(owner.offset, register),
+                        destination: physical(
+                            self.graph_scopes[sender.0 as usize].offset,
+                            destination,
+                        ),
+                        slot_end: physical(owner.offset, owner.argument_count),
                         sender,
                         call,
                     };
@@ -1053,7 +1070,7 @@ impl Laying<'_, '_> {
             | SnapshotInstruction::SendInlinable {
                 receiver_register, ..
             } => (
-                ReceiverOf::Register(sender_scope.offset + receiver_register),
+                ReceiverOf::Register(physical(sender_scope.offset, *receiver_register)),
                 ClassStart::ClassOf,
                 None,
                 level,
@@ -1078,21 +1095,29 @@ impl Laying<'_, '_> {
             _ => panic!("internal: only a send is inlined"),
         };
         let facts = &self.snapshots[scope.0 as usize].facts;
-        let named_start = callee.argument_count + crate::bytecode::HEADER_REGISTERS;
+        let named_start = physical(callee.argument_count, crate::bytecode::HEADER_REGISTERS);
         let named_end = facts.local_count.max(named_start);
         Entry {
             receiver,
             arguments: (0_u16..)
                 .zip(sources)
-                .map(|(index, source)| (callee.offset + index, sender_scope.offset + source))
+                .map(|(index, source)| {
+                    (
+                        physical(callee.offset, index),
+                        physical(sender_scope.offset, *source),
+                    )
+                })
                 .collect(),
             class_start,
             sender_class,
             class_steps,
             receiver_register: callee.header_register(HeaderBinding::Receiver),
             class_register: callee.header_register(HeaderBinding::CurrentClass),
-            temporaries: callee.offset + named_start..callee.offset + named_end,
-            overlay: vec![callee.exit_words(), callee.offset + named_end..u16::MAX],
+            temporaries: physical(callee.offset, named_start)..physical(callee.offset, named_end),
+            overlay: vec![
+                callee.exit_words(),
+                physical(callee.offset, named_end)..u16::MAX,
+            ],
         }
     }
 }
@@ -1760,6 +1785,7 @@ impl<'flat> Builder<'flat> {
             self.blocks.push(Block {
                 scope: shape.scope,
                 program_counter: shape.program_counter,
+                taint_point: self.flat.taint_point(shape.top),
                 phis: Vec::new(),
                 nodes: Vec::new(),
                 end: End::Frame,
@@ -2808,7 +2834,10 @@ fn shapes_of(flat: &Flat<'_>, edges: &[Edges]) -> (Vec<Shape>, HashMap<usize, us
             ] {
                 if way {
                     let to_run = to_run.expect("internal: a split way exists");
-                    let (scope, program_counter) = place(to_run);
+                    // An edge block holds nothing of the block it leads
+                    // to: on the way into an inlined scope's entry it is
+                    // still its sender's, at the send.
+                    let (scope, program_counter) = flat.taint_point(runs[to_run].0.start);
                     edges.push(Shape {
                         scope,
                         program_counter,
@@ -4262,7 +4291,12 @@ pub(crate) mod inlining_tests {
 
     /// `r14 := 2. r25 := 7. r21 := r13 foo: 5`, the argument laid at
     /// r20, `r15 := r14. r16 := r25. ^r21`: the callee answers its
-    /// argument.
+    /// argument. No compiler reads r25 after the send -- the leftover
+    /// analysis taints every register past the send's slots there, and a
+    /// send's slots keep the arguments, which the callee never writes -- so
+    /// the body is one no lowering makes, written to pin what the builder
+    /// does with the sender's registers the callee's frame lays over: it
+    /// forgets them, where a register below the slots keeps its value.
     #[test]
     fn an_inlined_callee_overlays_the_caller_s_scratch_registers_only() {
         let root = method(
@@ -4578,6 +4612,152 @@ pub(crate) mod inlining_tests {
                 Node::Copy { destination_register, source }
                     if *destination_register == header && source == receiver
             )));
+    }
+
+    /// `root` whose lexical send at `program_counter`, its site 0, is
+    /// taken without a test: the root's receiver is known, of the one
+    /// application the site cached, whose method is `callee`.
+    fn unguarded(root: Snapshot, program_counter: usize, callee: Snapshot) -> SnapshotTree {
+        let mut tree = monomorphic(root, program_counter, callee, 0);
+        tree.root_receiver = Some(test_receiver(1, 1, 0));
+        tree.root_entered = Some(test_receiver(1, 1, 0));
+        tree
+    }
+
+    /// `self foo` into r14, its argument base r20.
+    fn send_to_self(destination: u16) -> Instruction {
+        Instruction::SendLexical {
+            depth: 0,
+            selector: Symbol::intern("foo"),
+            argument_base: 20,
+            argument_sources: Vec::new(),
+            destination,
+            call_site: CallSite { number: 0 },
+        }
+    }
+
+    /// A method answering `true`.
+    fn answers_true() -> Snapshot {
+        method(
+            1,
+            0,
+            vec![
+                Instruction::LoadLiteral {
+                    destination: 13,
+                    literal: Literal::Boolean(true),
+                },
+                Instruction::Return { register: 13 },
+            ],
+        )
+    }
+
+    /// `r15 := 0. [r14 := self foo. r14] whileFalse. ^r14`, its `foo`
+    /// inlined without a test at the loop's head.
+    pub(crate) fn a_loop_headed_by_an_unguarded_send() -> SnapshotTree {
+        let root = method(
+            0,
+            0,
+            vec![
+                literal(15, 0),
+                send_to_self(14),
+                Instruction::BranchIfFalse {
+                    register: 14,
+                    target: 1,
+                },
+                Instruction::Return { register: 14 },
+            ],
+        );
+        unguarded(root, 1, answers_true())
+    }
+
+    /// `flag ifFalse: [r15 := 1]. r14 := self foo. ^r14`, its `foo`
+    /// inlined without a test where the two ways meet, which the branch
+    /// enters through a block of its own.
+    pub(crate) fn an_unguarded_send_where_two_ways_meet() -> SnapshotTree {
+        let root = method(
+            0,
+            1,
+            vec![
+                Instruction::BranchIfFalse {
+                    register: 0,
+                    target: 2,
+                },
+                literal(15, 1),
+                send_to_self(14),
+                Instruction::Return { register: 14 },
+            ],
+        );
+        unguarded(root, 2, answers_true())
+    }
+
+    /// The block the inlined scope's entry begins.
+    fn entry_block(graph: &Graph) -> BlockId {
+        let entries: Vec<BlockId> = (0..graph.blocks.len())
+            .map(BlockId::of_index)
+            .filter(|block| {
+                let block = graph.block(*block);
+                block.scope == ScopeId(1)
+                    && block
+                        .nodes
+                        .iter()
+                        .any(|node| matches!(node, Node::CurrentClass { .. }))
+            })
+            .collect();
+        let [entry] = entries[..] else {
+            panic!("one entry: {graph:#?}");
+        };
+        entry
+    }
+
+    /// The back edge to a loop's head that is an inlined scope's entry is
+    /// its sender's: the poll there leaves the frame before the send, the
+    /// scope's frame not laid on that pass.
+    #[test]
+    fn a_loop_headed_by_an_unguarded_inlined_send_polls_in_its_sender() {
+        let tree = a_loop_headed_by_an_unguarded_send();
+        let (plan, graph) = built(&tree);
+        assert_eq!(
+            plan.sites[&(ScopeId::ROOT, 1)].fall_through,
+            FallThrough::Unguarded
+        );
+        let entry = entry_block(&graph);
+        assert_eq!(graph.block(entry).taint_point, (ScopeId::ROOT, 1));
+        let polls: Vec<BlockId> = (0..graph.blocks.len())
+            .map(BlockId::of_index)
+            .filter(|block| {
+                crate::jit::optimizing::liveness::poll_target(&graph, *block) == Some(entry)
+            })
+            .collect();
+        let [poll] = polls[..] else {
+            panic!("one back edge to the entry: {graph:#?}");
+        };
+        assert_eq!(graph.block(poll).scope, ScopeId::ROOT);
+    }
+
+    /// The block on the way into an inlined scope's entry where two ways
+    /// meet is its sender's, and it, like the entry's, reads its sender's
+    /// leftover analysis at the send.
+    #[test]
+    fn an_edge_into_an_unguarded_entry_is_its_sender_s() {
+        let tree = an_unguarded_send_where_two_ways_meet();
+        let (_, graph) = built(&tree);
+        let entry = entry_block(&graph);
+        assert_eq!(graph.block(entry).taint_point, (ScopeId::ROOT, 2));
+        let edges: Vec<&crate::jit::optimizing::graph::Block> = graph
+            .block(entry)
+            .predecessors
+            .iter()
+            .map(|predecessor| graph.block(*predecessor))
+            .filter(|block| block.taint_point == (ScopeId::ROOT, 2))
+            .collect();
+        assert!(!edges.is_empty(), "{graph:#?}");
+        for edge in edges {
+            assert_eq!(edge.scope, ScopeId::ROOT);
+            assert!(edge
+                .nodes
+                .iter()
+                .all(|node| matches!(node, Node::FrameRead { .. })));
+        }
     }
 
     /// Every graph the inlining corpus's trees plan, speculating and not,

@@ -78,6 +78,11 @@ pub(crate) struct GraphScope {
     pub(crate) tainted_before: Vec<Vec<Range<u16>>>,
 }
 
+/// Why a physical register number fits a `u16`: the plan inlines a scope
+/// only where its every register does (`plan::Planner::take`).
+pub(crate) const FRAME_BOUND: &str =
+    "internal: an inlined scope's registers lie below u16::MAX, which the plan keeps";
+
 /// A header word of an inlined scope that is a binding of the allocation
 /// like a register's: written back before every interrupt point inside
 /// the scope, since the exit writes the header's other words only.
@@ -94,7 +99,9 @@ impl GraphScope {
             HeaderBinding::Receiver => 0,
             HeaderBinding::CurrentClass => 1,
         };
-        self.offset + self.argument_count + word
+        self.offset
+            .checked_add(self.argument_count + word)
+            .expect(FRAME_BOUND)
     }
 
     /// The physical registers of the header words the exit writes, past
@@ -104,8 +111,8 @@ impl GraphScope {
         if self.parent.is_none() {
             return 0..0;
         }
-        let header = self.offset + self.argument_count;
-        header + 2..header + HEADER_REGISTERS
+        let header = self.header_register(HeaderBinding::Receiver);
+        header + 2..header.checked_add(HEADER_REGISTERS).expect(FRAME_BOUND)
     }
 
     /// One past the highest physical register the scope's body names.
@@ -193,6 +200,12 @@ pub(crate) struct Block {
     /// The entry block a body whose first instruction is a loop's head is
     /// given holds no instruction and names 0 as well.
     pub(crate) program_counter: u32,
+    /// The scope and the instruction whose leftover analysis holds at the
+    /// block's top, which is also where a frame goes on that leaves at a
+    /// back edge to it: the block's own first instruction, but for the
+    /// block an inlined scope's entry begins -- the scope's frame is not
+    /// laid there yet -- whose point is its sender's send.
+    pub(crate) taint_point: (ScopeId, u32),
     pub(crate) phis: Vec<Phi>,
     pub(crate) nodes: Vec<Node>,
     pub(crate) end: End,
@@ -599,28 +612,13 @@ impl Graph {
     }
 
     /// The physical registers the leftover analysis taints at the top of
-    /// `block`: before its first instruction, or, for the block an inlined
-    /// scope's entry begins, before the send it is inlined at -- the
-    /// scope's frame is not laid yet. That block, or the one on the way
-    /// into it, is the scope's one block at its first instruction that no
-    /// block of the scope leads to: its sender enters it, and its own
-    /// loop back to that instruction enters the block after the entry.
+    /// `block`, at its `taint_point`.
     pub(crate) fn tainted_at_top(&self, block: BlockId) -> Vec<Range<u16>> {
-        let top = self.block(block);
         if self.scopes.is_empty() {
             return Vec::new();
         }
-        if let Some((sender, call)) = self.scope(top.scope).parent {
-            let entered = top.program_counter == 0
-                && top
-                    .predecessors
-                    .iter()
-                    .all(|predecessor| self.block(*predecessor).scope != top.scope);
-            if entered {
-                return tainted_at(&self.scopes, sender, call);
-            }
-        }
-        tainted_at(&self.scopes, top.scope, top.program_counter)
+        let (scope, program_counter) = self.block(block).taint_point;
+        tainted_at(&self.scopes, scope, program_counter)
     }
 
     /// `scope` and every scope it is inlined into, innermost first.

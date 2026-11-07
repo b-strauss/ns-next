@@ -618,6 +618,10 @@ mod tests {
         Block {
             scope: crate::jit::optimizing::graph::ScopeId::ROOT,
             program_counter,
+            taint_point: (
+                crate::jit::optimizing::graph::ScopeId::ROOT,
+                program_counter,
+            ),
             phis: Vec::new(),
             nodes,
             end,

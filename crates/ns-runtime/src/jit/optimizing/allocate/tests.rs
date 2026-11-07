@@ -761,3 +761,67 @@ fn every_inlined_allocation_verifies() {
     }
     assert!(chained > 0);
 }
+
+/// The poll on the back edge to a loop's head that is an unguarded
+/// inlined scope's entry names the sender alone, at the send, running it
+/// again: that pass has not laid the callee's frame yet.
+#[test]
+fn a_poll_into_an_unguarded_entry_names_its_sender_at_the_send() {
+    use crate::jit::optimizing::build::build_inlined;
+    use crate::jit::optimizing::build::inlining_tests::a_loop_headed_by_an_unguarded_send;
+    use crate::jit::optimizing::graph::ScopeId;
+    use crate::jit::optimizing::plan::plan;
+    use crate::jit::optimizing::Speculation;
+
+    let tree = a_loop_headed_by_an_unguarded_send();
+    let plan = plan(&tree, Speculation::Traps);
+    let graph = build_inlined(&tree, &plan, Speculation::Traps);
+    for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+        let (allocation, described) = allocate_and_describe(&graph, &Roles::of(abi));
+        assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
+        let polls: Vec<_> = allocation
+            .dirty_at
+            .iter()
+            .zip(&described.points)
+            .filter(|(point, _)| point.kind == PointKind::Poll)
+            .map(|(_, described)| described)
+            .collect();
+        let [poll] = polls[..] else {
+            panic!("one poll: {polls:?}");
+        };
+        let [root] = &poll.scopes[..] else {
+            panic!("the sender alone: {poll:?}");
+        };
+        assert_eq!(
+            (root.scope, root.program_counter, root.resumes),
+            (ScopeId::ROOT, 1, Resumes::Reexecute)
+        );
+    }
+}
+
+/// An unguarded inlined scope's entry where two ways meet, one through a
+/// block of its own, allocates and verifies: the builder, liveness and
+/// the replay read one leftover analysis at its top, its sender's.
+#[test]
+fn an_unguarded_entry_where_two_ways_meet_allocates_and_verifies() {
+    use crate::jit::optimizing::build::build_inlined;
+    use crate::jit::optimizing::build::inlining_tests::an_unguarded_send_where_two_ways_meet;
+    use crate::jit::optimizing::plan::plan;
+    use crate::jit::optimizing::Speculation;
+
+    let tree = an_unguarded_send_where_two_ways_meet();
+    for speculation in [Speculation::Traps, Speculation::None] {
+        let plan = plan(&tree, speculation);
+        let graph = build_inlined(&tree, &plan, speculation);
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let order = block_order(&graph);
+            let allocation = allocate(
+                &graph,
+                &crate::jit::optimizing::liveness::intervals_knowing(&graph, &order),
+                &Roles::of(abi),
+            );
+            let described = metadata(&graph, &allocation);
+            assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
+        }
+    }
+}

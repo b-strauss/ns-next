@@ -443,12 +443,11 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
 }
 
 /// The limits the inlining sweeps plan under: room for more of the
-/// corpus's callees than the standard method limit leaves, and a compile
-/// small enough that a sweep over every body stays quick.
+/// corpus's callees than the standard method limit leaves, under the
+/// standard compile limit.
 #[cfg(test)]
 pub(crate) const SWEEP_LIMITS: plan::Limits = plan::Limits {
     method: 200,
-    compile: 600,
     ..plan::Limits::STANDARD
 };
 

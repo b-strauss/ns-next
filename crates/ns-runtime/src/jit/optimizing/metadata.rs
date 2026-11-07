@@ -105,10 +105,14 @@ fn point_of(graph: &Graph, block: BlockId, kind: PointKind) -> (ScopeId, u32, Re
             };
             (*scope, *program_counter, resumes)
         }
+        // The loop's head runs again: where its block begins an inlined
+        // scope's entry, the send that scope is inlined at, whose frame
+        // the poll's exit leaves before the callee's is laid.
         PointKind::Poll => {
             let head = graph
                 .block(poll_target(graph, block).expect("internal: a poll's block jumps back"));
-            (head.scope, head.program_counter, Resumes::Reexecute)
+            let (scope, program_counter) = head.taint_point;
+            (scope, program_counter, Resumes::Reexecute)
         }
         // A trap runs its instruction again in the interpreter.
         PointKind::Trap { node: Some(node) } => {
@@ -580,17 +584,20 @@ fn interrupt(
     kind: PointKind,
     described: &InterruptPoint,
 ) -> Result<(), VerifyError> {
-    let (scope, program_counter, resumes) = point_of(graph, block, kind);
+    let (scope, program_counter, resumes) = stopped_at(graph, block, kind)?;
     if usize::try_from(program_counter)
         .ok()
         .is_none_or(|index| index >= graph.scope(scope).tainted_before.len())
     {
         return Err(VerifyError::Unaligned);
     }
-    if described.scopes != chain_at(graph, scope, program_counter, resumes) {
-        return Err(VerifyError::MetadataDisagrees { program_counter });
-    }
     let tainted_here = graph.tainted_at(scope, program_counter);
+    described_chain(
+        graph,
+        described,
+        (scope, program_counter, resumes),
+        &tainted_here,
+    )?;
     for register in 0..stopped.words.len() {
         let number = u16::try_from(register).expect("internal: a register number fits a u16");
         if tainted(&tainted_here, number) {
@@ -602,6 +609,107 @@ fn interrupt(
                 program_counter,
             });
         }
+    }
+    Ok(())
+}
+
+/// Where a frame stopped at an interrupt point stands, found from the
+/// graph's blocks and nodes alone, apart from the metadata's own reading
+/// (`point_of`): the scope of the point's block -- the frame laid there --
+/// at the frame node's or the trap's instruction, or, for a poll, at the
+/// loop head's, which is the send its scope is inlined at in that block's
+/// scope where the head begins an inlined scope.
+fn stopped_at(
+    graph: &Graph,
+    block: BlockId,
+    kind: PointKind,
+) -> Result<(ScopeId, u32, Resumes), VerifyError> {
+    let here = graph.block(block);
+    match kind {
+        PointKind::Frame { node } => match &here.nodes[node] {
+            Node::Frame {
+                program_counter,
+                instruction,
+                ..
+            } => Ok((
+                here.scope,
+                *program_counter,
+                if instruction.argument_slots().is_some() {
+                    Resumes::Deliver
+                } else {
+                    Resumes::Reexecute
+                },
+            )),
+            _ => Err(VerifyError::Unaligned),
+        },
+        PointKind::Poll => {
+            let head = graph.block(poll_target(graph, block).ok_or(VerifyError::Unaligned)?);
+            let (mut scope, mut program_counter) = (head.scope, head.program_counter);
+            while scope != here.scope {
+                let (sender, call) = graph.scope(scope).parent.ok_or(VerifyError::Unaligned)?;
+                scope = sender;
+                program_counter = call;
+            }
+            Ok((scope, program_counter, Resumes::Reexecute))
+        }
+        PointKind::Trap { node: Some(node) } => here.nodes[node]
+            .trap()
+            .map(|program_counter| (here.scope, program_counter, Resumes::Reexecute))
+            .ok_or(VerifyError::Unaligned),
+        PointKind::Trap { node: None } => graph
+            .end_trap(block)
+            .map(|program_counter| (here.scope, program_counter, Resumes::Reexecute))
+            .ok_or(VerifyError::Unaligned),
+    }
+}
+
+/// Checks that `described` names the chain of scopes a frame stopped at
+/// `stopped` stands in, innermost first, each delivering at the send its
+/// inner scope is inlined at, and among each scope's locations every
+/// register of its own that `tainted_here` leaves, in its frame word, and
+/// no other.
+fn described_chain(
+    graph: &Graph,
+    described: &InterruptPoint,
+    stopped: (ScopeId, u32, Resumes),
+    tainted_here: &[Range<u16>],
+) -> Result<(), VerifyError> {
+    let (_, program_counter, _) = stopped;
+    let disagrees = VerifyError::MetadataDisagrees { program_counter };
+    let mut expected = Some(stopped);
+    let mut end = graph.scope(stopped.0).top();
+    for scope in &described.scopes {
+        let Some((id, counter, resumes)) = expected else {
+            return Err(disagrees);
+        };
+        let owner = graph.scope(id);
+        if scope.scope != id
+            || scope.code_id != owner.code_id
+            || scope.program_counter != counter
+            || scope.resumes != resumes
+            || scope.offset != owner.offset
+        {
+            return Err(disagrees);
+        }
+        let mut listed = scope.locations.iter();
+        for register in owner.offset..end {
+            if tainted(tainted_here, register) {
+                continue;
+            }
+            if listed.next() != Some(&(register - owner.offset, Location::FrameWord)) {
+                return Err(disagrees);
+            }
+        }
+        if listed.next().is_some() {
+            return Err(disagrees);
+        }
+        end = owner.offset;
+        expected = owner
+            .parent
+            .map(|(sender, call)| (sender, call, Resumes::Deliver));
+    }
+    if expected.is_some() {
+        return Err(disagrees);
     }
     Ok(())
 }
