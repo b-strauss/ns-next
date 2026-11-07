@@ -43,6 +43,9 @@ pub(super) const CLOSURE_BITS: u64 = (Format::Closure as u64) << FORMAT_SHIFT;
 /// The format bits of a frame object's header: what the outer-local
 /// templates compare a captured frame's with, under `FORMAT_BITS`.
 pub(super) const FRAME_BITS: u64 = (Format::Frame as u64) << FORMAT_SHIFT;
+/// The format bits of a number's payload (`Format::SixtyFourBit`): what
+/// an inlined `==` tells a possible boxed `Float` by, under `FORMAT_BITS`.
+pub(super) const SIXTY_FOUR_BIT_BITS: u64 = (Format::SixtyFourBit as u64) << FORMAT_SHIFT;
 /// The header bits every code of a `ByteArray`'s format
 /// (`Format::AlignedBytes`, 24 to 31) sets and no other format's code
 /// sets all of, for machine code's test of a ByteArray.

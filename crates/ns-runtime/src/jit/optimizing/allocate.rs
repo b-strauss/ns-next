@@ -690,15 +690,10 @@ impl Allocator<'_> {
         let definition = use_position + 1;
         self.free_dead(use_position);
         let mut moves = Vec::new();
+        // A frame node's reads are its frame words, written back before it.
         let operands = match node {
-            Node::Copy { source, .. } | Node::CurrentClass { from: source, .. } => vec![*source],
-            Node::OwnSlotLoad { receiver, .. } => vec![*receiver],
-            Node::IntegerBinary { left, right, .. } => vec![*left, *right],
-            Node::FrameRead { .. }
-            | Node::Constant { .. }
-            | Node::Receiver { .. }
-            | Node::Frame { .. }
-            | Node::Overlay { .. } => Vec::new(),
+            Node::Frame { .. } => Vec::new(),
+            _ => node.uses(),
         };
         for operand in &operands {
             self.ensure_register(*operand, use_position, &operands, &mut moves);

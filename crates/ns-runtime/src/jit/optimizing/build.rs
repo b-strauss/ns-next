@@ -25,19 +25,35 @@
 //! the send's destination, where the returns meet in a phi. The pass then
 //! runs over that body as over any other, so every rule above holds of
 //! the physical frame.
+//!
+//! **Callees always inlined.** An arm whose callee the plan always
+//! inlines (`AlwaysInlined`) -- an accessor, a quick method, a lazy slot's
+//! getter, `==`, `class`, `SmallInteger` arithmetic and an `Array`'s or a
+//! `ByteArray`'s `at:` and `at:put:` -- is no scope: its step lies in its
+//! sender at the send (`Step::Always`), its simple nodes compute what the
+//! callee answers, and it binds the send's argument slots and destination
+//! as the interpreter's send leaves them. Every check such a callee makes
+//! -- a lazy slot unfilled, an index out of bounds, an object of another
+//! kind, an operand of no known answer -- is a trap that runs the send
+//! again in the interpreter, which decides it and raises its own error;
+//! so an arm with a check is expressed only in a copy that speculates,
+//! at a site that never trapped (`Laying::expressed`).
 
 use std::collections::HashMap;
 use std::ops::Range;
 
+use crate::builtins::primitive::{
+    BytePrimitive, CollectionPrimitive, IntegerPrimitive, ObjectPrimitive, Primitive,
+};
 use crate::bytecode::IntegerOperation;
-use crate::heap::Immediate;
-use crate::mixin::DispatchId;
+use crate::heap::{ApplicationIndex, Immediate};
+use crate::mixin::{DispatchId, QuickConstant};
 
 use super::graph::{
-    tainted_at, Block, BlockId, ClassStart, End, Graph, GraphScope, HeaderBinding, Node, Phi,
-    ScopeId, ValueId, ValueKind, FRAME_BOUND,
+    tainted_at, Block, BlockId, ClassStart, End, Graph, GraphScope, HeaderBinding, IndexedKind,
+    Node, Phi, ScopeId, ValueId, ValueKind, FRAME_BOUND,
 };
-use super::plan::{ArmPlan, FallThrough, InliningPlan};
+use super::plan::{AlwaysInlined, ArmPlan, FallThrough, InliningPlan};
 use super::snapshot::{Snapshot, SnapshotInstruction};
 use super::tree::SnapshotTree;
 use super::verify::immediate_dominators;
@@ -289,6 +305,8 @@ enum Kind {
     Enter,
     /// An inlined scope's return (`Step::Return`).
     InlinedReturn,
+    /// A callee always inlined (`Step::Always`).
+    Always,
 }
 
 /// The outcome of a Boolean test a branch instruction jumps for.
@@ -541,6 +559,51 @@ enum Step {
         slot_end: u16,
         continuation: usize,
     },
+    /// A callee always inlined at its sender's send: an arm of the send's
+    /// type-case, or the send itself where it is taken without a test.
+    Always(Box<AlwaysStep>),
+}
+
+/// A callee always inlined (`Step::Always`), every register physical: what
+/// it computes from the send's receiver and its arguments, read from
+/// their sources; the slots the send lays them on, bound to them as the
+/// interpreter's send leaves them; the send's destination; and the step of
+/// the instruction after the send, where it goes on.
+#[derive(Debug, Clone, PartialEq)]
+struct AlwaysStep {
+    expressed: Expressed,
+    receiver: ReceiverOf,
+    /// Each argument's slot and the sender's register it is in.
+    arguments: Vec<(u16, u16)>,
+    destination: u16,
+    continuation: usize,
+}
+
+/// What a callee always inlined computes, as the graph expresses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expressed {
+    /// A getter's load of its receiver's field.
+    FieldLoad { field: u32 },
+    /// A setter's store into its receiver's field.
+    FieldStore { field: u32 },
+    /// A lazy slot's getter: its field, unless it is `nil`.
+    LazyGetter { field: u32 },
+    /// A quick method's constant word.
+    Constant(u64),
+    /// `^self`.
+    Receiver,
+    /// `^` the argument at this position.
+    Parameter(usize),
+    /// `==`.
+    Identity,
+    /// `class`.
+    ClassOf,
+    /// `at:`.
+    IndexedLoad(IndexedKind),
+    /// `at:put:`.
+    IndexedStore(IndexedKind),
+    /// `SmallInteger` arithmetic or comparison.
+    Integer(IntegerOperation),
 }
 
 /// A step and where it comes from: its scope, and its program counter in
@@ -574,6 +637,9 @@ struct Flat<'snapshot> {
     /// step (`graph::tainted_at`).
     tainted: Vec<Vec<Range<u16>>>,
     register_count: usize,
+    /// The applications the arms always inlined were decided for
+    /// (`Graph::arm_applications`).
+    arm_applications: Vec<ApplicationIndex>,
 }
 
 impl<'snapshot> Flat<'snapshot> {
@@ -617,6 +683,7 @@ impl<'snapshot> Flat<'snapshot> {
                 })
                 .collect(),
             register_count,
+            arm_applications: Vec::new(),
         }
     }
 
@@ -658,6 +725,7 @@ impl<'snapshot> Flat<'snapshot> {
                 .collect(),
             entries: vec![usize::MAX; snapshots.len()],
             sends: HashMap::new(),
+            arm_applications: Vec::new(),
         };
         laying.lay_out();
         let Laying {
@@ -665,6 +733,7 @@ impl<'snapshot> Flat<'snapshot> {
             steps_of,
             entries,
             sends,
+            arm_applications,
             ..
         } = laying;
         let steps: Vec<FlatStep> = steps
@@ -692,7 +761,10 @@ impl<'snapshot> Flat<'snapshot> {
                         receiver,
                         arms: arms
                             .into_iter()
-                            .map(|(guard, callee)| (guard, entries[callee.0 as usize]))
+                            .map(|(guard, target)| match target {
+                                ArmTarget::Scope(callee) => (guard, entries[callee.0 as usize]),
+                                ArmTarget::Step(step) => (guard, step),
+                            })
                             .collect(),
                         fall_through: sent.then(|| sends[&(scope, program_counter)]),
                         site,
@@ -710,6 +782,11 @@ impl<'snapshot> Flat<'snapshot> {
                         slot_end,
                         continuation: steps_of[sender.0 as usize][call as usize + 1],
                     },
+                    Pending::Always(mut always) => {
+                        always.continuation =
+                            steps_of[scope.0 as usize][program_counter as usize + 1];
+                        Step::Always(always)
+                    }
                 };
                 FlatStep {
                     scope,
@@ -745,6 +822,7 @@ impl<'snapshot> Flat<'snapshot> {
             steps_of,
             tainted,
             register_count,
+            arm_applications,
         }
     }
 
@@ -801,7 +879,7 @@ enum Pending {
     },
     TypeCase {
         receiver: ReceiverOf,
-        arms: Vec<(DispatchId, ScopeId)>,
+        arms: Vec<(DispatchId, ArmTarget)>,
         sent: bool,
         site: u32,
     },
@@ -813,6 +891,22 @@ enum Pending {
         sender: ScopeId,
         call: u32,
     },
+    /// Its continuation not numbered yet: the step after its send's.
+    Always(Box<AlwaysStep>),
+}
+
+/// Where a type-case's arm goes: the entry of its callee's scope, or the
+/// step of its callee always inlined.
+enum ArmTarget {
+    Scope(ScopeId),
+    Step(usize),
+}
+
+/// An arm as it is laid out: its callee inlined as a scope, or always
+/// inlined at the send.
+enum LaidArm {
+    Scope(ScopeId),
+    Always(Box<AlwaysStep>),
 }
 
 /// What is left to lay out: a scope's instructions from one on, or the
@@ -831,12 +925,12 @@ enum Work {
 /// How a send the plan inlines is laid out.
 enum Lowered {
     /// Its one callee, taken without a test.
-    Unguarded(ScopeId),
+    Unguarded(LaidArm),
     /// A type-case over its arms' callees, falling through to the send
     /// itself if `sent`, to a trap otherwise.
     TypeCase {
         receiver: ReceiverOf,
-        arms: Vec<(DispatchId, ScopeId)>,
+        arms: Vec<(DispatchId, LaidArm)>,
         sent: bool,
     },
 }
@@ -854,6 +948,8 @@ struct Laying<'plan, 'snapshot> {
     entries: Vec<usize>,
     /// The step of each send a type-case falls through to.
     sends: HashMap<(ScopeId, u32), usize>,
+    /// The applications of the arms always inlined laid out, each once.
+    arm_applications: Vec<ApplicationIndex>,
 }
 
 impl Laying<'_, '_> {
@@ -904,10 +1000,16 @@ impl Laying<'_, '_> {
                             let pending = self.instruction(scope, program_counter);
                             self.steps.push((scope, program_counter, pending));
                         }
-                        Some(Lowered::Unguarded(callee)) => work.push(Work::Scope {
-                            scope: callee,
-                            program_counter: 0,
-                        }),
+                        Some(Lowered::Unguarded(LaidArm::Scope(callee))) => {
+                            work.push(Work::Scope {
+                                scope: callee,
+                                program_counter: 0,
+                            });
+                        }
+                        Some(Lowered::Unguarded(LaidArm::Always(always))) => {
+                            self.steps
+                                .push((scope, program_counter, Pending::Always(always)));
+                        }
                         Some(Lowered::TypeCase {
                             receiver,
                             arms,
@@ -922,9 +1024,29 @@ impl Laying<'_, '_> {
                                     program_counter,
                                 });
                             }
-                            for (_, callee) in arms.iter().rev() {
+                            // The arms always inlined lie right after the
+                            // type-case, in its arms' order; the scopes'
+                            // entries follow them.
+                            let mut next_step = self.steps.len() + 1;
+                            let mut targets = Vec::with_capacity(arms.len());
+                            let mut always_steps = Vec::new();
+                            let mut callees = Vec::new();
+                            for (guard, arm) in arms {
+                                match arm {
+                                    LaidArm::Scope(callee) => {
+                                        targets.push((guard, ArmTarget::Scope(callee)));
+                                        callees.push(callee);
+                                    }
+                                    LaidArm::Always(always) => {
+                                        targets.push((guard, ArmTarget::Step(next_step)));
+                                        next_step += 1;
+                                        always_steps.push(always);
+                                    }
+                                }
+                            }
+                            for callee in callees.into_iter().rev() {
                                 work.push(Work::Scope {
-                                    scope: *callee,
+                                    scope: callee,
                                     program_counter: 0,
                                 });
                             }
@@ -933,11 +1055,15 @@ impl Laying<'_, '_> {
                                 program_counter,
                                 Pending::TypeCase {
                                     receiver,
-                                    arms,
+                                    arms: targets,
                                     sent,
                                     site,
                                 },
                             ));
+                            for always in always_steps {
+                                self.steps
+                                    .push((scope, program_counter, Pending::Always(always)));
+                            }
                         }
                     }
                 }
@@ -947,26 +1073,12 @@ impl Laying<'_, '_> {
 
     /// How the send at `program_counter` of `scope` is laid out, if the
     /// plan inlines it and the graph expresses its arms: an arm always
-    /// inlined is not expressed yet, so a site with one falls through to
-    /// its send; a lexical send past depth 0, whose receiver the walk out
-    /// to its enclosing object finds, a frame node's, is sent.
-    fn lowered(&self, scope: ScopeId, program_counter: u32) -> Option<Lowered> {
+    /// inlined the graph does not express (`expressed`) is not taken, so a
+    /// site with one falls through to its send; a lexical send past depth
+    /// 0, whose receiver the walk out to its enclosing object finds, a
+    /// frame node's, is sent.
+    fn lowered(&mut self, scope: ScopeId, program_counter: u32) -> Option<Lowered> {
         let site = self.plan.sites.get(&(scope, program_counter))?;
-        let mut arms = Vec::with_capacity(site.arms.len());
-        for (guard, _, arm) in &site.arms {
-            if let ArmPlan::Inline { callee } = arm {
-                if self.plan.scopes[callee.0 as usize].block_of.is_none() {
-                    arms.push((*guard, *callee));
-                }
-            }
-        }
-        if arms.is_empty() {
-            return None;
-        }
-        let every_arm = arms.len() == site.arms.len();
-        if site.fall_through == FallThrough::Unguarded {
-            return every_arm.then(|| Lowered::Unguarded(arms[0].1));
-        }
         let offset = self.graph_scopes[scope.0 as usize].offset;
         let instruction = &self.snapshots[scope.0 as usize].instructions[program_counter as usize];
         let receiver = match instruction {
@@ -975,17 +1087,158 @@ impl Laying<'_, '_> {
             }
             | SnapshotInstruction::SendInlinable {
                 receiver_register, ..
-            } => ReceiverOf::Register(physical(offset, *receiver_register)),
-            SnapshotInstruction::SendLexical { depth: 0, .. } => ReceiverOf::SelfOf(scope),
-            _ => return None,
+            } => Some(ReceiverOf::Register(physical(offset, *receiver_register))),
+            // A lexical send at depth 0 and a `super` send are the sender's
+            // own receiver's.
+            SnapshotInstruction::SendLexical { depth: 0, .. }
+            | SnapshotInstruction::SendSuper { .. } => Some(ReceiverOf::SelfOf(scope)),
+            _ => None,
         };
-        Some(Lowered::TypeCase {
+        let mut arms = Vec::with_capacity(site.arms.len());
+        let mut applications = Vec::new();
+        for (guard, application, arm) in &site.arms {
+            match arm {
+                ArmPlan::Inline { callee } => {
+                    if self.plan.scopes[callee.0 as usize].block_of.is_none() {
+                        arms.push((*guard, LaidArm::Scope(*callee)));
+                    }
+                }
+                ArmPlan::Always(always) => {
+                    let Some(receiver) = receiver else {
+                        continue;
+                    };
+                    if let Some(step) = self.always_step(scope, program_counter, *always, receiver)
+                    {
+                        arms.push((*guard, LaidArm::Always(Box::new(step))));
+                        applications.push(*application);
+                    }
+                }
+            }
+        }
+        if arms.is_empty() {
+            return None;
+        }
+        let every_arm = arms.len() == site.arms.len();
+        let lowered = if site.fall_through == FallThrough::Unguarded {
+            if !every_arm {
+                return None;
+            }
+            Lowered::Unguarded(arms.pop().map(|(_, arm)| arm)?)
+        } else {
+            // Only a public send, or a lexical one at depth 0, tests its
+            // receiver.
+            let receiver = receiver
+                .filter(|_| !matches!(instruction, SnapshotInstruction::SendSuper { .. }))?;
+            Lowered::TypeCase {
+                receiver,
+                arms,
+                sent: !(site.fall_through == FallThrough::Trap
+                    && every_arm
+                    && self.speculation == Speculation::Traps),
+            }
+        };
+        for application in applications {
+            if !self.arm_applications.contains(&application) {
+                self.arm_applications.push(application);
+            }
+        }
+        Some(lowered)
+    }
+
+    /// The step of `always`, the callee of the send at `program_counter`
+    /// of `scope` whose receiver is `receiver`, if the graph expresses it.
+    fn always_step(
+        &self,
+        scope: ScopeId,
+        program_counter: u32,
+        always: AlwaysInlined,
+        receiver: ReceiverOf,
+    ) -> Option<AlwaysStep> {
+        let offset = self.graph_scopes[scope.0 as usize].offset;
+        let snapshot = self.snapshots[scope.0 as usize];
+        let sent = &snapshot.instructions[program_counter as usize];
+        let (base, sources) = sent.argument_slots()?;
+        let expressed = self.expressed(snapshot, program_counter, always, sources.len())?;
+        Some(AlwaysStep {
+            expressed,
             receiver,
-            arms,
-            sent: !(site.fall_through == FallThrough::Trap
-                && every_arm
-                && self.speculation == Speculation::Traps),
+            arguments: (0_u16..)
+                .zip(sources)
+                .map(|(position, source)| {
+                    (
+                        physical(offset, base.checked_add(position).expect(FRAME_BOUND)),
+                        physical(offset, *source),
+                    )
+                })
+                .collect(),
+            destination: physical(offset, sent.register_written()?),
+            continuation: usize::MAX,
         })
+    }
+
+    /// What the graph expresses of `always`, sent at `program_counter` of
+    /// `snapshot` with `argument_count` arguments; `None` where the graph
+    /// sends it. A callee with a check -- one whose answer the operands may
+    /// leave to the interpreter -- is expressed only in a copy that
+    /// speculates, at a site that never trapped: a copy that speculates
+    /// nothing never traps, and a check that failed at the site once would
+    /// fail again. A builtin class's accessor answers what the heap's
+    /// tables name, which no simple node reads, and `^<parameter> value`
+    /// and `cull:` activate a block, a scope of its own: both are sent.
+    /// `SmallInteger` arithmetic is not expressed at a fast path's
+    /// fallback send, where the same test already failed.
+    fn expressed(
+        &self,
+        snapshot: &Snapshot,
+        program_counter: u32,
+        always: AlwaysInlined,
+        argument_count: usize,
+    ) -> Option<Expressed> {
+        let index = program_counter as usize;
+        let checks = self.speculation == Speculation::Traps
+            && snapshot
+                .sites
+                .get(index)
+                .copied()
+                .flatten()
+                .is_some_and(|facts| !facts.trapped);
+        let fixed = |field: u32| field < FIXED_FIELD_LIMIT;
+        let expressed = match always {
+            AlwaysInlined::SlotLoad { field } if fixed(field) && argument_count == 0 => {
+                Expressed::FieldLoad { field }
+            }
+            AlwaysInlined::SlotStore { field } if fixed(field) && argument_count == 1 => {
+                Expressed::FieldStore { field }
+            }
+            AlwaysInlined::LazyGetter { field }
+                if checks && fixed(field) && argument_count == 0 =>
+            {
+                Expressed::LazyGetter { field }
+            }
+            AlwaysInlined::Constant(constant) => Expressed::Constant(match constant {
+                QuickConstant::True => Immediate::boolean(true).bits(),
+                QuickConstant::False => Immediate::boolean(false).bits(),
+                QuickConstant::Nil => Immediate::NIL.bits(),
+            }),
+            AlwaysInlined::Receiver => Expressed::Receiver,
+            AlwaysInlined::Parameter(position) if usize::from(position) < argument_count => {
+                Expressed::Parameter(usize::from(position))
+            }
+            AlwaysInlined::Primitive(primitive) => {
+                return expressed_primitive(primitive, argument_count, checks).filter(|expressed| {
+                    !matches!(expressed, Expressed::Integer(_))
+                        || !is_fallback_send(snapshot, program_counter)
+                })
+            }
+            AlwaysInlined::SlotLoad { .. }
+            | AlwaysInlined::SlotStore { .. }
+            | AlwaysInlined::LazyGetter { .. }
+            | AlwaysInlined::Parameter(_)
+            | AlwaysInlined::BuiltinClass(_)
+            | AlwaysInlined::ValueOfParameter(_)
+            | AlwaysInlined::CullParameter(_) => return None,
+        };
+        Some(expressed)
     }
 
     /// The instruction at `program_counter` of `scope` as a step: its
@@ -1116,6 +1369,54 @@ impl Laying<'_, '_> {
             ],
         }
     }
+}
+
+/// What the graph expresses of the leaf `primitive` sent with
+/// `argument_count` arguments, `checks` saying whether a callee with a
+/// check is expressed (`Laying::expressed`): only `class` has none.
+fn expressed_primitive(
+    primitive: Primitive,
+    argument_count: usize,
+    checks: bool,
+) -> Option<Expressed> {
+    let expressed = match (primitive, argument_count) {
+        (Primitive::Object(ObjectPrimitive::Class), 0) => return Some(Expressed::ClassOf),
+        (Primitive::Object(ObjectPrimitive::Identical), 1) => Expressed::Identity,
+        (Primitive::Collection(CollectionPrimitive::ElementAt), 1) => {
+            Expressed::IndexedLoad(IndexedKind::Array)
+        }
+        (Primitive::Collection(CollectionPrimitive::ElementAtPut), 2) => {
+            Expressed::IndexedStore(IndexedKind::Array)
+        }
+        (Primitive::Bytes(BytePrimitive::ElementAt), 1) => {
+            Expressed::IndexedLoad(IndexedKind::ByteArray)
+        }
+        (Primitive::Bytes(BytePrimitive::ElementAtPut), 2) => {
+            Expressed::IndexedStore(IndexedKind::ByteArray)
+        }
+        (Primitive::Integer(integer), 1) => Expressed::Integer(match integer {
+            IntegerPrimitive::Add => IntegerOperation::Add,
+            IntegerPrimitive::Subtract => IntegerOperation::Subtract,
+            IntegerPrimitive::Multiply => IntegerOperation::Multiply,
+            IntegerPrimitive::FloorDivide => IntegerOperation::FloorDivide,
+            IntegerPrimitive::Less => IntegerOperation::Less,
+            IntegerPrimitive::Greater => IntegerOperation::Greater,
+            IntegerPrimitive::LessOrEqual => IntegerOperation::LessOrEqual,
+            IntegerPrimitive::GreaterOrEqual => IntegerOperation::GreaterOrEqual,
+            IntegerPrimitive::Equal => IntegerOperation::Equal,
+            _ => return None,
+        }),
+        _ => return None,
+    };
+    checks.then_some(expressed)
+}
+
+/// Whether the send at `program_counter` of `snapshot` is an integer fast
+/// path's fallback.
+fn is_fallback_send(snapshot: &Snapshot, program_counter: u32) -> bool {
+    snapshot.instructions.iter().any(|instruction| {
+        matches!(instruction, SnapshotInstruction::IntegerBinary { target, .. } if *target == program_counter)
+    })
 }
 
 /// `instruction` of a scope at `offset`, its registers numbered
@@ -1737,6 +2038,7 @@ impl<'flat> Builder<'flat> {
             Step::TypeCase { .. } => Kind::TypeCase,
             Step::Enter(_) => Kind::Enter,
             Step::Return { .. } => Kind::InlinedReturn,
+            Step::Always(_) => Kind::Always,
         }
     }
 
@@ -1759,10 +2061,11 @@ impl<'flat> Builder<'flat> {
                 .all(|block| block.phis.iter().all(|phi| !phi.inputs.contains(&UNFILLED))),
             "internal: every back edge filled its head's phis"
         );
-        Ok(Graph::with_scopes(
-            self.blocks,
-            self.flat.graph_scopes.clone(),
-        ))
+        let mut graph = Graph::with_scopes(self.blocks, self.flat.graph_scopes.clone());
+        graph
+            .arm_applications
+            .clone_from(&self.flat.arm_applications);
+        Ok(graph)
     }
 
     /// The blocks, each with its predecessors and whether it heads a
@@ -2504,6 +2807,153 @@ impl<'flat> Builder<'flat> {
                 self.overlay(block, state, ranges);
                 None
             }
+            Kind::Always => {
+                let Step::Always(always) = &step.step else {
+                    unreachable!("internal: an always-inlined callee's kind is its step's");
+                };
+                self.always(block, state, always, program_counter);
+                None
+            }
+        }
+    }
+
+    /// A callee always inlined (`AlwaysStep`) at the send at
+    /// `program_counter`: its receiver and arguments read, its nodes --
+    /// every check among them before anything is bound, so that a trap
+    /// leaves the frame as it was before the send -- then the send's
+    /// argument slots bound to the arguments and its destination to the
+    /// answer, as the interpreter's send leaves them.
+    fn always(
+        &mut self,
+        block: usize,
+        state: &mut State,
+        always: &AlwaysStep,
+        program_counter: u32,
+    ) {
+        let receiver = self.receiver_value(block, state, always.receiver);
+        let arguments: Vec<ValueId> = always
+            .arguments
+            .iter()
+            .map(|(_, source)| self.read(block, state, *source))
+            .collect();
+        let argument = |position: usize| arguments[position];
+        // A setter's store, which checks nothing, laid after the bindings.
+        let mut store = None;
+        let answer = match always.expressed {
+            Expressed::FieldLoad { field } => {
+                let value = self.new_value(None);
+                self.blocks[block].nodes.push(Node::FieldLoad {
+                    value,
+                    object: receiver,
+                    field,
+                });
+                value
+            }
+            Expressed::LazyGetter { field } => {
+                let value = self.new_value(None);
+                let nodes = &mut self.blocks[block].nodes;
+                nodes.push(Node::FieldLoad {
+                    value,
+                    object: receiver,
+                    field,
+                });
+                nodes.push(Node::TrapIfNil {
+                    value,
+                    program_counter,
+                });
+                value
+            }
+            Expressed::FieldStore { field } => {
+                store = Some(Node::FieldStore {
+                    object: receiver,
+                    field,
+                    source: argument(0),
+                });
+                receiver
+            }
+            Expressed::Constant(word) => {
+                let value = self.new_value(None);
+                self.blocks[block]
+                    .nodes
+                    .push(Node::Constant { value, word });
+                value
+            }
+            Expressed::Receiver => receiver,
+            Expressed::Parameter(position) => argument(position),
+            Expressed::Identity => {
+                let value = self.new_value(None);
+                self.blocks[block].nodes.push(Node::IdentityCompare {
+                    value,
+                    left: receiver,
+                    right: argument(0),
+                    program_counter,
+                });
+                value
+            }
+            Expressed::ClassOf => {
+                let value = self.new_value(None);
+                self.blocks[block].nodes.push(Node::ClassOf {
+                    value,
+                    object: receiver,
+                });
+                value
+            }
+            Expressed::IndexedLoad(kind) => {
+                let value = self.new_value(None);
+                self.blocks[block].nodes.push(Node::IndexedLoad {
+                    kind,
+                    value,
+                    object: receiver,
+                    index: argument(0),
+                    program_counter,
+                });
+                value
+            }
+            Expressed::IndexedStore(kind) => {
+                self.blocks[block].nodes.push(Node::IndexedStore {
+                    kind,
+                    object: receiver,
+                    index: argument(0),
+                    source: argument(1),
+                    program_counter,
+                });
+                argument(1)
+            }
+            Expressed::Integer(operation) => {
+                let value = self.new_value(None);
+                self.blocks[block].nodes.push(Node::IntegerBinary {
+                    operation,
+                    program_counter,
+                    destination_register: always.destination,
+                    value,
+                    left: receiver,
+                    right: argument(0),
+                    fallback: None,
+                });
+                self.bind(state, always.destination, value);
+                value
+            }
+        };
+        let bindings = always
+            .arguments
+            .iter()
+            .map(|(slot, _)| *slot)
+            .zip(arguments.iter().copied())
+            .chain([(always.destination, answer)]);
+        for (register, value) in bindings.collect::<Vec<_>>() {
+            self.blocks[block].nodes.push(Node::Copy {
+                destination_register: register,
+                source: value,
+            });
+            self.bind(state, register, value);
+        }
+        // A store with no check may follow the bindings, no interrupt point
+        // between: so the receiver it answers -- a value of the header,
+        // bound to no register before -- crosses the barrier's leaf call
+        // bound to the destination, whose frame word the allocation can
+        // keep it in if no register that survives the call is free.
+        if let Some(store) = store {
+            self.blocks[block].nodes.push(store);
         }
     }
 
@@ -2565,6 +3015,11 @@ fn step_reads(flat: &Flat<'_>, step: &FlatStep, choice: Choice) -> Vec<u16> {
             reads
         }
         Step::Return { source, .. } => vec![*source],
+        Step::Always(always) => {
+            let mut reads = receiver_reads(flat, always.receiver);
+            reads.extend(always.arguments.iter().map(|(_, source)| *source));
+            reads
+        }
     }
 }
 
@@ -2595,6 +3050,12 @@ fn step_writes(step: &FlatStep, choice: Choice) -> Vec<u16> {
             written
         }
         Step::Return { destination, .. } => vec![*destination],
+        Step::Always(always) => always
+            .arguments
+            .iter()
+            .map(|(slot, _)| *slot)
+            .chain([always.destination])
+            .collect(),
     }
 }
 
@@ -2654,6 +3115,15 @@ fn edges_of(flat: &Flat<'_>, index: usize, choice: Choice) -> Edges {
             target: None,
             others: Vec::new(),
             ends_block: true,
+            starts_block: false,
+        },
+        // An arm goes on after its send, where the type-case's ways meet;
+        // a callee taken without a test lies where the send stands.
+        Step::Always(always) => Edges {
+            next: Some(always.continuation),
+            target: None,
+            others: Vec::new(),
+            ends_block: false,
             starts_block: false,
         },
     }
@@ -4053,7 +4523,8 @@ pub(crate) mod inlining_tests {
     use crate::bytecode::{CallSite, Instruction, Literal};
     use crate::heap::{CodeId, Immediate};
     use crate::jit::optimizing::graph::{
-        BlockId, Definition, End, Graph, HeaderBinding, Node, ScopeId, ValueId,
+        BlockId, Definition, End, Graph, HeaderBinding, IndexedKind, Node, ScopeId, ValueId,
+        ValueKind,
     };
     use crate::jit::optimizing::plan::{plan, plan_with, ArmPlan, FallThrough, InliningPlan};
     use crate::jit::optimizing::snapshot::{Snapshot, SnapshotInstruction};
@@ -4756,12 +5227,351 @@ pub(crate) mod inlining_tests {
         }
     }
 
+    /// A body for each kind of callee always inlined, each run once on the
+    /// receivers it is inlined for: a slot's getter and setter and a lazy
+    /// slot's getter, a quick method, `==`, `class` and an `Array`'s
+    /// `at:put:`.
+    const ALWAYS_INLINED: &str = indoc! {"
+        class AlwaysInlined = () (
+          class Point = (|
+            public x ::= 3.
+          |) (
+            lazy public cached = 4.
+          )
+          public read: point = (
+            ^point x
+          )
+          public write: point = (
+            ^point x: 5
+          )
+          public cache: point = (
+            ^point cached
+          )
+          public negate: flag = (
+            ^flag not
+          )
+          public same: thing = (
+            ^thing == nil
+          )
+          public classOfSelf = (
+            ^self class
+          )
+          public put: elements = (
+            ^elements at: 2 put: 7
+          )
+          public run = (
+            | point = Point new. |
+            self read: point.
+            self write: point.
+            self cache: point.
+            self negate: true.
+            self same: point.
+            self classOfSelf.
+            self put: (Array new: 3).
+            ^0
+          )
+        )
+    "};
+
+    /// The graph of `selector`'s body after one run of `ALWAYS_INLINED`,
+    /// the one send of `sent` in it, and the block its type-case's one arm
+    /// enters.
+    fn always_inlined(selector: &str, sent: &str) -> (SnapshotTree, Graph, u32, BlockId) {
+        let tree = tree_of_run(ALWAYS_INLINED, selector);
+        let (plan, graph) = built(&tree);
+        let send = send_of(&tree.root, sent);
+        let planned = &plan.sites[&(ScopeId::ROOT, send)];
+        assert!(
+            matches!(planned.arms[..], [(_, _, ArmPlan::Always(_))]),
+            "{planned:?}"
+        );
+        let End::TypeCase { arms, .. } = type_case(&graph, ScopeId::ROOT, send) else {
+            unreachable!();
+        };
+        let [(_, arm)] = arms[..] else {
+            panic!("one arm: {graph:#?}");
+        };
+        (tree, graph, send, arm)
+    }
+
+    /// The type-case's receiver at the root's send at `program_counter`.
+    fn tested(graph: &Graph, program_counter: u32) -> ValueId {
+        let End::TypeCase { receiver, .. } = type_case(graph, ScopeId::ROOT, program_counter)
+        else {
+            unreachable!();
+        };
+        *receiver
+    }
+
+    /// Whether `value` is the type-case's receiver `tested`: the very
+    /// value, or a read of the frame word it was read from, which a block
+    /// of its own reads again.
+    fn is_receiver(graph: &Graph, value: ValueId, tested: ValueId) -> bool {
+        value == tested
+            || matches!(
+                (graph.definition(value), graph.definition(tested)),
+                (
+                    Definition::Node(Node::FrameRead { register, .. }),
+                    Definition::Node(Node::FrameRead { register: other, .. }),
+                ) if register == other
+            )
+    }
+
+    /// The field the site of the root's send at `program_counter` cached
+    /// its accessor at.
+    fn cached_field(tree: &SnapshotTree, program_counter: u32) -> u32 {
+        let site = tree.root.sites[program_counter as usize]
+            .expect("a site")
+            .site;
+        match &tree.sites[&(tree.root.code_id, site)].arms[..] {
+            [(_, CalleeFacts::Slot { field, .. })] => *field,
+            other => panic!("one accessor: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_accessor_arm_is_a_field_load() {
+        let (tree, graph, send, arm) = always_inlined("read:", "x");
+        let Definition::Node(Node::FieldLoad { object, field, .. }) =
+            graph.definition(returned(&graph))
+        else {
+            panic!("the getter's load: {graph:#?}");
+        };
+        assert!(is_receiver(&graph, *object, tested(&graph, send)));
+        assert_eq!(*field, cached_field(&tree, send));
+        // The field is the arm's application's layout's, which the copy
+        // relies on.
+        let site = tree.root.sites[send as usize].expect("a site").site;
+        let [(receiver, _)] = &tree.sites[&(tree.root.code_id, site)].arms[..] else {
+            panic!("one arm");
+        };
+        assert_eq!(graph.arm_applications, vec![receiver.application]);
+        // The arm is its sender's, at the send: no scope, no frame node.
+        assert_eq!(graph.block(arm).scope, ScopeId::ROOT);
+        assert_eq!(graph.scopes.len(), 1);
+        assert!(graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .all(|node| !matches!(node, Node::Frame { .. })));
+    }
+
+    #[test]
+    fn a_setter_arm_is_a_field_store_answering_its_receiver() {
+        let (tree, graph, send, _) = always_inlined("write:", "x:");
+        let stores: Vec<(ValueId, u32, ValueId)> = graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .filter_map(|node| match node {
+                Node::FieldStore {
+                    object,
+                    field,
+                    source,
+                } => Some((*object, *field, *source)),
+                _ => None,
+            })
+            .collect();
+        let [(object, field, source)] = stores[..] else {
+            panic!("one store: {graph:#?}");
+        };
+        assert!(is_receiver(&graph, object, tested(&graph, send)));
+        assert_eq!(field, cached_field(&tree, send));
+        assert!(matches!(
+            graph.definition(source),
+            Definition::Node(Node::Constant { word, .. })
+                if *word == Immediate::small_integer(5).expect("small").bits()
+        ));
+        assert_eq!(returned(&graph), object, "a setter answers its receiver");
+        assert!(graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .any(|node| node.calls_leaf()));
+    }
+
+    #[test]
+    fn a_quick_method_arm_answers_its_constant() {
+        let (_, graph, _, _) = always_inlined("negate:", "not");
+        assert!(matches!(
+            graph.definition(returned(&graph)),
+            Definition::Node(Node::Constant { word, .. })
+                if *word == Immediate::boolean(false).bits()
+        ));
+    }
+
+    #[test]
+    fn a_lazy_getter_arm_tests_and_loads() {
+        let (_, graph, send, arm) = always_inlined("cache:", "cached");
+        let value = returned(&graph);
+        let Definition::Node(Node::FieldLoad { object, .. }) = graph.definition(value) else {
+            panic!("the lazy slot's load: {graph:#?}");
+        };
+        assert!(is_receiver(&graph, *object, tested(&graph, send)));
+        // An unfilled slot runs the getter again in the interpreter.
+        assert!(graph.block(arm).nodes.iter().any(|node| matches!(
+            node,
+            Node::TrapIfNil { value: tested_value, program_counter }
+                if *tested_value == value && *program_counter == send
+        )));
+    }
+
+    #[test]
+    fn identity_compare_answers_a_boolean_of_known_kind() {
+        let (_, graph, send, _) = always_inlined("same:", "==");
+        let value = returned(&graph);
+        let Definition::Node(Node::IdentityCompare {
+            left,
+            program_counter,
+            ..
+        }) = graph.definition(value)
+        else {
+            panic!("the identity: {graph:#?}");
+        };
+        assert!(is_receiver(&graph, *left, tested(&graph, send)));
+        assert_eq!(*program_counter, send);
+        assert_eq!(graph.kind(value), ValueKind::Boolean);
+    }
+
+    #[test]
+    fn a_class_arm_is_a_class_of_its_receiver() {
+        let (_, graph, send, _) = always_inlined("classOfSelf", "class");
+        let Definition::Node(Node::ClassOf { object, .. }) = graph.definition(returned(&graph))
+        else {
+            panic!("the class: {graph:#?}");
+        };
+        // `class` is protected, so its receiver is `self`, read afresh.
+        assert!(
+            is_receiver(&graph, *object, tested(&graph, send))
+                || matches!(
+                    graph.definition(*object),
+                    Definition::Node(Node::Receiver { .. })
+                ),
+            "{graph:#?}"
+        );
+    }
+
+    #[test]
+    fn an_array_at_put_arm_stores_once_its_checks_pass_and_traps_at_the_send() {
+        let (_, graph, send, _) = always_inlined("put:", "at:put:");
+        let stores: Vec<&Node> = graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .filter(|node| matches!(node, Node::IndexedStore { .. }))
+            .collect();
+        let [Node::IndexedStore {
+            kind,
+            object,
+            source,
+            program_counter,
+            ..
+        }] = stores[..]
+        else {
+            panic!("one store: {graph:#?}");
+        };
+        assert_eq!(*kind, IndexedKind::Array);
+        assert!(is_receiver(&graph, *object, tested(&graph, send)));
+        assert_eq!(*program_counter, send);
+        assert_eq!(returned(&graph), *source, "`at:put:` answers the element");
+    }
+
+    /// A lexical send to `self`, whose receiver the copy knows, takes its
+    /// accessor without a test, right where the send stands, at the field
+    /// of the application the site cached.
+    #[test]
+    fn an_accessor_taken_without_a_test_is_a_field_load_where_the_send_stands() {
+        let mut root = method(
+            0,
+            0,
+            vec![send_to_self(14), Instruction::Return { register: 14 }],
+        );
+        ran_site(&mut root, 0, 0);
+        let code_id = root.code_id;
+        let mut tree = test_tree(
+            root,
+            vec![(
+                code_id,
+                0,
+                vec![(
+                    test_receiver(1, 1, 0),
+                    CalleeFacts::Slot {
+                        field: 3,
+                        kind: crate::mixin::AccessorKind::Getter,
+                        level: crate::heap::ApplicationIndex::from_raw(1),
+                    },
+                )],
+            )],
+            Vec::new(),
+        );
+        tree.root_receiver = Some(test_receiver(1, 1, 0));
+        tree.root_entered = Some(test_receiver(1, 1, 0));
+        let (plan, graph) = built(&tree);
+        assert_eq!(
+            plan.sites[&(ScopeId::ROOT, 0)].fall_through,
+            FallThrough::Unguarded
+        );
+        assert!(graph
+            .blocks
+            .iter()
+            .all(|block| !matches!(block.end, End::TypeCase { .. })));
+        let Definition::Node(Node::FieldLoad { object, field, .. }) =
+            graph.definition(returned(&graph))
+        else {
+            panic!("the getter's load: {graph:#?}");
+        };
+        assert_eq!(*field, 3);
+        assert!(matches!(
+            graph.definition(*object),
+            Definition::Node(Node::Receiver { .. })
+        ));
+        assert_eq!(
+            graph.arm_applications,
+            vec![crate::heap::ApplicationIndex::from_raw(1)]
+        );
+    }
+
+    /// A copy that speculates nothing never traps: no arm with a check is
+    /// expressed, and its site is the send.
+    #[test]
+    fn without_speculation_an_arm_with_a_check_is_its_send() {
+        let tree = tree_of_run(ALWAYS_INLINED, "put:");
+        let plan = plan(&tree, Speculation::None);
+        let graph = build_inlined(&tree, &plan, Speculation::None);
+        assert_eq!(verify(&graph), Ok(()));
+        assert!(graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .all(|node| node.trap().is_none()));
+    }
+
+    /// A site that trapped sends its arms with a check: the check failed
+    /// there once, and would again.
+    #[test]
+    fn after_a_trap_an_arm_with_a_check_is_its_send() {
+        let mut tree = tree_of_run(ALWAYS_INLINED, "cache:");
+        let send = send_of(&tree.root, "cached");
+        tree.root.sites[send as usize]
+            .as_mut()
+            .expect("a site")
+            .trapped = true;
+        let (_, graph) = built(&tree);
+        assert!(graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .all(|node| !matches!(node, Node::TrapIfNil { .. } | Node::FieldLoad { .. })));
+    }
+
     /// Every graph the inlining corpus's trees plan, speculating and not,
     /// verifies, every frame node's registers its own scope's.
     #[test]
     fn every_inlined_graph_verifies() {
         let mut inlined = 0;
         let mut type_cases = 0;
+        // Each kind of node an arm always inlined becomes.
+        let mut always = [0; 5];
         for tree in inlining_corpus() {
             for speculation in [Speculation::Traps, Speculation::None] {
                 let plan = plan_with(&tree, &SWEEP_LIMITS, speculation);
@@ -4779,8 +5589,20 @@ pub(crate) mod inlining_tests {
                     .iter()
                     .filter(|block| matches!(block.end, End::TypeCase { .. }))
                     .count();
+                for node in graph.blocks.iter().flat_map(|block| &block.nodes) {
+                    let kind = match node {
+                        Node::FieldLoad { .. } => 0,
+                        Node::FieldStore { .. } => 1,
+                        Node::ClassOf { .. } => 2,
+                        Node::IdentityCompare { .. } => 3,
+                        Node::IndexedStore { .. } => 4,
+                        _ => continue,
+                    };
+                    always[kind] += 1;
+                }
             }
         }
         assert!(inlined > 0 && type_cases > 0);
+        assert!(always.iter().all(|count| *count > 0), "{always:?}");
     }
 }

@@ -1098,6 +1098,28 @@ impl MacroAssembler {
         );
     }
 
+    /// Stores `value` into field `index` of the object `holder` names,
+    /// through the write barrier (`store_with_barrier`), with no check:
+    /// for optimized code's setter, whose receiver's application, which
+    /// its type-case or its scope vouches for, has the field
+    /// (`Node::FieldStore`). Clobbers what `store_with_barrier` does.
+    pub(crate) fn store_field_with_barrier(
+        &mut self,
+        holder: Register,
+        index: u32,
+        value: Register,
+        scratch: Register,
+    ) {
+        let displacement = i32::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(WORD_BYTES))
+            .and_then(|offset| {
+                offset.checked_add(crate::heap::Heap::machine_layout().fields_displacement)
+            })
+            .expect("internal: a fixed field's displacement fits a store's");
+        self.store_with_barrier(holder, displacement, value, scratch);
+    }
+
     /// The frame's register `register := source`. Keeps the flags.
     pub(crate) fn store_frame_register(&mut self, register: u16, source: Register) {
         let slot = self.frame_slot(register);
@@ -2099,6 +2121,87 @@ impl MacroAssembler {
         assembler.and_immediate(scratch, layout.instance_format_bits);
         assembler.compare_immediate(scratch, format);
         assembler.jump_if(Condition::NotEqual, failed);
+    }
+
+    /// Jumps to `undecided` where `left == right`, two different words,
+    /// is not `false` by the words alone, as `object_class::identical` and
+    /// `future::declines_for_a_future` decide it: where both name objects
+    /// and `left`'s has a number's payload -- a boxed `Float` is identical
+    /// to another of its bits -- or where either names a future, for which
+    /// the leaf declines. Two different immediates are never identical:
+    /// a `SmallFloat`'s word is its bits, rotated. `left` and `right` are
+    /// kept; clobbers the flags, `scratch` and `machine_words`.
+    pub(crate) fn jump_if_identity_undecided(
+        &mut self,
+        (left, right): (Register, Register),
+        (scratch, machine_words): (Register, Register),
+        undecided: Label,
+    ) {
+        debug_assert!(
+            distinct(&[left, right, scratch, machine_words]),
+            "internal: an identity's registers are distinct"
+        );
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let (no_number, right_checked, decided) = (
+            self.assembler.label(),
+            self.assembler.label(),
+            self.assembler.label(),
+        );
+        self.load_machine_words(machine_words);
+        let future_class = MacroAssembler::machine_word(machine_words, MachineWord::FutureClass);
+        self.jump_unless_object_word(left, right_checked);
+        let assembler = &mut self.assembler;
+        assembler.move_register(scratch, left);
+        assembler.add(scratch, object_space);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: scratch,
+                displacement: layout.header_displacement,
+            },
+        );
+        assembler.and_immediate(scratch, layout.instance_format_bits);
+        assembler.compare_immediate(scratch, layout.number_format);
+        assembler.jump_if(Condition::NotEqual, no_number);
+        // A number's payload: the bits decide where `right` names an object.
+        self.jump_unless_object_word(right, no_number);
+        self.assembler.jump(undecided);
+        self.assembler.bind(no_number);
+        self.jump_if_future(left, scratch, future_class, undecided);
+        self.assembler.bind(right_checked);
+        self.jump_unless_object_word(right, decided);
+        self.jump_if_future(right, scratch, future_class, undecided);
+        self.assembler.bind(decided);
+    }
+
+    /// Jumps to `future` if the object `object` names is a future: its
+    /// class word `FutureImplementation`'s, `future_class`, which no
+    /// program can subclass. `object` is kept; clobbers the flags and
+    /// `scratch`.
+    fn jump_if_future(
+        &mut self,
+        object: Register,
+        scratch: Register,
+        future_class: Memory,
+        future: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let object_space = self.roles.object_space;
+        let assembler = &mut self.assembler;
+        assembler.move_register(scratch, object);
+        assembler.add(scratch, object_space);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: scratch,
+                displacement: layout.class_word_displacement,
+            },
+        );
+        assembler.compare_memory(scratch, future_class);
+        assembler.jump_if(Condition::Equal, future);
     }
 
     /// `count :=` the count of the words after the header of the object

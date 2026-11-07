@@ -1,0 +1,131 @@
+/// Callees the optimizing JIT always inlines -- a slot's getter and setter,
+/// a lazy slot's getter, a quick method, `==`, `class` and an Array's and a
+/// ByteArray's `at:` and `at:put:` -- sent from methods hot enough to be
+/// optimized: each answers what its send answers. A check such a callee
+/// makes that fails -- a lazy slot not yet filled, two boxed floats whose
+/// bits decide their identity, an index or a byte out of range -- runs the
+/// send again in the interpreter, which answers it or raises its own error.
+class AlwaysInlinedCallees = Object new () (
+  class Cell = Object new (
+    |
+      public value ::= 0.
+    |
+  ) (
+    lazy public doubled = value * 2.
+
+    public kind = (
+      ^self class.
+    )
+  )
+
+  bump: cell = (
+    cell value: cell value + 1.
+    ^cell value.
+  )
+
+  doubledOf: cell = (
+    ^cell doubled.
+  )
+
+  same: left as: right = (
+    ^left == right.
+  )
+
+  negate: flag = (
+    ^flag not.
+  )
+
+  store: index into: elements = (
+    elements at: index put: index * 3.
+    ^elements at: index.
+  )
+
+  storeByte: index into: bytes = (
+    bytes at: index put: index \\ 256.
+    ^bytes at: index.
+  )
+
+  put: byte into: bytes = (
+    ^bytes at: 1 put: byte.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      cell = Cell new.
+      elements = Array new: 100.
+      bytes = ByteArray new: 100.
+      doubledFloat = 1.0e300 * 2.0.
+      sum ::= 0.
+      filled ::= 0.
+      fresh ::= 0.
+      sames ::= 0.
+      floats ::= 0.
+      negations ::= 0.
+      classes ::= 0.
+      stored ::= 0.
+      storedBytes ::= 0.
+      putBytes ::= 0.
+    |
+    1 to: 50000 do: [:index | sum:: sum + (self bump: cell)].
+    1 to: 50000 do: [:index | filled:: filled + (self doubledOf: cell)].
+    1 to: 50000 do: [:index |
+      |
+        another = Cell new.
+      |
+      another value: index.
+      fresh:: fresh + (self doubledOf: another).
+    ].
+    1 to: 50000 do: [:index |
+      (self same: cell as: cell) ifTrue: [sames:: sames + 1].
+      (self same: cell as: nil) ifTrue: [sames:: sames + 1000000].
+      (self same: index as: index) ifTrue: [sames:: sames + 1].
+      (self same: doubledFloat as: 2.0e300) ifTrue: [floats:: floats + 1].
+      (self same: doubledFloat as: 1.0e300) ifTrue: [floats:: floats + 1000000].
+      (self negate: index \\ 2 = 1) ifTrue: [negations:: negations + 1].
+      cell kind == Cell ifTrue: [classes:: classes + 1].
+      stored:: stored + (self store: index \\ 100 + 1 into: elements).
+      storedBytes:: storedBytes + (self storeByte: index \\ 100 + 1 into: bytes).
+      putBytes:: putBytes + (self put: index \\ 256 into: bytes).
+    ].
+    t
+        show: sum printString;
+        newLine.
+    t
+        show: cell value printString;
+        newLine.
+    t
+        show: filled printString;
+        newLine.
+    t
+        show: fresh printString;
+        newLine.
+    t
+        show: sames printString;
+        newLine.
+    t
+        show: floats printString;
+        newLine.
+    t
+        show: negations printString;
+        newLine.
+    t
+        show: classes printString;
+        newLine.
+    t
+        show: stored printString;
+        newLine.
+    t
+        show: storedBytes printString;
+        newLine.
+    t
+        show: putBytes printString;
+        newLine.
+    t
+        show: ([self store: 101 into: elements] on: Error do: [:error | error messageText]);
+        newLine.
+    t
+        show: ([self put: 300 into: bytes] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

@@ -40,10 +40,12 @@
 
 use std::collections::HashMap;
 
-use ns_assembler::{Condition, Label, Register};
+use ns_assembler::{Condition, Label, Memory, Register, Width};
 
 use super::allocate::{Allocation, DirtyPoint, Location, Move, PointKind, Spot};
-use super::graph::{BlockId, ClassStart, End, Graph, Node, ScopeId, ValueId, ValueKind};
+use super::graph::{
+    BlockId, ClassStart, End, Graph, IndexedKind, Node, ScopeId, ValueId, ValueKind,
+};
 use super::liveness::poll_target;
 use super::metadata::Metadata;
 use super::snapshot::{Snapshot, SnapshotInstruction};
@@ -108,7 +110,8 @@ pub(crate) struct ReliedOn {
     /// The applications its inlined scopes were compiled for, each once:
     /// each scope's receiver's and the one it is entered at, whose lookup
     /// found the callee, whose layout its slot reads and whose outer
-    /// structure its lexical sends walk.
+    /// structure its lexical sends walk; and the one each arm always
+    /// inlined was decided for, whose layout an accessor's field is.
     pub(crate) applications: Vec<crate::heap::ApplicationIndex>,
     /// Each inlined method's body and the feedback base its sends' cells
     /// are found from, in the order of its scopes, each once.
@@ -243,6 +246,46 @@ impl Emitter<'_> {
             .hold_values(&self.allocation.registers_held_at(position));
         #[cfg(not(debug_assertions))]
         let _ = (body, position);
+    }
+
+    /// Tells a debug build, before a store's barrier, whose remembering
+    /// leaf keeps only the survivors, that only the values living past the
+    /// node at `use_position` are held: the allocation moved those into
+    /// the survivors, and the node's operands dying there are read no more.
+    fn hold_past_leaf_call(&self, body: &mut BodyAssembler, use_position: u32) {
+        self.hold(body, use_position + 1);
+    }
+
+    /// The address of the element the one-based index in `index` names of
+    /// the `Array` or `ByteArray` `object` names, as the row's stub finds
+    /// it (`MacroAssembler::load_element_address`, `load_byte_address`),
+    /// in the idioms' temporaries: a jump to `failed` for every receiver,
+    /// index and bound the row's leaf decides otherwise. `object` and
+    /// `index` are kept.
+    fn indexed_address(
+        body: &mut BodyAssembler,
+        kind: IndexedKind,
+        object: Register,
+        index: Register,
+        failed: Label,
+    ) -> Register {
+        let macro_assembler = &mut body.macro_assembler;
+        let temporaries = macro_assembler.roles().integer_temporaries();
+        let (index_copy, address) = (
+            macro_assembler.temporary(temporaries.right),
+            macro_assembler.temporary(temporaries.remainder),
+        );
+        macro_assembler.move_register(index_copy, index);
+        match kind {
+            IndexedKind::Array => {
+                macro_assembler.load_element_address(object, index_copy, address, failed);
+            }
+            IndexedKind::ByteArray => {
+                let size = macro_assembler.temporary(temporaries.left);
+                macro_assembler.load_byte_address(object, index_copy, address, size, failed);
+            }
+        }
+        address
     }
 
     /// The scope `scope` names.
@@ -443,6 +486,189 @@ impl Emitter<'_> {
             } => {
                 let from = self.register_of(*from, use_position);
                 self.current_class(body, block_id, defined_in(*value), from, *start, *steps);
+            }
+            Node::FieldLoad {
+                value,
+                object,
+                field,
+            } => {
+                let object = self.register_of(*object, use_position);
+                if let Some(target) = defined_in(*value) {
+                    body.macro_assembler.load_field(target, object, *field);
+                }
+            }
+            Node::FieldStore {
+                object,
+                field,
+                source,
+            } => {
+                let (object, source) = (
+                    self.register_of(*object, use_position),
+                    self.register_of(*source, use_position),
+                );
+                let macro_assembler = &mut body.macro_assembler;
+                let temporaries = macro_assembler.roles().integer_temporaries();
+                let (holder, scratch) = (
+                    macro_assembler.temporary(temporaries.left),
+                    macro_assembler.temporary(temporaries.right),
+                );
+                macro_assembler.move_register(holder, object);
+                self.hold_past_leaf_call(body, use_position);
+                body.macro_assembler
+                    .store_field_with_barrier(holder, *field, source, scratch);
+            }
+            Node::IdentityCompare {
+                value,
+                left,
+                right,
+                program_counter,
+            } => {
+                let (left, right) = (
+                    self.register_of(*left, use_position),
+                    self.register_of(*right, use_position),
+                );
+                let scope = self.graph.block(block_id).scope;
+                let undecided =
+                    self.trap_out_of_line(body, use_position, *program_counter, scope, None);
+                let macro_assembler = &mut body.macro_assembler;
+                let temporaries = macro_assembler.roles().integer_temporaries();
+                let scratch = (
+                    macro_assembler.temporary(temporaries.left),
+                    macro_assembler.temporary(temporaries.right),
+                );
+                let (identical, done) = (
+                    macro_assembler.assembler().label(),
+                    macro_assembler.assembler().label(),
+                );
+                // One value on both sides -- `x == x` -- is identical, and
+                // its one register is no pair the checks can take.
+                if left == right {
+                    macro_assembler.assembler().jump(identical);
+                } else {
+                    macro_assembler.assembler().compare(left, right);
+                    macro_assembler
+                        .assembler()
+                        .jump_if(Condition::Equal, identical);
+                    // Every check runs whether or not the answer is read: a
+                    // future the leaf declines for is forced by the method.
+                    macro_assembler.jump_if_identity_undecided((left, right), scratch, undecided);
+                }
+                match defined_in(*value) {
+                    Some(target) => {
+                        macro_assembler
+                            .load_immediate_word(target, Immediate::boolean(false).bits());
+                        macro_assembler.assembler().jump(done);
+                        macro_assembler.assembler().bind(identical);
+                        macro_assembler
+                            .load_immediate_word(target, Immediate::boolean(true).bits());
+                    }
+                    None => macro_assembler.assembler().bind(identical),
+                }
+                macro_assembler.assembler().bind(done);
+            }
+            Node::ClassOf { value, object } => {
+                let object = self.register_of(*object, use_position);
+                if let Some(target) = defined_in(*value) {
+                    let macro_assembler = &mut body.macro_assembler;
+                    let class = macro_assembler
+                        .temporary(macro_assembler.roles().integer_temporaries().left);
+                    macro_assembler.load_class(class, object);
+                    macro_assembler.move_register(target, class);
+                }
+            }
+            Node::IndexedLoad {
+                kind,
+                value,
+                object,
+                index,
+                program_counter,
+            } => {
+                let (object, index) = (
+                    self.register_of(*object, use_position),
+                    self.register_of(*index, use_position),
+                );
+                let scope = self.graph.block(block_id).scope;
+                let failed =
+                    self.trap_out_of_line(body, use_position, *program_counter, scope, None);
+                let element = Self::indexed_address(body, *kind, object, index, failed);
+                let macro_assembler = &mut body.macro_assembler;
+                let loaded =
+                    macro_assembler.temporary(macro_assembler.roles().integer_temporaries().left);
+                let layout = Heap::machine_layout();
+                let assembler = macro_assembler.assembler();
+                match kind {
+                    IndexedKind::Array => assembler.load(Width::Word64, loaded, word_at(element)),
+                    IndexedKind::ByteArray => {
+                        assembler.load(Width::Byte, loaded, word_at(element));
+                        assembler.shift_left(loaded, layout.tag_bits);
+                        assembler.or_immediate(loaded, layout.small_integer_tag);
+                    }
+                }
+                if let Some(target) = defined_in(*value) {
+                    macro_assembler.move_register(target, loaded);
+                }
+            }
+            Node::IndexedStore {
+                kind,
+                object,
+                index,
+                source,
+                program_counter,
+            } => {
+                let (object, index, source) = (
+                    self.register_of(*object, use_position),
+                    self.register_of(*index, use_position),
+                    self.register_of(*source, use_position),
+                );
+                let scope = self.graph.block(block_id).scope;
+                let failed =
+                    self.trap_out_of_line(body, use_position, *program_counter, scope, None);
+                let element = Self::indexed_address(body, *kind, object, index, failed);
+                let macro_assembler = &mut body.macro_assembler;
+                let temporaries = macro_assembler.roles().integer_temporaries();
+                let layout = Heap::machine_layout();
+                match kind {
+                    IndexedKind::Array => {
+                        let (holder, scratch) = (
+                            macro_assembler.temporary(temporaries.left),
+                            macro_assembler.temporary(temporaries.right),
+                        );
+                        macro_assembler.move_register(holder, object);
+                        self.hold_past_leaf_call(body, use_position);
+                        body.macro_assembler.store_with_barrier_at(
+                            holder,
+                            word_at(element),
+                            source,
+                            scratch,
+                        );
+                    }
+                    IndexedKind::ByteArray => {
+                        // A `SmallInteger` from 0 to 255: tagged, and its
+                        // word below 256's, unsigned, which a negative
+                        // one's is not.
+                        let byte = macro_assembler.temporary(temporaries.left);
+                        let assembler = macro_assembler.assembler();
+                        assembler.test_immediate(source, layout.small_integer_tag);
+                        assembler.jump_if(Condition::Equal, failed);
+                        assembler.compare_immediate(source, BYTE_LIMIT << layout.tag_bits);
+                        assembler.jump_if(Condition::AboveOrEqual, failed);
+                        assembler.move_register(byte, source);
+                        assembler.shift_right_logical(byte, layout.tag_bits);
+                        assembler.store(Width::Byte, word_at(element), byte);
+                    }
+                }
+            }
+            Node::TrapIfNil {
+                value,
+                program_counter,
+            } => {
+                let value = self.register_of(*value, use_position);
+                let scope = self.graph.block(block_id).scope;
+                let unfilled =
+                    self.trap_out_of_line(body, use_position, *program_counter, scope, None);
+                let assembler = body.macro_assembler.assembler();
+                assembler.compare_immediate(value, Heap::machine_layout().nil_word);
+                assembler.jump_if(Condition::Equal, unfilled);
             }
             Node::Frame {
                 scope,
@@ -967,6 +1193,17 @@ impl Emitter<'_> {
         }
     }
 }
+
+/// The word at `address`.
+fn word_at(address: Register) -> Memory {
+    Memory {
+        base: address,
+        displacement: 0,
+    }
+}
+
+/// One past the largest byte, which `at:put:` stores into a `ByteArray`.
+const BYTE_LIMIT: i32 = 256;
 
 #[cfg(test)]
 mod tests {

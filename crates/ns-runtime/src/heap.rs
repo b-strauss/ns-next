@@ -858,6 +858,10 @@ pub(crate) struct MachineLayout {
     /// The header word's format bits of a frame object, under
     /// `instance_format_bits`.
     pub(crate) frame_format: i32,
+    /// The header word's format bits of a number's payload -- a boxed
+    /// `Float`'s or a `LargeInteger`'s (`Format::SixtyFourBit`) -- under
+    /// `instance_format_bits`.
+    pub(crate) number_format: i32,
     /// A class object's builtin field's displacement from its offset
     /// (`Heap::class_builtin`): nil for a class whose instances are
     /// ordinary ones.
@@ -9884,6 +9888,7 @@ impl<'gc> Heap<'gc> {
             class_format: small(header::CLASS_BITS),
             closure_format: small(header::CLOSURE_BITS),
             frame_format: small(header::FRAME_BITS),
+            number_format: small(header::SIXTY_FOUR_BIT_BITS),
             builtin_displacement: displacement(FIELDS + class_field::BUILTIN),
             value_class_refusal_displacement: displacement(
                 FIELDS + class_field::VALUE_CLASS_REFUSAL,

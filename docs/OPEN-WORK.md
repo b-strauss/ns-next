@@ -908,6 +908,24 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       allocation's verification ran cubic in a body's size (`e5fb65f5`,
       `d0e8f458`, `7096a52e`). A gate of the pairs that touch the
       optimizer would keep such failures found.
+  - **What the third stage's callees always inlined leave** (2026-11-07),
+    none a wrong answer; [execution.md](design/execution.md),
+    "Inlining":
+    - *Sent, not expressed*: a builtin class's accessor
+      (`MethodFastPath::BuiltinClass`), whose class only the heap's
+      tables name, which no simple node reads; `^<parameter> value` and
+      `cull:`, which activate a block, a scope of its own, until blocks
+      are inlined; and every arm with a check in a copy that speculates
+      nothing or at a site that trapped (`build::Laying::expressed`).
+    - *Traps that recur*: a lazy slot's getter traps for every instance
+      whose slot is still empty, and `==` for every pair whose first is
+      an object with a number's payload -- a `LargeInteger` too, whose
+      identity no bits decide -- or that holds a future; such a site
+      is sent once its trap retired the copy.
+    - *Costs*: the barrier of a setter and of an `Array`'s `at:put:`
+      calls the remembering leaf out of line, so that every value live
+      across either leaves the registers the call clobbers -- moved into
+      a survivor or written back -- on the straight line too.
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any

@@ -204,10 +204,10 @@ fn laid_out_scopes(graph: &graph::Graph) -> Vec<bool> {
 }
 
 /// What the code `graph` lays out relied on (`emit::ReliedOn`): the
-/// guards its type-cases test, and of every inlined scope `laid_out`
-/// says it lays out the receiver's and entered applications `plan`
-/// customized it to and its body and feedback base, as `scopes` emitted
-/// it.
+/// guards its type-cases test, the applications its arms always inlined
+/// were decided for, and of every inlined scope `laid_out` says it lays
+/// out the receiver's and entered applications `plan` customized it to
+/// and its body and feedback base, as `scopes` emitted it.
 #[cfg(ns_jit)]
 fn relied_on(
     plan: &plan::InliningPlan,
@@ -223,6 +223,12 @@ fn relied_on(
                     relied_on.guards.push(*guard);
                 }
             }
+        }
+    }
+    // A field an accessor's node addresses is its arm's application's.
+    for application in &graph.arm_applications {
+        if !relied_on.applications.contains(application) {
+            relied_on.applications.push(*application);
         }
     }
     for (index, scope_plan) in plan.scopes.iter().enumerate().skip(1) {
@@ -461,17 +467,22 @@ pub(crate) fn tree_of_run(source: &str, selector: &str) -> tree::SnapshotTree {
 /// A tree over every body of `corpus_of_bodies()` as its root, with
 /// synthetic feedback: each send of each body walked a site whose cache
 /// recorded a callee of the corpus that takes as many arguments -- one,
-/// or for every third site two, or for every fifth unary one a slot
-/// accessor beside it, an arm always inlined -- each its own guard's, all
-/// of one application, so that a `super` or lexical send in an inlined
-/// scope is taken without a test; and every seventh site left never run;
-/// walked from the root three callees deep. The inlining passes' sweeps
+/// or for every third site two, and for every fifth of at most two
+/// arguments two arms always inlined beside them: a unary one's slot
+/// getter and `class`, a one-argument one's setter and `==`, and a
+/// two-argument one's `at:put:` of an `Array` and of a `ByteArray` --
+/// each its own guard's, all of one application, so that a `super` or
+/// lexical send in an inlined scope is taken without a test; and every
+/// seventh site left never run; walked from the root three callees deep. The inlining passes' sweeps
 /// hold every scope, return, type-case and trap such trees make to their
 /// checks.
 #[cfg(test)]
 pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
     use std::collections::{HashMap, HashSet};
 
+    use crate::builtins::primitive::{
+        BytePrimitive, CollectionPrimitive, ObjectPrimitive, Primitive,
+    };
     use crate::bytecode::CodeKind;
     use crate::heap::CodeId;
     use crate::mixin::AccessorKind;
@@ -527,7 +538,7 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
                 arms.push(pick(1));
             }
             ran_site(&mut fed, index, facts.site);
-            sites.push((facts.site, arms, seed % 5 == 0 && arity == 0));
+            sites.push((facts.site, arms, (seed % 5 == 0).then_some(arity)));
         }
         (fed, sites)
     };
@@ -556,14 +567,32 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
                             },
                         ));
                     }
-                    if accessor {
+                    let slot = |kind| CalleeFacts::Slot {
+                        field: 2,
+                        kind,
+                        level: crate::heap::ApplicationIndex::from_raw(0),
+                    };
+                    let always = match accessor {
+                        Some(0) => vec![
+                            slot(AccessorKind::Getter),
+                            CalleeFacts::Primitive(Primitive::Object(ObjectPrimitive::Class)),
+                        ],
+                        Some(1) => vec![
+                            slot(AccessorKind::Setter),
+                            CalleeFacts::Primitive(Primitive::Object(ObjectPrimitive::Identical)),
+                        ],
+                        Some(2) => vec![
+                            CalleeFacts::Primitive(Primitive::Collection(
+                                CollectionPrimitive::ElementAtPut,
+                            )),
+                            CalleeFacts::Primitive(Primitive::Bytes(BytePrimitive::ElementAtPut)),
+                        ],
+                        _ => Vec::new(),
+                    };
+                    for (turn, callee) in (0_u32..).zip(always) {
                         facts.push((
-                            test_receiver(raw(code_id) * 4 + 3, 0, 2),
-                            CalleeFacts::Slot {
-                                field: 2,
-                                kind: AccessorKind::Getter,
-                                level: crate::heap::ApplicationIndex::from_raw(0),
-                            },
+                            test_receiver(raw(code_id) * 4 + 3 + turn * (1 << 20), 0, 2),
+                            callee,
                         ));
                     }
                     tree_sites.push((code_id, site, facts));

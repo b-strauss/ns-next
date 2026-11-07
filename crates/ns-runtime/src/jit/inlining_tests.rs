@@ -764,3 +764,111 @@ fn an_inlined_site_meeting_an_unseen_receiver_traps_and_is_recompiled_with_its_s
         "the copy compiled again traps no more"
     );
 }
+
+/// `store:` stores a young `Array` into the `item` slot of `holder`
+/// through the setter its optimized copy inlines, which `run` compiles;
+/// `storeLast` stores one more, and `check` reads it back.
+#[cfg(debug_assertions)]
+const AN_OLD_HOLDER: &str = indoc! {"
+    class Subject = Object new (
+      | holder = Holder new. |
+    ) (
+      class Holder = Object new (
+        | public item ::= nil. |
+      ) ()
+      store: index = (
+        | element = Array new: 1. |
+        element at: 1 put: index.
+        holder item: element.
+        ^index
+      )
+      public run = (
+        | index ::= 0. |
+        [index < 3000] whileTrue: [
+          self store: index.
+          index:: index + 1.
+        ].
+        ^0
+      )
+      public storeLast = (
+        ^self store: 4242
+      )
+      public check = (
+        ^holder item at: 1
+      )
+    )
+"};
+
+/// The setter `store:`'s optimized copy inlines is a store through the
+/// barrier: once `run` has compiled the copy, a full collection makes the
+/// holder old and leaves it unremembered, and the copy's store of a young
+/// value into it remembers it, so that the remembered set verifies and
+/// the scavenge after it keeps the value the old object names -- one the
+/// barrier missed would leave it naming the vacated nursery, read back as
+/// poison, or at exit status 0 as another object. A debug build's: the
+/// collections on demand, the verification and the poison are its own.
+#[cfg(debug_assertions)]
+#[test]
+fn a_setter_arm_stores_through_the_barrier() {
+    use crate::jit::optimizing::build::build_inlined;
+    use crate::jit::optimizing::graph::Node;
+    use crate::jit::optimizing::plan::plan;
+    use crate::jit::optimizing::{tree_of_run, Speculation};
+
+    // What the copy compiles: the setter's store, which calls the barrier's
+    // leaf.
+    let tree = tree_of_run(AN_OLD_HOLDER, "store:");
+    let graph = build_inlined(&tree, &plan(&tree, Speculation::Traps), Speculation::Traps);
+    assert!(
+        graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .any(|node| matches!(node, Node::FieldStore { .. })),
+        "{graph:#?}"
+    );
+
+    let module = ns_syntax::parse(AN_OLD_HOLDER).expect("parse");
+    let resolved = crate::resolve(
+        module,
+        AN_OLD_HOLDER.into(),
+        SourceOrigin::File("test.ns".into()),
+    )
+    .unwrap_or_else(|_| panic!("the module resolves"));
+    let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+    // The run's feedback is what the copy is compiled from: the cache
+    // stress mode would vacate it at the run's safepoints.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_caches(false);
+    interpreter.set_jit_enabled(true);
+    interpreter.set_jit_stress(true);
+    interpreter.set_optimize_stress(true);
+    let class = interpreter.load_module(&resolved);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("run"), &[]),
+        "run",
+    );
+    assert!(
+        interpreter.jit_customized_copies(&class, MethodSide::Instance, Symbol::intern("store:"))
+            >= 1,
+        "`store:` runs as a copy"
+    );
+    // The holder is old and unremembered from here on.
+    interpreter.collect_now();
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("storeLast"), &[]),
+        "storeLast",
+    );
+    interpreter.enter(|mutator| mutator.heap.verify_remembered_set());
+    interpreter.scavenge_now();
+    let checked = expect_ok(
+        interpreter.send(&instance, Symbol::intern("check"), &[]),
+        "check",
+    );
+    let checked = interpreter.enter(|mutator| match mutator.fetch(&checked).kind() {
+        crate::ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("check: expected a small integer"),
+    });
+    assert_eq!(checked, 4242);
+}

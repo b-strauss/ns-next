@@ -440,7 +440,14 @@ fn replay(
                 | Node::Receiver { .. }
                 | Node::OwnSlotLoad { .. }
                 | Node::CurrentClass { .. }
-                | Node::Frame { .. } => {}
+                | Node::Frame { .. }
+                | Node::FieldLoad { .. }
+                | Node::FieldStore { .. }
+                | Node::IdentityCompare { .. }
+                | Node::ClassOf { .. }
+                | Node::IndexedLoad { .. }
+                | Node::IndexedStore { .. }
+                | Node::TrapIfNil { .. } => {}
             }
             apply(&mut replay, allocation, definition)?;
         }

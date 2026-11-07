@@ -202,7 +202,14 @@ pub(crate) fn named_registers(graph: &Graph) -> usize {
                 | Node::Receiver { .. }
                 | Node::OwnSlotLoad { .. }
                 | Node::CurrentClass { .. }
-                | Node::Overlay { .. } => {}
+                | Node::Overlay { .. }
+                | Node::FieldLoad { .. }
+                | Node::FieldStore { .. }
+                | Node::IdentityCompare { .. }
+                | Node::ClassOf { .. }
+                | Node::IndexedLoad { .. }
+                | Node::IndexedStore { .. }
+                | Node::TrapIfNil { .. } => {}
             }
         }
     }
@@ -255,7 +262,14 @@ pub(crate) fn bind(bindings: &mut [Binding], node: &Node) {
         Node::Constant { .. }
         | Node::Receiver { .. }
         | Node::OwnSlotLoad { .. }
-        | Node::CurrentClass { .. } => {}
+        | Node::CurrentClass { .. }
+        | Node::FieldLoad { .. }
+        | Node::FieldStore { .. }
+        | Node::IdentityCompare { .. }
+        | Node::ClassOf { .. }
+        | Node::IndexedLoad { .. }
+        | Node::IndexedStore { .. }
+        | Node::TrapIfNil { .. } => {}
     }
 }
 
@@ -545,26 +559,15 @@ fn intervals_with(graph: &Graph, order: &[BlockId], knowing: bool) -> Intervals 
         let nodes = &graph.block(*block).nodes;
         for (index, node) in nodes.iter().enumerate() {
             let position = positions.node_use(*block, index);
-            match node {
-                Node::Frame { .. } => {
-                    frames.push(position);
-                    write_back(&bindings, position, reads);
+            // A simple node reads each of its operands in a machine
+            // register.
+            if let Node::Frame { .. } = node {
+                frames.push(position);
+                write_back(&bindings, position, reads);
+            } else {
+                for operand in node.uses() {
+                    reads.push((position, operand, Need::Register));
                 }
-                Node::Copy { source, .. }
-                | Node::OwnSlotLoad {
-                    receiver: source, ..
-                }
-                | Node::CurrentClass { from: source, .. } => {
-                    reads.push((position, *source, Need::Register));
-                }
-                Node::IntegerBinary { left, right, .. } => {
-                    reads.push((position, *left, Need::Register));
-                    reads.push((position, *right, Need::Register));
-                }
-                Node::FrameRead { .. }
-                | Node::Constant { .. }
-                | Node::Receiver { .. }
-                | Node::Overlay { .. } => {}
             }
             // A trap leaves the frame as the interpreter's, as a frame
             // node does, on the way its fast path fails.

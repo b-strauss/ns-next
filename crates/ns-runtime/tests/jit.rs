@@ -4809,6 +4809,44 @@ fn at_put_out_of_range_fails_as_the_interpreter_does() {
     }
 }
 
+/// The message of the error `selector` raises, sent to a `Subject` of
+/// `OUT_OF_RANGE` once `run` has optimized `store:at:`, whose copy inlines
+/// both receivers' `at:put:` -- with the JIT on or off -- and how many
+/// traps the send took.
+fn inlined_out_of_range_message(selector: &str, jit: bool) -> (String, u64) {
+    let (mut interpreter, class) = load_customizing(OUT_OF_RANGE, Lowering::Optimized);
+    interpreter.set_jit_enabled(jit);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("run"), &[]),
+        "run",
+    );
+    let before = interpreter.jit_statistics().traps;
+    let message = match interpreter.send(&instance, Symbol::intern(selector), &[]) {
+        Err(HostSignal::Error(error)) => error.message,
+        Err(HostSignal::Return) => panic!("{selector}: a non-local return escaped"),
+        Ok(_) => panic!("{selector}: the store past the end succeeded"),
+    };
+    (message, interpreter.jit_statistics().traps - before)
+}
+
+/// A store past the end of an Array or a ByteArray inlined in optimized
+/// code checks its bounds as a trap, which runs the send again in the
+/// interpreter, and the interpreter raises its own error: machine code
+/// holds no error text.
+#[test]
+fn an_array_at_put_out_of_bounds_traps_and_raises_the_interpreter_s_error() {
+    for selector in ["storePastArray", "storePastBytes"] {
+        let (compiled, traps) = inlined_out_of_range_message(selector, true);
+        let (interpreted, _) = inlined_out_of_range_message(selector, false);
+        assert_eq!(compiled, interpreted);
+        assert!(compiled.contains("out of range"), "{selector}: {compiled}");
+        if a_copy_runs_to_its_trap() {
+            assert_eq!(traps, 1, "{selector}: the inlined bounds check traps");
+        }
+    }
+}
+
 /// The rows marked leaf-safe -- `MachineCall::Leaf`, or `Stub` with a
 /// stub of their own -- are exactly those this list names, each with why
 /// its leaf is leaf-safe: a row marked without being read

@@ -8,11 +8,13 @@
 //! registers by reference, move every object a value names, or reify the
 //! frame, so after one every register is read again from its frame word
 //! (`Node::FrameRead`). Every node but a frame node is register
-//! arithmetic that emits no call.
+//! arithmetic that runs no Newspeak code: none emits a call but a store's
+//! out of line, through the write barrier into its remembering leaf
+//! (`Node::calls_leaf`).
 use std::ops::Range;
 
 use crate::bytecode::{IntegerOperation, HEADER_REGISTERS};
-use crate::heap::{CodeId, Immediate};
+use crate::heap::{ApplicationIndex, CodeId, Immediate};
 use crate::mixin::DispatchId;
 
 pub(crate) use super::plan::ScopeId;
@@ -52,6 +54,11 @@ pub(crate) struct Graph {
     pub(crate) blocks: Vec<Block>,
     pub(crate) values: Vec<ValueDefinition>,
     pub(crate) scopes: Vec<GraphScope>,
+    /// The applications the arms always inlined that the graph lays out
+    /// were decided for, each once: a field an accessor's node addresses
+    /// is that application's layout's, which the copy then relies on
+    /// (`jit::CopyDependencies`).
+    pub(crate) arm_applications: Vec<ApplicationIndex>,
 }
 
 /// One scope of a graph, where it lies in the physical frame
@@ -320,6 +327,85 @@ pub(crate) enum Node {
     /// held there is ever written into the callee's frame, nor read after
     /// the callee returns. Emits nothing.
     Overlay { ranges: Vec<Range<u16>> },
+    /// An always-inlined getter, or a lazy slot's getter: field `field` of
+    /// the object `object` names, the absolute index the lookup resolved
+    /// the accessor to for the arm's receiver application, which the
+    /// type-case's guard -- or, taken without a test, the scope's known
+    /// receiver -- vouches the object is of. It checks the field exists no
+    /// more than `OwnSlotLoad` does, for the same reason, and no guard:
+    /// what could replace the object runs after an exit.
+    FieldLoad {
+        value: ValueId,
+        object: ValueId,
+        field: u32,
+    },
+    /// An always-inlined setter: `source` stored into field `field` of the
+    /// object `object` names, as `FieldLoad` addresses it, through the
+    /// inline write barrier, whose remembering leaf it may call. The
+    /// setter answers its receiver, which the builder binds the send's
+    /// destination to.
+    FieldStore {
+        object: ValueId,
+        field: u32,
+        source: ValueId,
+    },
+    /// `==` inlined: `true` where the two words are the same, `false`
+    /// where they differ and the words alone decide it -- as
+    /// `object_class::identical` and its decline for a future decide it
+    /// -- and a trap, running the send at `program_counter` again, where
+    /// they do not: two objects the first of which may be a boxed number,
+    /// whose bits decide, or either a future, for which the leaf declines.
+    IdentityCompare {
+        value: ValueId,
+        left: ValueId,
+        right: ValueId,
+        program_counter: u32,
+    },
+    /// `class` inlined: the class object of `object`, as
+    /// `Mutator::class_of` finds it -- an object's class word, an
+    /// immediate's class from the machine words -- which never needs the
+    /// heap's tables, so it is a simple node.
+    ClassOf { value: ValueId, object: ValueId },
+    /// `at:` of an `Array` or a `ByteArray` inlined: the element the
+    /// one-based `index` names of the object `object` names. Every check
+    /// the row's leaf makes -- the object's kind, the index a
+    /// `SmallInteger` within its bounds -- is a trap that runs the send at
+    /// `program_counter` again, so that the interpreter decides, and
+    /// raises, what the leaf would.
+    IndexedLoad {
+        kind: IndexedKind,
+        value: ValueId,
+        object: ValueId,
+        index: ValueId,
+        program_counter: u32,
+    },
+    /// `at:put:` inlined, as `IndexedLoad` checks it, a `ByteArray`'s
+    /// byte also checked to be a `SmallInteger` from 0 to 255: `source`
+    /// stored, into an `Array` through the inline write barrier, only once
+    /// every check passed. It answers `source`, which the builder binds
+    /// the send's destination to.
+    IndexedStore {
+        kind: IndexedKind,
+        object: ValueId,
+        index: ValueId,
+        source: ValueId,
+        program_counter: u32,
+    },
+    /// Traps, running the send at `program_counter` again, where `value`
+    /// is `nil`: a lazy slot's getter inlined finds its slot unfilled, and
+    /// the interpreter runs the getter, its initializer and all.
+    TrapIfNil {
+        value: ValueId,
+        program_counter: u32,
+    },
+}
+
+/// What an inlined indexed access reads or writes (`Node::IndexedLoad`,
+/// `Node::IndexedStore`): an `Array`'s elements, or a `ByteArray`'s bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndexedKind {
+    Array,
+    ByteArray,
 }
 
 /// Where a `Node::CurrentClass` starts its steps.
@@ -407,34 +493,72 @@ impl Node {
             | Node::Receiver { value }
             | Node::IntegerBinary { value, .. }
             | Node::OwnSlotLoad { value, .. }
-            | Node::CurrentClass { value, .. } => Some(*value),
-            Node::Copy { .. } | Node::Frame { .. } | Node::Overlay { .. } => None,
+            | Node::CurrentClass { value, .. }
+            | Node::FieldLoad { value, .. }
+            | Node::IdentityCompare { value, .. }
+            | Node::ClassOf { value, .. }
+            | Node::IndexedLoad { value, .. } => Some(*value),
+            Node::Copy { .. }
+            | Node::Frame { .. }
+            | Node::Overlay { .. }
+            | Node::FieldStore { .. }
+            | Node::IndexedStore { .. }
+            | Node::TrapIfNil { .. } => None,
         }
     }
 
-    /// What the value the node defines is known to be, by the node alone.
+    /// What the value the node defines is known to be, by the node alone:
+    /// a byte read is a `SmallInteger`, and an identity a Boolean.
     pub(crate) fn kind(&self) -> ValueKind {
         match self {
             Node::Constant { word, .. } => ValueKind::of_word(*word),
             Node::IntegerBinary { operation, .. } => ValueKind::of_operation(*operation),
+            Node::IdentityCompare { .. } => ValueKind::Boolean,
+            Node::IndexedLoad {
+                kind: IndexedKind::ByteArray,
+                ..
+            } => ValueKind::SmallInteger,
             Node::FrameRead { .. }
             | Node::Receiver { .. }
             | Node::Copy { .. }
             | Node::OwnSlotLoad { .. }
             | Node::Frame { .. }
             | Node::CurrentClass { .. }
-            | Node::Overlay { .. } => ValueKind::Unknown,
+            | Node::Overlay { .. }
+            | Node::FieldLoad { .. }
+            | Node::FieldStore { .. }
+            | Node::ClassOf { .. }
+            | Node::IndexedLoad {
+                kind: IndexedKind::Array,
+                ..
+            }
+            | Node::IndexedStore { .. }
+            | Node::TrapIfNil { .. } => ValueKind::Unknown,
         }
     }
 
     /// The program counter of the trap the node takes when its fast path
-    /// fails, if it takes one: an integer fast path with no fallback.
+    /// fails, if it takes one: an integer fast path with no fallback, and
+    /// every check of a callee always inlined, each of which runs the send
+    /// again.
     pub(crate) fn trap(&self) -> Option<u32> {
         match self {
             Node::IntegerBinary {
                 program_counter,
                 fallback: None,
                 ..
+            }
+            | Node::IdentityCompare {
+                program_counter, ..
+            }
+            | Node::IndexedLoad {
+                program_counter, ..
+            }
+            | Node::IndexedStore {
+                program_counter, ..
+            }
+            | Node::TrapIfNil {
+                program_counter, ..
             } => Some(*program_counter),
             _ => None,
         }
@@ -442,10 +566,17 @@ impl Node {
 
     /// Whether the node is a simple node whose code calls a Rust leaf,
     /// across which only the registers `Roles::survive_leaf_calls` counts
-    /// keep their values. No simple node does yet; a frame node is an
-    /// interrupt point, not a leaf call, after which no value holds.
+    /// keep their values: a store into an object, whose inline barrier
+    /// calls the remembering leaf for an old object it stores a young
+    /// one into. A frame node is an interrupt point, not a leaf call,
+    /// after which no value holds.
     pub(crate) fn calls_leaf(&self) -> bool {
         match self {
+            Node::FieldStore { .. }
+            | Node::IndexedStore {
+                kind: IndexedKind::Array,
+                ..
+            } => true,
             Node::FrameRead { .. }
             | Node::Constant { .. }
             | Node::Receiver { .. }
@@ -454,7 +585,16 @@ impl Node {
             | Node::OwnSlotLoad { .. }
             | Node::Frame { .. }
             | Node::CurrentClass { .. }
-            | Node::Overlay { .. } => false,
+            | Node::Overlay { .. }
+            | Node::FieldLoad { .. }
+            | Node::IdentityCompare { .. }
+            | Node::ClassOf { .. }
+            | Node::IndexedLoad { .. }
+            | Node::IndexedStore {
+                kind: IndexedKind::ByteArray,
+                ..
+            }
+            | Node::TrapIfNil { .. } => false,
         }
     }
 
@@ -465,9 +605,23 @@ impl Node {
             | Node::Constant { .. }
             | Node::Receiver { .. }
             | Node::Overlay { .. } => Vec::new(),
-            Node::Copy { source, .. } | Node::CurrentClass { from: source, .. } => vec![*source],
+            Node::Copy { source, .. }
+            | Node::CurrentClass { from: source, .. }
+            | Node::FieldLoad { object: source, .. }
+            | Node::ClassOf { object: source, .. }
+            | Node::TrapIfNil { value: source, .. } => vec![*source],
             Node::OwnSlotLoad { receiver, .. } => vec![*receiver],
-            Node::IntegerBinary { left, right, .. } => vec![*left, *right],
+            Node::IntegerBinary { left, right, .. } | Node::IdentityCompare { left, right, .. } => {
+                vec![*left, *right]
+            }
+            Node::FieldStore { object, source, .. } => vec![*object, *source],
+            Node::IndexedLoad { object, index, .. } => vec![*object, *index],
+            Node::IndexedStore {
+                object,
+                index,
+                source,
+                ..
+            } => vec![*object, *index, *source],
             Node::Frame { reads, .. } => reads.iter().map(|(_, value)| *value).collect(),
         }
     }
@@ -584,6 +738,7 @@ impl Graph {
             blocks,
             values,
             scopes: Vec::new(),
+            arm_applications: Vec::new(),
         };
         graph.find_phi_kinds();
         graph
