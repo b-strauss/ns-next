@@ -7088,7 +7088,14 @@ target without a JIT; and one held a run to no refused body, where under
 - `b993155f`, `4d17d968` -- the measurement, and the interpreted send
   through the dispatching entry it led to, past the rows by the lookup.
 - `4deabcec` -- the speculation's tests in every gate's configuration.
-- The documents' commit after them.
+- The documents' commits after them.
+- `2eb46405`, `40e5168a` -- what the whole branch's review found: a
+  dropped pending request re-arms its body's budget, and a block of
+  dispatching rows is vacated when its lean body is freed and when a
+  collection frees its body's code id, which the stricter verification
+  of the rows found under the optimize, deopt and invalidate modes. The
+  end-of-batch groups passed again after them: `release-checks` 4,685
+  tests, `linux` and `aarch64` 4,851 each, every stress mode.
 
 What the stage leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "What
 the second stage left": the table from dispatch id to application and
