@@ -4,16 +4,19 @@
 //! every back edge's poll, every trap -- the chain of scopes it stops
 //! in, innermost first, and for each its program counter, which of the
 //! two ways it resumes there, and where the value of each of its
-//! registers the leftover analysis does not taint is. That is always its
-//! frame word: the point's write-back (`allocate::DirtyPoint`) stores
-//! every binding that is not there yet, and `verify_allocation` holds the
-//! allocation to it by replaying every move.
+//! registers the leftover analysis does not taint is. That is its frame
+//! word: the point's write-back (`allocate::DirtyPoint`) stores every
+//! binding that is not there yet, and `verify_allocation` holds the
+//! allocation to it by replaying every move -- but for a register that
+//! holds a block the compile eliminated on every way there
+//! (`plan::ScopePlan::eliminated_before`), whose word holds `nil` for it:
+//! there it is that block, which the exit makes (`jit::materialize`).
 
 use std::collections::HashMap;
 use std::ops::Range;
 
 use super::allocate::{allocate, Allocation, Location, Move, PointKind, Spot};
-use super::graph::{BlockId, Graph, Node, ScopeId, ValueId};
+use super::graph::{BlockId, Graph, GraphScope, Node, ScopeId, ValueId};
 use super::liveness::{block_order, intervals_knowing, poll_target, Positions};
 use super::verify::VerifyError;
 use crate::heap::CodeId;
@@ -43,7 +46,9 @@ pub(crate) enum Resumes {
 /// its registers the leftover analysis does not taint is, numbered from
 /// its register 0. An inlined scope's registers end where the scope
 /// inlined into it begins, the slots of the send it is inlined at, and
-/// the header words the exit writes are not among them.
+/// the header words the exit writes are not among them. A block scope's
+/// activation's closure is no register: the exit writes it into the
+/// header of the scope that runs the block (`jit::InlinedScope::block`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScopeAtPoint {
     pub(crate) scope: ScopeId,
@@ -59,6 +64,19 @@ pub(crate) struct ScopeAtPoint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InterruptPoint {
     pub(crate) scopes: Vec<ScopeAtPoint>,
+}
+
+impl InterruptPoint {
+    /// Whether a register of a scope the point stops in holds a block the
+    /// compile eliminated, which an exit there makes.
+    pub(crate) fn holds_eliminated_blocks(&self) -> bool {
+        self.scopes.iter().any(|scope| {
+            scope
+                .locations
+                .iter()
+                .any(|(_, location)| matches!(location, Location::EliminatedBlock(_)))
+        })
+    }
 }
 
 /// The metadata of a body's interrupt points, in the order of the
@@ -134,21 +152,64 @@ fn tainted(ranges: &[Range<u16>], register: u16) -> bool {
     ranges.iter().any(|range| range.contains(&register))
 }
 
+/// Where the value of `register` of `scope`, stopped before its
+/// instruction at `program_counter`, is: the block the compile eliminated
+/// that it holds on every way there, which its frame word holds `nil` for
+/// until the exit makes it, or else its frame word -- always for one at or
+/// past `callee_from`, where the callee of the send the frame stopped at
+/// lies from the call on, its arguments copied in.
+fn location_of(
+    scope: &GraphScope,
+    program_counter: u32,
+    register: u16,
+    callee_from: Option<u16>,
+) -> Location {
+    if callee_from.is_some_and(|start| register >= start) {
+        return Location::FrameWord;
+    }
+    scope
+        .eliminated_before
+        .get(program_counter as usize)
+        .and_then(|held| held.iter().find(|(holder, _)| *holder == register))
+        .map_or(Location::FrameWord, |(_, block)| {
+            Location::EliminatedBlock(*block)
+        })
+}
+
+/// Where the callee of the send a frame node of `graph` stops at lies, in
+/// its scope's numbering, for the interrupt point `kind` of `block`: from
+/// the send's argument base up, the callee's frame, which a frame below
+/// it reads none of its own blocks in; `None` for any other point -- a
+/// trap or a type-case's, whose frame runs the send again, the arguments
+/// it copies from those registers among what it reads.
+fn callee_from(graph: &Graph, block: BlockId, kind: PointKind) -> Option<u16> {
+    match kind {
+        PointKind::Frame { node } => match &graph.block(block).nodes[node] {
+            Node::Frame { instruction, .. } => instruction.argument_slots().map(|(base, _)| base),
+            _ => None,
+        },
+        PointKind::Poll | PointKind::Trap { .. } => None,
+    }
+}
+
 /// The chain of scopes a point that stops in `scope` at `program_counter`
 /// and resumes as `resumes` describes (`ScopeAtPoint`): each register of
 /// each scope the leftover analysis leaves to the frame there is in its
 /// frame word, the point's write-back having stored every one that was
-/// not.
+/// not, or the block the compile eliminated that it holds
+/// (`location_of`), the innermost's past `callee_from` its callee's.
 fn chain_at(
     graph: &Graph,
-    scope: ScopeId,
-    program_counter: u32,
-    resumes: Resumes,
+    (scope, program_counter, resumes): (ScopeId, u32, Resumes),
+    callee_from: Option<u16>,
 ) -> Vec<ScopeAtPoint> {
     let tainted_here = graph.tainted_at(scope, program_counter);
     let mut chain = Vec::new();
     let mut stopped = (scope, program_counter, resumes);
     let mut end = graph.scope(scope).top();
+    // Only the innermost scope's frame reaches past a send it stopped
+    // at: every other ends where the one inlined into it begins.
+    let mut callee_from = callee_from;
     loop {
         let (id, program_counter, resumes) = stopped;
         let owner = graph.scope(id);
@@ -160,9 +221,13 @@ fn chain_at(
             offset: owner.offset,
             locations: (owner.offset..end)
                 .filter(|register| !tainted(&tainted_here, *register))
-                .map(|register| (register - owner.offset, Location::FrameWord))
+                .map(|register| {
+                    let own = register - owner.offset;
+                    (own, location_of(owner, program_counter, own, callee_from))
+                })
                 .collect(),
         });
+        callee_from = None;
         let Some((sender, call)) = owner.parent else {
             return chain;
         };
@@ -178,9 +243,9 @@ pub(crate) fn metadata(graph: &Graph, allocation: &Allocation) -> Metadata {
             .dirty_at
             .iter()
             .map(|point| {
-                let (scope, program_counter, resumes) = point_of(graph, point.block, point.kind);
+                let stopped = point_of(graph, point.block, point.kind);
                 InterruptPoint {
-                    scopes: chain_at(graph, scope, program_counter, resumes),
+                    scopes: chain_at(graph, stopped, callee_from(graph, point.block, point.kind)),
                 }
             })
             .collect(),
@@ -447,7 +512,8 @@ fn replay(
                 | Node::ClassOf { .. }
                 | Node::IndexedLoad { .. }
                 | Node::IndexedStore { .. }
-                | Node::TrapIfNil { .. } => {}
+                | Node::TrapIfNil { .. }
+                | Node::EliminatedBlock { .. } => {}
             }
             apply(&mut replay, allocation, definition)?;
         }
@@ -603,7 +669,7 @@ fn interrupt(
         graph,
         described,
         (scope, program_counter, resumes),
-        &tainted_here,
+        (&tainted_here, callee_from(graph, block, kind)),
     )?;
     for register in 0..stopped.words.len() {
         let number = u16::try_from(register).expect("internal: a register number fits a u16");
@@ -679,7 +745,7 @@ fn described_chain(
     graph: &Graph,
     described: &InterruptPoint,
     stopped: (ScopeId, u32, Resumes),
-    tainted_here: &[Range<u16>],
+    (tainted_here, mut callee_from): (&[Range<u16>], Option<u16>),
 ) -> Result<(), VerifyError> {
     let (_, program_counter, _) = stopped;
     let disagrees = VerifyError::MetadataDisagrees { program_counter };
@@ -703,13 +769,15 @@ fn described_chain(
             if tainted(tainted_here, register) {
                 continue;
             }
-            if listed.next() != Some(&(register - owner.offset, Location::FrameWord)) {
+            let own = register - owner.offset;
+            if listed.next() != Some(&(own, location_of(owner, counter, own, callee_from))) {
                 return Err(disagrees);
             }
         }
         if listed.next().is_some() {
             return Err(disagrees);
         }
+        callee_from = None;
         end = owner.offset;
         expected = owner
             .parent

@@ -83,7 +83,10 @@ pub(crate) struct OptimizedBody {
     /// from, by its `ScopeId`, the body's own first; `None` for a scope
     /// the plan made that the graph lays out no code for, which is no
     /// scope of the copy's (`optimizing::laid_out_scopes`).
-    pub(crate) scopes: Vec<Option<(CodeId, FeedbackBase)>>,
+    pub(crate) scopes: Vec<Option<LaidOutScope>>,
+    /// Every block the compile eliminated, by its `EliminatedId`: what the
+    /// exit that finds it live makes it from (`jit::materialize`).
+    pub(crate) eliminated: Vec<EliminatedBlock>,
     /// The most scopes inlined into one another below the body's own, and
     /// one past the highest physical register any scope's frame reaches
     /// (`plan::InliningPlan`).
@@ -100,6 +103,27 @@ pub(crate) struct OptimizedBody {
     pub(crate) small_integer_tag_tests: usize,
 }
 
+/// A scope the copy laid out code for: its body, the feedback base its
+/// sends' cells are found from, and for a block's scope the block the
+/// compile eliminated whose `value` it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LaidOutScope {
+    pub(crate) code_id: CodeId,
+    pub(crate) feedback_base: FeedbackBase,
+    pub(crate) block: Option<super::plan::EliminatedId>,
+}
+
+/// A block the compile eliminated, as the exit makes it: its body, the
+/// scope whose `MakeClosure` it is -- the frame it captures -- and the
+/// registers of that scope its values are copied from, which the plan
+/// keeps unwritten while it lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EliminatedBlock {
+    pub(crate) code_id: CodeId,
+    pub(crate) home: ScopeId,
+    pub(crate) copied: Vec<u16>,
+}
+
 /// What optimized code relied on beyond its own body and its key: what an
 /// edit, a full collection or a slide of the site ranges can change under
 /// it (`docs/design/execution.md`, "Invalidation").
@@ -113,8 +137,10 @@ pub(crate) struct ReliedOn {
     /// structure its lexical sends walk; and the one each arm always
     /// inlined was decided for, whose layout an accessor's field is.
     pub(crate) applications: Vec<crate::heap::ApplicationIndex>,
-    /// Each inlined method's body and the feedback base its sends' cells
-    /// are found from, in the order of its scopes, each once.
+    /// Each inlined body -- a method's or a block's -- and the feedback
+    /// base its sends' cells are found from, in the order of its scopes,
+    /// then each eliminated block's body, whose closure an exit makes,
+    /// each once.
     pub(crate) bodies: Vec<(CodeId, FeedbackBase)>,
 }
 
@@ -294,10 +320,13 @@ impl Emitter<'_> {
     }
 
     /// The site the code of the interrupt point `point` records its
-    /// addresses with: its index, for a point inside an inlined scope, and
-    /// none for one of the body's own scope, whose addresses name the body.
+    /// addresses with: its index, for a point inside an inlined scope or
+    /// where a block the compile eliminated is live, whose closure the exit
+    /// makes; none for any other point of the body's own scope, whose
+    /// addresses name the body.
     fn site_of(&self, point: usize) -> Option<u32> {
-        (self.metadata.points[point].scopes.len() > 1).then(|| {
+        let described = &self.metadata.points[point];
+        (described.scopes.len() > 1 || described.holds_eliminated_blocks()).then(|| {
             u32::try_from(point).expect("internal: a body's points are numbered in 32 bits")
         })
     }
@@ -393,6 +422,15 @@ impl Emitter<'_> {
             Node::Constant { value, word } => {
                 if let Some(target) = defined_in(*value) {
                     body.macro_assembler.load_immediate_word(target, *word);
+                }
+            }
+            // The block is made by the exit that finds it live; until then
+            // every frame word bound to it holds `nil`, a word the
+            // collector may trace.
+            Node::EliminatedBlock { value, .. } => {
+                if let Some(target) = defined_in(*value) {
+                    body.macro_assembler
+                        .load_immediate_word(target, Immediate::NIL.bits());
                 }
             }
             // The body's own receiver: an inlined scope's is its header
@@ -830,9 +868,12 @@ impl Emitter<'_> {
         // arm transfers into the twin, as a lean body's does -- the body's
         // own frame's twin, which no inlined scope has: in one the
         // interpreter makes the closure, once the exit has materialized
-        // the scopes.
+        // the scopes. A transfer writes nothing of the frame but its
+        // header, so where a block the compile eliminated is live, whose
+        // registers hold `nil` for it, the exit makes it instead.
+        let eliminated = self.metadata.points[point_index].holds_eliminated_blocks();
         let lowering = match instruction {
-            SnapshotInstruction::MakeClosure { .. } if inlined => Lowering::Exit,
+            SnapshotInstruction::MakeClosure { .. } if inlined || eliminated => Lowering::Exit,
             SnapshotInstruction::MakeClosure { .. } => closures::transfer_to_twin(body),
             other => lower(
                 &other
@@ -1672,10 +1713,12 @@ mod tests {
     /// -- their type-cases, entries, returns and frame nodes at their
     /// scopes' offsets -- under AArch64's convention, which no test here
     /// runs, and every address recorded with an interrupt point lies in
-    /// the code and names a point inside an inlined scope.
+    /// the code and names a point inside an inlined scope or one where a
+    /// block the copy eliminated is live; and the corpus eliminates more
+    /// than ten blocks.
     #[test]
     fn an_inlined_body_assembles_for_aapcs64() {
-        let mut inlined = 0;
+        let (mut inlined, mut eliminated) = (0, 0);
         for tree in crate::jit::optimizing::inlining_corpus() {
             let optimized = crate::jit::optimizing::compile_tree(
                 &tree,
@@ -1688,13 +1731,16 @@ mod tests {
             let length = u32::try_from(optimized.code.bytes.len()).expect("small");
             for (offset, point) in &optimized.sites {
                 assert!(*offset <= length);
-                assert!(optimized.metadata.points[*point as usize].scopes.len() > 1);
+                let described = &optimized.metadata.points[*point as usize];
+                assert!(described.scopes.len() > 1 || described.holds_eliminated_blocks());
             }
             if optimized.deepest_chain > 0 {
                 inlined += 1;
             }
+            eliminated += optimized.eliminated.len();
         }
         assert!(inlined > 10, "{inlined} trees inline");
+        assert!(eliminated > 10, "{eliminated} blocks eliminated");
     }
 
     /// `r15 := r0 + r1. r16 := r15 < r2. ^r16`, each operation's fallback

@@ -470,7 +470,7 @@ fn jit_statistics_print_one_line_to_stderr() {
          # bodies optimized (# customized copies) in # ms, \
          # optimized exits (# forced, # traps), # abandoned, \
          # made not entrant, # refused for good, # invalidated copies, \
-         # dispatched calls"
+         # dispatched calls, # blocks materialized"
     );
 }
 

@@ -209,7 +209,8 @@ pub(crate) fn named_registers(graph: &Graph) -> usize {
                 | Node::ClassOf { .. }
                 | Node::IndexedLoad { .. }
                 | Node::IndexedStore { .. }
-                | Node::TrapIfNil { .. } => {}
+                | Node::TrapIfNil { .. }
+                | Node::EliminatedBlock { .. } => {}
             }
         }
     }
@@ -269,7 +270,8 @@ pub(crate) fn bind(bindings: &mut [Binding], node: &Node) {
         | Node::ClassOf { .. }
         | Node::IndexedLoad { .. }
         | Node::IndexedStore { .. }
-        | Node::TrapIfNil { .. } => {}
+        | Node::TrapIfNil { .. }
+        | Node::EliminatedBlock { .. } => {}
     }
 }
 

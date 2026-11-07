@@ -50,11 +50,10 @@ pub(crate) enum Location {
     /// The frame word of every bytecode register bound to the value.
     FrameWord,
     /// A block the compile never creates, which an exit that finds it
-    /// live materializes (`docs/design/execution.md`, "Inlining").
-    #[expect(
-        dead_code,
-        reason = "the plan eliminates no block until the exit can materialize one"
-    )]
+    /// live materializes (`docs/design/execution.md`, "Inlining"): a
+    /// register's location in an interrupt point's metadata, never a
+    /// value's in the allocation, which holds the block's `nil` like any
+    /// other value.
     EliminatedBlock(EliminatedId),
 }
 

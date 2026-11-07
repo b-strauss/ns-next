@@ -17,7 +17,7 @@ use crate::bytecode::{IntegerOperation, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId, Immediate};
 use crate::mixin::DispatchId;
 
-pub(crate) use super::plan::ScopeId;
+pub(crate) use super::plan::{EliminatedId, ScopeId};
 use super::snapshot::SnapshotInstruction;
 
 /// A block of the graph: its index in `Graph::blocks`.
@@ -83,6 +83,14 @@ pub(crate) struct GraphScope {
     /// body's instructions, in its own numbering
     /// (`Snapshot::tainted_before`).
     pub(crate) tainted_before: Vec<Vec<Range<u16>>>,
+    /// For a block's scope, the eliminated block whose `value` it runs:
+    /// its activation's closure is that block, made by the exit.
+    pub(crate) block: Option<EliminatedId>,
+    /// The registers that hold an eliminated block before each of the
+    /// body's instructions, in its own numbering, and the block
+    /// (`plan::ScopePlan::eliminated_before`): where an exit stopped there
+    /// writes the closure it makes of it.
+    pub(crate) eliminated_before: Vec<Vec<(u16, EliminatedId)>>,
 }
 
 /// Why a physical register number fits a `u16`: the plan inlines a scope
@@ -399,6 +407,13 @@ pub(crate) enum Node {
         value: ValueId,
         program_counter: u32,
     },
+    /// A block the compile never creates (`plan::BlockPlan::Eliminated`):
+    /// a value no machine code reads -- every use of it is an inlined
+    /// `value` send of it or a move -- whose frame words hold `nil` until
+    /// an exit that finds it live makes the closure and writes it into
+    /// every register the interrupt point says holds it
+    /// (`jit::materialize`). Emitted as `nil`.
+    EliminatedBlock { value: ValueId, block: EliminatedId },
 }
 
 /// What an inlined indexed access reads or writes (`Node::IndexedLoad`,
@@ -498,7 +513,8 @@ impl Node {
             | Node::FieldLoad { value, .. }
             | Node::IdentityCompare { value, .. }
             | Node::ClassOf { value, .. }
-            | Node::IndexedLoad { value, .. } => Some(*value),
+            | Node::IndexedLoad { value, .. }
+            | Node::EliminatedBlock { value, .. } => Some(*value),
             Node::Copy { .. }
             | Node::Frame { .. }
             | Node::Overlay { .. }
@@ -534,7 +550,8 @@ impl Node {
                 ..
             }
             | Node::IndexedStore { .. }
-            | Node::TrapIfNil { .. } => ValueKind::Unknown,
+            | Node::TrapIfNil { .. }
+            | Node::EliminatedBlock { .. } => ValueKind::Unknown,
         }
     }
 
@@ -595,7 +612,8 @@ impl Node {
                 kind: IndexedKind::ByteArray,
                 ..
             }
-            | Node::TrapIfNil { .. } => false,
+            | Node::TrapIfNil { .. }
+            | Node::EliminatedBlock { .. } => false,
         }
     }
 
@@ -605,7 +623,8 @@ impl Node {
             Node::FrameRead { .. }
             | Node::Constant { .. }
             | Node::Receiver { .. }
-            | Node::Overlay { .. } => Vec::new(),
+            | Node::Overlay { .. }
+            | Node::EliminatedBlock { .. } => Vec::new(),
             Node::Copy { source, .. }
             | Node::CurrentClass { from: source, .. }
             | Node::FieldLoad { object: source, .. }

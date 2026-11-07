@@ -135,6 +135,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
             - before.optimized_frames_materialized,
         inlined_frames_materialized: after.inlined_frames_materialized
             - before.inlined_frames_materialized,
+        materialized_blocks: after.materialized_blocks - before.materialized_blocks,
         optimized_bodies_resumed: after.optimized_bodies_resumed - before.optimized_bodies_resumed,
         optimized_twin_requests: after.optimized_twin_requests - before.optimized_twin_requests,
         customized_copies: after.customized_copies - before.customized_copies,
@@ -10223,4 +10224,183 @@ fn a_reclaimed_dispatch_id_answers_none() {
     drop(outer);
     interpreter.collect_now();
     assert_eq!(interpreter.application_of_dispatch_id(id), None);
+}
+
+/// `run: count` adds, `count` times over, twice each of 1 to 10 through
+/// `apply:to:`, which values the block it is handed: the block `to:do:`
+/// is handed makes a block at every pass, and both are eliminated where
+/// `run:`'s copy inlines `to:do:`, `apply:to:` and the two blocks.
+/// `run: count` answers `count * 110`.
+const BLOCKS_IN_A_TO_DO_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      apply: action to: value = (
+        ^action value: value
+      )
+
+      public run: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          1 to: 10 do: [:step | sum:: sum + (self apply: [:value | value * 2] to: step)].
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A `to:do:` loop whose copy inlines `to:do:` with its block, and the
+    /// block that block makes at every pass with the method it is handed
+    /// to, creates neither: 1,000 passes allocate fewer objects than the
+    /// 100 blocks `to:do:` is handed, and no exit makes a block. The answer
+    /// is the interpreter's.
+    fn a_to_do_loop_inlined_with_its_block_creates_no_closure(lowering) {
+        let (mut interpreter, class) = load_customizing(BLOCKS_IN_A_TO_DO_LOOP, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let pinned = run_until_inlining(
+            &mut interpreter,
+            &class,
+            &subject,
+            lowering,
+            ("run:", 11000),
+            3,
+        );
+        let before = interpreter.jit_statistics();
+        let objects = interpreter.heap_statistics().live_objects;
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 11000);
+        let allocated = interpreter
+            .heap_statistics()
+            .live_objects
+            .saturating_sub(objects);
+        let done = since(interpreter.jit_statistics(), before);
+        // The deopt stress mode forces the copy out at its interrupt
+        // points, which the counts below would see.
+        if !pinned || the_stress_mode_is_on("DEOPT") {
+            return;
+        }
+        assert_eq!(done.materialized_blocks, 0, "{done:?}");
+        assert_eq!(done.optimized_exits, 0, "{done:?}");
+        assert!(allocated < 100, "{allocated} objects for 1,000 passes");
+    }
+}
+
+/// `find: target` answers ten times `target` from inside the block it
+/// hands `to:do:`, by a `^` out of it; `run: count` sums `find: 7` over
+/// `count` passes, answering `count * 70`.
+const A_RETURN_FROM_A_TO_DO_BLOCK: &str = indoc! {"
+    class Subject = Object new () (
+      find: target = (
+        1 to: 100 do: [:each | each = target ifTrue: [^each * 10]].
+        ^0
+      )
+
+      public run: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (self find: 7).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A `^` from a block inlined into the copy, whose home -- `find:` --
+    /// the copy inlined too, is a jump to that home's return: no cut runs
+    /// and no exit leaves the copy, where a block run as a closure cuts its
+    /// way back to its home at every return. The answer is the
+    /// interpreter's.
+    fn a_non_local_return_from_an_inlined_block_jumps_to_its_home_s_return(lowering) {
+        let (mut interpreter, class) = load_customizing(A_RETURN_FROM_A_TO_DO_BLOCK, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let pinned = run_until_inlining(
+            &mut interpreter,
+            &class,
+            &subject,
+            lowering,
+            ("run:", 7000),
+            3,
+        );
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 7000);
+        let done = since(interpreter.jit_statistics(), before);
+        // The deopt stress mode forces the copy out at its interrupt
+        // points, which the counts below would see.
+        if !pinned || the_stress_mode_is_on("DEOPT") {
+            return;
+        }
+        assert_eq!(done.cuts, 0, "{done:?}");
+        assert_eq!(done.optimized_exits, 0, "{done:?}");
+    }
+}
+
+/// `remember:`, which `run:`'s copy inlines, makes a block that `keep:`
+/// stores in a slot, where `apply:` finds it: the block escapes, so the
+/// copy creates it -- as the interpreter does, which the copy leaves for
+/// it. `run: count` answers `count * (count - 1)`.
+const AN_ESCAPING_BLOCK: &str = indoc! {"
+    class Subject = Object new (
+      | stored ::= nil. |
+    ) (
+      keep: action = (
+        stored:: action.
+        ^0
+      )
+
+      remember: index = (
+        self keep: [:value | value * 2].
+        ^index
+      )
+
+      apply: value = (
+        ^stored value: value
+      )
+
+      public run: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          self remember: index.
+          sum:: sum + (self apply: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A block that escapes -- stored in a slot -- is created by its
+    /// `MakeClosure` as the interpreter creates it: inside a scope the copy
+    /// inlined that leaves the copy, which makes no block of its own. The
+    /// answer is the interpreter's.
+    fn a_block_that_escapes_still_leaves_optimized_code(lowering) {
+        let (mut interpreter, class) = load_customizing(AN_ESCAPING_BLOCK, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let pinned = run_until_inlining(
+            &mut interpreter,
+            &class,
+            &subject,
+            lowering,
+            ("run:", 9900),
+            1,
+        );
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 9900);
+        let done = since(interpreter.jit_statistics(), before);
+        if !pinned {
+            return;
+        }
+        assert!(done.optimized_exits >= 1, "{done:?}");
+        assert_eq!(done.materialized_blocks, 0, "{done:?}");
+    }
 }

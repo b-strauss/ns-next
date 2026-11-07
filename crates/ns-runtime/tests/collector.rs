@@ -351,8 +351,9 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
     );
 }
 
-/// A module whose entry allocates a closure per iteration and keeps none
-/// of them: every closure dies young.
+/// A module whose entry allocates an `Array` per iteration and keeps none
+/// of them: every one dies young. An `Array`, not a block: optimized code
+/// makes no block that nothing lets escape.
 const CHURN: &str = indoc! {"
     class Churn = Object new () (
       public run: count = (
@@ -360,8 +361,9 @@ const CHURN: &str = indoc! {"
         total:: 0.
         remaining:: count.
         [remaining > 0] whileTrue: [
-          | block = [:value | value + 1]. |
-          total:: block value: total.
+          | cell = Array new: 1. |
+          cell at: 1 put: total + 1.
+          total:: cell at: 1.
           remaining:: remaining - 1.
         ].
         ^total
@@ -390,7 +392,7 @@ const KEEPER: &str = indoc! {"
 "};
 
 /// Eden reaching its threshold asks for a scavenge, and the run loop's next
-/// safepoint serves it: the closures die young and the run's answer stands.
+/// safepoint serves it: the Arrays die young and the run's answer stands.
 #[test]
 fn filling_eden_scavenges_during_the_run() {
     let (mut interpreter, class) = load(CHURN);

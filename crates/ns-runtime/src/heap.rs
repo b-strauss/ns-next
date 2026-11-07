@@ -1075,6 +1075,9 @@ enum MachineOperand {
     CurrentClass,
     /// The operand word the frame's prologue wrote.
     Recorded,
+    /// `nil`, for an inlined block's closure no one made yet
+    /// (`MachineKind::inlined_closure`).
+    NotMadeYet,
 }
 
 #[cfg(ns_jit)]
@@ -1124,6 +1127,17 @@ impl MachineKind {
         MachineKind {
             tag: MachineKindTag::Constant(kind_tag::SUPERCLASS_CLAUSE),
             operand: MachineOperand::Recorded,
+        }
+    }
+
+    /// An inlined block's activation in optimized code, whose closure the
+    /// compile eliminated: no closure exists for it yet, so its operand is
+    /// `nil` until the exit that made the activation makes the closure and
+    /// writes it there (`Heap::set_closure_of_inlined_scope`).
+    pub(crate) fn inlined_closure() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::CLOSURE),
+            operand: MachineOperand::NotMadeYet,
         }
     }
 
@@ -10107,7 +10121,7 @@ impl<'gc> Heap<'gc> {
         let recorded = || {
             let Some(written) = written else {
                 unreachable!(
-                    "internal: an inlined scope is a method's, whose frame records nothing"
+                    "internal: an inlined scope's frame records nothing, no prologue having written it"
                 );
             };
             written
@@ -10128,7 +10142,12 @@ impl<'gc> Heap<'gc> {
         } else {
             (Word::NIL, false)
         };
-        let counted = if frame.reifies || frame.kind.is_closure() {
+        // An inlined scope is counted as the interpreter's push of it
+        // counts it, a block's among them: only the reference lowering's
+        // control flow pushes an uncounted one, which no copy inlines.
+        let counted = if frame.inlined {
+            true
+        } else if frame.reifies || frame.kind.is_closure() {
             recorded().counted
         } else {
             true
@@ -10168,6 +10187,7 @@ impl<'gc> Heap<'gc> {
             MachineOperand::Selector(selector) => frames::number_word(selector.index() as u64),
             MachineOperand::CurrentClass => header_word(self, frame_header::CURRENT_CLASS),
             MachineOperand::Recorded => header_word(self, frame_header::OPERAND),
+            MachineOperand::NotMadeYet => Word::NIL,
         };
         // The program counter a frame that reifies holds is the one the
         // interpreter would hold there -- its push's 0, or the last one it
@@ -10266,6 +10286,75 @@ impl<'gc> Heap<'gc> {
             }
         }
         self.activation_handle_at(frame.offset)
+    }
+
+    /// The selector of `activation`'s method, if it is a method's: what a
+    /// test reads of any activation, an inlined block's whose closure no
+    /// exit made yet among them, which `activation_kind` refuses.
+    #[cfg(all(test, ns_jit))]
+    pub(crate) fn activation_method_selector(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<Symbol> {
+        self.check_activation(activation);
+        let offset = activation.offset;
+        (self.stack.flags(offset).kind_tag == kind_tag::METHOD).then(|| {
+            Symbol::from_index(frames::number_as_u32(
+                self.stack.header_word(offset, frame_header::OPERAND),
+            ))
+        })
+    }
+
+    /// The closure of `activation`, if it is a closure's and its closure
+    /// exists: an inlined block's waits for the exit to make it.
+    #[cfg(all(test, ns_jit))]
+    pub(crate) fn activation_closure(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<ObjectReference<'gc>> {
+        self.check_activation(activation);
+        let offset = activation.offset;
+        if self.stack.flags(offset).kind_tag != kind_tag::CLOSURE {
+            return None;
+        }
+        self.stack
+            .header_word(offset, frame_header::OPERAND)
+            .object_offset()
+            .map(|object| self.object_handle(object))
+    }
+
+    /// The activation whose header lies at `offset`: a frame the exit's
+    /// walk wrote and made the stack's (`adopt_machine_frames`), an
+    /// inlined scope's among them, which no push made and so no handle
+    /// names yet.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_activation_at(&self, offset: u32) -> ActivationReference {
+        let activation = self.activation_handle_at(offset);
+        self.check_activation(activation);
+        activation
+    }
+
+    /// Makes `closure` the closure of `activation`, an inlined block's
+    /// activation an exit wrote while no closure of it existed
+    /// (`MachineKind::inlined_closure`): the exit made the closure since,
+    /// as the interpreter's push would have found it.
+    #[cfg(ns_jit)]
+    pub(crate) fn set_closure_of_inlined_scope(
+        &mut self,
+        activation: ActivationReference,
+        closure: ObjectReference<'gc>,
+    ) {
+        self.check_activation(activation);
+        let offset = activation.offset;
+        debug_assert!(
+            self.stack.flags(offset).kind_tag == kind_tag::CLOSURE
+                && self.stack.header_word(offset, frame_header::OPERAND).bits() == Word::NIL.bits(),
+            "internal: only an inlined block's activation waits for its closure"
+        );
+        let word = self.store(Value::object(closure));
+        self.stack
+            .frames
+            .set_committed_word(offset as usize + frame_header::OPERAND, word.bits());
     }
 
     /// The handle of the frame whose header lies at `offset`, whatever the

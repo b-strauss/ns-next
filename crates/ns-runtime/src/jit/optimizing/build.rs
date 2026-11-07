@@ -26,6 +26,18 @@
 //! runs over that body as over any other, so every rule above holds of
 //! the physical frame.
 //!
+//! **Blocks.** A block the plan eliminates (`plan::BlockPlan::Eliminated`)
+//! is made by nothing: its `MakeClosure` binds its destination to a value
+//! no machine code reads (`Node::EliminatedBlock`), `nil` in every frame
+//! word bound to it, which the exit that finds the block live replaces with
+//! the closure it makes. A `value` send of it is its block's scope, laid
+//! out where the interpreter would push the closure's activation, entered
+//! as the push enters it -- its parameters the send's arguments, its
+//! receiver and current class its home's, its copied values what its
+//! home's registers hold, which the plan keeps unwritten while it lives --
+//! its outer locals its homes' registers, and its `^` a jump to the return
+//! of its home that is no block's, all of them scopes of the compile.
+//!
 //! **Callees always inlined.** An arm whose callee the plan always
 //! inlines (`AlwaysInlined`) -- an accessor, a quick method, a lazy slot's
 //! getter, `==`, `class`, `SmallInteger` arithmetic and an `Array`'s or a
@@ -53,7 +65,7 @@ use super::graph::{
     tainted_at, Block, BlockId, ClassStart, End, Graph, GraphScope, HeaderBinding, IndexedKind,
     Node, Phi, ScopeId, ValueId, ValueKind, FRAME_BOUND,
 };
-use super::plan::{AlwaysInlined, ArmPlan, FallThrough, InliningPlan};
+use super::plan::{AlwaysInlined, ArmPlan, BlockPlan, EliminatedId, FallThrough, InliningPlan};
 use super::snapshot::{Snapshot, SnapshotInstruction};
 use super::tree::SnapshotTree;
 use super::verify::immediate_dominators;
@@ -307,6 +319,11 @@ enum Kind {
     InlinedReturn,
     /// A callee always inlined (`Step::Always`).
     Always,
+    /// An eliminated block's `MakeClosure` (`Step::Eliminated`).
+    EliminatedBlock {
+        destination: u16,
+        block: EliminatedId,
+    },
 }
 
 /// The outcome of a Boolean test a branch instruction jumps for.
@@ -562,6 +579,12 @@ enum Step {
     /// A callee always inlined at its sender's send: an arm of the send's
     /// type-case, or the send itself where it is taken without a test.
     Always(Box<AlwaysStep>),
+    /// A `MakeClosure` whose block the compile eliminates: `destination`
+    /// bound to the block (`Node::EliminatedBlock`), nothing made.
+    Eliminated {
+        destination: u16,
+        block: EliminatedId,
+    },
 }
 
 /// A callee always inlined (`Step::Always`), every register physical: what
@@ -669,7 +692,7 @@ impl<'snapshot> Flat<'snapshot> {
                     .customization
                     .map(|customization| customization.own_slot_base),
             }],
-            graph_scopes: vec![graph_scope_of(snapshot, None, 0)],
+            graph_scopes: vec![graph_scope_of(snapshot, None, 0, None, Vec::new())],
             steps_of: vec![(0..snapshot.instructions.len()).collect()],
             // A test's snapshot may name fewer sets than instructions: the
             // rest taint nothing.
@@ -710,7 +733,15 @@ impl<'snapshot> Flat<'snapshot> {
             .scopes
             .iter()
             .zip(&snapshots)
-            .map(|(scope, snapshot)| graph_scope_of(snapshot, scope.parent, scope.offset))
+            .map(|(scope, snapshot)| {
+                graph_scope_of(
+                    snapshot,
+                    scope.parent,
+                    scope.offset,
+                    scope.block,
+                    scope.eliminated_before.clone(),
+                )
+            })
             .collect();
         let mut laying = Laying {
             tree,
@@ -787,6 +818,9 @@ impl<'snapshot> Flat<'snapshot> {
                             steps_of[scope.0 as usize][program_counter as usize + 1];
                         Step::Always(always)
                     }
+                    Pending::Eliminated { destination, block } => {
+                        Step::Eliminated { destination, block }
+                    }
                 };
                 FlatStep {
                     scope,
@@ -857,8 +891,16 @@ fn taint_point_of(scopes: &[GraphScope], step: &FlatStep) -> (ScopeId, u32) {
     }
 }
 
-/// The graph's scope of `snapshot`'s body at `offset`, sent from `parent`.
-fn graph_scope_of(snapshot: &Snapshot, parent: Option<(ScopeId, u32)>, offset: u16) -> GraphScope {
+/// The graph's scope of `snapshot`'s body at `offset`, sent from `parent`,
+/// running the eliminated block `block` if it is a block's, the blocks
+/// `eliminated_before` says held before each of its instructions.
+fn graph_scope_of(
+    snapshot: &Snapshot,
+    parent: Option<(ScopeId, u32)>,
+    offset: u16,
+    block: Option<EliminatedId>,
+    eliminated_before: Vec<Vec<(u16, EliminatedId)>>,
+) -> GraphScope {
     GraphScope {
         code_id: snapshot.code_id,
         parent,
@@ -867,6 +909,8 @@ fn graph_scope_of(snapshot: &Snapshot, parent: Option<(ScopeId, u32)>, offset: u
         register_count: u16::try_from(snapshot.register_count())
             .expect("internal: a body names at most u16::MAX registers"),
         tainted_before: snapshot.tainted_before.clone(),
+        block,
+        eliminated_before,
     }
 }
 
@@ -893,6 +937,10 @@ enum Pending {
     },
     /// Its continuation not numbered yet: the step after its send's.
     Always(Box<AlwaysStep>),
+    Eliminated {
+        destination: u16,
+        block: EliminatedId,
+    },
 }
 
 /// Where a type-case's arm goes: the entry of its callee's scope, or the
@@ -1098,11 +1146,7 @@ impl Laying<'_, '_> {
         let mut applications = Vec::new();
         for (guard, application, arm) in &site.arms {
             match arm {
-                ArmPlan::Inline { callee } => {
-                    if self.plan.scopes[callee.0 as usize].block_of.is_none() {
-                        arms.push((*guard, LaidArm::Scope(*callee)));
-                    }
-                }
+                ArmPlan::Inline { callee } => arms.push((*guard, LaidArm::Scope(*callee))),
                 ArmPlan::Always(always) => {
                     let Some(receiver) = receiver else {
                         continue;
@@ -1241,31 +1285,130 @@ impl Laying<'_, '_> {
         Some(expressed)
     }
 
+    /// The return of the inlined scope `scope` with the value in its
+    /// register `register`: the value bound to its send's destination in
+    /// its sender, where it goes on.
+    fn return_of(&self, scope: ScopeId, register: u16) -> Pending {
+        let owner = &self.graph_scopes[scope.0 as usize];
+        let (sender, call) = owner
+            .parent
+            .expect("internal: an inlined scope has a sender");
+        let sent = &self.snapshots[sender.0 as usize].instructions[call as usize];
+        let destination = sent
+            .register_written()
+            .expect("internal: an inlined send writes its destination");
+        Pending::Return {
+            source: physical(owner.offset, register),
+            destination: physical(self.graph_scopes[sender.0 as usize].offset, destination),
+            slot_end: physical(owner.offset, owner.argument_count),
+            sender,
+            call,
+        }
+    }
+
+    /// The scope `depth` frames out from the block scope `scope`, as its
+    /// closures' captured frames chain them: its home, then each home's
+    /// own while it is a block's; `scope` itself for 0. The plan inlines
+    /// no block whose body reaches past the compile
+    /// (`Planner::reaches_past_the_compile`).
+    fn reached(&self, scope: ScopeId, depth: u16) -> ScopeId {
+        let mut reached = scope;
+        for _ in 0..depth {
+            reached = self.plan.scopes[reached.0 as usize]
+                .block_of
+                .expect("internal: an inlined block reaches no frame past the compile");
+        }
+        reached
+    }
+
     /// The instruction at `program_counter` of `scope` as a step: its
     /// registers physical, a `Return` of an inlined scope the scope's
     /// return to its sender, and its `LoadSelf` a read of the receiver its
-    /// header binds.
+    /// header binds. In an inlined block's scope an outer local is its
+    /// home's register, and a `^` its home's return, both in the compile;
+    /// a `MakeClosure` the plan eliminates makes nothing.
     fn instruction(&self, scope: ScopeId, program_counter: u32) -> Pending {
         let owner = &self.graph_scopes[scope.0 as usize];
         let original =
             self.snapshots[scope.0 as usize].instructions[program_counter as usize].clone();
-        if let Some((sender, call)) = owner.parent {
+        if let SnapshotInstruction::MakeClosure { destination, .. } = original {
+            if let Some(BlockPlan::Eliminated(block)) =
+                self.plan.blocks.get(&(scope, program_counter))
+            {
+                return Pending::Eliminated {
+                    destination: physical(owner.offset, destination),
+                    block: *block,
+                };
+            }
+        }
+        if owner.parent.is_some() {
+            let block_scope = self.plan.scopes[scope.0 as usize].block_of.is_some();
             match original {
                 SnapshotInstruction::Return { register }
                 | SnapshotInstruction::ImplicitReturn { register } => {
-                    let sent = &self.snapshots[sender.0 as usize].instructions[call as usize];
-                    let destination = sent
-                        .register_written()
-                        .expect("internal: an inlined send writes its destination");
-                    return Pending::Return {
-                        source: physical(owner.offset, register),
-                        destination: physical(
-                            self.graph_scopes[sender.0 as usize].offset,
+                    return self.return_of(scope, register);
+                }
+                // A block's `^` returns from its first home that is no
+                // block's: the root's own return, or an inlined method's.
+                SnapshotInstruction::NonLocalReturn { register } if block_scope => {
+                    let mut home = scope;
+                    while let Some(outer) = self.plan.scopes[home.0 as usize].block_of {
+                        home = outer;
+                    }
+                    if home != ScopeId::ROOT {
+                        let returned = self.return_of(home, 0);
+                        let Pending::Return {
                             destination,
-                        ),
-                        slot_end: physical(owner.offset, owner.argument_count),
-                        sender,
-                        call,
+                            slot_end,
+                            sender,
+                            call,
+                            ..
+                        } = returned
+                        else {
+                            unreachable!("internal: a return is a return");
+                        };
+                        return Pending::Return {
+                            source: physical(owner.offset, register),
+                            destination,
+                            slot_end,
+                            sender,
+                            call,
+                        };
+                    }
+                    let returned = SnapshotInstruction::Return {
+                        register: physical(owner.offset, register),
+                    };
+                    return Pending::Instruction {
+                        physical: returned,
+                        original,
+                    };
+                }
+                SnapshotInstruction::LoadOuterLocal {
+                    destination,
+                    depth,
+                    index,
+                } if block_scope => {
+                    let reached = &self.graph_scopes[self.reached(scope, depth).0 as usize];
+                    return Pending::Instruction {
+                        physical: SnapshotInstruction::Move {
+                            destination: physical(owner.offset, destination),
+                            source: physical(reached.offset, index),
+                        },
+                        original,
+                    };
+                }
+                SnapshotInstruction::StoreOuterLocal {
+                    source,
+                    depth,
+                    index,
+                } if block_scope => {
+                    let reached = &self.graph_scopes[self.reached(scope, depth).0 as usize];
+                    return Pending::Instruction {
+                        physical: SnapshotInstruction::StoreLocal {
+                            source: physical(owner.offset, source),
+                            slot: physical(reached.offset, index),
+                        },
+                        original,
                     };
                 }
                 SnapshotInstruction::ReturnSlotIfFilled { .. }
@@ -1294,6 +1437,9 @@ impl Laying<'_, '_> {
     fn entry(&self, scope: ScopeId) -> Entry {
         let callee = &self.graph_scopes[scope.0 as usize];
         let planned = &self.plan.scopes[scope.0 as usize];
+        if let Some(home) = planned.block_of {
+            return self.block_entry(scope, home);
+        }
         let (sender, call) = planned
             .parent
             .expect("internal: an inlined scope has a sender");
@@ -1360,6 +1506,76 @@ impl Laying<'_, '_> {
             class_start,
             sender_class,
             class_steps,
+            receiver_register: callee.header_register(HeaderBinding::Receiver),
+            class_register: callee.header_register(HeaderBinding::CurrentClass),
+            temporaries: physical(callee.offset, named_start)..physical(callee.offset, named_end),
+            overlay: vec![
+                callee.exit_words(),
+                physical(callee.offset, named_end)..u16::MAX,
+            ],
+        }
+    }
+
+    /// The entry of the block scope `scope`, whose block `home` made: as
+    /// the interpreter's push of a closure lays it -- its parameters bound
+    /// to the `value` send's arguments, its receiver and current class to
+    /// its home's, its copied values to what the registers they were
+    /// copied from hold, which the plan keeps unwritten while the block
+    /// lives (`Planner::copied_source_written`), and its other named
+    /// temporaries to `nil`.
+    fn block_entry(&self, scope: ScopeId, home: ScopeId) -> Entry {
+        let callee = &self.graph_scopes[scope.0 as usize];
+        let planned = &self.plan.scopes[scope.0 as usize];
+        let (sender, call) = planned
+            .parent
+            .expect("internal: an inlined scope has a sender");
+        let sender_scope = &self.graph_scopes[sender.0 as usize];
+        let home_scope = &self.graph_scopes[home.0 as usize];
+        let sent = &self.snapshots[sender.0 as usize].instructions[call as usize];
+        let (_, sources) = sent
+            .argument_slots()
+            .expect("internal: an inlined send lays its arguments on slots");
+        let block = planned
+            .block
+            .expect("internal: a block's scope runs an eliminated block");
+        let made_at = self
+            .plan
+            .blocks
+            .iter()
+            .find(|(_, planned)| **planned == BlockPlan::Eliminated(block))
+            .map(|((_, program_counter), _)| *program_counter)
+            .expect("internal: an eliminated block is made in its home");
+        let SnapshotInstruction::MakeClosure { copied, .. } =
+            &self.snapshots[home.0 as usize].instructions[made_at as usize]
+        else {
+            panic!("internal: a block is made by a `MakeClosure`");
+        };
+        let copied_start = physical(callee.argument_count, crate::bytecode::HEADER_REGISTERS);
+        let mut arguments: Vec<(u16, u16)> = (0_u16..)
+            .zip(sources)
+            .map(|(index, source)| {
+                (
+                    physical(callee.offset, index),
+                    physical(sender_scope.offset, *source),
+                )
+            })
+            .collect();
+        arguments.extend((0_u16..).zip(copied).map(|(position, source)| {
+            (
+                physical(callee.offset, physical(copied_start, position)),
+                physical(home_scope.offset, *source),
+            )
+        }));
+        let facts = &self.snapshots[scope.0 as usize].facts;
+        let named_start = physical(copied_start, facts.copied_count);
+        let named_end = facts.local_count.max(named_start);
+        Entry {
+            receiver: ReceiverOf::SelfOf(home),
+            arguments,
+            // Its home's current class, no step from it.
+            class_start: ClassStart::Class,
+            sender_class: Some(home_scope.header_register(HeaderBinding::CurrentClass)),
+            class_steps: 0,
             receiver_register: callee.header_register(HeaderBinding::Receiver),
             class_register: callee.header_register(HeaderBinding::CurrentClass),
             temporaries: physical(callee.offset, named_start)..physical(callee.offset, named_end),
@@ -2039,6 +2255,10 @@ impl<'flat> Builder<'flat> {
             Step::Enter(_) => Kind::Enter,
             Step::Return { .. } => Kind::InlinedReturn,
             Step::Always(_) => Kind::Always,
+            Step::Eliminated { destination, block } => Kind::EliminatedBlock {
+                destination: *destination,
+                block: *block,
+            },
         }
     }
 
@@ -2814,6 +3034,23 @@ impl<'flat> Builder<'flat> {
                 self.always(block, state, always, program_counter);
                 None
             }
+            Kind::EliminatedBlock {
+                destination,
+                block: eliminated,
+            } => {
+                let value = self.new_value(None);
+                let nodes = &mut self.blocks[block].nodes;
+                nodes.push(Node::EliminatedBlock {
+                    value,
+                    block: eliminated,
+                });
+                nodes.push(Node::Copy {
+                    destination_register: destination,
+                    source: value,
+                });
+                self.bind(state, destination, value);
+                None
+            }
         }
     }
 
@@ -3019,6 +3256,8 @@ fn step_reads(flat: &Flat<'_>, step: &FlatStep, choice: Choice) -> Vec<u16> {
             reads.extend(always.arguments.iter().map(|(_, source)| *source));
             reads
         }
+        // Its copied values are read where its scope is entered.
+        Step::Eliminated { .. } => Vec::new(),
     }
 }
 
@@ -3048,7 +3287,9 @@ fn step_writes(step: &FlatStep, choice: Choice) -> Vec<u16> {
             written.extend(entry.temporaries.clone());
             written
         }
-        Step::Return { destination, .. } => vec![*destination],
+        Step::Return { destination, .. } | Step::Eliminated { destination, .. } => {
+            vec![*destination]
+        }
         Step::Always(always) => always
             .arguments
             .iter()
@@ -3120,6 +3361,13 @@ fn edges_of(flat: &Flat<'_>, index: usize, choice: Choice) -> Edges {
         // a callee taken without a test lies where the send stands.
         Step::Always(always) => Edges {
             next: Some(always.continuation),
+            target: None,
+            others: Vec::new(),
+            ends_block: false,
+            starts_block: false,
+        },
+        Step::Eliminated { .. } => Edges {
+            next: Some(index + 1),
             target: None,
             others: Vec::new(),
             ends_block: false,

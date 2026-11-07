@@ -9,7 +9,6 @@ use indoc::indoc;
 use crate::heap::{ActivationReference, CodeId, Heap};
 use crate::interpreter::inline_cache::MethodSide;
 use crate::interpreter::Mutator;
-use crate::types::ActivationKind;
 use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
 
 /// What a test records of every exit's stack and every leaf's frame
@@ -19,10 +18,109 @@ pub(crate) struct Recorder {
     exits: Vec<RecordedExit>,
     /// Each leaf's frame, and whether it is an inlined scope's.
     leaves: Vec<(RecordedFrame, bool)>,
-    /// Each frame returned to that went on in its body's baseline code
-    /// (`jit::resumed`): how many exits were recorded before it, its body
-    /// and the program counter it went on at.
-    resumptions: Vec<(usize, CodeId, u32)>,
+    /// Each frame that went on in its body's baseline code -- returned to
+    /// (`jit::resumed`), or switched into it at a backward jump
+    /// (`jit::back_edge_ready`): how many exits were recorded before it, its body,
+    /// the program counter it went on at and whether its frame was
+    /// reified, which makes it go on in its body's twin.
+    resumptions: Vec<(usize, CodeId, u32, bool)>,
+    /// Each block an exit made (`materialize::materialize_blocks`), with
+    /// how many resumptions were recorded before it.
+    blocks: Vec<(usize, RecordedBlock)>,
+}
+
+/// What an exit made of one block optimized code eliminated, as the
+/// stack reads right after.
+#[derive(Debug, Clone, Copy)]
+struct RecordedBlock {
+    /// How many registers it was written into, and of how many scopes.
+    registers: usize,
+    scopes: usize,
+    /// Whether every one of them reads back the one closure.
+    one_object: bool,
+    /// Whether the closure's captured frame is its home's activation's
+    /// frame object, married to it.
+    home_married: bool,
+    /// The body of its home's activation.
+    home: CodeId,
+    /// Whether a scope of the chain runs the block, its activation's
+    /// closure the one made.
+    run_by_a_scope: bool,
+    /// Whether its frame lies below the innermost the exit left.
+    below: bool,
+}
+
+/// Records the block the exit made, `made`, its id and its closure, over
+/// `home`, one of `scopes`' activations -- a point's chain of scopes and
+/// each one's activation -- in a frame `below` the innermost or not, as
+/// the stack reads it.
+pub(crate) fn record_block<'gc>(
+    mutator: &mut Mutator<'gc>,
+    (chain, activations): (
+        &[crate::jit::optimizing::metadata::ScopeAtPoint],
+        &[Option<ActivationReference>],
+    ),
+    made: (
+        crate::jit::optimizing::plan::EliminatedId,
+        crate::heap::ObjectReference<'gc>,
+    ),
+    home: ActivationReference,
+    below: bool,
+) {
+    use crate::jit::optimizing::allocate::Location;
+
+    if mutator.jit.recorder.is_none() {
+        return;
+    }
+    let (block, closure) = made;
+    let heap = &mutator.heap;
+    let mut recorded = RecordedBlock {
+        registers: 0,
+        scopes: 0,
+        one_object: true,
+        home_married: false,
+        home: heap.activation_code_id(home),
+        run_by_a_scope: false,
+        below,
+    };
+    for stopped in chain {
+        let Some(activation) = activations[stopped.scope.0 as usize] else {
+            continue;
+        };
+        let base = heap.activation_register_base(activation);
+        let held: Vec<u16> = stopped
+            .locations
+            .iter()
+            .filter(|(_, location)| *location == Location::EliminatedBlock(block))
+            .map(|(register, _)| *register)
+            .collect();
+        if !held.is_empty() {
+            recorded.scopes += 1;
+        }
+        for register in held {
+            recorded.registers += 1;
+            recorded.one_object &= heap
+                .register(base, register)
+                .as_object()
+                .is_some_and(|object| object.same(closure));
+        }
+        if heap
+            .activation_closure(activation)
+            .is_some_and(|running| running.same(closure))
+        {
+            recorded.run_by_a_scope = true;
+        }
+    }
+    recorded.home_married = heap
+        .activation_reified(home)
+        .zip(heap.closure_captured_frame(closure))
+        .is_some_and(|(married, captured)| {
+            heap.frame_object(married).same(heap.frame_object(captured))
+        });
+    if let Some(recorder) = mutator.jit.recorder.as_mut() {
+        let resumed_before = recorder.resumptions.len();
+        recorder.blocks.push((resumed_before, recorded));
+    }
 }
 
 /// The stack an exit left, innermost first, as the run loop found it, how
@@ -48,10 +146,9 @@ struct RecordedFrame {
 }
 
 fn describe(heap: &Heap<'_>, activation: ActivationReference) -> RecordedFrame {
-    let selector = match heap.activation_kind(activation) {
-        ActivationKind::Method(selector) => Some(selector),
-        _ => None,
-    };
+    // A leaf's view of an inlined block's activation names no closure yet:
+    // its kind is read only of a method's.
+    let selector = heap.activation_method_selector(activation);
     RecordedFrame {
         selector,
         code: heap.activation_code_id(activation),
@@ -98,9 +195,12 @@ pub(crate) fn record_resumption(
     program_counter: u32,
 ) {
     let code = mutator.heap.activation_code_id(activation);
+    let reified = mutator.heap.activation_reified(activation).is_some();
     if let Some(recorder) = mutator.jit.recorder.as_mut() {
         let exits = recorder.exits.len();
-        recorder.resumptions.push((exits, code, program_counter));
+        recorder
+            .resumptions
+            .push((exits, code, program_counter, reified));
     }
 }
 
@@ -207,6 +307,17 @@ struct Recording {
 /// selector of a body and the selector it sends, and the counted depth
 /// before the run.
 fn run_recording(source: &str, deopt: bool, sends: &[(&str, &str)]) -> Recording {
+    run_recording_after(source, (false, deopt), sends)
+}
+
+/// `run_recording`, `run` run once before with no stress mode of the
+/// test's own and nothing recorded when `warmed`, so that the caches hold
+/// what every send of a run reaches before the first body is optimized.
+fn run_recording_after(
+    source: &str,
+    (warmed, deopt): (bool, bool),
+    sends: &[(&str, &str)],
+) -> Recording {
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = crate::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
         .unwrap_or_else(|_| panic!("the module resolves"));
@@ -217,13 +328,19 @@ fn run_recording(source: &str, deopt: bool, sends: &[(&str, &str)]) -> Recording
     interpreter.set_stress_caches(false);
     interpreter.set_jit_enabled(true);
     interpreter.set_jit_stress(true);
+    let class = interpreter.load_module(&resolved);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    if warmed {
+        expect_ok(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run",
+        );
+    }
     if deopt {
         interpreter.set_deopt_stress(true);
     } else {
         interpreter.set_optimize_stress(true);
     }
-    let class = interpreter.load_module(&resolved);
-    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let counted_before = interpreter.enter(|mutator| {
         mutator.jit.recorder = Some(Recorder::default());
         mutator.heap.counted_depth()
@@ -393,7 +510,7 @@ fn each_scope_goes_on_in_its_own_baseline_code_after_an_exit() {
             recorder
                 .resumptions
                 .iter()
-                .any(|(exits, code, program_counter)| *exits > index
+                .any(|(exits, code, program_counter, _)| *exits > index
                     && (*code, *program_counter) == (outer, after_send)),
             "`outer:` goes on in its own baseline code past its send"
         );
@@ -871,4 +988,298 @@ fn a_setter_arm_stores_through_the_barrier() {
         _ => panic!("check: expected a small integer"),
     });
     assert_eq!(checked, 4242);
+}
+
+/// `step:with:` hands `check:at:with:`, which its copy inlines, the block
+/// `double`, which both value only through inlined sends, so that the copy
+/// eliminates it; `check:at:with:` first sends its prober `probe:`, which
+/// the copy inlines for the `Plain` prober every pass is handed -- until,
+/// from its second run on, `run` hands the last pass an `Other`, which no
+/// arm of the type-case takes: a trap inside the inlined scope where the
+/// block lies in two registers, `step:with:`'s local and
+/// `check:at:with:`'s parameter. `step:with:` then counts in a loop of its
+/// own, whose backward jumps take its frame back into machine code. `run`
+/// answers three times the sum of 0 to 2,999.
+const A_BLOCK_IN_TWO_SCOPES: &str = indoc! {"
+    class Subject = Object new (
+      | runs ::= 0. |
+    ) (
+      class Plain = () (
+        public probe: value = (
+          ^value
+        )
+      )
+      class Other = () (
+        public probe: value = (
+          ^value
+        )
+      )
+      check: action at: index with: prober = (
+        | probed |
+        probed:: prober probe: index.
+        ^probed + (action value: index)
+      )
+      step: index with: prober = (
+        |
+          double = [:value | value * 2].
+          result = self check: double at: index with: prober.
+          count ::= 0.
+        |
+        [count < 10] whileTrue: [count:: count + 1].
+        ^result
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+          plain = Plain new.
+          other = Other new.
+        |
+        runs:: runs + 1.
+        [index < 3000] whileTrue: [
+          sum:: sum + (self step: index with: ((runs > 1 and: [index = 2999]) ifTrue: [other] ifFalse: [plain])).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    )
+"};
+
+/// `step:with:` holds the block `double`, which it values only through
+/// `apply:to:`, inlined, so that its copy eliminates it, and sends
+/// `probe:`, which weighs more than the plan inlines and is optimized on
+/// its own, its additions speculating on `SmallInteger`s: from its second
+/// run on, `run` hands the last ten passes a `Float`, so that `probe:`'s
+/// copy traps, leaving `step:with:`'s frame below it, standing in its
+/// copy at the send with the block in its local. `run` answers twice the
+/// sum of 0 to 2,999.
+const A_BLOCK_BELOW_AN_EXIT: &str = indoc! {"
+    class Subject = Object new (
+      | runs ::= 0. |
+    ) (
+      probe: value = (
+        ^value + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0
+      )
+      apply: action to: value = (
+        ^action value: value
+      )
+      step: index with: value = (
+        | double = [:each | each * 2]. |
+        self probe: value.
+        ^self apply: double to: index
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        runs:: runs + 1.
+        [index < 3000] whileTrue: [
+          sum:: sum + (self step: index with: ((runs > 1 and: [index >= 2990]) ifTrue: [index + 0.5] ifFalse: [index])).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    )
+"};
+
+/// The trap inside `check:at:with:`'s scope, where the block
+/// `step:with:` eliminated lies in two scopes' registers, makes one closure
+/// of it, which every register that holds it answers, its captured frame
+/// `step:with:`'s activation's frame object, married to it. The answer is
+/// the interpreter's.
+#[test]
+fn an_eliminated_block_is_one_object_after_an_exit() {
+    let Recording {
+        answer, recorder, ..
+    } = run_recording_after(A_BLOCK_IN_TWO_SCOPES, (true, false), &[]);
+    assert_eq!(answer, sum_of_indices(0) * 3);
+    // The zone stress mode compacts the zone at every safepoint: every
+    // other compaction spares optimized code and slides it, but the
+    // freeing at the others is constant enough that no exit falls inside
+    // the inlined scope to observe. The answer is still the interpreter's.
+    if the_zone_stress_mode_is_on() {
+        return;
+    }
+    assert!(!recorder.blocks.is_empty(), "an exit made a block");
+    for (_, block) in &recorder.blocks {
+        assert!(block.one_object, "{block:?}");
+        assert!(block.home_married, "{block:?}");
+    }
+    assert!(
+        recorder
+            .blocks
+            .iter()
+            .any(|(_, block)| block.scopes >= 2 && block.registers >= 2),
+        "a block held in `step:with:`'s local and `check:at:with:`'s parameter: {:?}",
+        recorder.blocks
+    );
+}
+
+/// The block an exit makes captures its home's activation, which it
+/// reifies: `step:with:`, whose frame goes back into machine code, once
+/// the inlined `check:at:with:` the trap left returns, in its body's twin,
+/// the copy that keeps a reified frame's words, never in its lean code.
+/// The answer is the interpreter's.
+#[test]
+fn the_home_of_a_materialized_block_goes_on_in_its_twin() {
+    let Recording {
+        answer,
+        recorder,
+        sends,
+        ..
+    } = run_recording_after(
+        A_BLOCK_IN_TWO_SCOPES,
+        (true, false),
+        &[("step:with:", "check:at:with:")],
+    );
+    assert_eq!(answer, sum_of_indices(0) * 3);
+    // The zone stress mode compacts the zone at every safepoint: every
+    // other compaction spares optimized code and slides it, but the
+    // freeing at the others is constant enough that no exit falls inside
+    // the inlined scope to observe. The answer is still the interpreter's.
+    if the_zone_stress_mode_is_on() {
+        return;
+    }
+    let [(step, _)] = sends[..] else {
+        panic!("one send");
+    };
+    assert!(
+        recorder.blocks.iter().any(|(resumed_before, block)| {
+            block.home == step
+                && recorder.resumptions[*resumed_before..]
+                    .iter()
+                    .any(|(_, resumed, _, reified)| *resumed == step && *reified)
+        }),
+        "`step:with:` goes on in machine code, reified, after an exit made its block: {:?} {:?}",
+        recorder.blocks,
+        recorder.resumptions
+    );
+}
+
+/// An exit deeper than a frame of optimized code makes the blocks that
+/// frame's code eliminated too: `probe:`'s copy, which `step:with:`'s
+/// copy called, traps, and `step:with:`'s frame, which goes on in
+/// baseline code once `probe:` returns, finds its block made, one closure
+/// in its local and married to its frame. The answer is the
+/// interpreter's.
+#[test]
+fn a_block_in_a_frame_below_an_exit_is_made_there() {
+    let Recording {
+        answer,
+        recorder,
+        sends,
+        ..
+    } = run_recording_after(
+        A_BLOCK_BELOW_AN_EXIT,
+        (true, false),
+        &[("step:with:", "probe:")],
+    );
+    assert_eq!(answer, sum_of_indices(0) * 2);
+    // The zone stress mode compacts the zone at every safepoint: every
+    // other compaction spares optimized code and slides it, but the
+    // freeing at the others is constant enough that no exit falls inside
+    // the inlined scope to observe. The answer is still the interpreter's.
+    if the_zone_stress_mode_is_on() {
+        return;
+    }
+    let [(step, _)] = sends[..] else {
+        panic!("one send");
+    };
+    let below: Vec<&RecordedBlock> = recorder
+        .blocks
+        .iter()
+        .map(|(_, block)| block)
+        .filter(|block| block.below && block.home == step)
+        .collect();
+    assert!(
+        !below.is_empty(),
+        "an exit above `step:with:` made its block: {:?}",
+        recorder.blocks
+    );
+    for block in below {
+        assert!(block.one_object && block.home_married, "{block:?}");
+        assert!(block.registers >= 1, "{block:?}");
+    }
+}
+
+/// `countOf:` hands `values do:` a block that counts, which its copy
+/// eliminates where it inlines `Triple`'s `do:` for the `Triple` `run`
+/// hands it; from its second run on, `run` hands the last pass a `Pair`,
+/// which no arm of the type-case takes, so that the copy traps at the send
+/// of `do:` with the block in its argument slot. `run` answers 2,999 times
+/// 3, then 2 for the `Pair`.
+const A_BLOCK_HANDED_TO_A_TRAPPING_SEND: &str = indoc! {"
+    class Subject = Object new (
+      | runs ::= 0. |
+    ) (
+      class Pair = () (
+        public do: action = (
+          action value: 1.
+          action value: 2.
+        )
+      )
+      class Triple = () (
+        public do: action = (
+          action value: 1.
+          action value: 2.
+          action value: 3.
+        )
+      )
+      countOf: values = (
+        | count ::= 0. |
+        values do: [:each | count:: count + 1].
+        ^count
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+          small = Triple new.
+        |
+        runs:: runs + 1.
+        [index < 3000] whileTrue: [
+          sum:: sum + (self countOf: ((runs > 1 and: [index = 2999]) ifTrue: [Pair new] ifFalse: [small])).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    )
+"};
+
+/// A type-case that finds a receiver none of its arms takes traps, and
+/// the interpreter runs its send again, reading its arguments where the
+/// send placed them: the exit makes the block the copy eliminated in its
+/// argument slot, so that `Pair`'s `do:` is handed a closure, which
+/// counts. The answer is the interpreter's.
+#[test]
+fn a_block_handed_to_a_send_a_type_case_traps_at_is_made_in_its_slot() {
+    let Recording {
+        answer,
+        recorder,
+        sends,
+        ..
+    } = run_recording_after(
+        A_BLOCK_HANDED_TO_A_TRAPPING_SEND,
+        (true, false),
+        &[("countOf:", "do:")],
+    );
+    assert_eq!(answer, 2999 * 3 + 2);
+    // The zone stress mode compacts the zone at every safepoint: every
+    // other compaction spares optimized code and slides it, but the
+    // freeing at the others leaves no copy compiled for the Arrays to
+    // meet the `Pair` and trap. The answer is still the interpreter's.
+    if the_zone_stress_mode_is_on() {
+        return;
+    }
+    let [(count_of, _)] = sends[..] else {
+        panic!("one send");
+    };
+    assert!(
+        recorder.blocks.iter().any(|(_, block)| {
+            block.home == count_of && !block.below && block.one_object && block.home_married
+        }),
+        "the trap made `countOf:`'s block: {:?}",
+        recorder.blocks
+    );
 }

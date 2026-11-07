@@ -120,6 +120,11 @@ pub(crate) fn compile_tree(
                 depth += 1;
                 parent = graph.scope(sender).parent;
             }
+            // An inlined block's scope is lowered as a method's too: its
+            // templates never return, reach an outer local or make a
+            // closure, which are what a block's role changes -- its return
+            // and its `^` are jumps, its outer locals its homes' registers
+            // and its `MakeClosure` an exit (`build`, `emit`).
             let scope_role = if index == 0 { role } else { BodyRole::Method };
             emit::EmittedScope {
                 snapshot: scope_snapshot,
@@ -138,6 +143,7 @@ pub(crate) fn compile_tree(
     // them, what it names in a collection and what it depends on are all
     // read off it, so that none of them can name a scope the others miss.
     let laid_out = laid_out_scopes(&graph);
+    let eliminated = eliminated_blocks(&plan, tree);
     let returns = body.take_call_returns();
     let words = body.macro_assembler.body_words_label();
     let word_bytes =
@@ -172,13 +178,19 @@ pub(crate) fn compile_tree(
         scopes: scopes
             .iter()
             .zip(&laid_out)
-            .map(|(scope, laid_out)| {
-                laid_out.then_some((scope.snapshot.code_id, scope.snapshot.feedback_base))
+            .zip(&graph.scopes)
+            .map(|((scope, laid_out), graph_scope)| {
+                laid_out.then_some(emit::LaidOutScope {
+                    code_id: scope.snapshot.code_id,
+                    feedback_base: scope.snapshot.feedback_base,
+                    block: graph_scope.block,
+                })
             })
             .collect(),
         deepest_chain: plan.deepest_chain,
         deepest_extent: plan.deepest_extent,
-        relied_on: relied_on(&plan, &graph, &scopes, &laid_out),
+        relied_on: relied_on(&plan, &graph, &scopes, &laid_out, &eliminated, tree),
+        eliminated,
         push_entry,
         #[cfg(test)]
         small_integer_tag_tests,
@@ -203,17 +215,65 @@ fn laid_out_scopes(graph: &graph::Graph) -> Vec<bool> {
     laid_out
 }
 
+/// Every block `plan` eliminates, by its `EliminatedId`, as the exit makes
+/// it (`emit::EliminatedBlock`): its body, its home and the registers its
+/// `MakeClosure` copies.
+#[cfg(ns_jit)]
+fn eliminated_blocks(
+    plan: &plan::InliningPlan,
+    tree: &tree::SnapshotTree,
+) -> Vec<emit::EliminatedBlock> {
+    let mut eliminated: Vec<(plan::EliminatedId, emit::EliminatedBlock)> = plan
+        .blocks
+        .iter()
+        .filter_map(|((home, program_counter), planned)| {
+            let plan::BlockPlan::Eliminated(id) = planned else {
+                return None;
+            };
+            let snapshot = tree
+                .snapshot_of(plan.scopes[home.0 as usize].code_id)
+                .expect("internal: the tree holds every planned scope's snapshot");
+            let snapshot::SnapshotInstruction::MakeClosure { block, copied, .. } =
+                &snapshot.instructions[*program_counter as usize]
+            else {
+                panic!("internal: an eliminated block is a `MakeClosure`'s");
+            };
+            Some((
+                *id,
+                emit::EliminatedBlock {
+                    code_id: *block,
+                    home: *home,
+                    copied: copied.clone(),
+                },
+            ))
+        })
+        .collect();
+    eliminated.sort_unstable_by_key(|(id, _)| *id);
+    debug_assert!(
+        eliminated
+            .iter()
+            .enumerate()
+            .all(|(index, (id, _))| id.0 as usize == index),
+        "internal: the eliminated blocks are numbered from 0 without a gap"
+    );
+    eliminated.into_iter().map(|(_, block)| block).collect()
+}
+
 /// What the code `graph` lays out relied on (`emit::ReliedOn`): the
 /// guards its type-cases test, the applications its arms always inlined
-/// were decided for, and of every inlined scope `laid_out` says it lays
-/// out the receiver's and entered applications `plan` customized it to
-/// and its body and feedback base, as `scopes` emitted it.
+/// were decided for, of every inlined scope `laid_out` says it lays out
+/// the receiver's and entered applications `plan` customized it to and
+/// its body and feedback base, as `scopes` emitted it -- a block's scope
+/// among them -- and the body of every block it eliminated, `eliminated`,
+/// whose closure an exit makes, as `tree` snapshotted it.
 #[cfg(ns_jit)]
 fn relied_on(
     plan: &plan::InliningPlan,
     graph: &graph::Graph,
     scopes: &[emit::EmittedScope<'_>],
     laid_out: &[bool],
+    eliminated: &[emit::EliminatedBlock],
+    tree: &tree::SnapshotTree,
 ) -> emit::ReliedOn {
     let mut relied_on = emit::ReliedOn::default();
     for block in &graph.blocks {
@@ -247,6 +307,15 @@ fn relied_on(
             scopes[index].snapshot.code_id,
             scopes[index].snapshot.feedback_base,
         );
+        if !relied_on.bodies.contains(&body) {
+            relied_on.bodies.push(body);
+        }
+    }
+    for block in eliminated {
+        let snapshot = tree
+            .snapshot_of(block.code_id)
+            .expect("internal: the tree holds every eliminated block's snapshot");
+        let body = (block.code_id, snapshot.feedback_base);
         if !relied_on.bodies.contains(&body) {
             relied_on.bodies.push(body);
         }
@@ -473,7 +542,9 @@ pub(crate) fn tree_of_run(source: &str, selector: &str) -> tree::SnapshotTree {
 /// setter and `==` or an `Array`'s `at:` and a `SmallInteger`'s `+`, and
 /// a two-argument one's `at:put:` of an `Array` and of a `ByteArray` --
 /// each its own guard's, all of one application, so that a `super` or
-/// lexical send in an inlined scope is taken without a test; and every
+/// lexical send in an inlined scope is taken without a test; a
+/// `value`-family send a closure's leaf, as a send to a block records it,
+/// every block a walked body makes walked as a callee is; and every
 /// seventh site left never run; walked from the root three callees deep. The inlining passes' sweeps
 /// hold every scope, return, type-case and trap such trees make to their
 /// checks.
@@ -482,9 +553,13 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
     use std::collections::{HashMap, HashSet};
 
     use crate::builtins::primitive::{
-        BytePrimitive, CollectionPrimitive, IntegerPrimitive, ObjectPrimitive, Primitive,
+        BlockPrimitive, BytePrimitive, CollectionPrimitive, IntegerPrimitive, ObjectPrimitive,
+        Primitive,
     };
     use crate::bytecode::CodeKind;
+
+    // The mark of a `value`-family send, whose one arm is a closure's leaf.
+    const BLOCK_VALUE: u16 = u16::MAX;
     use crate::heap::CodeId;
     use crate::mixin::AccessorKind;
     use snapshot::Snapshot;
@@ -545,6 +620,20 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
                 continue;
             }
             let arity = u16::try_from(sources.len()).expect("a send's arguments fit a u16");
+            // A `value`-family send reached a closure's leaf, as every send
+            // of one to a block records it: the plan inlines the block
+            // where the receiver can only be one the body makes.
+            let block_value = matches!(
+                instruction,
+                snapshot::SnapshotInstruction::SendPublic { selector, .. }
+                    if ["value", "value:", "value:value:", "value:value:value:"]
+                        .contains(&selector.as_str())
+            );
+            if block_value {
+                ran_site(&mut fed, index, facts.site);
+                sites.push((facts.site, Vec::new(), Some((BLOCK_VALUE, false))));
+                continue;
+            }
             let Some(pool) = methods.get(&arity) else {
                 continue;
             };
@@ -570,7 +659,18 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
             let mut callees: Vec<Snapshot> = Vec::new();
             let mut walked: HashSet<CodeId> = HashSet::from([root.code_id]);
             let mut pending = vec![(root.code_id, root_sites, 0)];
+            let mut blocks = HashMap::new();
             while let Some((code_id, sites, depth)) = pending.pop() {
+                // Its blocks, walked as its own sends are.
+                for instruction in &by_id[&code_id].instructions {
+                    if let snapshot::SnapshotInstruction::MakeClosure { block, .. } = instruction {
+                        if walked.insert(*block) {
+                            let (fed_block, block_sites) = fed(by_id[block]);
+                            blocks.insert(*block, fed_block);
+                            pending.push((*block, block_sites, depth));
+                        }
+                    }
+                }
                 for (site, arms, accessor) in sites {
                     let mut facts = Vec::new();
                     for (turn, callee) in (0_u32..).zip(&arms) {
@@ -593,6 +693,9 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
                         level: crate::heap::ApplicationIndex::from_raw(0),
                     };
                     let always = match accessor {
+                        Some((BLOCK_VALUE, _)) => vec![CalleeFacts::Primitive(Primitive::Block(
+                            BlockPrimitive::Value,
+                        ))],
                         Some((0, true)) => vec![
                             slot(AccessorKind::Getter),
                             CalleeFacts::Primitive(Primitive::Object(ObjectPrimitive::Class)),
@@ -642,7 +745,9 @@ pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
                     }
                 }
             }
-            test_tree(fed_root, tree_sites, callees)
+            let mut tree = test_tree(fed_root, tree_sites, callees);
+            tree.blocks = blocks;
+            tree
         })
         .collect()
 }

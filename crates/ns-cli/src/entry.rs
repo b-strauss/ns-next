@@ -65,7 +65,7 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
          {} bodies optimized ({} customized copies) in {:.3} ms, \
          {} optimized exits ({} forced, {} traps), {} abandoned, \
          {} made not entrant, {} refused for good, {} invalidated copies, \
-         {} dispatched calls",
+         {} dispatched calls, {} blocks materialized",
         statistics.compiled_bodies,
         statistics.compiled_twins,
         statistics.compile_nanoseconds as f64 / 1_000_000.0,
@@ -84,6 +84,7 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
         statistics.refused_for_good,
         statistics.invalidated_copies,
         statistics.dispatched_calls,
+        statistics.materialized_blocks,
     );
 }
 

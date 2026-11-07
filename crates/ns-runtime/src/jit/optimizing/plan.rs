@@ -33,7 +33,7 @@ use crate::builtins::primitive::{
     BlockPrimitive, BytePrimitive, CollectionPrimitive, IntegerPrimitive, ObjectPrimitive,
     Primitive, MIRROR,
 };
-use crate::bytecode::HEADER_REGISTERS;
+use crate::bytecode::{CodeKind, Literal, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId};
 use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, QuickConstant};
 use crate::types::BuiltinClass;
@@ -79,9 +79,8 @@ pub(crate) const LOOP_WEIGHT: u32 = 8;
 const LEAST_BUDGET_SHARE: f64 = 1.0 / 64.0;
 
 /// The limits a plan is made under: the constants above, and a test's own;
-/// and whether blocks are inlined at all. Until an exit can materialize an
-/// eliminated block, none is: every block is created, and a `value` send
-/// of one is sent.
+/// and whether blocks are inlined at all: a plan without them creates
+/// every block and sends every `value` send of one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Limits {
     pub(crate) method: u32,
@@ -99,14 +98,19 @@ impl Limits {
         block_argument_bonus: BLOCK_ARGUMENT_BONUS,
         compile: COMPILE_LIMIT,
         recursion: RECURSION_LIMIT,
-        inline_blocks: false,
+        inline_blocks: true,
     };
 
     /// `STANDARD` with blocks inlined and eliminated: what the plan's
     /// tests of blocks hold it to.
     #[cfg(test)]
-    pub(crate) const WITH_BLOCKS: Limits = Limits {
-        inline_blocks: true,
+    pub(crate) const WITH_BLOCKS: Limits = Limits::STANDARD;
+
+    /// `STANDARD` with every block created and every `value` send of
+    /// one sent.
+    #[cfg(test)]
+    pub(crate) const WITHOUT_BLOCKS: Limits = Limits {
+        inline_blocks: false,
         ..Limits::STANDARD
     };
 }
@@ -333,6 +337,18 @@ pub(crate) struct ScopePlan {
     pub(crate) level: Option<u16>,
     /// A block scope's home: the scope whose `MakeClosure` made it.
     pub(crate) block_of: Option<ScopeId>,
+    /// A block scope's block: only a block the compile eliminates is
+    /// inlined at a `value` send.
+    pub(crate) block: Option<EliminatedId>,
+    /// Before each of the scope's instructions, the registers that hold an
+    /// eliminated block on every way there, in the scope's numbering, and
+    /// the block: what an exit that stops there materializes in them
+    /// (`docs/design/execution.md`, "Closures, frames and non-local return
+    /// in inlined scopes"). No register the leftover analysis leaves to the
+    /// frame holds an eliminated block on one way and anything else on
+    /// another: such a block is created (`Planner::escapes`), so that where
+    /// a block is is a fact of the instruction, not of the way taken.
+    pub(crate) eliminated_before: Vec<Vec<(u16, EliminatedId)>>,
 }
 
 /// The plan of one compile.
@@ -751,6 +767,17 @@ fn transfer(
     state
 }
 
+/// Whether the leftover analysis taints `register` of `snapshot`'s body
+/// before its instruction at `program_counter`: a register no instruction
+/// reads before it writes it, whose word an exit leaves to the collector's
+/// pre-pass. A snapshot a test made by hand may name no set for it.
+fn tainted_at(snapshot: &Snapshot, program_counter: usize, register: u16) -> bool {
+    snapshot
+        .tainted_before
+        .get(program_counter)
+        .is_some_and(|ranges| ranges.iter().any(|range| range.contains(&register)))
+}
+
 fn program_counter_u32(program_counter: usize) -> u32 {
     u32::try_from(program_counter)
         .expect("internal: a body holds at most INSTRUCTION_LIMIT instructions")
@@ -942,6 +969,8 @@ impl<'tree> Planner<'tree> {
                     .map(|customization| customization.own_slot_base),
                 level: None,
                 block_of: None,
+                block: None,
+                eliminated_before: Vec::new(),
             },
             root,
             1.0,
@@ -1030,7 +1059,14 @@ impl<'tree> Planner<'tree> {
             let candidates = tree.sites.get(&(snapshot.code_id, facts.site));
             let decision = match send.shape {
                 SendShape::Public { receiver } => {
-                    let block_value = if self.limits.inline_blocks {
+                    // The reference lowering's control flow is a
+                    // `SendInlinable`, whose block's activation the
+                    // interpreter does not count against the depth limit
+                    // while every inlined scope is counted: its block is
+                    // created and sent, as the oracle it is.
+                    let inlinable =
+                        matches!(instruction, SnapshotInstruction::SendInlinable { .. });
+                    let block_value = if self.limits.inline_blocks && !inlinable {
                         self.block_value(scope, index, &send, receiver, candidates)
                     } else {
                         None
@@ -1086,9 +1122,15 @@ impl<'tree> Planner<'tree> {
         let arity = value_arity(send.selector)?;
         let owner = &self.scopes[scope.index()];
         let held = owner.holdings.get(index)?.get(&receiver)?;
+        // A register that holds nothing of the compile's on any way is
+        // absent; one that may hold something else besides is no known
+        // receiver, and neither is something else alone.
         let [block] = held.iter().copied().collect::<Vec<_>>()[..] else {
             return None;
         };
+        if block == SOMETHING_ELSE {
+            return None;
+        }
         let (block_code, parameter_count) = self.made_block(block)?;
         let snapshot = self.tree.blocks.get(&block_code)?;
         if parameter_count != arity || usize::from(arity) != send.sources.len() {
@@ -1279,7 +1321,7 @@ impl<'tree> Planner<'tree> {
                 let Some(snapshot) = tree.blocks.get(&block_code) else {
                     return;
                 };
-                if is_observed(snapshot) {
+                if is_observed(snapshot) || self.reaches_past_the_compile(block, snapshot) {
                     return;
                 }
                 let home = &self.scopes[block.0.index()];
@@ -1327,6 +1369,8 @@ impl<'tree> Planner<'tree> {
                 own_slot_base: scope_facts.own_slot_base,
                 level: scope_facts.level,
                 block_of: scope_facts.block.map(|(home, _)| home),
+                block: None,
+                eliminated_before: Vec::new(),
             },
             snapshot,
             frequency,
@@ -1348,6 +1392,50 @@ impl<'tree> Planner<'tree> {
             }
             _ => unreachable!("internal: a candidate's site was decided as its kind"),
         }
+    }
+
+    /// Whether the body of `block`, inlined at a `value` send, reaches a
+    /// frame the compile does not lay out: an outer local past the
+    /// outermost block scope of its chain of homes, or the home of a `^`
+    /// -- its first home that is no block -- when that is the root and the
+    /// root is a block's body, whose own home lies below the compile. An
+    /// inlined block reaches its homes' registers as physical ones and
+    /// returns from its home as a jump, which neither can be past the
+    /// compile. A literal of a body too large to compile, whose error
+    /// names the running activation's kind, is reached too: a leaf called
+    /// in an inlined block's scope reads an activation whose closure is
+    /// not made yet.
+    fn reaches_past_the_compile(&self, block: BlockKey, snapshot: &Snapshot) -> bool {
+        // The scope that is `depth` frames out from the block's own: its
+        // home, then each home's home while each is a block scope.
+        let home_at = |depth: u16| {
+            let mut scope = block.0;
+            for _ in 1..depth {
+                scope = self.scopes[scope.index()].block?.0;
+            }
+            Some(scope)
+        };
+        snapshot
+            .instructions
+            .iter()
+            .any(|instruction| match instruction {
+                SnapshotInstruction::LoadOuterLocal { depth, .. }
+                | SnapshotInstruction::StoreOuterLocal { depth, .. } => {
+                    *depth > 0 && home_at(*depth).is_none()
+                }
+                SnapshotInstruction::NonLocalReturn { .. } => {
+                    let mut home = block.0;
+                    while let Some((outer, _)) = self.scopes[home.index()].block {
+                        home = outer;
+                    }
+                    home == ScopeId::ROOT && self.tree.root.facts.kind == CodeKind::Block
+                }
+                SnapshotInstruction::LoadLiteral {
+                    literal: Literal::BodyTooLarge(_),
+                    ..
+                } => true,
+                _ => false,
+            })
     }
 
     /// How many scopes from `scope` up to the root run the body `code_id`.
@@ -1538,6 +1626,15 @@ impl<'tree> Planner<'tree> {
                 for (register, blocks) in held {
                     if blocks.contains(&block) {
                         holding.insert(*register);
+                        // Held on one way and not on another, the block
+                        // would be where an exit finds it only on some ways
+                        // there: its register's word, which the exit leaves
+                        // to the frame, is the interpreter's on every one.
+                        if blocks.len() > 1
+                            && !tainted_at(scope.snapshot, program_counter, *register)
+                        {
+                            return true;
+                        }
                     }
                 }
             }
@@ -1684,6 +1781,7 @@ impl<'tree> Planner<'tree> {
         };
         let mut scopes = Vec::with_capacity(next);
         let mut blocks = HashMap::new();
+        let mut ids: HashMap<BlockKey, EliminatedId> = HashMap::new();
         let mut eliminated_count = 0_u32;
         let (mut deepest_chain, mut deepest_extent) = (0_u16, 0_u32);
         for (index, scope) in self.scopes.iter().enumerate() {
@@ -1707,6 +1805,7 @@ impl<'tree> Planner<'tree> {
                     let decision = if eliminated.contains(&(id, program_counter)) {
                         let eliminated_id = EliminatedId(eliminated_count);
                         eliminated_count += 1;
+                        ids.insert((id, program_counter), eliminated_id);
                         BlockPlan::Eliminated(eliminated_id)
                     } else {
                         BlockPlan::Created
@@ -1715,6 +1814,28 @@ impl<'tree> Planner<'tree> {
                 }
             }
             scopes.push(plan);
+        }
+        // Where each eliminated block is held, once every block has its
+        // id: a scope holds those of its senders and homes besides its own.
+        for (plan, scope) in scopes
+            .iter_mut()
+            .zip(self.scopes.iter().filter(|scope| scope.alive))
+        {
+            plan.block = scope.block.and_then(|block| ids.get(&block).copied());
+            plan.eliminated_before = scope
+                .holdings
+                .iter()
+                .map(|held| {
+                    held.iter()
+                        .filter_map(|(register, blocks)| {
+                            match blocks.iter().collect::<Vec<_>>()[..] {
+                                [block] => ids.get(block).map(|id| (*register, *id)),
+                                _ => None,
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
         }
         let mut sites = HashMap::new();
         for ((scope, program_counter), decision) in &self.decisions {
@@ -2465,13 +2586,13 @@ mod tests {
         assert_eq!(plan.deepest_chain, 2);
     }
 
-    /// The standard limits inline no block: the block is created, the
-    /// callee it is passed to still inlined, and its `value:` sent.
+    /// Limits that inline no block: the block is created, the callee it
+    /// is passed to still inlined, and its `value:` sent.
     #[test]
     fn without_block_inlining_every_block_is_created_and_its_value_sent() {
         let (mut interpreter, class) = run(VALUES);
         let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
-        let plan = super::plan(&tree, Speculation::Traps);
+        let plan = super::plan_with(&tree, &Limits::WITHOUT_BLOCKS, Speculation::Traps);
         let closure = closure_of(&tree.root);
         assert_eq!(plan.blocks[&(ScopeId::ROOT, closure)], BlockPlan::Created);
         let apply = inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "apply:"));

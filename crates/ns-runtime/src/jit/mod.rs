@@ -332,6 +332,10 @@ pub struct JitStatistics {
     /// Frames of inlined scopes of optimized code the exit's walk wrote in
     /// place: each scope an exit or a call inside it left standing.
     pub inlined_frames_materialized: u64,
+    /// Closures an exit made of blocks optimized code eliminated, which it
+    /// found live (`materialize::materialize_blocks`): one per block per
+    /// exit, however many registers held it.
+    pub materialized_blocks: u64,
     /// Frames returned to (`resumed`) of a body with optimized code, which
     /// go on in its baseline code: one of `resumed_entries`.
     pub optimized_bodies_resumed: u64,
@@ -2985,6 +2989,25 @@ impl InlinedAt {
         &self.metadata.points[self.point].scopes
     }
 
+    /// Whether the point lies in an inlined scope: one of the body's own
+    /// is named only for the blocks it holds.
+    #[cfg(ns_jit)]
+    pub(crate) fn inlines(&self) -> bool {
+        self.chain().len() > 1
+    }
+
+    /// Whether a scope of the point's chain holds a block the copy
+    /// eliminated, or runs one, which an exit there makes.
+    #[cfg(ns_jit)]
+    pub(crate) fn holds_eliminated_blocks(&self) -> bool {
+        self.metadata.points[self.point].holds_eliminated_blocks()
+            || self.chain().iter().any(|stopped| {
+                self.metadata.scopes[stopped.scope.0 as usize]
+                    .as_ref()
+                    .is_some_and(|scope| scope.block.is_some())
+            })
+    }
+
     /// The body, method and feedback base of the scope `scope` of the copy.
     #[cfg(ns_jit)]
     pub(crate) fn scope(&self, scope: optimizing::graph::ScopeId) -> &InlinedScope {
@@ -2997,11 +3020,13 @@ impl InlinedAt {
 /// What an installed copy of optimized code that inlines keeps of its
 /// interrupt points (`docs/design/execution.md`, "Inlining"): each point's
 /// chain of scopes, the point every address inside an inlined scope's
-/// code belongs to -- an exit's, a leaf call's and a call's return
-/// address -- by its offset from the copy's start, which a compaction
-/// keeps, and the body each inlined scope runs. An exit there leaves the
-/// physical frame standing for every scope of the chain, each of whose
-/// headers the exit's walk writes in place (`jit::materialize`).
+/// code belongs to -- or in the body's own where a block the copy
+/// eliminated is live -- an exit's, a leaf call's and a call's return
+/// address, by its offset from the copy's start, which a compaction
+/// keeps, the body each inlined scope runs and what each eliminated block
+/// is made from. An exit there leaves the physical frame standing for
+/// every scope of the chain, each of whose headers the exit's walk writes
+/// in place, and makes every block the point holds (`jit::materialize`).
 #[cfg(ns_jit)]
 pub(crate) struct OptimizedMetadata {
     pub(crate) points: Vec<optimizing::metadata::InterruptPoint>,
@@ -3009,6 +3034,20 @@ pub(crate) struct OptimizedMetadata {
     /// Each scope's body, by its `ScopeId`; `None` for the copy's own,
     /// which its installed body names.
     pub(crate) scopes: Vec<Option<InlinedScope>>,
+    /// Each block the copy eliminated, by its `EliminatedId`, which an
+    /// exit that finds it live makes (`materialize::materialize_blocks`).
+    pub(crate) blocks: Vec<EliminatedBlock>,
+}
+
+/// A block a copy of optimized code eliminated, as an exit makes it: its
+/// body, held strongly, the scope whose `MakeClosure` it is, whose frame
+/// the closure captures, and the registers of that scope its values are
+/// copied from.
+#[cfg(ns_jit)]
+pub(crate) struct EliminatedBlock {
+    pub(crate) code: Rc<CompiledCode>,
+    pub(crate) home: optimizing::graph::ScopeId,
+    pub(crate) copied: Vec<u16>,
 }
 
 /// Without a JIT no copy inlines.
@@ -3041,16 +3080,18 @@ pub(crate) struct CopyDependencies {
     /// mints it again for another application, which a type-case would
     /// take for the dead one (`forget_freed_copies`).
     pub(crate) applications: Vec<DispatchId>,
-    /// Every inlined method's code id, by which the copy's interrupt
-    /// points name its scopes (`optimizing::metadata::ScopeAtPoint`): a
-    /// full collection names it while the copy lives, so that it is never
-    /// freed and minted again for another body under it
-    /// (`inlined_code_ids`). Each inlined block's id is its home's to add
-    /// once blocks are inlined.
+    /// Every inlined body's code id, a method's or a block's, by which the
+    /// copy's interrupt points name its scopes
+    /// (`optimizing::metadata::ScopeAtPoint`), and every eliminated
+    /// block's, whose closure an exit makes: a full collection names it
+    /// while the copy lives, so that it is never freed and minted again
+    /// for another body under it (`inlined_code_ids`).
     pub(crate) code_ids: Vec<CodeId>,
-    /// Every inlined method's feedback base, from which its scope's sends
-    /// address their cells: a slide that moves one leaves the copy reading
-    /// and filling another family's sites (`invalidate_copies_of_moved_bases`).
+    /// Every inlined body's feedback base, from which its scope's sends
+    /// address their cells -- a block's is its home's family's -- and
+    /// every eliminated block's, which its closure is made with: a slide
+    /// that moves one leaves the copy reading and filling another family's
+    /// sites (`invalidate_copies_of_moved_bases`).
     pub(crate) feedback_bases: Vec<FeedbackBase>,
 }
 
@@ -3087,8 +3128,12 @@ impl CopyDependencies {
 #[cfg(ns_jit)]
 pub(crate) struct InlinedScope {
     pub(crate) code: Rc<CompiledCode>,
+    /// The method whose body it runs; `None` for a block's scope.
     pub(crate) method: Option<Rc<MixinMethod>>,
     pub(crate) feedback_base: FeedbackBase,
+    /// For a block's scope, the eliminated block whose `value` it runs:
+    /// its activation's closure, which the exit makes.
+    pub(crate) block: Option<optimizing::plan::EliminatedId>,
 }
 
 /// How many bodies `BodyLookup` remembers: a power of two.
@@ -5503,13 +5548,14 @@ struct OptimizedInstall {
 }
 
 /// What a copy of `optimized` keeps of its interrupt points inside
-/// inlined scopes (`OptimizedMetadata`), each scope's body found in
-/// `heap`, which registered it with its method when the tree was taken
-/// at this safepoint, and `None` for each scope the graph laid no code out
-/// for (`optimizing::laid_out_scopes`); `None` for code that inlines
-/// nothing, and for one
-/// whose body `heap` no longer names, which no compile at the tree's
-/// safepoint meets.
+/// inlined scopes or where a block it eliminated is live
+/// (`OptimizedMetadata`), each scope's body and each eliminated block's
+/// found in `heap`, which registered them -- a method's body with its
+/// method -- when the tree was taken at this safepoint, and `None` for
+/// each scope the graph laid no code out for
+/// (`optimizing::laid_out_scopes`); `None` for code that has no such
+/// point, and for one whose body `heap` no longer names, which no compile
+/// at the tree's safepoint meets.
 #[cfg(ns_jit)]
 fn optimized_metadata(
     heap: &Heap<'_>,
@@ -5522,19 +5568,40 @@ fn optimized_metadata(
     for scope in optimized.scopes.iter().skip(1) {
         // A scope the graph laid no code out for has no point to name it,
         // and the copy holds no body for it.
-        let Some((code_id, feedback_base)) = scope else {
+        let Some(scope) = scope else {
             scopes.push(None);
             continue;
         };
-        let (Some(code), Some(method)) = (heap.code(*code_id), heap.code_method(*code_id)) else {
+        let Some(code) = heap.code(scope.code_id) else {
             return Err(Refusal::Unassembled(None));
+        };
+        // A block's body is no method's: its frame is its closure's.
+        let method = match scope.block {
+            Some(_) => None,
+            None => Some(
+                heap.code_method(scope.code_id)
+                    .ok_or(Refusal::Unassembled(None))?,
+            ),
         };
         scopes.push(Some(InlinedScope {
             code,
-            method: Some(method),
-            feedback_base: *feedback_base,
+            method,
+            feedback_base: scope.feedback_base,
+            block: scope.block,
         }));
     }
+    let blocks = optimized
+        .eliminated
+        .iter()
+        .map(|block| {
+            let code = heap.code(block.code_id).ok_or(Refusal::Unassembled(None))?;
+            Ok(EliminatedBlock {
+                code,
+                home: block.home,
+                copied: block.copied.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
     Ok(Some(Rc::new(OptimizedMetadata {
         points: std::mem::take(&mut optimized.metadata.points),
         by_address: optimized
@@ -5543,6 +5610,7 @@ fn optimized_metadata(
             .map(|(offset, point)| (*offset, *point as usize))
             .collect(),
         scopes,
+        blocks,
     })))
 }
 
@@ -5891,6 +5959,8 @@ pub(crate) fn at_back_edge(
     );
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     let entry = entry_of_frame(mutator, activation, code, feedback_base, target)?;
+    #[cfg(all(test, ns_jit))]
+    inlining_tests::record_resumption(mutator, activation, target);
     mutator.jit.statistics.back_edge_switches += 1;
     Some(run_machine_code(mutator, activation, register_base, entry))
 }
@@ -7176,13 +7246,19 @@ pub(crate) fn verify_inlined_code_ids(mutator: &Mutator<'_>) {
         let Some(metadata) = &body.metadata else {
             continue;
         };
-        for scope in metadata.scopes.iter().flatten() {
+        let held = metadata
+            .scopes
+            .iter()
+            .flatten()
+            .map(|scope| &scope.code)
+            .chain(metadata.blocks.iter().map(|block| &block.code));
+        for held in held {
             assert!(
                 body.dependencies.code_ids.iter().any(|code_id| {
                     mutator
                         .heap
                         .code(*code_id)
-                        .is_some_and(|code| Rc::ptr_eq(&code, &scope.code))
+                        .is_some_and(|code| Rc::ptr_eq(&code, held))
                 }),
                 "internal: a live copy's inlined code id was reclaimed"
             );

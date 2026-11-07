@@ -29,16 +29,27 @@
 //! Nothing is copied or rebuilt: every scope then reads as an interpreted
 //! frame and goes on in its own baseline code or the interpreter. A leaf
 //! called inside an inlined scope reads that scope alone.
+//!
+//! A block the code eliminated is made by the exit that finds it live,
+//! in every frame of optimized code the walk passes, the innermost and
+//! every one below it, once every frame is the stack's
+//! (`materialize_blocks`): one closure per block per exit, its home's
+//! activation reified for it, so that the home goes on in its body's twin,
+//! and written into every register that holds the block and into the
+//! header of the scope that runs it.
 
 use std::rc::Rc;
 
 use crate::bytecode::{CodeKind, CompiledCode};
-use crate::heap::{ActivationReference, CodeId, Heap, MachineFrame, MachineKind};
+use crate::heap::{ActivationReference, CodeId, Heap, MachineFrame, MachineKind, ObjectReference};
 use crate::interpreter::Mutator;
 use crate::mixin::MixinMethod;
+use crate::Value;
 
+use super::optimizing::allocate::Location;
+use super::optimizing::plan::EliminatedId;
 use super::stubs::{BlockWord, ExitKind};
-use super::{InlinedAt, InlinedScope, Installed};
+use super::{EliminatedBlock, InlinedAt, InlinedScope, Installed};
 
 /// Where the exit's walk stands: the frame the next return address lies
 /// in, which the previous one's send placed, and what the walk has
@@ -59,6 +70,24 @@ pub(crate) struct Walk {
     last_physical: Option<ActivationReference>,
     /// How many of the frames the walk materialized are inlined scopes'.
     inlined: usize,
+    /// Each frame of optimized code the walk materialized at an interrupt
+    /// point where a block its code eliminated is live: the frame, and
+    /// the point, whose blocks are made once every frame is the stack's
+    /// (`materialize_blocks`).
+    blocks: Vec<BlocksAt>,
+}
+
+/// A frame of optimized code stopped at an interrupt point that holds
+/// blocks its code eliminated: its header's word offset and its register
+/// 0's, and the point.
+#[derive(Clone)]
+pub(crate) struct BlocksAt {
+    offset: u32,
+    register_base: u32,
+    point: InlinedAt,
+    /// Whether the frame lies below the innermost the exit leaves: a
+    /// frame whose call the walk passed.
+    below: bool,
 }
 
 impl Walk {
@@ -95,6 +124,7 @@ impl Walk {
             added: 0,
             last_physical: None,
             inlined: 0,
+            blocks: Vec::new(),
         };
     }
 
@@ -114,6 +144,7 @@ impl Walk {
             added,
             last_physical,
             inlined,
+            blocks,
         } = self;
         *last = None;
         *callee = None;
@@ -121,6 +152,7 @@ impl Walk {
         *added = 0;
         *last_physical = None;
         *inlined = 0;
+        blocks.clear();
     }
 }
 
@@ -216,7 +248,9 @@ pub(crate) fn machine_frame(
 
 /// The header of the frame at `offset` of the inlined scope `scope` runs,
 /// stopped at `program_counter`, whose caller is `caller`: a method's
-/// frame, as the interpreter's push of its method would lay it.
+/// frame, or a block's, as the interpreter's push of its method or its
+/// closure would lay it -- the closure of a block the compile eliminated
+/// made later, by the exit (`materialize_blocks`).
 fn scope_frame(
     heap: &mut Heap<'_>,
     offset: u32,
@@ -226,7 +260,7 @@ fn scope_frame(
 ) -> MachineFrame {
     let kind = match &scope.method {
         Some(method) => MachineKind::method(method.selector),
-        None => unreachable!("internal: only a method's body is inlined"),
+        None => MachineKind::inlined_closure(),
     };
     MachineFrame {
         offset,
@@ -245,20 +279,30 @@ fn scope_frame(
 
 /// Writes the header of every inlined scope of the chain `inlined`
 /// names, outermost first, above the physical frame whose register 0 is
-/// at `register_base` and whose header is at `offset`: each the callee of
-/// the one below it, at the send it is inlined at, the innermost at the
-/// point's own program counter. Answers the innermost's header offset,
-/// its register 0 and its body.
+/// at `register_base` and whose header is at `offset`, running `physical`:
+/// each the callee of the one below it, at the send it is inlined at, the
+/// innermost at the point's own program counter. Answers the innermost's
+/// header offset, its register 0 and its body -- the physical frame's own
+/// for a point of its own scope, there for the blocks it holds -- and
+/// records the point for its blocks, if it holds any.
 fn materialize_scopes(
     heap: &mut Heap<'_>,
     inlined: &InlinedAt,
-    register_base: u32,
-    offset: u32,
+    (register_base, offset, physical): (u32, u32, &Rc<CompiledCode>),
+    below: bool,
     walk: &mut Walk,
 ) -> (u32, u32, Rc<CompiledCode>) {
+    if inlined.holds_eliminated_blocks() {
+        walk.blocks.push(BlocksAt {
+            offset,
+            register_base,
+            point: inlined.clone(),
+            below,
+        });
+    }
     let chain = inlined.chain();
     let mut caller = offset;
-    let mut innermost = None;
+    let mut innermost = (offset, register_base, Rc::clone(physical));
     for stopped in chain.iter().rev().skip(1) {
         let scope = inlined.scope(stopped.scope);
         let scope_base = register_base + u32::from(stopped.offset);
@@ -275,11 +319,8 @@ fn materialize_scopes(
         walk.added += 1;
         walk.inlined += 1;
         caller = scope_offset;
-        innermost = Some((scope_offset, scope_base, Rc::clone(&scope.code)));
+        innermost = (scope_offset, scope_base, Rc::clone(&scope.code));
     }
-    let Some(innermost) = innermost else {
-        unreachable!("internal: an inlined point's chain holds an inlined scope");
-    };
     innermost
 }
 
@@ -371,8 +412,14 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
     // slots, and the call counted the scopes already (`BodyAssembler::call_send`).
     let (offset, register_base, code) = match &inlined {
         Some(inlined) => {
-            walk.last_physical = Some(physical);
-            materialize_scopes(&mut mutator.heap, inlined, register_base, offset, &mut walk)
+            walk.last_physical = inlined.inlines().then_some(physical);
+            materialize_scopes(
+                &mut mutator.heap,
+                inlined,
+                (register_base, offset, code),
+                true,
+                &mut walk,
+            )
         }
         None => {
             walk.last_physical = None;
@@ -410,6 +457,10 @@ pub(crate) fn materialize_innermost(
     };
     let innermost = if kind == ExitKind::PushRefused as u64 {
         mutator.jit.exited_physical = walk.last_physical;
+        // The last frame walked re-executes its send: the innermost.
+        if let Some(innermost) = walk.blocks.last_mut() {
+            innermost.below = false;
+        }
         last
     } else {
         let Some(installed) = mutator.jit.body_of(return_address_of(code_address)) else {
@@ -442,12 +493,14 @@ pub(crate) fn materialize_innermost(
                 let (innermost, _, _) = materialize_scopes(
                     &mut mutator.heap,
                     inlined,
-                    register_base,
-                    offset,
+                    (register_base, offset, &installed.code),
+                    false,
                     &mut walk,
                 );
                 mutator.heap.adjust_counted_depth(inlined_depth(inlined));
-                mutator.jit.exited_physical = Some(physical);
+                if inlined.inlines() {
+                    mutator.jit.exited_physical = Some(physical);
+                }
                 innermost
             }
             None => offset,
@@ -458,6 +511,11 @@ pub(crate) fn materialize_innermost(
         .adopt_machine_frames(innermost, walk.top, walk.added);
     mutator.jit.statistics.materialized_frames += walk.added as u64;
     mutator.jit.statistics.inlined_frames_materialized += walk.inlined as u64;
+    // Every frame of optimized code the walk passed goes on in baseline
+    // code or the interpreter from here, which read every register: the
+    // blocks its code eliminated are made, in every frame, not only the
+    // innermost.
+    materialize_blocks(mutator, &walk.blocks);
     let Some(activation) = mutator.heap.top_activation() else {
         unreachable!("internal: a walk leaves its innermost frame on the stack");
     };
@@ -470,7 +528,9 @@ pub(crate) fn materialize_innermost(
 /// none of: each written as the walk writes it above its physical frame,
 /// counted, and made the stack's, the entry stopped at the send its
 /// outermost scope is inlined at. Answers the innermost, which the run
-/// loop goes on at; `None`, writing nothing, for any other exit.
+/// loop goes on at; `None` for any other exit, writing nothing but the
+/// blocks the code eliminated, which an exit in its own scope makes in the
+/// entry frame.
 pub(crate) fn materialize_at_entry(
     mutator: &mut Mutator<'_>,
     entry: ActivationReference,
@@ -483,6 +543,17 @@ pub(crate) fn materialize_at_entry(
     let installed = mutator.jit.body_of(return_address_of(address))?;
     let inlined = inlined_at(mutator, &installed, address)?;
     let inlined = &inlined;
+    let register_base = Heap::register_base_index(mutator.heap.activation_register_base(entry));
+    if !inlined.inlines() {
+        let blocks = [BlocksAt {
+            offset: Heap::activation_offset(entry),
+            register_base,
+            point: inlined.clone(),
+            below: false,
+        }];
+        materialize_blocks(mutator, &blocks);
+        return None;
+    }
     let program_counter = physical_program_counter(Some(inlined), 0);
     mutator
         .heap
@@ -491,12 +562,15 @@ pub(crate) fn materialize_at_entry(
         top: mutator.heap.activation_stack_top(),
         ..Walk::default()
     };
-    let register_base = Heap::register_base_index(mutator.heap.activation_register_base(entry));
     let (innermost, _, _) = materialize_scopes(
         &mut mutator.heap,
         inlined,
-        register_base,
-        Heap::activation_offset(entry),
+        (
+            register_base,
+            Heap::activation_offset(entry),
+            &installed.code,
+        ),
+        false,
         &mut walk,
     );
     mutator.heap.adjust_counted_depth(inlined_depth(inlined));
@@ -507,7 +581,147 @@ pub(crate) fn materialize_at_entry(
     mutator.jit.statistics.inlined_frames_materialized += walk.inlined as u64;
     mutator.jit.statistics.optimized_frames_materialized += 1;
     mutator.jit.exited_physical = Some(entry);
+    materialize_blocks(mutator, &walk.blocks);
     mutator.heap.top_activation()
+}
+
+/// Makes the blocks optimized code eliminated that each of `points` holds
+/// (`docs/design/execution.md`, "Closures, frames and non-local return in
+/// inlined scopes"), once every frame the exit leaves is the stack's: for
+/// each block live at a point one closure, over its home's activation --
+/// reified, and so married to the activation in place, which goes on in
+/// its body's twin -- with the values its home's registers hold, which the
+/// compile kept unwritten since the block's `MakeClosure`; then that one
+/// closure written into every register the point says holds the block, in
+/// every scope, and made the activation's closure where a scope runs the
+/// block, so that every place that holds the block holds one object, as
+/// the interpreter's would. A block is made after any block its home's
+/// activation runs, whose closure that activation's frame names, and any
+/// its values are copied from. Allocates, as `MakeClosure` does, and
+/// runs no Newspeak code.
+pub(crate) fn materialize_blocks(mutator: &mut Mutator<'_>, points: &[BlocksAt]) {
+    for stopped_at in points {
+        let metadata = &stopped_at.point.metadata;
+        let chain = stopped_at.point.chain();
+        // Each scope of the chain's activation, by its `ScopeId`.
+        let mut activations: Vec<Option<ActivationReference>> = vec![None; metadata.scopes.len()];
+        for stopped in chain {
+            let offset = match &metadata.scopes[stopped.scope.0 as usize] {
+                Some(scope) => {
+                    stopped_at.register_base
+                        + u32::from(stopped.offset)
+                        + u32::from(scope.code.argument_count)
+                }
+                None => stopped_at.offset,
+            };
+            activations[stopped.scope.0 as usize] =
+                Some(mutator.heap.machine_activation_at(offset));
+        }
+        // The blocks live at the point: held in a register, or run by a
+        // scope of the chain.
+        let mut live: Vec<EliminatedId> = Vec::new();
+        for stopped in chain {
+            let run = metadata.scopes[stopped.scope.0 as usize]
+                .as_ref()
+                .and_then(|scope| scope.block);
+            let held = stopped
+                .locations
+                .iter()
+                .filter_map(|(_, location)| match location {
+                    Location::EliminatedBlock(block) => Some(*block),
+                    _ => None,
+                });
+            for block in run.into_iter().chain(held) {
+                if !live.contains(&block) {
+                    live.push(block);
+                }
+            }
+        }
+        let mut made: Vec<(EliminatedId, ObjectReference<'_>)> = Vec::new();
+        while made.len() < live.len() {
+            let waiting = |block: EliminatedId| {
+                live.contains(&block) && !made.iter().any(|(each, _)| *each == block)
+            };
+            let Some(next) = live.iter().copied().find(|block| {
+                let facts = &metadata.blocks[block.0 as usize];
+                let home_runs = metadata.scopes[facts.home.0 as usize]
+                    .as_ref()
+                    .and_then(|scope| scope.block);
+                let copied_holds = chain
+                    .iter()
+                    .filter(|stopped| stopped.scope == facts.home)
+                    .flat_map(|stopped| &stopped.locations)
+                    .filter(|(register, _)| facts.copied.contains(register))
+                    .filter_map(|(_, location)| match location {
+                        Location::EliminatedBlock(held) => Some(*held),
+                        _ => None,
+                    })
+                    .any(waiting);
+                waiting(*block) && !home_runs.is_some_and(waiting) && !copied_holds
+            }) else {
+                unreachable!("internal: an eliminated block's home and values are made first");
+            };
+            let facts = &metadata.blocks[next.0 as usize];
+            let Some(home) = activations[facts.home.0 as usize] else {
+                unreachable!("internal: a live block's home is a scope of the point's chain");
+            };
+            let closure = make_block(mutator, home, facts);
+            made.push((next, closure));
+            for stopped in chain {
+                let Some(activation) = activations[stopped.scope.0 as usize] else {
+                    continue;
+                };
+                let base = mutator.heap.activation_register_base(activation);
+                for (register, location) in &stopped.locations {
+                    if *location == Location::EliminatedBlock(next) {
+                        mutator
+                            .heap
+                            .set_register(base, *register, Value::object(closure));
+                    }
+                }
+                let runs = metadata.scopes[stopped.scope.0 as usize]
+                    .as_ref()
+                    .and_then(|scope| scope.block);
+                if runs == Some(next) {
+                    mutator
+                        .heap
+                        .set_closure_of_inlined_scope(activation, closure);
+                }
+            }
+            mutator.jit.statistics.materialized_blocks += 1;
+            #[cfg(test)]
+            super::inlining_tests::record_block(
+                mutator,
+                (chain, &activations),
+                (next, closure),
+                home,
+                stopped_at.below,
+            );
+        }
+    }
+}
+
+/// The closure of the eliminated block `facts` describes, over `home`, the
+/// activation of its home scope, as the interpreter's `MakeClosure` makes
+/// it there (`vm::make_closure_into`).
+fn make_block<'gc>(
+    mutator: &mut Mutator<'gc>,
+    home: ActivationReference,
+    facts: &EliminatedBlock,
+) -> ObjectReference<'gc> {
+    let captured_frame = mutator.heap.reify(home);
+    if facts.code.outer_reach > 0 {
+        mutator.heap.retain_registers(home);
+    }
+    let feedback_base = mutator.heap.activation_feedback_base(home);
+    let register_base = mutator.heap.activation_register_base(home);
+    mutator.new_closure_from_registers(
+        &facts.code,
+        captured_frame,
+        feedback_base,
+        register_base,
+        &facts.copied,
+    )
 }
 
 /// The interrupt point of an inlined scope `address`, inside the body
@@ -617,7 +831,10 @@ fn inlined_leaf_frame(
     register_base: u32,
     program_counter: u32,
 ) -> Option<MachineFrame> {
-    let inlined = mutator.jit.inlined_at(return_address_of(code_address))?;
+    let inlined = mutator
+        .jit
+        .inlined_at(return_address_of(code_address))
+        .filter(InlinedAt::inlines)?;
     let scope = inlined.scope(inlined.chain()[0].scope);
     Some(scope_frame(
         &mut mutator.heap,
