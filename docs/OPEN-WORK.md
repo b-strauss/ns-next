@@ -851,20 +851,39 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       to of every body that has optimized code, not only of frames that
       ran it, and `deepest_forced_exit` counts the points since the last
       safepoint across all optimized code, not per activation.
-  - **Optimized code's sends mispredict in the shared stubs**
-    (2026-11-05). At the first stage, DeltaBlueTon80's optimized bodies
-    took 3.3% fewer samples than their baseline code, but the
-    polymorphic stub and the row stubs they call took 6.8% more, their
-    type tests mispredicting more often behind an optimized caller, so
-    the program ran level with a build that optimizes nothing. The
-    second stage's customized copies run it about 2% ahead of its
-    baseline code (2026-11-06), but its sends still go through the same
-    cells and shared stubs, since send sites do not speculate before
-    stage 3's type-cases, and the mispredictions were not measured
-    again: this machine's sampled profiles did not separate them. To be
-    measured again with stage 3. [execution.md](design/execution.md),
-    "What the optimizing tier's foundation moved", "What speculation
-    moved".
+  - **What the third stage's measurement left** (2026-11-08), none a
+    wrong answer; [execution.md](design/execution.md), "What inlining
+    moved":
+    - *The current class at every inlined entry*: each inlined scope
+      computes its current class at its entry and keeps it bound, also
+      where no frame node reads it, because a trap or poll inside the
+      scope writes it back. An experiment that bound the receiver
+      instead -- wrong wherever the class is read -- ran List 9%,
+      `bench_send` 8% and Queens 5% faster: computing it only before a
+      frame node, and letting the exit's walk compute it for a scope
+      that has none, would take most of that. The verifier's check of
+      the header bindings at interrupt points changes with it.
+    - *A block handed to an Array's `do:` escapes*: `Array>>do:`'s way
+      for a receiver whose size the mirror cannot read hands the block
+      to `super do:`, so the plan eliminates no such block, and a
+      callee making one is sent rather than inlined. Treating the
+      mirror send's failure way as a fast path's fallback -- a trap
+      where the copy speculates -- would let it be eliminated.
+    - *`ValueOfParameter` and `CullParameter` stay sends*, and the
+      "cheap" weight of a send counts their fast paths, the mirror's and
+      a closure's `value` among them, at an accessor's 2 though they may
+      run a whole block.
+    - *Instantiation*: `bench_new2` +1.8% and `bench_newarg` +1.5%
+      against `master`, a sampled profile level within 0.4% and the
+      difference moving between functions the binaries inline
+      differently; a copy that keeps metadata still looks every leaf
+      call's site up, its root scope's included.
+    - *Not measured apart*: the barrier leaf's register moves around an
+      inlined store, and an own-slot store in an inlined scope taking
+      the cold leaf once per entry.
+    - *Compile time*: a debug build's verification of every allocation
+      takes a quarter to a third of its optimizing compiles; DeltaBlue's
+      97 copies take 29 ms in a release build.
   - **What the second stage left** (2026-11-06), none a wrong answer;
     [execution.md](design/execution.md), "Speculation":
     - *For stage 3*: no table maps a dispatch id back to its

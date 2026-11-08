@@ -9026,6 +9026,217 @@ Mandelbrot's one long activation still runs a copy only from its second
 `bench` send on; the compiler thread, stage 8's; and the stress and
 end-of-batch gates, which the batch's end runs.
 
+### What inlining moved
+
+**Measured 2026-11-08, `d4ae78da` against `master` (`56d65674`)**, by
+the protocol of "What speculation moved": three pinned release builds a
+side with debug information, a, b and c laid out as there, the code
+zones at the same three paddings on both sides; `vm::run` spans 44.0,
+47.4 and 51.0 KB on both sides with 451 calls, and no build has a
+`run_stretch` or a `vm::run` closure of its own. Three rounds in one
+sitting, the order of the six binaries rotated each round, every process
+held to the eight performance cores (the mask `0xC03C03`) from its
+start; `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue
+and `--iterations 8` for the rest. Each cell is a side's medians per
+build pooled by geometric mean, in milliseconds. Between the two trees
+lies road step 9's third stage ("Planned: the optimizing JIT",
+"Inlining"): the snapshot tree and the inlining plan, inlined method
+scopes and their type-cases, always-inlined accessors and indexed
+access, blocks compiled with their home and eliminated, the copies'
+dependencies, the recompilee walk and the re-entry at a poll.
+
+| Program | master (ms) | master's builds | branch (ms) | builds | vs master | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.198 | 0.195–0.201 | 0.109 | 0.109–0.110 | -44.9% | faster |
+| `CD` | 3081.092 | 3070.516–3091.550 | 2998.508 | 2994.954–3001.268 | -2.7% | faster |
+| `DeltaBlue` | 222.391 | 221.175–223.992 | 179.850 | 178.165–181.638 | -19.1% | faster |
+| `DeltaBlueTon80` | 1.944 | 1.939–1.950 | 1.910 | 1.901–1.925 | -1.8% | faster |
+| `Havlak` | 1130.822 | 1088.960–1213.075 | 811.816 | 811.332–812.195 | -28.2% | faster |
+| `Json` | 3.310 | 3.288–3.338 | 2.652 | 2.640–2.659 | -19.9% | faster |
+| `List` | 0.190 | 0.187–0.193 | 0.066 | 0.066–0.067 | -65.1% | faster |
+| `Mandelbrot` | 1807.932 | 1799.558–1813.117 | 1788.883 | 1780.954–1798.735 | -1.1% | faster |
+| `NBody` | 1074.099 | 1061.291–1087.153 | 940.291 | 930.792–946.234 | -12.5% | faster |
+| `Permute` | 0.377 | 0.370–0.387 | 0.238 | 0.227–0.260 | -36.8% | faster |
+| `Queens` | 0.313 | 0.313–0.315 | 0.081 | 0.078–0.084 | -74.0% | faster |
+| `Richards` | 16.824 | 16.729–16.981 | 11.708 | 11.641–11.836 | -30.4% | faster |
+| `RichardsTon80` | 1.774 | 1.769–1.778 | 1.295 | 1.285–1.304 | -27.0% | faster |
+| `Sieve` | 0.381 | 0.366–0.398 | 0.379 | 0.351–0.403 | -0.7% | no |
+| `Storage` | 0.661 | 0.655–0.667 | 0.657 | 0.640–0.670 | -0.6% | no |
+| `Towers` | 0.471 | 0.464–0.478 | 0.268 | 0.245–0.315 | -43.1% | faster |
+| `bench_block` | 0.865 | 0.862–0.867 | 0.249 | 0.248–0.252 | -71.2% | faster |
+| `bench_loop` | 0.512 | 0.499–0.522 | 0.079 | 0.078–0.080 | -84.6% | faster |
+| `bench_megamorphic` | 0.708 | 0.701–0.712 | 0.712 | 0.705–0.725 | +0.6% | no |
+| `bench_send` | 0.501 | 0.498–0.504 | 0.085 | 0.082–0.087 | -83.0% | faster |
+| `bench_signal` | 19.007 | 18.851–19.090 | 19.194 | 19.086–19.251 | +1.0% | no |
+| `bench_while` | 5.963 | 5.844–6.197 | 3.246 | 3.144–3.454 | -45.6% | faster |
+| `bench_recursion` | 0.485 | 0.469–0.497 | 0.487 | 0.469–0.522 | +0.3% | no |
+| `bench_new` | 1.720 | 1.719–1.721 | 1.746 | 1.717–1.772 | +1.5% | no |
+| `bench_new2` | 2.874 | 2.851–2.902 | 2.926 | 2.921–2.933 | +1.8% | slower |
+| `bench_newarg` | 3.015 | 2.985–3.049 | 3.061 | 3.053–3.072 | +1.5% | slower |
+| `bench_do` | 0.651 | 0.641–0.660 | 0.509 | 0.506–0.512 | -21.7% | faster |
+
+The geometric mean over the twenty-seven sources is -34.3%, and each of
+the branch's three builds lies far below each of `master`'s: 2.581,
+2.570 and 2.637 against 3.969, 3.935 and 3.946. What each difference
+is:
+
+- **Sends inlined.** `bench_send` and `bench_loop` run 83% to 85%
+  faster, `bench_block` 71%, List 65%, Bounce, Towers and `bench_while`
+  43% to 46%: their hot sends are type-cases of inlined callees, their
+  accessors loads and stores, and their blocks run in their homes'
+  frames. Richards, RichardsTon80, Havlak, Json and DeltaBlue are 19% to
+  30% faster, CD 2.7%, whose churn of baseline code ("What reclamation
+  moved") inlining does not reach.
+- **Queens: blocks up to twice Strongtalk's weight.** Its blocks weigh
+  between 70 and 140, and `BLOCK_LIMIT` is 140 (below): 74% faster.
+- **Three regressions the first sitting found, fixed.** A first sitting
+  of `1621baf0` measured Towers +48%, RichardsTon80 +40% and Queens +14%,
+  their copies leaving at 129 to 320 exits a run and five copies
+  abandoned: an inlined scope that creates a block -- a block that
+  escapes, such as Towers' `ifTrue:ifFalse:` arguments, whose quick
+  method's `value` stays a send -- left optimized code at its
+  `MakeClosure` every time it ran it. The plan now sends every callee
+  whose scope would create a block it does not eliminate, a fast path's
+  fallback aside (`plan::Planner::creates_a_block`): Towers 320 exits a
+  run to 0, Queens 320 to 0, RichardsTon80 129 to 4, none abandoned.
+  The same sitting measured `bench_new2` and `bench_newarg` about 10%
+  slower, bisected to `0f840a06` and sampled: 13% of the samples lay in
+  `JitState::inlined_at`, which every leaf called from optimized code
+  asked whether its site lay inside an inlined scope, finding the body
+  again and hashing the offset with SipHash. Only a body whose copy
+  keeps metadata asks now (`Installed::described`), and the table hashes
+  by identity.
+- **Instantiation: placement.** `bench_new2` +1.8% and `bench_newarg`
+  +1.5% are separated by a few microseconds of their builds' ranges. A
+  sampled profile of 400 runs a side puts the same total in the run loop
+  and its leaves (+0.4%), the difference moving between
+  `materialize::leaf_frame` and `Heap::class_factory`, which the two
+  binaries inline differently, and the medians of those two runs were
+  level (2.721 and 2.722 ms). Their `main:args:` copy inlines one scope
+  and keeps metadata, so each leaf its root scope calls still asks for
+  its site.
+- **Unchanged.** Mandelbrot and NBody gain 1.1% and 12.5%, their float
+  arithmetic leaf calls as before; `bench_megamorphic`, whose site gets
+  no type-case, `bench_signal`, which optimizes nothing, and
+  `bench_recursion` stay level.
+
+**The shared stubs' mispredictions behind optimized callers**
+(`OPEN-WORK.md` named them at the first stage). Sampled by the
+processor's mispredicted branches (xperf, `BranchMispredictions` every
+4,096), DeltaBlueTon80 run 4,000 times, each sample placed by the code
+zone's layout the run printed: `master` took 356 samples in the
+polymorphic stub and 389 in the megamorphic and row stubs, about 760
+mispredictions a run in the shared stubs, and 1,910 in the bodies; the
+branch 28, 118 and 1,073, about 150 a run in the stubs. A type-case
+tests the receiver inline, so the sends optimized code still makes are
+the polymorphic and megamorphic ones it inlines no arm of, and the
+stubs' mispredictions fall by four fifths. At 4,000 iterations the
+copies run DeltaBlueTon80 in 1.02 ms against `master`'s 1.67; at the
+eight iterations of the table, where compiles weigh, 1.8% ahead.
+
+**The limits of decision 6**, each halved and doubled, one build of
+layout a whose limits an environment variable set for the measurement
+alone, so that every variant ran the same machine code of the run loop;
+three rounds, the variants' order rotated, the iterations of the table.
+Each cell is the variant's pooled medians against the limits of
+Strongtalk (40, 70, 35, 1 and the 2,000 of the plan's ruling), its
+geometric mean over the twenty-seven sources:
+
+| Limit | halved | doubled |
+|---|---|---|
+| `METHOD_LIMIT` 40 | 20: +0.82% | 80: -0.58% |
+| `BLOCK_LIMIT` 70 | 35: +0.92% | 140: -3.43% |
+| `BLOCK_ARGUMENT_BONUS` 35 | 17: +0.93% | 70: +0.08% |
+| `COMPILE_LIMIT` 2,000 | 1,000: +0.22% | 4,000: +0.72%; 12,000: -0.25% |
+| `RECURSION_LIMIT` 1 | 0: +1.44% | 2: +0.03% |
+
+The variant measured against itself in a second sitting moved the
+geometric mean by 1.2%, the noise below which no difference decides.
+`BLOCK_LIMIT` 140 decides: -3.4% and, in a second sitting against 70,
+-2.6%, Queens 56% to 61% faster in both, no program slower beyond its
+rounds; 280 measured -1.9% there. `METHOD_LIMIT` 80 inlines more of
+Json (-10%) and DeltaBlue's and RichardsTon80's callers' callees, which
+run 4% to 8% slower; with `BLOCK_LIMIT` 140 it moved the mean -0.2%, no
+verdict. `COMPILE_LIMIT` 12,000 moved it -0.25% alone and +0.8% with
+`BLOCK_LIMIT` 140, DeltaBlue 5% slower in both: the ruling's 2,000
+stays, and with it a debug build's compile time. So `BLOCK_LIMIT` is
+140 and the other four stay.
+
+**The counters**, `--jit-statistics` on build a with the iterations
+above, which turns on the counts machine code otherwise leaves out and
+so changes the code: these runs time nothing.
+
+| Program | optimized (customized) | in (ms) | scopes inlined | type-case arms | blocks eliminated | made | inlined frames | optimized exits | traps | abandoned | budget exits (above) | poll re-entries |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 3 (2) | 0.404 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (0) | 0 |
+| `CD` | 32 (19) | 5.807 | 22 | 219 | 3 | 0 | 0 | 1111 | 4 | 5 | 32 (2) | 0 |
+| `DeltaBlue` | 97 (69) | 28.983 | 329 | 716 | 39 | 14 | 79 | 94 | 44 | 0 | 97 (28) | 3 |
+| `DeltaBlueTon80` | 14 (13) | 6.526 | 79 | 164 | 9 | 3 | 6 | 7 | 2 | 0 | 14 (6) | 0 |
+| `Havlak` | 60 (37) | 12.214 | 99 | 199 | 11 | 174 | 478 | 632 | 6 | 0 | 60 (11) | 90 |
+| `Json` | 16 (15) | 3.574 | 52 | 11 | 1 | 0 | 40 | 22 | 4 | 0 | 16 (5) | 0 |
+| `List` | 1 (1) | 0.273 | 1 | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 1 (1) | 0 |
+| `Mandelbrot` | 4 (1) | 0.907 | 0 | 0 | 0 | 0 | 0 | 2 | 2 | 0 | 4 (0) | 0 |
+| `NBody` | 7 (3) | 1.074 | 3 | 41 | 0 | 0 | 0 | 2 | 0 | 0 | 7 (1) | 0 |
+| `Permute` | 3 (2) | 0.574 | 3 | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (1) | 0 |
+| `Queens` | 1 (1) | 1.408 | 11 | 30 | 2 | 0 | 0 | 0 | 0 | 0 | 1 (1) | 0 |
+| `Richards` | 18 (10) | 2.521 | 38 | 97 | 0 | 0 | 1 | 2 | 2 | 0 | 18 (2) | 0 |
+| `RichardsTon80` | 10 (8) | 1.913 | 12 | 86 | 0 | 0 | 0 | 4 | 2 | 0 | 10 (0) | 0 |
+| `Sieve` | 4 (2) | 0.516 | 3 | 6 | 1 | 0 | 0 | 0 | 0 | 0 | 4 (1) | 0 |
+| `Storage` | 3 (2) | 0.445 | 2 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (0) | 0 |
+| `Towers` | 4 (2) | 0.530 | 4 | 19 | 0 | 0 | 0 | 0 | 0 | 0 | 4 (1) | 0 |
+| `bench_block` | 3 (3) | 0.454 | 5 | 0 | 3 | 0 | 0 | 8 | 2 | 0 | 3 (0) | 2 |
+| `bench_loop` | 2 (2) | 0.270 | 0 | 0 | 0 | 0 | 0 | 7 | 2 | 0 | 2 (0) | 0 |
+| `bench_megamorphic` | 1 (1) | 0.303 | 0 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 1 (0) | 0 |
+| `bench_send` | 3 (3) | 0.314 | 2 | 0 | 0 | 0 | 0 | 6 | 2 | 0 | 3 (0) | 0 |
+| `bench_signal` | 0 (0) | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 (0) | 0 |
+| `bench_while` | 5 (2) | 0.217 | 0 | 7 | 0 | 0 | 0 | 0 | 0 | 0 | 5 (0) | 0 |
+| `bench_recursion` | 1 (1) | 0.120 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 (0) | 0 |
+| `bench_new` | 4 (2) | 0.253 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 4 (0) | 0 |
+| `bench_new2` | 5 (2) | 0.275 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 5 (0) | 0 |
+| `bench_newarg` | 5 (2) | 0.269 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 5 (0) | 0 |
+| `bench_do` | 3 (2) | 0.361 | 1 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (1) | 0 |
+
+"Scopes inlined" counts each inlined body a copy lays out code for, an
+arm's or a block's; "type-case arms" every arm a site tests, an
+always-inlined accessor's or indexed access's among them; "made" the
+blocks an exit made of eliminated ones. No poll went without an entry,
+and no frame that left at a poll was kept from going back in. Compile time grew
+with inlining -- DeltaBlue's 97 copies take 29 ms, Havlak's 60 take 12
+-- and is the mutator's until the compiler thread of stage 8.
+
+**What the measurement settled of the stage's open costs.**
+
+- *The current class at every inlined entry.* Every inlined scope
+  computes its current class at its entry and keeps it bound, also
+  where no frame node of the scope reads it. An experiment that bound
+  the receiver in its place -- wrong for any frame node or exit that
+  reads the class, so that Richards, DeltaBlueTon80 and Json fail with
+  it -- ran List 9%, `bench_send` 8% and Queens 5% faster: an upper
+  bound of what computing it only where a frame node or an exit needs
+  it would save (`OPEN-WORK.md`).
+- *The barrier's leaf around an inlined store*, and *an own-slot store
+  in an inlined scope taking the cold leaf once per entry*, are not
+  measured apart: DeltaBlue and Richards, whose setters are inlined,
+  run 19% and 30% faster.
+- *A block created inside an inlined scope* left the copy at every
+  `MakeClosure`; the plan now sends such a scope (above).
+- *`ValueOfParameter` and `CullParameter`* stay sends, so a block a
+  quick method evaluates escapes and its callee is sent: Towers'
+  `ifTrue:ifFalse:` with a block that declares a temporary is one.
+- *A block handed to an Array's `do:`* escapes through `do:`'s way for
+  a receiver whose size the mirror cannot read, which hands it to
+  `super do:`, so that no copy eliminates it and a callee making one
+  is sent (`OPEN-WORK.md`).
+- *A debug build's verification of every allocation* takes 25% to 33%
+  of its optimizing compiles: Richards' 4.8 ms against 3.6 without it,
+  DeltaBlueTon80's 8.0 against 5.4.
+
+**Not covered**: AArch64, which runs under QEMU only; on-stack
+replacement into optimized code, stage 6's, so that a long activation
+-- Mandelbrot's, and `main:args:` of a program run once -- runs a copy
+only from its second entry; the compiler thread, stage 8's; and the
+stress and end-of-batch gates, which the batch's end runs.
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
