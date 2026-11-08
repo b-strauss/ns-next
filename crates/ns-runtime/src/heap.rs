@@ -8981,6 +8981,21 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Where the object physical register `index` of the frame whose
+    /// registers start at `base` names lies, if it names one, read past
+    /// the frame's window too: what a test compares before and after a
+    /// safepoint, a word of an inlined scope's registers among them.
+    #[cfg(all(test, ns_jit))]
+    pub(crate) fn frame_word_object_offset(&self, base: RegisterBase, index: u16) -> Option<u64> {
+        Word::from_bits(
+            self.stack
+                .frames
+                .committed_word(base.index as usize + index as usize),
+        )
+        .object_offset()
+        .map(std::num::NonZeroU64::get)
+    }
+
     /// Register `index` of the window `base` names: one index into the
     /// register file. A debug build checks the base is still its
     /// activation's and the register inside its window.

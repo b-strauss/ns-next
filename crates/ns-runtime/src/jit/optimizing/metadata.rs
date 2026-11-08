@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use super::allocate::{allocate, Allocation, Location, Move, PointKind, Spot};
+use ns_assembler::Register;
+
 use super::graph::{BlockId, Graph, GraphScope, Node, ScopeId, ValueId};
 use super::liveness::{block_order, intervals_knowing, poll_target, Positions};
 use super::verify::VerifyError;
@@ -358,12 +360,23 @@ fn replay(
         for (register, value) in &entry.machine {
             replay.machine.insert(Spot::Machine(*register), *value);
         }
+        // A register the leftover analysis taints at the block's top that
+        // holds the interpreter's word holds what no one may read: a word
+        // a callee or a popped frame left, which the collector's pre-pass
+        // nils -- and, where a frame went back into the code at a poll,
+        // the `nil` its entry restored a value no code reads on with
+        // (`poll_restores`) -- so that a read of it before a write is
+        // refused.
+        let tainted_here = graph.tainted_at_top(*block);
         for (register, binding) in entry.bindings.iter().enumerate() {
             replay.interpreter[register] = binding.value;
-            replay.words[register] = if binding.clean {
-                binding.value.map_or(Word::Original, Word::Value)
-            } else {
-                Word::Stale
+            let tainted_word =
+                u16::try_from(register).is_ok_and(|number| tainted(&tainted_here, number));
+            replay.words[register] = match (binding.clean, binding.value) {
+                (true, None) if tainted_word => Word::Stale,
+                (true, None) => Word::Original,
+                (true, Some(value)) => Word::Value(value),
+                (false, _) => Word::Stale,
             };
         }
         let nodes = &graph.block(*block).nodes;
@@ -532,6 +545,21 @@ fn replay(
             let mut stopped = replay.clone();
             write_back(&mut stopped, &point.stores, end_use)?;
             interrupt(&stopped, graph, *block, point.kind, described)?;
+            // A frame that goes back into the code at the poll.
+            if let (Some(restores), Some(head)) = (
+                poll_restores(graph, allocation, described, end_use),
+                poll_target(graph, *block),
+            ) {
+                replay_reentry(
+                    &stopped,
+                    graph,
+                    allocation,
+                    described,
+                    &restores,
+                    (*block, head),
+                    (end_use, positions.end_definition(*block)),
+                )?;
+            }
         }
         if graph.end_trap(*block).is_some() {
             let Some((point, described)) = points.next() else {
@@ -555,6 +583,180 @@ fn replay(
     Ok(())
 }
 
+/// Where a poll's entry reads a value back from (`poll_restores`): a frame
+/// word the frame kept, a constant's word, or `nil` for a value no code
+/// past the poll reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PollSource {
+    Frame(u16),
+    Word(u64),
+    Nil,
+}
+
+/// One value a poll's entry restores: which, from where, into the machine
+/// register the code holds it in, if any, and into each frame word the
+/// collector's pre-pass may have nilled that the code reads it back from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PollRestore {
+    pub(crate) value: ValueId,
+    pub(crate) source: PollSource,
+    pub(crate) machine: Option<Register>,
+    pub(crate) lost: Vec<u16>,
+}
+
+/// The registers of the frame words the frame keeps at the interrupt
+/// point `described`, in the physical frame's numbering: every register
+/// of its chain the leftover analysis leaves to the frame, which the
+/// collector traces and keeps current.
+fn kept_at(described: &InterruptPoint) -> Vec<u16> {
+    described
+        .scopes
+        .iter()
+        .flat_map(|scope| {
+            scope
+                .locations
+                .iter()
+                .filter(|(_, location)| {
+                    matches!(location, Location::FrameWord | Location::EliminatedBlock(_))
+                })
+                .map(move |(own, _)| scope.offset + own)
+        })
+        .collect()
+}
+
+/// What a frame going back into the code at the poll `described`, at
+/// `position`, restores: every value live there in the machine register
+/// the code holds it in, and in every frame word the code after the poll
+/// reads it back from -- each from a frame word the frame kept, one of a
+/// register the leftover analysis leaves to the frame there, which the
+/// collector kept current meanwhile, or for a constant from its word,
+/// since the collector's pre-pass nils every other (`Heap::trace_stack`).
+/// A value the code past the poll never reads -- live only for the stores
+/// of its dirty bindings, as a load of a slot the loop then stores is --
+/// is read back from a kept word one of them names, which the poll's
+/// write-back stored, so that the merge's stores write it again, or else
+/// is `nil`, written only into words nothing reads, which the replay
+/// holds the code to (`replay_reentry`). `None` where a value the code
+/// reads on is in no such word and no constant: no frame goes back in
+/// there, and the poll's exit is any interrupt point's
+/// (`JitStatistics::polls_without_an_entry`).
+pub(crate) fn poll_restores(
+    graph: &Graph,
+    allocation: &Allocation,
+    described: &InterruptPoint,
+    position: u32,
+) -> Option<Vec<PollRestore>> {
+    let kept = kept_at(described);
+    let mut restores = Vec::new();
+    for polled in allocation.poll_values.get(&position)? {
+        // A value read on: every clean binding the code may read it back
+        // from; one read by nothing but the stores of its dirty bindings:
+        // none, its machine register alone.
+        let lost: Vec<u16> = if polled.read_on {
+            polled
+                .clean
+                .iter()
+                .copied()
+                .filter(|register| !kept.contains(register))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if polled.machine.is_none() && lost.is_empty() {
+            continue;
+        }
+        let source = match polled.bound.iter().find(|register| kept.contains(register)) {
+            // A dirty binding the frame keeps, which the poll's write-back
+            // stored, is a store the merge makes again.
+            Some(register) => PollSource::Frame(*register),
+            None => match graph.constant_word(polled.value) {
+                Some(word) => PollSource::Word(word),
+                None if !polled.read_on => PollSource::Nil,
+                None => return None,
+            },
+        };
+        restores.push(PollRestore {
+            value: polled.value,
+            source,
+            machine: polled.machine,
+            lost,
+        });
+    }
+    Some(restores)
+}
+
+/// What no value is: a machine register a poll's entry gave `nil`
+/// (`PollSource::Nil`), as the replay of the frame going back in knows it.
+const RESTORED_NIL: ValueId = ValueId(u32::MAX);
+
+/// Checks the frame going back into the code at a poll, whose state at
+/// the poll after its write-back is `stopped`, `described` the point, as
+/// `restores` restores it: the collector's pre-pass nils every frame word
+/// the frame does not keep there, the entry writes back what `restores`
+/// says, and the code past the poll -- the moves into the loop's head,
+/// `head`, from `block` -- brings the head everything it assumes, as
+/// `enters` checks every way in: a value no code reads on, `nil` in its
+/// machine register, is stored only into words nothing reads, and every
+/// clean binding the head assumes holds its value. From the head on the
+/// replay of every block holds the code to never reading a word the
+/// analysis taints before it writes it, which a `nil` stored there is.
+fn replay_reentry(
+    stopped: &Replay,
+    graph: &Graph,
+    allocation: &Allocation,
+    described: &InterruptPoint,
+    restores: &[PollRestore],
+    (block, head): (BlockId, BlockId),
+    (end_use, end_definition): (u32, u32),
+) -> Result<(), VerifyError> {
+    let kept = kept_at(described);
+    let mut reentered = stopped.clone();
+    for (register, word) in reentered.words.iter_mut().enumerate() {
+        if !u16::try_from(register).is_ok_and(|number| kept.contains(&number)) {
+            *word = Word::Stale;
+        }
+    }
+    reentered.machine.clear();
+    for restore in restores {
+        let held = match restore.source {
+            PollSource::Frame(register) => {
+                if stopped.words[usize::from(register)] != Word::Value(restore.value) {
+                    return Err(VerifyError::StaleFrameWord {
+                        register,
+                        position: end_use,
+                    });
+                }
+                restore.value
+            }
+            PollSource::Word(_) => restore.value,
+            PollSource::Nil => RESTORED_NIL,
+        };
+        if let Some(register) = restore.machine {
+            reentered.machine.insert(Spot::Machine(register), held);
+        }
+        for register in &restore.lost {
+            reentered.words[usize::from(*register)] = Word::Value(held);
+        }
+    }
+    // The moves into the head: a `nil` stored is a word nothing may read.
+    for each in allocation.moves_at(end_definition) {
+        match *each {
+            Move::Store { from, register, .. }
+                if reentered.machine.get(&Spot::Machine(from)) == Some(&RESTORED_NIL) =>
+            {
+                reentered.words[usize::from(register)] = Word::Stale;
+            }
+            Move::Transfer { from, into, .. }
+                if reentered.machine.get(&from) == Some(&RESTORED_NIL) =>
+            {
+                reentered.machine.insert(into, RESTORED_NIL);
+            }
+            _ => apply_move(&mut reentered, allocation, *each, end_definition)?,
+        }
+    }
+    enters(&reentered, graph, allocation, block, head)
+}
+
 /// Checks that `value`, read in a machine register at `position`, is
 /// where the allocation says.
 fn in_register(
@@ -575,47 +777,58 @@ fn in_register(
 
 /// Replays the moves at `position`.
 fn apply(replay: &mut Replay, allocation: &Allocation, position: u32) -> Result<(), VerifyError> {
+    for each in allocation.moves_at(position) {
+        apply_move(replay, allocation, *each, position)?;
+    }
+    Ok(())
+}
+
+/// Replays the move `each` at `position`.
+fn apply_move(
+    replay: &mut Replay,
+    allocation: &Allocation,
+    each: Move,
+    position: u32,
+) -> Result<(), VerifyError> {
     let allocatable = |spot: Spot| match spot {
         Spot::Machine(register) => allocation.allocatable.contains(&register),
         Spot::Scratch => true,
     };
-    for each in allocation.moves_at(position) {
-        match *each {
-            Move::Store {
-                value,
-                from,
-                register,
-            } => {
-                if !allocatable(Spot::Machine(from)) {
-                    return Err(VerifyError::NotAllocatable { position });
-                }
-                if replay.machine.get(&Spot::Machine(from)) != Some(&value) {
-                    return Err(VerifyError::Misplaced { value, position });
-                }
-                replay.words[usize::from(register)] = Word::Value(value);
+    match each {
+        Move::Store {
+            value,
+            from,
+            register,
+        } => {
+            if !allocatable(Spot::Machine(from)) {
+                return Err(VerifyError::NotAllocatable { position });
             }
-            Move::Load {
-                value,
-                register,
-                into,
-            } => {
-                if !allocatable(Spot::Machine(into)) {
-                    return Err(VerifyError::NotAllocatable { position });
-                }
-                if replay.words[usize::from(register)] != Word::Value(value) {
-                    return Err(VerifyError::StaleFrameWord { register, position });
-                }
-                replay.machine.insert(Spot::Machine(into), value);
+            if replay.machine.get(&Spot::Machine(from)) != Some(&value) {
+                return Err(VerifyError::Misplaced { value, position });
             }
-            Move::Transfer { value, from, into } => {
-                if !allocatable(from) || !allocatable(into) {
-                    return Err(VerifyError::NotAllocatable { position });
-                }
-                if replay.machine.get(&from) != Some(&value) {
-                    return Err(VerifyError::Misplaced { value, position });
-                }
-                replay.machine.insert(into, value);
+            replay.words[usize::from(register)] = Word::Value(value);
+        }
+        Move::Load {
+            value,
+            register,
+            into,
+        } => {
+            if !allocatable(Spot::Machine(into)) {
+                return Err(VerifyError::NotAllocatable { position });
             }
+            if replay.words[usize::from(register)] != Word::Value(value) {
+                return Err(VerifyError::StaleFrameWord { register, position });
+            }
+            replay.machine.insert(Spot::Machine(into), value);
+        }
+        Move::Transfer { value, from, into } => {
+            if !allocatable(from) || !allocatable(into) {
+                return Err(VerifyError::NotAllocatable { position });
+            }
+            if replay.machine.get(&from) != Some(&value) {
+                return Err(VerifyError::Misplaced { value, position });
+            }
+            replay.machine.insert(into, value);
         }
     }
     Ok(())
@@ -848,7 +1061,11 @@ fn enters(
             }
             (None, None) => {}
         }
-        if assumed.clean && !replay.in_sync(register) {
+        // The interpreter's word of a register tainted there is what no
+        // one reads, whatever it holds.
+        let unread = assumed.value.is_none()
+            && u16::try_from(register).is_ok_and(|number| tainted(&tainted_there, number));
+        if assumed.clean && !unread && !replay.in_sync(register) {
             return Err(disagrees);
         }
         if !assumed.clean

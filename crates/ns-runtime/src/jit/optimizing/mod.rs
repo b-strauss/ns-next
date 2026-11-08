@@ -179,6 +179,8 @@ pub(crate) fn compile_tree(
             point: poll.point,
             #[cfg(test)]
             rewrites_lost_words: poll.rewrites_lost_words,
+            #[cfg(test)]
+            machine_sources: poll.machine_sources.clone(),
         })
         .collect();
     Ok(emit::OptimizedBody {

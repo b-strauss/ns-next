@@ -11,6 +11,10 @@ use crate::interpreter::inline_cache::MethodSide;
 use crate::interpreter::Mutator;
 use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
 
+/// The object a frame word named when the frame left its optimized code
+/// at a poll and when it went back in, by their offsets.
+pub(crate) type ObjectsAcross = (Option<u64>, Option<u64>);
+
 /// What a test records of every exit's stack and every leaf's frame
 /// (`JitState::recorder`).
 #[derive(Default)]
@@ -33,6 +37,10 @@ pub(crate) struct Recorder {
     /// whether the poll's entry wrote a value back into a frame word the
     /// collector's pre-pass may have nilled.
     poll_reentries: Vec<(u32, u32, bool)>,
+    /// For each of those re-entries, each object a frame word the entry
+    /// loads a machine register from named when the frame left, and when
+    /// it went back in, by their offsets.
+    reentered_objects: Vec<Vec<ObjectsAcross>>,
 }
 
 /// What an exit made of one block optimized code eliminated, as the
@@ -221,16 +229,18 @@ pub(crate) fn record_resumption(
 
 /// Records a frame going back into its optimized code at the poll it
 /// left, the copy having started at `exit_start` then and at
-/// `entry_start` now, its entry rewriting a lost word or not.
+/// `entry_start` now, its entry rewriting a lost word or not, and the
+/// objects its entry's machine registers are loaded from then and now.
 pub(crate) fn record_poll_reentry(
     mutator: &mut Mutator<'_>,
     (exit_start, entry_start): (u32, u32),
-    rewrites_lost_words: bool,
+    (rewrites_lost_words, objects): (bool, Vec<ObjectsAcross>),
 ) {
     if let Some(recorder) = mutator.jit.recorder.as_mut() {
         recorder
             .poll_reentries
             .push((exit_start, entry_start, rewrites_lost_words));
+        recorder.reentered_objects.push(objects);
     }
 }
 
@@ -1609,65 +1619,73 @@ mod polls {
         );
     }
 
-    /// `run: count` sums 3 twice over 1 to `count`, each time through
-    /// `to:do:` as `AN_ALLOCATING_INLINED_LOOP` does, reading the first
-    /// element of `table`, an `Array` made before the loops, at every pass,
-    /// after it checked that `holder`'s one element, which a collection
-    /// rewrites like any field, is still `table`: the young `table` lives
-    /// across every poll of the inner loop, where the allocations' and the
-    /// scavenge stress mode's scavenges move it. `run: count` answers
-    /// `6 * count`, and a big negative number for any pass that found
-    /// `table` not what `holder` holds.
+    /// `run: count` adds 3 `count` times in a loop of its own, each turn
+    /// checking that `holder`'s one element, which a collection rewrites
+    /// like any field, is `current`, a young `Array` the loop keeps
+    /// choosing again with no frame node between, so that the copy holds
+    /// `holder` and `current` in machine registers across the loop's
+    /// poll. `run: count` answers `3 * count`, and a big negative number
+    /// for any turn that found `current` not what `holder` holds.
     const A_MOVED_OBJECT_ACROSS_A_POLL: &str = indoc! {"
         class Subject = Object new () (
           public run: count = (
             |
               sum ::= 0.
-              round ::= 0.
-              last
+              index ::= 0.
               table
               holder
+              current
             |
             table:: {3. 0. 0. 0}.
             holder:: {table}.
-            [round < 2] whileTrue: [
-              1 to: count do: [:step |
-                last:: {step. step. step. step. step. step. step. step}.
-                ((holder at: 1) == table)
-                  ifTrue: [sum:: sum + (table at: 1)]
-                  ifFalse: [sum:: sum - 1000000].
-              ].
-              round:: round + 1.
+            current:: table.
+            [index < count] whileTrue: [
+              ((holder at: 1) == current)
+                ifTrue: [sum:: sum + 3]
+                ifFalse: [sum:: sum - 1000000].
+              current:: index >= 0 ifTrue: [table] ifFalse: [holder].
+              index:: index + 1.
             ].
             ^sum
           )
         )
     "};
 
-    /// A frame going back into its optimized code at a poll finds a heap
-    /// object it holds across the poll where the scavenge moved it: under
-    /// the scavenge stress mode, which scavenges at every safepoint, every
-    /// pass reads `table` and finds it the object `holder` holds, and the
-    /// sum is the interpreter's.
+    /// A frame going back into its optimized code at a poll finds the heap
+    /// objects it holds in machine registers across the poll where the
+    /// scavenge moved them: under the scavenge stress mode, which
+    /// scavenges at every safepoint, an object a frame word the poll's
+    /// entry loads a machine register from named lay elsewhere when the
+    /// frame went back in than when it left, every turn finds `current`
+    /// the object `holder` holds -- `nil` restored, `holder at:` would trap
+    /// and fail -- and the sum is the interpreter's.
     #[test]
     fn a_moved_object_held_across_a_poll_is_the_same_after_re_entry() {
         let Polled {
             answer,
+            recorder,
             statistics,
             scavenges,
             ..
         } = run_polling_with(
-            (A_MOVED_OBJECT_ACROSS_A_POLL, 600),
-            2_000,
+            (A_MOVED_OBJECT_ACROSS_A_POLL, 300),
+            200,
             None,
             (|_| {}, |interpreter| interpreter.set_stress_scavenge(true)),
         );
-        assert_eq!(answer, 6 * 2_000);
+        assert_eq!(answer, 3 * 200);
         if a_stress_mode_is_on() {
             return;
         }
         assert!(scavenges >= 2, "{scavenges} scavenges");
         assert!(statistics.poll_reentries >= 1, "{statistics:?}");
+        assert!(
+            recorder.reentered_objects.iter().flatten().any(
+                |(left, entered)| matches!((left, entered), (Some(before), Some(after)) if before != after)
+            ),
+            "an object a machine register is restored with moved during the safepoint: {:?}",
+            recorder.reentered_objects
+        );
     }
 
     /// `run: limit` counts the slot `index` up to `limit` in a loop whose

@@ -6367,6 +6367,11 @@ pub(crate) struct StoppedAtPoll {
     /// a test compares with where it is entered again.
     #[cfg(all(test, ns_jit))]
     exit_start: u32,
+    /// The objects the frame words the poll's entry loads machine
+    /// registers from named when the frame left, by their offsets, which
+    /// a test compares with what they name when it goes back in.
+    #[cfg(all(test, ns_jit))]
+    exit_objects: Vec<Option<u64>>,
 }
 
 impl StoppedAtPoll {
@@ -6393,7 +6398,7 @@ impl JitState {
         }
         let offset = self.offset_in(body, address)?;
         let poll = body.polls.iter().find(|poll| poll.exit == offset)?;
-        Some((body, *poll))
+        Some((body, poll.clone()))
     }
 
     /// Whether the exit that hands over `address` is a poll of optimized
@@ -6742,10 +6747,10 @@ fn stop_at_poll(
     let Ok(address) = usize::try_from(block.get(stubs::BlockWord::ExitCodeAddress.index())) else {
         unreachable!("internal: machine code's addresses fit the pointer width");
     };
-    let Some((key, installation, point, start)) = mutator
+    let Some((key, installation, point, start, poll)) = mutator
         .jit
         .poll_at(address)
-        .map(|(body, poll)| (body.key, body.installation, poll.point, body.start))
+        .map(|(body, poll)| (body.key, body.installation, poll.point, body.start, poll))
     else {
         debug_assert!(
             blocks.is_none(),
@@ -6768,14 +6773,31 @@ fn stop_at_poll(
         blocks,
         #[cfg(test)]
         exit_start: start,
+        #[cfg(test)]
+        exit_objects: frame_objects(&mutator.heap, physical, &poll.machine_sources),
     };
     #[cfg(not(test))]
-    let _ = start;
+    let _ = (start, poll);
     if forced {
         deoptimize_at_poll(mutator, stopped);
         return;
     }
     mutator.jit.stopped_at_poll = Some(stopped);
+}
+
+/// The objects `registers` of `physical`'s frame name, by their offsets:
+/// what a test compares across a safepoint.
+#[cfg(all(test, ns_jit))]
+fn frame_objects(
+    heap: &Heap<'_>,
+    physical: ActivationReference,
+    registers: &[u16],
+) -> Vec<Option<u64>> {
+    let base = heap.activation_register_base(physical);
+    registers
+        .iter()
+        .map(|register| heap.frame_word_object_offset(base, *register))
+        .collect()
 }
 
 /// The frame `stopped` names, which left its optimized code at a poll,
@@ -6810,11 +6832,15 @@ pub(crate) fn resumed_at_poll(
         .fold_inlined_scopes(stopped.physical, stopped.scopes - 1);
     mutator.jit.statistics.poll_reentries += 1;
     #[cfg(test)]
-    inlining_tests::record_poll_reentry(
-        mutator,
-        (stopped.exit_start, start),
-        poll.rewrites_lost_words,
-    );
+    {
+        let objects = frame_objects(&mutator.heap, stopped.physical, &poll.machine_sources);
+        let moved = stopped.exit_objects.iter().copied().zip(objects).collect();
+        inlining_tests::record_poll_reentry(
+            mutator,
+            (stopped.exit_start, start),
+            (poll.rewrites_lost_words, moved),
+        );
+    }
     #[cfg(not(test))]
     let _ = (poll, start);
     mutator.jit.poll_entry = Some(entry);
@@ -6867,7 +6893,11 @@ fn poll_reentry(
             (body.deepest_chain, body.deepest_extent),
             inlined,
         );
-    enters.then_some((CodeOffset(body.start + poll.entry), *poll, body.start))
+    enters.then_some((
+        CodeOffset(body.start + poll.entry),
+        poll.clone(),
+        body.start,
+    ))
 }
 
 /// The frame `stopped` names goes on in baseline code or the interpreter,

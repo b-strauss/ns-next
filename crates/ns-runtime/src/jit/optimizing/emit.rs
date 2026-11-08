@@ -47,7 +47,7 @@ use super::graph::{
     BlockId, ClassStart, End, Graph, IndexedKind, Node, ScopeId, ValueId, ValueKind,
 };
 use super::liveness::poll_target;
-use super::metadata::Metadata;
+use super::metadata::{Metadata, PollSource};
 use super::snapshot::{Snapshot, SnapshotInstruction};
 use crate::heap::{CodeId, Heap, Immediate};
 use crate::interpreter::inline_cache::FeedbackBase;
@@ -112,11 +112,11 @@ pub(crate) struct OptimizedBody {
 /// code of the address its exit hands over, which names the poll, and of
 /// its entry, and the index of its interrupt point. The entry restores
 /// every value live there from the frame's words a collection at the
-/// safepoint kept current (`Emitter::poll_restores`), the frame register
+/// safepoint kept current (`metadata::poll_restores`), the frame register
 /// at the physical frame's register 0, as the poll stood, and goes on
 /// past the poll's test, so that a request standing still costs a turn
 /// of the loop, never a turn without one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PollEntry {
     pub(crate) exit: u32,
     pub(crate) entry: u32,
@@ -125,6 +125,10 @@ pub(crate) struct PollEntry {
     /// collector's pre-pass may have nilled, which the tests read.
     #[cfg(test)]
     pub(crate) rewrites_lost_words: bool,
+    /// The frame words the entry loads values into machine registers
+    /// from, which the tests read before and after the safepoint.
+    #[cfg(test)]
+    pub(crate) machine_sources: Vec<u16>,
 }
 
 /// A `PollEntry` as the emitter lays it out, before the code's offsets are
@@ -135,6 +139,8 @@ pub(crate) struct EmittedPoll {
     pub(crate) point: u32,
     #[cfg(test)]
     pub(crate) rewrites_lost_words: bool,
+    #[cfg(test)]
+    pub(crate) machine_sources: Vec<u16>,
 }
 
 /// A scope the copy laid out code for: its body, the feedback base its
@@ -1255,7 +1261,7 @@ impl Emitter<'_> {
     /// the loop's head, where the interpreter takes the safepoint; and
     /// the poll's entry, where the frame goes back into the code once the
     /// safepoint is served (`PollEntry`), for a poll whose every live
-    /// value it can restore (`poll_restores`).
+    /// value it can restore (`metadata::poll_restores`).
     fn emit_polls(&mut self, body: &mut BodyAssembler) {
         for poll in std::mem::take(&mut self.polls) {
             body.macro_assembler.assembler().bind(poll.label);
@@ -1275,7 +1281,12 @@ impl Emitter<'_> {
             if body.macro_assembler.refuses_poll_entries() {
                 continue;
             }
-            let Some(restores) = self.poll_restores(poll.point, poll.position) else {
+            let Some(restores) = super::metadata::poll_restores(
+                self.graph,
+                self.allocation,
+                &self.metadata.points[poll.point],
+                poll.position,
+            ) else {
                 continue;
             };
             let entry = body.macro_assembler.assembler().label();
@@ -1286,6 +1297,15 @@ impl Emitter<'_> {
             self.hold(body, poll.position);
             #[cfg(test)]
             let rewrites_lost_words = restores.iter().any(|restore| !restore.lost.is_empty());
+            #[cfg(test)]
+            let machine_sources = restores
+                .iter()
+                .filter(|restore| restore.machine.is_some())
+                .filter_map(|restore| match restore.source {
+                    PollSource::Frame(register) => Some(register),
+                    PollSource::Word(_) | PollSource::Nil => None,
+                })
+                .collect();
             for restore in restores {
                 Self::restore(body, restore);
             }
@@ -1297,88 +1317,26 @@ impl Emitter<'_> {
                     .expect("internal: a body's points are numbered in 32 bits"),
                 #[cfg(test)]
                 rewrites_lost_words,
+                #[cfg(test)]
+                machine_sources,
             });
         }
-    }
-
-    /// What a frame going back into the code at the poll of the interrupt
-    /// point `point`, at `position`, restores: every value live there in
-    /// the machine register the code holds it in, and in every frame word
-    /// the code after the poll reads it back from -- each from a frame
-    /// word the frame kept, one of a register the leftover analysis leaves
-    /// to the frame there, which the collector kept current meanwhile, or
-    /// for a constant from its word, since the collector's pre-pass nils
-    /// every other (`Heap::trace_stack`). A value the code past the poll
-    /// never reads -- live only for the stores of its dirty bindings, as a
-    /// load of a slot the loop then stores is -- is read back from a kept
-    /// word one of them names, which the poll's write-back stored, so that
-    /// the merge's stores write it again, or else is `nil`, written only
-    /// into words nothing reads. `None` where a value the code reads on is
-    /// in no such word and no constant: no frame goes back in there, and
-    /// the poll's exit is any interrupt point's
-    /// (`JitStatistics::polls_without_an_entry`).
-    fn poll_restores(&self, point: usize, position: u32) -> Option<Vec<Restore>> {
-        let kept: Vec<u16> = self.metadata.points[point]
-            .scopes
-            .iter()
-            .flat_map(|scope| {
-                scope
-                    .locations
-                    .iter()
-                    .filter(|(_, location)| {
-                        matches!(location, Location::FrameWord | Location::EliminatedBlock(_))
-                    })
-                    .map(move |(own, _)| scope.offset + own)
-            })
-            .collect();
-        let mut restores = Vec::new();
-        for polled in self.allocation.poll_values.get(&position)? {
-            // A value read on: every clean binding the code may read it
-            // back from; one read by nothing but the stores of its dirty
-            // bindings: none, its machine register alone.
-            let lost: Vec<u16> = if polled.read_on {
-                polled
-                    .clean
-                    .iter()
-                    .copied()
-                    .filter(|register| !kept.contains(register))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            if polled.machine.is_none() && lost.is_empty() {
-                continue;
-            }
-            let source = match polled.bound.iter().find(|register| kept.contains(register)) {
-                // A dirty binding the frame keeps, which the poll's
-                // write-back stored, is a store the merge makes again.
-                Some(register) => Source::Frame(*register),
-                None => match self.graph.constant_word(polled.value) {
-                    Some(word) => Source::Word(word),
-                    None if !polled.read_on => Source::Word(Immediate::NIL.bits()),
-                    None => return None,
-                },
-            };
-            restores.push(Restore {
-                source,
-                machine: polled.machine,
-                lost,
-            });
-        }
-        Some(restores)
     }
 
     /// Emits `restore`: its value into its machine register, if it has
     /// one, then into each frame word lost.
-    fn restore(body: &mut BodyAssembler, restore: Restore) {
+    fn restore(body: &mut BodyAssembler, restore: super::metadata::PollRestore) {
         let macro_assembler = &mut body.macro_assembler;
         let held = match restore.machine {
             Some(register) => register,
             None => macro_assembler.temporary(macro_assembler.roles().integer_temporaries().left),
         };
         match restore.source {
-            Source::Frame(register) => macro_assembler.load_physical_register(held, register),
-            Source::Word(word) => macro_assembler.assembler().move_immediate(held, word),
+            PollSource::Frame(register) => macro_assembler.load_physical_register(held, register),
+            PollSource::Word(word) => macro_assembler.assembler().move_immediate(held, word),
+            PollSource::Nil => macro_assembler
+                .assembler()
+                .move_immediate(held, Immediate::NIL.bits()),
         }
         for register in restore.lost {
             macro_assembler.store_physical_register(register, held);
@@ -1396,23 +1354,6 @@ impl Emitter<'_> {
             body.macro_assembler.assembler().jump(block);
         }
     }
-}
-
-/// Where a poll's entry reads a value back from (`Emitter::poll_restores`):
-/// a frame word the frame kept, or a constant's word.
-#[derive(Clone, Copy)]
-enum Source {
-    Frame(u16),
-    Word(u64),
-}
-
-/// One value a poll's entry restores: from where, into the machine
-/// register the code holds it in, if any, and into each frame word the
-/// collector's pre-pass may have nilled that the code reads it back from.
-struct Restore {
-    source: Source,
-    machine: Option<Register>,
-    lost: Vec<u16>,
 }
 
 /// The word at `address`.
