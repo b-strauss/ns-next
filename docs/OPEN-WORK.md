@@ -879,8 +879,10 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       home called once be entered at its loop's head.
     - *NBody's rare slow run*: since NBody's `do:` block is eliminated,
       about one run in thirty-five takes 1.01 s or more against 0.93 to
-      0.96 s, the JIT's statistics the same as every other run's;
-      `18944be5` had none in seventy. Not found
+      0.96 s; `18944be5` had none in seventy. No slow run has been seen
+      with its statistics: 68 runs with `--jit-statistics`, none of them
+      slow, gave identical statistics, and the flag changes the code.
+      Not found
       ([execution.md](design/execution.md), "What inlining moved").
     - *A block handed on through a local loses its bonus*: the snapshot
       tree weighs a callee against `METHOD_LIMIT` plus the block

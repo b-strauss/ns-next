@@ -10741,6 +10741,115 @@ const A_HOT_BLOCK: &str = indoc! {"
     ) : ()
 "};
 
+/// `few` and `several`, loopless homes that hand `each:upTo:` a block
+/// spending about twice what a turn of its loop spends, sent by `calls:`
+/// and `severalCalls:` from their loops: compiled code, whose calls enter
+/// the homes' machine code through its prologue, which counts the call.
+/// `few`'s block runs out within its home's first few such calls,
+/// `several`'s after more than `LEAST_HOME_CALLS` of them. `few` answers
+/// 4950, `several` 1770.
+const HOMES_CALLED_FROM_COMPILED_CODE: &str = indoc! {"
+    class Subject = Object new () (
+      each: block upTo: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (block value: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      few = (
+        ^self each: [:value | (value * 3) + (value * 5) + (value * 7) - (value * 14)] upTo: 100
+      )
+      several = (
+        ^self each: [:value | (value * 3) + (value * 5) + (value * 7) - (value * 14)] upTo: 60
+      )
+      public calls: times = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < times] whileTrue: [
+          total:: total + self few.
+          index:: index + 1.
+        ].
+        ^total
+      )
+      public severalCalls: times = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < times] whileTrue: [
+          total:: total + self several.
+          index:: index + 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+/// `selector` sent to `subject` with the `SmallInteger` `count`,
+/// answering the `SmallInteger` it answers.
+fn send_count(interpreter: &mut Interpreter, subject: &Root, selector: &str, count: i64) -> i64 {
+    let argument = interpreter.stash(ns_runtime::Value::small_integer(count));
+    let answer = expect_ok(
+        interpreter.send(
+            subject,
+            Symbol::intern(selector),
+            std::slice::from_ref(&argument),
+        ),
+        selector,
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("{selector}: expected a small integer"),
+    })
+}
+
+ns_runtime::for_each_lowering! {
+    /// A home called from compiled code a few times -- each call through
+    /// its prologue, which counts it -- is not requested, and one called
+    /// more than `LEAST_HOME_CALLS` times is: `few`'s block runs out at
+    /// its home's first counted call, `several`'s at its fifth. The
+    /// callers run once with no call first, so that they are compiled.
+    fn a_home_is_requested_at_its_least_calls(lowering) {
+        let source = HOMES_CALLED_FROM_COMPILED_CODE;
+        let (mut interpreter, class, subject) = walking(source, lowering);
+        for _ in 0..2 {
+            assert_eq!(send_count(&mut interpreter, &subject, "calls:", 0), 0);
+        }
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_count(&mut interpreter, &subject, "calls:", 3), 14_850);
+        let after = interpreter.jit_statistics();
+        if pins_the_tiers(lowering) {
+            assert_eq!(copies_of(&mut interpreter, &class, "few"), 0, "a home called once");
+            assert!(
+                after.optimized_bodies > before.optimized_bodies,
+                "its block is requested: {after:?}"
+            );
+            assert_eq!(after.recompilees_above, before.recompilees_above, "{after:?}");
+        }
+        // Each home in a world of its own, its callee's feedback and budget
+        // the other's to share otherwise.
+        let (mut interpreter, class, subject) = walking(source, lowering);
+        for _ in 0..2 {
+            assert_eq!(send_count(&mut interpreter, &subject, "severalCalls:", 0), 0);
+        }
+        assert_eq!(send_count(&mut interpreter, &subject, "severalCalls:", 6), 10_620);
+        if pins_the_tiers(lowering) {
+            assert_eq!(
+                copies_of(&mut interpreter, &class, "several"),
+                1,
+                "a home called five times"
+            );
+        }
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// A block's run-out walks to its home, not its sender: `sumOf`, whose
     /// plan inlines `each:upTo:` and the block in it, is requested, though its
@@ -10764,14 +10873,14 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A home called a few times is not requested: its running activation
-    /// never enters a copy until on-stack replacement into optimized code,
-    /// and the copy would wait for its next call, while the block's own
-    /// is entered at the loop's next turn. `once`'s block, made in a home
-    /// called once a run and compiled at its second call, runs out in that
-    /// call and is requested itself; `once`, called fewer than
-    /// `LEAST_HOME_CALLS` times since its budget was armed, whatever the
-    /// budget, is not.
+    /// A home whose calls its budget never counted is not requested: its
+    /// running activation never enters a copy until on-stack replacement
+    /// into optimized code, and the copy would wait for its next call,
+    /// while the block's own is entered at the loop's next turn. `once`,
+    /// sent from the host, whose push enters past the prologue, has
+    /// counted no call when its block runs out in its second call; the
+    /// block is requested itself. `a_home_is_requested_at_its_least_calls`
+    /// pins the count itself.
     fn a_home_called_a_few_times_is_not_requested(lowering) {
         let (mut interpreter, class, subject) = walking(A_HOT_BLOCK, lowering);
         let before = interpreter.jit_statistics();

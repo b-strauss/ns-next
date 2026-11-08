@@ -5694,9 +5694,11 @@ pub(crate) const LEAST_HOME_CALLS: i64 = 4;
 /// row, and a loop run once -- one the frame has left, or stands in --
 /// would read as calls. A body with a loop of its own runs out its own
 /// budget on its calls and back edges, and is optimized at its own
-/// run-out, inlining the block if its plan does. A budget of nothing,
-/// the optimize stress mode's, says nothing of calls: the home is taken
-/// as called often, as before the rule.
+/// run-out, inlining the block if its plan does; the rule holds under
+/// every budget. A budget of nothing, the optimize stress mode's, says
+/// nothing of calls: a home without a loop is taken as called often
+/// there, as before the rule, and one with a loop is refused, its own
+/// next spend running out its budget.
 #[cfg(ns_jit)]
 fn called_repeatedly(heap: &Heap<'_>, code: &Rc<CompiledCode>) -> bool {
     let instructions = code.instructions();

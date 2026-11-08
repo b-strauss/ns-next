@@ -9344,8 +9344,9 @@ of them only `bench_recursion`, +8.7%, and `bench_newarg`, -0.8%, are
 separated, each in one sitting, the first having measured +2.4% and
 +0.4%. NBody's +7.4% is one round's 1,719 ms on build b, beside 938
 and 939: such a run comes about once in thirty-five since the block
-is eliminated, its statistics the same as every other run's, and never
-in more than seventy of `18944be5`'s (`OPEN-WORK.md`).
+is eliminated, and never in more than seventy of `18944be5`'s; 68 runs
+with `--jit-statistics`, none of them slow, gave identical statistics
+(`OPEN-WORK.md`).
 
 - *Permute*, 70% faster: `to:by:do:`'s block, which the closure of
   its `step < 0` conditional for a non-Boolean reached by reference,
