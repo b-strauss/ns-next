@@ -146,6 +146,8 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         made_not_entrant: after.made_not_entrant - before.made_not_entrant,
         refused_for_good: after.refused_for_good - before.refused_for_good,
         invalidated_copies: after.invalidated_copies - before.invalidated_copies,
+        budget_exits: after.budget_exits - before.budget_exits,
+        recompilees_above: after.recompilees_above - before.recompilees_above,
     }
 }
 
@@ -2823,11 +2825,13 @@ const STAGGER: i64 = 30;
 /// Enough turns for the last callee to run its budget out.
 const TURNS: i64 = 6000;
 
-/// A push refused at a callee's prologue because a real safepoint request
-/// lowered the depth limit word -- here the optimization request of a
-/// callee whose budget ran out -- is not counted against the caller,
-/// whose code it says nothing of: a caller whose callees keep requesting
-/// their optimization is not abandoned, however many there are.
+/// A caller whose callees keep requesting their optimization is not
+/// abandoned, however many there are: each callee's run-out leaves its
+/// prologue for the walk (`stubs::ExitKind::BudgetSpent`), an exit
+/// counted against no budget, and a push refused at a callee's prologue
+/// because a real safepoint request lowered the depth limit word -- the
+/// request of a callee whose budget ran out -- is not counted against
+/// the caller, whose code it says nothing of.
 #[test]
 fn a_caller_whose_callees_keep_requesting_optimization_is_not_abandoned() {
     let source = callees_optimized_one_after_another();
@@ -2852,7 +2856,7 @@ fn a_caller_whose_callees_keep_requesting_optimization_is_not_abandoned() {
         "{} optimization requests",
         statistics.optimization_requests
     );
-    assert!(statistics.pushes_refused > 64, "{statistics:?}");
+    assert!(statistics.budget_exits > 64, "{statistics:?}");
     assert_eq!(statistics.abandoned_bodies, 0, "{statistics:?}");
     assert_eq!(statistics.abandoned_optimized_bodies, 0, "{statistics:?}");
 }
@@ -10600,4 +10604,375 @@ fn a_leaf_reads_an_inlined_block_s_activation_whose_closure_is_not_made() {
     );
     interpreter.set_jit_stress(true);
     assert_eq!(run(&mut interpreter, &class), 240_600_000);
+}
+
+/// `source` loaded under `lowering`, every body's budget
+/// `OPTIMIZING_BUDGET`, and an instance of its class: what the
+/// recompilee walk's tests run, each body compiled at its second entry.
+fn walking(source: &str, lowering: Lowering) -> (Interpreter, Root, Root) {
+    let (mut interpreter, class) = load_spending_with(source, lowering);
+    interpreter.set_optimization_budget(OPTIMIZING_BUDGET);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    (interpreter, class, subject)
+}
+
+/// How many optimized copies `selector`'s body on `class`'s instance
+/// side has.
+fn copies_of(interpreter: &mut Interpreter, class: &Root, selector: &str) -> usize {
+    interpreter.jit_customized_copies(class, MethodSide::Instance, Symbol::intern(selector))
+}
+
+/// How many bodies the copies of `selector`'s body on `class`'s instance
+/// side inlined.
+fn inlined_by(interpreter: &mut Interpreter, class: &Root, selector: &str) -> usize {
+    interpreter.jit_inlined_bodies(class, MethodSide::Instance, Symbol::intern(selector))
+}
+
+/// `run`'s loop sending `weigh:`, a body that spends about twice what a
+/// turn of the loop spends and weighs less than a method callee's limit,
+/// so that its budget runs out first while `run`'s plan would inline it.
+/// `run` answers 4950.
+const A_SMALL_HOT_CALLEE: &str = indoc! {"
+    class Subject = Object new () (
+      weigh: value = (
+        ^(value * 3) + (value * 5) + (value * 7) - (value * 14)
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + (self weigh: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The run-out of a callee the caller's inlining plan would inline
+    /// requests the caller, whose copy inlines it, rather than the callee
+    /// alone (`docs/design/execution.md`, "When a body is optimized"):
+    /// `weigh:` is never optimized on its own. Pinned under the optimized
+    /// lowering alone, whose caches give the plan its receivers, and under
+    /// no stress mode that changes which copy runs when
+    /// (`pins_the_tiers`): the optimize stress mode requests every body at
+    /// its first spend, and the others free or compile again what the
+    /// walk chose.
+    fn a_small_hot_callee_requests_its_caller_s_optimization(lowering) {
+        let (mut interpreter, class, subject) = walking(A_SMALL_HOT_CALLEE, lowering);
+        for _ in 0..5 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 4950);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        assert_eq!(copies_of(&mut interpreter, &class, "run"), 1, "`run` is requested");
+        assert_eq!(copies_of(&mut interpreter, &class, "weigh:"), 0, "`weigh:` is not");
+        assert!(inlined_by(&mut interpreter, &class, "run") >= 1);
+    }
+}
+
+/// `run` handing `each:` a block that spends about twice what a turn of
+/// `each:`'s loop spends: the block's budget runs out first, while its
+/// home, `run`, sent once per run, spends almost nothing. `run` answers
+/// 4950.
+const A_HOT_BLOCK: &str = indoc! {"
+    class Subject = Object new () (
+      each: block = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + (block value: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public run = (
+        ^self each: [:value | (value * 3) + (value * 5) + (value * 7) - (value * 14)]
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A block's run-out walks to its home, not its sender: `run`, whose
+    /// plan inlines `each:` and the block in it, is requested, though its
+    /// own budget is nowhere near spent, and `each:` is not. Pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
+    fn a_block_s_run_out_requests_its_home(lowering) {
+        let (mut interpreter, class, subject) = walking(A_HOT_BLOCK, lowering);
+        for _ in 0..5 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 4950);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        assert_eq!(copies_of(&mut interpreter, &class, "run"), 1, "the home is requested");
+        assert_eq!(copies_of(&mut interpreter, &class, "each:"), 0);
+        assert!(
+            inlined_by(&mut interpreter, &class, "run") >= 2,
+            "`each:` and the block"
+        );
+    }
+}
+
+/// `apply:to:`, taking a block, sent by `relay:to:`, which `run` sends
+/// with a block of its own: `apply:to:` spends the most, weighs more than
+/// a method callee's limit -- so that `relay:to:`'s own plan, in which the
+/// block is a parameter, would not inline it -- and less than the limit a
+/// block made in the compile raises it to, so that `run`'s plan inlines
+/// it. `run` answers 9900.
+const A_METHOD_TAKING_A_BLOCK: &str = indoc! {"
+    class Subject = Object new () (
+      apply: block to: value = (
+        ^(block value: value) + (value * 3) + (value * 5) + (value * 7) + (value * 11) + (value * 13) - (value * 39)
+      )
+      relay: block to: value = (
+        ^self apply: block to: value
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + (self relay: [:each | each + each] to: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The run-out of a method that takes a block walks to the block's
+    /// home, past its sender: `relay:to:` would not inline `apply:to:`,
+    /// `run`, the block's home, would, and is requested. Pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
+    fn a_method_taking_a_block_requests_the_block_s_home(lowering) {
+        let (mut interpreter, class, subject) = walking(A_METHOD_TAKING_A_BLOCK, lowering);
+        for _ in 0..5 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 9900);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        assert_eq!(copies_of(&mut interpreter, &class, "run"), 1, "the home is requested");
+        assert_eq!(copies_of(&mut interpreter, &class, "apply:to:"), 0);
+        assert_eq!(copies_of(&mut interpreter, &class, "relay:to:"), 0);
+    }
+}
+
+/// `run:` sending `weigh:` to the receivers of an array in turn: an `A`,
+/// whose `weigh:` any plan inlines, and an `H`, whose `weigh:` weighs
+/// more than any plan inlines, so that the site's type-case sends every
+/// other receiver; then a `B`, whose `weigh:` a plan would inline. `run:`
+/// answers 5000 for the first array and 4950 for the second.
+const A_CALLER_OPTIMIZED_FIRST: &str = indoc! {"
+    class Subject = Object new () (
+      class A = Object new () (
+        public weigh: value = (
+          ^value + 1
+        )
+      )
+      class B = Object new () (
+        public weigh: value = (
+          ^(value * 3) + (value * 5) + (value * 7) - (value * 14)
+        )
+      )
+      class H = Object new () (
+        public weigh: value = (
+          ^(value * 3) + (value * 5) + (value * 7) + (value * 11) + (value * 13) + (value * 17) + (value * 19) - (value * 74)
+        )
+      )
+      public first = (
+        ^(Array new: 2)
+          at: 1 put: A new;
+          at: 2 put: H new;
+          yourself
+      )
+      public second = (
+        ^(Array new: 1)
+          at: 1 put: B new;
+          yourself
+      )
+      public classB = (
+        ^B
+      )
+      public run: receivers = (
+        |
+          sum ::= 0.
+          index ::= 0.
+          count = receivers size.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + ((receivers at: (index \\\\ count) + 1) weigh: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// `subject`'s `run:` with `receivers`, answering the `SmallInteger` it
+/// answers.
+fn run_with(interpreter: &mut Interpreter, subject: &Root, receivers: &Root) -> i64 {
+    let answer = expect_ok(
+        interpreter.send(
+            subject,
+            Symbol::intern("run:"),
+            std::slice::from_ref(receivers),
+        ),
+        "run:",
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("run: expected a small integer"),
+    })
+}
+
+ns_runtime::for_each_lowering! {
+    /// The walk stops at a caller running optimized code compiled lately:
+    /// `run:`'s copy, installed while its site saw an `A` and an `H`,
+    /// sends a `B`, whose `weigh:`'s run-out requests `weigh:` itself --
+    /// a request for `run:` would be dropped, its key having a copy.
+    /// Pinned as `a_small_hot_callee_requests_its_caller_s_optimization`
+    /// is.
+    fn the_walk_stops_at_young_optimized_code(lowering) {
+        let (mut interpreter, class, subject) = walking(A_CALLER_OPTIMIZED_FIRST, lowering);
+        let first = class_answered(&mut interpreter, &subject, "first");
+        let second = class_answered(&mut interpreter, &subject, "second");
+        for _ in 0..8 {
+            assert_eq!(run_with(&mut interpreter, &subject, &first), 5000);
+        }
+        let pinned = pins_the_tiers(lowering);
+        if pinned {
+            assert_eq!(copies_of(&mut interpreter, &class, "run:"), 1, "`run:` first");
+        }
+        for _ in 0..8 {
+            assert_eq!(run_with(&mut interpreter, &subject, &second), 4950);
+        }
+        if !pinned {
+            return;
+        }
+        let class_b = class_answered(&mut interpreter, &subject, "classB");
+        assert_eq!(copies_of(&mut interpreter, &class_b, "weigh:"), 1, "`B>>weigh:` alone");
+        assert_eq!(copies_of(&mut interpreter, &class, "run:"), 1);
+    }
+}
+
+/// `run` sending a chain of eleven sends, `link11:` to `link1:`, each
+/// tiny, the last sending `weigh:`, which spends the most: every caller's
+/// plan would inline the body it sends. `run` answers 4950.
+fn a_long_chain() -> String {
+    let links: String = (1..=11)
+        .map(|link| {
+            let next = if link == 1 {
+                "weigh:".to_owned()
+            } else {
+                format!("link{}:", link - 1)
+            };
+            format!("  link{link}: value = (\n    ^self {next} value\n  )\n")
+        })
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+          weigh: value = (
+            ^(value * 3) + (value * 5) + (value * 7) - (value * 14)
+          )
+        {links}  public run = (
+            |
+              sum ::= 0.
+              index ::= 0.
+            |
+            [index < 100] whileTrue: [
+              sum:: sum + (self link11: index).
+              index:: index + 1.
+            ].
+            ^sum
+          )
+        ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// The walk goes up at most `RECOMPILEE_SEARCH_LENGTH`, ten, frames:
+    /// from `weigh:` to `link10:`, which is requested, though `link11:`
+    /// and `run` would inline it too. Pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
+    fn the_walk_stops_after_ten_frames(lowering) {
+        let (mut interpreter, class, subject) = walking(&a_long_chain(), lowering);
+        // Three runs: `weigh:` runs out in the second, and a fourth would
+        // run `run`'s own budget out.
+        for _ in 0..3 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 4950);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        assert_eq!(copies_of(&mut interpreter, &class, "link10:"), 1, "ten frames up");
+        for selector in ["weigh:", "link1:", "link9:", "link11:", "run"] {
+            assert_eq!(copies_of(&mut interpreter, &class, selector), 0, "{selector}");
+        }
+    }
+}
+
+/// The number of subclasses of `Base` `many_keys` declares: more than a
+/// body's exit budget, 64.
+const KEY_COUNT: usize = 80;
+
+/// `Base>>answer` run on an instance of each of `KEY_COUNT` subclasses,
+/// one per `answerN`, so that each run-out of its budget is a new key's
+/// and requests a copy. Each `answerN` answers 3.
+fn many_keys() -> String {
+    let classes: String = (1..=KEY_COUNT)
+        .map(|key| format!("  class S{key} = Base new () ()\n"))
+        .collect();
+    let senders: String = (1..=KEY_COUNT)
+        .map(|key| format!("  public answer{key} = (\n    ^S{key} new answer\n  )\n"))
+        .collect();
+    formatdoc! {"
+        class Subject = Object new () (
+          class Base = Object new () (
+            public answer = (
+              |
+                one ::= 1.
+              |
+              ^one + 2
+            )
+          )
+        {classes}{senders}  public baseClass = (
+            ^Base
+          )
+        ) : ()
+    "}
+}
+
+ns_runtime::for_each_lowering! {
+    /// A budget's run-out leaves machine code for the walk, an exit that
+    /// counts against no exit budget: `answer`'s baseline code runs its
+    /// budget out once per key, more often than its exit budget, and is
+    /// never abandoned -- a budget of one instruction runs out at every
+    /// spend of a key without a copy. Its counts pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization`'s are.
+    fn a_budget_exit_counts_against_no_budget(lowering) {
+        let (mut interpreter, _, subject) = walking(&many_keys(), lowering);
+        interpreter.set_optimization_budget(1);
+        let before = interpreter.jit_statistics();
+        for key in 1..=KEY_COUNT {
+            assert_eq!(send_unary(&mut interpreter, &subject, &format!("answer{key}")), 3);
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        assert_eq!(done.abandoned_bodies, 0, "{done:?}");
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        assert!(done.budget_exits > 64, "{done:?}");
+        let base = class_answered(&mut interpreter, &subject, "baseClass");
+        assert!(copies_of(&mut interpreter, &base, "answer") > 64);
+    }
 }

@@ -585,12 +585,14 @@ enum ColdPath {
         rejoin: Label,
     },
     /// A leaf's call (`call_leaf_out_of_line_or_exit`), then back into the
-    /// straight line at `rejoin` when it answered 0, and an exit that
-    /// re-executes the instruction at `program_counter` otherwise.
+    /// straight line at `rejoin` when it answered 0, and the exit `kind`
+    /// at `program_counter` otherwise: one that re-executes the
+    /// instruction there, or the budget's run-out (`spend_budget`).
     CheckedLeafCall {
         label: Label,
         leaf: LeafIndex,
         arguments: [Operand; 3],
+        kind: ExitKind,
         program_counter: u32,
         rejoin: Label,
     },
@@ -1566,6 +1568,7 @@ impl MacroAssembler {
             label,
             leaf,
             arguments,
+            kind: ExitKind::Reexecute,
             program_counter,
             rejoin,
         });
@@ -2393,7 +2396,14 @@ impl MacroAssembler {
     /// the frame's -- whose header names the key a method's body is
     /// optimized for (`jit::budget_spent`) -- and the code's own address,
     /// then goes on where the spend ends, since the leaf changes nothing
-    /// the code reads. Clobbers the flags and the idiom scratch register.
+    /// the code reads, unless the leaf found an optimization due: then it
+    /// takes the exit `ExitKind::BudgetSpent` at `program_counter`, where
+    /// the interpreter goes on once the run loop has walked the stack for
+    /// the frame to request (`jit::find_recompilee`) -- the walk no leaf
+    /// may make. The spend comes before the instruction at
+    /// `program_counter` and after every store of the one before it, so
+    /// that the exit re-applies nothing. Clobbers the flags and the idiom
+    /// scratch register.
     ///
     /// The data word names the row rather than the code holding a code
     /// id, since a full collection may free a code id and mint it again
@@ -2407,7 +2417,7 @@ impl MacroAssembler {
     ///
     /// On an amount past `i32::MAX`, which no body's length reaches: the
     /// compile refuses a body past `u16::MAX` instructions.
-    pub(crate) fn spend_budget(&mut self, word: usize, amount: u32) {
+    pub(crate) fn spend_budget(&mut self, word: usize, amount: u32, program_counter: u32) {
         let scratch = self.roles.idiom_scratch;
         let amount = i32::try_from(amount).expect("internal: a body's length fits an immediate");
         let (cold, rejoin) = (self.assembler.label(), self.assembler.label());
@@ -2421,17 +2431,18 @@ impl MacroAssembler {
         );
         self.assembler.jump_if(Condition::Less, cold);
         self.assembler.bind(rejoin);
-        self.call_leaf_out_of_line(
-            cold,
-            super::leaves::Leaf::Budget.index(),
-            [
+        self.push_cold_path(ColdPath::CheckedLeafCall {
+            label: cold,
+            leaf: super::leaves::Leaf::Budget.index(),
+            arguments: [
                 Operand::Register(scratch),
                 Operand::Register(self.roles.frame),
                 Operand::CodeAddress,
             ],
-            scratch,
+            kind: ExitKind::BudgetSpent,
+            program_counter,
             rejoin,
-        );
+        });
     }
 
     /// Adds one to the entry block's `CompiledCalls` when the code counts
@@ -3239,6 +3250,7 @@ impl MacroAssembler {
                     label,
                     leaf,
                     arguments,
+                    kind,
                     program_counter,
                     rejoin,
                 } => {
@@ -3246,7 +3258,7 @@ impl MacroAssembler {
                     self.call_leaf(leaf, arguments);
                     self.assembler.compare_immediate(self.roles.leaf_result, 0);
                     self.assembler.jump_if(Condition::Equal, rejoin);
-                    self.exit(ExitKind::Reexecute, program_counter);
+                    self.exit(kind, program_counter);
                 }
                 ColdPath::StackGrowth {
                     label,

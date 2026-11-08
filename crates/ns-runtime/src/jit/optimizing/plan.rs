@@ -75,8 +75,10 @@ pub(crate) const RECURSION_LIMIT: u32 = 1;
 pub(crate) const LOOP_WEIGHT: u32 = 8;
 
 /// The least share of its budget a callee's frequency counts, so that a
-/// body whose budget says it barely ran still orders by its loops.
-const LEAST_BUDGET_SHARE: f64 = 1.0 / 64.0;
+/// body whose budget says it barely ran still orders by its loops; and
+/// the least a caller the recompilee walk goes to must have spent, so
+/// that it never requests a body that barely ran (`jit::find_recompilee`).
+pub(crate) const LEAST_BUDGET_SHARE: f64 = 1.0 / 64.0;
 
 /// The limits a plan is made under: the constants above, and a test's own;
 /// and whether blocks are inlined at all: a plan without them creates
@@ -1885,19 +1887,25 @@ impl<'tree> Planner<'tree> {
 }
 
 /// The share of `OPTIMIZATION_BUDGET` a row holding `remaining` spent, at
-/// least `LEAST_BUDGET_SHARE`. A parked row, `i64::MAX`, ran its whole
-/// budget and waits for its compile.
+/// least `LEAST_BUDGET_SHARE`.
+fn spent_share(remaining: i64) -> f64 {
+    budget_share(remaining).max(LEAST_BUDGET_SHARE)
+}
+
+/// The share of `OPTIMIZATION_BUDGET` a row holding `remaining` spent,
+/// from 0 to 1. A parked row, `i64::MAX`, ran its whole budget and waits
+/// for its compile.
 #[expect(
     clippy::cast_precision_loss,
     reason = "a budget of 240,000 instructions needs far fewer than 53 bits"
 )]
-fn spent_share(remaining: i64) -> f64 {
+pub(crate) fn budget_share(remaining: i64) -> f64 {
     if remaining == i64::MAX {
         return 1.0;
     }
     let budget = crate::jit::OPTIMIZATION_BUDGET;
     let spent = budget.saturating_sub(remaining).clamp(0, budget);
-    (spent as f64 / budget as f64).max(LEAST_BUDGET_SHARE)
+    spent as f64 / budget as f64
 }
 
 /// What a scope about to be added knows of its receiver and level.

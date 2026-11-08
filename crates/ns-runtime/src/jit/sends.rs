@@ -212,7 +212,7 @@ pub(super) fn prologue(body: &mut BodyAssembler, facts: &BodyFacts) {
     // After every word of the frame is written, where the call holds
     // nothing in a scratch register that the budget leaf's call could
     // clobber.
-    body.spend_budget(facts.instruction_count);
+    body.spend_budget(facts.instruction_count, 0);
 }
 
 /// What `Step::Block`'s push writes into a block's frame besides what

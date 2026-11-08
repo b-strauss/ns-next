@@ -11254,9 +11254,18 @@ its own (`heap/optimization_budgets.rs`), armed with
 the body's length at its prologue and the loop's length at each back
 jump -- the load of an address, a subtract from memory and one
 branch -- and below zero calls the budget leaf (`Leaf::Budget`), which
-records the body's optimization request, parks the row at `i64::MAX`
-and requests a safepoint; it compiles nothing. Optimized code spends no
-budget. A send whose cache fill follows a miss raises the running
+parks the row at `i64::MAX` and answers whether an optimization is due
+-- none for a key whose copy is installed or a pair refused, whose
+budget it arms afresh; it compiles nothing. When one is due the code
+takes the exit `ExitKind::BudgetSpent`, counted against no exit budget,
+at the instruction the spend comes before -- the body's first at the
+prologue, the loop's head at a back jump -- and the run loop, where
+every frame the exit left is an activation, walks up the stack for the
+frame to request (`jit::find_recompilee`, "When a body is optimized"
+below), records its request and requests a safepoint, the frame going
+on interpreted. Under the optimize stress mode, whose budgets are armed
+at 0, the leaf records the spending frame's own request and the code
+goes on. Optimized code spends no budget. A send whose cache fill follows a miss raises the running
 body's armed row to at least `BUDGET_AFTER_CACHE_CHANGE`, a sixth of the
 budget (`interpreter/inline_cache.rs`'s `fill`), so that a compile
 waits for its feedback to settle.

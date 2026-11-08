@@ -178,6 +178,16 @@ pub(crate) enum ExitKind {
     /// `Reexecute`, and the run loop counts the trap of the site in the
     /// block's `ExitTrapSite` against no exit budget.
     Trap = 5,
+    /// A spend ran the body's optimization budget out and the budget leaf
+    /// found an optimization due (`MacroAssembler::spend_budget`): the
+    /// interpreter goes on at the exit's program counter -- the
+    /// instruction a prologue's spend comes before, or the loop's head a
+    /// backward jump's spend jumps to -- once the run loop has walked up
+    /// the stack for the frame whose optimization it requests
+    /// (`jit::find_recompilee`), which no leaf may, since a leaf reads no
+    /// other activation. Counted against no exit budget: it says the body
+    /// ran long, not that its code exits where it must.
+    BudgetSpent = 6,
 }
 
 /// An exit, decoded from the block and the kind `enter` answered.
@@ -208,6 +218,9 @@ pub(crate) enum MachineExit {
     Trap {
         program_counter: u32,
         site: u32,
+    },
+    BudgetSpent {
+        program_counter: u32,
     },
 }
 
@@ -260,6 +273,8 @@ pub(crate) fn decode_exit(block: &EntryBlock, kind: u64) -> MachineExit {
         }
     } else if kind == ExitKind::Safepoint as u64 {
         MachineExit::Safepoint { program_counter }
+    } else if kind == ExitKind::BudgetSpent as u64 {
+        MachineExit::BudgetSpent { program_counter }
     } else if kind == ExitKind::DeadRegister as u64 {
         let word = block.get(BlockWord::ExitRegister.index());
         let Ok(register) = u16::try_from(word) else {

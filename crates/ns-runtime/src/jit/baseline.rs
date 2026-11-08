@@ -416,9 +416,10 @@ impl BodyAssembler {
 
     /// Spends `amount` instructions of the body's optimization budget
     /// (`MacroAssembler::spend_budget`), through the one data word every
-    /// spend of this copy shares. Clobbers the flags and the idiom scratch
-    /// register.
-    pub(super) fn spend_budget(&mut self, amount: u32) {
+    /// spend of this copy shares, before the instruction at
+    /// `program_counter`, where the run-out's exit goes on. Clobbers the
+    /// flags and the idiom scratch register.
+    pub(super) fn spend_budget(&mut self, amount: u32, program_counter: u32) {
         if self.optimized {
             return;
         }
@@ -430,7 +431,8 @@ impl BodyAssembler {
                 word
             }
         };
-        self.macro_assembler.spend_budget(word, amount);
+        self.macro_assembler
+            .spend_budget(word, amount, program_counter);
     }
 
     /// The instructions a backward jump from the instruction being lowered
@@ -447,7 +449,7 @@ impl BodyAssembler {
     fn jump_to(&mut self, target: u32) {
         if target <= self.program_counter {
             self.macro_assembler.count_back_edge();
-            self.spend_budget(self.back_jump_distance(target));
+            self.spend_budget(self.back_jump_distance(target), target);
             self.macro_assembler.poll(target);
         }
         let label = self.starts[target as usize];
@@ -477,7 +479,7 @@ impl BodyAssembler {
             // The jump's own instruction, the one the code after it
             // stands at.
             self.program_counter = target + distance - 1;
-            self.spend_budget(distance);
+            self.spend_budget(distance, target);
             self.macro_assembler.poll(target);
             let start = self.starts[target as usize];
             self.macro_assembler.assembler().jump(start);

@@ -369,6 +369,13 @@ pub struct JitStatistics {
     /// rounds free (`invalidate_optimized_for_stress`). Neither a trap nor
     /// an exit: no version is raised for them.
     pub invalidated_copies: u64,
+    /// Exits at a budget's run-out (`stubs::ExitKind::BudgetSpent`), for
+    /// the walk that finds the recompilee (`find_recompilee`): of `exits`,
+    /// counted against no exit budget.
+    pub budget_exits: u64,
+    /// Run-outs whose walk requested a frame above the one that ran its
+    /// budget out: its sender, or a block's home.
+    pub recompilees_above: u64,
 }
 
 impl JitStatistics {
@@ -1598,6 +1605,14 @@ pub(crate) struct JitState {
     /// held weakly as the installed bodies are: what the optimizing
     /// compile at the next safepoint takes up.
     pub(crate) optimization_requests: Vec<OptimizationRequest>,
+    /// The bodies whose run-out the walk answered with another frame's
+    /// request (`request_recompilee`), each with the version of the copy
+    /// its frame's key had: their budgets stay parked until the next
+    /// safepoint has compiled what was requested, which reads them as
+    /// spent, as they were when the walk asked the recompilee's plan --
+    /// and so that no further run-out walks again meanwhile -- and are
+    /// armed afresh there, at that version's wait (`optimize_requested`).
+    pub(crate) parked_for_recompilees: Vec<(Weak<CompiledCode>, u8)>,
     /// The installed bodies, by index in `bodies`, whose budget word is
     /// still to be pointed at their row, which only a caller holding the
     /// heap can do (`after_compile_trigger`). Emptied by a compaction,
@@ -1904,6 +1919,7 @@ impl JitState {
             revived_by_entries: false,
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
+            parked_for_recompilees: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: if optimize_stress {
                 0
@@ -2939,6 +2955,7 @@ impl JitState {
             revived_by_entries: false,
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
+            parked_for_recompilees: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: OPTIMIZATION_BUDGET,
             budget_set: OPTIMIZATION_BUDGET,
@@ -5027,25 +5044,38 @@ fn point_budget_word(
 /// The budget leaf's work (`leaves::budget`): a spend of the body the
 /// address inside the code `code_address` lies in left the word at
 /// `spent_from` below zero. A row that ran out -- the one the body's id
-/// names now, and armed -- requests the body's optimization, once while
-/// the request is pending, parks the row and requests a safepoint, at
-/// which the request is taken up. Anything else spent from a word that
-/// names no budget of this body's: the unpointed budget, written back
-/// negative, or a row cleared since, and the word is pointed at the
-/// body's row, armed afresh; the sink an id past the table spends from is
-/// parked again.
+/// names now, and armed -- is parked, and answers whether the run-out
+/// asks for an optimization, which the run loop requests after the exit
+/// that follows (`stubs::ExitKind::BudgetSpent`), once its walk up the
+/// stack has found the frame to request (`find_recompilee`): a walk no
+/// leaf may make. Anything else spent from a word that names no budget
+/// of this body's: the unpointed budget, written back negative, or a row
+/// cleared since, and the word is pointed at the body's row, armed
+/// afresh; the sink an id past the table spends from is parked again.
 ///
 /// A method's body is optimized per key (`CustomizationKey`), its budget
-/// still one per body: a run-out requests the copy for the key of the
-/// spending frame, at `frame_address`, read off the header its call
-/// wrote (`request_copy`).
+/// still one per body: the run-out of a frame of a key that has its copy
+/// or a refused row, or of a body refused, asks for nothing
+/// (`optimization_due`) -- read off the header its call wrote for the
+/// spending frame, at `frame_address` -- so that a run-out a request
+/// would not follow walks nothing either.
+///
+/// Under the optimize stress mode, whose budgets are armed at 0 so that
+/// each body's first spend requests that body's optimization
+/// (`JitState::set_optimize_stress`), a run-out says nothing of how often
+/// anything ran, so that no walk could find a better recompilee: the
+/// leaf requests the spending frame's own, as the walk answering it
+/// would, and the code goes on, its feedback filling as it would without
+/// the stress mode, rather than leave its frame to an interpreter that
+/// takes the safepoint -- and compiles the copy -- before the frame's
+/// next sends have run once.
 #[cfg(ns_jit)]
 pub(crate) fn budget_spent(
     mutator: &mut Mutator<'_>,
     spent_from: u64,
     frame_address: u64,
     code_address: usize,
-) {
+) -> bool {
     let Some(index) = mutator.jit.installed_index_at(code_address) else {
         unreachable!("internal: a budget is spent by an installed body");
     };
@@ -5069,7 +5099,7 @@ pub(crate) fn budget_spent(
     }
     if budget.sink || spent_from != budget.address || !budget.armed {
         point_budget_word(mutator, index, None);
-        return;
+        return false;
     }
     mutator.heap.park_optimization_budget(budget.id);
     let customized = code.kind == crate::bytecode::CodeKind::Method
@@ -5077,14 +5107,67 @@ pub(crate) fn budget_spent(
             .jit
             .live_body(index)
             .is_some_and(|body| body.method.is_some());
-    if customized && request_copy(mutator, &code, frame_address) {
-        return;
+    let frame = if customized {
+        let Some(frame) = mutator
+            .heap
+            .machine_frame_receiver_and_current_class(frame_address, code.argument_count)
+        else {
+            unreachable!("internal: a budget is spent by a frame in the activation stack");
+        };
+        Some(frame)
+    } else {
+        None
+    };
+    let due = optimization_due(mutator, &code, frame);
+    if due && mutator.jit.optimize_stress() {
+        request_optimization(mutator, &code, frame);
+        return false;
+    }
+    due
+}
+
+/// Whether the run-out of `code`'s budget by a frame of the receiver and
+/// current class `frame` names -- `None` for a body optimized as one
+/// copy, a block's or an initializer's -- asks for an optimization: the
+/// copy for the frame's key, unless the key has a refused row, whose
+/// budget is armed afresh while another pair is not refused
+/// (`rearm_for_other_pairs`), or a copy, whose frames ran baseline code
+/// only where no entry could ask for the key (a `super` or private
+/// lexical send, a frame switched into its loop), and whose budget is
+/// armed afresh at the plain wait, so that another key's run-out compiles
+/// that key's copy; for a frame without a key -- its receiver or its
+/// class of an application with no minted id -- and a body optimized as
+/// one copy, the body's one uncustomized copy, unless the body is refused,
+/// whose budget is left to `rearm_for_other_pairs`. Requests nothing.
+#[cfg(ns_jit)]
+fn optimization_due<'gc>(
+    mutator: &mut Mutator<'gc>,
+    code: &Rc<CompiledCode>,
+    frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
+) -> bool {
+    let key = frame.and_then(|(receiver, current_class)| {
+        CustomizationKey::of(&mutator.heap, receiver, current_class)
+    });
+    if let Some(key) = key {
+        match code.jit.copy_row(key) {
+            Some(row) if row.refused => {
+                rearm_for_other_pairs(mutator, code);
+                return false;
+            }
+            // The next run-out is another key's, which has failed nothing:
+            // the plain wait.
+            Some(_) if mutator.jit.copy_of(code, key).is_some() => {
+                rearm_optimization_budget(mutator, code, 0);
+                return false;
+            }
+            _ => return true,
+        }
     }
     if code.jit.optimized_refused.get() {
-        rearm_for_other_pairs(mutator, &code);
-        return;
+        rearm_for_other_pairs(mutator, code);
+        return false;
     }
-    request(mutator, OptimizationRequest::uncustomized(&code));
+    true
 }
 
 /// After a run-out by a frame of a pair refused for good -- a key's row,
@@ -5125,63 +5208,368 @@ fn request(mutator: &mut Mutator<'_>, request: OptimizationRequest) {
     }
 }
 
-/// The run-out of `code`'s budget by the frame at `frame_address`, a
-/// method's activation in baseline code: requests the copy for the
-/// frame's key -- its receiver's application and the one the frame was
-/// entered at, read off the header the call wrote, never another
-/// activation's -- unless the key has a copy, whose frames ran baseline
-/// code only where no entry could ask for the key (a `super` or private
-/// lexical send, a frame switched into its loop), or a refused row. A key
-/// with a copy has the budget armed afresh, so that another key's
-/// run-out compiles that key's copy; a refused one leaves it parked, as a
-/// refused body's is. A key first requested gets its row, which records
-/// the level the frame was entered at above the receiver's class.
-/// Answers whether the frame had a key: a frame without one -- its
-/// receiver or its class of an application with no minted id -- is
-/// requested the body's one uncustomized copy.
+/// How many frames up the stack the walk for the recompilee goes at most
+/// (`find_recompilee`): Strongtalk's `MaxRecompilationSearchLength`
+/// (`recompiler/recompiler.cpp:56-121`). The frames a block's or a block
+/// argument's home lies above the frame that went to it are counted, so
+/// that the bound is one of the stack, not of the steps.
+pub(crate) const RECOMPILEE_SEARCH_LENGTH: usize = 10;
+
+/// The frame whose optimization the run-out of `triggering`'s budget
+/// requests (`docs/design/execution.md`, "When a body is optimized"):
+/// Strongtalk's `findTopInlinableFrame`
+/// (`recompiler/recompiler.cpp:56-121`). From the triggering frame the
+/// walk goes up -- to a block's home, to the home of a method's block
+/// arguments, to a method's sender (`sender_or_parent_of`) -- while the
+/// frame it would go to could be optimized (`recompilable`) and its
+/// inlining plan would inline the body of the frame it comes from
+/// (`inlines`), up to `RECOMPILEE_SEARCH_LENGTH` frames: a compile of that
+/// frame takes in the hot body, and the loop around it, which a compile
+/// of the hot body alone would leave to a send. Answers `triggering`
+/// itself when it goes nowhere.
+///
+/// Run by the run loop after the exit a run-out takes, where every frame
+/// the exit left is an activation the interpreter reads, and holding none
+/// of them past it: the request it leads to names a body and a key.
 #[cfg(ns_jit)]
-fn request_copy(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, frame_address: u64) -> bool {
-    let Some((receiver, current_class)) = mutator
-        .heap
-        .machine_frame_receiver_and_current_class(frame_address, code.argument_count)
-    else {
-        unreachable!("internal: a budget is spent by a frame in the activation stack");
+pub(crate) fn find_recompilee(
+    mutator: &mut Mutator<'_>,
+    triggering: ActivationReference,
+) -> ActivationReference {
+    let mut current = triggering;
+    let mut distance = 0;
+    while let Some((next, step)) = sender_or_parent_of(mutator, current) {
+        let Some(frames) = frames_between(&mutator.heap, current, next) else {
+            break;
+        };
+        distance += frames;
+        if distance > RECOMPILEE_SEARCH_LENGTH {
+            break;
+        }
+        let Some(candidate) = recompilable(mutator, next) else {
+            break;
+        };
+        // A sender inlines the body at its send; a home anywhere in its
+        // plan, at a send of a body it inlines.
+        let send = match step {
+            Step::Sender => Some(mutator.heap.activation_program_counter(next)),
+            Step::Home => None,
+        };
+        if !inlines(mutator, &candidate, current, send) {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+/// How the walk went up from a frame (`sender_or_parent_of`).
+#[cfg(ns_jit)]
+#[derive(Clone, Copy)]
+enum Step {
+    Sender,
+    Home,
+}
+
+/// Where the walk goes up from `activation`, Strongtalk's
+/// `senderOrParentOf` (`recompiler/recompiler.cpp:199-237`): a block's
+/// home, the method that made it, whose compile is the one that can
+/// inline it, when it runs below the block; a method's lowest-lying home
+/// of a block among its arguments, which can inline the method with the
+/// block, when one runs below it; and the sender otherwise, `None` at the
+/// bottom of the stack.
+#[cfg(ns_jit)]
+fn sender_or_parent_of(
+    mutator: &Mutator<'_>,
+    activation: ActivationReference,
+) -> Option<(ActivationReference, Step)> {
+    let heap = &mutator.heap;
+    let position = heap.activation_position(activation);
+    let below = |home: Option<ActivationReference>| {
+        home.filter(|home| heap.activation_position(*home) < position)
     };
+    if heap.activation_runs_a_block(activation) {
+        let home = heap
+            .activation_home(activation)
+            .and_then(|frame| heap.frame_activation(frame));
+        if let Some(home) = below(home) {
+            return Some((home, Step::Home));
+        }
+    } else {
+        let argument_count = heap.activation_code(activation).argument_count;
+        let lowest = (0..argument_count)
+            .filter_map(|index| {
+                let closure = heap
+                    .activation_local(activation, index)
+                    .as_object()
+                    .filter(|object| heap.is_closure(*object))?;
+                let home = heap
+                    .closure_home(closure)
+                    .and_then(|frame| heap.frame_activation(frame));
+                below(home)
+            })
+            .min_by_key(|home| heap.activation_position(*home));
+        if let Some(home) = lowest {
+            return Some((home, Step::Home));
+        }
+    }
+    heap.activation_sender(activation)
+        .map(|sender| (sender, Step::Sender))
+}
+
+/// How many frames `lower` lies below `upper` on the stack, counted by
+/// their senders, or `None` past `RECOMPILEE_SEARCH_LENGTH`.
+#[cfg(ns_jit)]
+fn frames_between(
+    heap: &Heap<'_>,
+    upper: ActivationReference,
+    lower: ActivationReference,
+) -> Option<usize> {
+    let mut frame = upper;
+    for frames in 1..=RECOMPILEE_SEARCH_LENGTH + 1 {
+        frame = heap.activation_sender(frame)?;
+        if Heap::activation_offset(frame) == Heap::activation_offset(lower) {
+            return Some(frames);
+        }
+    }
+    None
+}
+
+/// A frame the walk may request (`recompilable`): its body, the feedback
+/// base and key its compile would read, and its key's own-slot base.
+#[cfg(ns_jit)]
+struct Recompilable {
+    code: Rc<CompiledCode>,
+    feedback_base: FeedbackBase,
+    key: Option<CustomizationKey>,
+    customization: Option<optimizing::snapshot::Customization>,
+}
+
+/// What a compile of `activation`'s body would be made of, if a request
+/// for it would compile one: a frame whose body has baseline code here --
+/// beside which optimized code is installed -- no top-level activation,
+/// which machine code never runs, whose pair -- its key's row, or the
+/// body's one uncustomized copy, as the request would name it -- is
+/// neither refused nor has its copy, and whose body has spent at least
+/// `plan::LEAST_BUDGET_SHARE` of its budget: a frame that sent too rarely
+/// to be worth a compile of its own.
+///
+/// A copy installed stops the walk because it is young -- installed
+/// within the last `OPTIMIZATION_BUDGET` of its spend, Strongtalk's
+/// `nmethod::isYoung` (`code/nmethod.cpp:970-979`) -- and no copy is old
+/// yet: optimized code spends no budget (`BodyAssembler::spend_budget`),
+/// so that no row records a copy's spend since its install, and a request
+/// for a pair with a copy would be dropped (`optimize`).
+#[cfg(ns_jit)]
+fn recompilable(mutator: &Mutator<'_>, activation: ActivationReference) -> Option<Recompilable> {
+    let heap = &mutator.heap;
+    if matches!(
+        heap.activation_kind(activation),
+        crate::types::ActivationKind::TopLevel
+    ) {
+        return None;
+    }
+    let code = heap.activation_code(activation);
+    let body = mutator.jit.installed(&code)?;
+    let customized = code.kind == crate::bytecode::CodeKind::Method && body.method.is_some();
+    let feedback_base = body.feedback_base;
+    let (key, current_class) = if customized {
+        let (receiver, current_class) = heap.activation_receiver_and_current_class(activation);
+        (
+            CustomizationKey::of(heap, receiver, current_class),
+            current_class,
+        )
+    } else {
+        (None, None)
+    };
+    let settled = match key {
+        Some(key) => {
+            code.jit.copy_row(key).is_some_and(|row| row.refused)
+                || mutator.jit.copy_of(&code, key).is_some()
+        }
+        None => code.jit.optimized_refused.get() || mutator.jit.optimized(&code).is_some(),
+    };
+    if settled {
+        return None;
+    }
+    let remaining = heap.armed_optimization_budget(&code)?;
+    if optimizing::plan::budget_share(remaining) < optimizing::plan::LEAST_BUDGET_SHARE {
+        return None;
+    }
+    // As `optimize` customizes the copy for the key the request names.
+    let customization = key.and_then(|key| {
+        let application = current_class.and_then(|class| heap.class_application(class))?;
+        let own_slot_base = u32::try_from(application.own_slot_base).ok()?;
+        Some(optimizing::snapshot::Customization { key, own_slot_base })
+    });
+    Some(Recompilable {
+        code,
+        feedback_base,
+        key,
+        customization,
+    })
+}
+
+/// Whether the inlining plan a compile of `candidate` would make inlines
+/// the body `callee` runs -- at the send at `send` of its root, when the
+/// candidate is the callee's sender, or anywhere when it is the home of
+/// the callee's block: the plan itself (`plan::plan`), on the tree the
+/// compile would take (`SnapshotTree::take`), so that the walk's answer
+/// is the compile's as of now.
+#[cfg(ns_jit)]
+fn inlines(
+    mutator: &mut Mutator<'_>,
+    candidate: &Recompilable,
+    callee: ActivationReference,
+    send: Option<usize>,
+) -> bool {
+    let callee = mutator.heap.activation_code_id(callee);
+    let tree = optimizing::tree::SnapshotTree::take(
+        &candidate.code,
+        &mut mutator.heap,
+        &mutator.caches,
+        candidate.feedback_base,
+        candidate.customization,
+        &optimizing::plan::Limits::STANDARD,
+    );
+    let plan = optimizing::plan::plan(
+        &tree,
+        optimizing::Speculation::at_version(candidate.code.jit.optimized_version(candidate.key)),
+    );
+    let parent = match send {
+        None => None,
+        Some(send) => match u32::try_from(send) {
+            Ok(send) => Some((optimizing::plan::ScopeId::ROOT, send)),
+            Err(_) => return false,
+        },
+    };
+    plan.scopes
+        .iter()
+        .any(|scope| scope.code_id == callee && (parent.is_none() || scope.parent == parent))
+}
+
+/// Requests the optimization of `recompilee`'s body, the frame the walk
+/// from `triggering`, whose budget ran out, answered (`find_recompilee`),
+/// for the key read off its header, as `budget_spent` decided it for the
+/// triggering frame (`optimization_due`): the copy for its key, or the
+/// body's one uncustomized copy. The triggering frame's own request when
+/// the walk went nowhere, its budget parked by the run-out; otherwise the
+/// recompilee's budget is parked for its request as a run-out parks it,
+/// and the triggering body's left parked until the safepoint has
+/// compiled the request, where it is armed afresh at the wait its key's
+/// copy earned (`JitState::parked_for_recompilees`), since its run-out
+/// requested nothing of its own.
+#[cfg(ns_jit)]
+fn request_recompilee(
+    mutator: &mut Mutator<'_>,
+    triggering: ActivationReference,
+    recompilee: ActivationReference,
+) {
+    if Heap::activation_offset(recompilee) != Heap::activation_offset(triggering) {
+        mutator.jit.statistics.recompilees_above += 1;
+        let code = mutator.heap.activation_code(triggering);
+        let key = frame_of(mutator, &code, triggering).and_then(|(receiver, current_class)| {
+            CustomizationKey::of(&mutator.heap, receiver, current_class)
+        });
+        let version = code.jit.optimized_version(key);
+        mutator
+            .jit
+            .parked_for_recompilees
+            .push((Rc::downgrade(&code), version));
+        let code = mutator.heap.activation_code(recompilee);
+        let budget = mutator.heap.optimization_budget_of(&code);
+        if budget.armed && !budget.sink {
+            mutator.heap.park_optimization_budget(budget.id);
+        }
+        let frame = frame_of(mutator, &code, recompilee);
+        // Due, as `recompilable` found it, unless its decision settled the
+        // pair after all.
+        if optimization_due(mutator, &code, frame) {
+            request_optimization(mutator, &code, frame);
+        }
+        return;
+    }
+    let code = mutator.heap.activation_code(triggering);
+    let frame = frame_of(mutator, &code, triggering);
+    request_optimization(mutator, &code, frame);
+}
+
+/// The receiver and current class of `activation`, which runs `code`,
+/// when its body is optimized a copy per key -- a method's whose baseline
+/// code is installed here as one, as `budget_spent` asks it -- and `None`
+/// otherwise.
+#[cfg(ns_jit)]
+fn frame_of<'gc>(
+    mutator: &Mutator<'gc>,
+    code: &CompiledCode,
+    activation: ActivationReference,
+) -> Option<(Value<'gc>, Option<ClassReference<'gc>>)> {
+    let customized = code.kind == crate::bytecode::CodeKind::Method
+        && mutator
+            .jit
+            .installed(code)
+            .is_some_and(|body| body.method.is_some());
+    customized.then(|| {
+        mutator
+            .heap
+            .activation_receiver_and_current_class(activation)
+    })
+}
+
+/// The request `optimization_due` found due for `code`, run by a frame
+/// of the receiver and current class `frame` names: the copy for the
+/// frame's key (`request_copy`), or the body's one uncustomized copy.
+#[cfg(ns_jit)]
+fn request_optimization<'gc>(
+    mutator: &mut Mutator<'gc>,
+    code: &Rc<CompiledCode>,
+    frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
+) {
+    if let Some((receiver, current_class)) = frame {
+        if request_copy(mutator, code, receiver, current_class) {
+            return;
+        }
+    }
+    request(mutator, OptimizationRequest::uncustomized(code));
+}
+
+/// The request of `code`'s copy for the key of a frame of `receiver` and
+/// `current_class`, a method's activation -- read off the header its call
+/// wrote, never another activation's -- which `optimization_due` found
+/// due. A key first requested gets its row, which records the level the
+/// frame was entered at above the receiver's class. Answers whether the
+/// frame had a key: a frame without one -- its receiver or its class of
+/// an application with no minted id -- is requested the body's one
+/// uncustomized copy.
+#[cfg(ns_jit)]
+fn request_copy<'gc>(
+    mutator: &mut Mutator<'gc>,
+    code: &Rc<CompiledCode>,
+    receiver: Value<'gc>,
+    current_class: Option<ClassReference<'gc>>,
+) -> bool {
     let Some(key) = CustomizationKey::of(&mutator.heap, receiver, current_class) else {
         return false;
     };
-    match code.jit.copy_row(key) {
-        Some(row) if row.refused => {
-            rearm_for_other_pairs(mutator, code);
-            return true;
+    if code.jit.copy_row(key).is_none() {
+        let level = current_class.and_then(|class| levels_to(mutator, receiver, class));
+        // A key exists only for a class of an application, whose class
+        // objects hold its word.
+        let entered_word = current_class
+            .and_then(|class| mutator.heap.class_application_word(class))
+            .unwrap_or(crate::heap::optimized_copies::VACANT);
+        if !code.jit.has_copies() {
+            mutator.jit.customized.push(Rc::downgrade(code));
         }
-        // The next run-out is another key's, which has failed nothing:
-        // the plain wait.
-        Some(_) if mutator.jit.copy_of(code, key).is_some() => {
-            rearm_optimization_budget(mutator, code, 0);
-            return true;
-        }
-        Some(_) => {}
-        None => {
-            let level = current_class.and_then(|class| levels_to(mutator, receiver, class));
-            // A key exists only for a class of an application, whose
-            // class objects hold its word.
-            let entered_word = current_class
-                .and_then(|class| mutator.heap.class_application_word(class))
-                .unwrap_or(crate::heap::optimized_copies::VACANT);
-            if !code.jit.has_copies() {
-                mutator.jit.customized.push(Rc::downgrade(code));
-            }
-            code.jit.copies.borrow_mut().push(CustomizedCopy {
-                key,
-                body: NO_BODY,
-                version: 0,
-                traps: 0,
-                refused: false,
-                level,
-                entered_word,
-            });
-        }
+        code.jit.copies.borrow_mut().push(CustomizedCopy {
+            key,
+            body: NO_BODY,
+            version: 0,
+            traps: 0,
+            refused: false,
+            level,
+            entered_word,
+        });
     }
     let entered = current_class
         .and_then(|class| mutator.heap.class_application(class))
@@ -5245,11 +5633,27 @@ fn rearm_optimization_budget(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>,
 /// (`Interpreter::safepoint`), between two stretches, where no return
 /// address into the zone exists; the compile reads only its snapshot, and
 /// the install only appends, so neither collects nor moves code.
+///
+/// Then the budget of every body whose run-out requested another frame
+/// (`JitState::parked_for_recompilees`) is armed afresh, unless something
+/// armed it since: should the recompilee's compile not have taken the
+/// body in -- its feedback changed, the compile was held -- its next
+/// run-out walks again.
 #[cfg(ns_jit)]
 pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
     for request in std::mem::take(&mut mutator.jit.optimization_requests) {
         if let Some(code) = request.code.upgrade() {
             optimize(mutator, &code, request.key, &request.entered);
+        }
+    }
+    for (code, version) in std::mem::take(&mut mutator.jit.parked_for_recompilees) {
+        let Some(code) = code.upgrade() else {
+            continue;
+        };
+        if mutator.heap.armed_optimization_budget(&code)
+            == Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
+        {
+            rearm_optimization_budget(mutator, &code, version);
         }
     }
 }
@@ -5258,6 +5662,7 @@ pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
 #[cfg(not(ns_jit))]
 pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
     mutator.jit.optimization_requests.clear();
+    mutator.jit.parked_for_recompilees.clear();
 }
 
 /// `code`'s optimized code compiled and installed, when its baseline code
@@ -6567,6 +6972,20 @@ fn resumption_after_exit(
         }
         MachineExit::DeadRegister { register, .. } => {
             mutator.heap.refuse_dead_register(innermost, register)
+        }
+        // The budget leaf found an optimization due: the walk from the
+        // frame that ran its budget out decides which frame's, among the
+        // activations the exit left, and the frame goes on interpreted,
+        // until its next backward jump or return enters machine code
+        // again. Counted against no exit budget, above.
+        MachineExit::BudgetSpent { program_counter } => {
+            mutator.jit.statistics.budget_exits += 1;
+            let recompilee = find_recompilee(mutator, innermost);
+            request_recompilee(mutator, innermost, recompilee);
+            Resumption::Interpreted {
+                activation: innermost,
+                program_counter,
+            }
         }
     }
 }
@@ -8153,12 +8572,14 @@ mod tests {
 
         /// A body's row is armed with the budget when its baseline code is
         /// installed, before the code runs, and its data word names the
-        /// row; a spend that ran the armed row out requests the body's
-        /// optimization once and parks the row, while a spend from the
-        /// unpointed budget, or from a row cleared since, points the word
-        /// and arms the row and requests nothing.
+        /// row; a spend that ran the armed row out parks the row and
+        /// answers the optimization due, which the exit that follows
+        /// requests once its walk has found the frame to request
+        /// (`find_recompilee`), while a spend from the unpointed budget, or
+        /// from a row cleared since, points the word and arms the row and
+        /// asks for nothing.
         #[test]
-        fn a_budget_that_runs_out_requests_its_body_once() {
+        fn a_budget_that_runs_out_asks_for_its_body_s_optimization() {
             let mut interpreter = pinning_the_budget();
             interpreter.enter(|mutator| {
                 let code = body_with_a_loop();
@@ -8190,28 +8611,31 @@ mod tests {
                         .executable_address(CodeOffset(body.start + 1))
                 };
                 let unpointed = mutator.jit.unpointed_budget_address();
-                crate::jit::budget_spent(mutator, unpointed, 0, inside);
                 assert!(
-                    mutator.jit.optimization_requests.is_empty(),
+                    !crate::jit::budget_spent(mutator, unpointed, 0, inside),
                     "a spend from the unpointed budget"
                 );
                 assert_eq!(word(mutator), row, "pointed again");
-                crate::jit::budget_spent(mutator, row, 0, inside);
-                crate::jit::budget_spent(mutator, row, 0, inside);
-                assert_eq!(mutator.jit.optimization_requests.len(), 1);
-                assert_eq!(mutator.jit.statistics.optimization_requests, 1, "once");
+                assert!(crate::jit::budget_spent(mutator, row, 0, inside));
                 assert_eq!(
                     mutator.heap.armed_optimization_budget(&code),
                     Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
                 );
+                assert!(
+                    mutator.jit.optimization_requests.is_empty(),
+                    "the exit's to request"
+                );
                 mutator.heap.forget_optimization_budget(&code);
-                crate::jit::budget_spent(mutator, row, 0, inside);
+                assert!(
+                    !crate::jit::budget_spent(mutator, row, 0, inside),
+                    "a cleared row asks for nothing"
+                );
                 assert_eq!(
                     mutator.heap.armed_optimization_budget(&code),
                     Some(crate::jit::OPTIMIZATION_BUDGET),
-                    "a cleared row is armed afresh, requesting nothing"
+                    "a cleared row is armed afresh"
                 );
-                assert_eq!(mutator.jit.statistics.optimization_requests, 1);
+                assert_eq!(mutator.jit.statistics.optimization_requests, 0);
             });
         }
 
