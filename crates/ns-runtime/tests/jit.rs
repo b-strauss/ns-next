@@ -10701,7 +10701,8 @@ const A_HOT_BLOCK: &str = indoc! {"
 ns_runtime::for_each_lowering! {
     /// A block's run-out walks to its home, not its sender: `run`, whose
     /// plan inlines `each:` and the block in it, is requested, though its
-    /// own budget is nowhere near spent, and `each:` is not. Pinned as
+    /// own budget is nowhere near spent -- a home step asks no share of
+    /// it, as a sender step does -- and `each:` is not. Pinned as
     /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
     fn a_block_s_run_out_requests_its_home(lowering) {
         let (mut interpreter, class, subject) = walking(A_HOT_BLOCK, lowering);
@@ -10974,5 +10975,352 @@ ns_runtime::for_each_lowering! {
         assert!(done.budget_exits > 64, "{done:?}");
         let base = class_answered(&mut interpreter, &subject, "baseClass");
         assert!(copies_of(&mut interpreter, &base, "answer") > 64);
+    }
+}
+
+/// `run:` sending `sum:` once, whose own loop spends its budget: `run:`,
+/// sent three times in all, spends a few instructions a call. `run: 1`
+/// answers 0, `run: 1000` 499500.
+const A_RARE_CALLER: &str = indoc! {"
+    class Subject = Object new () (
+      sum: count = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          total:: total + index.
+          index:: index + 1.
+        ].
+        ^total
+      )
+      public run: count = (
+        ^self sum: count
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The walk stops at a sender that ran too rarely: `sum:` runs its
+    /// budget out at a back jump, and `run:`, whose plan would inline it,
+    /// has spent far less than a sixty-fourth of the budget it was armed
+    /// with, so `sum:` is requested itself. Pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
+    fn the_walk_stops_at_a_caller_that_ran_too_rarely(lowering) {
+        let (mut interpreter, class, subject) = walking(A_RARE_CALLER, lowering);
+        // Two calls compile both bodies, the third runs `sum:` out.
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 1), 0);
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 1), 0);
+        let before = interpreter.jit_statistics();
+        assert_eq!(
+            send_integer(&mut interpreter, &subject, "run:", 1000),
+            499_500
+        );
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        assert!(done.budget_exits >= 1, "{done:?}");
+        assert_eq!(done.recompilees_above, 0, "{done:?}");
+        assert_eq!(copies_of(&mut interpreter, &class, "sum:"), 1, "`sum:` itself");
+        assert_eq!(copies_of(&mut interpreter, &class, "run:"), 0);
+    }
+}
+
+/// `run`'s loop sending `apply:to:` a block, which `run`'s copy inlines
+/// with the block eliminated, and `apply:to:` sending `weigh:` to five
+/// receivers in turn, a megamorphic site no copy inlines: `weigh:`, one
+/// body of `Base`'s, runs its budget out at its prologue under `run`'s
+/// optimized frame, the block live in the inlined scope. `run` answers
+/// 14950 once `fill` has made the receivers.
+const A_CALLEE_SENT_FROM_AN_INLINED_SCOPE: &str = indoc! {"
+    class Subject = Object new (
+      |
+        receivers = Array new: 5.
+      |
+    ) (
+      class Base = Object new () (
+        public weigh: value = (
+          ^value + 1
+        )
+      )
+      class S1 = Base new () ()
+      class S2 = Base new () ()
+      class S3 = Base new () ()
+      class S4 = Base new () ()
+      class S5 = Base new () ()
+      public fill = (
+        receivers at: 1 put: S1 new.
+        receivers at: 2 put: S2 new.
+        receivers at: 3 put: S3 new.
+        receivers at: 4 put: S4 new.
+        receivers at: 5 put: S5 new.
+        ^0
+      )
+      public baseClass = (
+        ^Base
+      )
+      apply: block to: value = (
+        ^((receivers at: (value \\\\ 5) + 1) weigh: value) + (block value: value)
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + (self apply: [:each | each + each] to: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A callee that is not inlined, sent from inside an inlined scope
+    /// that holds an eliminated block, runs its budget out: the exit
+    /// writes the optimized frame's scopes and makes the block, the walk
+    /// stops at the scope's frame, which runs no copy of its own, and
+    /// every run answers what the interpreter does. Pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
+    fn a_callee_sent_from_an_inlined_scope_runs_its_budget_out(lowering) {
+        let (mut interpreter, class, subject) =
+            walking(A_CALLEE_SENT_FROM_AN_INLINED_SCOPE, lowering);
+        assert_eq!(send_unary(&mut interpreter, &subject, "fill"), 0);
+        let before = interpreter.jit_statistics();
+        for _ in 0..20 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 14950);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        assert_eq!(copies_of(&mut interpreter, &class, "run"), 1, "{done:?}");
+        assert_eq!(copies_of(&mut interpreter, &class, "apply:to:"), 0);
+        let base = class_answered(&mut interpreter, &subject, "baseClass");
+        assert!(copies_of(&mut interpreter, &base, "weigh:") >= 1, "{done:?}");
+        assert!(done.materialized_blocks >= 1, "{done:?}");
+        assert!(done.inlined_frames_materialized >= 1, "{done:?}");
+    }
+}
+
+/// `run:` sending `pick:at:`, which sends `weigh:` to the receivers of
+/// an array in turn, as `A_CALLER_OPTIMIZED_FIRST`'s `run:` does: `run:`'s
+/// copy inlines `pick:at:` while its site has seen an `A` and an `H`;
+/// `warm:` then runs `pick:at:` on `A`s alone in baseline code, so that
+/// its own budget says it ran; then a `B` reaches `weigh:` through the
+/// inlined scope's send. `run:` answers 5000 for `first`, 4950 for
+/// `second`; `warm:` 11325 for `lights`.
+const A_SCOPE_INLINED_FIRST: &str = indoc! {"
+    class Subject = Object new () (
+      class A = Object new () (
+        public weigh: value = (
+          ^value + 1
+        )
+      )
+      class B = Object new () (
+        public weigh: value = (
+          ^(value * 3) + (value * 5) + (value * 7) - (value * 14)
+        )
+      )
+      class H = Object new () (
+        public weigh: value = (
+          ^(value * 3) + (value * 5) + (value * 7) + (value * 11) + (value * 13) + (value * 17) + (value * 19) - (value * 74)
+        )
+      )
+      public first = (
+        ^(Array new: 2)
+          at: 1 put: A new;
+          at: 2 put: H new;
+          yourself
+      )
+      public second = (
+        ^(Array new: 1)
+          at: 1 put: B new;
+          yourself
+      )
+      public lights = (
+        ^(Array new: 1)
+          at: 1 put: A new;
+          yourself
+      )
+      public classB = (
+        ^B
+      )
+      pick: receivers at: index = (
+        ^(receivers at: (index \\\\ receivers size) + 1) weigh: index
+      )
+      public warm: receivers = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 150] whileTrue: [
+          sum:: sum + (self pick: receivers at: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+      public run: receivers = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + (self pick: receivers at: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// `subject`'s one-argument `selector` with `argument`, answering the
+/// `SmallInteger` it answers.
+fn send_with(
+    interpreter: &mut Interpreter,
+    subject: &Root,
+    selector: &str,
+    argument: &Root,
+) -> i64 {
+    let answer = expect_ok(
+        interpreter.send(
+            subject,
+            Symbol::intern(selector),
+            std::slice::from_ref(argument),
+        ),
+        selector,
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("{selector}: expected a small integer"),
+    })
+}
+
+ns_runtime::for_each_lowering! {
+    /// The walk stops at a frame the exit wrote from a scope `run:`'s copy
+    /// inlined: `B>>weigh:`'s run-out, sent from the inlined `pick:at:`,
+    /// requests `B>>weigh:` itself, never `pick:at:`, whose copy `run:`'s
+    /// copy would never enter, though `pick:at:`'s plan would inline it
+    /// and its budget says it ran. Pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
+    fn the_walk_stops_at_a_frame_rebuilt_from_an_inlined_scope(lowering) {
+        let (mut interpreter, class, subject) = walking(A_SCOPE_INLINED_FIRST, lowering);
+        let first = class_answered(&mut interpreter, &subject, "first");
+        let second = class_answered(&mut interpreter, &subject, "second");
+        let lights = class_answered(&mut interpreter, &subject, "lights");
+        for _ in 0..8 {
+            assert_eq!(send_with(&mut interpreter, &subject, "run:", &first), 5000);
+        }
+        let pinned = pins_the_tiers(lowering);
+        if pinned {
+            assert_eq!(copies_of(&mut interpreter, &class, "run:"), 1, "`run:` first");
+            assert!(inlined_by(&mut interpreter, &class, "run:") >= 1);
+        }
+        assert_eq!(send_with(&mut interpreter, &subject, "warm:", &lights), 11325);
+        for _ in 0..8 {
+            assert_eq!(send_with(&mut interpreter, &subject, "run:", &second), 4950);
+        }
+        if !pinned {
+            return;
+        }
+        let class_b = class_answered(&mut interpreter, &subject, "classB");
+        assert_eq!(copies_of(&mut interpreter, &class_b, "weigh:"), 1, "`B>>weigh:` itself");
+        assert_eq!(copies_of(&mut interpreter, &class, "pick:at:"), 0);
+    }
+}
+
+/// `each:` sending `value:` to a block a slot holds, whose home -- the
+/// initializer -- has returned: the block runs its budget out at its
+/// prologue, entered through the closure stub. `each: 100` answers 4950.
+const A_STORED_BLOCK: &str = indoc! {"
+    class Subject = Object new (
+      |
+        stored = [:value | (value * 3) + (value * 5) + (value * 7) - (value * 14)].
+      |
+    ) (
+      public each: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (stored value: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A block entered through the closure stub runs its budget out at
+    /// its prologue: the exit goes on interpreted at its first
+    /// instruction, the walk finds no home running and a sender whose plan
+    /// cannot inline a block it did not make, and the block is requested.
+    /// Its counts pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization`'s are.
+    fn a_block_entered_through_the_closure_stub_runs_its_budget_out(lowering) {
+        let (mut interpreter, _, subject) = walking(A_STORED_BLOCK, lowering);
+        let before = interpreter.jit_statistics();
+        for _ in 0..5 {
+            assert_eq!(send_integer(&mut interpreter, &subject, "each:", 100), 4950);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        assert!(done.budget_exits >= 1, "{done:?}");
+        assert_eq!(done.recompilees_above, 0, "{done:?}");
+        assert!(done.optimized_bodies >= 1, "{done:?}");
+    }
+}
+
+/// `run` making a `Point` a turn, whose initializer computes its `y`
+/// from its argument: the initializer spends the most. `run` answers
+/// 4950.
+const A_HOT_INITIALIZER: &str = indoc! {"
+    class Subject = Object new () (
+      class Point x: value = Object new (
+        |
+          y = (value * 3) + (value * 5) + (value * 7) - (value * 14).
+        |
+      ) (
+        public height = (
+          ^y
+        )
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + (Point x: index) height.
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An initializer runs its budget out at its prologue: the exit goes
+    /// on interpreted at its first instruction, and every instance is the
+    /// interpreter's. Its counts pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization`'s are.
+    fn an_initializer_runs_its_budget_out(lowering) {
+        let (mut interpreter, _, subject) = walking(A_HOT_INITIALIZER, lowering);
+        let before = interpreter.jit_statistics();
+        for _ in 0..5 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 4950);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        let done = since(interpreter.jit_statistics(), before);
+        assert!(done.budget_exits >= 1, "{done:?}");
+        assert!(done.optimized_bodies >= 1, "{done:?}");
     }
 }

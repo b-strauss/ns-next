@@ -924,6 +924,18 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       calls the remembering leaf out of line, so that every value live
       across either leaves the registers the call clobbers -- moved into
       a survivor or written back -- on the straight line too.
+  - **An optimized caller is never recompiled to inline a callee that
+    became hot later** (2026-11-08). The recompilee walk
+    (`jit::find_recompilee`) stops at every caller whose key has a copy
+    installed: optimized code spends no budget, so no row says how long
+    a copy has run since its install, and `optimize` drops a request for
+    a pair that has its copy. A caller optimized first keeps sending a
+    callee that grew hot afterwards, which is then optimized alone.
+    Strongtalk recompiles an old nmethod when its own counters fire
+    (`recompiler/recompiler.cpp`, `shouldNotRecompileNMethod`,
+    `code/nmethod.cpp`'s `isYoung`). The fix needs a spend measure in
+    optimized code and a way to recompile a live copy: raise its version,
+    compile, install in its place.
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any

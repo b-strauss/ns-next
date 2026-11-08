@@ -96,9 +96,10 @@ pub(crate) struct SiteCandidates {
 /// The compiled body's snapshot and what lies below it: the candidates of
 /// every send of every body walked, keyed by the body's code id and the
 /// send's call-site number; the snapshot of every block literal of a
-/// walked body and of every method callee, by its code id; what is left
-/// of the optimization budget of each of them whose row is armed, the
-/// estimate of how often it ran (`plan`'s frequency); and, for a
+/// walked body and of every method callee, by its code id; the share of
+/// its last arming each of them whose row is armed spent
+/// (`jit::budget_share_of`), the estimate of how often it ran (`plan`'s
+/// frequency); and, for a
 /// customized root, what its key's receiver and entered application are.
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotTree {
@@ -106,7 +107,7 @@ pub(crate) struct SnapshotTree {
     pub(crate) sites: HashMap<(CodeId, u32), SiteCandidates>,
     pub(crate) blocks: HashMap<CodeId, Snapshot>,
     pub(crate) callees: HashMap<CodeId, Snapshot>,
-    pub(crate) budgets: HashMap<CodeId, i64>,
+    pub(crate) budgets: HashMap<CodeId, f64>,
     pub(crate) root_receiver: Option<ReceiverFacts>,
     pub(crate) root_entered: Option<ReceiverFacts>,
 }
@@ -408,8 +409,8 @@ impl Walk<'_> {
     )]
     fn record_budget(&mut self, code: &Rc<CompiledCode>, code_id: CodeId, heap: &Heap) {
         #[cfg(ns_jit)]
-        if let Some(remaining) = heap.armed_optimization_budget(code) {
-            self.tree.budgets.insert(code_id, remaining);
+        if let Some(share) = crate::jit::budget_share_of(heap, code) {
+            self.tree.budgets.insert(code_id, share);
         }
     }
 }

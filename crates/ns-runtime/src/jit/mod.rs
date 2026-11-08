@@ -572,6 +572,12 @@ pub(crate) struct JitSlot {
     /// The version of the body's one uncustomized copy, as a copy's row
     /// holds its key's (`CustomizedCopy::version`).
     optimized_version: Cell<u8>,
+    /// What the body's budget row was last armed with afresh -- the
+    /// plain budget, or a retired copy's longer wait -- against which
+    /// what the row holds says how much of its wait the body spent
+    /// (`budget_share_of`). Kept on the body rather than the row, which a
+    /// full collection renumbers and arms with what was left of it.
+    budget_armed: Cell<i64>,
     /// The traps the body's one uncustomized copy took, as a copy's row
     /// counts its key's (`CustomizedCopy::traps`).
     optimized_traps: Cell<u8>,
@@ -700,6 +706,7 @@ impl Default for JitSlot {
             back_jumps: Cell::new(0),
             optimized: Cell::new(NO_BODY),
             optimized_version: Cell::new(0),
+            budget_armed: Cell::new(0),
             optimized_traps: Cell::new(0),
             optimized_refused: Cell::new(false),
             copies: RefCell::new(Vec::new()),
@@ -1613,6 +1620,13 @@ pub(crate) struct JitState {
     /// and so that no further run-out walks again meanwhile -- and are
     /// armed afresh there, at that version's wait (`optimize_requested`).
     pub(crate) parked_for_recompilees: Vec<(Weak<CompiledCode>, u8)>,
+    /// The header offsets of the frames the last exit wrote from
+    /// optimized code -- each physical frame of a copy, and each scope it
+    /// had inlined -- which the recompilee walk does not go up to
+    /// (`find_recompilee`): cleared at every entry into machine code and
+    /// once the walk has read it, so that no offset outlives the frames
+    /// it named.
+    pub(crate) rebuilt_from_optimized: Vec<u32>,
     /// The installed bodies, by index in `bodies`, whose budget word is
     /// still to be pointed at their row, which only a caller holding the
     /// heap can do (`after_compile_trigger`). Emptied by a compaction,
@@ -1920,6 +1934,7 @@ impl JitState {
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
             parked_for_recompilees: Vec::new(),
+            rebuilt_from_optimized: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: if optimize_stress {
                 0
@@ -2111,6 +2126,12 @@ impl JitState {
     pub(crate) fn set_optimization_budget(&mut self, budget: i64) -> i64 {
         self.budget_set = budget;
         self.optimization_budget = if self.optimize_stress { 0 } else { budget };
+        // Every armed row is armed afresh with it (`Heap::rearm_optimization_budgets`).
+        for body in self.bodies.iter().filter(|body| !body.free) {
+            if let Some(code) = body.code.upgrade() {
+                code.jit.budget_armed.set(self.optimization_budget);
+            }
+        }
         self.optimization_budget
     }
 
@@ -2956,6 +2977,7 @@ impl JitState {
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
             parked_for_recompilees: Vec::new(),
+            rebuilt_from_optimized: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: OPTIMIZATION_BUDGET,
             budget_set: OPTIMIZATION_BUDGET,
@@ -5028,10 +5050,15 @@ fn point_budget_word(
     };
     let budget = mutator.heap.optimization_budget_of(&code);
     if !budget.armed && !budget.sink {
-        let left = carried
+        let carried = carried
             .and_then(|carried| carried.get(&(Rc::as_ptr(&code) as usize)))
-            .copied()
-            .unwrap_or(mutator.jit.optimization_budget);
+            .copied();
+        // What a collection carries is what was left of the arming the
+        // body keeps.
+        if carried.is_none() {
+            code.jit.budget_armed.set(mutator.jit.optimization_budget);
+        }
+        let left = carried.unwrap_or(mutator.jit.optimization_budget);
         mutator.heap.arm_optimization_budget(budget.id, left);
     }
     mutator.jit.write_budget_word(index, budget.address);
@@ -5138,7 +5165,8 @@ pub(crate) fn budget_spent(
 /// that key's copy; for a frame without a key -- its receiver or its
 /// class of an application with no minted id -- and a body optimized as
 /// one copy, the body's one uncustomized copy, unless the body is refused,
-/// whose budget is left to `rearm_for_other_pairs`. Requests nothing.
+/// whose budget is left to `rearm_for_other_pairs`, or has that copy
+/// installed, whose budget stays parked. Requests nothing.
 #[cfg(ns_jit)]
 fn optimization_due<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -5167,7 +5195,10 @@ fn optimization_due<'gc>(
         rearm_for_other_pairs(mutator, code);
         return false;
     }
-    true
+    // A frame that goes on mid-body in the baseline code of a body with
+    // its one copy installed: a request would be dropped (`optimize`), so
+    // the row stays parked, as that dropped request left it.
+    mutator.jit.optimized(code).is_none()
 }
 
 /// After a run-out by a frame of a pair refused for good -- a key's row,
@@ -5246,7 +5277,18 @@ pub(crate) fn find_recompilee(
         if distance > RECOMPILEE_SEARCH_LENGTH {
             break;
         }
-        let Some(candidate) = recompilable(mutator, next) else {
+        // A frame the exit rebuilt from an inlined scope of optimized code
+        // runs no copy of its own, and no request for one would ever be
+        // entered from the copy it was inlined in, as Strongtalk stops at
+        // a compiled frame.
+        if mutator
+            .jit
+            .rebuilt_from_optimized
+            .contains(&Heap::activation_offset(next))
+        {
+            break;
+        }
+        let Some(candidate) = recompilable(mutator, next, step) else {
             break;
         };
         // A sender inlines the body at its send; a home anywhere in its
@@ -5350,9 +5392,13 @@ struct Recompilable {
 /// beside which optimized code is installed -- no top-level activation,
 /// which machine code never runs, whose pair -- its key's row, or the
 /// body's one uncustomized copy, as the request would name it -- is
-/// neither refused nor has its copy, and whose body has spent at least
-/// `plan::LEAST_BUDGET_SHARE` of its budget: a frame that sent too rarely
-/// to be worth a compile of its own.
+/// neither refused nor has its copy, and -- reached as the sender, `step`
+/// -- whose body has spent at least `plan::LEAST_BUDGET_SHARE` of its
+/// budget: a sender that sent too rarely is not worth a compile of its
+/// own. A home has no such stop, as Strongtalk's parent link has none:
+/// a home hands its block to a loop and spends a few instructions a
+/// call, while the block spends the loop's, and only the home's compile
+/// can inline the block.
 ///
 /// A copy installed stops the walk because it is young -- installed
 /// within the last `OPTIMIZATION_BUDGET` of its spend, Strongtalk's
@@ -5361,7 +5407,11 @@ struct Recompilable {
 /// so that no row records a copy's spend since its install, and a request
 /// for a pair with a copy would be dropped (`optimize`).
 #[cfg(ns_jit)]
-fn recompilable(mutator: &Mutator<'_>, activation: ActivationReference) -> Option<Recompilable> {
+fn recompilable(
+    mutator: &Mutator<'_>,
+    activation: ActivationReference,
+    step: Step,
+) -> Option<Recompilable> {
     let heap = &mutator.heap;
     if matches!(
         heap.activation_kind(activation),
@@ -5392,8 +5442,8 @@ fn recompilable(mutator: &Mutator<'_>, activation: ActivationReference) -> Optio
     if settled {
         return None;
     }
-    let remaining = heap.armed_optimization_budget(&code)?;
-    if optimizing::plan::budget_share(remaining) < optimizing::plan::LEAST_BUDGET_SHARE {
+    let share = budget_share_of(heap, &code)?;
+    if matches!(step, Step::Sender) && share < optimizing::plan::LEAST_BUDGET_SHARE {
         return None;
     }
     // As `optimize` customizes the copy for the key the request names.
@@ -5408,6 +5458,18 @@ fn recompilable(mutator: &Mutator<'_>, activation: ActivationReference) -> Optio
         key,
         customization,
     })
+}
+
+/// The share of its last arming `code`'s armed budget row says the
+/// body spent (`plan::budget_share`), `None` for a row not armed: what
+/// the walk's stop and the plan's frequency read alike.
+#[cfg(ns_jit)]
+pub(crate) fn budget_share_of(heap: &Heap<'_>, code: &Rc<CompiledCode>) -> Option<f64> {
+    let remaining = heap.armed_optimization_budget(code)?;
+    Some(optimizing::plan::budget_share(
+        remaining,
+        code.jit.budget_armed.get(),
+    ))
 }
 
 /// Whether the inlining plan a compile of `candidate` would make inlines
@@ -5623,6 +5685,7 @@ fn levels_to<'gc>(
 fn rearm_optimization_budget(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, version: u8) {
     let budget = mutator.heap.optimization_budget_of(code);
     let armed = optimization_budget_after(mutator.jit.optimization_budget, version);
+    code.jit.budget_armed.set(armed);
     mutator.heap.arm_optimization_budget(budget.id, armed);
 }
 
@@ -6412,6 +6475,7 @@ fn run_machine_code(
     mutator.jit.walked_optimized = false;
     mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
+    mutator.jit.rebuilt_from_optimized.clear();
     let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
     // was materialized, none goes on interpreted and nothing exited.
@@ -6624,6 +6688,7 @@ fn call_through(
     mutator.jit.walked_optimized = false;
     mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
+    mutator.jit.rebuilt_from_optimized.clear();
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
         // No exit took the seed.
@@ -6859,58 +6924,15 @@ fn resumption_after_exit(
     if at_a_send {
         mutator.jit.statistics.send_exits += 1;
     }
-    // A push the callee's prologue refused at the depth limit word while a
-    // real safepoint request stands was refused for the request, which
-    // lowered the word to 0 -- often the optimization request a freshly
-    // compiled callee's first spend made -- whatever the depth: like a
-    // forced exit it says nothing of the caller's code, and counted it
-    // would abandon a hot caller of callees optimized one after another.
-    // The interpreter's push, at the safepoint, decides the depth limit.
-    let refused_for_a_request = matches!(
-        exit,
-        MachineExit::PushRefused {
-            at_the_bound: true,
-            ..
-        }
-    ) && mutator.heap.real_safepoint_requested();
-    // Nor does a push optimized code's prologue refused for its inlined
-    // scopes alone: the interpreter's push goes on in the callee's
-    // baseline code (`entered`), which overflows only where the
-    // interpreter does.
-    let refused_for_its_inlining = matches!(
-        exit,
-        MachineExit::PushRefused {
-            for_its_inlining: true,
-            ..
-        }
-    );
-    // A call the miss leaf refused because its callee has no machine code
-    // yet, while the zone has room to compile it, says nothing of the
-    // caller's code either: the interpreter's push counts the callee's
-    // entry, and an entry to come compiles it (`note_call_refused`).
-    // Counted, a caller whose callees a compaction frees -- each counting
-    // its entries again -- would spend a refusal on every callee every
-    // compaction freed, and be abandoned for what the zone did.
-    let refused_for_an_uncompiled_callee =
-        std::mem::take(&mut mutator.jit.refused_for_an_uncompiled_callee)
-            && matches!(
-                exit,
-                MachineExit::PushRefused {
-                    at_the_bound: false,
-                    for_its_inlining: false,
-                }
-            );
-    // The stress mode enters every body at every push, however often it
-    // leaves.
-    if matches!(
-        exit,
-        MachineExit::Reexecute { .. } | MachineExit::PushRefused { .. }
-    ) && !mutator.jit.install_bodies_exiting_at_once
-        && !forced
-        && !refused_for_a_request
-        && !refused_for_its_inlining
-        && !refused_for_an_uncompiled_callee
-    {
+    let circumstances = ExitCircumstances {
+        real_request: mutator.heap.real_safepoint_requested(),
+        forced,
+        refused_for_an_uncompiled_callee: std::mem::take(
+            &mut mutator.jit.refused_for_an_uncompiled_callee,
+        ),
+        installed_whatever_it_exits_at: mutator.jit.install_bodies_exiting_at_once,
+    };
+    if exit_counts(exit, circumstances) {
         // An exit inside an inlined scope is the physical frame's copy's.
         let physical = physical.unwrap_or(innermost);
         let code = mutator.heap.activation_code(physical);
@@ -6982,12 +7004,87 @@ fn resumption_after_exit(
             mutator.jit.statistics.budget_exits += 1;
             let recompilee = find_recompilee(mutator, innermost);
             request_recompilee(mutator, innermost, recompilee);
+            mutator.jit.rebuilt_from_optimized.clear();
             Resumption::Interpreted {
                 activation: innermost,
                 program_counter,
             }
         }
     }
+}
+
+/// What beside an exit itself decides whether it counts against an exit
+/// budget (`exit_counts`): whether a real safepoint request stands,
+/// whether the deopt stress mode forced it, whether the miss leaf refused
+/// the call for a callee with no machine code yet, and whether the JIT
+/// stress mode installs every body whatever it exits at.
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, Default)]
+struct ExitCircumstances {
+    real_request: bool,
+    forced: bool,
+    refused_for_an_uncompiled_callee: bool,
+    installed_whatever_it_exits_at: bool,
+}
+
+/// Whether `exit` counts against its body's exit budget (`count_exit`):
+/// an exit at an instruction and a refused push do, unless what refused
+/// it says nothing of the code; no other exit -- a poll, a trap, a
+/// return, a budget's run-out -- does.
+#[cfg(ns_jit)]
+fn exit_counts(exit: stubs::MachineExit, circumstances: ExitCircumstances) -> bool {
+    use stubs::MachineExit;
+
+    // A push the callee's prologue refused at the depth limit word while a
+    // real safepoint request stands was refused for the request, which
+    // lowered the word to 0 -- often the optimization request a freshly
+    // compiled callee's first spend made -- whatever the depth: like a
+    // forced exit it says nothing of the caller's code, and counted it
+    // would abandon a hot caller of callees optimized one after another.
+    // The interpreter's push, at the safepoint, decides the depth limit.
+    let refused_for_a_request = matches!(
+        exit,
+        MachineExit::PushRefused {
+            at_the_bound: true,
+            ..
+        }
+    ) && circumstances.real_request;
+    // Nor does a push optimized code's prologue refused for its inlined
+    // scopes alone: the interpreter's push goes on in the callee's
+    // baseline code (`entered`), which overflows only where the
+    // interpreter does.
+    let refused_for_its_inlining = matches!(
+        exit,
+        MachineExit::PushRefused {
+            for_its_inlining: true,
+            ..
+        }
+    );
+    // A call the miss leaf refused because its callee has no machine code
+    // yet, while the zone has room to compile it, says nothing of the
+    // caller's code either: the interpreter's push counts the callee's
+    // entry, and an entry to come compiles it (`note_call_refused`).
+    // Counted, a caller whose callees a compaction frees -- each counting
+    // its entries again -- would spend a refusal on every callee every
+    // compaction freed, and be abandoned for what the zone did.
+    let refused_for_an_uncompiled_callee = circumstances.refused_for_an_uncompiled_callee
+        && matches!(
+            exit,
+            MachineExit::PushRefused {
+                at_the_bound: false,
+                for_its_inlining: false,
+            }
+        );
+    // The stress mode enters every body at every push, however often it
+    // leaves.
+    matches!(
+        exit,
+        MachineExit::Reexecute { .. } | MachineExit::PushRefused { .. }
+    ) && !circumstances.installed_whatever_it_exits_at
+        && !circumstances.forced
+        && !refused_for_a_request
+        && !refused_for_its_inlining
+        && !refused_for_an_uncompiled_callee
 }
 
 /// The words of the entry block that name what lasts from one entry to
@@ -8636,6 +8733,111 @@ mod tests {
                     "a cleared row is armed afresh"
                 );
                 assert_eq!(mutator.jit.statistics.optimization_requests, 0);
+            });
+        }
+
+        /// Which exits count against an exit budget: an exit at an
+        /// instruction and a refused push, but no push refused for a real
+        /// safepoint request at the depth limit word -- the request lowered
+        /// it, whatever the depth -- nor one refused for the inlined scopes
+        /// of optimized code, nor a call refused for an uncompiled callee,
+        /// nor a forced exit, nor any exit under the JIT stress mode; and
+        /// never a poll, a trap or a budget's run-out.
+        #[test]
+        fn only_exits_that_say_something_of_the_code_count() {
+            use crate::jit::stubs::MachineExit;
+            use crate::jit::{exit_counts, ExitCircumstances};
+            let plain = ExitCircumstances::default();
+            let at_the_bound = MachineExit::PushRefused {
+                at_the_bound: true,
+                for_its_inlining: false,
+            };
+            let refused = MachineExit::PushRefused {
+                at_the_bound: false,
+                for_its_inlining: false,
+            };
+            let reexecute = MachineExit::Reexecute { program_counter: 3 };
+            assert!(exit_counts(reexecute, plain));
+            assert!(exit_counts(refused, plain));
+            assert!(exit_counts(at_the_bound, plain), "the depth limit itself");
+            let requested = ExitCircumstances {
+                real_request: true,
+                ..plain
+            };
+            assert!(
+                !exit_counts(at_the_bound, requested),
+                "refused for a request"
+            );
+            assert!(exit_counts(refused, requested));
+            let inlining = MachineExit::PushRefused {
+                at_the_bound: false,
+                for_its_inlining: true,
+            };
+            assert!(!exit_counts(inlining, plain));
+            let uncompiled = ExitCircumstances {
+                refused_for_an_uncompiled_callee: true,
+                ..plain
+            };
+            assert!(!exit_counts(refused, uncompiled));
+            assert!(exit_counts(at_the_bound, uncompiled));
+            let forced = ExitCircumstances {
+                forced: true,
+                ..plain
+            };
+            assert!(!exit_counts(reexecute, forced));
+            let stress = ExitCircumstances {
+                installed_whatever_it_exits_at: true,
+                ..plain
+            };
+            assert!(!exit_counts(reexecute, stress));
+            for exit in [
+                MachineExit::Safepoint { program_counter: 3 },
+                MachineExit::Trap {
+                    program_counter: 3,
+                    site: 0,
+                },
+                MachineExit::BudgetSpent { program_counter: 3 },
+            ] {
+                assert!(!exit_counts(exit, plain), "{exit:?}");
+            }
+        }
+
+        /// A run-out of a body optimized as one copy, by a frame that went
+        /// on mid-body in its baseline code once the copy was installed,
+        /// asks for nothing -- no exit, no walk, no request `optimize`
+        /// would drop -- and leaves the row parked, as that dropped
+        /// request left it.
+        #[test]
+        fn a_body_with_its_one_copy_installed_asks_for_nothing() {
+            let mut interpreter = pinning_the_budget();
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
+                crate::jit::optimize_requested(mutator);
+                assert!(
+                    mutator.jit.optimized(&code).is_some(),
+                    "the copy is installed"
+                );
+                let index = code.jit.map.get();
+                let inside = {
+                    let body = &mutator.jit.bodies[index as usize];
+                    let zone = mutator.jit.zone.as_ref().expect("a zone");
+                    zone.writer
+                        .zone()
+                        .executable_address(CodeOffset(body.start + 1))
+                };
+                let row = mutator.heap.optimization_budget_of(&code).address;
+                assert!(!crate::jit::budget_spent(mutator, row, 0, inside));
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
+                );
+                assert!(mutator.jit.optimization_requests.is_empty());
             });
         }
 

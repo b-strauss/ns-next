@@ -991,7 +991,7 @@ impl<'tree> Planner<'tree> {
         self.tree
             .budgets
             .get(&code_id)
-            .map_or(LEAST_BUDGET_SHARE, |remaining| spent_share(*remaining))
+            .map_or(LEAST_BUDGET_SHARE, |share| share.max(LEAST_BUDGET_SHARE))
     }
 
     /// Adds the scope `plan` and queues its sends as candidates.
@@ -1886,26 +1886,21 @@ impl<'tree> Planner<'tree> {
     }
 }
 
-/// The share of `OPTIMIZATION_BUDGET` a row holding `remaining` spent, at
-/// least `LEAST_BUDGET_SHARE`.
-fn spent_share(remaining: i64) -> f64 {
-    budget_share(remaining).max(LEAST_BUDGET_SHARE)
-}
-
-/// The share of `OPTIMIZATION_BUDGET` a row holding `remaining` spent,
-/// from 0 to 1. A parked row, `i64::MAX`, ran its whole budget and waits
-/// for its compile.
+/// The share of its last arming, `armed`, a row holding `remaining`
+/// spent, from 0 to 1: of the plain budget, a test's own, or a retired
+/// copy's longer wait alike. A parked row, `i64::MAX`, ran its whole
+/// budget and waits for its compile, and a row armed at 0 -- the optimize
+/// stress mode's -- spent it at its first spend.
 #[expect(
     clippy::cast_precision_loss,
-    reason = "a budget of 240,000 instructions needs far fewer than 53 bits"
+    reason = "a budget's waits need far fewer than 53 bits"
 )]
-pub(crate) fn budget_share(remaining: i64) -> f64 {
-    if remaining == i64::MAX {
+pub(crate) fn budget_share(remaining: i64, armed: i64) -> f64 {
+    if remaining == i64::MAX || armed <= 0 {
         return 1.0;
     }
-    let budget = crate::jit::OPTIMIZATION_BUDGET;
-    let spent = budget.saturating_sub(remaining).clamp(0, budget);
-    spent as f64 / budget as f64
+    let spent = armed.saturating_sub(remaining).clamp(0, armed);
+    spent as f64 / armed as f64
 }
 
 /// What a scope about to be added knows of its receiver and level.

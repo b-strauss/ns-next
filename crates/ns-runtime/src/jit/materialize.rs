@@ -78,6 +78,10 @@ pub(crate) struct Walk {
     /// The header offset of the physical frame the last return address
     /// lay in: the frame a refused push leaves the innermost.
     last_physical_offset: Option<u32>,
+    /// The header offsets of the frames written from optimized code:
+    /// physical frames of a copy and the scopes it inlined, which the
+    /// recompilee walk does not go up to (`JitState::rebuilt_from_optimized`).
+    rebuilt: Vec<u32>,
 }
 
 /// A frame of optimized code stopped at an interrupt point that holds
@@ -129,6 +133,7 @@ impl Walk {
             inlined: 0,
             blocks: Vec::new(),
             last_physical_offset: None,
+            rebuilt: Vec::new(),
         };
     }
 
@@ -150,6 +155,7 @@ impl Walk {
             inlined,
             blocks,
             last_physical_offset,
+            rebuilt,
         } = self;
         *last = None;
         *callee = None;
@@ -159,6 +165,7 @@ impl Walk {
         *inlined = 0;
         blocks.clear();
         *last_physical_offset = None;
+        rebuilt.clear();
     }
 }
 
@@ -324,6 +331,7 @@ fn materialize_scopes(
         walk.top = walk.top.max(frame.window_end());
         walk.added += 1;
         walk.inlined += 1;
+        walk.rebuilt.push(scope_offset);
         caller = scope_offset;
         innermost = (scope_offset, scope_base, Rc::clone(&scope.code));
     }
@@ -415,6 +423,9 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
         }
     };
     walk.last_physical_offset = Some(Heap::activation_offset(physical));
+    if installed.optimized {
+        walk.rebuilt.push(Heap::activation_offset(physical));
+    }
     // A call made inside an inlined scope: its callee lies on that scope's
     // slots, and the call counted the scopes already (`BodyAssembler::call_send`).
     let (offset, register_base, code) = match &inlined {
@@ -497,6 +508,9 @@ pub(crate) fn materialize_innermost(
         let physical = mutator.heap.write_machine_frame(&frame);
         walk.top = walk.top.max(frame.window_end());
         walk.added += 1;
+        if installed.optimized {
+            walk.rebuilt.push(offset);
+        }
         match &inlined {
             // An exit inside an inlined scope: its scopes are activations
             // from here on, counted as the interpreter's pushes count them.
@@ -523,6 +537,10 @@ pub(crate) fn materialize_innermost(
         .adopt_machine_frames(innermost, walk.top, walk.added);
     mutator.jit.statistics.materialized_frames += walk.added as u64;
     mutator.jit.statistics.inlined_frames_materialized += walk.inlined as u64;
+    mutator
+        .jit
+        .rebuilt_from_optimized
+        .extend(std::mem::take(&mut walk.rebuilt));
     // Every frame of optimized code the walk passed goes on in baseline
     // code or the interpreter from here, which read every register: the
     // blocks its code eliminated are made, in every frame, not only the
@@ -593,6 +611,11 @@ pub(crate) fn materialize_at_entry(
     mutator.jit.statistics.inlined_frames_materialized += walk.inlined as u64;
     mutator.jit.statistics.optimized_frames_materialized += 1;
     mutator.jit.exited_physical = Some(entry);
+    walk.rebuilt.push(Heap::activation_offset(entry));
+    mutator
+        .jit
+        .rebuilt_from_optimized
+        .extend(std::mem::take(&mut walk.rebuilt));
     materialize_blocks(mutator, &walk.blocks);
     mutator.heap.top_activation()
 }
