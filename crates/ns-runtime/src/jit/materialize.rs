@@ -315,7 +315,7 @@ fn materialize_scopes(
     let chain = inlined.chain();
     let mut caller = offset;
     let mut innermost = (offset, register_base, Rc::clone(physical));
-    // Each scope's activation, by its `ScopeId`, the physical frame's
+    // Each scope's header offset, by its `ScopeId`, the physical frame's
     // first, whose current class its call wrote.
     let mut headers: Vec<Option<u32>> = vec![None; inlined.metadata.scopes.len()];
     headers[0] = Some(offset);
@@ -323,6 +323,12 @@ fn materialize_scopes(
         let scope = inlined.scope(stopped.scope);
         let scope_base = register_base + u32::from(stopped.offset);
         let scope_offset = scope_base + u32::from(scope.code.argument_count);
+        // The class first: the header's guard and entered level, which the
+        // frame's write records for a scope addressing its own slots, are
+        // the current class's.
+        headers[stopped.scope.0 as usize] = Some(scope_offset);
+        let class = scope_class(mutator, scope_offset, scope.class, &headers);
+        mutator.heap.set_walked_current_class(scope_offset, class);
         let frame = scope_frame(
             &mut mutator.heap,
             scope_offset,
@@ -331,9 +337,6 @@ fn materialize_scopes(
             Some((caller, walk.top)),
         );
         let _ = mutator.heap.write_machine_frame(&frame);
-        headers[stopped.scope.0 as usize] = Some(scope_offset);
-        let class = scope_class(mutator, scope_offset, scope.class, &headers);
-        mutator.heap.set_walked_current_class(scope_offset, class);
         walk.top = walk.top.max(frame.window_end());
         walk.added += 1;
         walk.inlined += 1;
