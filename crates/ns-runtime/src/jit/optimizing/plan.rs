@@ -54,13 +54,22 @@ pub(crate) const COST_SEND: u32 = 5;
 pub(crate) const COST_CLOSURE: u32 = 3;
 /// The weight of a send with a fast path inline: an `IntegerBinary`.
 pub(crate) const COST_CHEAP_SEND: u32 = 2;
-/// The heaviest method callee inlined.
+/// The heaviest method callee inlined: Strongtalk's 40. Halved and
+/// doubled over the twenty-seven sources it moved the geometric mean
+/// +0.8% and -0.6%, within the measurement's noise; 80 inlined more of
+/// Json, 10% faster, and of DeltaBlue's, DeltaBlueTon80's and
+/// RichardsTon80's callers, 4% to 8% slower (`docs/design/execution.md`,
+/// "What inlining moved").
 pub(crate) const METHOD_LIMIT: u32 = 40;
 /// The heaviest block inlined at a `value`-family send: twice
-/// Strongtalk's 70, which the measurement of the limits chose -- Queens
-/// runs 58% faster, its blocks between the two inlined, and no other
-/// program the twenty-seven sources time moves beyond the sittings'
-/// noise (`docs/design/execution.md`, "What inlining moved").
+/// Strongtalk's 70, which the measurement of the limits chose. Against
+/// 70, three pinned builds each, two sittings, the geometric mean over
+/// the twenty-seven sources moved -3.3% and -2.7%, against the sittings'
+/// 0.5% between themselves: Queens, whose blocks lie between the two,
+/// runs 61% faster in both. Towers and Sieve, whose plans are the same at
+/// both limits, measured 7% to 12% slower in one sitting each, their
+/// medians of eight short runs scattering by a third
+/// (`docs/design/execution.md`, "What inlining moved").
 pub(crate) const BLOCK_LIMIT: u32 = 140;
 /// What a callee's limit grows by for each argument that is a block made
 /// in the compile, which is then inlined into it.
@@ -70,8 +79,11 @@ pub(crate) const BLOCK_ARGUMENT_BONUS: u32 = 35;
 /// this counts instructions of the bytecode's kind, each of which may
 /// emit a template many machine instructions long, and every scope's
 /// registers and values pass through liveness, allocation and, in a debug
-/// build, the replay that verifies them. A start the measurement of the
-/// limits refines.
+/// build, the replay that verifies them. Halved, doubled and at
+/// Strongtalk's 12,000 it moved the geometric mean over the twenty-seven
+/// sources +0.2%, +0.7% and -0.3% alone, within the measurement's noise,
+/// DeltaBlue 5% slower at 4,000 and 12,000 (`docs/design/execution.md`,
+/// "What inlining moved").
 pub(crate) const COMPILE_LIMIT: u32 = 2_000;
 /// How many times a body may be inlined into a chain it already runs in.
 pub(crate) const RECURSION_LIMIT: u32 = 1;
