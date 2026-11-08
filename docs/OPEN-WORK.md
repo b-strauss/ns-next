@@ -854,33 +854,40 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   - **What the third stage's measurement left** (2026-11-08), none a
     wrong answer; [execution.md](design/execution.md), "What inlining
     moved":
-    - *The current class at every inlined entry*: each inlined scope
-      computes its current class at its entry and keeps it bound, also
-      where no frame node reads it, because a trap or poll inside the
-      scope writes it back. An experiment that bound the receiver
-      instead -- wrong wherever the class is read -- ran List 9%,
-      `bench_send` 8% and Queens 5% faster: computing it only before a
-      frame node, and letting the exit's walk compute it for a scope
-      that has none, would take most of that. The verifier's check of
-      the header bindings at interrupt points changes with it.
+    - *An inlined scope that would create a block is sent*: until
+      optimized code creates blocks itself (stage 4), a `MakeClosure` in
+      an inlined scope leaves the copy, so the plan sends every callee
+      whose scope would create a block it does not eliminate on a way
+      that ran (`plan::Planner::creates_a_block`). The rule is stage 4's
+      to lift, and it costs eliminated blocks: a callee handed one that
+      creates another is sent, and the block handed to it escapes -- the
+      inlining corpus eliminates 6 blocks with the rule, 18 without it.
+      Plan decision 2's "leaves optimized code until stage 4" now reads
+      "is sent"; the design's "Inlining" says so when the batch's
+      documents are written.
     - *A block handed to an Array's `do:` escapes*: `Array>>do:`'s way
       for a receiver whose size the mirror cannot read hands the block
-      to `super do:`, so the plan eliminates no such block, and a
-      callee making one is sent rather than inlined. Treating the
+      to `super do:`, so the plan eliminates no such block, and with the
+      rule above a callee making one is sent rather than inlined: block
+      elimination is shut out of the collection protocol. Treating the
       mirror send's failure way as a fast path's fallback -- a trap
-      where the copy speculates -- would let it be eliminated.
+      where the copy speculates -- would let it be eliminated, a new
+      speculation, for the user to decide.
     - *`ValueOfParameter` and `CullParameter` stay sends*, and the
       "cheap" weight of a send counts their fast paths, the mirror's and
       a closure's `value` among them, at an accessor's 2 though they may
       run a whole block.
-    - *Instantiation*: `bench_new2` +1.8% and `bench_newarg` +1.5%
-      against `master`, a sampled profile level within 0.4% and the
-      difference moving between functions the binaries inline
-      differently; a copy that keeps metadata still looks every leaf
-      call's site up, its root scope's included.
-    - *Not measured apart*: the barrier leaf's register moves around an
-      inlined store, and an own-slot store in an inlined scope taking
-      the cold leaf once per entry.
+    - *The first runs of a short program*: at eight iterations
+      `bench_new2`, `bench_newarg` and Sieve measure 3% to 11% slower than
+      `master`, level or faster at 200 to 400; the optimizing compiles,
+      Sieve's 0.52 ms against `master`'s 0.22, are the mutator's until
+      the compiler thread of stage 8.
+    - *Measured, no cost*: the barrier leaf's register moves around an
+      inlined store (within 1% on an inlined setter's loop, DeltaBlue,
+      Richards, RichardsTon80 and DeltaBlueTon80), and an own-slot store
+      in an inlined scope taking the cold leaf once per entry (the leaf
+      is never called from an inlined scope in the twenty-seven
+      sources).
     - *Compile time*: a debug build's verification of every allocation
       takes a quarter to a third of its optimizing compiles; DeltaBlue's
       97 copies take 29 ms in a release build.

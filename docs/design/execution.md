@@ -8744,8 +8744,7 @@ and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
   receiver's class at their own site -- stage 3's type-cases, with a
   guard and a trap in the optimized code -- would take the tests out of
   the shared stubs
-  (`OPEN-WORK.md`, "Optimized code's sends mispredict in the shared
-  stubs").
+  ("What inlining moved" measures them with the type-cases).
 - **CD churns**: 159 bodies optimized and 136 of them abandoned, with
   8,762 optimized exits, the same pattern as its baseline code's
   ("What reclamation moved"; `OPEN-WORK.md`, "A nested class's accessor
@@ -9028,13 +9027,13 @@ end-of-batch gates, which the batch's end runs.
 
 ### What inlining moved
 
-**Measured 2026-11-08, `d4ae78da` against `master` (`56d65674`)**, by
+**Measured 2026-11-08, `3b30e41e` against `master` (`56d65674`)**, by
 the protocol of "What speculation moved": three pinned release builds a
 side with debug information, a, b and c laid out as there, the code
 zones at the same three paddings on both sides; `vm::run` spans 44.0,
 47.4 and 51.0 KB on both sides with 451 calls, and no build has a
 `run_stretch` or a `vm::run` closure of its own. Three rounds in one
-sitting, the order of the six binaries rotated each round, every process
+sitting, the order of the binaries rotated each round, every process
 held to the eight performance cores (the mask `0xC03C03`) from its
 start; `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue
 and `--iterations 8` for the rest. Each cell is a side's medians per
@@ -9047,100 +9046,120 @@ dependencies, the recompilee walk and the re-entry at a poll.
 
 | Program | master (ms) | master's builds | branch (ms) | builds | vs master | separated |
 |---|---|---|---|---|---|---|
-| `Bounce` | 0.198 | 0.195–0.201 | 0.109 | 0.109–0.110 | -44.9% | faster |
-| `CD` | 3081.092 | 3070.516–3091.550 | 2998.508 | 2994.954–3001.268 | -2.7% | faster |
-| `DeltaBlue` | 222.391 | 221.175–223.992 | 179.850 | 178.165–181.638 | -19.1% | faster |
-| `DeltaBlueTon80` | 1.944 | 1.939–1.950 | 1.910 | 1.901–1.925 | -1.8% | faster |
-| `Havlak` | 1130.822 | 1088.960–1213.075 | 811.816 | 811.332–812.195 | -28.2% | faster |
-| `Json` | 3.310 | 3.288–3.338 | 2.652 | 2.640–2.659 | -19.9% | faster |
-| `List` | 0.190 | 0.187–0.193 | 0.066 | 0.066–0.067 | -65.1% | faster |
-| `Mandelbrot` | 1807.932 | 1799.558–1813.117 | 1788.883 | 1780.954–1798.735 | -1.1% | faster |
-| `NBody` | 1074.099 | 1061.291–1087.153 | 940.291 | 930.792–946.234 | -12.5% | faster |
-| `Permute` | 0.377 | 0.370–0.387 | 0.238 | 0.227–0.260 | -36.8% | faster |
-| `Queens` | 0.313 | 0.313–0.315 | 0.081 | 0.078–0.084 | -74.0% | faster |
-| `Richards` | 16.824 | 16.729–16.981 | 11.708 | 11.641–11.836 | -30.4% | faster |
-| `RichardsTon80` | 1.774 | 1.769–1.778 | 1.295 | 1.285–1.304 | -27.0% | faster |
-| `Sieve` | 0.381 | 0.366–0.398 | 0.379 | 0.351–0.403 | -0.7% | no |
-| `Storage` | 0.661 | 0.655–0.667 | 0.657 | 0.640–0.670 | -0.6% | no |
-| `Towers` | 0.471 | 0.464–0.478 | 0.268 | 0.245–0.315 | -43.1% | faster |
-| `bench_block` | 0.865 | 0.862–0.867 | 0.249 | 0.248–0.252 | -71.2% | faster |
-| `bench_loop` | 0.512 | 0.499–0.522 | 0.079 | 0.078–0.080 | -84.6% | faster |
-| `bench_megamorphic` | 0.708 | 0.701–0.712 | 0.712 | 0.705–0.725 | +0.6% | no |
-| `bench_send` | 0.501 | 0.498–0.504 | 0.085 | 0.082–0.087 | -83.0% | faster |
-| `bench_signal` | 19.007 | 18.851–19.090 | 19.194 | 19.086–19.251 | +1.0% | no |
-| `bench_while` | 5.963 | 5.844–6.197 | 3.246 | 3.144–3.454 | -45.6% | faster |
-| `bench_recursion` | 0.485 | 0.469–0.497 | 0.487 | 0.469–0.522 | +0.3% | no |
-| `bench_new` | 1.720 | 1.719–1.721 | 1.746 | 1.717–1.772 | +1.5% | no |
-| `bench_new2` | 2.874 | 2.851–2.902 | 2.926 | 2.921–2.933 | +1.8% | slower |
-| `bench_newarg` | 3.015 | 2.985–3.049 | 3.061 | 3.053–3.072 | +1.5% | slower |
-| `bench_do` | 0.651 | 0.641–0.660 | 0.509 | 0.506–0.512 | -21.7% | faster |
+| `Bounce` | 0.201 | 0.198–0.203 | 0.119 | 0.109–0.142 | -40.7% | faster |
+| `CD` | 3083.916 | 3070.121–3096.269 | 2996.964 | 2978.014–3008.635 | -2.8% | faster |
+| `DeltaBlue` | 222.114 | 220.768–222.826 | 177.040 | 175.656–178.431 | -20.3% | faster |
+| `DeltaBlueTon80` | 1.915 | 1.898–1.927 | 1.913 | 1.880–1.931 | -0.1% | no |
+| `Havlak` | 1097.624 | 1093.734–1101.330 | 808.850 | 806.754–812.603 | -26.3% | faster |
+| `Json` | 3.331 | 3.321–3.346 | 2.681 | 2.649–2.712 | -19.5% | faster |
+| `List` | 0.193 | 0.191–0.196 | 0.061 | 0.060–0.061 | -68.6% | faster |
+| `Mandelbrot` | 1807.938 | 1803.551–1815.071 | 1794.207 | 1780.993–1805.150 | -0.8% | no |
+| `NBody` | 1075.444 | 1062.487–1087.576 | 940.274 | 935.784–945.690 | -12.6% | faster |
+| `Permute` | 0.367 | 0.364–0.373 | 0.237 | 0.231–0.244 | -35.4% | faster |
+| `Queens` | 0.318 | 0.314–0.322 | 0.076 | 0.076–0.077 | -75.9% | faster |
+| `Richards` | 16.828 | 16.721–16.991 | 11.544 | 11.479–11.654 | -31.4% | faster |
+| `RichardsTon80` | 1.792 | 1.778–1.804 | 1.342 | 1.321–1.359 | -25.1% | faster |
+| `Sieve` | 0.362 | 0.347–0.374 | 0.403 | 0.389–0.430 | +11.4% | slower |
+| `Storage` | 0.679 | 0.659–0.693 | 0.626 | 0.619–0.634 | -7.8% | faster |
+| `Towers` | 0.466 | 0.452–0.480 | 0.270 | 0.249–0.313 | -42.2% | faster |
+| `bench_block` | 0.854 | 0.847–0.860 | 0.281 | 0.278–0.285 | -67.1% | faster |
+| `bench_loop` | 0.511 | 0.499–0.522 | 0.080 | 0.079–0.081 | -84.4% | faster |
+| `bench_megamorphic` | 0.710 | 0.700–0.720 | 0.716 | 0.705–0.723 | +0.8% | no |
+| `bench_send` | 0.502 | 0.497–0.507 | 0.082 | 0.081–0.082 | -83.8% | faster |
+| `bench_signal` | 18.981 | 18.879–19.054 | 19.108 | 19.031–19.206 | +0.7% | no |
+| `bench_while` | 5.924 | 5.794–6.008 | 3.284 | 3.160–3.452 | -44.6% | faster |
+| `bench_recursion` | 0.488 | 0.468–0.518 | 0.500 | 0.495–0.511 | +2.5% | no |
+| `bench_new` | 1.740 | 1.736–1.746 | 1.742 | 1.741–1.744 | +0.1% | no |
+| `bench_new2` | 2.874 | 2.867–2.878 | 2.953 | 2.924–2.981 | +2.7% | slower |
+| `bench_newarg` | 2.986 | 2.981–2.988 | 3.075 | 3.071–3.079 | +3.0% | slower |
+| `bench_do` | 0.671 | 0.662–0.683 | 0.497 | 0.489–0.501 | -26.0% | faster |
 
-The geometric mean over the twenty-seven sources is -34.3%, and each of
+The geometric mean over the twenty-seven sources is -34.0%, and each of
 the branch's three builds lies far below each of `master`'s: 2.581,
-2.570 and 2.637 against 3.969, 3.935 and 3.946. What each difference
-is:
+2.616 and 2.613 against 3.950, 3.945 and 3.944. An earlier sitting of
+`d4ae78da`, before the fixes below, measured -34.3%. What each
+difference is:
 
-- **Sends inlined.** `bench_send` and `bench_loop` run 83% to 85%
-  faster, `bench_block` 71%, List 65%, Bounce, Towers and `bench_while`
-  43% to 46%: their hot sends are type-cases of inlined callees, their
+- **Sends inlined.** `bench_send` and `bench_loop` run 84% faster,
+  `bench_block` 67%, List 69%, Bounce, Towers and `bench_while` 41% to
+  45%: their hot sends are type-cases of inlined callees, their
   accessors loads and stores, and their blocks run in their homes'
   frames. Richards, RichardsTon80, Havlak, Json and DeltaBlue are 19% to
-  30% faster, CD 2.7%, whose churn of baseline code ("What reclamation
-  moved") inlining does not reach.
+  31% faster, Storage 7.8%, NBody 12.6% -- its float arithmetic leaf calls as before,
+  45 sites inlined around them -- and CD 2.8%, whose churn of baseline
+  code ("What reclamation moved") inlining does not reach.
 - **Queens: blocks up to twice Strongtalk's weight.** Its blocks weigh
-  between 70 and 140, and `BLOCK_LIMIT` is 140 (below): 74% faster.
-- **Three regressions the first sitting found, fixed.** A first sitting
-  of `1621baf0` measured Towers +48%, RichardsTon80 +40% and Queens +14%,
-  their copies leaving at 129 to 320 exits a run and five copies
-  abandoned: an inlined scope that creates a block -- a block that
-  escapes, such as Towers' `ifTrue:ifFalse:` arguments, whose quick
-  method's `value` stays a send -- left optimized code at its
-  `MakeClosure` every time it ran it. The plan now sends every callee
-  whose scope would create a block it does not eliminate, a fast path's
-  fallback aside (`plan::Planner::creates_a_block`): Towers 320 exits a
-  run to 0, Queens 320 to 0, RichardsTon80 129 to 4, none abandoned.
-  The same sitting measured `bench_new2` and `bench_newarg` about 10%
-  slower, bisected to `0f840a06` and sampled: 13% of the samples lay in
-  `JitState::inlined_at`, which every leaf called from optimized code
-  asked whether its site lay inside an inlined scope, finding the body
-  again and hashing the offset with SipHash. Only a body whose copy
-  keeps metadata asks now (`Installed::described`), and the table hashes
-  by identity.
-- **Instantiation: placement.** `bench_new2` +1.8% and `bench_newarg`
-  +1.5% are separated by a few microseconds of their builds' ranges. A
-  sampled profile of 400 runs a side puts the same total in the run loop
-  and its leaves (+0.4%), the difference moving between
-  `materialize::leaf_frame` and `Heap::class_factory`, which the two
-  binaries inline differently, and the medians of those two runs were
-  level (2.721 and 2.722 ms). Their `main:args:` copy inlines one scope
-  and keeps metadata, so each leaf its root scope calls still asks for
-  its site.
-- **Unchanged.** Mandelbrot and NBody gain 1.1% and 12.5%, their float
-  arithmetic leaf calls as before; `bench_megamorphic`, whose site gets
-  no type-case, `bench_signal`, which optimizes nothing, and
-  `bench_recursion` stay level.
+  between 70 and 140, and `BLOCK_LIMIT` is 140 (below): 76% faster.
+- **Regressions the sittings found, fixed.**
+  - *Inlined scopes that create a block.* A first sitting of `1621baf0`
+    measured Towers +48%, RichardsTon80 +40% and Queens +14%, their
+    copies leaving at 129 to 320 exits a run and five copies abandoned:
+    an inlined scope that creates a block -- one that escapes, such as
+    Towers' `ifTrue:ifFalse:` arguments, whose quick method's `value`
+    stays a send -- left optimized code at its `MakeClosure` every time
+    it ran it. The plan now sends every callee whose scope would create
+    a block it does not eliminate on a way that ran: not a fast path's
+    fallback, nor, where the copy speculates, a way whose send of the
+    block never ran, which traps there (`plan::Planner::creates_a_block`).
+    Towers 320 exits a run to 0, Queens 320 to 0, RichardsTon80 129 to
+    4, none abandoned. The rule costs blocks the plan eliminated before:
+    the inlining corpus eliminates 6 where it eliminated 18, a callee
+    that receives an eliminated block and creates another being sent.
+  - *The leaves' lookups.* `bench_new2` and `bench_newarg` measured about
+    10% slower, bisected to `0f840a06` and sampled: every leaf called
+    from optimized code asked whether its site lay inside an inlined
+    scope, finding the body again and hashing its offset with SipHash.
+    Only a body whose copy keeps metadata asks now, in that body's table,
+    which hashes by identity (`Installed::described`). A later sitting
+    still measured `bench_newarg` 7% to 9% slower in builds b and c:
+    two hot leaf calls of its loop met in one entry of the body lookup
+    and searched the bodies 100,000 times a run. Each offset has a pair
+    of entries now, the body last found moving to the second
+    (`BodyLookup::entries_of`), and a leaf a stub calls finds no body
+    without a search.
+  - *The current class at every inlined entry.* Every inlined scope
+    computed its current class at its entry and kept it bound, where
+    only a frame node's template or an exit reads it. It is computed
+    before each frame node of the scope now, and the exit's walk computes
+    and writes it for every inlined scope it materializes
+    (`graph::ClassRecipe`, `materialize::scope_class`): List and
+    `bench_send` about 7% faster and Queens about 5%, in an interim
+    measurement against `d4ae78da`.
+- **Instantiation and Sieve: the runs before the code settles.**
+  `bench_new2` +2.7%, `bench_newarg` +3.0% and Sieve +11.4% are separated
+  at the eight iterations of the table, where the optimizing compiles
+  -- Sieve's take 0.52 ms against `master`'s 0.22 -- and the runs before
+  the copies are installed weigh. At 400 iterations `bench_newarg` runs
+  level with `master` (2.812 against 2.809 ms, build c), and Sieve at 200
+  iterations 17% faster on all three builds (0.114 against 0.138 ms); a
+  sampled profile of `bench_newarg` at 400 iterations puts the same
+  totals in both. Sieve's medians of eight runs scatter by a third on
+  every binary, `master`'s too.
+- **Unchanged.** Mandelbrot moves -0.8%, its float arithmetic leaf calls
+  as before and nothing inlined; `bench_megamorphic`, whose site gets no
+  type-case, `bench_signal`, which optimizes nothing, `bench_recursion`
+  and `bench_new` stay level.
 
-**The shared stubs' mispredictions behind optimized callers**
-(`OPEN-WORK.md` named them at the first stage). Sampled by the
-processor's mispredicted branches (xperf, `BranchMispredictions` every
-4,096), DeltaBlueTon80 run 4,000 times, each sample placed by the code
-zone's layout the run printed: `master` took 356 samples in the
-polymorphic stub and 389 in the megamorphic and row stubs, about 760
-mispredictions a run in the shared stubs, and 1,910 in the bodies; the
-branch 28, 118 and 1,073, about 150 a run in the stubs. A type-case
-tests the receiver inline, so the sends optimized code still makes are
-the polymorphic and megamorphic ones it inlines no arm of, and the
-stubs' mispredictions fall by four fifths. At 4,000 iterations the
-copies run DeltaBlueTon80 in 1.02 ms against `master`'s 1.67; at the
-eight iterations of the table, where compiles weigh, 1.8% ahead.
+**The shared stubs' mispredictions behind optimized callers**, measured
+at `d4ae78da`. Sampled by the processor's mispredicted branches (xperf,
+`BranchMispredictions` every 4,096), DeltaBlueTon80 run 4,000 times,
+each sample placed by the code zone's layout the run printed: `master`
+took 356 samples in the polymorphic stub and 389 in the megamorphic and
+row stubs, about 760 mispredictions a run in the shared stubs, and 1,910
+in the bodies; the branch 28, 118 and 1,073, about 150 a run in the
+stubs. A type-case tests the receiver inline, so the sends optimized code
+still makes are the polymorphic and megamorphic ones it inlines no arm
+of, and the stubs' mispredictions fall by four fifths. At 4,000
+iterations the copies run DeltaBlueTon80 in 1.02 ms against `master`'s
+1.67; at the eight iterations of the table, where compiles weigh, level.
 
-**The limits of decision 6**, each halved and doubled, one build of
-layout a whose limits an environment variable set for the measurement
-alone, so that every variant ran the same machine code of the run loop;
-three rounds, the variants' order rotated, the iterations of the table.
-Each cell is the variant's pooled medians against the limits of
-Strongtalk (40, 70, 35, 1 and the 2,000 of the plan's ruling), its
-geometric mean over the twenty-seven sources:
+**The limits of decision 6**, each halved and doubled. An interim
+measurement first: one build of layout a whose limits an environment
+variable set for the measurement alone, so that every variant ran the
+same machine code of the run loop; three rounds, the variants' order
+rotated, the iterations of the table, each variant's geometric mean
+over the twenty-seven sources against Strongtalk's limits (40, 70, 35, 1
+and the 2,000 of the plan's ruling):
 
 | Limit | halved | doubled |
 |---|---|---|
@@ -9150,74 +9169,87 @@ geometric mean over the twenty-seven sources:
 | `COMPILE_LIMIT` 2,000 | 1,000: +0.22% | 4,000: +0.72%; 12,000: -0.25% |
 | `RECURSION_LIMIT` 1 | 0: +1.44% | 2: +0.03% |
 
-The variant measured against itself in a second sitting moved the
-geometric mean by 1.2%, the noise below which no difference decides.
-`BLOCK_LIMIT` 140 decides: -3.4% and, in a second sitting against 70,
--2.6%, Queens 56% to 61% faster in both, no program slower beyond its
-rounds; 280 measured -1.9% there. `METHOD_LIMIT` 80 inlines more of
-Json (-10%) and DeltaBlue's and RichardsTon80's callers' callees, which
-run 4% to 8% slower; with `BLOCK_LIMIT` 140 it moved the mean -0.2%, no
-verdict. `COMPILE_LIMIT` 12,000 moved it -0.25% alone and +0.8% with
-`BLOCK_LIMIT` 140, DeltaBlue 5% slower in both: the ruling's 2,000
-stays, and with it a debug build's compile time. So `BLOCK_LIMIT` is
-140 and the other four stay.
+The base measured against itself in a second sitting moved 1.2%, the
+noise below which no difference of this one-layout measurement decides.
+`METHOD_LIMIT` 80 inlines more of Json (-10%) and of DeltaBlue's,
+DeltaBlueTon80's and RichardsTon80's callers, which run 4% to 8%
+slower, and with `BLOCK_LIMIT` 140 moved the mean -0.2%; `COMPILE_LIMIT`
+12,000 moved it +0.8% with `BLOCK_LIMIT` 140, DeltaBlue 5% slower: both
+stay, and with them a debug build's compile time.
+
+`BLOCK_LIMIT` 140 then by the final protocol: three pinned builds of
+each value, the layouts above, nine binaries with `master`'s in each
+round, three rounds a sitting, two sittings. The geometric mean moved
+-3.3% in the first sitting and -2.7% in the second, where `master`'s and
+70's builds moved 0.25% and 0.5% between the sittings: Queens 61% faster
+in both. No program is slower in both sittings with its builds apart.
+Towers measured +11.9% (separated) and +9.0% at the eight iterations,
+Sieve -6.0% and +7.2% (separated in the second), `bench_loop` +2.0%
+(separated in the first) and 0.0%; Towers' and Sieve's plans are the
+same at both limits (`--jit-statistics`), their medians of eight runs
+scatter by a third on every binary, and at 200 iterations Towers runs
+level at both limits on all three builds (190 to 196 µs). So
+`BLOCK_LIMIT` is 140.
 
 **The counters**, `--jit-statistics` on build a with the iterations
 above, which turns on the counts machine code otherwise leaves out and
 so changes the code: these runs time nothing.
 
-| Program | optimized (customized) | in (ms) | scopes inlined | type-case arms | blocks eliminated | made | inlined frames | optimized exits | traps | abandoned | budget exits (above) | poll re-entries |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `Bounce` | 3 (2) | 0.404 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (0) | 0 |
-| `CD` | 32 (19) | 5.807 | 22 | 219 | 3 | 0 | 0 | 1111 | 4 | 5 | 32 (2) | 0 |
-| `DeltaBlue` | 97 (69) | 28.983 | 329 | 716 | 39 | 14 | 79 | 94 | 44 | 0 | 97 (28) | 3 |
-| `DeltaBlueTon80` | 14 (13) | 6.526 | 79 | 164 | 9 | 3 | 6 | 7 | 2 | 0 | 14 (6) | 0 |
-| `Havlak` | 60 (37) | 12.214 | 99 | 199 | 11 | 174 | 478 | 632 | 6 | 0 | 60 (11) | 90 |
-| `Json` | 16 (15) | 3.574 | 52 | 11 | 1 | 0 | 40 | 22 | 4 | 0 | 16 (5) | 0 |
-| `List` | 1 (1) | 0.273 | 1 | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 1 (1) | 0 |
-| `Mandelbrot` | 4 (1) | 0.907 | 0 | 0 | 0 | 0 | 0 | 2 | 2 | 0 | 4 (0) | 0 |
-| `NBody` | 7 (3) | 1.074 | 3 | 41 | 0 | 0 | 0 | 2 | 0 | 0 | 7 (1) | 0 |
-| `Permute` | 3 (2) | 0.574 | 3 | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (1) | 0 |
-| `Queens` | 1 (1) | 1.408 | 11 | 30 | 2 | 0 | 0 | 0 | 0 | 0 | 1 (1) | 0 |
-| `Richards` | 18 (10) | 2.521 | 38 | 97 | 0 | 0 | 1 | 2 | 2 | 0 | 18 (2) | 0 |
-| `RichardsTon80` | 10 (8) | 1.913 | 12 | 86 | 0 | 0 | 0 | 4 | 2 | 0 | 10 (0) | 0 |
-| `Sieve` | 4 (2) | 0.516 | 3 | 6 | 1 | 0 | 0 | 0 | 0 | 0 | 4 (1) | 0 |
-| `Storage` | 3 (2) | 0.445 | 2 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (0) | 0 |
-| `Towers` | 4 (2) | 0.530 | 4 | 19 | 0 | 0 | 0 | 0 | 0 | 0 | 4 (1) | 0 |
-| `bench_block` | 3 (3) | 0.454 | 5 | 0 | 3 | 0 | 0 | 8 | 2 | 0 | 3 (0) | 2 |
-| `bench_loop` | 2 (2) | 0.270 | 0 | 0 | 0 | 0 | 0 | 7 | 2 | 0 | 2 (0) | 0 |
-| `bench_megamorphic` | 1 (1) | 0.303 | 0 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 1 (0) | 0 |
-| `bench_send` | 3 (3) | 0.314 | 2 | 0 | 0 | 0 | 0 | 6 | 2 | 0 | 3 (0) | 0 |
-| `bench_signal` | 0 (0) | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 (0) | 0 |
-| `bench_while` | 5 (2) | 0.217 | 0 | 7 | 0 | 0 | 0 | 0 | 0 | 0 | 5 (0) | 0 |
-| `bench_recursion` | 1 (1) | 0.120 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 (0) | 0 |
-| `bench_new` | 4 (2) | 0.253 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 4 (0) | 0 |
-| `bench_new2` | 5 (2) | 0.275 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 5 (0) | 0 |
-| `bench_newarg` | 5 (2) | 0.269 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 5 (0) | 0 |
-| `bench_do` | 3 (2) | 0.361 | 1 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (1) | 0 |
+| Program | optimized (customized) | in (ms) | sites inlined | scopes inlined | type-case arms | blocks eliminated | made | inlined frames | optimized exits | traps | abandoned | budget exits (above) | poll re-entries |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 3 (2) | 0.413 | 23 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (0) | 0 |
+| `CD` | 32 (19) | 6.119 | 269 | 22 | 219 | 3 | 0 | 0 | 1111 | 4 | 5 | 32 (2) | 0 |
+| `DeltaBlue` | 97 (69) | 29.038 | 1343 | 329 | 716 | 39 | 14 | 79 | 94 | 44 | 0 | 97 (28) | 3 |
+| `DeltaBlueTon80` | 14 (13) | 6.533 | 318 | 79 | 164 | 9 | 3 | 6 | 7 | 2 | 0 | 14 (6) | 0 |
+| `Havlak` | 60 (37) | 11.700 | 496 | 99 | 199 | 11 | 174 | 478 | 632 | 6 | 0 | 60 (11) | 90 |
+| `Json` | 16 (15) | 3.849 | 167 | 52 | 11 | 1 | 0 | 40 | 22 | 4 | 0 | 16 (5) | 0 |
+| `List` | 1 (1) | 0.284 | 8 | 1 | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 1 (1) | 0 |
+| `Mandelbrot` | 4 (1) | 0.894 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 2 | 0 | 4 (0) | 0 |
+| `NBody` | 7 (3) | 1.091 | 45 | 3 | 41 | 0 | 0 | 0 | 2 | 0 | 0 | 7 (1) | 0 |
+| `Permute` | 3 (2) | 0.602 | 21 | 3 | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (1) | 0 |
+| `Queens` | 1 (1) | 1.365 | 55 | 11 | 30 | 2 | 0 | 0 | 0 | 0 | 0 | 1 (1) | 0 |
+| `Richards` | 18 (10) | 2.540 | 168 | 38 | 97 | 0 | 0 | 1 | 2 | 2 | 0 | 18 (2) | 0 |
+| `RichardsTon80` | 10 (8) | 1.853 | 143 | 12 | 86 | 0 | 0 | 0 | 4 | 2 | 0 | 10 (0) | 0 |
+| `Sieve` | 4 (2) | 0.517 | 7 | 3 | 6 | 1 | 0 | 0 | 0 | 0 | 0 | 4 (1) | 0 |
+| `Storage` | 3 (2) | 0.432 | 8 | 2 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (0) | 0 |
+| `Towers` | 4 (2) | 0.480 | 30 | 4 | 19 | 0 | 0 | 0 | 0 | 0 | 0 | 4 (1) | 0 |
+| `bench_block` | 3 (3) | 0.445 | 16 | 5 | 0 | 3 | 0 | 0 | 8 | 2 | 0 | 3 (0) | 2 |
+| `bench_loop` | 2 (2) | 0.281 | 13 | 0 | 0 | 0 | 0 | 0 | 7 | 2 | 0 | 2 (0) | 0 |
+| `bench_megamorphic` | 1 (1) | 0.293 | 6 | 0 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 1 (0) | 0 |
+| `bench_send` | 3 (3) | 0.319 | 13 | 2 | 0 | 0 | 0 | 0 | 6 | 2 | 0 | 3 (0) | 0 |
+| `bench_signal` | 0 (0) | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 (0) | 0 |
+| `bench_while` | 5 (2) | 0.208 | 7 | 0 | 7 | 0 | 0 | 0 | 0 | 0 | 0 | 5 (0) | 0 |
+| `bench_recursion` | 1 (1) | 0.137 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 (0) | 0 |
+| `bench_new` | 4 (2) | 0.254 | 5 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 4 (0) | 0 |
+| `bench_new2` | 5 (2) | 0.273 | 5 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 5 (0) | 0 |
+| `bench_newarg` | 5 (2) | 0.271 | 5 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 5 (0) | 0 |
+| `bench_do` | 3 (2) | 0.381 | 5 | 1 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (1) | 0 |
 
-"Scopes inlined" counts each inlined body a copy lays out code for, an
-arm's or a block's; "type-case arms" every arm a site tests, an
-always-inlined accessor's or indexed access's among them; "made" the
-blocks an exit made of eliminated ones. No poll went without an entry,
-and no frame that left at a poll was kept from going back in. Compile time grew
-with inlining -- DeltaBlue's 97 copies take 29 ms, Havlak's 60 take 12
--- and is the mutator's until the compiler thread of stage 8.
+"Sites inlined" counts each send a copy lays out as its arms -- a
+type-case, an unguarded inlined scope, or an accessor, quick method or
+indexed access always inlined, guarded or not; "scopes inlined" each
+inlined body a copy lays out code for, an arm's or a block's;
+"type-case arms" every arm of a type-case, an always-inlined callee's
+among them; "made" the blocks an exit made of eliminated ones. No poll
+went without an entry, and no frame that left at a poll was kept from
+going back in. Compile time grew with inlining -- DeltaBlue's 97 copies
+take 29 ms, Havlak's 60 take 12 -- and is the mutator's until the
+compiler thread of stage 8.
 
 **What the measurement settled of the stage's open costs.**
 
-- *The current class at every inlined entry.* Every inlined scope
-  computes its current class at its entry and keeps it bound, also
-  where no frame node of the scope reads it. An experiment that bound
-  the receiver in its place -- wrong for any frame node or exit that
-  reads the class, so that Richards, DeltaBlueTon80 and Json fail with
-  it -- ran List 9%, `bench_send` 8% and Queens 5% faster: an upper
-  bound of what computing it only where a frame node or an exit needs
-  it would save (`OPEN-WORK.md`).
-- *The barrier's leaf around an inlined store*, and *an own-slot store
-  in an inlined scope taking the cold leaf once per entry*, are not
-  measured apart: DeltaBlue and Richards, whose setters are inlined,
-  run 19% and 30% faster.
+- *The current class at every inlined entry*: computed only before a
+  frame node now (above).
+- *The barrier's leaf around an inlined store*: a build whose allocation
+  took a field store for no leaf call, so that values stayed in the
+  registers the barrier's leaf clobbers, ran an inlined setter's loop
+  (`bench_setter`, a young receiver, 200,000 stores a run), DeltaBlue,
+  Richards, RichardsTon80 and DeltaBlueTon80 within 1% of the build as it
+  is, in either direction, three rounds on one binary: the moves cost
+  nothing measurable.
+- *An own-slot store in an inlined scope taking the cold leaf once per
+  entry*: counted by a build of its own, the own-slot leaf is called
+  from an inlined scope's code not once in the twenty-seven sources.
 - *A block created inside an inlined scope* left the copy at every
   `MakeClosure`; the plan now sends such a scope (above).
 - *`ValueOfParameter` and `CullParameter`* stay sends, so a block a
