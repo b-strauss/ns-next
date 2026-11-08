@@ -5319,10 +5319,13 @@ pub(crate) fn find_recompilee(
 }
 
 /// Whether `activation`'s body is inlined into the copy of a frame below
-/// it: the first frame down its senders, within `RECOMPILEE_SEARCH_LENGTH`,
-/// whose pair has its copy installed (`JitState::optimized_for`), when
-/// that copy's inlined bodies (`CopyDependencies::code_ids`) hold
-/// `activation`'s and every body between. Conservative where the copy
+/// it: a frame down its senders, within `RECOMPILEE_SEARCH_LENGTH`, whose
+/// pair has its copy installed (`JitState::optimized_for`) and whose
+/// copy's inlined bodies (`CopyDependencies::code_ids`) hold
+/// `activation`'s and every body between. A copy that does not hold them
+/// -- a body between that is hot elsewhere and has a copy of its own,
+/// which did not inline the bodies above, while a copy further down
+/// inlined it with them -- is passed, not taken for the answer. Conservative where the copy
 /// inlines the body at another site than the one that sent it: the walk
 /// then requests the frame above, as it would without the copy.
 #[cfg(ns_jit)]
@@ -5337,9 +5340,12 @@ fn inlined_into_a_copy_below(mutator: &Mutator<'_>, activation: ActivationRefere
         let code = heap.activation_code(sender);
         let key = activation_key(heap, &code, sender);
         if let Some(copy) = mutator.jit.optimized_for(&code, key) {
-            return bodies
+            if bodies
                 .iter()
-                .all(|body| copy.dependencies.code_ids.contains(body));
+                .all(|body| copy.dependencies.code_ids.contains(body))
+            {
+                return true;
+            }
         }
         bodies.push(heap.activation_code_id(sender));
         frame = sender;

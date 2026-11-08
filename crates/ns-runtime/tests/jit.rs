@@ -11392,3 +11392,134 @@ ns_runtime::for_each_lowering! {
         assert_eq!(copies_of(&mut interpreter, &class, "pick:at:"), 0);
     }
 }
+
+/// `run:count:` sending `pick:at:` the receivers of an array in turn,
+/// which `pick:at:` sends `weigh:`; `C>>weigh:` sends `deep:`, which
+/// spends the most of the bodies `run:count:` reaches. `pick:at:`, whose
+/// short loop spends its budget at its back jumps -- a push from the host
+/// spends nothing -- gets a copy of its own first, sent from the host
+/// while its site has seen an `H` alone, whose `weigh:` no plan inlines,
+/// so that its copy sends every receiver; then `run:count:`'s copy,
+/// installed while its first long activation goes on in baseline code,
+/// inlines `pick:at:`, `C>>weigh:` and `deep:`. `pick:at:` answers its
+/// index for an `H`; `run:count:` answers 0 for a count of 1 and 500250
+/// for 1000 with `second`.
+const A_SCOPE_WITH_A_COPY_OF_ITS_OWN: &str = indoc! {"
+    class Subject = Object new () (
+      class A = Object new () (
+        public weigh: value = (
+          ^value + 1
+        )
+      )
+      class C = Object new () (
+        public weigh: value = (
+          ^self deep: value
+        )
+        deep: value = (
+          ^(value * 3) + (value * 5) + (value * 7) - (value * 14)
+        )
+      )
+      class H = Object new () (
+        public weigh: value = (
+          ^(value * 3) + (value * 5) + (value * 7) + (value * 11) + (value * 13) + (value * 17) + (value * 19) - (value * 74)
+        )
+      )
+      public heavy = (
+        ^H new
+      )
+      public second = (
+        ^(Array new: 4)
+          at: 1 put: C new;
+          at: 2 put: A new;
+          at: 3 put: A new;
+          at: 4 put: A new;
+          yourself
+      )
+      public classC = (
+        ^C
+      )
+      public pick: receiver at: index = (
+        | turn ::= 0. |
+        [turn < 3] whileTrue: [turn:: turn + 1].
+        ^(receiver weigh: index) + turn - 3
+      )
+      public run: receivers count: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (self pick: (receivers at: (index \\\\ receivers size) + 1) at: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// `subject`'s `selector` with `receivers` and the `SmallInteger`
+/// `argument`, answering the `SmallInteger` it answers.
+fn send_with_integer(
+    interpreter: &mut Interpreter,
+    subject: &Root,
+    selector: &str,
+    receivers: &Root,
+    argument: i64,
+) -> i64 {
+    let integer = interpreter.stash(ns_runtime::Value::small_integer(argument));
+    let answer = expect_ok(
+        interpreter.send(
+            subject,
+            Symbol::intern(selector),
+            &[receivers.clone(), integer],
+        ),
+        selector,
+    );
+    interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+        ValueKind::SmallInteger(integer) => integer,
+        _ => panic!("{selector}: expected a small integer"),
+    })
+}
+
+ns_runtime::for_each_lowering! {
+    /// The walk passes a copy below that does not inline the bodies
+    /// above it, and stops at the one further down that does:
+    /// `deep:`'s run-out under `C>>weigh:`, sent by `pick:at:`'s own copy
+    /// -- which inlined nothing for a `C` -- from `run:count:`'s baseline
+    /// code, whose copy inlines all three, requests `deep:` itself, never
+    /// `C>>weigh:`. Pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
+    fn the_walk_passes_a_copy_that_inlines_nothing_above(lowering) {
+        let (mut interpreter, class, subject) =
+            walking(A_SCOPE_WITH_A_COPY_OF_ITS_OWN, lowering);
+        let heavy = class_answered(&mut interpreter, &subject, "heavy");
+        let second = class_answered(&mut interpreter, &subject, "second");
+        for index in 0..400 {
+            assert_eq!(
+                send_with_integer(&mut interpreter, &subject, "pick:at:", &heavy, index),
+                index
+            );
+        }
+        let pinned = pins_the_tiers(lowering);
+        if pinned {
+            assert_eq!(copies_of(&mut interpreter, &class, "pick:at:"), 1, "`pick:at:` first");
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                send_with_integer(&mut interpreter, &subject, "run:count:", &second, 1),
+                0
+            );
+        }
+        assert_eq!(
+            send_with_integer(&mut interpreter, &subject, "run:count:", &second, 1000),
+            500_250
+        );
+        if !pinned {
+            return;
+        }
+        assert_eq!(copies_of(&mut interpreter, &class, "run:count:"), 1);
+        let class_c = class_answered(&mut interpreter, &subject, "classC");
+        assert_eq!(copies_of(&mut interpreter, &class_c, "deep:"), 1, "`deep:` itself");
+        assert_eq!(copies_of(&mut interpreter, &class_c, "weigh:"), 0);
+    }
+}
