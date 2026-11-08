@@ -867,12 +867,21 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       documents are written.
     - *The walk's home rule is undocumented in the design*: the walk
       goes up from a block to its home only when the home has been
-      called `LEAST_HOME_CALLS` times and stands in no loop of its own
-      (`jit::recompilable`); "When a body is optimized" still reads as
-      if a home had no stop, and says so when the batch's documents are
-      written. The rule is stage 6's to revisit: with on-stack
-      replacement into optimized code, a home that loops itself can be
-      entered at its loop's head.
+      called `LEAST_HOME_CALLS` times since its budget was armed, which
+      only a body without a backward jump can show (`jit::recompilable`,
+      `called_repeatedly`); "When a body is optimized" still reads as if
+      a home had no stop, and says so when the batch's documents are
+      written. A home with a loop of its own is refused even when called
+      often, and is optimized at its own run-out instead: its budget row
+      cannot tell its entries from its back edges. A count of entries
+      apart from the back edges' spend would let the walk take it, and
+      on-stack replacement into optimized code (stage 6) would let a
+      home called once be entered at its loop's head.
+    - *NBody's rare slow run*: since NBody's `do:` block is eliminated,
+      about one run in thirty-five takes 1.01 s or more against 0.93 to
+      0.96 s, the JIT's statistics the same as every other run's;
+      `18944be5` had none in seventy. Not found
+      ([execution.md](design/execution.md), "What inlining moved").
     - *A block handed on through a local loses its bonus*: the snapshot
       tree weighs a callee against `METHOD_LIMIT` plus the block
       argument bonus only for an argument a `MakeClosure` wrote, or a

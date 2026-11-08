@@ -9295,7 +9295,7 @@ compiler thread of stage 8.
   DeltaBlueTon80's 8.0 against 5.4.
 
 **What eliminating an Array's `do:` block moved**, measured 2026-11-08,
-`dfe718b3` against `18944be5`, the commit before the change, by the
+`453c1754` against `18944be5`, the commit before the change, by the
 protocol above: three pinned builds a side, the same three layouts and
 paddings, `vm::run` 44.0, 47.4 and 51.0 KB on both sides with no
 `run_stretch` or closure of its own, three rounds a sitting with the
@@ -9313,37 +9313,44 @@ home with such a conditional around a block's copied value from
 eliminating it, though no such receiver ever came; and a callee that
 passes a block on only on a way that never ran. And the recompilee
 walk goes up from a block to its home only when the home is called
-often enough for its copy to be entered -- at least
-`LEAST_HOME_CALLS` calls, and standing in no loop of its own -- since
-until on-stack replacement into optimized code the home's running
-activation never enters its copy (`jit::recompilable`). Each cell is a
+often enough for its copy to be entered, since until on-stack
+replacement into optimized code the home's running activation never
+enters its copy (`jit::recompilable`): at least `LEAST_HOME_CALLS`
+calls since its budget was armed, whatever budget is armed, which only
+a body without a backward jump can show -- its budget spent by its
+entries alone, each its instruction count, where a loop's back edges
+spend the same row and a loop run once would read as calls. Each cell is a
 side's medians per build pooled by geometric mean, in milliseconds, of
 the second sitting, the first sitting's difference beside it; the
 programs whose plans the two changes moved, as `--jit-statistics`
 counts them:
 
-| Program | `18944be5` (ms) | builds | `dfe718b3` (ms) | builds | second sitting | first sitting |
+| Program | `18944be5` (ms) | builds | `453c1754` (ms) | builds | second sitting | first sitting |
 |---|---|---|---|---|---|---|
-| `DeltaBlue` | 173.965 | 173.362–174.370 | 165.251 | 164.511–165.646 | -5.0%, faster | -5.9%, faster |
-| `Havlak` | 805.381 | 802.812–808.046 | 791.123 | 787.776–793.073 | -1.8%, faster | -2.8%, faster |
-| `NBody` | 942.319 | 936.057–945.904 | 958.478 | 937.188–988.450 | +1.7% | +7.2% |
-| `Permute` | 0.261 | 0.254–0.268 | 0.071 | 0.071–0.071 | -72.8%, faster | -70.1%, faster |
-| `Richards` | 11.583 | 11.551–11.631 | 11.391 | 11.231–11.497 | -1.7%, faster | -1.1% |
-| `Sieve` | 0.389 | 0.372–0.407 | 0.357 | 0.335–0.370 | -8.2%, faster | -13.3% |
-| `Storage` | 0.622 | 0.606–0.633 | 0.509 | 0.505–0.511 | -18.2%, faster | -17.9%, faster |
-| `bench_do` | 0.503 | 0.503–0.503 | 0.379 | 0.372–0.386 | -24.7%, faster | -26.8%, faster |
+| `DeltaBlue` | 174.633 | 174.010–175.233 | 166.283 | 165.514–167.142 | -4.8%, faster | -5.8%, faster |
+| `Havlak` | 812.623 | 810.457–816.885 | 791.426 | 787.617–796.245 | -2.6%, faster | -2.8%, faster |
+| `NBody` | 945.667 | 937.974–951.867 | 947.128 | 941.472–952.786 | +0.2% | +7.4% |
+| `Permute` | 0.238 | 0.228–0.244 | 0.071 | 0.070–0.072 | -70.2%, faster | -69.2%, faster |
+| `Richards` | 11.697 | 11.673–11.738 | 11.687 | 11.583–11.854 | -0.1% | -0.8%, faster |
+| `Sieve` | 0.369 | 0.363–0.376 | 0.349 | 0.335–0.364 | -5.5% | -11.5%, faster |
+| `Storage` | 0.643 | 0.630–0.660 | 0.513 | 0.507–0.523 | -20.2%, faster | -17.7%, faster |
+| `bench_do` | 0.496 | 0.487–0.508 | 0.372 | 0.364–0.380 | -25.1%, faster | -25.6%, faster |
 
-The geometric mean over the twenty-seven sources is -6.93% in the
-second sitting and -6.40% in the first; the builds' means are 2.387,
-2.379 and 2.433 against 2.579, 2.574 and 2.582. The nineteen others'
-plans are the same on both sides, and none of them is separated in
-either sitting; Bounce among them is -2.2% and -0.5%. NBody's +7.2% is
-one round's 1,723 ms on build a, beside its 943 and 950.
+The geometric mean over the twenty-seven sources is -6.09% in the
+second sitting and -6.33% in the first; the builds' means are 2.444,
+2.392 and 2.422 against 2.578, 2.577 and 2.574. The nineteen others'
+plans are the same on both sides, Bounce among them, -0.2% and +0.3%;
+of them only `bench_recursion`, +8.7%, and `bench_newarg`, -0.8%, are
+separated, each in one sitting, the first having measured +2.4% and
++0.4%. NBody's +7.4% is one round's 1,719 ms on build b, beside 938
+and 939: such a run comes about once in thirty-five since the block
+is eliminated, its statistics the same as every other run's, and never
+in more than seventy of `18944be5`'s (`OPEN-WORK.md`).
 
-- *Permute*, 72% faster: `to:by:do:`'s block, which the closure of
+- *Permute*, 70% faster: `to:by:do:`'s block, which the closure of
   its `step < 0` conditional for a non-Boolean reached by reference,
   is eliminated, and the copy inlines the loop with it.
-- *Storage*, 18% faster: the closure of `depth = 1 ifTrue:` for a
+- *Storage*, 18% to 20% faster: the closure of `depth = 1 ifTrue:` for a
   non-Boolean reaches `random`, a value `to:do:`'s block copies, by
   reference -- one the tree has no snapshot of may reach any -- and no
   longer counts: the block is eliminated.
@@ -9352,10 +9359,10 @@ one round's 1,723 ms on build a, beside its 943 and 950.
   enter the copy, but the block, whose copy runs at the loop's next
   turn.
 - *Havlak* eliminates 16 blocks where it eliminated 11, its `Set`s'
-  and `Map`s' `do:` blocks among them, and makes 652 at exits where it
+  and `Map`s' `do:` blocks among them, and makes 850 at exits where it
   made 174 -- each exit inside such a loop now materializes the block;
   DeltaBlue lays out 295 scopes in 92 copies where it laid out 329 in
-  97: 2% to 3% and 5% to 6% faster.
+  97: about 3% and 5% faster.
 - *Bounce*, with the escape rule alone (`56efe31f`), measured 27% and
   34% slower at eight iterations, separated in both sittings: the
   block `bench`'s second loop hands `balls do:` was eliminated, so the
@@ -9366,8 +9373,12 @@ one round's 1,723 ms on build a, beside its 943 and 950.
   got a copy of its own only a budget later. The walk now stops below a
   home called once or twice. `LEAST_HOME_CALLS` is measured: HotSpot's
   invocation minimum, 100, refused DeltaBlueTon80's homes called 3 to
-  53 times and ran it 5% and DeltaBlue 3% slower than no minimum; 4 is
-  as fast as none on both and refuses `bench`.
+  53 times -- none with a loop of its own -- and ran it 5% and DeltaBlue
+  3% slower than no minimum; 4 is as fast as none on both and refuses
+  `bench`. A first form of the rule counted what a home had spent
+  against the plain budget, its back edges included, and refused a
+  home only while it stood inside a loop: a home called once whose loop
+  had run before it handed its block on read as called often.
 
 **Not covered**: AArch64, which runs under QEMU only; on-stack
 replacement into optimized code, stage 6's, so that a long activation
