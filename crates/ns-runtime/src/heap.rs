@@ -9386,7 +9386,6 @@ impl<'gc> Heap<'gc> {
             .map(|caller| self.activation_handle(caller))
     }
 
-    /// What `activation` was activated for.
     /// Whether `activation` runs a block: a closure's activation, its
     /// closure made or, for an inlined block's activation a leaf runs in,
     /// not yet (`closure_not_made`). Read from the kind tag alone.
@@ -9411,6 +9410,7 @@ impl<'gc> Heap<'gc> {
                 .is_none()
     }
 
+    /// What `activation` was activated for.
     pub fn activation_kind(&self, activation: ActivationReference) -> ActivationKind<'gc> {
         self.check_activation(activation);
         let offset = activation.offset;
