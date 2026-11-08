@@ -2648,6 +2648,16 @@ impl JitState {
             let body = self.live_body(site.body)?;
             return upgraded(body, site.body);
         }
+        self.body_at_code_address(address)
+    }
+
+    /// `body_of` for an address a leaf call's `Operand::CodeAddress`
+    /// handed over: the address after the instruction that loaded it,
+    /// never a call's return address, so `returns`, which could never
+    /// answer it, is not probed on the way of every step, initializer and
+    /// own-slot leaf. Inline, as `body_of` is.
+    #[inline(always)]
+    pub(crate) fn body_at_code_address(&self, address: usize) -> Option<Installed> {
         let index = self.installed_index_at(address)?;
         upgraded(&self.bodies[index as usize], index)
     }

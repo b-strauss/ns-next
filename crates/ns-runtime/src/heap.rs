@@ -10198,25 +10198,21 @@ impl<'gc> Heap<'gc> {
     /// frame. Answers the frame's handle.
     #[cfg(ns_jit)]
     pub(crate) fn write_machine_frame(&mut self, frame: &MachineFrame) -> ActivationReference {
+        // Every leaf call writes its frame's view here, nearly always one
+        // a prologue wrote: an inlined scope's, which no prologue wrote,
+        // is written out of line, so that the leaves' way stays as short
+        // as it is without inlining.
+        if frame.inlined {
+            return self.write_inlined_scope_frame(frame);
+        }
         let offset = frame.offset as usize;
         let header_word = |heap: &Self, field: usize| {
             Word::from_bits(heap.stack.frames.committed_word(offset + field))
         };
-        // An inlined scope had no prologue: its flags word holds whatever a
-        // frame laid there before left, which nothing here reads.
-        let written =
-            (!frame.inlined).then(|| FrameFlags::of(header_word(self, frame_header::FLAGS)));
-        let recorded = || {
-            let Some(written) = written else {
-                unreachable!(
-                    "internal: an inlined scope's frame records nothing, no prologue having written it"
-                );
-            };
-            written
-        };
+        let written = FrameFlags::of(header_word(self, frame_header::FLAGS));
         let tag = match frame.kind.tag {
             MachineKindTag::Constant(tag) => tag,
-            MachineKindTag::Recorded => recorded().kind_tag,
+            MachineKindTag::Recorded => written.kind_tag,
         };
         // Only code that reifies its frame wrote these words: in any other
         // frame they hold whatever the stack held there before. A block's
@@ -10225,18 +10221,13 @@ impl<'gc> Heap<'gc> {
         let (reified, retains_registers) = if frame.reifies {
             (
                 header_word(self, frame_header::REIFIED),
-                recorded().retains_registers,
+                written.retains_registers,
             )
         } else {
             (Word::NIL, false)
         };
-        // An inlined scope is counted as the interpreter's push of it
-        // counts it, a block's among them: only the reference lowering's
-        // control flow pushes an uncounted one, which no copy inlines.
-        let counted = if frame.inlined {
-            true
-        } else if frame.reifies || frame.kind.is_closure() {
-            recorded().counted
+        let counted = if frame.reifies || frame.kind.is_closure() {
+            written.counted
         } else {
             true
         };
@@ -10244,38 +10235,18 @@ impl<'gc> Heap<'gc> {
             compiled: true,
             ..FrameFlags::new(tag, frame.argument_count, counted, retains_registers)
         };
-        // An inlined scope's generation is minted here, as a push mints one.
         #[cfg(debug_assertions)]
-        let flags = match written {
-            Some(written) => flags.with_generation(written.generation),
-            None => {
-                let generation = self.stack.peek_next_generation();
-                self.stack.advance_generation();
-                flags.with_generation(generation)
-            }
-        };
+        let flags = flags.with_generation(written.generation);
         // A leaf's view keeps how far the frame's call shifted it, which
         // its machine code's return reads (`frames::CALL_SHIFT_BITS`); a
-        // frame the walk materializes returns through the interpreter, and
-        // an inlined scope was shifted by no call.
+        // frame the walk materializes returns through the interpreter.
         let flags_word = match frame.caller {
             Some(_) => flags.word(),
-            None if frame.inlined => flags.word(),
             None => Word::from_bits(
                 flags.word().bits()
                     | (header_word(self, frame_header::FLAGS).bits()
                         & Self::machine_call_shift_mask()),
             ),
-        };
-        let caller = match frame.caller {
-            Some((caller, top)) => frames::caller_link_word(caller, frame.start(), top),
-            None => Word::NIL,
-        };
-        let operand = match frame.kind.operand {
-            MachineOperand::Selector(selector) => frames::number_word(selector.index() as u64),
-            MachineOperand::CurrentClass => header_word(self, frame_header::CURRENT_CLASS),
-            MachineOperand::Recorded => header_word(self, frame_header::OPERAND),
-            MachineOperand::NotMadeYet => Word::NIL,
         };
         // The program counter a frame that reifies holds is the one the
         // interpreter would hold there -- its push's 0, or the last one it
@@ -10290,6 +10261,106 @@ impl<'gc> Heap<'gc> {
             header_word(self, frame_header::PROGRAM_COUNTER)
         } else {
             frames::number_word(u64::from(frame.program_counter))
+        };
+        self.write_machine_header_words(frame, reified, flags_word, program_counter);
+        // Code that addresses its own slots had its prologue write its
+        // guard and entered level (`jit::sends::prologue`), and its own-slot
+        // instructions record the guard their cold check verified there
+        // since, which a rewrite here would throw away at every leaf call.
+        // Every other frame records none, as the push does.
+        if !frame.addresses_own_slots {
+            self.write_machine_guard_words(
+                offset,
+                DispatchId::NONE,
+                ApplicationIndex::UNREGISTERED,
+            );
+        }
+        self.activation_handle_at(frame.offset)
+    }
+
+    /// `write_machine_frame` of an inlined scope of optimized code
+    /// (`MachineFrame::inlined`), which no prologue wrote: only its
+    /// receiver and current class are its code's (`jit::optimizing::emit`),
+    /// and every other header word is written as the interpreter's push
+    /// writes it -- unreified and counted, a block's among them, since
+    /// only the reference lowering's control flow pushes an uncounted one,
+    /// which no copy inlines; its flags word whole, shifted by no call,
+    /// with a generation of its own in a debug build; and its guard and
+    /// entered level as the push records them, from its receiver and
+    /// current class, which its code wrote back.
+    #[cfg(ns_jit)]
+    #[inline(never)]
+    fn write_inlined_scope_frame(&mut self, frame: &MachineFrame) -> ActivationReference {
+        let offset = frame.offset as usize;
+        let header_word = |heap: &Self, field: usize| {
+            Word::from_bits(heap.stack.frames.committed_word(offset + field))
+        };
+        let (MachineKindTag::Constant(tag), false) = (frame.kind.tag, frame.reifies) else {
+            unreachable!(
+                "internal: an inlined scope's frame records nothing, no prologue having written it"
+            );
+        };
+        let flags = FrameFlags {
+            compiled: true,
+            ..FrameFlags::new(tag, frame.argument_count, true, false)
+        };
+        #[cfg(debug_assertions)]
+        let flags = {
+            let generation = self.stack.peek_next_generation();
+            self.stack.advance_generation();
+            flags.with_generation(generation)
+        };
+        let program_counter = frames::number_word(u64::from(frame.program_counter));
+        self.write_machine_header_words(frame, Word::NIL, flags.word(), program_counter);
+        if frame.addresses_own_slots {
+            let receiver = self.load(header_word(self, frame_header::RECEIVER));
+            let entered_level = header_word(self, frame_header::CURRENT_CLASS)
+                .object_offset()
+                .and_then(|class| self.class_application_index(self.object_handle(class)))
+                .unwrap_or(ApplicationIndex::UNREGISTERED);
+            let recorded_guard = if self.receiver_has_level(receiver, entered_level) {
+                self.dispatch_id(receiver)
+            } else {
+                DispatchId::NONE
+            };
+            self.write_machine_guard_words(offset, recorded_guard, entered_level);
+        } else {
+            self.write_machine_guard_words(
+                offset,
+                DispatchId::NONE,
+                ApplicationIndex::UNREGISTERED,
+            );
+        }
+        self.activation_handle_at(frame.offset)
+    }
+
+    /// The header words of machine code's frame `frame` its two writers
+    /// write alike -- its operand, the selector or the current class; its
+    /// code; its feedback base; its caller link; no continuation; its
+    /// register count -- with the `reified` word, the flags word and the
+    /// program counter each decided.
+    #[cfg(ns_jit)]
+    #[inline(always)]
+    fn write_machine_header_words(
+        &mut self,
+        frame: &MachineFrame,
+        reified: Word,
+        flags_word: Word,
+        program_counter: Word,
+    ) {
+        let offset = frame.offset as usize;
+        let header_word = |heap: &Self, field: usize| {
+            Word::from_bits(heap.stack.frames.committed_word(offset + field))
+        };
+        let caller = match frame.caller {
+            Some((caller, top)) => frames::caller_link_word(caller, frame.start(), top),
+            None => Word::NIL,
+        };
+        let operand = match frame.kind.operand {
+            MachineOperand::Selector(selector) => frames::number_word(selector.index() as u64),
+            MachineOperand::CurrentClass => header_word(self, frame_header::CURRENT_CLASS),
+            MachineOperand::Recorded => header_word(self, frame_header::OPERAND),
+            MachineOperand::NotMadeYet => Word::NIL,
         };
         let words = [
             (frame_header::OPERAND, operand),
@@ -10316,64 +10387,31 @@ impl<'gc> Heap<'gc> {
                 .frames
                 .set_committed_word(offset + field, word.bits());
         }
-        // Code that addresses its own slots had its prologue write its
-        // guard and entered level (`jit::sends::prologue`), and its own-slot
-        // instructions record the guard their cold check verified there
-        // since, which a rewrite here would throw away at every leaf call.
-        // An inlined scope had no prologue: its two words are recorded as
-        // the push records them, from its receiver and current class, which
-        // its code wrote back. Every other frame records none, as the push
-        // does.
-        if frame.addresses_own_slots && frame.inlined {
-            let receiver = self.load(Word::from_bits(
-                self.stack
-                    .frames
-                    .committed_word(offset + frame_header::RECEIVER),
-            ));
-            let entered_level = Word::from_bits(
-                self.stack
-                    .frames
-                    .committed_word(offset + frame_header::CURRENT_CLASS),
-            )
-            .object_offset()
-            .and_then(|class| self.class_application_index(self.object_handle(class)))
-            .unwrap_or(ApplicationIndex::UNREGISTERED);
-            let recorded_guard = if self.receiver_has_level(receiver, entered_level) {
-                self.dispatch_id(receiver)
-            } else {
-                DispatchId::NONE
-            };
-            for (field, word) in [
-                (
-                    frame_header::GUARD,
-                    frames::number_word(u64::from(recorded_guard.bits())),
-                ),
-                (
-                    frame_header::ENTERED_LEVEL,
-                    frames::number_word(entered_level.index() as u64),
-                ),
-            ] {
-                self.stack
-                    .frames
-                    .set_committed_word(offset + field, word.bits());
-            }
-        } else if !frame.addresses_own_slots {
-            for (field, word) in [
-                (
-                    frame_header::GUARD,
-                    frames::number_word(u64::from(DispatchId::NONE.bits())),
-                ),
-                (
-                    frame_header::ENTERED_LEVEL,
-                    frames::number_word(ApplicationIndex::UNREGISTERED.index() as u64),
-                ),
-            ] {
-                self.stack
-                    .frames
-                    .set_committed_word(offset + field, word.bits());
-            }
+    }
+
+    /// The guard and entered level words of the frame header at `offset`.
+    #[cfg(ns_jit)]
+    #[inline(always)]
+    fn write_machine_guard_words(
+        &mut self,
+        offset: usize,
+        guard: DispatchId,
+        entered_level: ApplicationIndex,
+    ) {
+        for (field, word) in [
+            (
+                frame_header::GUARD,
+                frames::number_word(u64::from(guard.bits())),
+            ),
+            (
+                frame_header::ENTERED_LEVEL,
+                frames::number_word(entered_level.index() as u64),
+            ),
+        ] {
+            self.stack
+                .frames
+                .set_committed_word(offset + field, word.bits());
         }
-        self.activation_handle_at(frame.offset)
     }
 
     /// The selector of `activation`'s method, if it is a method's: what a

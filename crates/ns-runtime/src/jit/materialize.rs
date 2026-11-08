@@ -52,7 +52,7 @@ use super::optimizing::allocate::Location;
 use super::optimizing::graph::{ClassRecipe, ClassStart};
 use super::optimizing::plan::EliminatedId;
 use super::stubs::{BlockWord, ExitKind};
-use super::{EliminatedBlock, InlinedAt, InlinedScope, Installed};
+use super::{EliminatedBlock, InlinedAt, InlinedScope, Installed, JitState};
 
 /// Where the exit's walk stands: the frame the next return address lies
 /// in, which the previous one's send placed, and what the walk has
@@ -854,18 +854,51 @@ pub(crate) struct LeafFrame {
 }
 
 /// The frame whose register 0 machine code holds at `frame_address`,
-/// running the body `code_address` lies in, stopped at `program_counter`,
-/// as a leaf it calls reads it: the stretch's entry frame as it is, a
-/// frame machine code pushed with its header written as the walk writes
-/// it, its caller left out, which no leaf reads -- a callee an
-/// interpreter's send called among them, whose sender, the innermost
-/// frame of the stack, runs no machine code. `release_leaf_frame` puts the
-/// stack back.
+/// running the body `code_address` lies in -- an address a leaf call's
+/// `Operand::CodeAddress` handed over (`JitState::body_at_code_address`)
+/// -- stopped at `program_counter`, as a leaf it calls reads it: the
+/// stretch's entry frame as it is, a frame machine code pushed with its
+/// header written as the walk writes it, its caller left out, which no
+/// leaf reads -- a callee an interpreter's send called among them, whose
+/// sender, the innermost frame of the stack, runs no machine code.
+/// `release_leaf_frame` puts the stack back.
 pub(crate) fn leaf_frame(
     mutator: &mut Mutator<'_>,
     frame_address: u64,
     code_address: u64,
     program_counter: u32,
+) -> LeafFrame {
+    leaf_frame_found(
+        mutator,
+        (frame_address, code_address, program_counter),
+        JitState::body_at_code_address,
+    )
+}
+
+/// `leaf_frame` for the sending frame of the call that returns to
+/// `return_address`, whose register 0 is at `sender_address`, stopped at
+/// the send at `program_counter`: what a leaf a send's stub calls reads.
+pub(crate) fn sender_leaf_frame(
+    mutator: &mut Mutator<'_>,
+    sender_address: u64,
+    return_address: u64,
+    program_counter: u32,
+) -> LeafFrame {
+    leaf_frame_found(
+        mutator,
+        (sender_address, return_address, program_counter),
+        JitState::body_of,
+    )
+}
+
+/// `leaf_frame` with the body the address lies in found by `body_of`.
+/// Inline into both, so that each finds its body its own way without a
+/// call through a pointer.
+#[inline(always)]
+fn leaf_frame_found(
+    mutator: &mut Mutator<'_>,
+    (frame_address, code_address, program_counter): (u64, u64, u32),
+    body_of: fn(&JitState, usize) -> Option<Installed>,
 ) -> LeafFrame {
     let Some(entry) = mutator.heap.top_activation() else {
         unreachable!("internal: machine code runs above its entry's frame");
@@ -882,7 +915,7 @@ pub(crate) fn leaf_frame(
             unreified: false,
         };
     }
-    let Some(installed) = mutator.jit.body_of(return_address_of(code_address)) else {
+    let Some(installed) = body_of(&mutator.jit, return_address_of(code_address)) else {
         unreachable!("internal: a leaf is called from an installed body");
     };
     // Inside an inlined scope the frame register stands at the scope's

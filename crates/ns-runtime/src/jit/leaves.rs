@@ -550,7 +550,8 @@ fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     else {
         unreachable!("internal: a send's call returns into an installed body");
     };
-    let frame = materialize::leaf_frame(mutator, sender_address, return_address, program_counter);
+    let frame =
+        materialize::sender_leaf_frame(mutator, sender_address, return_address, program_counter);
     let answer = inline_cache::decide_at(mutator, frame.activation, program_counter);
     materialize::release_leaf_frame(mutator, frame);
     match answer {
@@ -585,7 +586,8 @@ fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     else {
         unreachable!("internal: a send's call returns into an installed body");
     };
-    let frame = materialize::leaf_frame(mutator, sender_address, return_address, program_counter);
+    let frame =
+        materialize::sender_leaf_frame(mutator, sender_address, return_address, program_counter);
     let answer = inline_cache::act_at(mutator, frame.activation, program_counter)
         .map_or(Word::NO_VALUE_BITS, |value| {
             mutator.heap.machine_word_of(value)
@@ -689,7 +691,7 @@ fn mirror_method(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
             mutator.heap.machine_word_of(value)
         });
     }
-    let frame = materialize::leaf_frame(
+    let frame = materialize::sender_leaf_frame(
         mutator,
         sender_address,
         return_address,
