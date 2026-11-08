@@ -489,9 +489,25 @@ impl Choice {
 /// trapped, since a site a speculation trapped at may have run unrecorded
 /// -- a send resolved to `doesNotUnderstand:` fills no cache -- and
 /// speculating on it again would trap again.
-fn guard_of(snapshot: &Snapshot, index: usize, send_only: bool, speculation: Speculation) -> Guard {
+fn guard_of(
+    snapshot: &Snapshot,
+    (index, inlined): (usize, bool),
+    send_only: bool,
+    speculation: Speculation,
+) -> Guard {
     if speculation == Speculation::None || send_only {
         return Guard::None;
+    }
+    // A block an inlined scope creates where its send never ran: a
+    // `MakeClosure` there would leave the copy at every run of the way,
+    // and traps on the send's site instead, as the way's send would, so
+    // that a way that starts running retires the copy and its next
+    // compile sends the callee (`plan::Planner::creates_a_block`).
+    if let SnapshotInstruction::MakeClosure { destination, .. } = &snapshot.instructions[index] {
+        return match super::plan::never_run_consumer(snapshot, index, *destination) {
+            Some(site) if inlined => Guard::Send { site },
+            _ => Guard::None,
+        };
     }
     let Some(facts) = snapshot.sites.get(index).copied().flatten() else {
         return Guard::None;
@@ -2215,7 +2231,12 @@ impl<'flat> Builder<'flat> {
                         .unwrap_or(false);
                 Choice {
                     send_only,
-                    guard: guard_of(snapshot, program_counter, send_only, speculation),
+                    guard: guard_of(
+                        snapshot,
+                        (program_counter, step.scope != ScopeId::ROOT),
+                        send_only,
+                        speculation,
+                    ),
                     // Only a `JumpIfNotBoolean`'s third way is a jump target.
                     known_boolean: matches!(physical, SnapshotInstruction::JumpIfNotBoolean { .. })
                         && known_boolean.get(index).copied().unwrap_or(false),

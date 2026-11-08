@@ -823,10 +823,6 @@ impl Emitter<'_> {
         macro_assembler.move_register(target, class);
     }
 
-    /// A frame node: the write-back the allocation owes the frame there,
-    /// then the instruction by the template the baseline's arm for it
-    /// emits, with nothing held, the frame register at the register 0 of
-    /// the node's scope and the scope's facts.
     /// Makes the own-slot guard word of `block_id`'s scope `none`
     /// (`Node::ResetOwnSlotGuard`), since no push wrote it: the first
     /// own-slot access the scope's templates make then takes the cold
@@ -841,6 +837,10 @@ impl Emitter<'_> {
             .store_physical_immediate(scope.offset + guard, none_word);
     }
 
+    /// A frame node: the write-back the allocation owes the frame there,
+    /// then the instruction by the template the baseline's arm for it
+    /// emits, with nothing held, the frame register at the register 0 of
+    /// the node's scope and the scope's facts.
     #[expect(
         clippy::too_many_arguments,
         reason = "the node's fields, as the block's walk hands them over"

@@ -923,3 +923,45 @@ fn a_poll_s_re_entry_holds_a_tainted_register_to_its_binding_only_while_its_valu
         "{refused:?}"
     );
 }
+
+/// An inlined scope's current class, which its frame node's template
+/// reads, is written back at that node: left out, the allocation is
+/// refused, although the word is the exit's to write at every other point.
+#[test]
+fn a_frame_node_s_current_class_left_unwritten_is_refused() {
+    use crate::jit::optimizing::build::build_inlined;
+    use crate::jit::optimizing::build::inlining_tests::a_callee_with_a_frame_node;
+    use crate::jit::optimizing::graph::{HeaderBinding, ScopeId};
+    use crate::jit::optimizing::plan::plan;
+    use crate::jit::optimizing::Speculation;
+
+    let tree = a_callee_with_a_frame_node();
+    let plan = plan(&tree, Speculation::Traps);
+    let graph = build_inlined(&tree, &plan, Speculation::Traps);
+    let order = block_order(&graph);
+    let mut allocation = allocate(
+        &graph,
+        &crate::jit::optimizing::liveness::intervals_knowing(&graph, &order),
+        &Roles::of(Abi::Windows64),
+    );
+    let described = metadata(&graph, &allocation);
+    assert_eq!(verify_allocation(&graph, &allocation, &described), Ok(()));
+    let class = graph
+        .scope(ScopeId(1))
+        .header_register(HeaderBinding::CurrentClass);
+    let point = allocation
+        .dirty_at
+        .iter_mut()
+        .find(|point| {
+            matches!(point.kind, PointKind::Frame { .. })
+                && graph.block(point.block).scope == ScopeId(1)
+        })
+        .expect("the callee's frame node");
+    let before = point.stores.len();
+    point.stores.retain(|(register, _, _)| *register != class);
+    assert!(point.stores.len() < before, "the class is stored there");
+    assert!(matches!(
+        verify_allocation(&graph, &allocation, &described),
+        Err(VerifyError::NotWrittenBack { register, .. }) if register == class
+    ));
+}

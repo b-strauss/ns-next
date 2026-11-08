@@ -66,10 +66,12 @@ pub(crate) const METHOD_LIMIT: u32 = 40;
 /// 70, three pinned builds each, two sittings, the geometric mean over
 /// the twenty-seven sources moved -3.3% and -2.7%, against the sittings'
 /// 0.5% between themselves: Queens, whose blocks lie between the two,
-/// runs 61% faster in both. Towers and Sieve, whose plans are the same at
-/// both limits, measured 7% to 12% slower in one sitting each, their
-/// medians of eight short runs scattering by a third
-/// (`docs/design/execution.md`, "What inlining moved").
+/// runs 61% faster in both. Towers measured 12% and 9% slower, its
+/// builds apart in the first sitting, and Sieve 7% slower with its builds
+/// apart in the second; their plans are the same at both limits, their
+/// medians of eight short runs scatter by a third, and at 200 iterations
+/// Towers runs level at both (`docs/design/execution.md`, "What inlining
+/// moved").
 pub(crate) const BLOCK_LIMIT: u32 = 140;
 /// What a callee's limit grows by for each argument that is a block made
 /// in the compile, which is then inlined into it.
@@ -203,10 +205,15 @@ fn cost(instruction: &SnapshotInstruction) -> u32 {
     }
 }
 
-/// Whether the first instruction past `program_counter` of `snapshot`
-/// that reads `register`, a block's, before anything writes it again is a
-/// send whose site the caches say never ran.
-fn consumer_never_ran(snapshot: &Snapshot, program_counter: usize, register: u16) -> bool {
+/// The site of the first instruction past `program_counter` of
+/// `snapshot` that reads `register`, a block's, before anything writes it
+/// again, if it is a send whose site the caches say neither ran nor
+/// trapped.
+pub(crate) fn never_run_consumer(
+    snapshot: &Snapshot,
+    program_counter: usize,
+    register: u16,
+) -> Option<u32> {
     for (index, instruction) in snapshot
         .instructions
         .iter()
@@ -217,19 +224,22 @@ fn consumer_never_ran(snapshot: &Snapshot, program_counter: usize, register: u16
             .iter()
             .any(|(read, _)| *read == register)
         {
-            return is_call_site(instruction)
-                && snapshot
-                    .sites
-                    .get(index)
-                    .copied()
-                    .flatten()
-                    .is_some_and(|facts| !facts.executed);
+            if !is_call_site(instruction) {
+                return None;
+            }
+            return snapshot
+                .sites
+                .get(index)
+                .copied()
+                .flatten()
+                .filter(|facts| !facts.executed && !facts.trapped)
+                .map(|facts| facts.site);
         }
         if instruction.register_written() == Some(register) {
-            return false;
+            return None;
         }
     }
-    false
+    None
 }
 
 /// For each instruction, whether it lies on a fast path's fallback: an
@@ -1591,7 +1601,8 @@ impl<'tree> Planner<'tree> {
     /// ran: not a fast path's fallback -- a conditional's closure for a
     /// receiver that is no Boolean runs as rarely as such a receiver comes
     /// -- nor, where the copy speculates, a way whose send of the block
-    /// never ran, which traps there as every way that never ran does.
+    /// never ran, whose `MakeClosure` the graph lowers as a trap on that
+    /// send's site (`build::guard_of`), as every way that never ran traps.
     /// Until optimized code creates blocks itself (stage 4), such a scope
     /// would leave the copy at its `MakeClosure` every time it ran it.
     fn creates_a_block(&self, index: usize, eliminated: &BTreeSet<BlockKey>) -> bool {
@@ -1614,7 +1625,8 @@ impl<'tree> Planner<'tree> {
                     && !eliminated
                         .contains(&(ScopeId::of(index), program_counter_u32(program_counter)))
                     && !(self.speculates
-                        && consumer_never_ran(scope.snapshot, program_counter, *destination))
+                        && never_run_consumer(scope.snapshot, program_counter, *destination)
+                            .is_some())
             })
     }
 

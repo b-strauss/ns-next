@@ -295,8 +295,9 @@ impl Replay {
 /// move left it; every way into a block brings what the block assumes;
 /// at every interrupt point, after its write-back, every physical register
 /// the leftover analysis does not taint (`Graph::tainted_at`) -- an
-/// inlined scope's receiver and current class among them -- holds in its
-/// frame word what the interpreter's frames would, and the metadata says
+/// inlined scope's receiver among them, and its current class at a frame
+/// node of the scope, whose template reads it -- holds in its frame word
+/// what the interpreter's frames would, and the metadata says
 /// so of every scope the point stops in; no move names a register no
 /// value is allocated to; and no value is kept past a leaf call in a
 /// register the call clobbers.
@@ -905,6 +906,21 @@ fn interrupt(
         if !stopped.in_sync(register) {
             return Err(VerifyError::NotWrittenBack {
                 register: number,
+                program_counter,
+            });
+        }
+    }
+    // An inlined scope's current class is the exit's to write, but at its
+    // frame node the template reads it from the frame: there it is bound
+    // to the class computed before the node and written back.
+    if matches!(kind, PointKind::Frame { .. }) && scope != ScopeId::ROOT {
+        let class = graph
+            .scope(scope)
+            .header_register(super::graph::HeaderBinding::CurrentClass);
+        let index = usize::from(class);
+        if stopped.interpreter.get(index).copied().flatten().is_none() || !stopped.in_sync(index) {
+            return Err(VerifyError::NotWrittenBack {
+                register: class,
                 program_counter,
             });
         }

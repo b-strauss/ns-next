@@ -614,10 +614,12 @@ fn jit_statistics_count_what_inlining_did() {
     assert_eq!(reentries[1], 0, "{reentries:?}");
 }
 
-/// Two optimizer goldens reach in a plain run the path they are written
+/// Three optimizer goldens reach in a plain run the path they are written
 /// for: `an_edit_below_an_inlined_frame`'s edits each free the copy whose
-/// frame is below, and `eliminated_block_seen_after_an_exit`'s traps make
-/// the blocks its copies eliminated.
+/// frame is below, `eliminated_block_seen_after_an_exit`'s traps make
+/// the blocks its copies eliminated, and
+/// `a_block_made_on_a_way_not_run_traps`'s way that starts running traps
+/// at its `MakeClosure`, retiring the copy, which is compiled again.
 #[test]
 fn the_optimizer_goldens_reach_their_paths_in_a_plain_run() {
     let Some(edits) = plain_jit_counts(
@@ -647,6 +649,21 @@ nil
     )
     .expect("a target with a JIT");
     assert!(made.iter().all(|count| *count > 0), "{made:?}");
+    let retired = plain_jit_counts(
+        &common::golden("runtime/optimizer/a_block_made_on_a_way_not_run_traps"),
+        "15015000
+15015000
+22515000
+",
+        &["traps", "made not entrant", "bodies optimized"],
+    )
+    .expect("a target with a JIT");
+    assert!(retired[0] > 0, "the way traps once it runs: {retired:?}");
+    assert!(retired[1] > 0, "the trap retires the copy: {retired:?}");
+    assert!(
+        retired[2] > 1,
+        "and the body is compiled again: {retired:?}"
+    );
 }
 
 /// `--collector-statistics` prints the collector's counts and pauses to
