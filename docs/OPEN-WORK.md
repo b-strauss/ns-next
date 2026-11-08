@@ -865,14 +865,27 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       Plan decision 2's "leaves optimized code until stage 4" now reads
       "is sent"; the design's "Inlining" says so when the batch's
       documents are written.
-    - *A block handed to an Array's `do:` escapes*: `Array>>do:`'s way
-      for a receiver whose size the mirror cannot read hands the block
-      to `super do:`, so the plan eliminates no such block, and with the
-      rule above a callee making one is sent rather than inlined: block
-      elimination is shut out of the collection protocol. Treating the
-      mirror send's failure way as a fast path's fallback -- a trap
-      where the copy speculates -- would let it be eliminated, a new
-      speculation, for the user to decide.
+    - *A recompilee whose frame runs once*: the walk goes from a hot
+      block up to its home whenever the home's plan inlines it, and
+      requests the home, whose running activation never enters the copy
+      until on-stack replacement into optimized code (stage 6). Where
+      the home runs once a run and its copy exits at its first send --
+      Bounce's `bench`, whose fresh application builds `Random` in the
+      interpreter -- the block gets a copy of its own only a budget
+      later: Bounce is 27% to 34% slower at eight iterations since the
+      block is eliminated, and faster from thirty on
+      ([execution.md](design/execution.md), "What inlining moved").
+    - *A block handed on through a local loses its bonus*: the snapshot
+      tree weighs a callee against `METHOD_LIMIT` plus the block
+      argument bonus only for an argument a `MakeClosure` wrote, or a
+      parameter or copied value (`tree::block_registers`), while the
+      plan counts every register that may hold a block of the compile,
+      through moves. A block stored in a named temporary and then handed
+      to `do:` -- `| add = [...] | collection do: add` -- leaves the tree
+      recording a callee heavier than `METHOD_LIMIT` alone (`Array`'s
+      `do:` weighs 47 where its loop never ran) as one no plan could
+      inline (`CalleeFacts::Other`), so the plan never sees it and the
+      block escapes into the send.
     - *`ValueOfParameter` and `CullParameter` stay sends*, and the
       "cheap" weight of a send counts their fast paths, the mirror's and
       a closure's `value` among them, at an accessor's 2 though they may
