@@ -153,13 +153,18 @@ pub(crate) struct Allocation {
 /// it is in one, every bytecode register bound to it -- each of whose
 /// frame words holds it once the poll's write-back stored the dirty ones
 /// -- and of those the ones whose frame words the code after the poll
-/// takes to hold it, which it may read it back from.
+/// takes to hold it, which it may read it back from; and whether the code
+/// past the poll reads it at all: it is live into the loop's head, or the
+/// input of a phi there that is, rather than live only for the stores of
+/// its dirty bindings, the poll's on its way out and the merge's on its
+/// way in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PolledValue {
     pub(crate) value: ValueId,
     pub(crate) machine: Option<Register>,
     pub(crate) bound: Vec<u16>,
     pub(crate) clean: Vec<u16>,
+    pub(crate) read_on: bool,
 }
 
 impl Allocation {
@@ -701,9 +706,28 @@ impl Allocator<'_> {
 
     /// Every value live at a poll, here, where it is and the registers
     /// bound to it (`PolledValue`).
-    fn polled_values(&self) -> Vec<PolledValue> {
+    fn polled_values(&self, block: BlockId) -> Vec<PolledValue> {
         let number = |register: usize| {
             u16::try_from(register).expect("internal: a register number fits a u16")
+        };
+        let graph = self.graph;
+        let positions = self.positions();
+        let head = poll_target(graph, block).expect("internal: a poll's block jumps back");
+        let way = graph
+            .block(head)
+            .predecessors
+            .iter()
+            .position(|predecessor| *predecessor == block);
+        let read_on = |value: ValueId| {
+            self.intervals.live_at(value, positions.entry(head))
+                || way.is_some_and(|way| {
+                    graph.block(head).phis.iter().any(|phi| {
+                        phi.inputs[way] == value
+                            && self
+                                .intervals
+                                .live_at(phi.value, positions.phi_definition(head) + 1)
+                    })
+                })
         };
         self.state
             .placed
@@ -727,6 +751,7 @@ impl Allocator<'_> {
                         .filter(|(_, binding)| binding.clean)
                         .map(|(register, _)| number(register))
                         .collect(),
+                    read_on: read_on(*value),
                 }
             })
             .collect()
@@ -900,7 +925,7 @@ impl Allocator<'_> {
                 kind: PointKind::Poll,
                 stores,
             });
-            let values = self.polled_values();
+            let values = self.polled_values(block);
             self.allocation.poll_values.insert(use_position, values);
         }
         if graph.end_trap(block).is_some() {

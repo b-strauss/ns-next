@@ -121,6 +121,10 @@ pub(crate) struct PollEntry {
     pub(crate) exit: u32,
     pub(crate) entry: u32,
     pub(crate) point: u32,
+    /// Whether the entry writes a value back into a frame word the
+    /// collector's pre-pass may have nilled, which the tests read.
+    #[cfg(test)]
+    pub(crate) rewrites_lost_words: bool,
 }
 
 /// A `PollEntry` as the emitter lays it out, before the code's offsets are
@@ -129,6 +133,8 @@ pub(crate) struct EmittedPoll {
     pub(crate) exit: Label,
     pub(crate) entry: Label,
     pub(crate) point: u32,
+    #[cfg(test)]
+    pub(crate) rewrites_lost_words: bool,
 }
 
 /// A scope the copy laid out code for: its body, the feedback base its
@@ -1263,6 +1269,12 @@ impl Emitter<'_> {
                 .macro_assembler
                 .exit_naming_its_address(ExitKind::Safepoint, program_counter);
             body.macro_assembler.set_site(None);
+            // A test's way to the exit of a poll without an entry, which
+            // only a value no restore rebuilds makes otherwise.
+            #[cfg(test)]
+            if body.macro_assembler.refuses_poll_entries() {
+                continue;
+            }
             let Some(restores) = self.poll_restores(poll.point, poll.position) else {
                 continue;
             };
@@ -1272,6 +1284,8 @@ impl Emitter<'_> {
             // where the frame register stood at the poll.
             body.macro_assembler.assume_frame_shift(0);
             self.hold(body, poll.position);
+            #[cfg(test)]
+            let rewrites_lost_words = restores.iter().any(|restore| !restore.lost.is_empty());
             for restore in restores {
                 Self::restore(body, restore);
             }
@@ -1281,6 +1295,8 @@ impl Emitter<'_> {
                 entry,
                 point: u32::try_from(poll.point)
                     .expect("internal: a body's points are numbered in 32 bits"),
+                #[cfg(test)]
+                rewrites_lost_words,
             });
         }
     }
@@ -1292,8 +1308,15 @@ impl Emitter<'_> {
     /// word the frame kept, one of a register the leftover analysis leaves
     /// to the frame there, which the collector kept current meanwhile, or
     /// for a constant from its word, since the collector's pre-pass nils
-    /// every other (`Heap::trace_stack`). `None` where a value live there
-    /// is in no such word and no constant: no frame goes back in there.
+    /// every other (`Heap::trace_stack`). A value the code past the poll
+    /// never reads -- live only for the stores of its dirty bindings, as a
+    /// load of a slot the loop then stores is -- is read back from a kept
+    /// word one of them names, which the poll's write-back stored, so that
+    /// the merge's stores write it again, or else is `nil`, written only
+    /// into words nothing reads. `None` where a value the code reads on is
+    /// in no such word and no constant: no frame goes back in there, and
+    /// the poll's exit is any interrupt point's
+    /// (`JitStatistics::polls_without_an_entry`).
     fn poll_restores(&self, point: usize, position: u32) -> Option<Vec<Restore>> {
         let kept: Vec<u16> = self.metadata.points[point]
             .scopes
@@ -1310,18 +1333,31 @@ impl Emitter<'_> {
             .collect();
         let mut restores = Vec::new();
         for polled in self.allocation.poll_values.get(&position)? {
-            let lost: Vec<u16> = polled
-                .clean
-                .iter()
-                .copied()
-                .filter(|register| !kept.contains(register))
-                .collect();
+            // A value read on: every clean binding the code may read it
+            // back from; one read by nothing but the stores of its dirty
+            // bindings: none, its machine register alone.
+            let lost: Vec<u16> = if polled.read_on {
+                polled
+                    .clean
+                    .iter()
+                    .copied()
+                    .filter(|register| !kept.contains(register))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             if polled.machine.is_none() && lost.is_empty() {
                 continue;
             }
             let source = match polled.bound.iter().find(|register| kept.contains(register)) {
+                // A dirty binding the frame keeps, which the poll's
+                // write-back stored, is a store the merge makes again.
                 Some(register) => Source::Frame(*register),
-                None => Source::Word(self.graph.constant_word(polled.value)?),
+                None => match self.graph.constant_word(polled.value) {
+                    Some(word) => Source::Word(word),
+                    None if !polled.read_on => Source::Word(Immediate::NIL.bits()),
+                    None => return None,
+                },
             };
             restores.push(Restore {
                 source,

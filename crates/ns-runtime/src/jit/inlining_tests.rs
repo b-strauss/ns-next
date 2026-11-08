@@ -27,6 +27,12 @@ pub(crate) struct Recorder {
     /// Each block an exit made (`materialize::materialize_blocks`), with
     /// how many resumptions were recorded before it.
     blocks: Vec<(usize, RecordedBlock)>,
+    /// Each frame that went back into its optimized code at the poll it
+    /// left (`jit::resumed_at_poll`): where the copy started when the frame
+    /// left it and where it started when the frame went back in, and
+    /// whether the poll's entry wrote a value back into a frame word the
+    /// collector's pre-pass may have nilled.
+    poll_reentries: Vec<(u32, u32, bool)>,
 }
 
 /// What an exit made of one block optimized code eliminated, as the
@@ -210,6 +216,21 @@ pub(crate) fn record_resumption(
         recorder
             .resumptions
             .push((exits, code, program_counter, twin));
+    }
+}
+
+/// Records a frame going back into its optimized code at the poll it
+/// left, the copy having started at `exit_start` then and at
+/// `entry_start` now, its entry rewriting a lost word or not.
+pub(crate) fn record_poll_reentry(
+    mutator: &mut Mutator<'_>,
+    (exit_start, entry_start): (u32, u32),
+    rewrites_lost_words: bool,
+) {
+    if let Some(recorder) = mutator.jit.recorder.as_mut() {
+        recorder
+            .poll_reentries
+            .push((exit_start, entry_start, rewrites_lost_words));
     }
 }
 
@@ -1327,25 +1348,50 @@ mod polls {
     "};
 
     /// What `run_polling` answers: the run's answer, what was recorded, what
-    /// the JIT counted while it ran, `run:`'s code id, and the activations
-    /// the depth limit counted before the run and after it.
+    /// the JIT counted while it ran, `run:`'s code id, the activations the
+    /// depth limit counted before the run and after it, and the scavenges
+    /// it took.
     struct Polled {
         answer: i64,
         recorder: Recorder,
         statistics: crate::jit::JitStatistics,
         run: CodeId,
         counted: (usize, usize),
+        scavenges: usize,
     }
 
     /// `AN_ALLOCATING_INLINED_LOOP`'s `run: count`, the JIT on whatever the
     /// environment says, every body compiled at its first entry and
-    /// optimized at its first spend, run three times for 100 first, so that
+    /// optimized at its first spend, run six times for 100 first, so that
     /// `run:`'s copy inlines `to:do:` and its block, then once for `count`
     /// with a scavenge asked for at every 64 KiB eden takes, the recorder
     /// on, and `hook` run wherever a frame that left its optimized code at a
     /// poll is about to go back in (`JitState::before_poll_reentry`).
-    fn run_polling(count: i64, hook: Option<fn(&mut Mutator<'_>)>) -> Polled {
-        let source = AN_ALLOCATING_INLINED_LOOP;
+    fn run_polling(count: i64, hook: Option<Hook>) -> Polled {
+        run_polling_with(
+            (AN_ALLOCATING_INLINED_LOOP, 10100),
+            count,
+            hook,
+            (|_| {}, |_| {}),
+        )
+    }
+
+    /// What a test runs wherever a frame that left its optimized code at a
+    /// poll is about to go back in.
+    type Hook = fn(&mut Mutator<'_>, &crate::jit::StoppedAtPoll);
+
+    /// What a test sets the interpreter up with before a run.
+    type SetUp = fn(&mut Interpreter);
+
+    /// `run_polling` for `source`, whose `run: 100` answers `warmed`, the
+    /// interpreter set up by `before_warming` once the module is loaded
+    /// and by `before_measuring` before the measured run.
+    fn run_polling_with(
+        (source, warmed): (&str, i64),
+        count: i64,
+        hook: Option<Hook>,
+        (before_warming, before_measuring): (SetUp, SetUp),
+    ) -> Polled {
         let module = ns_syntax::parse(source).expect("parse");
         let resolved = crate::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
             .unwrap_or_else(|_| panic!("the module resolves"));
@@ -1358,6 +1404,7 @@ mod polls {
         interpreter.set_jit_stress(true);
         interpreter.set_optimize_stress(true);
         let class = interpreter.load_module(&resolved);
+        before_warming(&mut interpreter);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let send_run = |interpreter: &mut Interpreter, count: i64| {
             let argument = interpreter.stash(crate::Value::small_integer(count));
@@ -1370,18 +1417,21 @@ mod polls {
                 _ => panic!("run:: expected a small integer"),
             })
         };
-        for _ in 0..3 {
-            assert_eq!(send_run(&mut interpreter, 100), 10100);
+        for _ in 0..6 {
+            assert_eq!(send_run(&mut interpreter, 100), warmed);
         }
         interpreter.set_scavenge_threshold(64 * 1024);
+        before_measuring(&mut interpreter);
         let counted_before = interpreter.enter(|mutator| {
             mutator.jit.recorder = Some(Recorder::default());
             mutator.jit.before_poll_reentry = hook;
             mutator.heap.counted_depth()
         });
+        let scavenges = interpreter.collector_statistics().scavenges;
         let before = interpreter.jit_statistics();
         let answer = send_run(&mut interpreter, count);
         let after = interpreter.jit_statistics();
+        let scavenges = interpreter.collector_statistics().scavenges - scavenges;
         let (recorder, run, counted_after) = interpreter.enter(|mutator| {
             mutator.jit.before_poll_reentry = None;
             let recorder = mutator.jit.recorder.take().expect("recording");
@@ -1406,10 +1456,13 @@ mod polls {
                 poll_deoptimizations: after.poll_deoptimizations - before.poll_deoptimizations,
                 safepoint_exits: after.safepoint_exits - before.safepoint_exits,
                 materialized_blocks: after.materialized_blocks - before.materialized_blocks,
+                polls_without_an_entry: after.polls_without_an_entry
+                    - before.polls_without_an_entry,
                 ..after
             },
             run,
             counted: (counted_before, counted_after),
+            scavenges,
         }
     }
 
@@ -1456,6 +1509,7 @@ mod polls {
             statistics,
             run,
             counted: (counted_before, counted_after),
+            ..
         } = run_polling(20_000, None);
         assert_eq!(answer, 20_000 * 20_001);
         assert_eq!(counted_after, counted_before);
@@ -1487,7 +1541,7 @@ mod polls {
 
     /// Reifies the innermost activation: a frame among the scopes of the
     /// frame about to go back into its optimized code.
-    fn reify_the_innermost(mutator: &mut Mutator<'_>) {
+    fn reify_the_innermost(mutator: &mut Mutator<'_>, _stopped: &crate::jit::StoppedAtPoll) {
         if let Some(innermost) = mutator.heap.top_activation() {
             let _ = mutator.heap.reify(innermost);
         }
@@ -1523,7 +1577,7 @@ mod polls {
     }
 
     /// Frees every optimized copy there is.
-    fn free_every_copy(mutator: &mut Mutator<'_>) {
+    fn free_every_copy(mutator: &mut Mutator<'_>, _stopped: &crate::jit::StoppedAtPoll) {
         crate::jit::invalidate_all_optimized(mutator);
     }
 
@@ -1553,5 +1607,239 @@ mod polls {
             "the poll's frame made its block: {:?}",
             recorder.blocks
         );
+    }
+
+    /// `run: count` sums 3 twice over 1 to `count`, each time through
+    /// `to:do:` as `AN_ALLOCATING_INLINED_LOOP` does, reading the first
+    /// element of `table`, an `Array` made before the loops, at every pass,
+    /// after it checked that `holder`'s one element, which a collection
+    /// rewrites like any field, is still `table`: the young `table` lives
+    /// across every poll of the inner loop, where the allocations' and the
+    /// scavenge stress mode's scavenges move it. `run: count` answers
+    /// `6 * count`, and a big negative number for any pass that found
+    /// `table` not what `holder` holds.
+    const A_MOVED_OBJECT_ACROSS_A_POLL: &str = indoc! {"
+        class Subject = Object new () (
+          public run: count = (
+            |
+              sum ::= 0.
+              round ::= 0.
+              last
+              table
+              holder
+            |
+            table:: {3. 0. 0. 0}.
+            holder:: {table}.
+            [round < 2] whileTrue: [
+              1 to: count do: [:step |
+                last:: {step. step. step. step. step. step. step. step}.
+                ((holder at: 1) == table)
+                  ifTrue: [sum:: sum + (table at: 1)]
+                  ifFalse: [sum:: sum - 1000000].
+              ].
+              round:: round + 1.
+            ].
+            ^sum
+          )
+        )
+    "};
+
+    /// A frame going back into its optimized code at a poll finds a heap
+    /// object it holds across the poll where the scavenge moved it: under
+    /// the scavenge stress mode, which scavenges at every safepoint, every
+    /// pass reads `table` and finds it the object `holder` holds, and the
+    /// sum is the interpreter's.
+    #[test]
+    fn a_moved_object_held_across_a_poll_is_the_same_after_re_entry() {
+        let Polled {
+            answer,
+            statistics,
+            scavenges,
+            ..
+        } = run_polling_with(
+            (A_MOVED_OBJECT_ACROSS_A_POLL, 600),
+            2_000,
+            None,
+            (|_| {}, |interpreter| interpreter.set_stress_scavenge(true)),
+        );
+        assert_eq!(answer, 6 * 2_000);
+        if a_stress_mode_is_on() {
+            return;
+        }
+        assert!(scavenges >= 2, "{scavenges} scavenges");
+        assert!(statistics.poll_reentries >= 1, "{statistics:?}");
+    }
+
+    /// `run: limit` counts the slot `index` up to `limit` in a loop whose
+    /// head's first instruction is `self done`, a send the copy inlines,
+    /// each turn allocating: as `tests/jit.rs`'s program of the same name.
+    /// `run: limit` answers `2 * limit - 1`.
+    const A_LOOP_HEADED_BY_AN_INLINED_SEND: &str = indoc! {"
+        class Subject = Object new (
+          |
+            index ::= 0.
+            count ::= 0.
+          |
+        ) (
+          done = (
+            ^index >= count
+          )
+
+          public run: limit = (
+            | last |
+            index:: 0.
+            count:: limit.
+            [self done] whileFalse: [
+              last:: {index. index. index. index. index. index. index. index}.
+              index:: index + 1.
+            ].
+            ^index + (last at: 8)
+          )
+        )
+    "};
+
+    /// A poll's entry writes a value the code holds back into a frame word
+    /// the collector's pre-pass nils, where the code after the poll reads
+    /// it -- a clean binding of a register the leftover analysis taints at
+    /// the loop's head -- and the frame that goes back in there after the
+    /// scavenge stress mode's scavenges answers the interpreter's count.
+    #[test]
+    fn a_poll_s_entry_writes_back_what_the_collector_nilled() {
+        let Polled {
+            answer,
+            recorder,
+            statistics,
+            ..
+        } = run_polling_with(
+            (A_LOOP_HEADED_BY_AN_INLINED_SEND, 199),
+            2_000,
+            None,
+            (|_| {}, |interpreter| interpreter.set_stress_scavenge(true)),
+        );
+        assert_eq!(answer, 3_999);
+        if a_stress_mode_is_on() {
+            return;
+        }
+        assert!(statistics.poll_reentries >= 1, "{statistics:?}");
+        assert!(
+            recorder
+                .poll_reentries
+                .iter()
+                .any(|(_, _, rewrote)| *rewrote),
+            "an entry rewrote a lost word: {:?}",
+            recorder.poll_reentries
+        );
+    }
+
+    /// A frame goes back into its optimized code at the poll it left after
+    /// a compaction of the code zone moved the copy: under the zone stress
+    /// mode, which compacts the zone at every safepoint and every other
+    /// time spares the bodies with optimized code, sliding them, a frame
+    /// went back in at a copy that starts elsewhere than where it left it,
+    /// the poll's entry looked up afresh, and the sum is the interpreter's.
+    #[test]
+    fn a_poll_re_enters_the_copy_a_compaction_moved() {
+        let Polled {
+            answer,
+            recorder,
+            statistics,
+            ..
+        } = run_polling_with(
+            (AN_ALLOCATING_INLINED_LOOP, 10100),
+            100,
+            None,
+            (|_| {}, |interpreter| interpreter.set_stress_zone(true)),
+        );
+        assert_eq!(answer, 100 * 101);
+        if a_stress_mode_is_on() {
+            return;
+        }
+        assert!(
+            recorder
+                .poll_reentries
+                .iter()
+                .any(|(exit_start, entry_start, _)| exit_start != entry_start),
+            "a frame went back in at a moved copy: {:?} {statistics:?}",
+            recorder.poll_reentries
+        );
+    }
+
+    /// Frees every optimized copy and compiles the one the frame about to
+    /// go back in ran afresh, for the same body and key: what a safepoint
+    /// that frees a copy and then installs what was requested since can
+    /// do. Under no stress mode the copy is installed again.
+    fn install_the_copy_again(mutator: &mut Mutator<'_>, stopped: &crate::jit::StoppedAtPoll) {
+        let physical = stopped.physical();
+        let code = mutator.heap.activation_code(physical);
+        let frame = mutator.heap.activation_receiver_and_current_class(physical);
+        crate::jit::invalidate_all_optimized(mutator);
+        crate::jit::request_optimization(mutator, &code, Some(frame));
+        crate::jit::optimize_requested(mutator);
+        let key = crate::jit::activation_key(&mutator.heap, &code, physical);
+        let installed = match key {
+            Some(key) => mutator.jit.copy_of(&code, key).is_some(),
+            None => mutator.jit.optimized(&code).is_some(),
+        };
+        assert!(
+            a_stress_mode_is_on() || installed,
+            "the copy is installed again"
+        );
+    }
+
+    /// A frame that left its optimized code at a poll does not go back in
+    /// at a copy installed for the same body and key since its own was
+    /// freed, whose poll of the same index is another compile's: the copy
+    /// is found by its install, and the frame goes on in baseline code
+    /// with the block its copy eliminated made, answering the
+    /// interpreter's sum.
+    #[test]
+    fn a_copy_installed_again_in_its_place_is_not_entered() {
+        let Polled {
+            answer,
+            recorder,
+            statistics,
+            ..
+        } = run_polling(2_000, Some(install_the_copy_again));
+        assert_eq!(answer, 2_000 * 2_001);
+        if a_stress_mode_is_on() {
+            return;
+        }
+        assert!(statistics.poll_deoptimizations >= 1, "{statistics:?}");
+        assert_eq!(statistics.poll_reentries, 0, "{statistics:?}");
+        assert!(
+            recorder.blocks.iter().any(|(_, block)| !block.below),
+            "the poll's frame made its block: {:?}",
+            recorder.blocks
+        );
+    }
+
+    /// Makes the optimized code compiled from now on give no poll an entry.
+    fn refuse_poll_entries(interpreter: &mut Interpreter) {
+        interpreter.enter(|mutator| mutator.jit.refuse_poll_entries = true);
+    }
+
+    /// A poll the compile gave no entry keeps the exit any interrupt point
+    /// takes: the exit makes the block the copy eliminated, the frame goes
+    /// on in baseline code, the exit is counted as one at a poll without
+    /// an entry -- neither a re-entry nor a deoptimization of one -- and
+    /// the sum is the interpreter's.
+    #[test]
+    fn a_poll_without_an_entry_keeps_the_full_exit() {
+        let Polled {
+            answer, statistics, ..
+        } = run_polling_with(
+            (AN_ALLOCATING_INLINED_LOOP, 10100),
+            2_000,
+            None,
+            (refuse_poll_entries, |_| {}),
+        );
+        assert_eq!(answer, 2_000 * 2_001);
+        if a_stress_mode_is_on() {
+            return;
+        }
+        assert!(statistics.polls_without_an_entry >= 1, "{statistics:?}");
+        assert_eq!(statistics.poll_reentries, 0, "{statistics:?}");
+        assert_eq!(statistics.poll_deoptimizations, 0, "{statistics:?}");
+        assert!(statistics.materialized_blocks >= 1, "{statistics:?}");
     }
 }

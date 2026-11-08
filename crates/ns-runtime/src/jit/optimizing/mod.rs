@@ -177,6 +177,8 @@ pub(crate) fn compile_tree(
             exit: bound(poll.exit),
             entry: bound(poll.entry),
             point: poll.point,
+            #[cfg(test)]
+            rewrites_lost_words: poll.rewrites_lost_words,
         })
         .collect();
     Ok(emit::OptimizedBody {

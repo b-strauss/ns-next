@@ -381,11 +381,19 @@ pub struct JitStatistics {
     /// (`resumed_at_poll`): of `safepoint_exits`.
     pub poll_reentries: u64,
     /// Frames of optimized code that left it at a poll and could not go
-    /// back in -- the copy freed, a frame among its scopes reified, the
-    /// stack rebuilt, or the exit forced by a stress mode -- so that the
-    /// blocks its code eliminated were made and every scope went on in
-    /// baseline code (`resumed_at_poll`): of `safepoint_exits`.
+    /// back in -- the copy freed or another installed in its place, its
+    /// feedback base slid, a frame among its scopes reified, the stack
+    /// rebuilt, the room its scopes need gone (the native stack, the depth
+    /// limit, the stack's end), or the exit forced by a stress mode -- so
+    /// that the blocks its code eliminated were made and every scope went
+    /// on in baseline code (`resumed_at_poll`): of `safepoint_exits`.
     pub poll_deoptimizations: u64,
+    /// Exits of optimized code at a poll its compile gave no entry -- one
+    /// past which it reads a value no restore rebuilds
+    /// (`optimizing::emit`'s `poll_restores`) -- so that the frame goes
+    /// on in baseline code as after any exit. With `poll_reentries` and
+    /// `poll_deoptimizations`, every exit of optimized code at a poll.
+    pub polls_without_an_entry: u64,
 }
 
 impl JitStatistics {
@@ -1597,7 +1605,12 @@ pub(crate) struct JitState {
     /// poll is about to go back in, before anything is decided
     /// (`inlining_tests`).
     #[cfg(all(test, ns_jit))]
-    pub(crate) before_poll_reentry: Option<fn(&mut Mutator<'_>)>,
+    pub(crate) before_poll_reentry: Option<fn(&mut Mutator<'_>, &StoppedAtPoll)>,
+    /// Whether optimized code compiled from now on gives no poll an entry,
+    /// so that a test reaches the exit of a poll without one
+    /// (`MacroAssembler::set_refuse_poll_entries`).
+    #[cfg(all(test, ns_jit))]
+    pub(crate) refuse_poll_entries: bool,
     /// What a test records of every exit's stack and every leaf's frame,
     /// once it asks (`inlining_tests`).
     #[cfg(all(test, ns_jit))]
@@ -1989,6 +2002,8 @@ impl JitState {
             installations: 0,
             #[cfg(all(test, ns_jit))]
             before_poll_reentry: None,
+            #[cfg(all(test, ns_jit))]
+            refuse_poll_entries: false,
             #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
@@ -3034,6 +3049,8 @@ impl JitState {
             installations: 0,
             #[cfg(all(test, ns_jit))]
             before_poll_reentry: None,
+            #[cfg(all(test, ns_jit))]
+            refuse_poll_entries: false,
             #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
@@ -5950,6 +5967,8 @@ fn optimize(
     let countdown = mutator.jit.deopt_stress || mutator.jit.invalidate_stress;
     macro_assembler.set_deoptimize_by_countdown(countdown);
     macro_assembler.set_count_down_at_entry(countdown);
+    #[cfg(test)]
+    macro_assembler.set_refuse_poll_entries(mutator.jit.refuse_poll_entries);
     let role = baseline::BodyRole::of(code, method.is_some());
     let installation = optimizing::compile_tree(
         &tree,
@@ -6204,7 +6223,7 @@ fn optimized_metadata(
             })
         })
         .collect::<Result<Vec<_>, Refusal>>()?;
-    Ok(Some(Rc::new(OptimizedMetadata {
+    let metadata = OptimizedMetadata {
         points: std::mem::take(&mut optimized.metadata.points),
         by_address: optimized
             .sites
@@ -6213,7 +6232,61 @@ fn optimized_metadata(
             .collect(),
         scopes,
         blocks,
-    })))
+    };
+    #[cfg(debug_assertions)]
+    verify_blocks_at_poll_entries(&metadata, &optimized.polls);
+    Ok(Some(Rc::new(metadata)))
+}
+
+/// Holds every block a poll with an entry finds live to copied values
+/// the frame keeps there: a frame that does not go back in makes the
+/// block after the safepoint's collection, whose pre-pass nils every
+/// register the leftover analysis taints at the poll
+/// (`deoptimize_at_poll`), so that a copied value's source tainted there
+/// would make the closure over `nil`. The plan keeps the sources
+/// unwritten while the block lives, and its `MakeClosure` read them
+/// untainted (`plan`'s `copied_source_written`); this says so wherever
+/// the reliance is new.
+#[cfg(all(ns_jit, debug_assertions))]
+fn verify_blocks_at_poll_entries(
+    metadata: &OptimizedMetadata,
+    polls: &[optimizing::emit::PollEntry],
+) {
+    use optimizing::allocate::Location;
+
+    for poll in polls {
+        let chain = &metadata.points[poll.point as usize].scopes;
+        let held = chain.iter().flat_map(|stopped| {
+            stopped
+                .locations
+                .iter()
+                .filter_map(|(_, location)| match location {
+                    Location::EliminatedBlock(block) => Some(*block),
+                    _ => None,
+                })
+        });
+        let run = chain.iter().filter_map(|stopped| {
+            metadata.scopes[stopped.scope.0 as usize]
+                .as_ref()
+                .and_then(|scope| scope.block)
+        });
+        for block in held.chain(run) {
+            let facts = &metadata.blocks[block.0 as usize];
+            let home = chain
+                .iter()
+                .find(|stopped| stopped.scope == facts.home)
+                .expect("internal: a live block's home is a scope of the point's chain");
+            for register in &facts.copied {
+                assert!(
+                    home.locations.iter().any(|(own, location)| {
+                        own == register
+                            && matches!(location, Location::FrameWord | Location::EliminatedBlock(_))
+                    }),
+                    "internal: a block live at a poll copies r{register}, which the frame does not keep there"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(not(ns_jit))]
@@ -6290,6 +6363,10 @@ pub(crate) struct StoppedAtPoll {
     /// it does not go back in.
     #[cfg(ns_jit)]
     blocks: Option<materialize::BlocksAt>,
+    /// Where the copy started in the zone when the frame left it, which
+    /// a test compares with where it is entered again.
+    #[cfg(all(test, ns_jit))]
+    exit_start: u32,
 }
 
 impl StoppedAtPoll {
@@ -6665,15 +6742,16 @@ fn stop_at_poll(
     let Ok(address) = usize::try_from(block.get(stubs::BlockWord::ExitCodeAddress.index())) else {
         unreachable!("internal: machine code's addresses fit the pointer width");
     };
-    let Some((key, installation, point)) = mutator
+    let Some((key, installation, point, start)) = mutator
         .jit
         .poll_at(address)
-        .map(|(body, poll)| (body.key, body.installation, poll.point))
+        .map(|(body, poll)| (body.key, body.installation, poll.point, body.start))
     else {
         debug_assert!(
             blocks.is_none(),
             "internal: only a poll a frame goes back in at defers its blocks"
         );
+        mutator.jit.statistics.polls_without_an_entry += 1;
         return;
     };
     let scopes = mutator
@@ -6688,7 +6766,11 @@ fn stop_at_poll(
         scopes: u16::try_from(scopes).expect("internal: a chain is bounded by the plan's limits"),
         installation,
         blocks,
+        #[cfg(test)]
+        exit_start: start,
     };
+    #[cfg(not(test))]
+    let _ = start;
     if forced {
         deoptimize_at_poll(mutator, stopped);
         return;
@@ -6717,9 +6799,9 @@ pub(crate) fn resumed_at_poll(
 ) -> Option<CodeOffset> {
     #[cfg(test)]
     if let Some(hook) = mutator.jit.before_poll_reentry {
-        hook(mutator);
+        hook(mutator, &stopped);
     }
-    let Some(entry) = poll_reentry(mutator, &stopped) else {
+    let Some((entry, poll, start)) = poll_reentry(mutator, &stopped) else {
         deoptimize_at_poll(mutator, stopped);
         return None;
     };
@@ -6727,6 +6809,14 @@ pub(crate) fn resumed_at_poll(
         .heap
         .fold_inlined_scopes(stopped.physical, stopped.scopes - 1);
     mutator.jit.statistics.poll_reentries += 1;
+    #[cfg(test)]
+    inlining_tests::record_poll_reentry(
+        mutator,
+        (stopped.exit_start, start),
+        poll.rewrites_lost_words,
+    );
+    #[cfg(not(test))]
+    let _ = (poll, start);
     mutator.jit.poll_entry = Some(entry);
     Some(entry)
 }
@@ -6748,7 +6838,10 @@ pub(crate) fn resumed_at_poll(
 /// within the depth limit and the stack's end and on the native stack,
 /// gone.
 #[cfg(ns_jit)]
-fn poll_reentry(mutator: &Mutator<'_>, stopped: &StoppedAtPoll) -> Option<CodeOffset> {
+fn poll_reentry(
+    mutator: &Mutator<'_>,
+    stopped: &StoppedAtPoll,
+) -> Option<(CodeOffset, optimizing::emit::PollEntry, u32)> {
     let heap = &mutator.heap;
     let inlined = stopped.scopes.checked_sub(1)?;
     if !heap.inlined_scopes_stand(stopped.physical, inlined)
@@ -6774,7 +6867,7 @@ fn poll_reentry(mutator: &Mutator<'_>, stopped: &StoppedAtPoll) -> Option<CodeOf
             (body.deepest_chain, body.deepest_extent),
             inlined,
         );
-    enters.then_some(CodeOffset(body.start + poll.entry))
+    enters.then_some((CodeOffset(body.start + poll.entry), *poll, body.start))
 }
 
 /// The frame `stopped` names goes on in baseline code or the interpreter,

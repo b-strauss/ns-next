@@ -150,6 +150,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         recompilees_above: after.recompilees_above - before.recompilees_above,
         poll_reentries: after.poll_reentries - before.poll_reentries,
         poll_deoptimizations: after.poll_deoptimizations - before.poll_deoptimizations,
+        polls_without_an_entry: after.polls_without_an_entry - before.polls_without_an_entry,
     }
 }
 
@@ -11729,11 +11730,12 @@ const A_LOOP_HEADED_BY_AN_INLINED_SEND: &str = indoc! {"
 ns_runtime::for_each_lowering! {
     /// A poll whose loop's head begins an inlined scope stops the frame at
     /// the send that scope is inlined at, which runs again there: with no
-    /// stress mode the poll's exit leaves the copy -- the slot `index`,
-    /// stored and read again, crosses the back edge in a machine register
-    /// bound to a scratch register alone, whose frame word the collector's
-    /// pre-pass nils, so that no frame goes back in at that poll -- and
-    /// under the deopt stress mode its forced exits do. Both answer the
+    /// stress mode the frame goes back in at every poll -- the load of the
+    /// slot `index` the loop stores, which crosses the back edge bound to
+    /// a scratch register alone, whose frame word the collector's pre-pass
+    /// nils, is read past the poll by no code but its own stores, and is
+    /// `nil` at the poll's entry -- and under the deopt stress mode its
+    /// forced exits at the polls go on in baseline code. Both answer the
     /// interpreter's. Debug builds only, where a test sets the scavenge
     /// threshold.
     #[cfg(debug_assertions)]
@@ -11766,7 +11768,8 @@ ns_runtime::for_each_lowering! {
         if lowering != Lowering::Optimized || !copied || a_stress_mode_is_on() {
             return;
         }
-        assert!(done.optimized_exits >= 1, "{done:?}");
-        assert!(done.safepoint_exits >= 1, "{done:?}");
+        assert!(done.poll_reentries >= 1, "{done:?}");
+        assert_eq!(done.poll_reentries, done.safepoint_exits, "{done:?}");
+        assert_eq!(done.polls_without_an_entry, 0, "{done:?}");
     }
 }

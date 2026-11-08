@@ -936,6 +936,21 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     `code/nmethod.cpp`'s `isYoung`). The fix needs a spend measure in
     optimized code and a way to recompile a live copy: raise its version,
     compile, install in its place.
+  - **A poll whose entry cannot restore a value keeps the full exit**
+    (2026-11-08). A frame of optimized code that left at a poll goes back
+    in at the poll's entry, which reads every value the code reads past
+    the poll back from a frame word the leftover analysis leaves to the
+    frame there, or from a constant's word (`optimizing::emit`'s
+    `poll_restores`). A value read past the poll that is bound only to
+    registers the analysis taints at the loop's head, and no constant,
+    has no such source: the compile gives that poll no entry, and every
+    scavenge sends the frame on in baseline code until its next push
+    (`JitStatistics::polls_without_an_entry`). Among `ns-runtime`'s
+    tests only graphs built by hand compile one; a value the copy loads
+    across the back edge without the interpreter holding it -- a receiver
+    or a field load hoisted out of the loop -- would, and is rebuilt only
+    once a rule shows that no store between the load and the poll wrote
+    the field.
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any

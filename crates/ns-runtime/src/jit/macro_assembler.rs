@@ -634,6 +634,10 @@ pub(crate) struct MacroAssembler {
     /// Whether a poll takes its exit unconditionally, as under
     /// `NS_NEXT_STRESS_EXIT`: a safepoint is always requested.
     exit_at_every_poll: bool,
+    /// Whether optimized code gives no poll an entry, for a test
+    /// (`set_refuse_poll_entries`).
+    #[cfg(test)]
+    refuse_poll_entries: bool,
     /// Whether optimized code counts its interrupt points down to a
     /// forced exit (`count_down_to_deoptimize`), as under
     /// `NS_NEXT_STRESS_DEOPT` -- and under `NS_NEXT_STRESS_INVALIDATE`,
@@ -697,6 +701,8 @@ impl MacroAssembler {
             program_counter: 0,
             cold_paths: Vec::new(),
             exit_at_every_poll: super::stress_exit_from_env(),
+            #[cfg(test)]
+            refuse_poll_entries: false,
             deoptimize_by_countdown: false,
             count_down_at_entry: false,
             count_back_edges: false,
@@ -938,6 +944,19 @@ impl MacroAssembler {
     #[cfg(test)]
     pub(crate) fn set_exit_at_every_poll(&mut self, exit_at_every_poll: bool) {
         self.exit_at_every_poll = exit_at_every_poll;
+    }
+
+    /// Makes optimized code compiled from now on give no poll an entry
+    /// (`true`), so that a test reaches the exit a poll without one takes.
+    #[cfg(test)]
+    pub(crate) fn set_refuse_poll_entries(&mut self, refuse: bool) {
+        self.refuse_poll_entries = refuse;
+    }
+
+    /// Whether `set_refuse_poll_entries` asked for no poll entries.
+    #[cfg(test)]
+    pub(crate) fn refuses_poll_entries(&self) -> bool {
+        self.refuse_poll_entries
     }
 
     /// Makes every interrupt point of the optimized code emitted from now
@@ -1500,12 +1519,11 @@ impl MacroAssembler {
         program_counter: u32,
     ) -> Label {
         let roles = self.roles;
-        self.assembler.load_code_address(roles.exit_code_address());
+        self.load_code_address(roles.exit_code_address());
+        // Bound where `load_code_address` left the code: the address it
+        // loaded, which its own label records with the site, if any.
         let address = self.assembler.label();
         self.assembler.bind(address);
-        if let Some(site) = self.site {
-            self.site_addresses.push((address, site));
-        }
         self.jump_to_the_exit_stub(kind, program_counter);
         address
     }

@@ -902,12 +902,17 @@ impl Graph {
 
     /// The word of `value` when a constant defines it.
     pub(crate) fn constant_word(&self, value: ValueId) -> Option<u64> {
+        match self.defining_node(value)? {
+            Node::Constant { word, .. } => Some(*word),
+            _ => None,
+        }
+    }
+
+    /// The node that defines `value`; `None` for a phi's.
+    pub(crate) fn defining_node(&self, value: ValueId) -> Option<&Node> {
         let ValueDefinition { block, place, .. } = self.values[value.index()];
         match place {
-            Place::Node(index) => match self.block(block).nodes[index] {
-                Node::Constant { word, .. } => Some(word),
-                _ => None,
-            },
+            Place::Node(index) => Some(&self.block(block).nodes[index]),
             Place::Phi(_) => None,
         }
     }
