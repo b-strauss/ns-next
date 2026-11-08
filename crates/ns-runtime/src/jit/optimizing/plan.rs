@@ -1491,10 +1491,12 @@ impl<'tree> Planner<'tree> {
     /// with the scopes inlined for its `value` sends, until none does.
     fn decide_blocks(&mut self) -> BTreeSet<BlockKey> {
         let mut eliminated: BTreeSet<BlockKey> = BTreeSet::new();
-        if !self.limits.inline_blocks {
-            return eliminated;
-        }
-        for (index, scope) in self.scopes.iter().enumerate() {
+        for (index, scope) in self
+            .scopes
+            .iter()
+            .enumerate()
+            .filter(|_| self.limits.inline_blocks)
+        {
             for (program_counter, instruction) in scope.snapshot.instructions.iter().enumerate() {
                 if matches!(instruction, SnapshotInstruction::MakeClosure { .. }) {
                     eliminated.insert((ScopeId::of(index), program_counter_u32(program_counter)));
@@ -1515,26 +1517,71 @@ impl<'tree> Planner<'tree> {
                         || self.escapes(*block, &eliminated, &accessed)
                 })
                 .collect();
-            if escaping.is_empty() {
+            if !escaping.is_empty() {
+                for block in escaping {
+                    eliminated.remove(&block);
+                    self.drop_scopes_of(block);
+                }
+                continue;
+            }
+            // An inlined scope that creates a block leaves optimized code
+            // at its `MakeClosure` every time it runs it, until optimized
+            // code creates blocks itself: its send is sent instead, which
+            // runs the callee's own code, and the blocks it was handed may
+            // escape now.
+            let creating: Vec<usize> = (1..self.scopes.len())
+                .filter(|index| self.creates_a_block(*index, &eliminated))
+                .collect();
+            if creating.is_empty() {
                 return eliminated;
             }
-            for block in escaping {
-                eliminated.remove(&block);
-                self.drop_scopes_of(block);
+            for index in creating {
+                self.drop_scopes_where(|candidate, _| candidate == index);
             }
         }
+    }
+
+    /// Whether the live scope at `index` holds a `MakeClosure` whose block
+    /// `eliminated` does not hold, which it would create, on a way that
+    /// is not a fast path's fallback: a conditional's closure for a
+    /// receiver that is no Boolean runs as rarely as such a receiver
+    /// comes, and traps where the copy speculates.
+    fn creates_a_block(&self, index: usize, eliminated: &BTreeSet<BlockKey>) -> bool {
+        let scope = &self.scopes[index];
+        if !scope.alive {
+            return false;
+        }
+        let fallback = fallback_instructions(&scope.snapshot.instructions);
+        scope
+            .snapshot
+            .instructions
+            .iter()
+            .zip(fallback)
+            .enumerate()
+            .any(|(program_counter, (instruction, fallback))| {
+                matches!(instruction, SnapshotInstruction::MakeClosure { .. })
+                    && !fallback
+                    && !eliminated
+                        .contains(&(ScopeId::of(index), program_counter_u32(program_counter)))
+            })
     }
 
     /// Drops every live scope inlined for a `value` send of `block`, and
     /// every scope below it; each such send is sent instead.
     fn drop_scopes_of(&mut self, block: BlockKey) {
+        self.drop_scopes_where(|_, scope| scope.block == Some(block));
+    }
+
+    /// Drops every live scope `dropped` names, by its index, and every
+    /// scope below it; each such send is sent instead.
+    fn drop_scopes_where(&mut self, dropped: impl Fn(usize, &Scope<'_>) -> bool) {
         for index in 0..self.scopes.len() {
             let scope = &self.scopes[index];
             let parent_dead = scope
                 .plan
                 .parent
                 .is_some_and(|(parent, _)| !self.scopes[parent.index()].alive);
-            if scope.alive && (scope.block == Some(block) || parent_dead) {
+            if scope.alive && (dropped(index, scope) || parent_dead) {
                 if let Some(parent) = scope.plan.parent {
                     if let Some(SiteDecision::Unguarded(slot)) = self.decisions.get_mut(&parent) {
                         if matches!(slot, Some((_, _, ArmPlan::Inline { callee })) if callee.index() == index)
@@ -2238,6 +2285,49 @@ mod tests {
         assert!(site.arms.is_empty(), "{site:?}");
         assert_eq!(site.fall_through, FallThrough::Send);
         assert_eq!(plan.scopes.len(), 1);
+    }
+
+    /// `remember:` hands a block to `keep:`, which stores it: the block
+    /// escapes, and `remember:` would create it; `twice:` makes none.
+    const CREATING: &str = indoc! {"
+        class Creating = (
+          | stored |
+        ) (
+          public keep: action = (
+            stored:: action.
+            ^0
+          )
+          public remember: number = (
+            self keep: [number].
+            ^number
+          )
+          public twice: number = (
+            ^number + number
+          )
+          public run = (
+            ^(self remember: 3) + (self twice: 4)
+          )
+        )
+    "};
+
+    /// A callee whose scope would create a block -- which leaves optimized
+    /// code at its `MakeClosure` every time it runs it -- is sent, while a
+    /// callee beside it that makes none is inlined.
+    #[test]
+    fn a_callee_that_would_create_a_block_is_sent() {
+        let (mut interpreter, class) = run(CREATING);
+        let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
+        let plan = plan(&tree, Speculation::Traps);
+        let remember = &plan.sites[&(ScopeId::ROOT, send_of(&tree.root, "remember:"))];
+        assert!(remember.arms.is_empty(), "{remember:?}");
+        assert_eq!(remember.fall_through, FallThrough::Send);
+        let twice = &plan.sites[&(ScopeId::ROOT, send_of(&tree.root, "twice:"))];
+        assert_eq!(twice.arms.len(), 1, "{twice:?}");
+        assert_eq!(plan.scopes.len(), 2, "the root and `twice:`");
+        assert!(plan
+            .blocks
+            .values()
+            .all(|block| *block != BlockPlan::Created));
     }
 
     const BONUS: &str = indoc! {"

@@ -1,22 +1,23 @@
-/// Blocks an optimized copy eliminates, live where the copy's
-/// speculation fails, and evaluated after.
+/// Blocks the optimized copies eliminate, made by an exit that finds them
+/// live -- the deopt stress mode's, at any interrupt point -- and
+/// evaluated after, and blocks the copies create.
 ///
 /// `scale:by:` makes `[:each | each * factor]` and hands it to
 /// `apply:to:`, which sums `values` before it evaluates the block twice;
-/// `scale:by:` evaluates it once more itself. For 30000 sends `values`
-/// holds SmallIntegers, whose addition the optimized code takes for
-/// granted, then Floats: the first Float fails that speculation where the
-/// block lies in `scale:by:`'s local and in `apply:to:`'s parameter, so
-/// that the exit makes it, one closure over `scale:by:`'s activation, and
-/// the interpreter evaluates it from there. `{1. 2. 3}` scaled by 2
-/// answers 6 * 2 + 1 * 2 + 0, so 14, and 30000 times 420000;
-/// `{1.5. 2.5. 3.0}` by 2, 16.0; `{1. 2. 3}` by 3, 21.
+/// `scale:by:` evaluates it once more itself, so that a copy inlining
+/// both eliminates it. For 30000 sends `values` holds SmallIntegers, whose
+/// addition the optimized code takes for granted, then Floats, which fail
+/// that speculation in `sumOf:`. No copy inlines `sumOf:`: the block it
+/// hands an Array's `do:` escapes through `do:`'s way for a receiver
+/// whose size the mirror cannot read, so that its scope would create it
+/// and leave the copy at every send. `{1. 2. 3}` scaled by 2 answers 6 *
+/// 2 + 1 * 2 + 0, so 14, and 30000 times 420000; `{1.5. 2.5. 3.0}` by 2,
+/// 16.0; `{1. 2. 3}` by 3, 21.
 ///
-/// `countOf:` hands `values do:` a block that counts, which the copy
-/// eliminates where it inlines `do:` for the Arrays 30000 sends hand it:
-/// then a List, which no arm of the inlined `do:` takes, so that the send
-/// is run again by the interpreter with the block, made by the exit, as
-/// its argument. 30000 Arrays of 3 count 90000, and the List of 4, 4.
+/// `countOf:` hands `values do:` a block that counts, for the Arrays
+/// 30000 sends hand it, then a List, which no arm of an inlined `do:`
+/// takes, so that the send is run with the block as its argument. 30000
+/// Arrays of 3 count 90000, and the List of 4, 4.
 class EliminatedBlockSeenAfterAnExit = Object new () (
   sumOf: values = (
     |

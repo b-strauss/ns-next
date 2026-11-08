@@ -1839,7 +1839,8 @@ mod tests {
     /// runs, and every address recorded with an interrupt point lies in
     /// the code and names a point inside an inlined scope or one where a
     /// block the copy eliminated is live; and the corpus eliminates more
-    /// than ten blocks.
+    /// than five blocks -- fewer than it holds, since a callee that would
+    /// create a block besides is sent, its own blocks with it.
     #[test]
     fn an_inlined_body_assembles_for_aapcs64() {
         let (mut inlined, mut eliminated) = (0, 0);
@@ -1864,7 +1865,7 @@ mod tests {
             eliminated += optimized.eliminated.len();
         }
         assert!(inlined > 10, "{inlined} trees inline");
-        assert!(eliminated > 10, "{eliminated} blocks eliminated");
+        assert!(eliminated > 5, "{eliminated} blocks eliminated");
     }
 
     /// `r15 := r0 + r1. r16 := r15 < r2. ^r16`, each operation's fallback

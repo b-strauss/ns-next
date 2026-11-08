@@ -10363,10 +10363,11 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// `remember:`, which `run:`'s copy inlines, makes a block that `keep:`
-/// stores in a slot, where `apply:` finds it: the block escapes, so the
-/// copy creates it -- as the interpreter does, which the copy leaves for
-/// it. `run: count` answers `count * (count - 1)`.
+/// `remember:` makes a block that `keep:` stores in a slot, where
+/// `apply:` finds it: the block escapes, so it is created -- by
+/// `remember:`'s own code, which `run:`'s copy sends rather than inlines,
+/// since an inlined scope would leave the copy at every `MakeClosure`.
+/// `run: count` answers `count * (count - 1)`.
 const AN_ESCAPING_BLOCK: &str = indoc! {"
     class Subject = Object new (
       | stored ::= nil. |
@@ -10402,10 +10403,10 @@ const AN_ESCAPING_BLOCK: &str = indoc! {"
 
 ns_runtime::for_each_lowering! {
     /// A block that escapes -- stored in a slot -- is created by its
-    /// `MakeClosure` as the interpreter creates it: inside a scope the copy
-    /// inlined that leaves the copy, which makes no block of its own. The
-    /// answer is the interpreter's.
-    fn a_block_that_escapes_still_leaves_optimized_code(lowering) {
+    /// `MakeClosure` in the code of the body that makes it, which the copy
+    /// does not inline: the copy inlines the rest, never leaves its code
+    /// and makes no block of its own. The answer is the interpreter's.
+    fn a_block_that_escapes_is_made_by_a_body_the_copy_sends(lowering) {
         let (mut interpreter, class) = load_customizing(AN_ESCAPING_BLOCK, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let pinned = run_until_inlining(
@@ -10422,7 +10423,7 @@ ns_runtime::for_each_lowering! {
         if !pinned {
             return;
         }
-        assert!(done.optimized_exits >= 1, "{done:?}");
+        assert_eq!(done.optimized_exits, 0, "{done:?}");
         assert_eq!(done.materialized_blocks, 0, "{done:?}");
     }
 }

@@ -478,16 +478,16 @@ fn jit_statistics_print_one_line_to_stderr() {
     );
 }
 
-/// The `jit: ` line's count before `label`, of a run of `program` with
-/// `--jit-statistics` and with neither a stress mode nor
+/// The `jit: ` line's counts before each of `labels`, of a run of
+/// `program` with `--jit-statistics` and with neither a stress mode nor
 /// `NS_NEXT_NO_JIT`, whatever the environment says, so that what the
 /// optimizer inlines is what a plain run's budgets decide; `None` on a
 /// target without a JIT, which compiles no body.
-fn plain_jit_counts(program: &str, labels: &[&str]) -> Option<Vec<u64>> {
+fn plain_jit_counts(program: &std::path::Path, labels: &[&str]) -> Option<Vec<u64>> {
     let mut command = ns_next();
     command
         .arg("run")
-        .arg(common::golden(program))
+        .arg(program)
         .arg("--jit-statistics")
         .env_remove("NS_NEXT_NO_JIT");
     for mode in [
@@ -533,17 +533,54 @@ fn plain_jit_counts(program: &str, labels: &[&str]) -> Option<Vec<u64>> {
     Some(labels.iter().map(|label| count_before(label)).collect())
 }
 
+/// `sumOf:times:`'s block sends `sumOf:`, whose `to:do:` and block its
+/// copy inlines, the block eliminated; the Floats of the second run fail
+/// the addition's speculation inside the inlined block, where the block
+/// is live in `to:do:`'s scope, so that the exit writes the inlined
+/// frames and makes the block.
+const AN_ELIMINATED_BLOCK_MADE_AT_A_TRAP: &str = indoc! {"
+    class Subject = Object new () (
+      sumOf: values = (
+        |
+          total ::= 0.
+        |
+        1 to: values size do: [:index | total:: total + (values at: index)].
+        ^total.
+      )
+
+      sumOf: values times: count = (
+        |
+          sum ::= 0.
+        |
+        1 to: count do: [:round | sum:: sum + (sumOf: values)].
+        ^sum.
+      )
+
+      public main: platform args: arguments = (
+        platform transcript
+            show: (sumOf: {1. 2. 3} times: 30000) printString;
+            newLine.
+        platform transcript
+            show: (sumOf: {1.5. 2.5} times: 30) printString;
+            newLine.
+      )
+    )
+"};
+
 /// `--jit-statistics` counts what the optimized copies inlined and what
-/// became of it: a program whose blocks are eliminated inside inlined
-/// scopes and made by its exits counts the scopes, the type-case arms,
-/// the blocks eliminated and materialized, the inlined frames its exits
+/// became of it: a copy whose block is eliminated inside inlined scopes,
+/// and made by the exit at a trap there, counts the scopes, the type-case
+/// arms, the block eliminated and made, the inlined frames the exit
 /// wrote and the budget exits whose walk found the recompilee above; and
 /// a loop whose inlined callees allocate counts the polls it went back
 /// into its code at, after each scavenge.
 #[test]
 fn jit_statistics_count_what_inlining_did() {
+    let directory = ScratchDirectory::new("jit-statistics-inlining");
+    let program = directory.join("Subject.ns");
+    std::fs::write(&program, AN_ELIMINATED_BLOCK_MADE_AT_A_TRAP).unwrap();
     let Some(counts) = plain_jit_counts(
-        "runtime/optimizer/eliminated_block_seen_after_an_exit",
+        &program,
         &[
             "scopes inlined",
             "type-case arms",
@@ -558,7 +595,7 @@ fn jit_statistics_count_what_inlining_did() {
     };
     assert!(counts.iter().all(|count| *count > 0), "{counts:?}");
     let reentries = plain_jit_counts(
-        "runtime/optimizer/allocating_inlined_loop",
+        &common::golden("runtime/optimizer/allocating_inlined_loop"),
         &["poll re-entries", "polls without an entry"],
     )
     .expect("a target with a JIT");
