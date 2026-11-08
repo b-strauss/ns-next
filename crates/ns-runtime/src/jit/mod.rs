@@ -5670,14 +5670,19 @@ fn recompilable(
     })
 }
 
-/// The least calls a home must have taken for the walk to go up to it
-/// from its block (`recompilable`): HotSpot's
-/// `Tier3MinInvocationThreshold`, the least invocations at which a method
-/// whose back edges are hot is compiled with a normal entry
-/// (`compiler/compiler_globals.hpp`, `compilationPolicy.cpp`'s
-/// `call_predicate_helper`).
+/// The least calls a home must have taken, since its budget was armed,
+/// for the walk to go up to it from its block (`recompilable`): HotSpot's
+/// invocation minimum (`Tier3MinInvocationThreshold`,
+/// `compiler/compiler_globals.hpp`; `compilationPolicy.cpp`'s
+/// `call_predicate_helper`), below which a method whose back edges are
+/// hot is not compiled with a normal entry. Measured, as the plan's
+/// limits are: HotSpot's 100 kept DeltaBlueTon80's homes called 3 to 53
+/// times from their copies and ran it 5% slower than with no minimum; 4
+/// keeps all but the one called 3 times, as fast as none, and still
+/// refuses Bounce's `bench`, called once or twice
+/// (`docs/design/execution.md`, "What inlining moved").
 #[cfg(ns_jit)]
-pub(crate) const LEAST_HOME_CALLS: f64 = 100.0;
+pub(crate) const LEAST_HOME_CALLS: f64 = 4.0;
 
 /// Whether the home `activation`, which runs `code` and has spent `share`
 /// of its budget, is called often enough for a copy of it to be entered:
