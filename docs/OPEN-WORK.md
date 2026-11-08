@@ -1017,6 +1017,35 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   the comparison fair, so it is decided then, from the heap composition
   of real programs, not before; a large homogeneous run of numbers is
   served meanwhile by the typed arrays of the kernel's fifth sub-project.
+- **Last of all, once everything above is done: machine-level
+  experiments, each measured** (noted with the user on 2026-11-09, for
+  future optimization). Small gains, none worth a step of its own
+  before the structural ones above; each needs the encoder form, its
+  `iced-x86` check, the AArch64 counterpart where one applies, and a
+  measurement. The encoder today has `move_if` (`cmov`) and
+  `multiply_checked`, none of these:
+  - **`lea` for tagged arithmetic**: an addition with a constant, an
+    index or an address computed into another register without
+    touching the flags, a `mov` saved per operation (`SmallInteger`
+    with a constant, `at:`).
+  - **`setcc`/`cmov` for a Boolean result**: a comparison whose value
+    is stored or answered rather than branched on made `true` or
+    `false` without a jump; pays only where the comparison predicts
+    badly. First check what the templates emit for it.
+  - **Prefetch at allocation (`prefetchw`)**: the lines past the bump
+    pointer fetched ahead, HotSpot's `AllocatePrefetch`; for
+    allocation-heavy programs (CD, Storage, Richards); strongly
+    CPU-dependent.
+  - **`rep stosq` to initialize a large object**: an `Array new:` of
+    about 1-2 KB and more filled with `nil` in one instruction, unrolled
+    stores below.
+  - **Loop heads aligned** to 32 or 64 bytes for the micro-op cache and
+    the front end, HotSpot's `OptoLoopAlignment`; 0-3%, sometimes
+    negative.
+  - **`crc32` (SSE4.2) for the runtime's hash tables**, such as the
+    mirror method leaf's lookup by return address; Rust code, so the
+    `#[target_feature]` question of the SSE2 entry under "Planned:
+    performance and representation" comes with it.
 
 Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
