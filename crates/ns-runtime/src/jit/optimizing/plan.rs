@@ -56,8 +56,12 @@ pub(crate) const COST_CLOSURE: u32 = 3;
 pub(crate) const COST_CHEAP_SEND: u32 = 2;
 /// The heaviest method callee inlined.
 pub(crate) const METHOD_LIMIT: u32 = 40;
-/// The heaviest block inlined at a `value`-family send.
-pub(crate) const BLOCK_LIMIT: u32 = 70;
+/// The heaviest block inlined at a `value`-family send: twice
+/// Strongtalk's 70, which the measurement of the limits chose -- Queens
+/// runs 58% faster, its blocks between the two inlined, and no other
+/// program the twenty-seven sources time moves beyond the sittings'
+/// noise (`docs/design/execution.md`, "What inlining moved").
+pub(crate) const BLOCK_LIMIT: u32 = 140;
 /// What a callee's limit grows by for each argument that is a block made
 /// in the compile, which is then inlined into it.
 pub(crate) const BLOCK_ARGUMENT_BONUS: u32 = 35;
