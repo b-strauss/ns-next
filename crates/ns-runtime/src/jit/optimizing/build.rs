@@ -51,7 +51,7 @@
 //! so an arm with a check is expressed only in a copy that speculates,
 //! at a site that never trapped (`Laying::expressed`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::builtins::primitive::{
@@ -184,7 +184,63 @@ fn build_flat(flat: &Flat<'_>, speculation: Speculation) -> Graph {
         "internal: the built graph is refused: {:?}",
         super::verify::verify(&graph)
     );
+    #[cfg(debug_assertions)]
+    if let Some(reader) = eliminated_block_read(&graph) {
+        panic!("internal: {reader} reads an eliminated block the plan let escape");
+    }
     graph
+}
+
+/// What reads the value of a block the compile eliminated, other than a
+/// move of it or a phi of it, if anything does: the plan lets such a
+/// block be used only where the graph moves it, inlines its `value` or
+/// traps (`plan::Planner::escapes`), so a node or an end that reads it --
+/// a frame node, a return, an always-inlined callee's operand, a
+/// type-case's receiver -- would read the `nil` its frame words hold.
+#[cfg(debug_assertions)]
+fn eliminated_block_read(graph: &Graph) -> Option<String> {
+    let mut eliminated: std::collections::HashSet<ValueId> = graph
+        .blocks
+        .iter()
+        .flat_map(|block| &block.nodes)
+        .filter_map(|node| match node {
+            Node::EliminatedBlock { value, .. } => Some(*value),
+            _ => None,
+        })
+        .collect();
+    // A phi of an eliminated block is the block on that way too.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for phi in graph.blocks.iter().flat_map(|block| &block.phis) {
+            if !eliminated.contains(&phi.value)
+                && phi.inputs.iter().any(|input| eliminated.contains(input))
+            {
+                eliminated.insert(phi.value);
+                changed = true;
+            }
+        }
+    }
+    for (index, block) in graph.blocks.iter().enumerate() {
+        for node in &block.nodes {
+            if matches!(node, Node::Copy { .. } | Node::EliminatedBlock { .. }) {
+                continue;
+            }
+            if node.uses().iter().any(|value| eliminated.contains(value)) {
+                return Some(format!("{node:?} in block {index}"));
+            }
+        }
+        let read = match &block.end {
+            End::Branch { condition, .. } => Some(*condition),
+            End::Return { value } | End::ReturnUnlessNil { value, .. } => Some(*value),
+            End::TypeCase { receiver, .. } => Some(*receiver),
+            End::Jump(_) | End::Frame | End::FrameJump { .. } | End::Trap { .. } => None,
+        };
+        if read.is_some_and(|value| eliminated.contains(&value)) {
+            return Some(format!("{:?} of block {index}", block.end));
+        }
+    }
+    None
 }
 
 /// Drops the third way of every branch of `graph` whose condition is a
@@ -2269,10 +2325,6 @@ struct Builder<'flat> {
     /// The loop heads' registers a back edge brought as a value its frame
     /// word does not hold, though the head left them their frame words.
     refuted: Vec<(usize, usize)>,
-    /// The values of the blocks the compile eliminated, which no frame
-    /// node may read: the plan let each be used only where the graph
-    /// moves it, inlines its `value` or traps (`plan::Planner::escapes`).
-    eliminated_values: HashSet<ValueId>,
 }
 
 impl<'flat> Builder<'flat> {
@@ -2356,7 +2408,6 @@ impl<'flat> Builder<'flat> {
             forced_phis: vec![RegisterSet::empty(register_count); block_count],
             unbound_at_head: vec![RegisterSet::empty(register_count); block_count],
             refuted: Vec::new(),
-            eliminated_values: HashSet::new(),
         };
         builder.lay_out_blocks();
         builder.live_in = builder.liveness();
@@ -3087,16 +3138,10 @@ impl<'flat> Builder<'flat> {
                     .copied()
                     .filter(|register| own.contains(register))
                     .collect();
-                let reads: Vec<(u16, ValueId)> = registers
+                let reads = registers
                     .into_iter()
                     .map(|register| (register, self.read(block, state, register)))
                     .collect();
-                debug_assert!(
-                    reads
-                        .iter()
-                        .all(|(_, value)| !self.eliminated_values.contains(value)),
-                    "internal: the instruction at {program_counter} of {scope:?} reads an                      eliminated block the plan let escape"
-                );
                 let falls_through = physical.falls_through();
                 self.blocks[block].nodes.push(Node::Frame {
                     scope,
@@ -3189,7 +3234,6 @@ impl<'flat> Builder<'flat> {
                 block: eliminated,
             } => {
                 let value = self.new_value(None);
-                self.eliminated_values.insert(value);
                 let nodes = &mut self.blocks[block].nodes;
                 nodes.push(Node::EliminatedBlock {
                     value,

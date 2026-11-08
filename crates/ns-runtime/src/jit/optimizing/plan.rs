@@ -3137,6 +3137,46 @@ mod tests {
         );
     }
 
+    /// `go:` hands `apply:` a block that the closure of its `ifTrue:` for
+    /// a receiver that is no Boolean reads by reference in its home's
+    /// register, on a way that ran: `run` sends `go:` a `Flag` too, which
+    /// answers `ifTrue:` itself.
+    const REACHED_ON_A_WAY_THAT_RUNS: &str = indoc! {"
+        class ReachedOnAWayThatRuns = () (
+          class Flag = () (
+            public ifTrue: aBlock = (
+              ^nil
+            )
+          )
+          public apply: aBlock = (
+            ^aBlock value
+          )
+          public go: flag = (
+            | b |
+            b:: [1].
+            flag ifTrue: [b value].
+            ^self apply: b
+          )
+          public run = (
+            self go: Flag new.
+            ^self go: true
+          )
+        )
+    "};
+
+    /// Where the copy speculates, a block that a nested block made on a
+    /// way that ran reaches by reference still escapes: only a way that
+    /// ends in a trap is left out of the escape analysis.
+    #[test]
+    fn a_block_a_nested_block_reaches_on_a_way_that_ran_escapes_where_the_copy_speculates() {
+        let (mut interpreter, class) = run(REACHED_ON_A_WAY_THAT_RUNS);
+        let tree = tree_of(&mut interpreter, &class, "go:", &Limits::STANDARD);
+        let held = closures_of(&tree.root)[0];
+        let plan = plan(&tree, Speculation::Traps);
+        inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "apply:"));
+        assert_eq!(plan.blocks[&(ScopeId::ROOT, held)], BlockPlan::Created);
+    }
+
     /// A block handed to a callee that passes it on only on a way that
     /// never ran -- `Array`'s `do:` hands it to `super do:` where the
     /// mirror cannot read the receiver's size -- is eliminated where the

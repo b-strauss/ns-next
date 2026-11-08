@@ -984,7 +984,9 @@ thread_local! {
     /// receiver of one application ever takes -- `Array`'s `do:` handing
     /// its block to `super do:` for an instance of a subclass, which holds
     /// no elements -- trapping in a copy compiled for that application,
-    /// which no program can make before the way has run.
+    /// which no program makes deterministically: the arm is filled at the
+    /// outer send, and the way's `super` send follows it with no poll in
+    /// between unless `do:` runs interpreted, whose push polls.
     pub(crate) static SUPER_SENDS_READ_AS_NEVER_RUN: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }

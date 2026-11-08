@@ -1686,9 +1686,20 @@ fn a_failure_way_that_starts_running_traps_and_its_block_is_made() {
             .count()
     });
     assert!(made >= 1, "the trap made `sumOf:`'s block");
+    // The first trap marks the site, and the copy goes on being entered
+    // until the second there retires it: every copy retired took two.
+    let retired = first.made_not_entrant - before.made_not_entrant;
     assert!(
-        first.made_not_entrant - before.made_not_entrant >= 1,
+        retired >= 1,
         "the second trap at the site retires the copy: {first:?}"
+    );
+    assert!(
+        first.traps - before.traps >= 2,
+        "the first trap retires no copy: {first:?}"
+    );
+    assert!(
+        u64::try_from(traps).unwrap_or(u64::MAX) > retired,
+        "a copy retired only at its second trap: {traps} traps, {retired} retired"
     );
     // The site trapped: a compile of `sumOf:` now sends `super do:`, and
     // creates the block it is handed.
