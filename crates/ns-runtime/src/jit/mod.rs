@@ -332,6 +332,17 @@ pub struct JitStatistics {
     /// Frames of inlined scopes of optimized code the exit's walk wrote in
     /// place: each scope an exit or a call inside it left standing.
     pub inlined_frames_materialized: u64,
+    /// Scopes the optimized copies installed inlined: each method body a
+    /// site's arm or an unguarded send inlined, and each block a `value`
+    /// send inlined, that the copy lays out code for -- so a site inlined
+    /// as a type-case of two arms counts two.
+    pub inlined_scopes: u64,
+    /// Arms of the type-cases the optimized copies installed test, one
+    /// per receiver type a site's callee was inlined for.
+    pub type_case_arms: u64,
+    /// Blocks the optimized copies installed never create, each made
+    /// only by an exit that finds it live (`materialized_blocks`).
+    pub eliminated_blocks: u64,
     /// Closures an exit made of blocks optimized code eliminated, which it
     /// found live (`materialize::materialize_blocks`): one per block per
     /// exit, however many registers held it.
@@ -5970,6 +5981,9 @@ fn optimize(
     #[cfg(test)]
     macro_assembler.set_refuse_poll_entries(mutator.jit.refuse_poll_entries);
     let role = baseline::BodyRole::of(code, method.is_some());
+    // What the copy inlined -- its scopes, type-case arms and eliminated
+    // blocks -- counted once it is installed.
+    let mut inlined = (0_u64, 0_u64, 0_u64);
     let installation = optimizing::compile_tree(
         &tree,
         macro_assembler,
@@ -5978,6 +5992,11 @@ fn optimize(
         optimizing::Speculation::at_version(code.jit.optimized_version(key)),
     )
     .and_then(|mut optimized| {
+        inlined = (
+            optimized.scopes.iter().skip(1).flatten().count() as u64,
+            u64::from(optimized.type_case_arms),
+            optimized.eliminated.len() as u64,
+        );
         let metadata = optimized_metadata(&mutator.heap, &mut optimized)?;
         let dependencies = CopyDependencies::of(&mutator.heap, &optimized.relied_on);
         install_optimized(
@@ -6030,7 +6049,11 @@ fn optimize(
             mutator.jit.write_dispatching_rows(lean);
         }
     }
-    mutator.jit.statistics.optimized_bodies += 1;
+    let statistics = &mut mutator.jit.statistics;
+    statistics.optimized_bodies += 1;
+    statistics.inlined_scopes += inlined.0;
+    statistics.type_case_arms += inlined.1;
+    statistics.eliminated_blocks += inlined.2;
     // Its transfers go into the twin, which the baseline body may have.
     mutator.jit.write_transfer_words(index);
     // Every cell that called the baseline code is written afresh from its

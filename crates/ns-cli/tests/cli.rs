@@ -470,8 +470,100 @@ fn jit_statistics_print_one_line_to_stderr() {
          # bodies optimized (# customized copies) in # ms, \
          # optimized exits (# forced, # traps), # abandoned, \
          # made not entrant, # refused for good, # invalidated copies, \
-         # dispatched calls, # blocks materialized"
+         # dispatched calls; inlining: # scopes inlined, # type-case arms, \
+         # blocks eliminated, # blocks materialized, \
+         # inlined frames materialized, # budget exits \
+         (# recompilees above), # poll re-entries, \
+         # poll deoptimizations, # polls without an entry"
     );
+}
+
+/// The `jit: ` line's count before `label`, of a run of `program` with
+/// `--jit-statistics` and with neither a stress mode nor
+/// `NS_NEXT_NO_JIT`, whatever the environment says, so that what the
+/// optimizer inlines is what a plain run's budgets decide; `None` on a
+/// target without a JIT, which compiles no body.
+fn plain_jit_counts(program: &str, labels: &[&str]) -> Option<Vec<u64>> {
+    let mut command = ns_next();
+    command
+        .arg("run")
+        .arg(common::golden(program))
+        .arg("--jit-statistics")
+        .env_remove("NS_NEXT_NO_JIT");
+    for mode in [
+        "MOVES",
+        "COLLECT",
+        "SCAVENGE",
+        "SUSPEND",
+        "ZONE",
+        "JIT",
+        "EXIT",
+        "OPTIMIZE",
+        "DEOPT",
+        "CACHES",
+        "INVALIDATE",
+        "WIDE",
+    ] {
+        command.env_remove(format!("NS_NEXT_STRESS_{mode}"));
+    }
+    let output = command.output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    let line = stderr
+        .lines()
+        .find(|line| line.starts_with("jit: "))
+        .unwrap_or_else(|| panic!("no `jit: ` line in {stderr}"));
+    let count_before = |label: &str| -> u64 {
+        let position = line
+            .find(&format!(" {label}"))
+            .unwrap_or_else(|| panic!("no `{label}` in {line}"));
+        let digits: String = line[..position]
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect::<Vec<char>>()
+            .into_iter()
+            .rev()
+            .collect();
+        digits.parse().unwrap()
+    };
+    if count_before("bodies,") == 0 {
+        return None;
+    }
+    Some(labels.iter().map(|label| count_before(label)).collect())
+}
+
+/// `--jit-statistics` counts what the optimized copies inlined and what
+/// became of it: a program whose blocks are eliminated inside inlined
+/// scopes and made by its exits counts the scopes, the type-case arms,
+/// the blocks eliminated and materialized, the inlined frames its exits
+/// wrote and the budget exits whose walk found the recompilee above; and
+/// a loop whose inlined callees allocate counts the polls it went back
+/// into its code at, after each scavenge.
+#[test]
+fn jit_statistics_count_what_inlining_did() {
+    let Some(counts) = plain_jit_counts(
+        "runtime/optimizer/eliminated_block_seen_after_an_exit",
+        &[
+            "scopes inlined",
+            "type-case arms",
+            "blocks eliminated",
+            "blocks materialized",
+            "inlined frames materialized",
+            "budget exits",
+            "recompilees above",
+        ],
+    ) else {
+        return;
+    };
+    assert!(counts.iter().all(|count| *count > 0), "{counts:?}");
+    let reentries = plain_jit_counts(
+        "runtime/optimizer/allocating_inlined_loop",
+        &["poll re-entries", "polls without an entry"],
+    )
+    .expect("a target with a JIT");
+    assert!(reentries[0] > 0, "{reentries:?}");
+    assert_eq!(reentries[1], 0, "{reentries:?}");
 }
 
 /// `--collector-statistics` prints the collector's counts and pauses to

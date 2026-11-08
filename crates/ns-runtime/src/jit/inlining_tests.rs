@@ -772,6 +772,122 @@ fn the_prologue_holds_the_room_to_the_deepest_extent() {
     assert!(extents.is_empty(), "room enough");
 }
 
+/// `outer:` inlines `helper:`, whose locals reach past `outer:`'s own
+/// window, so that its copy's deepest extent lies above the window end
+/// of the frame a push of `outer:` makes.
+const ROOM_AT_A_PUSH: &str = indoc! {"
+    class Subject = Object new () (
+      helper: number = (
+        | a b c d e f g h |
+        a:: number.
+        b:: a.
+        c:: b.
+        d:: c.
+        e:: d.
+        f:: e.
+        g:: f.
+        h:: g.
+        ^h + 1
+      )
+      public outer: number = (
+        ^self helper: number
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 3000] whileTrue: [
+          sum:: sum + (self outer: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    )
+"};
+
+/// The run loop's push of a body whose optimized copy inlines enters the
+/// copy only where the frame has the room its inlined scopes reach
+/// (`jit::entered`): with every push seating the ordinary end at the
+/// pushed frame's window end, each host send of `outer:` goes on in its
+/// baseline code, whose call of `helper:` grows the stack first, and
+/// nothing is written past the seated end -- where entering the copy
+/// would write `helper:`'s registers -- and every answer is the
+/// interpreter's. Without the seat the same sends run the copy, which
+/// grows nothing.
+#[test]
+fn a_push_enters_no_copy_whose_inlined_scopes_pass_the_stack_s_end() {
+    let module = ns_syntax::parse(ROOM_AT_A_PUSH).expect("parse");
+    let resolved = crate::resolve(
+        module,
+        ROOM_AT_A_PUSH.into(),
+        SourceOrigin::File("room.ns".into()),
+    )
+    .unwrap_or_else(|_| panic!("the module resolves"));
+    let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_caches(false);
+    interpreter.set_jit_enabled(true);
+    interpreter.set_jit_stress(true);
+    let class = interpreter.load_module(&resolved);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let outer = Symbol::intern("outer:");
+    let send_outer = |interpreter: &mut Interpreter, number: i64| {
+        let argument = interpreter.stash(crate::Value::small_integer(number));
+        let answer = expect_ok(interpreter.send(&instance, outer, &[argument]), "outer:");
+        interpreter.enter(|mutator| mutator.fetch(&answer).as_small_integer())
+    };
+    // The caches fill before `outer:` is optimized, so that its copy
+    // inlines what its send reached.
+    let run = |interpreter: &mut Interpreter| {
+        let answer = expect_ok(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run",
+        );
+        interpreter.enter(|mutator| mutator.fetch(&answer).as_small_integer())
+    };
+    let sum: i64 = (1..=3000).sum();
+    assert_eq!(run(&mut interpreter), Some(sum));
+    interpreter.set_optimize_stress(true);
+    assert_eq!(run(&mut interpreter), Some(sum));
+    let stressed = std::env::vars_os().any(|(name, value)| {
+        name.to_string_lossy().starts_with("NS_NEXT_STRESS_") && !value.is_empty() && value != "0"
+    });
+    let inlined = interpreter.jit_inlined_bodies(&class, MethodSide::Instance, outer);
+    if !stressed {
+        assert_eq!(inlined, 1, "`outer:`'s copy inlines `helper:`");
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_outer(&mut interpreter, 41), Some(42));
+        let after = interpreter.jit_statistics();
+        assert_eq!(
+            after.stack_growths, before.stack_growths,
+            "without the seat the copy runs, inlining the call"
+        );
+    }
+    interpreter.enter(|mutator| mutator.heap.set_seat_ordinary_end_at_top(true));
+    let before = interpreter.jit_statistics();
+    for number in 0..10 {
+        assert_eq!(send_outer(&mut interpreter, number), Some(number + 1));
+    }
+    let after = interpreter.jit_statistics();
+    let disturbances = interpreter.enter(|mutator| {
+        mutator.heap.set_seat_ordinary_end_at_top(false);
+        mutator.heap.seat_disturbances()
+    });
+    assert_eq!(
+        disturbances, 0,
+        "nothing is written past a seated ordinary end before the stack grows"
+    );
+    if !stressed {
+        assert!(
+            after.stack_growths > before.stack_growths,
+            "baseline code's call of `helper:` grows the stack: {} to {}",
+            before.stack_growths,
+            after.stack_growths
+        );
+    }
+}
+
 /// An inlined site that only ever saw one receiver meets another: the
 /// type-case traps, the trap sets the site's trapped bit, the copy is
 /// retired at its second trap there, and the copy compiled again has the

@@ -1,0 +1,67 @@
+/// An inlined callee whose rare way sends to a method nothing has run
+/// yet: `run:` adds `step:` of every index in a loop, and `step:` is
+/// inlined into it. Thirty runs never reach the way of `step:` that sends
+/// `late:`, so the copy of `run:` compiled from them inlines `step:`
+/// without it; then a last run lowers the bound, and from its index 5001
+/// on `step:` sends `late:`. That way had not run when the copy was
+/// compiled, so the copy leaves its code there -- from inside the inlined
+/// scope, whose frame the exit writes in place -- for the interpreter,
+/// which runs `late:`, not compiled yet, and the run goes on. `step:`
+/// answers an index's remainder by 7, and so does `late:` but for the
+/// multiples of 1000, which it answers themselves, and for 9999, for
+/// which it answers 1000000.
+///
+/// Over 1 to 10000 the remainders by 7 sum to 1428 rounds of 0 to 6,
+/// 29988, and 9997 to 10000 add 1 + 2 + 3 + 4: 29998, and thirty runs
+/// 899940. In the last run 6000 to 10000 take out their remainders, 1, 0,
+/// 6, 5 and 4, and add themselves, 40000; 9999 takes out its 3 and adds
+/// 1000000: 29998 - 16 + 40000 - 3 + 1000000 = 1069979. `late:` counts
+/// its calls, one for each of 5001 to 10000: 5000.
+class InlinedCalleeExitsToAnUncompiledCallee = Object new (
+  |
+    bound ::= 10000.
+    lateCalls ::= 0.
+  |
+) (
+  step: index = (
+    index > bound ifTrue: [^late: index].
+    ^index \\ 7.
+  )
+
+  late: index = (
+    lateCalls:: lateCalls + 1.
+    index \\ 1000 = 0 ifTrue: [^index].
+    index = 9999 ifTrue: [^1000000].
+    ^index \\ 7.
+  )
+
+  run: count = (
+    |
+      total ::= 0.
+      index ::= 1.
+    |
+    [index <= count] whileTrue: [
+      total:: total + (step: index).
+      index:: index + 1.
+    ].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      sum ::= 0.
+    |
+    1 to: 30 do: [:round | sum:: sum + (run: 10000)].
+    transcript
+        show: sum printString;
+        newLine.
+    bound:: 5000.
+    transcript
+        show: (run: 10000) printString;
+        newLine.
+    transcript
+        show: lateCalls printString;
+        newLine.
+  )
+)

@@ -208,9 +208,23 @@ pub(crate) fn compile_tree(
         eliminated,
         push_entry,
         polls,
+        type_case_arms: type_case_arms(&graph),
         #[cfg(test)]
         small_integer_tag_tests,
     })
+}
+
+/// The arms of every type-case `graph` lays out.
+#[cfg(ns_jit)]
+fn type_case_arms(graph: &graph::Graph) -> u32 {
+    graph
+        .blocks
+        .iter()
+        .map(|block| match &block.end {
+            graph::End::TypeCase { arms, .. } => u32::try_from(arms.len()).unwrap_or(u32::MAX),
+            _ => 0,
+        })
+        .fold(0, u32::saturating_add)
 }
 
 /// Whether `graph` lays out code for each of its scopes, by its index:

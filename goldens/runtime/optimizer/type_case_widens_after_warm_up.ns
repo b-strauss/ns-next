@@ -1,0 +1,87 @@
+/// One send site whose receivers widen after the optimized copy holding
+/// it was compiled: `areaOf:times:` sends `area` to each element of an
+/// Array, and `area` is a method of three unrelated classes, small enough
+/// to be inlined as a type-case arm. Each phase sends `areaOf:times:` a
+/// hundred times, so that a copy left for a receiver it has no arm for is
+/// entered again. The first phase runs only circles, so the copy compiled
+/// then inlines one arm, and its type-case traps for any other receiver;
+/// the second adds squares, which trap, twice, so that the copy is made
+/// not entrant and the copy compiled after them inlines both; the third
+/// adds triangles, which that copy's site, which trapped, sends; the
+/// fourth runs circles again. A circle of radius r has the area 3 * r *
+/// r, a square of side s s * s and a triangle of base b and height h b *
+/// h // 2. The phases' Arrays sum to 3 + 12 = 15, 3 + 9 + 12 + 16 = 40
+/// and 5 + 9 + 3 + 8 = 25 a round, and each phase runs 100 times 100
+/// rounds: 150000, 400000, 250000 and 150000.
+class TypeCaseWidensAfterWarmUp = Object new () (
+  class Circle radius: radius = Object new (
+    |
+      private radius = radius.
+    |
+  ) (
+    public area = (
+      ^3 * radius * radius.
+    )
+  )
+
+  class Square side: side = Object new (
+    |
+      private side = side.
+    |
+  ) (
+    public area = (
+      ^side * side.
+    )
+  )
+
+  class Triangle base: base height: height = Object new (
+    |
+      private base = base.
+      private height = height.
+    |
+  ) (
+    public area = (
+      ^base * height // 2.
+    )
+  )
+
+  areaOf: shapes times: rounds = (
+    |
+      total ::= 0.
+      round ::= 0.
+      index ::= 0.
+    |
+    [round < rounds] whileTrue: [
+      index:: 1.
+      [index <= shapes size] whileTrue: [
+        total:: total + (shapes at: index) area.
+        index:: index + 1.
+      ].
+      round:: round + 1.
+    ].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      circles = {Circle radius: 1. Circle radius: 2}.
+      squares = {Circle radius: 1. Square side: 3. Circle radius: 2. Square side: 4}.
+      triangles = {
+        Triangle base: 2 height: 5.
+        Square side: 3.
+        Circle radius: 1.
+        Triangle base: 4 height: 4.
+      }.
+    |
+    {circles. squares. triangles. circles} do: [:shapes |
+      |
+        sum ::= 0.
+      |
+      1 to: 100 do: [:time | sum:: sum + (areaOf: shapes times: 100)].
+      transcript
+          show: sum printString;
+          newLine.
+    ].
+  )
+)
