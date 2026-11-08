@@ -1886,21 +1886,23 @@ impl<'tree> Planner<'tree> {
     }
 }
 
-/// The share of its last arming, `armed`, a row holding `remaining`
-/// spent, from 0 to 1: of the plain budget, a test's own, or a retired
-/// copy's longer wait alike. A parked row, `i64::MAX`, ran its whole
-/// budget and waits for its compile, and a row armed at 0 -- the optimize
-/// stress mode's -- spent it at its first spend.
+/// The share of the plain budget, `plain` -- `OPTIMIZATION_BUDGET`, or a
+/// test's own -- that a row holding `remaining` spent since it was armed
+/// with `armed`, at most 1: the instructions the body ran, in the same
+/// units for every body, whether its row waits the plain budget or a
+/// retired copy's longer wait (decision 7). A parked row, `i64::MAX`, ran
+/// its whole budget and waits for its compile, and under a plain budget
+/// of 0 -- the optimize stress mode's -- every spend runs it out.
 #[expect(
     clippy::cast_precision_loss,
     reason = "a budget's waits need far fewer than 53 bits"
 )]
-pub(crate) fn budget_share(remaining: i64, armed: i64) -> f64 {
-    if remaining == i64::MAX || armed <= 0 {
+pub(crate) fn budget_share(remaining: i64, armed: i64, plain: i64) -> f64 {
+    if remaining == i64::MAX || plain <= 0 {
         return 1.0;
     }
-    let spent = armed.saturating_sub(remaining).clamp(0, armed);
-    spent as f64 / armed as f64
+    let spent = armed.saturating_sub(remaining).max(0);
+    (spent as f64 / plain as f64).min(1.0)
 }
 
 /// What a scope about to be added knows of its receiver and level.

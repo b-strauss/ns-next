@@ -573,11 +573,13 @@ pub(crate) struct JitSlot {
     /// holds its key's (`CustomizedCopy::version`).
     optimized_version: Cell<u8>,
     /// What the body's budget row was last armed with afresh -- the
-    /// plain budget, or a retired copy's longer wait -- against which
-    /// what the row holds says how much of its wait the body spent
-    /// (`budget_share_of`). Kept on the body rather than the row, which a
-    /// full collection renumbers and arms with what was left of it.
-    budget_armed: Cell<i64>,
+    /// plain budget, or a retired copy's longer wait -- and the plain
+    /// budget at that arming: what the row holds against the first says
+    /// how many instructions the body spent since, which the second
+    /// measures (`budget_share_of`). Kept on the body rather than the
+    /// row, which a full collection renumbers and arms with what was left
+    /// of it.
+    budget_arming: Cell<BudgetArming>,
     /// The traps the body's one uncustomized copy took, as a copy's row
     /// counts its key's (`CustomizedCopy::traps`).
     optimized_traps: Cell<u8>,
@@ -691,6 +693,34 @@ impl OptimizationRequest {
     }
 }
 
+/// A budget row's last arming afresh (`JitSlot::budget_arming`): what it
+/// was armed with, and the plain budget then.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BudgetArming {
+    armed: i64,
+    plain: i64,
+}
+
+impl JitSlot {
+    /// Records that the body's row was armed afresh with `armed`, the
+    /// plain budget being `plain`.
+    pub(crate) fn record_budget_arming(&self, armed: i64, plain: i64) {
+        self.budget_arming.set(BudgetArming { armed, plain });
+    }
+
+    /// Records that a cache fill raised the body's row by `raised`
+    /// (`Heap::raise_running_optimization_budget`): the raise makes the
+    /// body wait for its feedback to settle and forgets nothing it spent,
+    /// so that the arming grows by as much.
+    pub(crate) fn record_budget_raise(&self, raised: i64) {
+        let arming = self.budget_arming.get();
+        self.budget_arming.set(BudgetArming {
+            armed: arming.armed.saturating_add(raised),
+            ..arming
+        });
+    }
+}
+
 impl Default for JitSlot {
     fn default() -> JitSlot {
         JitSlot {
@@ -706,7 +736,7 @@ impl Default for JitSlot {
             back_jumps: Cell::new(0),
             optimized: Cell::new(NO_BODY),
             optimized_version: Cell::new(0),
-            budget_armed: Cell::new(0),
+            budget_arming: Cell::new(BudgetArming::default()),
             optimized_traps: Cell::new(0),
             optimized_refused: Cell::new(false),
             copies: RefCell::new(Vec::new()),
@@ -1620,13 +1650,6 @@ pub(crate) struct JitState {
     /// and so that no further run-out walks again meanwhile -- and are
     /// armed afresh there, at that version's wait (`optimize_requested`).
     pub(crate) parked_for_recompilees: Vec<(Weak<CompiledCode>, u8)>,
-    /// The header offsets of the frames the last exit wrote from
-    /// optimized code -- each physical frame of a copy, and each scope it
-    /// had inlined -- which the recompilee walk does not go up to
-    /// (`find_recompilee`): cleared at every entry into machine code and
-    /// once the walk has read it, so that no offset outlives the frames
-    /// it named.
-    pub(crate) rebuilt_from_optimized: Vec<u32>,
     /// The installed bodies, by index in `bodies`, whose budget word is
     /// still to be pointed at their row, which only a caller holding the
     /// heap can do (`after_compile_trigger`). Emptied by a compaction,
@@ -1934,7 +1957,6 @@ impl JitState {
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
             parked_for_recompilees: Vec::new(),
-            rebuilt_from_optimized: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: if optimize_stress {
                 0
@@ -2126,12 +2148,6 @@ impl JitState {
     pub(crate) fn set_optimization_budget(&mut self, budget: i64) -> i64 {
         self.budget_set = budget;
         self.optimization_budget = if self.optimize_stress { 0 } else { budget };
-        // Every armed row is armed afresh with it (`Heap::rearm_optimization_budgets`).
-        for body in self.bodies.iter().filter(|body| !body.free) {
-            if let Some(code) = body.code.upgrade() {
-                code.jit.budget_armed.set(self.optimization_budget);
-            }
-        }
         self.optimization_budget
     }
 
@@ -2977,7 +2993,6 @@ impl JitState {
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
             parked_for_recompilees: Vec::new(),
-            rebuilt_from_optimized: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: OPTIMIZATION_BUDGET,
             budget_set: OPTIMIZATION_BUDGET,
@@ -5056,7 +5071,8 @@ fn point_budget_word(
         // What a collection carries is what was left of the arming the
         // body keeps.
         if carried.is_none() {
-            code.jit.budget_armed.set(mutator.jit.optimization_budget);
+            let plain = mutator.jit.optimization_budget;
+            code.jit.record_budget_arming(plain, plain);
         }
         let left = carried.unwrap_or(mutator.jit.optimization_budget);
         mutator.heap.arm_optimization_budget(budget.id, left);
@@ -5277,15 +5293,12 @@ pub(crate) fn find_recompilee(
         if distance > RECOMPILEE_SEARCH_LENGTH {
             break;
         }
-        // A frame the exit rebuilt from an inlined scope of optimized code
-        // runs no copy of its own, and no request for one would ever be
-        // entered from the copy it was inlined in, as Strongtalk stops at
-        // a compiled frame.
-        if mutator
-            .jit
-            .rebuilt_from_optimized
-            .contains(&Heap::activation_offset(next))
-        {
+        // A frame whose body a copy below it inlined -- a scope an exit
+        // rebuilt, now or at any earlier exit, or a frame its caller's
+        // baseline code pushed while that caller has its copy -- would
+        // have a copy of its own that the copy below never enters: the
+        // walk stops, as Strongtalk stops at a compiled frame.
+        if inlined_into_a_copy_below(mutator, next) {
             break;
         }
         let Some(candidate) = recompilable(mutator, next, step) else {
@@ -5303,6 +5316,35 @@ pub(crate) fn find_recompilee(
         current = next;
     }
     current
+}
+
+/// Whether `activation`'s body is inlined into the copy of a frame below
+/// it: the first frame down its senders, within `RECOMPILEE_SEARCH_LENGTH`,
+/// whose pair has its copy installed (`JitState::optimized_for`), when
+/// that copy's inlined bodies (`CopyDependencies::code_ids`) hold
+/// `activation`'s and every body between. Conservative where the copy
+/// inlines the body at another site than the one that sent it: the walk
+/// then requests the frame above, as it would without the copy.
+#[cfg(ns_jit)]
+fn inlined_into_a_copy_below(mutator: &Mutator<'_>, activation: ActivationReference) -> bool {
+    let heap = &mutator.heap;
+    let mut bodies = vec![heap.activation_code_id(activation)];
+    let mut frame = activation;
+    for _ in 0..RECOMPILEE_SEARCH_LENGTH {
+        let Some(sender) = heap.activation_sender(frame) else {
+            return false;
+        };
+        let code = heap.activation_code(sender);
+        let key = activation_key(heap, &code, sender);
+        if let Some(copy) = mutator.jit.optimized_for(&code, key) {
+            return bodies
+                .iter()
+                .all(|body| copy.dependencies.code_ids.contains(body));
+        }
+        bodies.push(heap.activation_code_id(sender));
+        frame = sender;
+    }
+    false
 }
 
 /// How the walk went up from a frame (`sender_or_parent_of`).
@@ -5460,16 +5502,33 @@ fn recompilable(
     })
 }
 
-/// The share of its last arming `code`'s armed budget row says the
-/// body spent (`plan::budget_share`), `None` for a row not armed: what
-/// the walk's stop and the plan's frequency read alike.
+/// The share of the plain budget `code`'s armed budget row says the
+/// body spent since its last arming (`plan::budget_share`), `None` for a
+/// row not armed: what the walk's stop and the plan's frequency read
+/// alike.
 #[cfg(ns_jit)]
 pub(crate) fn budget_share_of(heap: &Heap<'_>, code: &Rc<CompiledCode>) -> Option<f64> {
     let remaining = heap.armed_optimization_budget(code)?;
+    let arming = code.jit.budget_arming.get();
     Some(optimizing::plan::budget_share(
         remaining,
-        code.jit.budget_armed.get(),
+        arming.armed,
+        arming.plain,
     ))
+}
+
+/// Re-arms every armed budget row with `budget`
+/// (`Heap::rearm_optimization_budgets`) and records the arming on every
+/// live body, so that what a row holds is measured against it: what the
+/// test hooks that set the budget or a stress mode do.
+#[cfg(ns_jit)]
+pub(crate) fn rearm_all_budgets(mutator: &mut Mutator<'_>, budget: i64) {
+    mutator.heap.rearm_optimization_budgets(budget);
+    for body in mutator.jit.bodies.iter().filter(|body| !body.free) {
+        if let Some(code) = body.code.upgrade() {
+            code.jit.record_budget_arming(budget, budget);
+        }
+    }
 }
 
 /// Whether the inlining plan a compile of `candidate` would make inlines
@@ -5685,7 +5744,8 @@ fn levels_to<'gc>(
 fn rearm_optimization_budget(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, version: u8) {
     let budget = mutator.heap.optimization_budget_of(code);
     let armed = optimization_budget_after(mutator.jit.optimization_budget, version);
-    code.jit.budget_armed.set(armed);
+    code.jit
+        .record_budget_arming(armed, mutator.jit.optimization_budget);
     mutator.heap.arm_optimization_budget(budget.id, armed);
 }
 
@@ -6475,7 +6535,6 @@ fn run_machine_code(
     mutator.jit.walked_optimized = false;
     mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
-    mutator.jit.rebuilt_from_optimized.clear();
     let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
     // was materialized, none goes on interpreted and nothing exited.
@@ -6688,7 +6747,6 @@ fn call_through(
     mutator.jit.walked_optimized = false;
     mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
-    mutator.jit.rebuilt_from_optimized.clear();
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
         // No exit took the seed.
@@ -7004,7 +7062,6 @@ fn resumption_after_exit(
             mutator.jit.statistics.budget_exits += 1;
             let recompilee = find_recompilee(mutator, innermost);
             request_recompilee(mutator, innermost, recompilee);
-            mutator.jit.rebuilt_from_optimized.clear();
             Resumption::Interpreted {
                 activation: innermost,
                 program_counter,

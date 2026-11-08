@@ -6963,7 +6963,12 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn raise_running_optimization_budget(&mut self, at_least: i64) {
         if let Some(activation) = self.top_activation() {
             let id = self.activation_code_id(activation);
-            self.optimization_budgets.raise(id, at_least);
+            let raised = self.optimization_budgets.raise(id, at_least);
+            if raised > 0 {
+                self.activation_code(activation)
+                    .jit
+                    .record_budget_raise(raised);
+            }
         }
     }
 

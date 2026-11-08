@@ -11324,3 +11324,71 @@ ns_runtime::for_each_lowering! {
         assert!(done.optimized_bodies >= 1, "{done:?}");
     }
 }
+
+/// `run:`'s loop, heavy enough to run its budget out first, sending
+/// `pick:at:`, which sends `weigh:` to an `A` and a `B` in turn: `run:`'s
+/// copy, inlining `pick:at:`, is installed while its first activation
+/// goes on in baseline code, which pushes `pick:at:` as a frame of its
+/// own; `B>>weigh:` runs out under such a frame later in that activation.
+/// `run: 600` answers 180000.
+const A_SENDER_ITS_CALLERS_COPY_INLINES: &str = indoc! {"
+    class Subject = Object new () (
+      class A = Object new () (
+        public weigh: value = (
+          ^value + 1
+        )
+      )
+      class B = Object new () (
+        public weigh: value = (
+          ^(value * 3) + (value * 5) + (value * 7) - (value * 14)
+        )
+      )
+      public receivers = (
+        ^(Array new: 2)
+          at: 1 put: A new;
+          at: 2 put: B new;
+          yourself
+      )
+      public classB = (
+        ^B
+      )
+      pick: receivers at: index = (
+        ^(receivers at: (index \\\\ receivers size) + 1) weigh: index
+      )
+      public run: receivers = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 600] whileTrue: [
+          sum:: sum + (self pick: receivers at: index) + ((index * 3) + (index * 5) - (index * 8)).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The walk stops at a sender whose body the copy of its own caller
+    /// inlines, though no exit rebuilt it from an inlined scope:
+    /// `B>>weigh:`'s run-out under `pick:at:`, pushed by `run:`'s baseline
+    /// code after `run:`'s copy was installed, requests `B>>weigh:`
+    /// itself -- a copy of `pick:at:` would never be entered from `run:`'s
+    /// copy, which inlines it. Pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
+    fn the_walk_stops_at_a_sender_a_copy_below_inlines(lowering) {
+        let (mut interpreter, class, subject) =
+            walking(A_SENDER_ITS_CALLERS_COPY_INLINES, lowering);
+        let receivers = class_answered(&mut interpreter, &subject, "receivers");
+        assert_eq!(send_with(&mut interpreter, &subject, "run:", &receivers), 180_000);
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        assert_eq!(copies_of(&mut interpreter, &class, "run:"), 1, "`run:` first");
+        assert!(inlined_by(&mut interpreter, &class, "run:") >= 1);
+        let class_b = class_answered(&mut interpreter, &subject, "classB");
+        assert_eq!(copies_of(&mut interpreter, &class_b, "weigh:"), 1, "`B>>weigh:` itself");
+        assert_eq!(copies_of(&mut interpreter, &class, "pick:at:"), 0);
+    }
+}

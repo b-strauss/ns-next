@@ -1381,7 +1381,7 @@ impl Interpreter {
         self.enter(|mutator| {
             let budget = mutator.jit.set_optimize_stress(stress);
             #[cfg(ns_jit)]
-            mutator.heap.rearm_optimization_budgets(budget);
+            crate::jit::rearm_all_budgets(mutator, budget);
             #[cfg(not(ns_jit))]
             let _ = budget;
         });
@@ -1399,7 +1399,7 @@ impl Interpreter {
         self.enter(|mutator| {
             let budget = mutator.jit.set_deopt_stress(stress);
             #[cfg(ns_jit)]
-            mutator.heap.rearm_optimization_budgets(budget);
+            crate::jit::rearm_all_budgets(mutator, budget);
             #[cfg(not(ns_jit))]
             let _ = budget;
         });
@@ -1417,7 +1417,7 @@ impl Interpreter {
         self.enter(|mutator| {
             let budget = mutator.jit.set_invalidate_stress(stress);
             #[cfg(ns_jit)]
-            mutator.heap.rearm_optimization_budgets(budget);
+            crate::jit::rearm_all_budgets(mutator, budget);
             #[cfg(not(ns_jit))]
             let _ = budget;
         });
@@ -1455,7 +1455,7 @@ impl Interpreter {
         self.enter(|mutator| {
             let armed = mutator.jit.set_optimization_budget(budget);
             #[cfg(ns_jit)]
-            mutator.heap.rearm_optimization_budgets(armed);
+            crate::jit::rearm_all_budgets(mutator, armed);
             #[cfg(not(ns_jit))]
             let _ = armed;
         });
