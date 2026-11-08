@@ -9387,6 +9387,30 @@ impl<'gc> Heap<'gc> {
     }
 
     /// What `activation` was activated for.
+    /// Whether `activation` runs a block: a closure's activation, its
+    /// closure made or, for an inlined block's activation a leaf runs in,
+    /// not yet (`closure_not_made`). Read from the kind tag alone.
+    pub(crate) fn activation_runs_a_block(&self, activation: ActivationReference) -> bool {
+        self.check_activation(activation);
+        self.stack.flags(activation.offset).kind_tag == kind_tag::CLOSURE
+    }
+
+    /// Whether `activation` is an inlined block's activation whose closure
+    /// optimized code never made (`jit::materialize`'s leaf view of it):
+    /// a closure's kind with `nil` for its closure, which `activation_kind`
+    /// cannot answer. Only a leaf called inside the inlined block meets
+    /// one; every reader a leaf reaches decides what it asks of the
+    /// closure from the activation's code instead.
+    fn closure_not_made(&self, activation: ActivationReference) -> bool {
+        let offset = activation.offset;
+        self.stack.flags(offset).kind_tag == kind_tag::CLOSURE
+            && self
+                .stack
+                .header_word(offset, frame_header::OPERAND)
+                .object_offset()
+                .is_none()
+    }
+
     pub fn activation_kind(&self, activation: ActivationReference) -> ActivationKind<'gc> {
         self.check_activation(activation);
         let offset = activation.offset;
@@ -9455,6 +9479,14 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
     ) -> bool {
         self.check_activation(activation);
+        // An inlined block's activation a leaf runs in names no closure
+        // yet, so no captured frame to walk: its code says, as it says for
+        // every block made in a body-less declaration's own code
+        // (`CompiledCode::mark_declaration_code`), whose activations run at
+        // that declaration's class object alone.
+        if self.closure_not_made(activation) {
+            return self.activation_code(activation).is_declaration_code();
+        }
         let closure = match self.activation_kind(activation) {
             ActivationKind::Initializer(level, InitializerBody::Full) => return level.same(class),
             ActivationKind::Closure(closure) => closure,

@@ -20,7 +20,9 @@ use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterB
 use crate::interpreter::future::{not_a_closure, value_for_a_value_slot, Resolution};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
-use crate::interpreter::literals::{body_too_large_error, unresolved_identifier_error};
+use crate::interpreter::literals::{
+    body_named, body_too_large_error_named, unresolved_identifier_error, BLOCK_BODY,
+};
 use crate::interpreter::locals::{
     check_own_slots, filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
     receiver_keeps_entered_level, store_instance_field, store_vector, write_local,
@@ -3361,8 +3363,14 @@ fn make_value<'gc>(
         }
         Literal::BodyTooLarge(limit) => {
             let receiver = mutator.heap.activation_receiver(activation);
-            let kind = mutator.heap.activation_kind(activation);
-            return Err(body_too_large_error(kind, receiver, *limit));
+            // The activation of an inlined block a leaf runs in names no
+            // closure yet: a block's body is named without it.
+            let named = if mutator.heap.activation_runs_a_block(activation) {
+                BLOCK_BODY
+            } else {
+                body_named(mutator.heap.activation_kind(activation))
+            };
+            return Err(body_too_large_error_named(named, receiver, *limit));
         }
     })
 }

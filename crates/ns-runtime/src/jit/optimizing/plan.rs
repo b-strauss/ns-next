@@ -33,7 +33,7 @@ use crate::builtins::primitive::{
     BlockPrimitive, BytePrimitive, CollectionPrimitive, IntegerPrimitive, ObjectPrimitive,
     Primitive, MIRROR,
 };
-use crate::bytecode::{CodeKind, Literal, HEADER_REGISTERS};
+use crate::bytecode::{CodeKind, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId};
 use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, QuickConstant};
 use crate::types::BuiltinClass;
@@ -1401,10 +1401,11 @@ impl<'tree> Planner<'tree> {
     /// root is a block's body, whose own home lies below the compile. An
     /// inlined block reaches its homes' registers as physical ones and
     /// returns from its home as a jump, which neither can be past the
-    /// compile. A literal of a body too large to compile, whose error
-    /// names the running activation's kind, is reached too: a leaf called
-    /// in an inlined block's scope reads an activation whose closure is
-    /// not made yet.
+    /// compile. Nothing else of a block keeps it out: a leaf called inside
+    /// its scope reads an activation whose closure is not made yet, and
+    /// every reader a leaf reaches -- the kind a body too large to compile
+    /// is named after, whether the code is a body-less declaration's own --
+    /// decides it from the code (`Heap::activation_runs_a_block`).
     fn reaches_past_the_compile(&self, block: BlockKey, snapshot: &Snapshot) -> bool {
         // The scope that is `depth` frames out from the block's own: its
         // home, then each home's home while each is a block scope.
@@ -1430,10 +1431,6 @@ impl<'tree> Planner<'tree> {
                     }
                     home == ScopeId::ROOT && self.tree.root.facts.kind == CodeKind::Block
                 }
-                SnapshotInstruction::LoadLiteral {
-                    literal: Literal::BodyTooLarge(_),
-                    ..
-                } => true,
                 _ => false,
             })
     }

@@ -35,13 +35,33 @@ pub(crate) fn body_too_large_error<'gc>(
     receiver: Value<'gc>,
     limit: BodyLimit,
 ) -> Signal<'gc> {
-    let (selector, body) = match kind {
+    body_too_large_error_named(body_named(kind), receiver, limit)
+}
+
+/// The selector and the body a body too large to compile is named after,
+/// for an activation of `kind` (`body_too_large_error`).
+pub(crate) fn body_named(kind: ActivationKind<'_>) -> (Symbol, &'static str) {
+    match kind {
         ActivationKind::Method(selector) => (selector, "method"),
-        ActivationKind::Closure(_) => (Symbol::VALUE, "block"),
+        ActivationKind::Closure(_) => BLOCK_BODY,
         ActivationKind::Initializer(..) | ActivationKind::TopLevel => (Symbol::NEW, "initializer"),
         ActivationKind::Factory(_) => (Symbol::NEW, "factory"),
         ActivationKind::SuperclassClause(_) => (Symbol::NEW, "superclass clause"),
-    };
+    }
+}
+
+/// What a block's body too large to compile is named after, whatever its
+/// closure: the activation of an inlined block a leaf reads names no
+/// closure yet (`Heap::activation_runs_a_block`).
+pub(crate) const BLOCK_BODY: (Symbol, &str) = (Symbol::VALUE, "block");
+
+/// `body_too_large_error` for a body named `(selector, body)`
+/// (`body_named`).
+pub(crate) fn body_too_large_error_named<'gc>(
+    (selector, body): (Symbol, &'static str),
+    receiver: Value<'gc>,
+    limit: BodyLimit,
+) -> Signal<'gc> {
     let reason = match limit {
         BodyLimit::Registers => format!("it needs more than {} registers", u16::MAX),
         BodyLimit::Arguments => format!(

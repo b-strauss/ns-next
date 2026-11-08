@@ -10254,8 +10254,10 @@ const BLOCKS_IN_A_TO_DO_LOOP: &str = indoc! {"
 ns_runtime::for_each_lowering! {
     /// A `to:do:` loop whose copy inlines `to:do:` with its block, and the
     /// block that block makes at every pass with the method it is handed
-    /// to, creates neither: 1,000 passes allocate fewer objects than the
-    /// 100 blocks `to:do:` is handed, and no exit makes a block. The answer
+    /// to, creates neither: no exit makes a block, and the 1,000 passes
+    /// allocate fewer objects than the 100 blocks `to:do:` is handed --
+    /// counted as the objects the space holds, which nothing but a
+    /// collection lowers, over a run no collection interrupts. The answer
     /// is the interpreter's.
     fn a_to_do_loop_inlined_with_its_block_creates_no_closure(lowering) {
         let (mut interpreter, class) = load_customizing(BLOCKS_IN_A_TO_DO_LOOP, lowering);
@@ -10269,6 +10271,11 @@ ns_runtime::for_each_lowering! {
             3,
         );
         let before = interpreter.jit_statistics();
+        let collected = |interpreter: &Interpreter| {
+            let collector = interpreter.collector_statistics();
+            (collector.scavenges, collector.collections)
+        };
+        let collections = collected(&interpreter);
         let objects = interpreter.heap_statistics().live_objects;
         assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 11000);
         let allocated = interpreter
@@ -10283,6 +10290,11 @@ ns_runtime::for_each_lowering! {
         }
         assert_eq!(done.materialized_blocks, 0, "{done:?}");
         assert_eq!(done.optimized_exits, 0, "{done:?}");
+        assert_eq!(
+            collected(&interpreter),
+            collections,
+            "no collection lowered the count"
+        );
         assert!(allocated < 100, "{allocated} objects for 1,000 passes");
     }
 }
@@ -10403,4 +10415,189 @@ ns_runtime::for_each_lowering! {
         assert!(done.optimized_exits >= 1, "{done:?}");
         assert_eq!(done.materialized_blocks, 0, "{done:?}");
     }
+}
+
+/// `bump:` and `early:` hand a `Truthy` -- no Boolean, whose `ifTrue:`
+/// evaluates its argument -- the fallback closure of an inlined
+/// conditional, a block that reads and writes its home's `count` by
+/// reference, and `early:`'s returns from its home; `bump:`'s sends `one`,
+/// which weighs too much to inline, an interrupt point inside the inlined
+/// block. `bump:` answers 11,
+/// `early:` 400, and `run: count` sums both `count` times, `count * 411`.
+const A_FALLBACK_BLOCK_WRITES_ITS_HOME_S_LOCAL: &str = indoc! {"
+    class Subject = Object new (
+      | truthy = Truthy new. |
+    ) (
+      class Truthy = () (
+        public ifTrue: action = (
+          ^action value
+        )
+      )
+
+      one = (
+        ^1 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0
+      )
+
+      bump: condition = (
+        | count ::= 0. |
+        condition ifTrue: [count:: count + self one].
+        count:: count + 10.
+        ^count
+      )
+
+      early: condition = (
+        | count ::= 3. |
+        condition ifTrue: [
+          count:: count + 1.
+          ^count * 100
+        ].
+        ^count
+      )
+
+      public run: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (self bump: truthy) + (self early: truthy).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A fallback closure, which reaches its home's local by reference, is
+    /// eliminated where the copy inlines the `ifTrue:` it is handed: its
+    /// reads and writes of `count` are its home's register, and its `^`
+    /// its home's return -- no exit makes a block, and 100 passes allocate
+    /// none of the 200 closures, over a run no collection interrupts.
+    /// Under the deopt stress mode the copy leaves inside the inlined
+    /// blocks, whose closures the exits make, retaining their home's
+    /// registers, and the interpreter's answer stands either way.
+    fn a_fallback_block_reaching_its_home_by_reference_is_eliminated(lowering) {
+        let (mut interpreter, class) =
+            load_customizing(A_FALLBACK_BLOCK_WRITES_ITS_HOME_S_LOCAL, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let pinned = run_until_inlining(
+            &mut interpreter,
+            &class,
+            &subject,
+            lowering,
+            ("run:", 41100),
+            5,
+        );
+        let before = interpreter.jit_statistics();
+        let collected = |interpreter: &Interpreter| {
+            let collector = interpreter.collector_statistics();
+            (collector.scavenges, collector.collections)
+        };
+        let collections = collected(&interpreter);
+        let objects = interpreter.heap_statistics().live_objects;
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 41100);
+        let allocated = interpreter
+            .heap_statistics()
+            .live_objects
+            .saturating_sub(objects);
+        let done = since(interpreter.jit_statistics(), before);
+        if pinned && !the_stress_mode_is_on("DEOPT") {
+            assert_eq!(done.materialized_blocks, 0, "{done:?}");
+            assert_eq!(done.optimized_exits, 0, "{done:?}");
+            assert_eq!(collected(&interpreter), collections, "no collection lowered the count");
+            assert!(allocated < 100, "{allocated} objects for 200 closures");
+        }
+
+        // Run first with nothing optimized, so that the copies the deopt
+        // stress mode compiles afterwards read full caches and eliminate
+        // the blocks: a copy compiled from empty ones would be left at its
+        // forced exits before its speculations ever trapped.
+        let (mut deoptimized, class) =
+            load_with(A_FALLBACK_BLOCK_WRITES_ITS_HOME_S_LOCAL, lowering);
+        deoptimized.set_jit_stress(true);
+        let subject = expect_ok(deoptimized.instantiate(&class, &[]), "instantiate");
+        assert_eq!(send_integer(&mut deoptimized, &subject, "run:", 100), 41100);
+        deoptimized.set_deopt_stress(true);
+        let before = deoptimized.jit_statistics();
+        for _ in 0..5 {
+            assert_eq!(send_integer(&mut deoptimized, &subject, "run:", 100), 41100);
+        }
+        let done = since(deoptimized.jit_statistics(), before);
+        // A stress mode that compiles copies before the caches fill, or frees
+        // them, leaves no copy that eliminates the blocks to be forced out.
+        if pins_the_tiers(lowering) {
+            assert!(done.materialized_blocks > 0, "{done:?}");
+        }
+    }
+}
+
+/// `run` sums `sumOf:` of a mixin a body-less declaration applies, first
+/// with a `Library`, then with an `OtherLibrary`: `sumOf:` hands an inlined
+/// `each:` a block whose implicit-receiver send `helper:` is a lexical
+/// send at depth 1 to the enclosing library, whose cell misses inside the
+/// inlined block once the second library arrives. `helper:` answers
+/// `count` either way, so `run` answers 240600000.
+#[cfg(debug_assertions)]
+const A_LEXICAL_SEND_IN_AN_APPLIED_MIXIN_S_BLOCK: &str = indoc! {"
+    class Subject = Object new () (
+      class Library = Object new () (
+        public class M = Object new () (
+          public each: action = (
+            action value: 1.
+            action value: 2.
+            action value: 3.
+          )
+          public sumOf: count = (
+            | total ::= 0. |
+            self each: [:value | total:: total + value + (helper: count)].
+            ^total
+          )
+        )
+        public helper: count = (
+          ^count + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 - 30
+        )
+      )
+      class OtherLibrary = Library new () (
+        public helper: count = (
+          ^count + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 2 - 60
+        )
+      )
+      class Holder on: library = Object new (
+        | library = library. |
+      ) (
+        public class Applied = Object new <: libraryM.
+        libraryM = (
+          ^library M
+        )
+      )
+      runWith: holder = (
+        | applied = holder Applied new. sum ::= 0. |
+        1 to: 2000 do: [:index | sum:: sum + (applied sumOf: index)].
+        ^sum
+      )
+      public run = (
+        | first = Holder on: Library new. second = Holder on: OtherLibrary new. sum ::= 0. |
+        1 to: 20 do: [:index | sum:: sum + (self runWith: first)].
+        1 to: 20 do: [:index | sum:: sum + (self runWith: second)].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// A leaf called inside an inlined block -- the miss leaf deciding the
+/// lexical send whose cell misses -- reads the block's activation, whose
+/// closure the copy never made, as the interpreter's would read: whether
+/// its code is a body-less declaration's own is its code's to say, which a
+/// debug build holds the frame to. The answer is the interpreter's. A
+/// debug build's, as the check is.
+#[cfg(debug_assertions)]
+#[test]
+fn a_leaf_reads_an_inlined_block_s_activation_whose_closure_is_not_made() {
+    let (mut interpreter, class) = load_spending_with(
+        A_LEXICAL_SEND_IN_AN_APPLIED_MIXIN_S_BLOCK,
+        Lowering::Optimized,
+    );
+    interpreter.set_jit_stress(true);
+    assert_eq!(run(&mut interpreter, &class), 240_600_000);
 }

@@ -5820,7 +5820,7 @@ pub(crate) fn resumed(
     match entry_of_frame(mutator, activation, code, feedback_base, program_counter) {
         Some(entry) if native_stack_has_room() => {
             #[cfg(all(test, ns_jit))]
-            inlining_tests::record_resumption(mutator, activation, program_counter);
+            inlining_tests::record_resumption(mutator, activation, program_counter, entry);
             mutator.jit.statistics.resumed_entries += 1;
             if mutator.jit.has_optimized_code(code) {
                 mutator.jit.statistics.optimized_bodies_resumed += 1;
@@ -5960,7 +5960,7 @@ pub(crate) fn at_back_edge(
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     let entry = entry_of_frame(mutator, activation, code, feedback_base, target)?;
     #[cfg(all(test, ns_jit))]
-    inlining_tests::record_resumption(mutator, activation, target);
+    inlining_tests::record_resumption(mutator, activation, target, entry);
     mutator.jit.statistics.back_edge_switches += 1;
     Some(run_machine_code(mutator, activation, register_base, entry))
 }

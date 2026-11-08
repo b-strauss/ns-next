@@ -75,6 +75,9 @@ pub(crate) struct Walk {
     /// the point, whose blocks are made once every frame is the stack's
     /// (`materialize_blocks`).
     blocks: Vec<BlocksAt>,
+    /// The header offset of the physical frame the last return address
+    /// lay in: the frame a refused push leaves the innermost.
+    last_physical_offset: Option<u32>,
 }
 
 /// A frame of optimized code stopped at an interrupt point that holds
@@ -125,6 +128,7 @@ impl Walk {
             last_physical: None,
             inlined: 0,
             blocks: Vec::new(),
+            last_physical_offset: None,
         };
     }
 
@@ -145,6 +149,7 @@ impl Walk {
             last_physical,
             inlined,
             blocks,
+            last_physical_offset,
         } = self;
         *last = None;
         *callee = None;
@@ -153,6 +158,7 @@ impl Walk {
         *last_physical = None;
         *inlined = 0;
         blocks.clear();
+        *last_physical_offset = None;
     }
 }
 
@@ -408,6 +414,7 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
             (offset, offset - u32::from(code.argument_count), physical)
         }
     };
+    walk.last_physical_offset = Some(Heap::activation_offset(physical));
     // A call made inside an inlined scope: its callee lies on that scope's
     // slots, and the call counted the scopes already (`BodyAssembler::call_send`).
     let (offset, register_base, code) = match &inlined {
@@ -458,7 +465,12 @@ pub(crate) fn materialize_innermost(
     let innermost = if kind == ExitKind::PushRefused as u64 {
         mutator.jit.exited_physical = walk.last_physical;
         // The last frame walked re-executes its send: the innermost.
-        if let Some(innermost) = walk.blocks.last_mut() {
+        let last_walked = walk.last_physical_offset;
+        if let Some(innermost) = walk
+            .blocks
+            .iter_mut()
+            .find(|walked| Some(walked.offset) == last_walked)
+        {
             innermost.below = false;
         }
         last

@@ -21,8 +21,8 @@ pub(crate) struct Recorder {
     /// Each frame that went on in its body's baseline code -- returned to
     /// (`jit::resumed`), or switched into it at a backward jump
     /// (`jit::back_edge_ready`): how many exits were recorded before it, its body,
-    /// the program counter it went on at and whether its frame was
-    /// reified, which makes it go on in its body's twin.
+    /// the program counter it went on at and whether the code it entered
+    /// is its body's twin, which a reified frame goes on in.
     resumptions: Vec<(usize, CodeId, u32, bool)>,
     /// Each block an exit made (`materialize::materialize_blocks`), with
     /// how many resumptions were recorded before it.
@@ -187,20 +187,29 @@ pub(crate) fn record_exit(
     }
 }
 
-/// Records the frame `activation`, returned to, going on in its body's
-/// baseline code at `program_counter` (`jit::resumed`).
+/// Records the frame `activation` going on in its body's baseline code at
+/// `program_counter`, entering it at `entry` -- returned to
+/// (`jit::resumed`) or switched into at a backward jump
+/// (`jit::back_edge_ready`) -- and whether that code is the body's twin.
 pub(crate) fn record_resumption(
     mutator: &mut Mutator<'_>,
     activation: ActivationReference,
     program_counter: u32,
+    entry: ns_memory::CodeOffset,
 ) {
     let code = mutator.heap.activation_code_id(activation);
-    let reified = mutator.heap.activation_reified(activation).is_some();
+    let twin = mutator
+        .jit
+        .zone
+        .as_ref()
+        .map(|zone| zone.writer.zone().executable_address(entry))
+        .and_then(|address| mutator.jit.body_of(address))
+        .is_some_and(|installed| installed.reifies);
     if let Some(recorder) = mutator.jit.recorder.as_mut() {
         let exits = recorder.exits.len();
         recorder
             .resumptions
-            .push((exits, code, program_counter, reified));
+            .push((exits, code, program_counter, twin));
     }
 }
 
@@ -1149,9 +1158,9 @@ fn the_home_of_a_materialized_block_goes_on_in_its_twin() {
             block.home == step
                 && recorder.resumptions[*resumed_before..]
                     .iter()
-                    .any(|(_, resumed, _, reified)| *resumed == step && *reified)
+                    .any(|(_, resumed, _, twin)| *resumed == step && *twin)
         }),
-        "`step:with:` goes on in machine code, reified, after an exit made its block: {:?} {:?}",
+        "`step:with:` goes on in its twin after an exit made its block: {:?} {:?}",
         recorder.blocks,
         recorder.resumptions
     );
