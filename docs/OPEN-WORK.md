@@ -3054,7 +3054,12 @@ Small, deliberately left, none affecting an outcome.
   mode in mind (24 `fix:` commits name a mode, a lower bound, since a
   defect found during a feature is fixed in its own commit). There is no
   opt-out key: a golden's outcome is the same under every mode, and a
-  mode that makes its scenario impossible still checks its output.
+  mode that makes its scenario impossible still checks its output. The
+  directory rule then goes: each of the 25 goldens under
+  `goldens/runtime/optimizer/` names `OPTIMIZE` (several also `DEOPT` or
+  `INVALIDATE`), `crates/ns-cli/tests/run_goldens.rs` drops its prefix
+  test, and a test holds every golden under that directory to naming
+  `OPTIMIZE`, so that a new one cannot lose the run by forgetting the key.
 
 - **The reflective checks back in goldens** (2026-10-18): what only the
   representation showed while `class` and `Object`'s class accessors are
