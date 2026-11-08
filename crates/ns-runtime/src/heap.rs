@@ -15102,6 +15102,7 @@ mod tests {
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             reifies: false,
             optimized: false,
+            described: false,
         };
         let frame = crate::jit::materialize::machine_frame(
             &mut heap,

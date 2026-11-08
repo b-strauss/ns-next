@@ -229,6 +229,7 @@ pub(crate) fn machine_frame(
         feedback_base,
         reifies,
         optimized: _,
+        described: _,
     } = installed;
     let kind = match (method, code.kind) {
         (Some(method), _) => MachineKind::method(method.selector),
@@ -832,7 +833,7 @@ pub(crate) fn leaf_frame(
     };
     // Inside an inlined scope the frame register stands at the scope's
     // register 0: the leaf runs in the scope's frame.
-    let inlined = if installed.optimized {
+    let inlined = if installed.described {
         inlined_leaf_frame(mutator, code_address, register_base, program_counter)
     } else {
         None

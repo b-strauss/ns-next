@@ -3112,6 +3112,11 @@ pub(crate) struct Installed {
     pub(crate) reifies: bool,
     /// Whether the code is the body's optimized code (`Tier::Optimized`).
     pub(crate) optimized: bool,
+    /// Whether the code is optimized code that keeps the metadata of its
+    /// points inside inlined scopes or holding eliminated blocks
+    /// (`InstalledBody::metadata`): the only code a leaf's frame is looked
+    /// up in it for, so that every other leaf call pays nothing for it.
+    pub(crate) described: bool,
 }
 
 /// An address inside an inlined scope of an installed copy of optimized
@@ -3172,7 +3177,7 @@ impl InlinedAt {
 #[cfg(ns_jit)]
 pub(crate) struct OptimizedMetadata {
     pub(crate) points: Vec<optimizing::metadata::InterruptPoint>,
-    pub(crate) by_address: std::collections::HashMap<u32, usize>,
+    pub(crate) by_address: IdentityMap<u32, usize>,
     /// Each scope's body, by its `ScopeId`; `None` for the copy's own,
     /// which its installed body names.
     pub(crate) scopes: Vec<Option<InlinedScope>>,
@@ -3341,6 +3346,7 @@ fn upgraded(body: &InstalledBody) -> Option<Installed> {
         feedback_base: body.feedback_base,
         reifies: body.reifies,
         optimized: body.tier == Tier::Optimized,
+        described: body.metadata.is_some(),
     })
 }
 
