@@ -3009,6 +3009,11 @@ impl JitState {
         let zone = self.zone.as_ref()?;
         let base = zone.writer.zone().executable_address(CodeOffset(0));
         let offset = u32::try_from(return_address.checked_sub(base)?.checked_sub(1)?).ok()?;
+        // A stub's address lies below every body: a leaf a stub calls
+        // finds no body without searching for one, at every call.
+        if offset < zone.bodies_start {
+            return None;
+        }
         let holds = |index: usize| {
             self.bodies
                 .get(index)
@@ -3345,8 +3350,8 @@ impl Default for BodyLookup {
 }
 
 impl BodyLookup {
-    /// The two entries an offset into the zone hashes to, the one it is
-    /// written into first: the offsets of one body's leaf calls lie a few
+    /// The two entries an offset into the zone hashes to, the first the
+    /// one it is written into: the offsets of one body's leaf calls lie a few
     /// dozen bytes apart and bodies at least sixteen, so a multiplicative
     /// hash spreads both, and a pair of entries keeps two bodies whose
     /// offsets meet -- with one, two such leaf calls of a loop searched
@@ -3358,8 +3363,10 @@ impl BodyLookup {
         // the multiply is a bijection, whose top bits spread offsets that
         // differ in their low bits alone, as nearby leaf calls' do.
         const MULTIPLIER: u32 = 0x9E37_79B1;
-        let hashed = (offset.wrapping_mul(MULTIPLIER) >> SHIFT) as usize;
-        (&self.entries[hashed], &self.entries[hashed ^ 1])
+        // The pair is the hash's with its lowest bit cleared, so that two
+        // offsets meeting in it agree on which entry is the first.
+        let first = (offset.wrapping_mul(MULTIPLIER) >> SHIFT) as usize & !1;
+        (&self.entries[first], &self.entries[first + 1])
     }
 }
 
@@ -9211,6 +9218,30 @@ mod tests {
             assert_eq!(searches(&state), 4);
             state.bodies[0].free = true;
             assert_eq!(state.installed_index_at(inside_first), None, "freed");
+        }
+
+        /// Offsets that meet in a pair of the body lookup's entries agree on
+        /// which of the two is the first: each one's body, written into the
+        /// first, moves the other's to the second rather than over it, so
+        /// that two leaf calls of a loop that meet keep both bodies found.
+        #[test]
+        fn offsets_meeting_in_a_pair_of_entries_agree_on_its_first() {
+            let lookup = crate::jit::BodyLookup::default();
+            let pair_of = |offset: u32| {
+                let (first, second) = lookup.entries_of(offset);
+                (std::ptr::from_ref(first), std::ptr::from_ref(second))
+            };
+            let base = pair_of(0);
+            let meeting: Vec<u32> = (1..200_000)
+                .filter(|offset| {
+                    let (first, second) = pair_of(*offset);
+                    first == base.1 || second == base.0 || (first, second) == base
+                })
+                .collect();
+            assert!(meeting.len() > 1, "offsets meet in the pair");
+            for offset in meeting {
+                assert_eq!(pair_of(offset), base, "offset {offset}");
+            }
         }
 
         #[test]
