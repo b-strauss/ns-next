@@ -191,6 +191,35 @@ fn cost(instruction: &SnapshotInstruction) -> u32 {
     }
 }
 
+/// Whether the first instruction past `program_counter` of `snapshot`
+/// that reads `register`, a block's, before anything writes it again is a
+/// send whose site the caches say never ran.
+fn consumer_never_ran(snapshot: &Snapshot, program_counter: usize, register: u16) -> bool {
+    for (index, instruction) in snapshot
+        .instructions
+        .iter()
+        .enumerate()
+        .skip(program_counter + 1)
+    {
+        if uses_of(instruction)
+            .iter()
+            .any(|(read, _)| *read == register)
+        {
+            return is_call_site(instruction)
+                && snapshot
+                    .sites
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|facts| !facts.executed);
+        }
+        if instruction.register_written() == Some(register) {
+            return false;
+        }
+    }
+    false
+}
+
 /// For each instruction, whether it lies on a fast path's fallback: an
 /// `IntegerBinary`'s send at its target, and a `JumpIfNotBoolean`'s way
 /// from its target up to the first send, both before any jump.
@@ -1547,9 +1576,12 @@ impl<'tree> Planner<'tree> {
 
     /// Whether the live scope at `index` holds a `MakeClosure` whose block
     /// `eliminated` does not hold, which it would create, on a way that
-    /// is not a fast path's fallback: a conditional's closure for a
-    /// receiver that is no Boolean runs as rarely as such a receiver
-    /// comes, and traps where the copy speculates.
+    /// ran: not a fast path's fallback -- a conditional's closure for a
+    /// receiver that is no Boolean runs as rarely as such a receiver comes
+    /// -- nor, where the copy speculates, a way whose send of the block
+    /// never ran, which traps there as every way that never ran does.
+    /// Until optimized code creates blocks itself (stage 4), such a scope
+    /// would leave the copy at its `MakeClosure` every time it ran it.
     fn creates_a_block(&self, index: usize, eliminated: &BTreeSet<BlockKey>) -> bool {
         let scope = &self.scopes[index];
         if !scope.alive {
@@ -1563,10 +1595,14 @@ impl<'tree> Planner<'tree> {
             .zip(fallback)
             .enumerate()
             .any(|(program_counter, (instruction, fallback))| {
-                matches!(instruction, SnapshotInstruction::MakeClosure { .. })
-                    && !fallback
+                let SnapshotInstruction::MakeClosure { destination, .. } = instruction else {
+                    return false;
+                };
+                !fallback
                     && !eliminated
                         .contains(&(ScopeId::of(index), program_counter_u32(program_counter)))
+                    && !(self.speculates
+                        && consumer_never_ran(scope.snapshot, program_counter, *destination))
             })
     }
 
@@ -2332,6 +2368,41 @@ mod tests {
             .blocks
             .values()
             .all(|block| *block != BlockPlan::Created));
+    }
+
+    /// `remember:` makes a block only for a number past 100, which `run`
+    /// never hands it: the send of the block never ran.
+    const CREATING_ON_A_WAY_NOT_RUN: &str = indoc! {"
+        class Creating = (
+          | stored |
+        ) (
+          public keep: action = (
+            stored:: action.
+            ^0
+          )
+          public remember: number = (
+            number > 100 ifTrue: [self keep: [number]].
+            ^number
+          )
+          public run = (
+            ^self remember: 3
+          )
+        )
+    "};
+
+    /// A callee that would create a block only on a way that never ran is
+    /// inlined where the copy speculates, since that way traps there as
+    /// every way that never ran does; a copy that speculates nothing sends
+    /// it.
+    #[test]
+    fn a_callee_creating_a_block_on_a_way_not_run_is_inlined_where_the_copy_speculates() {
+        let (mut interpreter, class) = run(CREATING_ON_A_WAY_NOT_RUN);
+        let tree = tree_of(&mut interpreter, &class, "run", &Limits::STANDARD);
+        let site = (ScopeId::ROOT, send_of(&tree.root, "remember:"));
+        let speculating = plan(&tree, Speculation::Traps);
+        assert_eq!(speculating.sites[&site].arms.len(), 1, "{speculating:?}");
+        let cautious = plan(&tree, Speculation::None);
+        assert!(cautious.sites[&site].arms.is_empty(), "{cautious:?}");
     }
 
     const BONUS: &str = indoc! {"
