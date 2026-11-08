@@ -154,6 +154,9 @@ pub(crate) struct LaidOutScope {
     pub(crate) code_id: CodeId,
     pub(crate) feedback_base: FeedbackBase,
     pub(crate) block: Option<super::plan::EliminatedId>,
+    /// How its current class is found, which the exit's walk writes
+    /// (`graph::GraphScope::class`); `None` for the root.
+    pub(crate) class: Option<super::graph::ClassRecipe>,
 }
 
 /// A block the compile eliminated, as the exit makes it: its body, the
@@ -567,6 +570,7 @@ impl Emitter<'_> {
             // Its registers are the callee's: what the sender held there
             // is never stored.
             Node::Overlay { .. } => {}
+            Node::ResetOwnSlotGuard => self.reset_own_slot_guard(body, block_id),
             Node::CurrentClass {
                 value,
                 from,
@@ -574,7 +578,7 @@ impl Emitter<'_> {
                 steps,
             } => {
                 let from = self.register_of(*from, use_position);
-                self.current_class(body, block_id, defined_in(*value), from, *start, *steps);
+                self.current_class(body, defined_in(*value), from, *start, *steps);
             }
             Node::FieldLoad {
                 value,
@@ -779,29 +783,15 @@ impl Emitter<'_> {
     /// An inlined scope's current class into `target`, as a compiled call
     /// computes its callee's (`sends::send_public`): `steps` superclass
     /// steps up from the class of the value in `from`, or from the class
-    /// `from` holds; and, where the scope's code addresses its own slots,
-    /// its recorded guard set to none, since no push wrote it: the first
-    /// own-slot access the scope's templates make then takes the cold
-    /// check, which records it as the push would, and no guard a frame
-    /// laid there before left vouches for this scope's entered level.
+    /// `from` holds.
     fn current_class(
         &self,
         body: &mut BodyAssembler,
-        block_id: BlockId,
         target: Option<Register>,
         from: Register,
         start: ClassStart,
         steps: u16,
     ) {
-        let scope = self.scope(self.graph.block(block_id).scope);
-        if scope.snapshot.facts.addresses_own_slots {
-            let (guard, _) = Heap::own_slot_registers(scope.facts.argument_count);
-            let (none_word, _) = Heap::machine_own_slot_words();
-            let none_word =
-                i32::try_from(none_word).expect("internal: the guard none is a small word");
-            body.macro_assembler
-                .store_physical_immediate(scope.offset + guard, none_word);
-        }
         let Some(target) = target else {
             return;
         };
@@ -835,6 +825,20 @@ impl Emitter<'_> {
     /// then the instruction by the template the baseline's arm for it
     /// emits, with nothing held, the frame register at the register 0 of
     /// the node's scope and the scope's facts.
+    /// Makes the own-slot guard word of `block_id`'s scope `none`
+    /// (`Node::ResetOwnSlotGuard`), since no push wrote it: the first
+    /// own-slot access the scope's templates make then takes the cold
+    /// check, which records it as the push would, and no guard a frame
+    /// laid there before vouches for this scope's entered level.
+    fn reset_own_slot_guard(&self, body: &mut BodyAssembler, block_id: BlockId) {
+        let scope = self.scope(self.graph.block(block_id).scope);
+        let (guard, _) = Heap::own_slot_registers(scope.facts.argument_count);
+        let (none_word, _) = Heap::machine_own_slot_words();
+        let none_word = i32::try_from(none_word).expect("internal: the guard none is a small word");
+        body.macro_assembler
+            .store_physical_immediate(scope.offset + guard, none_word);
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "the node's fields, as the block's walk hands them over"

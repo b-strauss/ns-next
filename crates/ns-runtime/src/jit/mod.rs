@@ -3281,6 +3281,9 @@ pub(crate) struct InlinedScope {
     /// For a block's scope, the eliminated block whose `value` it runs:
     /// its activation's closure, which the exit makes.
     pub(crate) block: Option<optimizing::plan::EliminatedId>,
+    /// How its current class is found, which the exit's walk computes and
+    /// writes: optimized code computes it only before a frame node.
+    pub(crate) class: optimizing::graph::ClassRecipe,
 }
 
 /// How many bodies `BodyLookup` remembers: a power of two.
@@ -6238,6 +6241,7 @@ fn optimized_metadata(
             method,
             feedback_base: scope.feedback_base,
             block: scope.block,
+            class: scope.class.ok_or(Refusal::Unassembled(None))?,
         }));
     }
     let blocks = optimized

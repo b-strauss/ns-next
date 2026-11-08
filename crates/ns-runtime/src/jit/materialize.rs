@@ -41,12 +41,15 @@
 use std::rc::Rc;
 
 use crate::bytecode::{CodeKind, CompiledCode};
-use crate::heap::{ActivationReference, CodeId, Heap, MachineFrame, MachineKind, ObjectReference};
+use crate::heap::{
+    ActivationReference, ClassReference, CodeId, Heap, MachineFrame, MachineKind, ObjectReference,
+};
 use crate::interpreter::Mutator;
 use crate::mixin::MixinMethod;
 use crate::Value;
 
 use super::optimizing::allocate::Location;
+use super::optimizing::graph::{ClassRecipe, ClassStart};
 use super::optimizing::plan::EliminatedId;
 use super::stubs::{BlockWord, ExitKind};
 use super::{EliminatedBlock, InlinedAt, InlinedScope, Installed};
@@ -288,12 +291,14 @@ fn scope_frame(
 /// names, outermost first, above the physical frame whose register 0 is
 /// at `register_base` and whose header is at `offset`, running `physical`:
 /// each the callee of the one below it, at the send it is inlined at, the
-/// innermost at the point's own program counter. Answers the innermost's
-/// header offset, its register 0 and its body -- the physical frame's own
-/// for a point of its own scope, there for the blocks it holds -- and
-/// records the point for its blocks, if it holds any.
+/// innermost at the point's own program counter, each with its current
+/// class, which optimized code computes only before a frame node of the
+/// scope. Answers the innermost's header offset, its register 0 and its
+/// body -- the physical frame's own for a point of its own scope, there
+/// for the blocks it holds -- and records the point for its blocks, if it
+/// holds any.
 fn materialize_scopes(
-    heap: &mut Heap<'_>,
+    mutator: &mut Mutator<'_>,
     inlined: &InlinedAt,
     (register_base, offset, physical): (u32, u32, &Rc<CompiledCode>),
     below: bool,
@@ -310,18 +315,25 @@ fn materialize_scopes(
     let chain = inlined.chain();
     let mut caller = offset;
     let mut innermost = (offset, register_base, Rc::clone(physical));
+    // Each scope's activation, by its `ScopeId`, the physical frame's
+    // first, whose current class its call wrote.
+    let mut headers: Vec<Option<u32>> = vec![None; inlined.metadata.scopes.len()];
+    headers[0] = Some(offset);
     for stopped in chain.iter().rev().skip(1) {
         let scope = inlined.scope(stopped.scope);
         let scope_base = register_base + u32::from(stopped.offset);
         let scope_offset = scope_base + u32::from(scope.code.argument_count);
         let frame = scope_frame(
-            heap,
+            &mut mutator.heap,
             scope_offset,
             scope,
             stopped.program_counter,
             Some((caller, walk.top)),
         );
-        let _ = heap.write_machine_frame(&frame);
+        let _ = mutator.heap.write_machine_frame(&frame);
+        headers[stopped.scope.0 as usize] = Some(scope_offset);
+        let class = scope_class(mutator, scope_offset, scope.class, &headers);
+        mutator.heap.set_walked_current_class(scope_offset, class);
         walk.top = walk.top.max(frame.window_end());
         walk.added += 1;
         walk.inlined += 1;
@@ -329,6 +341,45 @@ fn materialize_scopes(
         innermost = (scope_offset, scope_base, Rc::clone(&scope.code));
     }
     innermost
+}
+
+/// The current class of the inlined scope whose header the walk wrote at
+/// `offset`, as `recipe` finds it -- as optimized code computes it before
+/// the scope's frame nodes -- from its receiver or from the current class
+/// of a scope further out, whose header `headers` holds by its `ScopeId`,
+/// written already.
+fn scope_class<'gc>(
+    mutator: &Mutator<'gc>,
+    offset: u32,
+    recipe: ClassRecipe,
+    headers: &[Option<u32>],
+) -> ClassReference<'gc> {
+    let start = match recipe.from {
+        None => mutator.heap.walked_receiver_and_current_class(offset).0,
+        Some(source) => {
+            let Some(source) = headers[source.0 as usize] else {
+                unreachable!("internal: a scope's class source lies further out on its chain")
+            };
+            let (_, class) = mutator.heap.walked_receiver_and_current_class(source);
+            let Some(class) = class else {
+                unreachable!("internal: a scope further out has its current class")
+            };
+            Value::object(class)
+        }
+    };
+    let mut class = match recipe.start {
+        ClassStart::ClassOf => mutator.class_of(start),
+        ClassStart::Class => start
+            .as_object()
+            .expect("internal: a class start is a class"),
+    };
+    for _ in 0..recipe.steps {
+        class = mutator
+            .heap
+            .class_superclass(class)
+            .expect("internal: the steps a send's lookup took lie within the chain");
+    }
+    class
 }
 
 /// The program counter a physical frame stops at, for an address at
@@ -422,7 +473,7 @@ pub(crate) fn materialize_frame(mutator: &mut Mutator<'_>, return_address: u64) 
         Some(inlined) => {
             walk.last_physical = inlined.inlines().then_some(physical);
             materialize_scopes(
-                &mut mutator.heap,
+                mutator,
                 inlined,
                 (register_base, offset, code),
                 true,
@@ -504,7 +555,7 @@ pub(crate) fn materialize_innermost(
             Some(inlined) => {
                 let register_base = offset - u32::from(installed.code.argument_count);
                 let (innermost, _, _) = materialize_scopes(
-                    &mut mutator.heap,
+                    mutator,
                     inlined,
                     (register_base, offset, &installed.code),
                     false,
@@ -578,7 +629,7 @@ pub(crate) fn materialize_at_entry(
         ..Walk::default()
     };
     let (innermost, _, _) = materialize_scopes(
-        &mut mutator.heap,
+        mutator,
         inlined,
         (
             register_base,

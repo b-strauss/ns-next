@@ -196,6 +196,7 @@ pub(crate) fn compile_tree(
             .zip(&graph.scopes)
             .map(|((scope, laid_out), graph_scope)| {
                 laid_out.then_some(emit::LaidOutScope {
+                    class: graph_scope.class,
                     code_id: scope.snapshot.code_id,
                     feedback_base: scope.snapshot.feedback_base,
                     block: graph_scope.block,

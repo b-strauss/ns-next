@@ -709,8 +709,10 @@ fn every_interrupt_point_names_its_chain_of_scopes() {
             .iter()
             .map(|(register, _)| *register)
             .collect();
-        assert!(registers.starts_with(&[0, 1, 2]), "{registers:?}");
-        assert!(registers.iter().all(|register| !(3..14).contains(register)));
+        // Its argument and its receiver; its current class, which its
+        // frame node computes, is the exit's to write.
+        assert!(registers.starts_with(&[0, 1]), "{registers:?}");
+        assert!(registers.iter().all(|register| !(2..14).contains(register)));
         assert_eq!(
             (root.scope, root.program_counter, root.resumes, root.offset),
             (ScopeId::ROOT, 2, Resumes::Deliver, 0)

@@ -518,6 +518,7 @@ fn replay(
                 | Node::Receiver { .. }
                 | Node::OwnSlotLoad { .. }
                 | Node::CurrentClass { .. }
+                | Node::ResetOwnSlotGuard
                 | Node::Frame { .. }
                 | Node::FieldLoad { .. }
                 | Node::FieldStore { .. }

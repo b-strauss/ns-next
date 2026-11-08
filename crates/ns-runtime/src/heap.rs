@@ -9103,6 +9103,42 @@ impl<'gc> Heap<'gc> {
         self.activation_entered_level_of(activation.offset)
     }
 
+    /// The receiver and the current class the header at `offset` holds,
+    /// of a frame the exit's walk is writing above the stack's top, which
+    /// it adopts once the walk is done (`jit::materialize`): no handle
+    /// names it yet.
+    #[cfg(ns_jit)]
+    pub(crate) fn walked_receiver_and_current_class(
+        &self,
+        offset: u32,
+    ) -> (Value<'gc>, Option<ClassReference<'gc>>) {
+        let word = |field: usize| {
+            Word::from_bits(self.stack.frames.committed_word(offset as usize + field))
+        };
+        let (receiver, current_class) = (
+            word(frame_header::RECEIVER),
+            word(frame_header::CURRENT_CLASS),
+        );
+        (
+            self.load(receiver),
+            current_class
+                .object_offset()
+                .map(|class| self.object_handle(class)),
+        )
+    }
+
+    /// Writes `class` as the current class of the header at `offset`, a
+    /// frame the exit's walk is writing (`walked_receiver_and_current_class`):
+    /// the walk computes an inlined scope's, which optimized code computes
+    /// only before a frame node of the scope.
+    #[cfg(ns_jit)]
+    pub(crate) fn set_walked_current_class(&mut self, offset: u32, class: ClassReference<'gc>) {
+        let word = self.store(Value::object(class));
+        self.stack
+            .frames
+            .set_committed_word(offset as usize + frame_header::CURRENT_CLASS, word.bits());
+    }
+
     /// Records `guard` as the one `activation`'s own-slot instructions
     /// compare the receiver's header against: a cold check that found the
     /// receiver still has the entered level's slots records its current

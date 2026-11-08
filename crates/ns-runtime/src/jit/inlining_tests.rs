@@ -157,17 +157,24 @@ struct RecordedFrame {
     code: CodeId,
     program_counter: usize,
     compiled: bool,
+    /// Whether its current class is its receiver's class; `None` for a
+    /// receiver that is no object.
+    class_is_the_receiver_s: Option<bool>,
 }
 
 fn describe(heap: &Heap<'_>, activation: ActivationReference) -> RecordedFrame {
     // A leaf's view of an inlined block's activation names no closure yet:
     // its kind is read only of a method's.
     let selector = heap.activation_method_selector(activation);
+    let (receiver, current_class) = heap.activation_receiver_and_current_class(activation);
     RecordedFrame {
         selector,
         code: heap.activation_code_id(activation),
         program_counter: heap.activation_program_counter(activation),
         compiled: heap.activation_is_compiled(activation),
+        class_is_the_receiver_s: receiver
+            .as_object()
+            .map(|object| current_class.is_some_and(|class| class.same(heap.object_class(object)))),
     }
 }
 
@@ -498,6 +505,103 @@ fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
             counted_before + 3,
             "the depth limit counts `run`, `outer:` and the scope `middle:`"
         );
+    }
+}
+
+/// `outer:` inlines `adding:`, which sends nothing: its scope has no frame
+/// node, so its copy never computes its current class. `run` adds
+/// `delta` to every index below 3,000; `useFloats` makes it 3 / 2, no
+/// `SmallInteger`.
+const NO_FRAME_NODE: &str = indoc! {"
+    class Subject = Object new (
+      | delta ::= 1. |
+    ) (
+      adding: value = (
+        ^value + delta
+      )
+      outer: value = (
+        ^self adding: value
+      )
+      public useFloats = (
+        delta:: 3 / 2.
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 3000] whileTrue: [
+          sum:: sum + (self outer: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    )
+"};
+
+/// An inlined scope with no frame node has its current class written by
+/// the exit's walk alone: once `delta` is no `SmallInteger`, the addition
+/// in `adding:`'s scope, inlined into `outer:`'s inlined into `run`,
+/// traps, and the exit leaves both scopes' activations with their
+/// receiver's class as their current class, as the interpreter's pushes
+/// would have it.
+#[test]
+fn the_exit_writes_the_current_class_of_a_scope_without_a_frame_node() {
+    let module = ns_syntax::parse(NO_FRAME_NODE).expect("parse");
+    let resolved = crate::resolve(
+        module,
+        NO_FRAME_NODE.into(),
+        SourceOrigin::File("class.ns".into()),
+    )
+    .unwrap_or_else(|_| panic!("the module resolves"));
+    let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_caches(false);
+    interpreter.set_jit_enabled(true);
+    interpreter.set_jit_stress(true);
+    let class = interpreter.load_module(&resolved);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let run = Symbol::intern("run");
+    expect_ok(interpreter.send(&instance, run, &[]), "run");
+    interpreter.set_optimize_stress(true);
+    expect_ok(interpreter.send(&instance, run, &[]), "run");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("useFloats"), &[]),
+        "useFloats",
+    );
+    interpreter.enter(|mutator| mutator.jit.recorder = Some(Recorder::default()));
+    let answer = expect_ok(interpreter.send(&instance, run, &[]), "run");
+    let printed = interpreter.enter(|mutator| {
+        let answer = mutator.fetch(&answer);
+        mutator.heap.describe(answer)
+    });
+    assert_eq!(printed, "4503000");
+    let stressed = std::env::vars_os().any(|(name, value)| {
+        name.to_string_lossy().starts_with("NS_NEXT_STRESS_") && !value.is_empty() && value != "0"
+    });
+    if stressed {
+        return;
+    }
+    let recorder = interpreter.enter(|mutator| mutator.jit.recorder.take().expect("recording"));
+    let inside: Vec<&RecordedExit> = recorder
+        .exits
+        .iter()
+        .filter(|exit| {
+            exit.inlined
+                && exit
+                    .frames
+                    .first()
+                    .is_some_and(|frame| frame.selector == Some(Symbol::intern("adding:")))
+        })
+        .collect();
+    assert!(
+        !inside.is_empty(),
+        "an exit inside the scope, of {} exits",
+        recorder.exits.len()
+    );
+    for exit in inside {
+        assert_eq!(exit.frames[0].class_is_the_receiver_s, Some(true));
+        assert_eq!(exit.frames[1].class_is_the_receiver_s, Some(true));
     }
 }
 

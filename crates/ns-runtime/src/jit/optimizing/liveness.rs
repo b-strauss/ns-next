@@ -203,6 +203,7 @@ pub(crate) fn named_registers(graph: &Graph) -> usize {
                 | Node::OwnSlotLoad { .. }
                 | Node::CurrentClass { .. }
                 | Node::Overlay { .. }
+                | Node::ResetOwnSlotGuard
                 | Node::FieldLoad { .. }
                 | Node::FieldStore { .. }
                 | Node::IdentityCompare { .. }
@@ -264,6 +265,7 @@ pub(crate) fn bind(bindings: &mut [Binding], node: &Node) {
         | Node::Receiver { .. }
         | Node::OwnSlotLoad { .. }
         | Node::CurrentClass { .. }
+        | Node::ResetOwnSlotGuard
         | Node::FieldLoad { .. }
         | Node::FieldStore { .. }
         | Node::IdentityCompare { .. }

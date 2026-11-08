@@ -91,6 +91,23 @@ pub(crate) struct GraphScope {
     /// (`plan::ScopePlan::eliminated_before`): where an exit stopped there
     /// writes the closure it makes of it.
     pub(crate) eliminated_before: Vec<Vec<(u16, EliminatedId)>>,
+    /// How an inlined scope's current class is found, `None` for the root,
+    /// whose header its call wrote: computed before each of its frame
+    /// nodes, whose templates read it, and by the exit's walk, which writes
+    /// it, for an exit in a scope that has not, so that no inlined entry
+    /// pays for it where nothing reads it.
+    pub(crate) class: Option<ClassRecipe>,
+}
+
+/// How an inlined scope's current class is found: `steps` superclass
+/// steps up from the class `start` names of `from` -- the scope's
+/// receiver, or the current class of the scope `from` names, its sender
+/// for a private lexical or a `super` send and its home for a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClassRecipe {
+    pub(crate) from: Option<ScopeId>,
+    pub(crate) start: ClassStart,
+    pub(crate) steps: u16,
 }
 
 /// Why a physical register number fits a `u16`: the plan inlines a scope
@@ -120,14 +137,17 @@ impl GraphScope {
     }
 
     /// The physical registers of the header words the exit writes, past
-    /// the two that are bindings: none for the root, whose header is its
-    /// frame's own.
+    /// the receiver, a binding: none for the root, whose header is its
+    /// frame's own. The current class among them is a binding too, but
+    /// only from where a frame node computes it (`GraphScope::class`):
+    /// before that the exit's walk computes and writes it, and nothing
+    /// reads it.
     pub(crate) fn exit_words(&self) -> Range<u16> {
         if self.parent.is_none() {
             return 0..0;
         }
         let header = self.header_register(HeaderBinding::Receiver);
-        header + 2..header.checked_add(HEADER_REGISTERS).expect(FRAME_BOUND)
+        header + 1..header.checked_add(HEADER_REGISTERS).expect(FRAME_BOUND)
     }
 
     /// One past the highest physical register the scope's body names.
@@ -327,6 +347,11 @@ pub(crate) enum Node {
         start: ClassStart,
         steps: u16,
     },
+    /// The own-slot guard word of the block's inlined scope, made `none` at
+    /// the scope's entry, as a push records none for a frame whose code
+    /// addresses own slots: its own-slot templates check the receiver's
+    /// level once and record it. Emits no call.
+    ResetOwnSlotGuard,
     /// The physical registers an inlined callee's frame is laid over, at
     /// its entry, or that it leaves, at its return: their bindings end
     /// unwritten, every one a register the leftover analysis taints there
@@ -518,6 +543,7 @@ impl Node {
             Node::Copy { .. }
             | Node::Frame { .. }
             | Node::Overlay { .. }
+            | Node::ResetOwnSlotGuard
             | Node::FieldStore { .. }
             | Node::IndexedStore { .. }
             | Node::TrapIfNil { .. } => None,
@@ -542,6 +568,7 @@ impl Node {
             | Node::Frame { .. }
             | Node::CurrentClass { .. }
             | Node::Overlay { .. }
+            | Node::ResetOwnSlotGuard
             | Node::FieldLoad { .. }
             | Node::FieldStore { .. }
             | Node::ClassOf { .. }
@@ -604,6 +631,7 @@ impl Node {
             | Node::Frame { .. }
             | Node::CurrentClass { .. }
             | Node::Overlay { .. }
+            | Node::ResetOwnSlotGuard
             | Node::FieldLoad { .. }
             | Node::IdentityCompare { .. }
             | Node::ClassOf { .. }
@@ -624,6 +652,7 @@ impl Node {
             | Node::Constant { .. }
             | Node::Receiver { .. }
             | Node::Overlay { .. }
+            | Node::ResetOwnSlotGuard
             | Node::EliminatedBlock { .. } => Vec::new(),
             Node::Copy { source, .. }
             | Node::CurrentClass { from: source, .. }

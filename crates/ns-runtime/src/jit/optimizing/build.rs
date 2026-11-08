@@ -62,8 +62,8 @@ use crate::heap::{ApplicationIndex, Immediate};
 use crate::mixin::{DispatchId, QuickConstant};
 
 use super::graph::{
-    tainted_at, Block, BlockId, ClassStart, End, Graph, GraphScope, HeaderBinding, IndexedKind,
-    Node, Phi, ScopeId, ValueId, ValueKind, FRAME_BOUND,
+    tainted_at, Block, BlockId, ClassRecipe, ClassStart, End, Graph, GraphScope, HeaderBinding,
+    IndexedKind, Node, Phi, ScopeId, ValueId, ValueKind, FRAME_BOUND,
 };
 use super::plan::{AlwaysInlined, ArmPlan, BlockPlan, EliminatedId, FallThrough, InliningPlan};
 use super::snapshot::{Snapshot, SnapshotInstruction};
@@ -536,6 +536,8 @@ struct Entry {
     /// receiver, or at the sender's current class, in the register given.
     class_start: ClassStart,
     sender_class: Option<u16>,
+    /// The scope whose current class `sender_class` holds.
+    class_source: Option<ScopeId>,
     class_steps: u16,
     receiver_register: u16,
     class_register: u16,
@@ -767,6 +769,16 @@ impl<'snapshot> Flat<'snapshot> {
             arm_applications,
             ..
         } = laying;
+        let mut graph_scopes = graph_scopes;
+        for (scope, _, pending) in &steps {
+            if let Pending::Enter(entry) = pending {
+                graph_scopes[scope.0 as usize].class = Some(ClassRecipe {
+                    from: entry.class_source,
+                    start: entry.class_start,
+                    steps: entry.class_steps,
+                });
+            }
+        }
         let steps: Vec<FlatStep> = steps
             .into_iter()
             .map(|(scope, program_counter, pending)| {
@@ -911,6 +923,7 @@ fn graph_scope_of(
         tainted_before: snapshot.tainted_before.clone(),
         block,
         eliminated_before,
+        class: None,
     }
 }
 
@@ -1489,6 +1502,7 @@ impl Laying<'_, '_> {
             ),
             _ => panic!("internal: only a send is inlined"),
         };
+        let class_source = sender_class.map(|_| sender);
         let facts = &self.snapshots[scope.0 as usize].facts;
         let named_start = physical(callee.argument_count, crate::bytecode::HEADER_REGISTERS);
         let named_end = facts.local_count.max(named_start);
@@ -1505,6 +1519,7 @@ impl Laying<'_, '_> {
                 .collect(),
             class_start,
             sender_class,
+            class_source,
             class_steps,
             receiver_register: callee.header_register(HeaderBinding::Receiver),
             class_register: callee.header_register(HeaderBinding::CurrentClass),
@@ -1575,6 +1590,7 @@ impl Laying<'_, '_> {
             // Its home's current class, no step from it.
             class_start: ClassStart::Class,
             sender_class: Some(home_scope.header_register(HeaderBinding::CurrentClass)),
+            class_source: Some(home),
             class_steps: 0,
             receiver_register: callee.header_register(HeaderBinding::Receiver),
             class_register: callee.header_register(HeaderBinding::CurrentClass),
@@ -2201,7 +2217,8 @@ impl<'flat> Builder<'flat> {
         let reads: Vec<Vec<u16>> = steps
             .iter()
             .zip(&choices)
-            .map(|(step, choice)| step_reads(flat, step, *choice))
+            .enumerate()
+            .map(|(index, (step, choice))| step_reads(flat, step, index, *choice))
             .collect();
         let written: Vec<Vec<u16>> = steps
             .iter()
@@ -2942,7 +2959,27 @@ impl<'flat> Builder<'flat> {
                 let Step::Instruction { physical, original } = &step.step else {
                     unreachable!("internal: only an instruction is a frame node");
                 };
-                let registers = self.reads[index].clone();
+                // A template may read its frame's current class: an inlined
+                // scope's is computed before each of its frame nodes, and
+                // written back with the others.
+                if scope != ScopeId::ROOT {
+                    let class = self.scope_class(block, state, scope);
+                    let register = self.flat.graph_scopes[scope.0 as usize]
+                        .header_register(HeaderBinding::CurrentClass);
+                    self.blocks[block].nodes.push(Node::Copy {
+                        destination_register: register,
+                        source: class,
+                    });
+                    self.bind(state, register, class);
+                }
+                // What the class's computation reads is no read of the
+                // instruction's, which its frame node names.
+                let own = physical.registers_read();
+                let registers: Vec<u16> = self.reads[index]
+                    .iter()
+                    .copied()
+                    .filter(|register| own.contains(register))
+                    .collect();
                 let reads = registers
                     .into_iter()
                     .map(|register| (register, self.read(block, state, register)))
@@ -3204,20 +3241,15 @@ impl<'flat> Builder<'flat> {
             .iter()
             .map(|(parameter, source)| (*parameter, self.read(block, state, *source)))
             .collect();
-        let from = match entry.sender_class {
-            Some(register) => self.read(block, state, register),
-            None => receiver,
-        };
-        let class = self.new_value(None);
-        self.blocks[block].nodes.push(Node::CurrentClass {
-            value: class,
-            from,
-            start: entry.class_start,
-            steps: entry.class_steps,
-        });
+        if self.flat.scopes[self.blocks[block].scope.0 as usize]
+            .snapshot
+            .facts
+            .addresses_own_slots
+        {
+            self.blocks[block].nodes.push(Node::ResetOwnSlotGuard);
+        }
         let mut bindings = arguments;
         bindings.push((entry.receiver_register, receiver));
-        bindings.push((entry.class_register, class));
         if !entry.temporaries.is_empty() {
             let nil = self.new_value(None);
             self.blocks[block].nodes.push(Node::Constant {
@@ -3233,21 +3265,70 @@ impl<'flat> Builder<'flat> {
             });
             self.bind(state, register, value);
         }
+        // The current class is computed where a frame node reads it
+        // (`Builder::scope_class`): until then its header word is the
+        // exit's to write, among the overlaid words.
         self.overlay(block, state, entry.overlay.clone());
+    }
+
+    /// `scope`'s current class, an inlined scope's, computed as a compiled
+    /// call computes its callee's: from the scope's receiver, or from the
+    /// current class of the scope its recipe names, that one's computed
+    /// in turn unless it is the root's, which its frame's header holds.
+    fn scope_class(&mut self, block: usize, state: &mut State, scope: ScopeId) -> ValueId {
+        let graph_scope = &self.flat.graph_scopes[scope.0 as usize];
+        let recipe = graph_scope
+            .class
+            .expect("internal: an inlined scope has its class's recipe");
+        let receiver_register = graph_scope.header_register(HeaderBinding::Receiver);
+        let from = match recipe.from {
+            None => self.read(block, state, receiver_register),
+            Some(ScopeId::ROOT) => {
+                let register =
+                    self.flat.graph_scopes[0].header_register(HeaderBinding::CurrentClass);
+                self.read(block, state, register)
+            }
+            Some(source) => self.scope_class(block, state, source),
+        };
+        let value = self.new_value(None);
+        self.blocks[block].nodes.push(Node::CurrentClass {
+            value,
+            from,
+            start: recipe.start,
+            steps: recipe.steps,
+        });
+        value
     }
 }
 
 /// The physical registers the step reads, as the builder's liveness
 /// counts them.
-fn step_reads(flat: &Flat<'_>, step: &FlatStep, choice: Choice) -> Vec<u16> {
+fn step_reads(flat: &Flat<'_>, step: &FlatStep, index: usize, choice: Choice) -> Vec<u16> {
     match &step.step {
         Step::Instruction { .. } if choice.send_only => Vec::new(),
-        Step::Instruction { physical, .. } => physical.registers_read(),
+        Step::Instruction { physical, .. } => {
+            let mut reads = physical.registers_read();
+            // An inlined scope's frame node is preceded by its current
+            // class's computation (`Builder::scope_class`).
+            if step.scope != ScopeId::ROOT
+                && matches!(
+                    kind_of(
+                        physical,
+                        index,
+                        choice,
+                        flat.scope(step.scope).own_slot_base
+                    ),
+                    Kind::Frame
+                )
+            {
+                reads.extend(class_reads(flat, step.scope));
+            }
+            reads
+        }
         Step::TypeCase { receiver, .. } => receiver_reads(flat, *receiver),
         Step::Enter(entry) => {
             let mut reads = receiver_reads(flat, entry.receiver);
             reads.extend(entry.arguments.iter().map(|(_, source)| *source));
-            reads.extend(entry.sender_class);
             reads
         }
         Step::Return { source, .. } => vec![*source],
@@ -3258,6 +3339,23 @@ fn step_reads(flat: &Flat<'_>, step: &FlatStep, choice: Choice) -> Vec<u16> {
         }
         // Its copied values are read where its scope is entered.
         Step::Eliminated { .. } => Vec::new(),
+    }
+}
+
+/// The registers the computation of the inlined scope `scope`'s current
+/// class reads (`Builder::scope_class`): its receiver's, or what the scope
+/// its recipe names reads, the root's current class word for the root.
+fn class_reads(flat: &Flat<'_>, scope: ScopeId) -> Vec<u16> {
+    let graph_scope = &flat.graph_scopes[scope.0 as usize];
+    let recipe = graph_scope
+        .class
+        .expect("internal: an inlined scope has its class's recipe");
+    match recipe.from {
+        None => vec![graph_scope.header_register(HeaderBinding::Receiver)],
+        Some(ScopeId::ROOT) => {
+            vec![flat.graph_scopes[0].header_register(HeaderBinding::CurrentClass)]
+        }
+        Some(source) => class_reads(flat, source),
     }
 }
 
@@ -5414,7 +5512,7 @@ pub(crate) mod inlining_tests {
                     && block
                         .nodes
                         .iter()
-                        .any(|node| matches!(node, Node::CurrentClass { .. }))
+                        .any(|node| matches!(node, Node::Overlay { .. }))
             })
             .collect();
         let [entry] = entries[..] else {
