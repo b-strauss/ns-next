@@ -10420,7 +10420,9 @@ ns_runtime::for_each_lowering! {
         let before = interpreter.jit_statistics();
         assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 9900);
         let done = since(interpreter.jit_statistics(), before);
-        if !pinned {
+        // The deopt and invalidate stress modes force the copy out at its
+        // interrupt points, which the counts below would see.
+        if !pinned || the_stress_mode_is_on("DEOPT") || the_stress_mode_is_on("INVALIDATE") {
             return;
         }
         assert_eq!(done.optimized_exits, 0, "{done:?}");

@@ -427,7 +427,7 @@ fn replay(
             } = node
             {
                 if graph.block(*block).exit_position(*fallback) == Some(index) {
-                    enters(&replay, graph, allocation, *block, *fallback)?;
+                    enters(&replay, graph, allocation, (*block, *fallback), None)?;
                 }
             }
             // The trap's cold write-back, replayed on its way out.
@@ -557,7 +557,11 @@ fn replay(
                     described,
                     &restores,
                     (*block, head),
-                    (end_use, positions.end_definition(*block)),
+                    (
+                        end_use,
+                        positions.end_definition(*block),
+                        &lives.live_in[head.index()],
+                    ),
                 )?;
             }
         }
@@ -574,7 +578,7 @@ fn replay(
         }
         apply(&mut replay, allocation, positions.end_definition(*block))?;
         for successor in graph.block(*block).end.successors() {
-            enters(&replay, graph, allocation, *block, successor)?;
+            enters(&replay, graph, allocation, (*block, successor), None)?;
         }
     }
     if points.next().is_some() {
@@ -697,7 +701,9 @@ const RESTORED_NIL: ValueId = ValueId(u32::MAX);
 /// `head`, from `block` -- brings the head everything it assumes, as
 /// `enters` checks every way in: a value no code reads on, `nil` in its
 /// machine register, is stored only into words nothing reads, and every
-/// clean binding the head assumes holds its value. From the head on the
+/// clean binding the head assumes holds its value, but a tainted
+/// register's binding of a value not in `live_at_head`, which no one
+/// reads past the head. From the head on the
 /// replay of every block holds the code to never reading a word the
 /// analysis taints before it writes it, which a `nil` stored there is.
 fn replay_reentry(
@@ -707,7 +713,7 @@ fn replay_reentry(
     described: &InterruptPoint,
     restores: &[PollRestore],
     (block, head): (BlockId, BlockId),
-    (end_use, end_definition): (u32, u32),
+    (end_use, end_definition, live_at_head): (u32, u32, &[ValueId]),
 ) -> Result<(), VerifyError> {
     let kept = kept_at(described);
     let mut reentered = stopped.clone();
@@ -754,7 +760,13 @@ fn replay_reentry(
             _ => apply_move(&mut reentered, allocation, *each, end_definition)?,
         }
     }
-    enters(&reentered, graph, allocation, block, head)
+    enters(
+        &reentered,
+        graph,
+        allocation,
+        (block, head),
+        Some(live_at_head),
+    )
 }
 
 /// Checks that `value`, read in a machine register at `position`, is
@@ -1006,13 +1018,15 @@ fn described_chain(
 /// what `successor`'s entry assumes: each of its machine registers'
 /// values -- a phi's input for the phi -- and each register's binding,
 /// held in its frame word wherever the entry says so, or where it forgets
-/// it, unless the leftover analysis taints the register there.
+/// it, unless the leftover analysis taints the register there -- and,
+/// for a frame that went back in at a poll, `reentered_live` the values
+/// live at the head, unless the value bound is no longer read.
 fn enters(
     replay: &Replay,
     graph: &Graph,
     allocation: &Allocation,
-    predecessor: BlockId,
-    successor: BlockId,
+    (predecessor, successor): (BlockId, BlockId),
+    reentered_live: Option<&[ValueId]>,
 ) -> Result<(), VerifyError> {
     let disagrees = VerifyError::EdgeDisagrees {
         predecessor,
@@ -1063,8 +1077,18 @@ fn enters(
         }
         // The interpreter's word of a register tainted there is what no
         // one reads, whatever it holds.
-        let unread = assumed.value.is_none()
-            && u16::try_from(register).is_ok_and(|number| tainted(&tainted_there, number));
+        let tainted_word =
+            u16::try_from(register).is_ok_and(|number| tainted(&tainted_there, number));
+        // Past a poll's entry a tainted register's word may be the `nil`
+        // the collector's pre-pass stored, whatever binding the head keeps
+        // of it: no instruction reads it before writing it, and a value
+        // no code past the head reads is read from it by no one either.
+        let unread = tainted_word
+            && assumed.value.is_none_or(|value| {
+                reentered_live.is_some_and(|live| {
+                    !live.contains(&value) && block.phis.iter().all(|phi| phi.value != value)
+                })
+            });
         if assumed.clean && !unread && !replay.in_sync(register) {
             return Err(disagrees);
         }
