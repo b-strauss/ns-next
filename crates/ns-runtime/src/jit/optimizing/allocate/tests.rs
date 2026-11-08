@@ -827,3 +827,99 @@ fn an_unguarded_entry_where_two_ways_meet_allocates_and_verifies() {
         }
     }
 }
+
+/// `r20 := self new: 0. r13 := r20.` then a counting loop over `r13`
+/// whose fallbacks never ran, the send's result held in `r20`, a scratch
+/// register the leftover analysis taints at the loop's head: the head
+/// keeps `r20` bound clean to the send's result, a value no code past the
+/// head reads.
+fn a_send_result_kept_in_a_tainted_register() -> Snapshot {
+    let mut snapshot = test_snapshot(vec![
+        Instruction::LoadSelf { destination: 18 },
+        Instruction::LoadLiteral {
+            destination: 19,
+            literal: Literal::SmallInteger(0),
+        },
+        test_send(18, 19, 20),
+        Instruction::Move {
+            destination: 13,
+            source: 20,
+        },
+        Instruction::LoadLiteral {
+            destination: 15,
+            literal: Literal::SmallInteger(1),
+        },
+        Instruction::IntegerBinary {
+            operation: IntegerOperation::Add,
+            destination: 16,
+            left: 13,
+            right: 15,
+            target: 7,
+        },
+        Instruction::Jump { target: 8 },
+        test_send(13, 15, 16),
+        Instruction::Move {
+            destination: 13,
+            source: 16,
+        },
+        Instruction::LoadLiteral {
+            destination: 17,
+            literal: Literal::SmallInteger(10),
+        },
+        Instruction::IntegerBinary {
+            operation: IntegerOperation::Less,
+            destination: 14,
+            left: 13,
+            right: 17,
+            target: 12,
+        },
+        Instruction::Jump { target: 13 },
+        test_send(13, 17, 14),
+        Instruction::BranchIfTrue {
+            register: 14,
+            target: 4,
+        },
+        Instruction::Return { register: 13 },
+    ]);
+    // The loop's fallbacks never ran: its addition and comparison trap,
+    // and nothing in it writes `r20`.
+    unrun_site(&mut snapshot, 5, 1);
+    unrun_site(&mut snapshot, 10, 2);
+    for tainted in snapshot.tainted_before.iter_mut().skip(4) {
+        if !tainted.iter().any(|range| range.contains(&20)) {
+            tainted.push(20..21);
+        }
+    }
+    snapshot
+}
+
+/// A frame that goes back into its code at the loop's poll finds `nil` in
+/// a register the leftover analysis taints at the head, where the
+/// collector's pre-pass stored it: the head's clean binding of it is no
+/// disagreement while the value it names is read past the head by no one,
+/// and is one -- the way back in brings the head a word that does not
+/// hold its value -- once the value counts as read there.
+#[test]
+fn a_poll_s_re_entry_holds_a_tainted_register_to_its_binding_only_while_its_value_is_read() {
+    use crate::jit::optimizing::metadata::EVERY_VALUE_LIVE_AT_A_HEAD;
+
+    let snapshot = a_send_result_kept_in_a_tainted_register();
+    let (graph, allocation) = allocated(&snapshot, Abi::Windows64);
+    let head = graph.loop_heads().next().expect("the body loops");
+    let entry = allocation.entries[head.index()]
+        .as_ref()
+        .expect("the head is in the order");
+    assert!(
+        entry.bindings[20].clean && entry.bindings[20].value.is_some(),
+        "{:?}",
+        entry.bindings[20]
+    );
+    assert_eq!(verified(&graph, &allocation), Ok(()));
+    EVERY_VALUE_LIVE_AT_A_HEAD.set(true);
+    let refused = verified(&graph, &allocation);
+    EVERY_VALUE_LIVE_AT_A_HEAD.set(false);
+    assert!(
+        matches!(refused, Err(VerifyError::EdgeDisagrees { successor, .. }) if successor == head),
+        "{refused:?}"
+    );
+}

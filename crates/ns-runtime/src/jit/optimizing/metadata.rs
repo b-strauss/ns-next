@@ -1087,7 +1087,9 @@ fn enters(
         let unread = tainted_word
             && assumed.value.is_none_or(|value| {
                 reentered_live.is_some_and(|live| {
-                    !live.contains(&value) && block.phis.iter().all(|phi| phi.value != value)
+                    !every_value_live_at_a_head()
+                        && !live.contains(&value)
+                        && block.phis.iter().all(|phi| phi.value != value)
                 })
             });
         if assumed.clean && !unread && !replay.in_sync(register) {
@@ -1101,6 +1103,26 @@ fn enters(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes `enters` take every value as live at a loop's head past a
+    /// poll's entry, for a test of what the check refuses then.
+    pub(crate) static EVERY_VALUE_LIVE_AT_A_HEAD: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Whether a test asked `enters` to take every value as live at a head.
+fn every_value_live_at_a_head() -> bool {
+    #[cfg(test)]
+    {
+        EVERY_VALUE_LIVE_AT_A_HEAD.get()
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]
