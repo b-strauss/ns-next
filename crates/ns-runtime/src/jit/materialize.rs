@@ -337,6 +337,22 @@ fn materialize_scopes(
             Some((caller, walk.top)),
         );
         let _ = mutator.heap.write_machine_frame(&frame);
+        // The frame's write recorded the entered level of the class it
+        // found in the header: the class written above, never one a
+        // callee that ran on these slots left. No program compiled from
+        // source inlines a scope addressing its own slots, so only this
+        // says the order holds for an image's.
+        #[cfg(debug_assertions)]
+        if scope.code.addresses_own_slots {
+            debug_assert_eq!(
+                mutator.heap.walked_entered_level(scope_offset),
+                mutator
+                    .heap
+                    .class_application_index(class)
+                    .unwrap_or(crate::heap::ApplicationIndex::UNREGISTERED),
+                "internal: an inlined scope's entered level is its current class's"
+            );
+        }
         walk.top = walk.top.max(frame.window_end());
         walk.added += 1;
         walk.inlined += 1;

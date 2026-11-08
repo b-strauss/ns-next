@@ -1,0 +1,49 @@
+/// A block handed to an Array's `do:`, which its optimized caller
+/// eliminates: `do:` hands the block to `super do:` only on the way for a
+/// receiver whose size the mirror cannot read, which no Array here takes,
+/// so in the copy of `sumOf:` that way is a trap and the block is made by
+/// no code. `sumOf:` adds the elements of `numbers`, 1 to 100, that is
+/// 5050, and `countOf:` counts those above 90, 10; five hundred rounds
+/// of each answer 2525000 and 5000.
+class ABlockHandedToAnArraySDoIsEliminated = Object new () (
+  sumOf: array = (
+    |
+      sum ::= 0.
+    |
+    array do: [:element | sum:: sum + element].
+    ^sum.
+  )
+
+  countOf: array = (
+    |
+      count ::= 0.
+    |
+    array do: [:element | element > 90 ifTrue: [count:: count + 1]].
+    ^count.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      numbers = Array new: 100.
+      index ::= 1.
+      sums ::= 0.
+      counts ::= 0.
+      round ::= 0.
+    |
+    [index <= 100] whileTrue: [
+      numbers at: index put: index.
+      index:: index + 1.
+    ].
+    [round < 500] whileTrue: [
+      sums:: sums + (sumOf: numbers).
+      counts:: counts + (countOf: numbers).
+      round:: round + 1.
+    ].
+    transcript
+        show: sums printString;
+        newLine;
+        show: counts printString;
+        newLine.
+  )
+)

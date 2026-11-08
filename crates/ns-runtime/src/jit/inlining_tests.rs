@@ -1544,6 +1544,192 @@ fn a_block_handed_to_a_send_a_type_case_traps_at_is_made_in_its_slot() {
     );
 }
 
+/// `sumOf:` hands its block to an `Empty`'s `do:`, `Array`'s, whose
+/// mirror cannot read the size of an instance of a subclass, which holds
+/// no elements: its failure way hands the block to `super do:`,
+/// `Collection`'s, whose `subclassResponsibility` `Empty` answers with 0,
+/// and `sumOf:` answers the 100 it began its `sum` with.
+const A_BLOCK_HANDED_ON_ON_A_FAILURE_WAY: &str = indoc! {"
+    class Subject = Object new (
+      | empty = Empty new. |
+    ) (
+      class Empty = Array new () (
+        public subclassResponsibility = (
+          ^0
+        )
+      )
+      sumOf: collection = (
+        | sum ::= 100. |
+        collection do: [:element | sum:: sum + element].
+        ^sum
+      )
+      public run = (
+        |
+          total ::= 0.
+          index ::= 0.
+        |
+        [index < 3000] whileTrue: [
+          total:: total + (self sumOf: empty).
+          index:: index + 1.
+        ].
+        ^total
+      )
+    )
+"};
+
+/// The way of `Array`'s `do:` for a receiver whose size the mirror cannot
+/// read, read as never run (`SUPER_SENDS_READ_AS_NEVER_RUN`), is a trap
+/// on its `super do:` in a copy that speculates, and lets the block
+/// `sumOf:` hands it escape nowhere: the copy of `sumOf:` inlines `do:`
+/// for `Empty` and eliminates the block. Its first entry takes the way and
+/// traps, the exit makes the block in `sumOf:`'s frame, and the
+/// interpreter runs `super do:` with it; the trap marks the site, the
+/// next one at the site retires the copy, and the copy compiled after it
+/// sends `super do:`, the block created: no trap more, and every answer
+/// the interpreter's.
+#[test]
+fn a_failure_way_that_starts_running_traps_and_its_block_is_made() {
+    use crate::jit::optimizing::plan::{plan, BlockPlan, Limits};
+    use crate::jit::optimizing::snapshot::SUPER_SENDS_READ_AS_NEVER_RUN;
+    use crate::jit::optimizing::tree::SnapshotTree;
+
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            SUPER_SENDS_READ_AS_NEVER_RUN.set(false);
+        }
+    }
+    SUPER_SENDS_READ_AS_NEVER_RUN.set(true);
+    let _reset = Reset;
+    let source = A_BLOCK_HANDED_ON_ON_A_FAILURE_WAY;
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = crate::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
+        .unwrap_or_else(|_| panic!("the module resolves"));
+    let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_caches(false);
+    interpreter.set_jit_enabled(true);
+    interpreter.set_jit_stress(true);
+    let class = interpreter.load_module(&resolved);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let run = |interpreter: &mut Interpreter| {
+        let answer = expect_ok(
+            interpreter.send(&instance, Symbol::intern("run"), &[]),
+            "run",
+        );
+        interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+            crate::ValueKind::SmallInteger(integer) => integer,
+            _ => panic!("run: expected a small integer"),
+        })
+    };
+    // A run that fills the caches before anything is optimized.
+    assert_eq!(run(&mut interpreter), 300_000);
+    interpreter.set_optimize_stress(true);
+    interpreter.set_jit_counting(true);
+    let sum_of = interpreter.enter(|mutator| {
+        mutator.jit.recorder = Some(Recorder::default());
+        let code = crate::interpreter::method_code(
+            mutator,
+            &class,
+            MethodSide::Instance,
+            Symbol::intern("sumOf:"),
+        )
+        .expect("the method");
+        mutator.heap.code_id(&code)
+    });
+    let before = interpreter.jit_statistics();
+    assert_eq!(run(&mut interpreter), 300_000);
+    // The zone stress mode compacts the zone at every safepoint, and the
+    // freeing at every other compaction leaves no copy for the way to
+    // trap in; the optimize, deopt and invalidate modes change which copy
+    // runs when, compiling one before the run above filled the caches,
+    // leaving one before it reaches the way, or freeing it. The answer is
+    // still the interpreter's.
+    let changes_the_copy = ["OPTIMIZE", "DEOPT", "INVALIDATE"].iter().any(|mode| {
+        std::env::var_os(format!("NS_NEXT_STRESS_{mode}"))
+            .is_some_and(|value| !value.is_empty() && value != "0")
+    });
+    if the_zone_stress_mode_is_on() || changes_the_copy {
+        assert_eq!(run(&mut interpreter), 300_000);
+        assert_eq!(run(&mut interpreter), 300_000);
+        return;
+    }
+    let first = interpreter.jit_statistics();
+    let trapped_in_do = |interpreter: &mut Interpreter| {
+        interpreter.enter(|mutator| {
+            let recorder = mutator.jit.recorder.as_ref().expect("recording");
+            recorder
+                .exits
+                .iter()
+                .filter(|exit| exit.trapped)
+                .filter(|exit| {
+                    exit.frames
+                        .first()
+                        .is_some_and(|frame| frame.selector == Some(Symbol::intern("do:")))
+                        && exit.frames.iter().any(|frame| frame.code == sum_of)
+                })
+                .count()
+        })
+    };
+    let traps = trapped_in_do(&mut interpreter);
+    assert!(traps >= 1, "the failure way traps in `do:`: {first:?}");
+    assert!(
+        first.eliminated_blocks - before.eliminated_blocks >= 1,
+        "the copy eliminated the block: {first:?}"
+    );
+    let made = interpreter.enter(|mutator| {
+        let recorder = mutator.jit.recorder.as_ref().expect("recording");
+        recorder
+            .blocks
+            .iter()
+            .filter(|(_, block)| block.home == sum_of && block.one_object && block.home_married)
+            .count()
+    });
+    assert!(made >= 1, "the trap made `sumOf:`'s block");
+    assert!(
+        first.made_not_entrant - before.made_not_entrant >= 1,
+        "the second trap at the site retires the copy: {first:?}"
+    );
+    // The site trapped: a compile of `sumOf:` now sends `super do:`, and
+    // creates the block it is handed.
+    let created = interpreter.enter(|mutator| {
+        let code = crate::interpreter::method_code(
+            mutator,
+            &class,
+            MethodSide::Instance,
+            Symbol::intern("sumOf:"),
+        )
+        .expect("the method");
+        let base = mutator.caches.known_base(&code).expect("it ran");
+        let tree = SnapshotTree::take(
+            &code,
+            &mut mutator.heap,
+            &mutator.caches,
+            base,
+            None,
+            &Limits::STANDARD,
+        );
+        let planned = plan(&tree, crate::jit::optimizing::Speculation::Traps);
+        planned
+            .blocks
+            .values()
+            .all(|block| *block == BlockPlan::Created)
+    });
+    assert!(created, "the block is created once the way ran");
+    // `run`'s copy, which inlines `sumOf:`, may have been compiled before
+    // the site trapped, and traps there once; every copy compiled since
+    // sends `super do:`.
+    assert_eq!(run(&mut interpreter), 300_000);
+    let settled = trapped_in_do(&mut interpreter);
+    assert_eq!(run(&mut interpreter), 300_000);
+    assert_eq!(run(&mut interpreter), 300_000);
+    assert_eq!(
+        trapped_in_do(&mut interpreter),
+        settled,
+        "the copies compiled again trap no more"
+    );
+}
+
 /// A poll's light exit and the frame going back into its optimized code
 /// there, or not, once the safepoint is served. Debug builds only, where
 /// a test sets the scavenge threshold.

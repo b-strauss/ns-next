@@ -9127,6 +9127,14 @@ impl<'gc> Heap<'gc> {
         )
     }
 
+    /// The application the header at `offset` records its frame entered
+    /// at, of a frame the exit's walk is writing
+    /// (`walked_receiver_and_current_class`).
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn walked_entered_level(&self, offset: u32) -> ApplicationIndex {
+        self.activation_entered_level_of(offset)
+    }
+
     /// Writes `class` as the current class of the header at `offset`, a
     /// frame the exit's walk is writing (`walked_receiver_and_current_class`):
     /// the walk computes an inlined scope's, which optimized code computes
@@ -10286,8 +10294,10 @@ impl<'gc> Heap<'gc> {
     /// only the reference lowering's control flow pushes an uncounted one,
     /// which no copy inlines; its flags word whole, shifted by no call,
     /// with a generation of its own in a debug build; and its guard and
-    /// entered level as the push records them, from its receiver and
-    /// current class, which its code wrote back.
+    /// entered level as the push records them, from its receiver, which
+    /// its code wrote back, and its current class, which its code wrote
+    /// back at a leaf's frame node and the exit's walk wrote before this
+    /// write (`jit::materialize`).
     #[cfg(ns_jit)]
     #[inline(never)]
     fn write_inlined_scope_frame(&mut self, frame: &MachineFrame) -> ActivationReference {

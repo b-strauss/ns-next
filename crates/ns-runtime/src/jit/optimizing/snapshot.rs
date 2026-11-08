@@ -977,6 +977,31 @@ pub(crate) struct Snapshot {
     pub(crate) customization: Option<Customization>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Makes every snapshot read a `super` send's site as never executed,
+    /// its trapped bit as the caches hold it: for a test of a way only a
+    /// receiver of one application ever takes -- `Array`'s `do:` handing
+    /// its block to `super do:` for an instance of a subclass, which holds
+    /// no elements -- trapping in a copy compiled for that application,
+    /// which no program can make before the way has run.
+    pub(crate) static SUPER_SENDS_READ_AS_NEVER_RUN: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Whether a test asked every snapshot to read a `super` send's site as
+/// never executed.
+fn super_sends_read_as_never_run() -> bool {
+    #[cfg(test)]
+    {
+        SUPER_SENDS_READ_AS_NEVER_RUN.get()
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 /// The registers tainted before each instruction of `code`, as
 /// `CompiledCode::tainted_before` answers them, from one pass and without
 /// keeping them on the body: a snapshot owns its copy.
@@ -1073,9 +1098,12 @@ impl Snapshot {
                     _ => instruction.call_site().map(|site| site.number),
                 }?;
                 let recorded = site < family_size;
+                let executed = !recorded || caches.site_executed(feedback_base, site);
                 Some(SiteFacts {
                     site,
-                    executed: !recorded || caches.site_executed(feedback_base, site),
+                    executed: executed
+                        && !(super_sends_read_as_never_run()
+                            && matches!(instruction, Instruction::SendSuper { .. })),
                     trapped: !recorded || caches.site_trapped(feedback_base, site),
                 })
             })

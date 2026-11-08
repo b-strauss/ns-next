@@ -3107,13 +3107,15 @@ ns_runtime::for_each_lowering! {
 /// `evaluate:` evaluate it: by then its budget has run out and it is
 /// optimized, so that its optimized code makes the first of its closures.
 const CLOSURE_IN_A_HOT_LOOP: &str = indoc! {"
-    class Subject = Object new () (
-      evaluate: block = (
-        ^block value
+    class Subject = Object new (
+      | kept |
+    ) (
+      evaluate: block or: sum = (
+        kept:: block.
+        ^block isNil ifTrue: [sum] ifFalse: [block value]
       )
       add: index to: total = (
-        index > 9000 ifTrue: [^self evaluate: [total + index]].
-        ^total + index
+        ^self evaluate: (index > 9000 ifTrue: [[total + index]] ifFalse: [nil]) or: total + index
       )
       public run = (
         |
@@ -3130,7 +3132,10 @@ const CLOSURE_IN_A_HOT_LOOP: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
-    /// `add:to:`'s optimized code makes its block as its lean baseline
+    /// `add:to:`'s optimized code makes its block, which `evaluate:or:`
+    /// keeps and so lets escape -- its send ran before the copy was
+    /// compiled, with `nil`, the block a branch made only past index
+    /// 9000 -- as its lean baseline
     /// code does, by transferring its frame into the body's twin, which
     /// makes the closure: its first transfer finds no twin and calls the
     /// twin leaf, which compiles the baseline body's twin -- once, the

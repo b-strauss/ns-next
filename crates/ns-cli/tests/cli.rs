@@ -614,12 +614,15 @@ fn jit_statistics_count_what_inlining_did() {
     assert_eq!(reentries[1], 0, "{reentries:?}");
 }
 
-/// Three optimizer goldens reach in a plain run the path they are written
+/// Four optimizer goldens reach in a plain run the path they are written
 /// for: `an_edit_below_an_inlined_frame`'s edits each free the copy whose
 /// frame is below, `eliminated_block_seen_after_an_exit`'s traps make
-/// the blocks its copies eliminated, and
+/// the blocks its copies eliminated,
 /// `a_block_made_on_a_way_not_run_traps`'s way that starts running traps
-/// at its `MakeClosure`, retiring the copy, which is compiled again.
+/// at its `MakeClosure`, the trap that follows there retiring the copy,
+/// which is compiled again, and
+/// `a_block_handed_to_an_array_s_do_is_eliminated`'s copies eliminate the
+/// blocks they hand an Array's `do:`, which traps on no way.
 #[test]
 fn the_optimizer_goldens_reach_their_paths_in_a_plain_run() {
     let Some(edits) = plain_jit_counts(
@@ -664,6 +667,16 @@ nil
         retired[2] > 1,
         "and the body is compiled again: {retired:?}"
     );
+    let handed = plain_jit_counts(
+        &common::golden("runtime/optimizer/a_block_handed_to_an_array_s_do_is_eliminated"),
+        "2525000
+5000
+",
+        &["blocks eliminated", "traps"],
+    )
+    .expect("a target with a JIT");
+    assert!(handed[0] > 0, "the blocks are eliminated: {handed:?}");
+    assert_eq!(handed[1], 0, "and no way traps: {handed:?}");
 }
 
 /// `--collector-statistics` prints the collector's counts and pauses to

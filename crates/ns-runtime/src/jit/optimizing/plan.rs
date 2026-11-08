@@ -39,6 +39,7 @@ use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, QuickConstant};
 use crate::types::BuiltinClass;
 use crate::Symbol;
 
+use super::build::{compiled_ways, CompiledWay};
 use super::snapshot::{Snapshot, SnapshotInstruction};
 use super::tree::{CalleeFacts, ReceiverFacts, SnapshotTree};
 use super::Speculation;
@@ -456,7 +457,7 @@ pub(crate) fn plan_with(
     limits: &Limits,
     speculation: Speculation,
 ) -> InliningPlan {
-    let mut planner = Planner::new(tree, *limits, speculation == Speculation::Traps);
+    let mut planner = Planner::new(tree, *limits, speculation);
     while let Some(candidate) = planner.queue.pop() {
         planner.take(&candidate);
     }
@@ -496,6 +497,9 @@ struct Scope<'tree> {
     holdings: Vec<Holdings>,
     /// Each instruction's number of enclosing loops.
     loop_depths: Vec<u32>,
+    /// What the graph makes of each instruction: a way the feedback says
+    /// never ran ends in a trap, and nothing past it is built.
+    ways: Vec<CompiledWay>,
     alive: bool,
     /// Its weight, which the compile's total gives back when it is
     /// dropped.
@@ -994,6 +998,7 @@ struct Planner<'tree> {
     limits: Limits,
     /// Whether the copy speculates: whether a type-case may trap.
     speculates: bool,
+    speculation: Speculation,
     scopes: Vec<Scope<'tree>>,
     total: u32,
     queue: BinaryHeap<Candidate>,
@@ -1002,12 +1007,13 @@ struct Planner<'tree> {
 }
 
 impl<'tree> Planner<'tree> {
-    fn new(tree: &'tree SnapshotTree, limits: Limits, speculates: bool) -> Planner<'tree> {
+    fn new(tree: &'tree SnapshotTree, limits: Limits, speculation: Speculation) -> Planner<'tree> {
         let root = &tree.root;
         let mut planner = Planner {
             tree,
             limits,
-            speculates,
+            speculates: speculation == Speculation::Traps,
+            speculation,
             scopes: Vec::new(),
             total: weight_in(tree, root),
             queue: BinaryHeap::new(),
@@ -1073,6 +1079,7 @@ impl<'tree> Planner<'tree> {
             block,
             holdings,
             loop_depths: loop_depths(&snapshot.instructions),
+            ways: compiled_ways(snapshot, id != ScopeId::ROOT, self.speculation),
             alive: true,
             weight: weight_in(self.tree, snapshot),
         });
@@ -1544,6 +1551,10 @@ impl<'tree> Planner<'tree> {
     /// The blocks the compile eliminates (the module's comment): every
     /// block of a live scope at first, then each that escapes taken out,
     /// with the scopes inlined for its `value` sends, until none does.
+    /// A `MakeClosure` the graph does not build, or lowers as a trap
+    /// (`build::compiled_ways`), makes no block of the compile, and one
+    /// whose body the tree holds no snapshot of -- which an exit could not
+    /// materialize -- is created.
     fn decide_blocks(&mut self) -> BTreeSet<BlockKey> {
         let mut eliminated: BTreeSet<BlockKey> = BTreeSet::new();
         for (index, scope) in self
@@ -1553,15 +1564,20 @@ impl<'tree> Planner<'tree> {
             .filter(|_| self.limits.inline_blocks)
         {
             for (program_counter, instruction) in scope.snapshot.instructions.iter().enumerate() {
-                if matches!(instruction, SnapshotInstruction::MakeClosure { .. }) {
-                    eliminated.insert((ScopeId::of(index), program_counter_u32(program_counter)));
+                if let SnapshotInstruction::MakeClosure { block, .. } = instruction {
+                    if scope.ways[program_counter] == CompiledWay::Runs
+                        && self.tree.blocks.contains_key(block)
+                    {
+                        eliminated
+                            .insert((ScopeId::of(index), program_counter_u32(program_counter)));
+                    }
                 }
             }
         }
         let accessed: Vec<Option<HashSet<u16>>> = self
             .scopes
             .iter()
-            .map(|scope| self.outer_accessed(scope.snapshot))
+            .map(|scope| self.outer_accessed(scope))
             .collect();
         loop {
             let escaping: Vec<BlockKey> = eliminated
@@ -1602,7 +1618,8 @@ impl<'tree> Planner<'tree> {
     /// receiver that is no Boolean runs as rarely as such a receiver comes
     /// -- nor, where the copy speculates, a way whose send of the block
     /// never ran, whose `MakeClosure` the graph lowers as a trap on that
-    /// send's site (`build::guard_of`), as every way that never ran traps.
+    /// send's site (`build::guard_of`), as every way that never ran traps,
+    /// nor a way past such a trap, which the graph does not build.
     /// Until optimized code creates blocks itself (stage 4), such a scope
     /// would leave the copy at its `MakeClosure` every time it ran it.
     fn creates_a_block(&self, index: usize, eliminated: &BTreeSet<BlockKey>) -> bool {
@@ -1618,15 +1635,11 @@ impl<'tree> Planner<'tree> {
             .zip(fallback)
             .enumerate()
             .any(|(program_counter, (instruction, fallback))| {
-                let SnapshotInstruction::MakeClosure { destination, .. } = instruction else {
-                    return false;
-                };
-                !fallback
+                matches!(instruction, SnapshotInstruction::MakeClosure { .. })
+                    && !fallback
+                    && scope.ways[program_counter] == CompiledWay::Runs
                     && !eliminated
                         .contains(&(ScopeId::of(index), program_counter_u32(program_counter)))
-                    && !(self.speculates
-                        && never_run_consumer(scope.snapshot, program_counter, *destination)
-                            .is_some())
             })
     }
 
@@ -1660,15 +1673,22 @@ impl<'tree> Planner<'tree> {
         }
     }
 
-    /// The registers of a frame running `snapshot`'s body that a block
+    /// The registers of a frame running `scope`'s body that a block
     /// literal nested in it reads or writes by reference
     /// (`LoadOuterLocal`, `StoreOuterLocal`); `None` when a nested block
-    /// was not snapshotted, which may reach any.
-    fn outer_accessed(&self, snapshot: &Snapshot) -> Option<HashSet<u16>> {
+    /// was not snapshotted, which may reach any. A block the scope makes
+    /// only on a way that ends in a trap, or at the trap -- a conditional's
+    /// closure for a receiver that is no Boolean, where none ever came --
+    /// is made by no code of the compile: the trap's exit hands the frame
+    /// to the interpreter, the blocks it holds materialized, before it.
+    fn outer_accessed(&self, scope: &Scope<'tree>) -> Option<HashSet<u16>> {
         let mut accessed = HashSet::new();
-        let mut work: Vec<(&Snapshot, u16)> = vec![(snapshot, 0)];
+        let mut work: Vec<(&Snapshot, u16)> = vec![(scope.snapshot, 0)];
         while let Some((body, depth)) = work.pop() {
-            for instruction in &body.instructions {
+            for (program_counter, instruction) in body.instructions.iter().enumerate() {
+                if depth == 0 && scope.ways[program_counter] != CompiledWay::Runs {
+                    continue;
+                }
                 match instruction {
                     SnapshotInstruction::LoadOuterLocal {
                         depth: reach,
@@ -1694,7 +1714,12 @@ impl<'tree> Planner<'tree> {
 
     /// Whether `block` escapes, `eliminated` the blocks still taken as
     /// eliminated and `accessed` each scope's registers its nested
-    /// blocks reach by reference.
+    /// blocks reach by reference. A way that ends in a trap lets nothing
+    /// escape (`build::compiled_ways`): at the trap the block is where an
+    /// exit finds it on every way there, so the exit materializes it and
+    /// the interpreter runs the instruction with it -- C2 reallocates an
+    /// object that escapes only through an uncommon trap the same way --
+    /// and nothing past the trap is built.
     fn escapes(
         &self,
         block: BlockKey,
@@ -1708,6 +1733,10 @@ impl<'tree> Planner<'tree> {
             let id = ScopeId::of(index);
             let mut holding = HashSet::new();
             for (program_counter, instruction) in scope.snapshot.instructions.iter().enumerate() {
+                let way = scope.ways[program_counter];
+                if way == CompiledWay::Unreached {
+                    continue;
+                }
                 let held = &scope.holdings[program_counter];
                 for (register, used) in uses_of(instruction) {
                     if !held
@@ -1718,17 +1747,18 @@ impl<'tree> Planner<'tree> {
                     }
                     holding.insert(register);
                     let key = (id, program_counter_u32(program_counter));
-                    let harmless = match used {
-                        Use::Move => true,
-                        Use::Copied => eliminated.contains(&key),
-                        Use::Receiver => matches!(
-                            self.decisions.get(&key),
-                            Some(SiteDecision::Unguarded(Some((_, _, ArmPlan::Inline { callee }))))
-                                if self.scopes[callee.index()].block == Some(block)
-                        ),
-                        Use::Argument(_) => self.inlines_every_way(key),
-                        Use::Other => false,
-                    };
+                    let harmless = way == CompiledWay::Traps
+                        || match used {
+                            Use::Move => true,
+                            Use::Copied => eliminated.contains(&key),
+                            Use::Receiver => matches!(
+                                self.decisions.get(&key),
+                                Some(SiteDecision::Unguarded(Some((_, _, ArmPlan::Inline { callee }))))
+                                    if self.scopes[callee.index()].block == Some(block)
+                            ),
+                            Use::Argument(_) => self.inlines_every_way(key),
+                            Use::Other => false,
+                        };
                     if !harmless {
                         return true;
                     }
@@ -3081,9 +3111,79 @@ mod tests {
             })
             .collect();
         assert!(!readers.is_empty(), "{:#?}", tree.root.instructions);
-        let plan = plan(&tree, Speculation::Traps);
+        // A copy that speculates nothing builds that way.
+        let plan = plan(&tree, Speculation::None);
         inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "apply:"));
         assert_eq!(plan.blocks[&(ScopeId::ROOT, held)], BlockPlan::Created);
+    }
+
+    /// Where the copy speculates, the not-Boolean way of `ifTrue:`, which
+    /// never ran, is a trap, and the block made on it is made by no code
+    /// of the compile: what it reaches by reference lets nothing escape.
+    #[test]
+    fn a_block_a_nested_block_reaches_only_past_a_trap_is_eliminated() {
+        let (mut interpreter, class) = run(REFERENCE);
+        let tree = tree_of(&mut interpreter, &class, "go:", &Limits::STANDARD);
+        let held = closures_of(&tree.root)[0];
+        let plan = plan(&tree, Speculation::Traps);
+        inlined_at(&plan, ScopeId::ROOT, send_of(&tree.root, "apply:"));
+        assert!(
+            matches!(
+                plan.blocks[&(ScopeId::ROOT, held)],
+                BlockPlan::Eliminated(_)
+            ),
+            "{:#?}",
+            plan.blocks
+        );
+    }
+
+    /// A block handed to a callee that passes it on only on a way that
+    /// never ran -- `Array`'s `do:` hands it to `super do:` where the
+    /// mirror cannot read the receiver's size -- is eliminated where the
+    /// copy speculates: that way is a trap on the send's site.
+    const PASSED_ON_A_WAY_NOT_RUN: &str = indoc! {"
+        class PassedOnAWayNotRun = () (
+          public walk: aBlock over: count = (
+            count > 100 ifTrue: [^self keep: aBlock].
+            ^aBlock value: count
+          )
+          public keep: aBlock = (
+            ^aBlock
+          )
+          public go: count = (
+            | total ::= 0. |
+            self walk: [:each | total:: total + each] over: count.
+            ^total
+          )
+          public run = (
+            ^self go: 3
+          )
+        )
+    "};
+
+    #[test]
+    fn a_block_passed_on_only_on_a_way_not_run_is_eliminated_where_the_copy_speculates() {
+        let (mut interpreter, class) = run(PASSED_ON_A_WAY_NOT_RUN);
+        let tree = tree_of(&mut interpreter, &class, "go:", &Limits::STANDARD);
+        let held = closure_of(&tree.root);
+        let speculating = plan(&tree, Speculation::Traps);
+        inlined_at(
+            &speculating,
+            ScopeId::ROOT,
+            send_of(&tree.root, "walk:over:"),
+        );
+        assert!(
+            matches!(
+                speculating.blocks[&(ScopeId::ROOT, held)],
+                BlockPlan::Eliminated(_)
+            ),
+            "{:#?}",
+            speculating.blocks
+        );
+        // Without speculation the way is built, and the block escapes
+        // into `keep:`.
+        let plain = plan(&tree, Speculation::None);
+        assert_eq!(plain.blocks[&(ScopeId::ROOT, held)], BlockPlan::Created);
     }
 
     const COPIED_INTO: &str = indoc! {"

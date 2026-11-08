@@ -51,7 +51,7 @@
 //! so an arm with a check is expressed only in a copy that speculates,
 //! at a site that never trapped (`Laying::expressed`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::builtins::primitive::{
@@ -500,9 +500,11 @@ fn guard_of(
     }
     // A block an inlined scope creates where its send never ran: a
     // `MakeClosure` there would leave the copy at every run of the way,
-    // and traps on the send's site instead, as the way's send would, so
-    // that a way that starts running retires the copy and its next
-    // compile sends the callee (`plan::Planner::creates_a_block`).
+    // and traps on the send's site instead, as the way's send would: a
+    // way that starts running traps there and marks the site trapped,
+    // the trap that follows at the site retires the copy, as every
+    // second trap at a site does, and the compile after it sends the
+    // callee (`plan::Planner::creates_a_block`).
     if let SnapshotInstruction::MakeClosure { destination, .. } = &snapshot.instructions[index] {
         return match super::plan::never_run_consumer(snapshot, index, *destination) {
             Some(site) if inlined => Guard::Send { site },
@@ -530,6 +532,72 @@ fn guard_of(
         | SnapshotInstruction::SendSuper { .. } => Guard::Send { site: facts.site },
         _ => Guard::None,
     }
+}
+
+/// What the graph of a scope running `snapshot` makes of one of its
+/// instructions (`compiled_ways`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompiledWay {
+    /// No way the graph builds reaches it: it lies past a trap only.
+    Unreached,
+    /// It traps before it does anything: a send that never ran, or a
+    /// block made for one (`guard_of`), whose exit hands the instruction
+    /// to the interpreter.
+    Traps,
+    /// The graph builds it.
+    Runs,
+}
+
+/// What the graph of a scope running `snapshot` -- the root, or a scope
+/// inlined (`inlined`) -- makes of each of its instructions under
+/// `speculation`, by the guards `guard_of` gives them: a way the
+/// feedback says never ran ends in a trap, and nothing past it is built.
+/// The plan's escape analysis reads it, so that a block used only on such
+/// a way -- an `Array`'s `do:` handing its block to `super do:` where the
+/// mirror cannot read the receiver's size, a conditional's closure for a
+/// receiver that is no Boolean -- is not let escape by it: the trap's exit
+/// materializes the block, and the interpreter goes on with it
+/// (`plan::Planner::escapes`). It answers each instruction a way the
+/// graph may build reaches, a conditional's third way kept even where
+/// an earlier build found its condition a known Boolean, so the plan
+/// may look at more than the graph builds, never at less.
+pub(crate) fn compiled_ways(
+    snapshot: &Snapshot,
+    inlined: bool,
+    speculation: Speculation,
+) -> Vec<CompiledWay> {
+    let instructions = &snapshot.instructions;
+    let mut ways = vec![CompiledWay::Unreached; instructions.len()];
+    let mut work = vec![0_usize];
+    while let Some(index) = work.pop() {
+        let Some(instruction) = instructions.get(index) else {
+            continue;
+        };
+        if ways[index] != CompiledWay::Unreached {
+            continue;
+        }
+        let send_only = matches!(instruction, SnapshotInstruction::IntegerBinary { .. })
+            && snapshot.fallback_taken.get(index).copied().unwrap_or(false);
+        let choice = Choice {
+            send_only,
+            guard: guard_of(snapshot, (index, inlined), send_only, speculation),
+            known_boolean: false,
+        };
+        if matches!(choice.guard, Guard::Send { .. }) {
+            ways[index] = CompiledWay::Traps;
+            continue;
+        }
+        ways[index] = CompiledWay::Runs;
+        if choice.may_fall_through() && instruction.falls_through() {
+            work.push(index + 1);
+        }
+        if choice.keeps_target() {
+            if let Some(target) = instruction.jump_target() {
+                work.push(target as usize);
+            }
+        }
+    }
+    ways
 }
 
 /// Where an inlined send's receiver is: in a physical register, or, for
@@ -2201,6 +2269,10 @@ struct Builder<'flat> {
     /// The loop heads' registers a back edge brought as a value its frame
     /// word does not hold, though the head left them their frame words.
     refuted: Vec<(usize, usize)>,
+    /// The values of the blocks the compile eliminated, which no frame
+    /// node may read: the plan let each be used only where the graph
+    /// moves it, inlines its `value` or traps (`plan::Planner::escapes`).
+    eliminated_values: HashSet<ValueId>,
 }
 
 impl<'flat> Builder<'flat> {
@@ -2284,6 +2356,7 @@ impl<'flat> Builder<'flat> {
             forced_phis: vec![RegisterSet::empty(register_count); block_count],
             unbound_at_head: vec![RegisterSet::empty(register_count); block_count],
             refuted: Vec::new(),
+            eliminated_values: HashSet::new(),
         };
         builder.lay_out_blocks();
         builder.live_in = builder.liveness();
@@ -3014,10 +3087,16 @@ impl<'flat> Builder<'flat> {
                     .copied()
                     .filter(|register| own.contains(register))
                     .collect();
-                let reads = registers
+                let reads: Vec<(u16, ValueId)> = registers
                     .into_iter()
                     .map(|register| (register, self.read(block, state, register)))
                     .collect();
+                debug_assert!(
+                    reads
+                        .iter()
+                        .all(|(_, value)| !self.eliminated_values.contains(value)),
+                    "internal: the instruction at {program_counter} of {scope:?} reads an                      eliminated block the plan let escape"
+                );
                 let falls_through = physical.falls_through();
                 self.blocks[block].nodes.push(Node::Frame {
                     scope,
@@ -3110,6 +3189,7 @@ impl<'flat> Builder<'flat> {
                 block: eliminated,
             } => {
                 let value = self.new_value(None);
+                self.eliminated_values.insert(value);
                 let nodes = &mut self.blocks[block].nodes;
                 nodes.push(Node::EliminatedBlock {
                     value,
