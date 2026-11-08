@@ -332,6 +332,10 @@ pub struct JitStatistics {
     /// Frames of inlined scopes of optimized code the exit's walk wrote in
     /// place: each scope an exit or a call inside it left standing.
     pub inlined_frames_materialized: u64,
+    /// Sites the optimized copies installed lay out as their arms rather
+    /// than send: a type-case, an unguarded inlined scope, or an accessor,
+    /// quick method or indexed access always inlined, guarded or not.
+    pub inlined_sites: u64,
     /// Scopes the optimized copies installed inlined: each method body a
     /// site's arm or an unguarded send inlined, and each block a `value`
     /// send inlined, that the copy lays out code for -- so a site inlined
@@ -6015,9 +6019,9 @@ fn optimize(
     #[cfg(test)]
     macro_assembler.set_refuse_poll_entries(mutator.jit.refuse_poll_entries);
     let role = baseline::BodyRole::of(code, method.is_some());
-    // What the copy inlined -- its scopes, type-case arms and eliminated
-    // blocks -- counted once it is installed.
-    let mut inlined = (0_u64, 0_u64, 0_u64);
+    // What the copy inlined -- its scopes, type-case arms, eliminated
+    // blocks and sites -- counted once it is installed.
+    let mut inlined = (0_u64, 0_u64, 0_u64, 0_u64);
     let installation = optimizing::compile_tree(
         &tree,
         macro_assembler,
@@ -6030,6 +6034,7 @@ fn optimize(
             optimized.scopes.iter().skip(1).flatten().count() as u64,
             u64::from(optimized.type_case_arms),
             optimized.eliminated.len() as u64,
+            u64::from(optimized.inlined_sites),
         );
         let metadata = optimized_metadata(&mutator.heap, &mut optimized)?;
         let dependencies = CopyDependencies::of(&mutator.heap, &optimized.relied_on);
@@ -6088,6 +6093,7 @@ fn optimize(
     statistics.inlined_scopes += inlined.0;
     statistics.type_case_arms += inlined.1;
     statistics.eliminated_blocks += inlined.2;
+    statistics.inlined_sites += inlined.3;
     // Its transfers go into the twin, which the baseline body may have.
     mutator.jit.write_transfer_words(index);
     // Every cell that called the baseline code is written afresh from its

@@ -66,7 +66,8 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
          {} bodies optimized ({} customized copies) in {:.3} ms, \
          {} optimized exits ({} forced, {} traps), {} abandoned, \
          {} made not entrant, {} refused for good, {} invalidated copies, \
-         {} dispatched calls; inlining: {} scopes inlined, {} type-case arms, \
+         {} dispatched calls; inlining: {} sites inlined, {} scopes inlined, \
+         {} type-case arms, \
          {} blocks eliminated, {} blocks materialized, \
          {} inlined frames materialized, {} budget exits \
          ({} recompilees above), {} poll re-entries, \
@@ -89,6 +90,7 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
         statistics.refused_for_good,
         statistics.invalidated_copies,
         statistics.dispatched_calls,
+        statistics.inlined_sites,
         statistics.inlined_scopes,
         statistics.type_case_arms,
         statistics.eliminated_blocks,

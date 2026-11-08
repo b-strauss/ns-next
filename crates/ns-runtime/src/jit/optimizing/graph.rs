@@ -59,6 +59,10 @@ pub(crate) struct Graph {
     /// is that application's layout's, which the copy then relies on
     /// (`jit::CopyDependencies`).
     pub(crate) arm_applications: Vec<ApplicationIndex>,
+    /// The sends laid out as their arms -- a type-case, or an unguarded
+    /// arm, an inlined scope or a callee always inlined -- rather than
+    /// sent: what `--jit-statistics` counts as inlined sites.
+    pub(crate) inlined_sites: u32,
 }
 
 /// One scope of a graph, where it lies in the physical frame
@@ -788,6 +792,7 @@ impl Graph {
             values,
             scopes: Vec::new(),
             arm_applications: Vec::new(),
+            inlined_sites: 0,
         };
         graph.find_phi_kinds();
         graph

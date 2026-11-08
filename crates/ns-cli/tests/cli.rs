@@ -470,7 +470,8 @@ fn jit_statistics_print_one_line_to_stderr() {
          # bodies optimized (# customized copies) in # ms, \
          # optimized exits (# forced, # traps), # abandoned, \
          # made not entrant, # refused for good, # invalidated copies, \
-         # dispatched calls; inlining: # scopes inlined, # type-case arms, \
+         # dispatched calls; inlining: # sites inlined, # scopes inlined, \
+         # type-case arms, \
          # blocks eliminated, # blocks materialized, \
          # inlined frames materialized, # budget exits \
          (# recompilees above), # poll re-entries, \
@@ -483,7 +484,7 @@ fn jit_statistics_print_one_line_to_stderr() {
 /// `NS_NEXT_NO_JIT`, whatever the environment says, so that what the
 /// optimizer inlines is what a plain run's budgets decide; `None` on a
 /// target without a JIT, which compiles no body.
-fn plain_jit_counts(program: &std::path::Path, labels: &[&str]) -> Option<Vec<u64>> {
+fn plain_jit_counts(program: &std::path::Path, stdout: &str, labels: &[&str]) -> Option<Vec<u64>> {
     let mut command = ns_next();
     command
         .arg("run")
@@ -509,6 +510,7 @@ fn plain_jit_counts(program: &std::path::Path, labels: &[&str]) -> Option<Vec<u6
     let output = command.output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), stdout);
     let line = stderr
         .lines()
         .find(|line| line.starts_with("jit: "))
@@ -569,11 +571,12 @@ const AN_ELIMINATED_BLOCK_MADE_AT_A_TRAP: &str = indoc! {"
 
 /// `--jit-statistics` counts what the optimized copies inlined and what
 /// became of it: a copy whose block is eliminated inside inlined scopes,
-/// and made by the exit at a trap there, counts the scopes, the type-case
-/// arms, the block eliminated and made, the inlined frames the exit
-/// wrote and the budget exits whose walk found the recompilee above; and
-/// a loop whose inlined callees allocate counts the polls it went back
-/// into its code at, after each scavenge.
+/// and made by the exit at a trap there, counts the sites and the scopes
+/// inlined, the type-case arms, the block eliminated and made, the
+/// inlined frames the exit wrote and the budget exits whose walk found
+/// the recompilee above, and answers the interpreter's sums; and a loop
+/// whose inlined callees allocate counts the polls it went back into its
+/// code at, after each scavenge.
 #[test]
 fn jit_statistics_count_what_inlining_did() {
     let directory = ScratchDirectory::new("jit-statistics-inlining");
@@ -581,7 +584,11 @@ fn jit_statistics_count_what_inlining_did() {
     std::fs::write(&program, AN_ELIMINATED_BLOCK_MADE_AT_A_TRAP).unwrap();
     let Some(counts) = plain_jit_counts(
         &program,
+        "180000
+120.0
+",
         &[
+            "sites inlined",
             "scopes inlined",
             "type-case arms",
             "blocks eliminated",
@@ -596,11 +603,50 @@ fn jit_statistics_count_what_inlining_did() {
     assert!(counts.iter().all(|count| *count > 0), "{counts:?}");
     let reentries = plain_jit_counts(
         &common::golden("runtime/optimizer/allocating_inlined_loop"),
+        "40000400000
+40
+8200040
+",
         &["poll re-entries", "polls without an entry"],
     )
     .expect("a target with a JIT");
     assert!(reentries[0] > 0, "{reentries:?}");
     assert_eq!(reentries[1], 0, "{reentries:?}");
+}
+
+/// Two optimizer goldens reach in a plain run the path they are written
+/// for: `an_edit_below_an_inlined_frame`'s edits each free the copy whose
+/// frame is below, and `eliminated_block_seen_after_an_exit`'s traps make
+/// the blocks its copies eliminated.
+#[test]
+fn the_optimizer_goldens_reach_their_paths_in_a_plain_run() {
+    let Some(edits) = plain_jit_counts(
+        &common::golden("runtime/optimizer/an_edit_below_an_inlined_frame"),
+        "420000
+14000
+420000
+nil
+9
+19005
+24000
+",
+        &["invalidated copies"],
+    ) else {
+        return;
+    };
+    assert_eq!(edits, vec![2], "a copy freed at each edit");
+    let made = plain_jit_counts(
+        &common::golden("runtime/optimizer/eliminated_block_seen_after_an_exit"),
+        "420000
+16.0
+21
+90000
+4
+",
+        &["blocks eliminated", "blocks materialized", "traps"],
+    )
+    .expect("a target with a JIT");
+    assert!(made.iter().all(|count| *count > 0), "{made:?}");
 }
 
 /// `--collector-statistics` prints the collector's counts and pauses to

@@ -104,6 +104,8 @@ pub(crate) struct OptimizedBody {
     /// The arms of every type-case the code tests, which `--jit-statistics`
     /// counts (`jit::JitStatistics::type_case_arms`).
     pub(crate) type_case_arms: u32,
+    /// The sites the code lays out as their arms (`graph::Graph::inlined_sites`).
+    pub(crate) inlined_sites: u32,
     /// The `SmallInteger` tag tests the code holds, which the tests count.
     #[cfg(test)]
     pub(crate) small_integer_tag_tests: usize,

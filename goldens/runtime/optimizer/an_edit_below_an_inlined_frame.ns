@@ -1,22 +1,27 @@
 /// MirrorBuilder edits of an inlined callee's class, each installed from
 /// a callee of a hot optimized method in the middle of its loop, while
-/// that method's frame, whose code inlined the callee, is below. `sweep:`
+/// that method's frame, whose copy inlined the callee, is below. `sweep:`
 /// adds `cell total` every turn, and `total`, `Cell`'s, is inlined into
-/// it, reading `Cell`'s private slots at their fixed offsets. The install
-/// is atomic and migrates every instance, keeping its slots' values by
-/// name (docs/design/liveness-and-reflection.md, "A MirrorBuilder and an
-/// atomic install"); it frees the copies that relied on what it changed,
-/// and the frame below goes on in baseline code, whose sends after the
-/// install find the new layout and the new method.
+/// its copy, which reads `Cell`'s private slots at their fixed offsets;
+/// `hook:`, which weighs too much to inline, is sent every turn and sends
+/// `pending install` at the turn `installRound` names. During the warm-up
+/// `pending` is an `Inert`, whose `install` does nothing, so that the way
+/// that installs has run before the copy is compiled. The install is
+/// atomic and migrates every instance, keeping its slots' values by name
+/// (docs/design/liveness-and-reflection.md, "A MirrorBuilder and an
+/// atomic install"); it frees the copy that relied on what it changed,
+/// whose frame is below, and that frame goes on in baseline code, whose
+/// sends after the install find the new layout and the new method.
 ///
 /// `Cell`'s `first` is 3 and `second` 4, and `total` answers their sum,
 /// 7: thirty sweeps of 2000 turns answer 420000. The first edit adds the
 /// public slot `added` in front of both, so that both move: the sweep
-/// that installs it at its 1000th turn still answers 14000, and so does
-/// the next; the old instance answers nil for `added`, a new one 9. The
-/// second edit replaces `total` with their product, 12, at the 1000th
-/// turn of a sweep: 999 turns of 7 and 1001 of 12 answer 19005, and the
-/// next sweep 24000.
+/// that installs it at its 1000th turn still answers 14000, and thirty
+/// more, which compile a copy against the new layout, 420000; the old
+/// instance answers nil for `added`, a new one 9. The second edit
+/// replaces `total` with their product, 12, at the 1000th turn of a sweep
+/// whose frame runs that second copy: 999 turns of 7 and 1001 of 12
+/// answer 19005, and the next sweep 24000.
 class AnEditBelowAnInlinedFrame = Object new (
   |
     pending ::= nil.
@@ -34,11 +39,31 @@ class AnEditBelowAnInlinedFrame = Object new (
     )
   )
 
-  installAt: round = (
+  class Inert = Object new () (
+    public install = (
+      ^self.
+    )
+  )
+
+  ignore: value = (
+    ^value.
+  )
+
+  hook: round = (
     round = installRound ifTrue: [
       pending install.
       installRound:: 0.
     ].
+    self ignore: round.
+    self ignore: round.
+    self ignore: round.
+    self ignore: round.
+    self ignore: round.
+    self ignore: round.
+    self ignore: round.
+    self ignore: round.
+    self ignore: round.
+    self ignore: round.
   )
 
   sweep: rounds on: cell = (
@@ -47,11 +72,23 @@ class AnEditBelowAnInlinedFrame = Object new (
       index ::= 1.
     |
     [index <= rounds] whileTrue: [
-      installAt: index.
+      hook: index.
       total:: total + cell total.
       index:: index + 1.
     ].
     ^total.
+  )
+
+  warm: cell = (
+    |
+      sum ::= 0.
+    |
+    pending:: Inert new.
+    1 to: 30 do: [:round |
+      installRound:: 1000.
+      sum:: sum + (sweep: 2000 on: cell).
+    ].
+    ^sum.
   )
 
   show: value on: transcript = (
@@ -65,16 +102,14 @@ class AnEditBelowAnInlinedFrame = Object new (
       transcript = platform transcript.
       ClassMirror = platform mirrors ClassMirror.
       cell = Cell new.
-      sum ::= 0.
     |
-    1 to: 30 do: [:round | sum:: sum + (sweep: 2000 on: cell)].
-    show: sum on: transcript.
+    show: (warm: cell) on: transcript.
     pending:: (ClassMirror reflecting: Cell) mixin declaration asBuilder.
     pending
         header source: 'class Cell = Object new (| public added ::= 9. private first = 3. private second = 4. |)'.
     installRound:: 1000.
     show: (sweep: 2000 on: cell) on: transcript.
-    show: (sweep: 2000 on: cell) on: transcript.
+    show: (warm: cell) on: transcript.
     show: cell added on: transcript.
     show: Cell new added on: transcript.
     pending:: (ClassMirror reflecting: Cell) mixin declaration asBuilder.

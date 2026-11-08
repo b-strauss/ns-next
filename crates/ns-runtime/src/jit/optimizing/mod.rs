@@ -210,6 +210,7 @@ pub(crate) fn compile_tree(
         push_entry,
         polls,
         type_case_arms: type_case_arms(&graph),
+        inlined_sites: graph.inlined_sites,
         #[cfg(test)]
         small_integer_tag_tests,
     })

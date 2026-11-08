@@ -135,6 +135,7 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
             - before.optimized_frames_materialized,
         inlined_frames_materialized: after.inlined_frames_materialized
             - before.inlined_frames_materialized,
+        inlined_sites: after.inlined_sites - before.inlined_sites,
         inlined_scopes: after.inlined_scopes - before.inlined_scopes,
         type_case_arms: after.type_case_arms - before.type_case_arms,
         eliminated_blocks: after.eliminated_blocks - before.eliminated_blocks,

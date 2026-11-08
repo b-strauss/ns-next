@@ -665,6 +665,8 @@ struct Flat<'snapshot> {
     /// The applications the arms always inlined were decided for
     /// (`Graph::arm_applications`).
     arm_applications: Vec<ApplicationIndex>,
+    /// The sites laid out as their arms (`Graph::inlined_sites`).
+    inlined_sites: u32,
 }
 
 impl<'snapshot> Flat<'snapshot> {
@@ -709,6 +711,7 @@ impl<'snapshot> Flat<'snapshot> {
                 .collect(),
             register_count,
             arm_applications: Vec::new(),
+            inlined_sites: 0,
         }
     }
 
@@ -759,6 +762,7 @@ impl<'snapshot> Flat<'snapshot> {
             entries: vec![usize::MAX; snapshots.len()],
             sends: HashMap::new(),
             arm_applications: Vec::new(),
+            inlined_sites: 0,
         };
         laying.lay_out();
         let Laying {
@@ -767,6 +771,7 @@ impl<'snapshot> Flat<'snapshot> {
             entries,
             sends,
             arm_applications,
+            inlined_sites,
             ..
         } = laying;
         let mut graph_scopes = graph_scopes;
@@ -869,6 +874,7 @@ impl<'snapshot> Flat<'snapshot> {
             tainted,
             register_count,
             arm_applications,
+            inlined_sites,
         }
     }
 
@@ -1011,6 +1017,8 @@ struct Laying<'plan, 'snapshot> {
     sends: HashMap<(ScopeId, u32), usize>,
     /// The applications of the arms always inlined laid out, each once.
     arm_applications: Vec<ApplicationIndex>,
+    /// The sites laid out as their arms.
+    inlined_sites: u32,
 }
 
 impl Laying<'_, '_> {
@@ -1056,7 +1064,11 @@ impl Laying<'_, '_> {
                         scope,
                         program_counter: program_counter + 1,
                     });
-                    match self.lowered(scope, program_counter) {
+                    let lowered = self.lowered(scope, program_counter);
+                    if lowered.is_some() {
+                        self.inlined_sites += 1;
+                    }
+                    match lowered {
                         None => {
                             let pending = self.instruction(scope, program_counter);
                             self.steps.push((scope, program_counter, pending));
@@ -2302,6 +2314,7 @@ impl<'flat> Builder<'flat> {
         graph
             .arm_applications
             .clone_from(&self.flat.arm_applications);
+        graph.inlined_sites = self.flat.inlined_sites;
         Ok(graph)
     }
 
