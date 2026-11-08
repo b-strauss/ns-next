@@ -9295,75 +9295,79 @@ compiler thread of stage 8.
   DeltaBlueTon80's 8.0 against 5.4.
 
 **What eliminating an Array's `do:` block moved**, measured 2026-11-08,
-`56efe31f` against `18944be5`, the commit before it, by the protocol
-above: three pinned builds a side, the same three layouts and
+`dfe718b3` against `18944be5`, the commit before the change, by the
+protocol above: three pinned builds a side, the same three layouts and
 paddings, `vm::run` 44.0, 47.4 and 51.0 KB on both sides with no
 `run_stretch` or closure of its own, three rounds a sitting with the
-order rotated, the mask `0xC03C03`, two sittings. The escape analysis
-looks only at what the graph builds (`build::compiled_ways`): a way
-the feedback says never ran ends in a trap, a use at the trap lets
-nothing escape -- the exit materializes the block, as HotSpot's C2
-reallocates an object that escapes only through an uncommon trap --
-and nothing past it is built. Three gaps close with it: `Array>>do:`'s
-way to `super do:`; a conditional's closure for a receiver that is no
-Boolean, which reaches its home's registers by reference and kept
-`Set>>do:`, `Map>>do:` and `to:by:do:`, whose `action value:` lies in a
-conditional, and every home with such a conditional around a block's
-copied value from eliminating it, though no such receiver ever came; and
-a callee that passes a block on only on a way that never ran. Each
-cell is a side's medians per build pooled by geometric mean, in
-milliseconds, of the second sitting, the first sitting's difference
-beside it; the programs whose plans the change moved, as
-`--jit-statistics` counts them:
+order rotated, the mask `0xC03C03`, two sittings. Between the two lie
+two changes. The escape analysis looks only at what the graph builds
+(`build::compiled_ways`): a way the feedback says never ran ends in a
+trap, a use at the trap lets nothing escape -- the exit materializes
+the block, as HotSpot's C2 reallocates an object that escapes only
+through an uncommon trap -- and nothing past it is built. Three gaps
+close with it: `Array>>do:`'s way to `super do:`; a conditional's
+closure for a receiver that is no Boolean, which reaches its home's
+registers by reference and kept `Set>>do:`, `Map>>do:` and
+`to:by:do:`, whose `action value:` lies in a conditional, and every
+home with such a conditional around a block's copied value from
+eliminating it, though no such receiver ever came; and a callee that
+passes a block on only on a way that never ran. And the recompilee
+walk goes up from a block to its home only when the home is called
+often enough for its copy to be entered -- at least
+`LEAST_HOME_CALLS` calls, and standing in no loop of its own -- since
+until on-stack replacement into optimized code the home's running
+activation never enters its copy (`jit::recompilable`). Each cell is a
+side's medians per build pooled by geometric mean, in milliseconds, of
+the second sitting, the first sitting's difference beside it; the
+programs whose plans the two changes moved, as `--jit-statistics`
+counts them:
 
-| Program | `18944be5` (ms) | builds | `56efe31f` (ms) | builds | second sitting | first sitting |
+| Program | `18944be5` (ms) | builds | `dfe718b3` (ms) | builds | second sitting | first sitting |
 |---|---|---|---|---|---|---|
-| `Bounce` | 0.112 | 0.107–0.117 | 0.143 | 0.139–0.147 | +27.3%, slower | +34.0%, slower |
-| `DeltaBlue` | 176.147 | 174.884–178.674 | 171.469 | 166.515–175.175 | -2.7% | -3.5%, faster |
-| `Havlak` | 825.797 | 818.373–829.584 | 827.574 | 798.908–867.600 | +0.2% | -2.2% |
-| `NBody` | 952.756 | 942.065–960.515 | 954.983 | 943.264–961.290 | +0.2% | 0.0% |
-| `Permute` | 0.252 | 0.244–0.263 | 0.072 | 0.072–0.072 | -71.3%, faster | -70.7%, faster |
-| `Richards` | 11.726 | 11.655–11.856 | 11.603 | 11.403–11.804 | -1.0% | -3.1%, faster |
-| `Storage` | 0.641 | 0.621–0.670 | 0.515 | 0.500–0.532 | -19.6%, faster | -20.0%, faster |
-| `bench_do` | 0.506 | 0.495–0.523 | 0.508 | 0.500–0.515 | +0.4% | +2.1% |
+| `DeltaBlue` | 173.965 | 173.362–174.370 | 165.251 | 164.511–165.646 | -5.0%, faster | -5.9%, faster |
+| `Havlak` | 805.381 | 802.812–808.046 | 791.123 | 787.776–793.073 | -1.8%, faster | -2.8%, faster |
+| `NBody` | 942.319 | 936.057–945.904 | 958.478 | 937.188–988.450 | +1.7% | +7.2% |
+| `Permute` | 0.261 | 0.254–0.268 | 0.071 | 0.071–0.071 | -72.8%, faster | -70.1%, faster |
+| `Richards` | 11.583 | 11.551–11.631 | 11.391 | 11.231–11.497 | -1.7%, faster | -1.1% |
+| `Sieve` | 0.389 | 0.372–0.407 | 0.357 | 0.335–0.370 | -8.2%, faster | -13.3% |
+| `Storage` | 0.622 | 0.606–0.633 | 0.509 | 0.505–0.511 | -18.2%, faster | -17.9%, faster |
+| `bench_do` | 0.503 | 0.503–0.503 | 0.379 | 0.372–0.386 | -24.7%, faster | -26.8%, faster |
 
-The geometric mean over the twenty-seven sources is -4.06% in the
-second sitting and -4.88% in the first; the builds' means are 2.483,
-2.474 and 2.527 against 2.618, 2.574 and 2.608. The nineteen others'
+The geometric mean over the twenty-seven sources is -6.93% in the
+second sitting and -6.40% in the first; the builds' means are 2.387,
+2.379 and 2.433 against 2.579, 2.574 and 2.582. The nineteen others'
 plans are the same on both sides, and none of them is separated in
-both sittings: `bench_newarg` +1.1% separated in the first and -0.3%
-in the second, Towers -4.9% in the first and +11.6% in the second,
-separated in neither.
+either sitting; Bounce among them is -2.2% and -0.5%. NBody's +7.2% is
+one round's 1,723 ms on build a, beside its 943 and 950.
 
-- *Permute*, 71% faster: `to:by:do:`'s block, which the closure of
+- *Permute*, 72% faster: `to:by:do:`'s block, which the closure of
   its `step < 0` conditional for a non-Boolean reached by reference,
   is eliminated, and the copy inlines the loop with it.
-- *Storage*, 20% faster: the closure of `depth = 1 ifTrue:` for a
+- *Storage*, 18% faster: the closure of `depth = 1 ifTrue:` for a
   non-Boolean reaches `random`, a value `to:do:`'s block copies, by
   reference -- one the tree has no snapshot of may reach any -- and no
   longer counts: the block is eliminated.
-- *Havlak* eliminates 19 blocks where it eliminated 11, its `Set`s'
-  and `Map`s' `do:` blocks among them, and makes 656 at exits where
-  it made 174 -- each exit inside such a loop now materializes the
-  block -- level in time. DeltaBlue lays out 261 scopes in 74 copies
-  where it laid out 329 in 97, its callers inlining the loops their
-  blocks now go with: 2.7% and 3.5% faster.
-- *Bounce* is slower at eight iterations, and only there: at fifteen
-  build a ran level, 101.2 against 101.0 µs, and at thirty, one run a
-  build, the builds of `56efe31f` measured 93.6, 101.3 and 98.1 µs
-  against `18944be5`'s 128.5, 105.8 and 134.4. The block `bench`'s second loop
-  hands its `balls do:` is eliminated now, so the recompilee walk goes
-  from that block up to its home, `bench`, whose plan inlines the loop,
-  `do:` and both blocks, and requests `bench`, where it stopped at the
-  block before ("When a body is optimized"). But `bench` runs once a
-  run, each run of the benchmark a fresh application whose first
-  `Random` send builds its nested class in the interpreter: its copy,
-  entered at the next run, exits at that send, its first, every time,
-  and the frame goes on in baseline code, there being no on-stack
-  replacement into optimized code until stage 6. The block gets a copy
-  of its own one budget later, once the walk stops at `bench`'s copy,
-  and from then on the runs are as fast as before or faster; the first
-  runs, half of eight, are not.
+- *`bench_do`*, 25% faster: its block's home loops itself, so the walk
+  no longer requests the home, whose running activation would never
+  enter the copy, but the block, whose copy runs at the loop's next
+  turn.
+- *Havlak* eliminates 16 blocks where it eliminated 11, its `Set`s'
+  and `Map`s' `do:` blocks among them, and makes 652 at exits where it
+  made 174 -- each exit inside such a loop now materializes the block;
+  DeltaBlue lays out 295 scopes in 92 copies where it laid out 329 in
+  97: 2% to 3% and 5% to 6% faster.
+- *Bounce*, with the escape rule alone (`56efe31f`), measured 27% and
+  34% slower at eight iterations, separated in both sittings: the
+  block `bench`'s second loop hands `balls do:` was eliminated, so the
+  walk went from it up to `bench` and requested `bench`, which runs
+  once a run, each run a fresh application whose first `Random` send
+  builds its nested class in the interpreter; `bench`'s copy exited at
+  that send, its first, at every entry -- not abandoned -- and the block
+  got a copy of its own only a budget later. The walk now stops below a
+  home called once or twice. `LEAST_HOME_CALLS` is measured: HotSpot's
+  invocation minimum, 100, refused DeltaBlueTon80's homes called 3 to
+  53 times and ran it 5% and DeltaBlue 3% slower than no minimum; 4 is
+  as fast as none on both and refuses `bench`.
 
 **Not covered**: AArch64, which runs under QEMU only; on-stack
 replacement into optimized code, stage 6's, so that a long activation

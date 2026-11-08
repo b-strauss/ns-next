@@ -865,16 +865,14 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       Plan decision 2's "leaves optimized code until stage 4" now reads
       "is sent"; the design's "Inlining" says so when the batch's
       documents are written.
-    - *A recompilee whose frame runs once*: the walk goes from a hot
-      block up to its home whenever the home's plan inlines it, and
-      requests the home, whose running activation never enters the copy
-      until on-stack replacement into optimized code (stage 6). Where
-      the home runs once a run and its copy exits at its first send --
-      Bounce's `bench`, whose fresh application builds `Random` in the
-      interpreter -- the block gets a copy of its own only a budget
-      later: Bounce is 27% to 34% slower at eight iterations since the
-      block is eliminated, and faster from thirty on
-      ([execution.md](design/execution.md), "What inlining moved").
+    - *The walk's home rule is undocumented in the design*: the walk
+      goes up from a block to its home only when the home has been
+      called `LEAST_HOME_CALLS` times and stands in no loop of its own
+      (`jit::recompilable`); "When a body is optimized" still reads as
+      if a home had no stop, and says so when the batch's documents are
+      written. The rule is stage 6's to revisit: with on-stack
+      replacement into optimized code, a home that loops itself can be
+      entered at its loop's head.
     - *A block handed on through a local loses its bonus*: the snapshot
       tree weighs a callee against `METHOD_LIMIT` plus the block
       argument bonus only for an argument a `MakeClosure` wrote, or a
