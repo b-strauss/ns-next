@@ -2557,7 +2557,7 @@ impl JitState {
     pub(crate) fn return_site(&self, return_address: usize) -> Option<(Installed, u32)> {
         let site = self.call_return(return_address)?;
         let body = self.live_body(site.body)?;
-        Some((upgraded(body)?, site.program_counter))
+        Some((upgraded(body, site.body)?, site.program_counter))
     }
 
     /// The interrupt point of an inlined scope an address inside optimized
@@ -2573,6 +2573,20 @@ impl JitState {
             Some(site) => self.live_body(site.body)?,
             None => self.installed_body_at(address)?,
         };
+        let metadata = body.metadata.as_ref()?;
+        let point = metadata.by_address.get(&self.offset_in(body, address)?)?;
+        Some(InlinedAt {
+            metadata: Rc::clone(metadata),
+            point: *point,
+        })
+    }
+
+    /// `inlined_at` for `address` in the code of the installed body at
+    /// `index` of `bodies` (`Installed::described`), found without a
+    /// second search.
+    #[cfg(ns_jit)]
+    pub(crate) fn inlined_in(&self, index: u32, address: usize) -> Option<InlinedAt> {
+        let body = self.live_body(index)?;
         let metadata = body.metadata.as_ref()?;
         let point = metadata.by_address.get(&self.offset_in(body, address)?)?;
         Some(InlinedAt {
@@ -2628,10 +2642,10 @@ impl JitState {
         // over, is found without a search.
         if let Some(site) = self.call_return(address) {
             let body = self.live_body(site.body)?;
-            return upgraded(body);
+            return upgraded(body, site.body);
         }
-        let body = self.installed_body_at(address)?;
-        upgraded(body)
+        let index = self.installed_index_at(address)?;
+        upgraded(&self.bodies[index as usize], index)
     }
 
     /// The sending frame's register 0 and the program counter of the send
@@ -2996,10 +3010,12 @@ impl JitState {
                 .get(index)
                 .is_some_and(|body| body.start <= offset && offset < body.end && !body.free)
         };
-        let entry = self.body_lookup.entry(offset);
-        if let Some(index) = entry.get().checked_sub(1) {
-            if holds(index as usize) {
-                return Some(index);
+        let (entry, other) = self.body_lookup.entries_of(offset);
+        for each in [entry, other] {
+            if let Some(index) = each.get().checked_sub(1) {
+                if holds(index as usize) {
+                    return Some(index);
+                }
             }
         }
         #[cfg(test)]
@@ -3014,6 +3030,9 @@ impl JitState {
             return None;
         }
         let index = u32::try_from(index).ok()?;
+        // The entry's last body moves to its pair's, so that two hot
+        // bodies whose offsets meet in one entry both stay found.
+        other.set(entry.get());
         entry.set(index + 1);
         Some(index)
     }
@@ -3112,11 +3131,13 @@ pub(crate) struct Installed {
     pub(crate) reifies: bool,
     /// Whether the code is the body's optimized code (`Tier::Optimized`).
     pub(crate) optimized: bool,
-    /// Whether the code is optimized code that keeps the metadata of its
-    /// points inside inlined scopes or holding eliminated blocks
-    /// (`InstalledBody::metadata`): the only code a leaf's frame is looked
-    /// up in it for, so that every other leaf call pays nothing for it.
-    pub(crate) described: bool,
+    /// For optimized code that keeps the metadata of its points inside
+    /// inlined scopes or holding eliminated blocks
+    /// (`InstalledBody::metadata`), its index in `JitState::bodies`: the
+    /// only code a leaf's frame is looked up in the metadata for, found
+    /// with the body, so that every other leaf call pays nothing for it and
+    /// this one one probe of the metadata's table.
+    pub(crate) described: Option<u32>,
 }
 
 /// An address inside an inlined scope of an installed copy of optimized
@@ -3320,24 +3341,28 @@ impl Default for BodyLookup {
 }
 
 impl BodyLookup {
-    /// The entry an offset into the zone hashes to: the offsets of one
-    /// body's leaf calls lie a few dozen bytes apart and bodies at least
-    /// sixteen, so a multiplicative hash spreads both.
-    fn entry(&self, offset: u32) -> &Cell<u32> {
+    /// The two entries an offset into the zone hashes to, the one it is
+    /// written into first: the offsets of one body's leaf calls lie a few
+    /// dozen bytes apart and bodies at least sixteen, so a multiplicative
+    /// hash spreads both, and a pair of entries keeps two bodies whose
+    /// offsets meet -- with one, two such leaf calls of a loop searched
+    /// the bodies at every turn, bench_newarg 9% slower in a build whose
+    /// layout made them meet.
+    fn entries_of(&self, offset: u32) -> (&Cell<u32>, &Cell<u32>) {
         const SHIFT: u32 = u32::BITS - BODY_LOOKUP_ENTRIES.trailing_zeros();
         // Fibonacci hashing: 2^32 divided by the golden ratio, odd so that
         // the multiply is a bijection, whose top bits spread offsets that
         // differ in their low bits alone, as nearby leaf calls' do.
         const MULTIPLIER: u32 = 0x9E37_79B1;
-        let hashed = offset.wrapping_mul(MULTIPLIER) >> SHIFT;
-        &self.entries[hashed as usize]
+        let hashed = (offset.wrapping_mul(MULTIPLIER) >> SHIFT) as usize;
+        (&self.entries[hashed], &self.entries[hashed ^ 1])
     }
 }
 
 /// `body` as `Installed`, while its code and method live. Inline, as
 /// `JitState::body_of` is.
 #[inline(always)]
-fn upgraded(body: &InstalledBody) -> Option<Installed> {
+fn upgraded(body: &InstalledBody, index: u32) -> Option<Installed> {
     let code = body.code.upgrade()?;
     let method = match &body.method {
         Some(method) => Some(method.upgrade()?),
@@ -3349,7 +3374,7 @@ fn upgraded(body: &InstalledBody) -> Option<Installed> {
         feedback_base: body.feedback_base,
         reifies: body.reifies,
         optimized: body.tier == Tier::Optimized,
-        described: body.metadata.is_some(),
+        described: body.metadata.is_some().then_some(index),
     })
 }
 
@@ -4950,7 +4975,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         return Ok(twin);
     }
     let (needed, settings) = (body.twin_needed, body.settings);
-    let Some(installed) = upgraded(body) else {
+    let Some(installed) = upgraded(body, lean) else {
         unreachable!("internal: a lean body running or resumed lives");
     };
     if installed.code.jit.twin_refused.get() {
@@ -9165,10 +9190,11 @@ mod tests {
             // -- as after a compaction renumbered `bodies` -- or no body at
             // all is not taken: the search answers the body holding it.
             for stale in [2, 99] {
-                state
+                let (entry, other) = state
                     .body_lookup
-                    .entry(offset_of(&state, inside_first))
-                    .set(stale);
+                    .entries_of(offset_of(&state, inside_first));
+                entry.set(stale);
+                other.set(stale);
                 assert_eq!(
                     state.installed_index_at(inside_first),
                     Some(0),

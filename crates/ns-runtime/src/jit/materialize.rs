@@ -884,10 +884,11 @@ pub(crate) fn leaf_frame(
     };
     // Inside an inlined scope the frame register stands at the scope's
     // register 0: the leaf runs in the scope's frame.
-    let inlined = if installed.described {
-        inlined_leaf_frame(mutator, code_address, register_base, program_counter)
-    } else {
-        None
+    let inlined = match installed.described {
+        Some(index) => {
+            inlined_leaf_frame(mutator, index, code_address, register_base, program_counter)
+        }
+        None => None,
     };
     #[cfg(test)]
     let in_a_scope = inlined.is_some();
@@ -916,19 +917,21 @@ pub(crate) fn leaf_frame(
 
 /// The header of the frame of the innermost scope of optimized code the
 /// address `code_address` lies in, whose register 0 is at
-/// `register_base`, as a leaf called there reads it; `None` for an
+/// `register_base`, as a leaf called there reads it, looked up in the
+/// metadata of the installed body at `body`; `None` for an
 /// address in the body's own scope. Out of line: only optimized code
 /// calls it.
 #[inline(never)]
 fn inlined_leaf_frame(
     mutator: &mut Mutator<'_>,
+    body: u32,
     code_address: u64,
     register_base: u32,
     program_counter: u32,
 ) -> Option<MachineFrame> {
     let inlined = mutator
         .jit
-        .inlined_at(return_address_of(code_address))
+        .inlined_in(body, return_address_of(code_address))
         .filter(InlinedAt::inlines)?;
     let scope = inlined.scope(inlined.chain()[0].scope);
     Some(scope_frame(
