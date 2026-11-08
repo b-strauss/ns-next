@@ -8942,8 +8942,8 @@ builds apart. What each difference is:
   code's, since send sites do not speculate in this stage ("Speculation
   and its failure"), so the mispredictions in the shared stubs stage 1
   measured stand; xperf's sampled profiles on this machine did not
-  separate them (`OPEN-WORK.md`, "Optimized code's sends mispredict in
-  the shared stubs").
+  separate them ("What inlining moved" measures them with the
+  type-cases).
 - **Placement.** `bench_block` measured +1.9% with its builds apart in a
   sitting before the last, while a sampled profile of 400 runs a side
   put 96% of its samples in machine code and the same totals to 0.1%,
@@ -9100,7 +9100,11 @@ difference is:
     it ran it. The plan now sends every callee whose scope would create
     a block it does not eliminate on a way that ran: not a fast path's
     fallback, nor, where the copy speculates, a way whose send of the
-    block never ran, which traps there (`plan::Planner::creates_a_block`).
+    block never ran (`plan::Planner::creates_a_block`), whose
+    `MakeClosure` the graph lowers as a trap on that send's site: the
+    first run of the way traps, the copy is made not entrant, and the next
+    compile sends the callee (`build::guard_of`; the golden
+    `a_block_made_on_a_way_not_run_traps`).
     Towers 320 exits a run to 0, Queens 320 to 0, RichardsTon80 129 to
     4, none abandoned. The rule costs blocks the plan eliminated before:
     the inlining corpus eliminates 6 where it eliminated 18, a callee
@@ -9125,16 +9129,29 @@ difference is:
     (`graph::ClassRecipe`, `materialize::scope_class`): List and
     `bench_send` about 7% faster and Queens about 5%, in an interim
     measurement against `d4ae78da`.
-- **Instantiation and Sieve: the runs before the code settles.**
-  `bench_new2` +2.7%, `bench_newarg` +3.0% and Sieve +11.4% are separated
-  at the eight iterations of the table, where the optimizing compiles
-  -- Sieve's take 0.52 ms against `master`'s 0.22 -- and the runs before
-  the copies are installed weigh. At 400 iterations `bench_newarg` runs
-  level with `master` (2.812 against 2.809 ms, build c), and Sieve at 200
-  iterations 17% faster on all three builds (0.114 against 0.138 ms); a
-  sampled profile of `bench_newarg` at 400 iterations puts the same
-  totals in both. Sieve's medians of eight runs scatter by a third on
-  every binary, `master`'s too.
+- **Instantiation: slower, not diagnosed.** `bench_new2` +2.7% and
+  `bench_newarg` +3.0% are separated at the eight iterations of the
+  table, and a second measurement holds them there: four further builds
+  a side of layout a at the zone paddings (16, 48), (144, 80), (320,
+  112) and (48, 240), three rounds, put `bench_new2` 3% to 6% slower at
+  every padding and `bench_newarg` 3% to 6% slower at three of them and
+  3% faster at the fourth.
+  Each run of the two trees compiles, exits and traps alike -- the same
+  bodies compiled and optimized in the same runs, the same exits per run
+  -- so no one-time cost explains a median of eight runs; the branch's
+  runs are slower from the second to the fourteenth, and over runs 41 to
+  60 between 0.5% and 10% slower than `master`'s, by build, `master`
+  speeding up over sixty runs without a compile too. Neither leaving every method callee uninlined nor taking the
+  leaf's lookup of an inlined site out moves it. Sampled, the branch's
+  extra time lies in the run loop's instantiation path -- the initializer
+  decisions, `Heap::class_factory`, whose machine code is the same byte
+  for byte, `materialize::leaf_frame` and `Heap::write_machine_frame` --
+  and the processor's retired instructions are 1.7% more.
+- **Sieve: noise.** +11.4% with its builds apart at eight iterations, but
+  its medians of eight runs scatter by a third on every binary,
+  `master`'s too; at the four paddings above two builds a side were
+  slower and two faster, and at 200 iterations it runs 17% faster on all
+  three builds (0.114 against 0.138 ms).
 - **Unchanged.** Mandelbrot moves -0.8%, its float arithmetic leaf calls
   as before and nothing inlined; `bench_megamorphic`, whose site gets no
   type-case, `bench_signal`, which optimizes nothing, `bench_recursion`

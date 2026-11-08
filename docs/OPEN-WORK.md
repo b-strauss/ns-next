@@ -877,17 +877,6 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       "cheap" weight of a send counts their fast paths, the mirror's and
       a closure's `value` among them, at an accessor's 2 though they may
       run a whole block.
-    - *The first runs of a short program*: at eight iterations
-      `bench_new2`, `bench_newarg` and Sieve measure 3% to 11% slower than
-      `master`, level or faster at 200 to 400; the optimizing compiles,
-      Sieve's 0.52 ms against `master`'s 0.22, are the mutator's until
-      the compiler thread of stage 8.
-    - *Measured, no cost*: the barrier leaf's register moves around an
-      inlined store (within 1% on an inlined setter's loop, DeltaBlue,
-      Richards, RichardsTon80 and DeltaBlueTon80), and an own-slot store
-      in an inlined scope taking the cold leaf once per entry (the leaf
-      is never called from an inlined scope in the twenty-seven
-      sources).
     - *Compile time*: a debug build's verification of every allocation
       takes a quarter to a third of its optimizing compiles; DeltaBlue's
       97 copies take 29 ms in a release build.
