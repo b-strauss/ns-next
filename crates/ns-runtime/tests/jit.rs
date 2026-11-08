@@ -10696,9 +10696,11 @@ ns_runtime::for_each_lowering! {
 /// that spends about twice what a turn of its loop spends, for ten
 /// turns: the block's budget runs out first, while its home, `sumOf`,
 /// called a few dozen times by then, spends a few instructions a call.
-/// `once` hands it the same block for a thousand turns, from a home
-/// called once a run, whose first call spends the block's budget. `run`
-/// answers 13500, `once` 499500.
+/// `once` hands it the same block for two hundred turns, from a home
+/// called once a run, whose second call spends the block's budget, the
+/// home compiled by then. `onceAfterALoop` hands it the block for a
+/// thousand turns after a loop of its own. `run` answers 13500, `once`
+/// 19900, `onceAfterALoop` 499500.
 const A_HOT_BLOCK: &str = indoc! {"
     class Subject = Object new () (
       each: block upTo: count = (
@@ -10727,6 +10729,13 @@ const A_HOT_BLOCK: &str = indoc! {"
         ^total
       )
       public once = (
+        ^self each: [:value | (value * 3) + (value * 5) + (value * 7) - (value * 14)] upTo: 200
+      )
+      public onceAfterALoop = (
+        |
+          warm ::= 0.
+        |
+        [warm < 100] whileTrue: [warm:: warm + 1].
         ^self each: [:value | (value * 3) + (value * 5) + (value * 7) - (value * 14)] upTo: 1000
       )
     ) : ()
@@ -10759,18 +10768,47 @@ ns_runtime::for_each_lowering! {
     /// never enters a copy until on-stack replacement into optimized code,
     /// and the copy would wait for its next call, while the block's own
     /// is entered at the loop's next turn. `once`'s block, made in a home
-    /// called once a run, runs out and is requested itself; `once` is not.
+    /// called once a run and compiled at its second call, runs out in that
+    /// call and is requested itself; `once`, called fewer than
+    /// `LEAST_HOME_CALLS` times since its budget was armed, whatever the
+    /// budget, is not.
     fn a_home_called_a_few_times_is_not_requested(lowering) {
         let (mut interpreter, class, subject) = walking(A_HOT_BLOCK, lowering);
         let before = interpreter.jit_statistics();
         for _ in 0..5 {
-            assert_eq!(send_unary(&mut interpreter, &subject, "once"), 499_500);
+            assert_eq!(send_unary(&mut interpreter, &subject, "once"), 19_900);
         }
         if !pins_the_tiers(lowering) {
             return;
         }
         let after = interpreter.jit_statistics();
         assert_eq!(copies_of(&mut interpreter, &class, "once"), 0, "the home is not requested");
+        assert!(
+            after.optimized_bodies > before.optimized_bodies,
+            "the block is: {after:?}"
+        );
+        assert_eq!(after.recompilees_above, before.recompilees_above, "{after:?}");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A home's back edges spend its budget as its calls do, so a home
+    /// with a loop of its own cannot show its calls: `onceAfterALoop`,
+    /// called once, whose loop ran before it hands its block on and left
+    /// the budget spent as by many calls, is not requested; its block is.
+    fn a_home_whose_loop_ran_once_is_not_requested(lowering) {
+        let (mut interpreter, class, subject) = walking(A_HOT_BLOCK, lowering);
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "onceAfterALoop"), 499_500);
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        let after = interpreter.jit_statistics();
+        assert_eq!(
+            copies_of(&mut interpreter, &class, "onceAfterALoop"),
+            0,
+            "the home is not requested"
+        );
         assert!(
             after.optimized_bodies > before.optimized_bodies,
             "the block is: {after:?}"

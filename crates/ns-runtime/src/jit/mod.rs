@@ -5591,13 +5591,14 @@ struct Recompilable {
 /// neither refused nor has its copy, and which is entered often enough
 /// for its copy to be entered at all: until on-stack replacement into
 /// optimized code (stage 6) the running activation never enters the
-/// copy, only the calls to come do. A frame whose body has spent less
-/// than `plan::LEAST_BUDGET_SHARE` of its budget -- a sender that sent
-/// too rarely, a home called a few times, which hands its block to a loop
-/// and spends a few instructions a call -- is not worth a compile of its
-/// own; and a home reached from its block (`step`) that stands inside a
-/// loop of its own spent its budget on that loop's back edges, which say
-/// nothing of how often it is called. Both are HotSpot's call predicate,
+/// copy, only the calls to come do. A sender whose body has spent less
+/// than `plan::LEAST_BUDGET_SHARE` of its budget sent too rarely to be
+/// worth a compile of its own. A home reached from its block (`step`),
+/// which hands its block to a loop and spends a few instructions a call,
+/// is held to its calls instead (`called_repeatedly`): at least
+/// `LEAST_HOME_CALLS` of them, which only a body without a loop of its
+/// own can show, its back edges spending the same budget. Both are
+/// HotSpot's call predicate,
 /// which compiles an enclosing method at an inlinee's back-branch event
 /// only on its invocation count
 /// (`compiler/compilationPolicy.cpp`, `method_back_branch_event`), and
@@ -5653,7 +5654,7 @@ fn recompilable(
     let share = budget_share_of(heap, &code)?;
     match step {
         Step::Sender if share < optimizing::plan::LEAST_BUDGET_SHARE => return None,
-        Step::Home if !called_repeatedly(heap, &code, share, activation) => return None,
+        Step::Home if !called_repeatedly(heap, &code) => return None,
         _ => {}
     }
     // As `optimize` customizes the copy for the key the request names.
@@ -5682,45 +5683,44 @@ fn recompilable(
 /// refuses Bounce's `bench`, called once or twice
 /// (`docs/design/execution.md`, "What inlining moved").
 #[cfg(ns_jit)]
-pub(crate) const LEAST_HOME_CALLS: f64 = 4.0;
+pub(crate) const LEAST_HOME_CALLS: i64 = 4;
 
-/// Whether the home `activation`, which runs `code` and has spent `share`
-/// of its budget, is called often enough for a copy of it to be entered:
-/// its entries, which each spend the body's instruction count, at least
-/// `LEAST_HOME_CALLS` of a budget of `OPTIMIZATION_BUDGET` -- scaled with
-/// a budget a test or a stress mode arms, as HotSpot scales its
-/// thresholds (`CompileThresholdScaling`) -- and the activation not
-/// inside a loop of its own, whose back edges would have spent the budget
-/// instead.
+/// Whether the home running `code` is called often enough for a copy of
+/// it to be entered: its calls since its budget was armed at least
+/// `LEAST_HOME_CALLS`, whatever budget is armed, since a home called once
+/// never enters its copy however small its budget. Only a body without a
+/// backward jump can say so: its budget is spent by its entries alone,
+/// each its instruction count, while a loop's back edges spend the same
+/// row, and a loop run once -- one the frame has left, or stands in --
+/// would read as calls. A body with a loop of its own runs out its own
+/// budget on its calls and back edges, and is optimized at its own
+/// run-out, inlining the block if its plan does. A budget of nothing,
+/// the optimize stress mode's, says nothing of calls: the home is taken
+/// as called often, as before the rule.
 #[cfg(ns_jit)]
-fn called_repeatedly(
-    heap: &Heap<'_>,
-    code: &Rc<CompiledCode>,
-    share: f64,
-    activation: ActivationReference,
-) -> bool {
-    let per_entry = code.instruction_count().max(1) as f64;
-    share * OPTIMIZATION_BUDGET as f64 / per_entry >= LEAST_HOME_CALLS
-        && !runs_in_its_own_loop(heap, activation)
-}
-
-/// Whether `activation` stands inside a loop of its own body: the
-/// instruction it runs lies between a backward jump and its target. What
-/// such a frame spent is its loop's back edges, its own entries saying
-/// nothing of how often it is called.
-#[cfg(ns_jit)]
-fn runs_in_its_own_loop(heap: &Heap<'_>, activation: ActivationReference) -> bool {
-    let program_counter = heap.activation_program_counter(activation);
-    heap.activation_code(activation)
-        .instructions()
-        .iter()
-        .enumerate()
-        .any(|(index, instruction)| {
-            crate::bytecode::jump_target(instruction).is_some_and(|target| {
-                let target = target as usize;
-                target <= index && (target..=index).contains(&program_counter)
-            })
-        })
+fn called_repeatedly(heap: &Heap<'_>, code: &Rc<CompiledCode>) -> bool {
+    let instructions = code.instructions();
+    let loops = instructions.iter().enumerate().any(|(index, instruction)| {
+        crate::bytecode::jump_target(instruction).is_some_and(|target| target as usize <= index)
+    });
+    if loops {
+        return false;
+    }
+    let arming = code.jit.budget_arming.get();
+    if arming.plain <= 0 {
+        return true;
+    }
+    let Some(remaining) = heap.armed_optimization_budget(code) else {
+        return false;
+    };
+    if remaining == i64::MAX {
+        return true;
+    }
+    let spent = arming.armed.saturating_sub(remaining).max(0);
+    let per_entry = i64::try_from(code.instruction_count())
+        .unwrap_or(i64::MAX)
+        .max(1);
+    spent / per_entry >= LEAST_HOME_CALLS
 }
 
 /// The share of the plain budget `code`'s armed budget row says the
