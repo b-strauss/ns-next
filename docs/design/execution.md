@@ -9070,8 +9070,8 @@ dependencies, the recompilee walk and the re-entry at a poll.
 | `bench_while` | 5.924 | 5.794–6.008 | 3.284 | 3.160–3.452 | -44.6% | faster |
 | `bench_recursion` | 0.488 | 0.468–0.518 | 0.500 | 0.495–0.511 | +2.5% | no |
 | `bench_new` | 1.740 | 1.736–1.746 | 1.742 | 1.741–1.744 | +0.1% | no |
-| `bench_new2` | 2.874 | 2.867–2.878 | 2.953 | 2.924–2.981 | +2.7% | slower |
-| `bench_newarg` | 2.986 | 2.981–2.988 | 3.075 | 3.071–3.079 | +3.0% | slower |
+| `bench_new2` | 2.892 | 2.881–2.904 | 2.862 | 2.851–2.874 | -1.1% | faster |
+| `bench_newarg` | 3.012 | 2.997–3.034 | 2.991 | 2.965–3.009 | -0.7% | no |
 | `bench_do` | 0.671 | 0.662–0.683 | 0.497 | 0.489–0.501 | -26.0% | faster |
 
 The geometric mean over the twenty-seven sources is -34.0%, and each of
@@ -9129,24 +9129,32 @@ difference is:
     (`graph::ClassRecipe`, `materialize::scope_class`): List and
     `bench_send` about 7% faster and Queens about 5%, in an interim
     measurement against `d4ae78da`.
-- **Instantiation: slower, not diagnosed.** `bench_new2` +2.7% and
-  `bench_newarg` +3.0% are separated at the eight iterations of the
-  table, and a second measurement holds them there: four further builds
-  a side of layout a at the zone paddings (16, 48), (144, 80), (320,
-  112) and (48, 240), three rounds, put `bench_new2` 3% to 6% slower at
-  every padding and `bench_newarg` 3% to 6% slower at three of them and
-  3% faster at the fourth.
-  Each run of the two trees compiles, exits and traps alike -- the same
-  bodies compiled and optimized in the same runs, the same exits per run
-  -- so no one-time cost explains a median of eight runs; the branch's
-  runs are slower from the second to the fourteenth, and over runs 41 to
-  60 between 0.5% and 10% slower than `master`'s, by build, `master`
-  speeding up over sixty runs without a compile too. Neither leaving every method callee uninlined nor taking the
-  leaf's lookup of an inlined site out moves it. Sampled, the branch's
-  extra time lies in the run loop's instantiation path -- the initializer
-  decisions, `Heap::class_factory`, whose machine code is the same byte
-  for byte, `materialize::leaf_frame` and `Heap::write_machine_frame` --
-  and the processor's retired instructions are 1.7% more.
+- **Instantiation: the leaf's frame.** `bench_new2` and `bench_newarg`
+  measured 2.7% and 3.0% slower than `master` here at `3b30e41e`, at
+  every layout and padding, each run of both trees compiling, exiting
+  and trapping alike. The processor's retired instructions, sampled
+  (xperf, `InstructionRetired` every 65,536, the same count to 0.1% from
+  run to run), said where: 1.9% and 2.1% more than `master`'s, and 0.9%
+  for `bench_new`, in proportion to the leaf calls a run makes -- four an
+  instantiation in the first two, three initializer leaves and an
+  own-slot one, two in `bench_new`, the same number in both trees.
+  Every step, initializer and own-slot leaf writes its frame's view
+  through `Heap::write_machine_frame`, which inlining had widened with
+  the header of an inlined scope -- a generation minted, a guard recorded
+  from the receiver -- inlined into every leaf's way. That way is the one
+  it was before inlining again, and an inlined scope's header is written
+  out of line (`Heap::write_inlined_scope_frame`); that alone took the
+  excess to 0.8% and 0.9%, `bench_new` level. A leaf handed the code's
+  own address finds its body without probing the call returns, which
+  never hold such an address (`JitState::body_at_code_address`): 2.4%,
+  2.1% and 2.5% fewer instructions than `master`'s. The two rows above
+  are of that commit, `83ea182a`, against `master` by the same
+  protocol, three builds a side and three rounds in a second sitting,
+  where `bench_new` measured -2.0%; a first sitting put the three at
+  -0.4%, -1.0% and -2.5%. Against `6a0ebc61`, the commit before it,
+  measured beside both, they ran 1.7% to 3.4% faster, separated in both
+  sittings, and the twenty-seven sources' geometric mean moved -0.03% and
+  -0.65%.
 - **Sieve: noise.** +11.4% with its builds apart at eight iterations, but
   its medians of eight runs scatter by a third on every binary,
   `master`'s too; at the four paddings above two builds a side were
