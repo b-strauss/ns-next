@@ -3102,10 +3102,12 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// A loop whose every turn calls `add:to:`, which adds, and from its
-/// 9,001st call on makes a block capturing its arguments and has
-/// `evaluate:` evaluate it: by then its budget has run out and it is
-/// optimized, so that its optimized code makes the first of its closures.
+/// A loop whose every turn calls `add:to:`, which sends `evaluate:or:`
+/// with `nil`, and from its 9,001st call on with a block capturing its
+/// arguments, which `evaluate:or:` keeps in a slot and evaluates: the
+/// send has run from the first call, so the block escapes into it, and
+/// by the 9,001st call `add:to:`'s budget has run out and it is optimized,
+/// so that its optimized code makes the first of its closures.
 const CLOSURE_IN_A_HOT_LOOP: &str = indoc! {"
     class Subject = Object new (
       | kept |
@@ -10690,59 +10692,172 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// `run` handing `each:` a block that spends about twice what a turn of
-/// `each:`'s loop spends: the block's budget runs out first, while its
-/// home, `run`, sent once per run, spends almost nothing. `run` answers
-/// 4950.
+/// `run` sending `sumOf` 300 times, which hands `each:upTo:` a block
+/// that spends about twice what a turn of its loop spends, for ten
+/// turns: the block's budget runs out first, while its home, `sumOf`,
+/// called a few dozen times by then, spends a few instructions a call.
+/// `once` hands it the same block for a thousand turns, from a home
+/// called once a run, whose first call spends the block's budget. `run`
+/// answers 13500, `once` 499500.
 const A_HOT_BLOCK: &str = indoc! {"
     class Subject = Object new () (
-      each: block = (
+      each: block upTo: count = (
         |
           sum ::= 0.
           index ::= 0.
         |
-        [index < 100] whileTrue: [
+        [index < count] whileTrue: [
           sum:: sum + (block value: index).
           index:: index + 1.
         ].
         ^sum
       )
+      sumOf = (
+        ^self each: [:value | (value * 3) + (value * 5) + (value * 7) - (value * 14)] upTo: 10
+      )
       public run = (
-        ^self each: [:value | (value * 3) + (value * 5) + (value * 7) - (value * 14)]
+        |
+          total ::= 0.
+          count ::= 0.
+        |
+        [count < 300] whileTrue: [
+          total:: total + self sumOf.
+          count:: count + 1.
+        ].
+        ^total
+      )
+      public once = (
+        ^self each: [:value | (value * 3) + (value * 5) + (value * 7) - (value * 14)] upTo: 1000
       )
     ) : ()
 "};
 
 ns_runtime::for_each_lowering! {
-    /// A block's run-out walks to its home, not its sender: `run`, whose
-    /// plan inlines `each:` and the block in it, is requested, though its
-    /// own budget is nowhere near spent -- a home step asks no share of
-    /// it, as a sender step does -- and `each:` is not. Pinned as
+    /// A block's run-out walks to its home, not its sender: `sumOf`, whose
+    /// plan inlines `each:upTo:` and the block in it, is requested, though its
+    /// own budget is far from spent, called often enough for its copy to
+    /// be entered (`LEAST_HOME_CALLS`), and `each:upTo:` is not. Pinned as
     /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
     fn a_block_s_run_out_requests_its_home(lowering) {
         let (mut interpreter, class, subject) = walking(A_HOT_BLOCK, lowering);
-        for _ in 0..5 {
-            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 4950);
-        }
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 13_500);
+        assert_eq!(send_unary(&mut interpreter, &subject, "run"), 13_500);
         if !pins_the_tiers(lowering) {
             return;
         }
-        assert_eq!(copies_of(&mut interpreter, &class, "run"), 1, "the home is requested");
-        assert_eq!(copies_of(&mut interpreter, &class, "each:"), 0);
+        assert_eq!(copies_of(&mut interpreter, &class, "sumOf"), 1, "the home is requested");
+        assert_eq!(copies_of(&mut interpreter, &class, "each:upTo:"), 0);
         assert!(
-            inlined_by(&mut interpreter, &class, "run") >= 2,
+            inlined_by(&mut interpreter, &class, "sumOf") >= 2,
             "`each:` and the block"
         );
     }
 }
 
-/// `apply:to:`, taking a block, sent by `relay:to:`, which `run` sends
-/// with a block of its own: `apply:to:` spends the most, weighs more than
-/// a method callee's limit -- so that `relay:to:`'s own plan, in which the
-/// block is a parameter, would not inline it -- and less than the limit a
-/// block made in the compile raises it to, so that `run`'s plan inlines
-/// it. `run` answers 9900.
+ns_runtime::for_each_lowering! {
+    /// A home called a few times is not requested: its running activation
+    /// never enters a copy until on-stack replacement into optimized code,
+    /// and the copy would wait for its next call, while the block's own
+    /// is entered at the loop's next turn. `once`'s block, made in a home
+    /// called once a run, runs out and is requested itself; `once` is not.
+    fn a_home_called_a_few_times_is_not_requested(lowering) {
+        let (mut interpreter, class, subject) = walking(A_HOT_BLOCK, lowering);
+        let before = interpreter.jit_statistics();
+        for _ in 0..5 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "once"), 499_500);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        let after = interpreter.jit_statistics();
+        assert_eq!(copies_of(&mut interpreter, &class, "once"), 0, "the home is not requested");
+        assert!(
+            after.optimized_bodies > before.optimized_bodies,
+            "the block is: {after:?}"
+        );
+        assert_eq!(after.recompilees_above, before.recompilees_above, "{after:?}");
+    }
+}
+
+/// `apply:to:`, taking a block, sent by `relay:to:`, which `step:` sends
+/// with a block of its own, `run` sending `step:` a hundred times:
+/// `apply:to:` spends the most, weighs more than a method callee's limit
+/// -- so that `relay:to:`'s own plan, in which the block is a parameter,
+/// would not inline it -- and less than the limit a block made in the
+/// compile raises it to, so that `step:`'s plan inlines it. `run`
+/// answers 9900.
 const A_METHOD_TAKING_A_BLOCK: &str = indoc! {"
+    class Subject = Object new () (
+      apply: block to: value = (
+        ^(block value: value) + (value * 3) + (value * 5) + (value * 7) + (value * 11) + (value * 13) - (value * 39)
+      )
+      relay: block to: value = (
+        ^self apply: block to: value
+      )
+      step: index = (
+        ^self relay: [:each | each + each] to: index
+      )
+      public run = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 100] whileTrue: [
+          sum:: sum + (self step: index).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// The run-out of a method that takes a block walks to the block's
+    /// home, past its sender: `relay:to:` would not inline `apply:to:`,
+    /// `step:`, the block's home, would, and is requested, or `run`, its
+    /// sender, whose plan inlines it in turn. Pinned as
+    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
+    fn a_method_taking_a_block_requests_the_block_s_home(lowering) {
+        let (mut interpreter, class, subject) = walking(A_METHOD_TAKING_A_BLOCK, lowering);
+        for _ in 0..5 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 9900);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        let home = copies_of(&mut interpreter, &class, "step:");
+        let sender = copies_of(&mut interpreter, &class, "run");
+        assert_eq!(home + sender, 1, "the home, or its sender, is requested");
+        assert_eq!(copies_of(&mut interpreter, &class, "apply:to:"), 0);
+        assert_eq!(copies_of(&mut interpreter, &class, "relay:to:"), 0);
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A home standing inside a loop of its own spent its budget on that
+    /// loop's back edges, which say nothing of how often it is called: the
+    /// walk does not go up to it. `run`'s loop hands `relay:to:` a block of
+    /// its own; `apply:to:`'s run-out requests `apply:to:` itself, where
+    /// the walk from a home called often requests the home (above).
+    fn a_home_inside_its_own_loop_is_not_requested(lowering) {
+        let (mut interpreter, class, subject) =
+            walking(A_METHOD_TAKING_A_BLOCK_IN_A_LOOP, lowering);
+        for _ in 0..5 {
+            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 9900);
+        }
+        if !pins_the_tiers(lowering) {
+            return;
+        }
+        assert!(
+            copies_of(&mut interpreter, &class, "apply:to:") >= 1,
+            "the walk answers the frame that ran out"
+        );
+    }
+}
+
+/// `A_METHOD_TAKING_A_BLOCK` with the block made in `run`'s own loop.
+/// `run` answers 9900.
+const A_METHOD_TAKING_A_BLOCK_IN_A_LOOP: &str = indoc! {"
     class Subject = Object new () (
       apply: block to: value = (
         ^(block value: value) + (value * 3) + (value * 5) + (value * 7) + (value * 11) + (value * 13) - (value * 39)
@@ -10763,25 +10878,6 @@ const A_METHOD_TAKING_A_BLOCK: &str = indoc! {"
       )
     ) : ()
 "};
-
-ns_runtime::for_each_lowering! {
-    /// The run-out of a method that takes a block walks to the block's
-    /// home, past its sender: `relay:to:` would not inline `apply:to:`,
-    /// `run`, the block's home, would, and is requested. Pinned as
-    /// `a_small_hot_callee_requests_its_caller_s_optimization` is.
-    fn a_method_taking_a_block_requests_the_block_s_home(lowering) {
-        let (mut interpreter, class, subject) = walking(A_METHOD_TAKING_A_BLOCK, lowering);
-        for _ in 0..5 {
-            assert_eq!(send_unary(&mut interpreter, &subject, "run"), 9900);
-        }
-        if !pins_the_tiers(lowering) {
-            return;
-        }
-        assert_eq!(copies_of(&mut interpreter, &class, "run"), 1, "the home is requested");
-        assert_eq!(copies_of(&mut interpreter, &class, "apply:to:"), 0);
-        assert_eq!(copies_of(&mut interpreter, &class, "relay:to:"), 0);
-    }
-}
 
 /// `run:` sending `weigh:` to the receivers of an array in turn: an `A`,
 /// whose `weigh:` any plan inlines, and an `H`, whose `weigh:` weighs

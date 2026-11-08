@@ -5588,13 +5588,25 @@ struct Recompilable {
 /// beside which optimized code is installed -- no top-level activation,
 /// which machine code never runs, whose pair -- its key's row, or the
 /// body's one uncustomized copy, as the request would name it -- is
-/// neither refused nor has its copy, and -- reached as the sender, `step`
-/// -- whose body has spent at least `plan::LEAST_BUDGET_SHARE` of its
-/// budget: a sender that sent too rarely is not worth a compile of its
-/// own. A home has no such stop, as Strongtalk's parent link has none:
-/// a home hands its block to a loop and spends a few instructions a
-/// call, while the block spends the loop's, and only the home's compile
-/// can inline the block.
+/// neither refused nor has its copy, and which is entered often enough
+/// for its copy to be entered at all: until on-stack replacement into
+/// optimized code (stage 6) the running activation never enters the
+/// copy, only the calls to come do. A frame whose body has spent less
+/// than `plan::LEAST_BUDGET_SHARE` of its budget -- a sender that sent
+/// too rarely, a home called a few times, which hands its block to a loop
+/// and spends a few instructions a call -- is not worth a compile of its
+/// own; and a home reached from its block (`step`) that stands inside a
+/// loop of its own spent its budget on that loop's back edges, which say
+/// nothing of how often it is called. Both are HotSpot's call predicate,
+/// which compiles an enclosing method at an inlinee's back-branch event
+/// only on its invocation count
+/// (`compiler/compilationPolicy.cpp`, `method_back_branch_event`), and
+/// Strongtalk's `MinSendsBeforeRecompile`: the walk answers the block
+/// below, whose loop's caller calls it at once, where a copy of the home
+/// would wait for the home's next call -- Bounce's `bench`, called once a
+/// run, waited a budget (`docs/design/execution.md`, "What inlining
+/// moved"). A home called often goes on being requested, its block
+/// inlined into it.
 ///
 /// A copy installed stops the walk because it is young -- installed
 /// within the last `OPTIMIZATION_BUDGET` of its spend, Strongtalk's
@@ -5639,8 +5651,10 @@ fn recompilable(
         return None;
     }
     let share = budget_share_of(heap, &code)?;
-    if matches!(step, Step::Sender) && share < optimizing::plan::LEAST_BUDGET_SHARE {
-        return None;
+    match step {
+        Step::Sender if share < optimizing::plan::LEAST_BUDGET_SHARE => return None,
+        Step::Home if !called_repeatedly(heap, &code, share, activation) => return None,
+        _ => {}
     }
     // As `optimize` customizes the copy for the key the request names.
     let customization = key.and_then(|key| {
@@ -5654,6 +5668,54 @@ fn recompilable(
         key,
         customization,
     })
+}
+
+/// The least calls a home must have taken for the walk to go up to it
+/// from its block (`recompilable`): HotSpot's
+/// `Tier3MinInvocationThreshold`, the least invocations at which a method
+/// whose back edges are hot is compiled with a normal entry
+/// (`compiler/compiler_globals.hpp`, `compilationPolicy.cpp`'s
+/// `call_predicate_helper`).
+#[cfg(ns_jit)]
+pub(crate) const LEAST_HOME_CALLS: f64 = 100.0;
+
+/// Whether the home `activation`, which runs `code` and has spent `share`
+/// of its budget, is called often enough for a copy of it to be entered:
+/// its entries, which each spend the body's instruction count, at least
+/// `LEAST_HOME_CALLS` of a budget of `OPTIMIZATION_BUDGET` -- scaled with
+/// a budget a test or a stress mode arms, as HotSpot scales its
+/// thresholds (`CompileThresholdScaling`) -- and the activation not
+/// inside a loop of its own, whose back edges would have spent the budget
+/// instead.
+#[cfg(ns_jit)]
+fn called_repeatedly(
+    heap: &Heap<'_>,
+    code: &Rc<CompiledCode>,
+    share: f64,
+    activation: ActivationReference,
+) -> bool {
+    let per_entry = code.instruction_count().max(1) as f64;
+    share * OPTIMIZATION_BUDGET as f64 / per_entry >= LEAST_HOME_CALLS
+        && !runs_in_its_own_loop(heap, activation)
+}
+
+/// Whether `activation` stands inside a loop of its own body: the
+/// instruction it runs lies between a backward jump and its target. What
+/// such a frame spent is its loop's back edges, its own entries saying
+/// nothing of how often it is called.
+#[cfg(ns_jit)]
+fn runs_in_its_own_loop(heap: &Heap<'_>, activation: ActivationReference) -> bool {
+    let program_counter = heap.activation_program_counter(activation);
+    heap.activation_code(activation)
+        .instructions()
+        .iter()
+        .enumerate()
+        .any(|(index, instruction)| {
+            crate::bytecode::jump_target(instruction).is_some_and(|target| {
+                let target = target as usize;
+                target <= index && (target..=index).contains(&program_counter)
+            })
+        })
 }
 
 /// The share of the plain budget `code`'s armed budget row says the
