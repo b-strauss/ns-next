@@ -1022,6 +1022,30 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
 
+- **`Float` arithmetic in SSE2, and the CPU's features asked once** (noted
+  with the user on 2026-11-09, to be taken up after the inlining
+  branch). The x64 encoder emits no SSE instruction, so every `Float`
+  comparison and arithmetic operation is a mirror method leaf call (the
+  step 8 entry's "`Float`'s comparisons and arithmetic are such leaf
+  calls", 83 million of CD's 85 million leaf calls a run). SSE2 is part
+  of every x86-64 CPU, so templates for them -- the `SmallFloat64` tag
+  taken apart inline, `addsd`, `subsd`, `mulsd`, `divsd`, `ucomisd`,
+  `sqrtsd`, `cvtsi2sd` on an `xmm` register role, and their AArch64
+  counterparts `fadd`, `fsub`, `fmul`, `fdiv`, `fcmp` -- need no
+  detection; they serve the baseline code and are what stage 5's
+  unboxed floats build on. Beside them, the JIT asks the CPU's
+  features once at start (`std::arch::is_x86_feature_detected!`, safe)
+  and records them in the macro assembler, which emits an extension's
+  form only where the CPU has it and the base form otherwise: SSE4.1's
+  `roundsd` for `floor`, `truncated` and `rounded`, `lzcnt`, `popcnt`,
+  BMI2's `shlx` and `sarx`, as HotSpot's `VM_Version` and V8's
+  `CpuFeatures` do. Each form is checked against `iced-x86`, and a
+  stress mode forces the base forms, or no test on a machine with the
+  extensions runs them. The Rust side stays built for the x86-64
+  baseline: per-function `#[target_feature]` with a runtime switch
+  needs `unsafe` and would pay only in `LargeInteger`'s digit loops
+  (`mulx`, `adcx`, `adox`), which no benchmark leans on.
+  Unmeasured.
 - **The depth flag a continuation's push takes is dead** (2026-10-27).
   `Mutator::push_continuation` takes `replaced_counted`, whether the
   activation a continuation replaces counted against the depth limit,
