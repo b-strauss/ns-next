@@ -3036,6 +3036,26 @@ Small, deliberately left, none affecting an outcome.
 
 ## Goldens and documentation
 
+- **A golden cannot name the stress modes it is written for**
+  (2026-11-08). Only a directory binds a mode today: every golden under
+  `goldens/runtime/optimizer/` runs a second time in a debug build as
+  `golden::optimizer::<name>` with `NS_NEXT_STRESS_OPTIMIZE=1`
+  ([README.md](design/README.md), "The goldens"); every other mode
+  reaches a golden only through the `stress` gate at the end of a batch.
+  A golden written for a mode -- an exit inside an inlined scope for
+  `DEOPT`, a freed copy for `INVALIDATE`, a moved frame for `MOVES` --
+  should say so in its `.toml` (a key such as `stress_modes = ["DEOPT",
+  "INVALIDATE"]`), and the default suite in a debug build should run it
+  under each mode it names, so that a defect in the very scenario it pins
+  is found at the commit, not at the batch's end, and which golden pins
+  which mode is recorded rather than left to comments. It adds to the
+  `stress` gate's run of every golden under every mode, never replaces
+  it: most defects the modes found were in code not written with that
+  mode in mind (24 `fix:` commits name a mode, a lower bound, since a
+  defect found during a feature is fixed in its own commit). There is no
+  opt-out key: a golden's outcome is the same under every mode, and a
+  mode that makes its scenario impossible still checks its output.
+
 - **The reflective checks back in goldens** (2026-10-18): what only the
   representation showed while `class` and `Object`'s class accessors are
   protected -- the boundary between `Integer` and `LargeInteger`, chains
