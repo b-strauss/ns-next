@@ -142,7 +142,24 @@ pub(crate) struct Allocation {
     pub(crate) entries: Vec<Option<Entry>>,
     pub(crate) allocatable: &'static [Register],
     pub(crate) survive_leaf_calls: usize,
+    /// Each back edge's poll, by its position: every value live there, as
+    /// a frame going back into the code at the poll after its safepoint
+    /// finds it again (`emit`'s poll entry).
+    pub(crate) poll_values: BTreeMap<u32, Vec<PolledValue>>,
     ranges: Vec<Vec<(u32, u32)>>,
+}
+
+/// A value live at a back edge's poll: the machine register it is in, if
+/// it is in one, every bytecode register bound to it -- each of whose
+/// frame words holds it once the poll's write-back stored the dirty ones
+/// -- and of those the ones whose frame words the code after the poll
+/// takes to hold it, which it may read it back from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PolledValue {
+    pub(crate) value: ValueId,
+    pub(crate) machine: Option<Register>,
+    pub(crate) bound: Vec<u16>,
+    pub(crate) clean: Vec<u16>,
 }
 
 impl Allocation {
@@ -219,6 +236,7 @@ pub(crate) fn allocate(graph: &Graph, intervals: &Intervals, roles: &Roles) -> A
             entries: vec![None; graph.blocks.len()],
             allocatable: roles.allocatable,
             survive_leaf_calls: roles.survive_leaf_calls,
+            poll_values: BTreeMap::new(),
             ranges: intervals.ranges.clone(),
         },
     };
@@ -681,6 +699,39 @@ impl Allocator<'_> {
             .collect()
     }
 
+    /// Every value live at a poll, here, where it is and the registers
+    /// bound to it (`PolledValue`).
+    fn polled_values(&self) -> Vec<PolledValue> {
+        let number = |register: usize| {
+            u16::try_from(register).expect("internal: a register number fits a u16")
+        };
+        self.state
+            .placed
+            .iter()
+            .map(|(value, location)| {
+                let bound = || {
+                    self.state
+                        .bindings
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, binding)| binding.value == Some(*value))
+                };
+                PolledValue {
+                    value: *value,
+                    machine: match location {
+                        Location::Register(register) => Some(*register),
+                        Location::FrameWord | Location::EliminatedBlock(_) => None,
+                    },
+                    bound: bound().map(|(register, _)| number(register)).collect(),
+                    clean: bound()
+                        .filter(|(_, binding)| binding.clean)
+                        .map(|(register, _)| number(register))
+                        .collect(),
+                }
+            })
+            .collect()
+    }
+
     fn node(&mut self, block: BlockId, index: usize) {
         let graph = self.graph;
         let intervals = self.intervals;
@@ -849,6 +900,8 @@ impl Allocator<'_> {
                 kind: PointKind::Poll,
                 stores,
             });
+            let values = self.polled_values();
+            self.allocation.poll_values.insert(use_position, values);
         }
         if graph.end_trap(block).is_some() {
             let stores = self.dirty_stores();

@@ -10541,6 +10541,87 @@ impl<'gc> Heap<'gc> {
         self.stack.live += added;
     }
 
+    /// Whether the stack still holds what a light exit of optimized code at
+    /// a poll left (`jit::StoppedAtPoll`): `inlined` activations above
+    /// `physical`, the innermost first, each the callee of the next, the
+    /// last `physical`'s, and none of them nor `physical` reified, since
+    /// optimized code keeps no reified word. Reads offsets only, so that a
+    /// rebuilt stack answers `false` rather than a stale handle's check.
+    #[cfg(ns_jit)]
+    pub(crate) fn inlined_scopes_stand(&self, physical: ActivationReference, inlined: u16) -> bool {
+        let reified = |offset: u32| {
+            self.stack
+                .header_word(offset, frame_header::REIFIED)
+                .object_offset()
+                .is_some()
+        };
+        let mut offset = self.stack.innermost;
+        for _ in 0..inlined {
+            if offset == NO_FRAME || reified(offset) {
+                return false;
+            }
+            match self.stack.caller(offset) {
+                Some(caller) => offset = caller,
+                None => return false,
+            }
+        }
+        offset == physical.offset && !reified(offset)
+    }
+
+    /// Takes the `inlined` activations above `physical` -- the inlined
+    /// scopes a light exit of its optimized code at a poll wrote, which
+    /// `inlined_scopes_stand` found standing -- out of the stack's
+    /// bookkeeping, as a frame that goes back into the code there stands
+    /// for them: `physical` the innermost again, the top what it was when
+    /// the outermost was laid, and the live count and the depth count as
+    /// many lower, as their pushes, which never happened, would have
+    /// counted them. Their words stay, the copy's registers among them,
+    /// which its code reads on: none is given back as a pop gives a dead
+    /// register back.
+    #[cfg(ns_jit)]
+    pub(crate) fn fold_inlined_scopes(&mut self, physical: ActivationReference, inlined: u16) {
+        debug_assert!(
+            self.inlined_scopes_stand(physical, inlined),
+            "internal: the scopes a poll's exit wrote stand above its frame"
+        );
+        let mut offset = self.stack.innermost;
+        let mut top = self.stack.frames.top();
+        let mut counted = 0;
+        for _ in 0..inlined {
+            let flags = self.stack.flags(offset);
+            let caller = self.stack.header_word(offset, frame_header::CALLER);
+            top = self.stack.top_without(offset, flags, caller);
+            counted += i64::from(flags.counted);
+            offset = frames::caller_offset_of(caller);
+        }
+        self.stack.frames.set_top(top);
+        self.stack.innermost = physical.offset;
+        self.stack.live -= usize::from(inlined);
+        self.adjust_counted_depth(-counted);
+    }
+
+    /// `machine_frame_fits` for a frame that goes back into its optimized
+    /// code mid-body, `inlined` of its scopes standing above it on the
+    /// stack until it does: the depth they count is taken off, and the
+    /// depth limit read without a safepoint request's lowering of its
+    /// word, since the frame entered the code at its push already and the
+    /// code's polls take a request that stands.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_frame_fits_without(
+        &self,
+        register_base: u64,
+        (chain, extent): (u16, u32),
+        inlined: u16,
+    ) -> bool {
+        let words = &self.machine_words;
+        let depth = words
+            .get(MachineWord::DepthCount)
+            .saturating_sub(u64::from(inlined));
+        let end = words.get(MachineWord::OrdinaryStackEnd);
+        depth.saturating_add(u64::from(chain)) <= self.depth_limit as u64
+            && register_base.saturating_add(u64::from(extent)) <= end
+    }
+
     /// The stack's top and innermost frame, which a leaf's view of its own
     /// machine frame changes for the leaf's while (`view_machine_frame`).
     #[cfg(ns_jit)]

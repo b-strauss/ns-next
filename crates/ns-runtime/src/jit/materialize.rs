@@ -526,7 +526,8 @@ pub(crate) fn materialize_innermost(
     // Every frame of optimized code the walk passed goes on in baseline
     // code or the interpreter from here, which read every register: the
     // blocks its code eliminated are made, in every frame, not only the
-    // innermost.
+    // innermost -- but for the innermost's at a poll it may go back in at.
+    defer_the_poll_s_blocks(mutator, kind, code_address, &mut walk.blocks);
     materialize_blocks(mutator, &walk.blocks);
     let Some(activation) = mutator.heap.top_activation() else {
         unreachable!("internal: a walk leaves its innermost frame on the stack");
@@ -557,12 +558,13 @@ pub(crate) fn materialize_at_entry(
     let inlined = &inlined;
     let register_base = Heap::register_base_index(mutator.heap.activation_register_base(entry));
     if !inlined.inlines() {
-        let blocks = [BlocksAt {
+        let mut blocks = vec![BlocksAt {
             offset: Heap::activation_offset(entry),
             register_base,
             point: inlined.clone(),
             below: false,
         }];
+        defer_the_poll_s_blocks(mutator, kind, address, &mut blocks);
         materialize_blocks(mutator, &blocks);
         return None;
     }
@@ -593,8 +595,37 @@ pub(crate) fn materialize_at_entry(
     mutator.jit.statistics.inlined_frames_materialized += walk.inlined as u64;
     mutator.jit.statistics.optimized_frames_materialized += 1;
     mutator.jit.exited_physical = Some(entry);
+    defer_the_poll_s_blocks(mutator, kind, address, &mut walk.blocks);
     materialize_blocks(mutator, &walk.blocks);
     mutator.heap.top_activation()
+}
+
+/// The light exit of a poll a frame of optimized code may go back in at
+/// (`jit::StoppedAtPoll`): the blocks its code eliminated that are live in
+/// the frame that left, the one of `blocks` not below the innermost, are
+/// taken out of `blocks` and left for the run loop, which makes them only
+/// if the frame does not go back in (`jit::resumed_at_poll`). Every frame
+/// below it goes on in its baseline code whatever the safepoint does, so
+/// that its blocks are made now. Nothing for any other exit, `kind` and
+/// `address` the exit's.
+fn defer_the_poll_s_blocks(
+    mutator: &mut Mutator<'_>,
+    kind: u64,
+    address: u64,
+    blocks: &mut Vec<BlocksAt>,
+) {
+    debug_assert!(
+        mutator.jit.deferred_blocks.is_none(),
+        "internal: the last exit's deferred blocks were taken"
+    );
+    if kind != ExitKind::Safepoint as u64
+        || !mutator.jit.poll_goes_back_in(return_address_of(address))
+    {
+        return;
+    }
+    if let Some(index) = blocks.iter().position(|stopped_at| !stopped_at.below) {
+        mutator.jit.deferred_blocks = Some(blocks.remove(index));
+    }
 }
 
 /// Makes the blocks optimized code eliminated that each of `points` holds

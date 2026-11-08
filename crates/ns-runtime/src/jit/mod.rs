@@ -376,6 +376,16 @@ pub struct JitStatistics {
     /// Run-outs whose walk requested a frame above the one that ran its
     /// budget out: its sender, or a block's home.
     pub recompilees_above: u64,
+    /// Frames of optimized code that left it at a poll and went back into
+    /// that same code at that poll once the safepoint was served
+    /// (`resumed_at_poll`): of `safepoint_exits`.
+    pub poll_reentries: u64,
+    /// Frames of optimized code that left it at a poll and could not go
+    /// back in -- the copy freed, a frame among its scopes reified, the
+    /// stack rebuilt, or the exit forced by a stress mode -- so that the
+    /// blocks its code eliminated were made and every scope went on in
+    /// baseline code (`resumed_at_poll`): of `safepoint_exits`.
+    pub poll_deoptimizations: u64,
 }
 
 impl JitStatistics {
@@ -1420,6 +1430,17 @@ struct InstalledBody {
     /// What optimized code relied on beyond its own body and its key,
     /// whose change frees it at once; nothing for baseline code.
     dependencies: CopyDependencies,
+    /// Optimized code's polls a frame goes back into it at, by offsets
+    /// from the body's start, which a compaction keeps; none for baseline
+    /// code.
+    #[cfg(ns_jit)]
+    polls: Vec<optimizing::emit::PollEntry>,
+    /// Which of its state's installs this was, counted from the first:
+    /// what tells a copy a frame left at a poll from one installed for the
+    /// same body and key since that one was freed (`StoppedAtPoll`), whose
+    /// polls are another compile's.
+    #[cfg(ns_jit)]
+    installation: u64,
 }
 
 /// A method's lean body's dispatching entry as installed: the offsets
@@ -1556,6 +1577,27 @@ pub(crate) struct JitState {
     /// innermost frame above it: the frame whose copy the exit counts
     /// against (`resumption_after_exit`). Cleared with `walked`.
     pub(crate) exited_physical: Option<ActivationReference>,
+    /// The frame of optimized code the last poll's light exit left, for
+    /// the run loop's safepoint, which sends it back into its code there
+    /// unless the safepoint made that impossible (`resumed_at_poll`).
+    stopped_at_poll: Option<StoppedAtPoll>,
+    /// The blocks the light exit of the poll the walk is leaving defers:
+    /// those of the frame that left, which the frame makes only if it
+    /// cannot go back in (`materialize::defer_the_poll_s_blocks`).
+    #[cfg(ns_jit)]
+    pub(crate) deferred_blocks: Option<materialize::BlocksAt>,
+    /// Where the next stretch enters the frame `resumed_at_poll` sent back
+    /// into its optimized code (`entered_at_poll`).
+    #[cfg(ns_jit)]
+    poll_entry: Option<CodeOffset>,
+    /// How many bodies this state installed (`InstalledBody::installation`).
+    #[cfg(ns_jit)]
+    installations: u64,
+    /// What a test runs wherever a frame that left its optimized code at a
+    /// poll is about to go back in, before anything is decided
+    /// (`inlining_tests`).
+    #[cfg(all(test, ns_jit))]
+    pub(crate) before_poll_reentry: Option<fn(&mut Mutator<'_>)>,
     /// What a test records of every exit's stack and every leaf's frame,
     /// once it asks (`inlining_tests`).
     #[cfg(all(test, ns_jit))]
@@ -1938,6 +1980,15 @@ impl JitState {
             walked: None,
             walked_optimized: false,
             exited_physical: None,
+            stopped_at_poll: None,
+            #[cfg(ns_jit)]
+            deferred_blocks: None,
+            #[cfg(ns_jit)]
+            poll_entry: None,
+            #[cfg(ns_jit)]
+            installations: 0,
+            #[cfg(all(test, ns_jit))]
+            before_poll_reentry: None,
             #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
@@ -2974,6 +3025,15 @@ impl JitState {
             walked: None,
             walked_optimized: false,
             exited_physical: None,
+            stopped_at_poll: None,
+            #[cfg(ns_jit)]
+            deferred_blocks: None,
+            #[cfg(ns_jit)]
+            poll_entry: None,
+            #[cfg(ns_jit)]
+            installations: 0,
+            #[cfg(all(test, ns_jit))]
+            before_poll_reentry: None,
             #[cfg(all(test, ns_jit))]
             recorder: None,
             refused_for_an_uncompiled_callee: false,
@@ -4805,10 +4865,15 @@ fn install_body(
         deepest_extent: optimized
             .as_ref()
             .map_or(0, |optimized| optimized.deepest_extent),
+        polls: optimized
+            .as_ref()
+            .map_or_else(Vec::new, |optimized| optimized.polls.clone()),
         dependencies: optimized.map_or_else(CopyDependencies::default, |optimized| {
             optimized.dependencies
         }),
+        installation: state.installations,
     });
+    state.installations += 1;
     // Until it is pointed at its row the code spends from the unpointed
     // budget, whose first spend calls the leaf: the word is never one the
     // spend must test for.
@@ -6016,6 +6081,7 @@ fn install_optimized(
         push_entry,
         deepest_chain,
         deepest_extent,
+        polls,
         ..
     } = optimized;
     let mut returns: Vec<CallReturn> = returns
@@ -6054,6 +6120,7 @@ fn install_optimized(
             deepest_chain,
             deepest_extent,
             dependencies,
+            polls,
         }),
     )
     .inspect_err(|refusal| {
@@ -6079,6 +6146,7 @@ struct OptimizedInstall {
     deepest_chain: u16,
     deepest_extent: u32,
     dependencies: CopyDependencies,
+    polls: Vec<optimizing::emit::PollEntry>,
 }
 
 /// What a copy of `optimized` keeps of its interrupt points inside
@@ -6178,6 +6246,85 @@ pub(crate) enum Resumption {
     /// is: the loop pops it and applies its continuation, as for a return
     /// it ran itself (`vm::finish`).
     Returned { value: u64 },
+}
+
+/// A frame of optimized code that its poll's light exit left at a
+/// safepoint, which goes back into the code there once the safepoint is
+/// served unless the safepoint made that impossible
+/// (`docs/design/execution.md`, "Between the tiers"; `resumed_at_poll`).
+/// The exit wrote the header of every scope the poll stops in, as every
+/// exit does, but made none of the blocks the copy eliminated that are
+/// live in the frame, whose registers hold `nil` for them meanwhile.
+/// Nothing reads those words before the frame goes back in or makes the
+/// blocks: the safepoint runs no Newspeak code -- neither a mirror nor a
+/// debugger reads a frame there, and no leaf reifies one -- the
+/// collector's pre-pass and trace read a `nil` as any other word, and
+/// the one thing at a safepoint that rebuilds the stack, the suspend
+/// stress mode, makes the blocks first (`deoptimize_stopped_at_poll`).
+/// The copy is named by its body and key and by its installation, never
+/// by an address, so that a compaction that moved it, or a freeing that
+/// took it, meanwhile is found.
+#[cfg_attr(
+    not(ns_jit),
+    expect(dead_code, reason = "no frame stops in optimized code without a JIT")
+)]
+pub(crate) struct StoppedAtPoll {
+    /// The copy's physical frame.
+    physical: ActivationReference,
+    /// The physical frame's body.
+    code_id: CodeId,
+    /// The key the copy was compiled for; `None` for a body's one
+    /// uncustomized copy.
+    key: Option<CustomizationKey>,
+    /// The poll's interrupt point, by its index among the copy's.
+    point: usize,
+    /// How many scopes the poll stops in, the physical frame's own among
+    /// them: the inlined ones are activations of the stack's until the
+    /// frame goes back in.
+    scopes: u16,
+    /// The copy's install (`InstalledBody::installation`), which a copy
+    /// installed for the same body and key since this one was freed is
+    /// not.
+    installation: u64,
+    /// The blocks the light exit left unmade, which the frame makes when
+    /// it does not go back in.
+    #[cfg(ns_jit)]
+    blocks: Option<materialize::BlocksAt>,
+}
+
+impl StoppedAtPoll {
+    /// The copy's physical frame: the frame the run loop enters again.
+    pub(crate) fn physical(&self) -> ActivationReference {
+        self.physical
+    }
+}
+
+impl JitState {
+    /// The frame the last poll's light exit left, taken
+    /// (`resumed_at_poll`).
+    pub(crate) fn take_stopped_at_poll(&mut self) -> Option<StoppedAtPoll> {
+        self.stopped_at_poll.take()
+    }
+
+    /// The copy of optimized code the exit that hands over `address`
+    /// leaves, and its poll, when it is a poll a frame goes back in at.
+    #[cfg(ns_jit)]
+    fn poll_at(&self, address: usize) -> Option<(&InstalledBody, optimizing::emit::PollEntry)> {
+        let body = self.installed_body_at(address)?;
+        if body.tier != Tier::Optimized {
+            return None;
+        }
+        let offset = self.offset_in(body, address)?;
+        let poll = body.polls.iter().find(|poll| poll.exit == offset)?;
+        Some((body, *poll))
+    }
+
+    /// Whether the exit that hands over `address` is a poll of optimized
+    /// code a frame goes back in at, whose exit is light.
+    #[cfg(ns_jit)]
+    pub(crate) fn poll_goes_back_in(&self, address: usize) -> bool {
+        self.poll_at(address).is_some()
+    }
 }
 
 /// A push of `activation`, whose body `code` has an armed slot, at
@@ -6499,6 +6646,194 @@ pub(crate) fn at_back_edge(
     Some(run_machine_code(mutator, activation, register_base, entry))
 }
 
+/// Records the frame of optimized code the poll's exit `block` describes
+/// left, `physical` the copy's frame, for the run loop's safepoint to send
+/// back into the code there (`resumed_at_poll`), with the blocks its light
+/// exit left unmade (`materialize::defer_the_poll_s_blocks`); a stress
+/// mode's forced exit there makes them at once and goes on in baseline
+/// code, as that mode's exits everywhere else do, so that its runs keep
+/// covering the polls' materialization. Nothing for a poll no frame goes
+/// back in at, whose exit made its blocks.
+#[cfg(ns_jit)]
+fn stop_at_poll(
+    mutator: &mut Mutator<'_>,
+    block: &EntryBlock,
+    physical: ActivationReference,
+    forced: bool,
+) {
+    let blocks = mutator.jit.deferred_blocks.take();
+    let Ok(address) = usize::try_from(block.get(stubs::BlockWord::ExitCodeAddress.index())) else {
+        unreachable!("internal: machine code's addresses fit the pointer width");
+    };
+    let Some((key, installation, point)) = mutator
+        .jit
+        .poll_at(address)
+        .map(|(body, poll)| (body.key, body.installation, poll.point))
+    else {
+        debug_assert!(
+            blocks.is_none(),
+            "internal: only a poll a frame goes back in at defers its blocks"
+        );
+        return;
+    };
+    let scopes = mutator
+        .jit
+        .inlined_at(address)
+        .map_or(1, |inlined| inlined.chain().len());
+    let stopped = StoppedAtPoll {
+        physical,
+        code_id: mutator.heap.activation_code_id(physical),
+        key,
+        point: point as usize,
+        scopes: u16::try_from(scopes).expect("internal: a chain is bounded by the plan's limits"),
+        installation,
+        blocks,
+    };
+    if forced {
+        deoptimize_at_poll(mutator, stopped);
+        return;
+    }
+    mutator.jit.stopped_at_poll = Some(stopped);
+}
+
+/// The frame `stopped` names, which left its optimized code at a poll,
+/// once the safepoint its exit stopped at is served: sent back into that
+/// code at that poll unless the safepoint made that impossible -- the
+/// copy freed or replaced, a frame among its scopes reified, the stack
+/// rebuilt, the room the copy's scopes need gone (`poll_reentry`) -- with
+/// the inlined scopes above the physical frame taken out of the stack's
+/// bookkeeping exactly as their pushes would never have counted them
+/// (`Heap::fold_inlined_scopes`), so that the frame stands as it stood at
+/// the poll; answers where the next stretch enters it
+/// (`entered_at_poll`). `None` once the blocks the copy eliminated are
+/// made, every scope going on in baseline code or the interpreter as
+/// after any exit. Out of line, as `after_safepoint`, its one caller, is.
+#[cfg(ns_jit)]
+#[cold]
+#[inline(never)]
+pub(crate) fn resumed_at_poll(
+    mutator: &mut Mutator<'_>,
+    stopped: StoppedAtPoll,
+) -> Option<CodeOffset> {
+    #[cfg(test)]
+    if let Some(hook) = mutator.jit.before_poll_reentry {
+        hook(mutator);
+    }
+    let Some(entry) = poll_reentry(mutator, &stopped) else {
+        deoptimize_at_poll(mutator, stopped);
+        return None;
+    };
+    mutator
+        .heap
+        .fold_inlined_scopes(stopped.physical, stopped.scopes - 1);
+    mutator.jit.statistics.poll_reentries += 1;
+    mutator.jit.poll_entry = Some(entry);
+    Some(entry)
+}
+
+#[cfg(not(ns_jit))]
+pub(crate) fn resumed_at_poll(
+    _mutator: &mut Mutator<'_>,
+    _stopped: StoppedAtPoll,
+) -> Option<CodeOffset> {
+    unreachable!("internal: no frame stops in optimized code without a JIT")
+}
+
+/// Where the frame `stopped` names goes back into its copy's code: the
+/// poll's entry in the copy as it lies now, a compaction having moved it
+/// or not; `None` when the frame cannot -- the stack no longer the one
+/// the exit left, a frame among its scopes reified, which optimized code
+/// keeps no reified word for, the copy freed or another installed in its
+/// place, its feedback base slid, or the room the copy's scopes need,
+/// within the depth limit and the stack's end and on the native stack,
+/// gone.
+#[cfg(ns_jit)]
+fn poll_reentry(mutator: &Mutator<'_>, stopped: &StoppedAtPoll) -> Option<CodeOffset> {
+    let heap = &mutator.heap;
+    let inlined = stopped.scopes.checked_sub(1)?;
+    if !heap.inlined_scopes_stand(stopped.physical, inlined)
+        || heap.activation_code_id(stopped.physical) != stopped.code_id
+    {
+        return None;
+    }
+    let code = heap.activation_code(stopped.physical);
+    let body = match stopped.key {
+        Some(key) => mutator.jit.copy_of(&code, key),
+        None => mutator.jit.optimized(&code),
+    }?;
+    let poll = body
+        .polls
+        .iter()
+        .find(|poll| poll.point as usize == stopped.point)?;
+    let register_base = Heap::register_base_words(heap.activation_register_base(stopped.physical));
+    let enters = body.installation == stopped.installation
+        && body.feedback_base == heap.activation_feedback_base(stopped.physical)
+        && native_stack_has_room()
+        && heap.machine_frame_fits_without(
+            register_base,
+            (body.deepest_chain, body.deepest_extent),
+            inlined,
+        );
+    enters.then_some(CodeOffset(body.start + poll.entry))
+}
+
+/// The frame `stopped` names goes on in baseline code or the interpreter,
+/// as after any exit: the blocks its copy eliminated made, the stack as
+/// the exit left it.
+#[cfg(ns_jit)]
+fn deoptimize_at_poll(mutator: &mut Mutator<'_>, stopped: StoppedAtPoll) {
+    if let Some(blocks) = stopped.blocks {
+        materialize::materialize_blocks(mutator, std::slice::from_ref(&blocks));
+    }
+    mutator.jit.statistics.poll_deoptimizations += 1;
+}
+
+/// Makes the frame the last poll's light exit left go on in baseline code
+/// or the interpreter, if there is one: the safepoint is about to rebuild
+/// the stack (`Interpreter::safepoint`'s suspension), after which no frame
+/// is where the exit left it, and the blocks the copy eliminated are made
+/// while it still is. Debug builds only, where the suspend stress mode
+/// exists.
+#[cfg(all(ns_jit, debug_assertions))]
+pub(crate) fn deoptimize_stopped_at_poll(mutator: &mut Mutator<'_>) {
+    if let Some(stopped) = mutator.jit.take_stopped_at_poll() {
+        deoptimize_at_poll(mutator, stopped);
+    }
+}
+
+#[cfg(all(not(ns_jit), debug_assertions))]
+pub(crate) fn deoptimize_stopped_at_poll(_mutator: &mut Mutator<'_>) {}
+
+/// The entry `resumed_at_poll` answered for `activation`, the physical
+/// frame, whose registers start at `register_base`: its optimized code
+/// run from the poll it left.
+#[cfg(ns_jit)]
+#[cold]
+#[inline(never)]
+pub(crate) fn entered_at_poll(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+) -> Resumption {
+    let Some(entry) = mutator.jit.poll_entry.take() else {
+        unreachable!("internal: a frame is entered at a poll that `resumed_at_poll` answered");
+    };
+    // `resumed_at_poll` found the native stack's room at the run loop's
+    // own depth before it took the scopes off the stack, and the frame
+    // cannot start over at its first instruction, as `run_machine_code`
+    // starts one without room.
+    enter_machine_code(mutator, activation, register_base, entry)
+}
+
+#[cfg(not(ns_jit))]
+pub(crate) fn entered_at_poll(
+    _mutator: &mut Mutator<'_>,
+    _activation: ActivationReference,
+    _register_base: RegisterBase,
+) -> Resumption {
+    unreachable!("internal: no frame stops in optimized code without a JIT")
+}
+
 /// Runs the machine code at `entry` on `activation`'s frame, whose
 /// registers start at `register_base`, and answers where the interpreter
 /// goes on: at 0, running nothing, when the thread's native stack has less
@@ -6516,14 +6851,25 @@ fn run_machine_code(
     register_base: RegisterBase,
     entry: CodeOffset,
 ) -> Resumption {
-    use stubs::{BlockWord, ExitKind};
-
     if !native_stack_has_room() {
         return Resumption::Interpreted {
             activation,
             program_counter: 0,
         };
     }
+    enter_machine_code(mutator, activation, register_base, entry)
+}
+
+/// `run_machine_code` once the native stack's room is known.
+#[cfg(ns_jit)]
+fn enter_machine_code(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    entry: CodeOffset,
+) -> Resumption {
+    use stubs::{BlockWord, ExitKind};
+
     let Some(zone) = mutator.jit.zone.as_ref() else {
         panic!("internal: machine code is entered without a zone");
     };
@@ -7051,6 +7397,9 @@ fn resumption_after_exit(
         }
         MachineExit::Safepoint { program_counter } => {
             mutator.jit.statistics.safepoint_exits += 1;
+            if optimized {
+                stop_at_poll(mutator, block, physical.unwrap_or(innermost), forced);
+            }
             Resumption::Safepoint {
                 activation: innermost,
                 program_counter,

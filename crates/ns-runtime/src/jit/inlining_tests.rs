@@ -1292,3 +1292,266 @@ fn a_block_handed_to_a_send_a_type_case_traps_at_is_made_in_its_slot() {
         recorder.blocks
     );
 }
+
+/// A poll's light exit and the frame going back into its optimized code
+/// there, or not, once the safepoint is served. Debug builds only, where
+/// a test sets the scavenge threshold.
+#[cfg(debug_assertions)]
+mod polls {
+    use super::*;
+
+    /// `run: count` sums 1 to `count` twice, each time through `to:do:`,
+    /// whose block allocates an `Array` at every pass: once `run:`'s copy
+    /// inlines `to:do:` and the block, the inner loop -- `to:do:`'s own, in
+    /// its inlined scope -- polls with the block eliminated and live in
+    /// `to:do:`'s parameter, and the scavenges the allocations ask for stop
+    /// it there. `run: count` answers `count * (count + 1)`.
+    const AN_ALLOCATING_INLINED_LOOP: &str = indoc! {"
+        class Subject = Object new () (
+          public run: count = (
+            |
+              sum ::= 0.
+              round ::= 0.
+              last
+            |
+            [round < 2] whileTrue: [
+              1 to: count do: [:step |
+                last:: {step. step. step. step. step. step. step. step}.
+                sum:: sum + (last at: 8).
+              ].
+              round:: round + 1.
+            ].
+            ^sum
+          )
+        )
+    "};
+
+    /// What `run_polling` answers: the run's answer, what was recorded, what
+    /// the JIT counted while it ran, `run:`'s code id, and the activations
+    /// the depth limit counted before the run and after it.
+    struct Polled {
+        answer: i64,
+        recorder: Recorder,
+        statistics: crate::jit::JitStatistics,
+        run: CodeId,
+        counted: (usize, usize),
+    }
+
+    /// `AN_ALLOCATING_INLINED_LOOP`'s `run: count`, the JIT on whatever the
+    /// environment says, every body compiled at its first entry and
+    /// optimized at its first spend, run three times for 100 first, so that
+    /// `run:`'s copy inlines `to:do:` and its block, then once for `count`
+    /// with a scavenge asked for at every 64 KiB eden takes, the recorder
+    /// on, and `hook` run wherever a frame that left its optimized code at a
+    /// poll is about to go back in (`JitState::before_poll_reentry`).
+    fn run_polling(count: i64, hook: Option<fn(&mut Mutator<'_>)>) -> Polled {
+        let source = AN_ALLOCATING_INLINED_LOOP;
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(module, source.into(), SourceOrigin::File("test.ns".into()))
+            .unwrap_or_else(|_| panic!("the module resolves"));
+        let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+        // The runs' feedback is what the compiles read: the cache stress mode
+        // would vacate it at the runs' safepoints.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_caches(false);
+        interpreter.set_jit_enabled(true);
+        interpreter.set_jit_stress(true);
+        interpreter.set_optimize_stress(true);
+        let class = interpreter.load_module(&resolved);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let send_run = |interpreter: &mut Interpreter, count: i64| {
+            let argument = interpreter.stash(crate::Value::small_integer(count));
+            let answer = expect_ok(
+                interpreter.send(&instance, Symbol::intern("run:"), &[argument]),
+                "run:",
+            );
+            interpreter.enter(|mutator| match mutator.fetch(&answer).kind() {
+                crate::ValueKind::SmallInteger(integer) => integer,
+                _ => panic!("run:: expected a small integer"),
+            })
+        };
+        for _ in 0..3 {
+            assert_eq!(send_run(&mut interpreter, 100), 10100);
+        }
+        interpreter.set_scavenge_threshold(64 * 1024);
+        let counted_before = interpreter.enter(|mutator| {
+            mutator.jit.recorder = Some(Recorder::default());
+            mutator.jit.before_poll_reentry = hook;
+            mutator.heap.counted_depth()
+        });
+        let before = interpreter.jit_statistics();
+        let answer = send_run(&mut interpreter, count);
+        let after = interpreter.jit_statistics();
+        let (recorder, run, counted_after) = interpreter.enter(|mutator| {
+            mutator.jit.before_poll_reentry = None;
+            let recorder = mutator.jit.recorder.take().expect("recording");
+            let code = crate::interpreter::method_code(
+                mutator,
+                &class,
+                MethodSide::Instance,
+                Symbol::intern("run:"),
+            )
+            .expect("the method");
+            (
+                recorder,
+                mutator.heap.code_id(&code),
+                mutator.heap.counted_depth(),
+            )
+        });
+        Polled {
+            answer,
+            recorder,
+            statistics: crate::jit::JitStatistics {
+                poll_reentries: after.poll_reentries - before.poll_reentries,
+                poll_deoptimizations: after.poll_deoptimizations - before.poll_deoptimizations,
+                safepoint_exits: after.safepoint_exits - before.safepoint_exits,
+                materialized_blocks: after.materialized_blocks - before.materialized_blocks,
+                ..after
+            },
+            run,
+            counted: (counted_before, counted_after),
+        }
+    }
+
+    /// Whether the environment turns a stress mode on, each of which changes
+    /// which code runs, or leaves it at every poll.
+    fn a_stress_mode_is_on() -> bool {
+        std::env::vars_os().any(|(name, value)| {
+            name.to_string_lossy().starts_with("NS_NEXT_STRESS_")
+                && !value.is_empty()
+                && value != "0"
+        })
+    }
+
+    /// The exits recorded inside `to:do:`'s scope inlined into `run:`: those
+    /// whose innermost frame is `to:do:`'s and whose next is `run:`'s.
+    fn exits_inside_to_do(recorder: &Recorder, run: CodeId) -> Vec<&RecordedExit> {
+        recorder
+            .exits
+            .iter()
+            .filter(|exit| {
+                exit.inlined
+                    && exit.frames.len() >= 2
+                    && exit.frames[0].selector == Some(Symbol::intern("to:do:"))
+                    && exit.frames[1].code == run
+            })
+            .collect()
+    }
+
+    /// A frame that goes back into its optimized code at the poll it left
+    /// gives back what the exit counted of its inlined scopes, exactly as
+    /// their pushes would have counted them: at every exit inside `to:do:`'s
+    /// scope -- the first, and every one after a frame went back in -- the
+    /// stack holds `run:` and `to:do:` live, the depth limit counts the two
+    /// above what it counted before the run, as the interpreter counts
+    /// there, and once the run is done it counts what it did before. With no
+    /// stress mode the frame goes back in at every poll, so that a re-entry
+    /// precedes every exit but the first; the block the copy eliminated is
+    /// never made, and `run:` never goes on in its baseline code.
+    #[test]
+    fn a_poll_re_entry_counts_the_depth_the_interpreter_counts() {
+        let Polled {
+            answer,
+            recorder,
+            statistics,
+            run,
+            counted: (counted_before, counted_after),
+        } = run_polling(20_000, None);
+        assert_eq!(answer, 20_000 * 20_001);
+        assert_eq!(counted_after, counted_before);
+        let inside = exits_inside_to_do(&recorder, run);
+        for exit in &inside {
+            assert_eq!(exit.depth, exit.frames.len(), "every activation is live");
+            assert_eq!(
+                exit.counted,
+                counted_before + 2,
+                "the depth limit counts `run:` and the scope `to:do:`"
+            );
+        }
+        if a_stress_mode_is_on() {
+            return;
+        }
+        assert!(inside.len() >= 2, "{} exits inside `to:do:`", inside.len());
+        assert!(statistics.poll_reentries >= 1, "{statistics:?}");
+        assert_eq!(statistics.poll_deoptimizations, 0, "{statistics:?}");
+        assert_eq!(statistics.materialized_blocks, 0, "{statistics:?}");
+        assert!(
+            recorder
+                .resumptions
+                .iter()
+                .all(|(_, code, _, _)| *code != run),
+            "`run:` never goes on in its baseline code: {:?}",
+            recorder.resumptions
+        );
+    }
+
+    /// Reifies the innermost activation: a frame among the scopes of the
+    /// frame about to go back into its optimized code.
+    fn reify_the_innermost(mutator: &mut Mutator<'_>) {
+        if let Some(innermost) = mutator.heap.top_activation() {
+            let _ = mutator.heap.reify(innermost);
+        }
+    }
+
+    /// A frame that left its optimized code at a poll does not go back in
+    /// once a frame among its scopes is reified, since optimized code keeps
+    /// no reified word: the block the copy eliminated is made, in the frame
+    /// that left, and every scope goes on in its baseline code, answering
+    /// the interpreter's sum.
+    #[test]
+    fn a_reified_scope_s_poll_deoptimizes() {
+        let Polled {
+            answer,
+            recorder,
+            statistics,
+            ..
+        } = run_polling(2_000, Some(reify_the_innermost));
+        assert_eq!(answer, 2_000 * 2_001);
+        if a_stress_mode_is_on() {
+            return;
+        }
+        assert!(statistics.poll_deoptimizations >= 1, "{statistics:?}");
+        assert_eq!(statistics.poll_reentries, 0, "{statistics:?}");
+        assert!(
+            recorder
+                .blocks
+                .iter()
+                .any(|(_, block)| !block.below && block.one_object && block.home_married),
+            "the poll's frame made its block: {:?}",
+            recorder.blocks
+        );
+    }
+
+    /// Frees every optimized copy there is.
+    fn free_every_copy(mutator: &mut Mutator<'_>) {
+        crate::jit::invalidate_all_optimized(mutator);
+    }
+
+    /// A frame that left its optimized code at a poll does not go back in
+    /// once the copy is freed -- found by its body and key, never by an
+    /// address -- and goes on in baseline code with the block the copy
+    /// eliminated made, answering the interpreter's sum.
+    #[test]
+    fn a_freed_copy_s_poll_deoptimizes() {
+        let Polled {
+            answer,
+            recorder,
+            statistics,
+            ..
+        } = run_polling(2_000, Some(free_every_copy));
+        assert_eq!(answer, 2_000 * 2_001);
+        if a_stress_mode_is_on() {
+            return;
+        }
+        assert!(statistics.poll_deoptimizations >= 1, "{statistics:?}");
+        assert_eq!(statistics.poll_reentries, 0, "{statistics:?}");
+        assert!(
+            recorder
+                .blocks
+                .iter()
+                .any(|(_, block)| !block.below && block.one_object && block.home_married),
+            "the poll's frame made its block: {:?}",
+            recorder.blocks
+        );
+    }
+}

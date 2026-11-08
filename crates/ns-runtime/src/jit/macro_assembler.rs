@@ -1487,6 +1487,33 @@ impl MacroAssembler {
     pub(crate) fn exit(&mut self, kind: ExitKind, program_counter: u32) {
         let roles = self.roles;
         self.load_code_address(roles.exit_code_address());
+        self.jump_to_the_exit_stub(kind, program_counter);
+    }
+
+    /// `exit`, answering a label bound at the address it hands over: what
+    /// names a poll's exit in optimized code, so that the run loop finds
+    /// the entry the frame goes back in at once the safepoint is served
+    /// (`optimizing::emit::PollEntry`).
+    pub(crate) fn exit_naming_its_address(
+        &mut self,
+        kind: ExitKind,
+        program_counter: u32,
+    ) -> Label {
+        let roles = self.roles;
+        self.assembler.load_code_address(roles.exit_code_address());
+        let address = self.assembler.label();
+        self.assembler.bind(address);
+        if let Some(site) = self.site {
+            self.site_addresses.push((address, site));
+        }
+        self.jump_to_the_exit_stub(kind, program_counter);
+        address
+    }
+
+    /// The rest of an exit once the code address is loaded: the kind and
+    /// the program counter, and the jump into the exit stub.
+    fn jump_to_the_exit_stub(&mut self, kind: ExitKind, program_counter: u32) {
+        let roles = self.roles;
         self.assembler
             .move_immediate(roles.exit_kind(), kind as u64);
         self.assembler

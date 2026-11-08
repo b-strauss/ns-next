@@ -148,6 +148,8 @@ fn since(after: JitStatistics, before: JitStatistics) -> JitStatistics {
         invalidated_copies: after.invalidated_copies - before.invalidated_copies,
         budget_exits: after.budget_exits - before.budget_exits,
         recompilees_above: after.recompilees_above - before.recompilees_above,
+        poll_reentries: after.poll_reentries - before.poll_reentries,
+        poll_deoptimizations: after.poll_deoptimizations - before.poll_deoptimizations,
     }
 }
 
@@ -11521,5 +11523,250 @@ ns_runtime::for_each_lowering! {
         let class_c = class_answered(&mut interpreter, &subject, "classC");
         assert_eq!(copies_of(&mut interpreter, &class_c, "deep:"), 1, "`deep:` itself");
         assert_eq!(copies_of(&mut interpreter, &class_c, "weigh:"), 0);
+    }
+}
+
+/// `run: count` sums 1 to `count` twice, each time through `to:do:`,
+/// whose block allocates an `Array` at every pass: once `run:`'s copy
+/// inlines `to:do:` and the block, the inner loop -- `to:do:`'s own, in
+/// its inlined scope -- polls with the block eliminated and live in
+/// `to:do:`'s parameter, and the scavenges the allocations ask for stop
+/// it there. `rounds: count` sends `run: count` ten times from a loop of
+/// its own, so that `run:`'s frame is a callee, which the exit's walk
+/// materializes above its sender. `run: count` answers
+/// `count * (count + 1)`.
+#[cfg(debug_assertions)]
+const AN_ALLOCATING_INLINED_LOOP: &str = indoc! {"
+    class Subject = Object new () (
+      public run: count = (
+        |
+          sum ::= 0.
+          round ::= 0.
+          last
+        |
+        [round < 2] whileTrue: [
+          1 to: count do: [:step |
+            last:: {step. step. step. step. step. step. step. step}.
+            sum:: sum + (last at: 8).
+          ].
+          round:: round + 1.
+        ].
+        ^sum
+      )
+
+      public rounds: count = (
+        |
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < 10] whileTrue: [
+          sum:: sum + (self run: count).
+          index:: index + 1.
+        ].
+        ^sum
+      )
+    ) : ()
+"};
+
+/// `AN_ALLOCATING_INLINED_LOOP` loaded customizing, its subject made and
+/// `run:` run until its copy inlines `to:do:` and its block: the
+/// interpreter, the subject and whether the copy is pinned
+/// (`run_until_inlining`).
+#[cfg(debug_assertions)]
+fn an_allocating_inlined_loop(lowering: Lowering) -> (Interpreter, Root, bool) {
+    let (mut interpreter, class) = load_customizing(AN_ALLOCATING_INLINED_LOOP, lowering);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let pinned = run_until_inlining(
+        &mut interpreter,
+        &class,
+        &subject,
+        lowering,
+        ("run:", 10100),
+        2,
+    );
+    (interpreter, subject, pinned)
+}
+
+/// The sum `run:` answers for `count`: twice 1 to `count`.
+#[cfg(debug_assertions)]
+fn twice_the_sum_to(count: i64) -> i64 {
+    count * (count + 1)
+}
+
+ns_runtime::for_each_lowering! {
+    /// A poll of optimized code that finds a scavenge requested inside an
+    /// inlined scope leaves lightly, and once the safepoint is served the
+    /// frame goes back into that same optimized code at that poll: every
+    /// poll exit of `run:`'s loop goes back in, none goes on in baseline
+    /// code -- no frame switches into it at its loop's head after a
+    /// safepoint -- and the answer is the interpreter's, whether the run
+    /// loop entered `run:` at its push or a compiled sender called it.
+    /// Pinned only under no stress mode: each changes which code runs, or
+    /// leaves it at every poll. Debug builds only, where a test sets the
+    /// scavenge threshold.
+    #[cfg(debug_assertions)]
+    fn a_scavenge_in_an_inlined_loop_goes_back_into_its_optimized_code(lowering) {
+        let (mut interpreter, subject, pinned) = an_allocating_inlined_loop(lowering);
+        interpreter.set_scavenge_threshold(64 * 1024);
+        let scavenges = interpreter.collector_statistics().scavenges;
+        let before = interpreter.jit_statistics();
+        assert_eq!(
+            send_integer(&mut interpreter, &subject, "run:", 20_000),
+            twice_the_sum_to(20_000)
+        );
+        let done = since(interpreter.jit_statistics(), before);
+        let scavenges = interpreter.collector_statistics().scavenges - scavenges;
+        let before = interpreter.jit_statistics();
+        assert_eq!(
+            send_integer(&mut interpreter, &subject, "rounds:", 2_000),
+            10 * twice_the_sum_to(2_000)
+        );
+        let rounds = since(interpreter.jit_statistics(), before);
+        if !pinned || a_stress_mode_is_on() {
+            return;
+        }
+        assert!(scavenges >= 2, "{scavenges} scavenges");
+        assert!(done.poll_reentries >= 1, "{done:?}");
+        assert_eq!(done.poll_reentries, done.safepoint_exits, "{done:?}");
+        assert_eq!(done.poll_deoptimizations, 0, "{done:?}");
+        assert_eq!(done.safepoint_resumptions, 0, "{done:?}");
+        assert_eq!(done.back_edge_switches, 0, "{done:?}");
+        assert!(rounds.poll_reentries >= 1, "{rounds:?}");
+        assert_eq!(rounds.poll_deoptimizations, 0, "{rounds:?}");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// A frame that left its optimized code at a poll goes back into it
+    /// after a compaction of the code zone moved the code: under the zone
+    /// stress mode, which compacts the zone at its safepoints and every
+    /// other time spares the bodies that have optimized code, sliding
+    /// them, every poll of `run:`'s loop leaves -- the mode holds the
+    /// safepoint request -- and the frame goes back in at the poll's
+    /// entry looked up afresh in the moved copy, answering the
+    /// interpreter's sum. Debug builds only, where the zone stress mode
+    /// exists.
+    #[cfg(debug_assertions)]
+    fn a_poll_re_enters_moved_code(lowering) {
+        let (mut interpreter, subject, pinned) = an_allocating_inlined_loop(lowering);
+        interpreter.set_stress_zone(true);
+        let compactions = interpreter.stress_zone_compactions();
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 60), twice_the_sum_to(60));
+        let done = since(interpreter.jit_statistics(), before);
+        let compactions = interpreter.stress_zone_compactions() - compactions;
+        interpreter.set_stress_zone(false);
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 10100);
+        if !pinned || a_stress_mode_is_on() {
+            return;
+        }
+        assert!(compactions >= 2, "{compactions} compactions");
+        assert!(done.moved_bytes > 0, "{done:?}");
+        assert!(done.poll_reentries >= 1, "{done:?}");
+    }
+}
+
+ns_runtime::for_each_lowering! {
+    /// Under the suspend stress mode, which suspends every activation of
+    /// the run into its frame at its safepoints, a frame that left its
+    /// optimized code at a poll cannot go back in, its stack rebuilt:
+    /// before the suspension the block the copy eliminated is made in the
+    /// frame it is live in, and every scope goes on from its frame in
+    /// baseline code or the interpreter, reading the block -- `nil`
+    /// otherwise, which `value:` would not understand -- and answering the
+    /// interpreter's sum. Debug builds only, where the suspend stress mode
+    /// exists.
+    #[cfg(debug_assertions)]
+    fn the_suspend_stress_mode_deoptimizes_at_a_poll(lowering) {
+        let (mut interpreter, subject, pinned) = an_allocating_inlined_loop(lowering);
+        interpreter.set_stress_suspend(true);
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_integer(&mut interpreter, &subject, "run:", 300), twice_the_sum_to(300));
+        let done = since(interpreter.jit_statistics(), before);
+        let suspensions = interpreter.stress_suspensions();
+        interpreter.set_stress_suspend(false);
+        if !pinned || a_stress_mode_is_on() {
+            return;
+        }
+        assert!(suspensions >= 1, "{suspensions} suspensions");
+        assert!(done.poll_deoptimizations >= 1, "{done:?}");
+        assert!(done.materialized_blocks >= 1, "{done:?}");
+    }
+}
+
+/// `run: limit` counts the slot `index` up to the slot `count` in a loop
+/// whose test is `self done`, a send at the loop's head, which the copy
+/// inlines: the head's first instruction is the send, so that the loop's
+/// poll stops the frame there -- at the send the scope is inlined at,
+/// whose callee is not laid yet -- and the frame runs the send again.
+/// Each turn allocates, so that its scavenges stop the loop. `run: limit`
+/// answers `limit` plus the last array's last element, `limit - 1`.
+#[cfg(debug_assertions)]
+const A_LOOP_HEADED_BY_AN_INLINED_SEND: &str = indoc! {"
+    class Subject = Object new (
+      |
+        index ::= 0.
+        count ::= 0.
+      |
+    ) (
+      done = (
+        ^index >= count
+      )
+
+      public run: limit = (
+        | last |
+        index:: 0.
+        count:: limit.
+        [self done] whileFalse: [
+          last:: {index. index. index. index. index. index. index. index}.
+          index:: index + 1.
+        ].
+        ^index + (last at: 8)
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A poll whose loop's head begins an inlined scope stops the frame at
+    /// the send that scope is inlined at, which runs again there: with no
+    /// stress mode the poll's exit leaves the copy -- the slot `index`,
+    /// stored and read again, crosses the back edge in a machine register
+    /// bound to a scratch register alone, whose frame word the collector's
+    /// pre-pass nils, so that no frame goes back in at that poll -- and
+    /// under the deopt stress mode its forced exits do. Both answer the
+    /// interpreter's. Debug builds only, where a test sets the scavenge
+    /// threshold.
+    #[cfg(debug_assertions)]
+    fn a_poll_at_the_head_of_an_inlined_send_stops_at_the_send(lowering) {
+        let (mut interpreter, class) =
+            load_customizing(A_LOOP_HEADED_BY_AN_INLINED_SEND, lowering);
+        let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        for _ in 0..6 {
+            assert_eq!(send_integer(&mut interpreter, &subject, "run:", 100), 199);
+        }
+        let copied = interpreter.jit_customized_copies(
+            &class,
+            MethodSide::Instance,
+            Symbol::intern("run:"),
+        ) == 1;
+        interpreter.set_scavenge_threshold(64 * 1024);
+        let before = interpreter.jit_statistics();
+        assert_eq!(
+            send_integer(&mut interpreter, &subject, "run:", 20_000),
+            39_999
+        );
+        let done = since(interpreter.jit_statistics(), before);
+        interpreter.set_deopt_stress(true);
+        for _ in 0..3 {
+            assert_eq!(
+                send_integer(&mut interpreter, &subject, "run:", 2_000),
+                3_999
+            );
+        }
+        if lowering != Lowering::Optimized || !copied || a_stress_mode_is_on() {
+            return;
+        }
+        assert!(done.optimized_exits >= 1, "{done:?}");
+        assert!(done.safepoint_exits >= 1, "{done:?}");
     }
 }

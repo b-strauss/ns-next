@@ -95,6 +95,9 @@ enum Arrival {
     /// An interpreted backward jump to the frame's program counter, the
     /// loop's head: on-stack replacement (`jit::at_back_edge`).
     BackEdge,
+    /// A frame of optimized code that left it at a poll, going back in
+    /// there once the safepoint is served (`jit::entered_at_poll`).
+    AtPoll,
 }
 
 /// Where control goes after a send, a return, an unwind or a forcing: one
@@ -283,8 +286,13 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
 /// (`jit::back_edge_ready`, which counts the jump the safepoint skipped).
 /// Without it a loop that allocates would leave its machine code at the
 /// poll of its first scavenge and run interpreted until a later backward
-/// jump switched it back. Out of line, so that the run loop pays for it
-/// only at a safepoint.
+/// jump switched it back. A frame of optimized code its poll left goes
+/// back into that code at that poll instead, its physical frame the one
+/// the loop goes on with, unless the safepoint made that impossible
+/// (`jit::resumed_at_poll`): only optimized code holds what its inlining
+/// and its eliminated blocks need, and its frame never enters it mid-body
+/// otherwise. Out of line, so that the run loop pays for it only at a
+/// safepoint.
 #[cold]
 #[inline(never)]
 fn after_safepoint(
@@ -292,6 +300,14 @@ fn after_safepoint(
     frame: &mut FrameRegisters,
     at_loop_head: bool,
 ) -> Option<Arrival> {
+    if let Some(stopped) = mutator.jit.take_stopped_at_poll() {
+        let physical = stopped.physical();
+        if crate::jit::resumed_at_poll(mutator, stopped).is_some() {
+            let program_counter = mutator.heap.activation_program_counter(physical);
+            *frame = FrameRegisters::of(mutator, physical, program_counter);
+            return Some(Arrival::AtPoll);
+        }
+    }
     frame.feedback_base = mutator.heap.activation_feedback_base(frame.activation);
     let switches = at_loop_head
         && frame.code.jit.back_edge_is_armed()
@@ -2715,6 +2731,7 @@ fn machine_code_switch<'gc>(
                         program_counter: arrived_at,
                     })
             }
+            Arrival::AtPoll => crate::jit::entered_at_poll(mutator, activation, register_base),
         };
         match resumption {
             Resumption::Interpreted {

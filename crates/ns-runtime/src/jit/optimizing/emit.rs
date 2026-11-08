@@ -98,9 +98,37 @@ pub(crate) struct OptimizedBody {
     /// The offset in the code where the run loop's push enters, past the
     /// prologue a compiled call enters at: the body's first block.
     pub(crate) push_entry: u32,
+    /// Each back edge's poll a frame goes back into the code at once the
+    /// safepoint its exit stopped at is served.
+    pub(crate) polls: Vec<PollEntry>,
     /// The `SmallInteger` tag tests the code holds, which the tests count.
     #[cfg(test)]
     pub(crate) small_integer_tag_tests: usize,
+}
+
+/// A back edge's poll a frame of the code goes back in at once the
+/// safepoint its exit stopped at is served (`jit::resumed_at_poll`,
+/// `docs/design/execution.md`, "Between the tiers"): the offsets in the
+/// code of the address its exit hands over, which names the poll, and of
+/// its entry, and the index of its interrupt point. The entry restores
+/// every value live there from the frame's words a collection at the
+/// safepoint kept current (`Emitter::poll_restores`), the frame register
+/// at the physical frame's register 0, as the poll stood, and goes on
+/// past the poll's test, so that a request standing still costs a turn
+/// of the loop, never a turn without one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PollEntry {
+    pub(crate) exit: u32,
+    pub(crate) entry: u32,
+    pub(crate) point: u32,
+}
+
+/// A `PollEntry` as the emitter lays it out, before the code's offsets are
+/// known.
+pub(crate) struct EmittedPoll {
+    pub(crate) exit: Label,
+    pub(crate) entry: Label,
+    pub(crate) point: u32,
 }
 
 /// A scope the copy laid out code for: its body, the feedback base its
@@ -156,14 +184,15 @@ pub(crate) struct EmittedScope<'tree> {
 /// Emits the optimized code of the graph `graph` over `scopes` -- the
 /// body's own first -- allocated as `allocation` says and described by
 /// `metadata`, into `body`, which `BodyAssembler::for_optimized` made;
-/// answers the label the run loop's push enters at, past the prologue.
+/// answers the label the run loop's push enters at, past the prologue,
+/// and each poll a frame goes back in at.
 pub(in crate::jit) fn emit(
     scopes: &[EmittedScope<'_>],
     graph: &Graph,
     allocation: &Allocation,
     metadata: &Metadata,
     body: &mut BodyAssembler,
-) -> Result<Label, Refusal> {
+) -> Result<(Label, Vec<EmittedPoll>), Refusal> {
     let root = scopes
         .first()
         .expect("internal: a compile has the body's own scope");
@@ -185,6 +214,7 @@ pub(in crate::jit) fn emit(
             .map(|(index, point)| (point.position, (index, point)))
             .collect(),
         polls: Vec::new(),
+        poll_entries: Vec::new(),
         traps: Vec::new(),
         trampolines: Vec::new(),
     };
@@ -210,16 +240,20 @@ pub(in crate::jit) fn emit(
     emitter.emit_trampolines(body);
     body.macro_assembler.set_site(None);
     body.macro_assembler.hold_values(&[]);
-    Ok(push_entry)
+    Ok((push_entry, emitter.poll_entries))
 }
 
 /// A back edge's poll, out of line: the label its test jumps to, the
-/// stores it owes the frame there, and its interrupt point, whose
-/// innermost scope it exits in, at the loop head's program counter.
+/// stores it owes the frame there, its interrupt point, whose innermost
+/// scope it exits in, at the loop head's program counter, its position,
+/// and the label past its test, where a frame that goes back in at the
+/// poll goes on.
 struct Poll {
     label: Label,
     stores: Vec<(u16, Register)>,
     point: usize,
+    position: u32,
+    resume: Label,
 }
 
 /// A guard's trap, out of line: the label its failed test jumps to, the
@@ -245,6 +279,8 @@ struct Emitter<'graph> {
     /// Each interrupt point's index and write-back, by its position.
     points: HashMap<u32, (usize, &'graph DirtyPoint)>,
     polls: Vec<Poll>,
+    /// Each poll's exit and entry, once laid out (`emit_polls`).
+    poll_entries: Vec<EmittedPoll>,
     traps: Vec<Trap>,
     /// The ways into a block from a template's jump made with the frame
     /// register at an inlined scope's register 0: the label the template
@@ -1131,10 +1167,14 @@ impl Emitter<'_> {
         // whose write-back lies on its way alone.
         body.macro_assembler.count_down_to(label);
         body.macro_assembler.poll_to(label);
+        let resume = body.macro_assembler.assembler().label();
+        body.macro_assembler.assembler().bind(resume);
         self.polls.push(Poll {
             label,
             stores,
             point: point_index,
+            position: end_use,
+            resume,
         });
     }
 
@@ -1206,7 +1246,10 @@ impl Emitter<'_> {
     }
 
     /// Each back edge's way to its exit: the write-back, then the exit at
-    /// the loop's head, where the interpreter takes the safepoint.
+    /// the loop's head, where the interpreter takes the safepoint; and
+    /// the poll's entry, where the frame goes back into the code once the
+    /// safepoint is served (`PollEntry`), for a poll whose every live
+    /// value it can restore (`poll_restores`).
     fn emit_polls(&mut self, body: &mut BodyAssembler) {
         for poll in std::mem::take(&mut self.polls) {
             body.macro_assembler.assembler().bind(poll.label);
@@ -1216,9 +1259,93 @@ impl Emitter<'_> {
             }
             self.leave_at(body, poll.point);
             let program_counter = self.metadata.points[poll.point].scopes[0].program_counter;
-            body.macro_assembler
-                .exit(ExitKind::Safepoint, program_counter);
+            let exit = body
+                .macro_assembler
+                .exit_naming_its_address(ExitKind::Safepoint, program_counter);
             body.macro_assembler.set_site(None);
+            let Some(restores) = self.poll_restores(poll.point, poll.position) else {
+                continue;
+            };
+            let entry = body.macro_assembler.assembler().label();
+            body.macro_assembler.assembler().bind(entry);
+            // The run loop enters the physical frame at its register 0,
+            // where the frame register stood at the poll.
+            body.macro_assembler.assume_frame_shift(0);
+            self.hold(body, poll.position);
+            for restore in restores {
+                Self::restore(body, restore);
+            }
+            body.macro_assembler.assembler().jump(poll.resume);
+            self.poll_entries.push(EmittedPoll {
+                exit,
+                entry,
+                point: u32::try_from(poll.point)
+                    .expect("internal: a body's points are numbered in 32 bits"),
+            });
+        }
+    }
+
+    /// What a frame going back into the code at the poll of the interrupt
+    /// point `point`, at `position`, restores: every value live there in
+    /// the machine register the code holds it in, and in every frame word
+    /// the code after the poll reads it back from -- each from a frame
+    /// word the frame kept, one of a register the leftover analysis leaves
+    /// to the frame there, which the collector kept current meanwhile, or
+    /// for a constant from its word, since the collector's pre-pass nils
+    /// every other (`Heap::trace_stack`). `None` where a value live there
+    /// is in no such word and no constant: no frame goes back in there.
+    fn poll_restores(&self, point: usize, position: u32) -> Option<Vec<Restore>> {
+        let kept: Vec<u16> = self.metadata.points[point]
+            .scopes
+            .iter()
+            .flat_map(|scope| {
+                scope
+                    .locations
+                    .iter()
+                    .filter(|(_, location)| {
+                        matches!(location, Location::FrameWord | Location::EliminatedBlock(_))
+                    })
+                    .map(move |(own, _)| scope.offset + own)
+            })
+            .collect();
+        let mut restores = Vec::new();
+        for polled in self.allocation.poll_values.get(&position)? {
+            let lost: Vec<u16> = polled
+                .clean
+                .iter()
+                .copied()
+                .filter(|register| !kept.contains(register))
+                .collect();
+            if polled.machine.is_none() && lost.is_empty() {
+                continue;
+            }
+            let source = match polled.bound.iter().find(|register| kept.contains(register)) {
+                Some(register) => Source::Frame(*register),
+                None => Source::Word(self.graph.constant_word(polled.value)?),
+            };
+            restores.push(Restore {
+                source,
+                machine: polled.machine,
+                lost,
+            });
+        }
+        Some(restores)
+    }
+
+    /// Emits `restore`: its value into its machine register, if it has
+    /// one, then into each frame word lost.
+    fn restore(body: &mut BodyAssembler, restore: Restore) {
+        let macro_assembler = &mut body.macro_assembler;
+        let held = match restore.machine {
+            Some(register) => register,
+            None => macro_assembler.temporary(macro_assembler.roles().integer_temporaries().left),
+        };
+        match restore.source {
+            Source::Frame(register) => macro_assembler.load_physical_register(held, register),
+            Source::Word(word) => macro_assembler.assembler().move_immediate(held, word),
+        }
+        for register in restore.lost {
+            macro_assembler.store_physical_register(register, held);
         }
     }
 
@@ -1233,6 +1360,23 @@ impl Emitter<'_> {
             body.macro_assembler.assembler().jump(block);
         }
     }
+}
+
+/// Where a poll's entry reads a value back from (`Emitter::poll_restores`):
+/// a frame word the frame kept, or a constant's word.
+#[derive(Clone, Copy)]
+enum Source {
+    Frame(u16),
+    Word(u64),
+}
+
+/// One value a poll's entry restores: from where, into the machine
+/// register the code holds it in, if any, and into each frame word the
+/// collector's pre-pass may have nilled that the code reads it back from.
+struct Restore {
+    source: Source,
+    machine: Option<Register>,
+    lost: Vec<u16>,
 }
 
 /// The word at `address`.

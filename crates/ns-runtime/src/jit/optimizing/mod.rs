@@ -138,7 +138,7 @@ pub(crate) fn compile_tree(
             }
         })
         .collect();
-    let push_entry = emit::emit(&scopes, &graph, &allocation, &metadata, &mut body)?;
+    let (push_entry, polls) = emit::emit(&scopes, &graph, &allocation, &metadata, &mut body)?;
     // The one answer to which scopes the copy inlined: what it keeps of
     // them, what it names in a collection and what it depends on are all
     // read off it, so that none of them can name a scope the others miss.
@@ -168,6 +168,17 @@ pub(crate) fn compile_tree(
             (offset, *point)
         })
         .collect();
+    let bound = |label: ns_assembler::Label| {
+        code.label_offsets[label.index()].expect("internal: every poll's labels are bound")
+    };
+    let polls = polls
+        .iter()
+        .map(|poll| emit::PollEntry {
+            exit: bound(poll.exit),
+            entry: bound(poll.entry),
+            point: poll.point,
+        })
+        .collect();
     Ok(emit::OptimizedBody {
         code,
         returns,
@@ -192,6 +203,7 @@ pub(crate) fn compile_tree(
         relied_on: relied_on(&plan, &graph, &scopes, &laid_out, &eliminated, tree),
         eliminated,
         push_entry,
+        polls,
         #[cfg(test)]
         small_integer_tag_tests,
     })
