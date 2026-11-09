@@ -1,0 +1,59 @@
+/// `Float`'s `+ - * /`, `< > <= >=` and `=` of every kind of receiver --
+/// `SmallFloat64`s, the boxed `1.0e300`, `1.0e-300`, the infinity, NaN
+/// and the subnormal `4.9e-324` -- with every kind of argument: the same
+/// floats, `SmallInteger`s, one of them past 2^53, and objects that are
+/// no numbers. Each operation is a block run on every pair, so that
+/// machine code runs it once the block is compiled; a line is the
+/// receiver, the operation and each result, or the error it signals,
+/// apart by ` | `.
+class FloatOperations = () (
+  /// The text of `operation` on `left` and `right`: its result printed,
+  /// or the message of the error it signals.
+  textOf: operation on: left and: right = (
+    ^[(operation value: left value: right) printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      receivers = {1.5. -2.25. 0.1. 1.0e300. 1.0e-300. Float infinity. Float nan. 4.9e-324}.
+      operands = {
+        1.5.
+        -2.25.
+        0.1.
+        1.0e300.
+        1.0e-300.
+        Float infinity.
+        Float nan.
+        4.9e-324.
+        3.
+        -7.
+        (2 raisedTo: 53) + 1.
+        'a'.
+        nil.
+      }.
+      operations = {
+        {'+'. [:left :right | left + right]}.
+        {'-'. [:left :right | left - right]}.
+        {'*'. [:left :right | left * right]}.
+        {'/'. [:left :right | left / right]}.
+        {'<'. [:left :right | left < right]}.
+        {'>'. [:left :right | left > right]}.
+        {'<='. [:left :right | left <= right]}.
+        {'>='. [:left :right | left >= right]}.
+        {'='. [:left :right | left = right]}.
+      }.
+    |
+    operations do: [:operation |
+      receivers do: [:receiver |
+        transcript show: receiver printString , ' ' , (operation at: 1).
+        operands do: [:operand |
+          transcript
+              show: ' | ';
+              show: (textOf: (operation at: 2) on: receiver and: operand).
+        ].
+        transcript newLine.
+      ].
+    ].
+  )
+)

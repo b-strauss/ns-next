@@ -4452,7 +4452,19 @@ fn run_thrice_on_one_instance(
     lowering: Lowering,
     jit: bool,
 ) -> ([i64; 3], JitStatistics) {
+    run_thrice_configured(source, lowering, jit, |_| {})
+}
+
+/// `run_thrice_on_one_instance`, the interpreter set up by `configure`
+/// once the module is loaded.
+fn run_thrice_configured(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+    configure: impl FnOnce(&mut Interpreter),
+) -> ([i64; 3], JitStatistics) {
     let (mut interpreter, class) = load_with(source, lowering);
+    configure(&mut interpreter);
     interpreter.set_jit_enabled(jit);
     interpreter.set_jit_stress(jit);
     interpreter.set_jit_counting(jit);
@@ -4574,6 +4586,97 @@ ns_runtime::for_each_lowering! {
                 statistics.act_leaf_calls
             );
         }
+    }
+}
+
+/// `Float`'s `* + - / <` sent five thousand times from a compiled loop,
+/// every operand and result a `SmallFloat64`: each cell names its row's
+/// stub, which computes the operation in machine code.
+const FLOAT_ARITHMETIC: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          value ::= 1.5.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          value:: value * 1.25 + 0.5 - 0.25 / 1.125.
+          value < 100.0 ifTrue: [count:: count + 1] ifFalse: [value:: value / 1000.0].
+          index:: index + 1.
+        ].
+        ^count.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `Float`'s arithmetic and orderings run in their rows' stubs: the
+    /// third run's sends leave machine code for nothing and call no leaf,
+    /// and the count is the interpreter's.
+    fn float_arithmetic_calls_no_leaf(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(FLOAT_ARITHMETIC, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(FLOAT_ARITHMETIC, lowering, false);
+        assert!(interpreted[0] > 0 && interpreted[0] < 1000, "{interpreted:?}");
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.miss_leaf_calls, 0);
+            assert_eq!(
+                statistics.act_leaf_calls, 0,
+                "every float operation ran in its row's stub"
+            );
+        }
+    }
+}
+
+/// How many boxed `Float`s `FLOAT_BOXES`' loop makes per run.
+const FLOAT_BOX_COUNT: u64 = 2000;
+
+/// A loop whose every sum is a `Float` outside the `SmallFloat64` range,
+/// boxed in eden, and one `asInteger`, a leaf, at its end.
+const FLOAT_BOXES: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          value ::= 1.0e300.
+          index ::= 0.
+        |
+        [index < 2000] whileTrue: [
+          value:: value + 1.0e290.
+          index:: index + 1.
+        ].
+        ^(value / 1.0e290) asInteger.
+      )
+    ) : ()
+"};
+
+/// A `Float` boxed by a row's stub with eden past its scavenge threshold
+/// declines to the row's leaf, which allocates where the interpreter does
+/// and asks for the scavenge: with a threshold of a few hundred floats,
+/// the answers are the interpreter's, some sums boxed inline and some by
+/// the leaf.
+#[test]
+fn a_float_boxed_with_eden_full_is_the_leaf_s() {
+    let small_eden = |interpreter: &mut Interpreter| interpreter.set_scavenge_threshold(4096);
+    let (compiled, statistics) =
+        run_thrice_configured(FLOAT_BOXES, Lowering::Optimized, true, small_eden);
+    let (interpreted, _) =
+        run_thrice_configured(FLOAT_BOXES, Lowering::Optimized, false, small_eden);
+    assert_eq!(compiled, interpreted);
+    assert!(interpreted[0] > 10_000_000_000, "{interpreted:?}");
+    if !a_stress_mode_is_on() {
+        // The one `asInteger` besides the boxes the leaf made.
+        assert!(
+            statistics.act_leaf_calls > 1,
+            "some boxes found eden full: {}",
+            statistics.act_leaf_calls
+        );
+        assert!(
+            statistics.act_leaf_calls < FLOAT_BOX_COUNT / 2,
+            "most boxes were made inline: {}",
+            statistics.act_leaf_calls
+        );
     }
 }
 
@@ -4937,7 +5040,7 @@ fn an_inlined_identity_with_a_future_traps_and_answers_the_interpreter_s_result(
 /// fails here, and so does one the list names that is not marked.
 #[test]
 fn every_leaf_row_is_audited() {
-    use ns_runtime::builtins::primitive::{MachineCall, RowStub, MIRROR};
+    use ns_runtime::builtins::primitive::{row_stub_index, MachineCall, MIRROR, ROW_STUB_COUNT};
     let marked: std::collections::BTreeSet<&str> = MIRROR
         .iter()
         .filter(|entry| entry.machine_call.is_leaf_safe())
@@ -4960,16 +5063,18 @@ fn every_leaf_row_is_audited() {
         unmarked.is_empty(),
         "audited but not marked Leaf: {unmarked:?}"
     );
-    // A row stub falls back to the row the first entry marked with it
-    // names (`jit::targets`'s `emit_row_stub`), so a second would be run
-    // as the first's.
-    for stub in RowStub::ALL {
-        let rows: Vec<&str> = MIRROR
-            .iter()
-            .filter(|entry| entry.machine_call == MachineCall::Stub(stub))
-            .map(|entry| entry.selector)
-            .collect();
-        assert_eq!(rows.len(), 1, "{stub:?} marks exactly one row: {rows:?}");
+    // Each row marked with a stub has one of its own, numbered densely in
+    // row order, which the zone's table of row stubs is indexed by.
+    let stubbed: Vec<usize> = MIRROR
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| matches!(entry.machine_call, MachineCall::Stub(_)))
+        .map(|(row, _)| row)
+        .collect();
+    assert_eq!(stubbed.len(), ROW_STUB_COUNT);
+    for row in 0..=MIRROR.len() {
+        let expected = stubbed.iter().position(|stubbed_row| *stubbed_row == row);
+        assert_eq!(row_stub_index(row), expected, "row {row}");
     }
 }
 
@@ -7830,6 +7935,20 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// The room past the stubs the tests of a small zone give bodies: a few
+/// dozen small bodies, far fewer than the hundreds of methods those tests
+/// make hot. It is fixed past the stubs (`zone_used_bytes`) rather than
+/// as the zone's size, since the stubs' size differs by architecture and
+/// grows with every row stub.
+const SMALL_ZONE_ROOM: usize = 4_544;
+
+/// Replaces `interpreter`'s zone with one of `room` bytes past its stubs.
+fn set_zone_room(interpreter: &mut Interpreter, room: usize) {
+    interpreter.set_jit_zone_bytes(1 << 20);
+    let stubs = interpreter.table_sizes().zone_used_bytes;
+    interpreter.set_jit_zone_bytes(stubs + room);
+}
+
 /// `count` methods `m0`, `m1`, ..., each answering its index and one, and
 /// for each a method `hot` sending it a hundred times from a loop of its
 /// own, which `run` sends one after another: each `m` is hot for a while
@@ -7871,7 +7990,7 @@ fn hot_in_turn(count: usize) -> String {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A zone of four pages holds a few of two hundred methods hot in
+    /// A small zone holds a few of two hundred methods hot in
     /// turn: a compile that finds it full asks for a compaction, which
     /// frees the methods no longer sent, and every method is compiled once
     /// it is hot, none refused for want of room, the output the
@@ -7880,7 +7999,7 @@ ns_runtime::for_each_lowering! {
         let count = 200;
         let source = hot_in_turn(count);
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(16_384);
+        set_zone_room(&mut interpreter, SMALL_ZONE_ROOM);
         let (answer, done) = run_measured(&mut interpreter, &class);
         let expected: i64 = (1..=200).map(|index: i64| 100 * index).sum();
         assert_eq!(answer, expected, "the interpreter's");
@@ -8314,7 +8433,7 @@ ns_runtime::for_each_lowering! {
         let count = 300;
         let source = chain_of(count);
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(16_384);
+        set_zone_room(&mut interpreter, SMALL_ZONE_ROOM);
         let before = interpreter.jit_statistics();
         let runs = 4;
         for _ in 0..runs {
@@ -8704,7 +8823,7 @@ ns_runtime::for_each_lowering! {
             1,
         );
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(16_384);
+        set_zone_room(&mut interpreter, SMALL_ZONE_ROOM);
         interpreter.set_jit_counting(true);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let collections = interpreter.collector_statistics().collections;
@@ -9728,7 +9847,7 @@ ns_runtime::for_each_lowering! {
         let count = 300;
         let source = chain_ending_in_a_loop(count);
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(16_384);
+        set_zone_room(&mut interpreter, SMALL_ZONE_ROOM);
         let expected = 10_000 + count as i64 - 1;
         let before = interpreter.jit_statistics();
         for _ in 0..3 {

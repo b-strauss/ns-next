@@ -15,13 +15,6 @@
 //! equals a NaN, which IEEE's comparison does not say), an `asInteger`
 //! past the `SmallInteger` range or not finite, and a result to box with
 //! eden full. The libm functions, `hash` and printing stay leaves.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the row stubs and optimized code's float nodes emit these"
-    )
-)]
 
 use ns_assembler::{Condition, FloatArithmetic, FloatRegister, Label, Register, Rounding};
 
@@ -785,7 +778,7 @@ mod tests {
 
     use super::{emit, FloatComparison, FloatOperation, FloatReceiver, FloatRegisters};
     use crate::builtins::numbers::tower::{self, Operand};
-    use crate::builtins::primitive::MIRROR;
+    use crate::builtins::primitive::{MachineCall, RowStub, MIRROR};
     use crate::heap::machine_words::MachineWord;
     use crate::heap::{is_small_float_bits, Heap, Immediate, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
     use crate::jit::macro_assembler::{Abi, Roles};
@@ -848,6 +841,38 @@ mod tests {
                     entry.selector
                 );
             }
+        }
+    }
+
+    /// Every row marked with the float stub is one machine code computes
+    /// a `Float` operation for, which its stub emits; `Float`'s binary
+    /// operations are among them.
+    #[test]
+    fn every_row_with_a_float_stub_has_its_operation() {
+        let stubbed: Vec<&str> = MIRROR
+            .iter()
+            .filter(|entry| entry.machine_call == MachineCall::Stub(RowStub::Float))
+            .inspect(|entry| {
+                assert!(
+                    FloatOperation::of(entry.primitive).is_some(),
+                    "{}",
+                    entry.selector
+                );
+            })
+            .map(|entry| entry.selector)
+            .collect();
+        for selector in [
+            "float:add:ifFail:",
+            "float:subtract:ifFail:",
+            "float:multiply:ifFail:",
+            "float:divide:ifFail:",
+            "float:lessThan:ifFail:",
+            "float:greaterThan:ifFail:",
+            "float:lessOrEqual:ifFail:",
+            "float:greaterOrEqual:ifFail:",
+            "float:equals:ifFail:",
+        ] {
+            assert!(stubbed.contains(&selector), "{selector}");
         }
     }
 

@@ -1266,7 +1266,7 @@ struct AccessorStubs {
     /// The method whose fast path is each mirror row, by row.
     mirror_methods: Vec<CodeOffset>,
     /// The method whose fast path is a row with a stub of its own, by
-    /// the stub's index (`RowStub::index`).
+    /// the stub's index (`builtins::primitive::row_stub_index`).
     row_stubs: Vec<CodeOffset>,
     nil: CodeOffset,
     true_constant: CodeOffset,
@@ -4026,7 +4026,12 @@ pub(crate) fn stub_entry(state: &JitState, stubbed: &Stubbed<'_>) -> Option<u64>
                     .map(|entry| address(*entry))
             }
             Some(MethodFastPath::Mirror(row)) => match mirror_entry(row).machine_call {
-                MachineCall::Stub(stub) => Some(address(zone.accessors.row_stubs[stub.index()])),
+                MachineCall::Stub(_) => {
+                    let Some(stub) = crate::builtins::primitive::row_stub_index(row.index()) else {
+                        unreachable!("internal: a row with a stub has its stub's index");
+                    };
+                    Some(address(zone.accessors.row_stubs[stub]))
+                }
                 MachineCall::Leaf => Some(
                     zone.accessors
                         .mirror_methods

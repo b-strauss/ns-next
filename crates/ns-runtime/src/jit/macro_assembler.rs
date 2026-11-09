@@ -580,13 +580,6 @@ pub(crate) enum ObjectSize {
 /// operation takes one -- a `Float` receiver's argument of an arithmetic,
 /// as `tower::arithmetic_double` takes it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "named by the float operations, which the row stubs emit"
-    )
-)]
 pub(crate) enum FloatOperand {
     Float,
     FloatOrSmallInteger,
@@ -1886,13 +1879,6 @@ impl MacroAssembler {
     /// `SixtyFourBit`; only `allocate_float` makes such an object, always
     /// with its one field. `value` is kept; clobbers the flags, `scratch`
     /// and the idiom scratch register.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called by the float operations, which the row stubs emit"
-        )
-    )]
     pub(crate) fn load_float(
         &mut self,
         value: Register,
@@ -1981,13 +1967,6 @@ impl MacroAssembler {
     /// off, every other's are 2 or more and below 2^61 exactly when the
     /// exponent is 897 to 1151, or 896 with a mantissa. `source` is kept;
     /// clobbers the flags and the idiom scratch register.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called by the float operations, which the row stubs emit"
-        )
-    )]
     pub(crate) fn tag_float(
         &mut self,
         source: FloatRegister,
@@ -2033,13 +2012,6 @@ impl MacroAssembler {
     /// written, when eden has no room under its limit. The object is new,
     /// so its stores need no barrier. `source` is kept; clobbers the
     /// flags, `scratch` and the idiom scratch register.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called by the float operations, which the row stubs emit"
-        )
-    )]
     pub(crate) fn box_float(
         &mut self,
         source: FloatRegister,
@@ -2098,13 +2070,6 @@ impl MacroAssembler {
     /// to `decline` with nothing written but `target` and `scratch`.
     /// `source` is kept; clobbers the flags, `scratch` and the idiom
     /// scratch register.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "called by the float operations, which the row stubs emit"
-        )
-    )]
     pub(crate) fn float_result(
         &mut self,
         source: FloatRegister,

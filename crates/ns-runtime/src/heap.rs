@@ -802,24 +802,10 @@ pub(crate) struct MachineLayout {
     /// What a `SmallFloat`'s encoding takes off a double's bits rotated
     /// left by one, unless they are ±0.0's, before it shifts them above
     /// the tag, and its decoding adds back (`Value::small_float`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the float idioms, which the row stubs call"
-        )
-    )]
     pub(crate) small_float_exponent_offset: u64,
     /// The header word's format bits of a `LargeInteger` and a boxed
     /// `Float`, under `instance_format_bits`, whose one field
     /// `Heap::float_value` reads for a boxed `Float`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the float idioms, which the row stubs call"
-        )
-    )]
     pub(crate) sixty_four_bit_format: i32,
     /// The header word's format bits, all clear exactly for an instance's
     /// format, whose fields `Heap::instance_field` reads.

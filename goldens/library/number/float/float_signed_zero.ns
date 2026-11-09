@@ -1,0 +1,56 @@
+/// `0.0` and `-0.0` under `Float`'s `+ - * /`, `< > <= >=` and `=`, with
+/// zeros, ones and `SmallInteger`s: a sum or a difference of two zeros
+/// is `-0.0` only where IEEE 754 rounds it so, a product's and a
+/// quotient's sign is the operands' signs' exclusive or, a division of
+/// a nonzero number by a zero answers the infinity of that sign, and the
+/// two zeros compare equal. Each operation is a block run on every pair,
+/// so that machine code runs it once the block is compiled. The unary
+/// operations that answer a zero keep its sign as well.
+class FloatSignedZero = () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      zeros = {0.0. -0.0}.
+      operands = {0.0. -0.0. 1.0. -1.0. 0. 1. -1}.
+      operations = {
+        {'+'. [:left :right | left + right]}.
+        {'-'. [:left :right | left - right]}.
+        {'*'. [:left :right | left * right]}.
+        {'/'. [:left :right | left / right]}.
+        {'<'. [:left :right | left < right]}.
+        {'>'. [:left :right | left > right]}.
+        {'<='. [:left :right | left <= right]}.
+        {'>='. [:left :right | left >= right]}.
+        {'='. [:left :right | left = right]}.
+      }.
+    |
+    operations do: [:operation |
+      zeros do: [:zero |
+        transcript show: zero printString , ' ' , (operation at: 1).
+        operands do: [:operand |
+          transcript
+              show: ' | ';
+              print: ((operation at: 2) value: zero value: operand).
+        ].
+        transcript newLine.
+      ].
+    ].
+    transcript
+        print: 1.0 / 0.0;
+        show: ' ';
+        print: 1.0 / -0.0;
+        show: ' ';
+        print: -1.0 / -0.0;
+        show: ' ';
+        print: 0.0 negated;
+        show: ' ';
+        print: -0.4 rounded;
+        show: ' ';
+        print: -0.5 ceiling;
+        show: ' ';
+        print: -0.0 floor;
+        show: ' ';
+        print: -0.0 * 1;
+        newLine.
+  )
+)
