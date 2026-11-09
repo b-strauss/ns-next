@@ -1530,14 +1530,14 @@ outliers, CD and NBody, are the two programs of floating-point
 arithmetic on objects' slots, where the JVM keeps doubles unboxed in
 registers and fields, and ns-next tags or boxes every intermediate
 result and calls a leaf for every `Float` operator, since machine code
-has no `Float` templates yet -- the leaf calls the code makes for every
-`Float` operator, not a profile, are what says so. The narrowest, Queens
-and Permute, under 6×, are programs of `SmallInteger` arithmetic,
-indexed access and small sends, all of which the plan may inline as
-nodes, and inlining measured them 76% and, with the `do:` block's
-elimination, 70% faster ("What inlining moved"); no profile of them was
-taken here, so what of their remaining gap is which cost is not
-measured. What the comparison does not
+has no `Float` templates yet; no profile of them was taken, so how much
+of the gap that is is not measured. The narrowest, Queens and Permute,
+under 6×, are programs of `SmallInteger` arithmetic, indexed access and
+small sends: the plan lowers the arithmetic and the indexed access to
+nodes and inlines the small sends as scopes, and inlining measured
+Queens 76% and Permute, with the `do:` block's elimination, 70% faster
+("What inlining moved"); no profile of them was taken here, so which
+costs make up their remaining gap is not measured. What the comparison does not
 cover: the five slow programs' `bench` figures include each
 application's setup and only one discarded warm-up run where Java's are
 a steady state after two seconds, which favours Java slightly; one
@@ -12044,10 +12044,12 @@ scavenge, suspend and zone modes (`hold_safepoints_for_stress`) --
 makes an activation's optimized code leave at every back edge's poll,
 and the frame goes back in there, past the poll's test, unless the
 safepoint's own work forbids it -- the suspend mode's rebuild of the
-stack, a compaction of the zone mode that spares no optimized body, a
-slide that frees the copy -- where it goes on in baseline code
-(`poll_deoptimizations`; "Inlining", "Back into optimized code at a
-poll"). The zone stress mode's compactions alternate:
+stack, a full collection of the collect mode whose slide frees the copy
+or moves its feedback base -- or no room is left, where it goes on in
+baseline code (`poll_deoptimizations`), among the refusals of
+"Inlining", "Back into optimized code at a poll". A compaction of the
+zone mode keeps the copy, since every body an activation runs keeps
+its copies, and the frame goes back into it where it now lies. The zone stress mode's compactions alternate:
 every other one keeps every body that has optimized code and slides it
 with the rest, so that a callee's optimized code, installed while the
 callee still ran its baseline code, is moved, run where it now lies and
