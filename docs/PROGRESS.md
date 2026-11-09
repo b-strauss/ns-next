@@ -6828,7 +6828,7 @@ baseline JIT is compiled for AArch64 on Linux and Apple's platforms
 (`cfg(ns_jit)`, `crates/ns-runtime/build.rs`); Windows on ARM stays
 interpreted. `ns-assembler` gained a second encoder, `Aarch64`, every
 encoding checked against `yaxpeax-arm`, a dev-dependency only, and
-every constant citing its developer.arm.com page; it keeps `x16` and
+every constant citing its support.arm.com page; it keeps `x16` and
 `x17` as its scratch registers, never uses `x18`, leaves `x30` to the
 call convention, and lays a conditional branch out as one `b.cond`,
 a body whose branch reaches farther staying interpreted. Decided with

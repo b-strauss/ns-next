@@ -51,8 +51,8 @@ Rust 1.98.0, edition 2021, seven crates:
   does, a result outside the `SmallFloat64` range boxed in eden, by the
   code `jit/floats.rs` writes once for them and for optimized code's
   `Node::FloatOperation`, the rows it computes classified by
-  `jit/float_operations.rs`, compiled without a JIT too, and continuing at the mirror method stub
-  wherever it declines; `execution.md`, "Floats in machine code"), the
+  `jit/float_operations.rs`, compiled without a JIT too, and continuing at
+  the mirror method stub wherever it declines; `execution.md`, "Floats in machine code"), the
   callee returns by `ret`, the miss leaf decides
   what the cell did not and may compile the callee, every body compiles
   lean and its `MakeClosure` transfers the frame into a reifying twin
@@ -827,9 +827,12 @@ and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
   commit (`core-library.md`, "The embedded shipped code").
 - **Every encoding constant of `ns-assembler` is a named `const` documented with its
   official source** -- the Intel SDM volume and section title for x64, the
-  developer.arm.com page of the instruction for AArch64 -- and no integer literal
+  support.arm.com page of the instruction for AArch64 -- and no integer literal
   other than 0 and 1 stands outside a `const`; held, for every encoder file under
   `src/`, by `crates/ns-assembler/tests/encoding_sources.rs`.
+- **A web link is never wrapped or shortened for line width.** A line
+  holding a link may exceed the width, in code comments and documents
+  alike: a URL cut across lines or abbreviated points nowhere.
 - **Object, frame and activation access goes through
   `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to the
   `heap` module (`heap.rs` and its submodules, `heap/value.rs` among them, which

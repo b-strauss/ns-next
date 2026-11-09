@@ -27,7 +27,7 @@
 //!
 //! Every opcode, field shift, field mask, condition code and limit is a
 //! named constant whose documentation cites the instruction's page of the
-//! Arm A64 Instruction Set Architecture on developer.arm.com, and the
+//! Arm A64 Instruction Set Architecture on support.arm.com, and the
 //! registers cite the Procedure Call Standard there. No numeric pattern
 //! appears in a function body; `tests/encoding_sources.rs` holds every
 //! encoder file to that.
@@ -39,7 +39,7 @@ use crate::{
 
 /// `x0`: register number 0, as an instruction's register fields name it.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -48,7 +48,7 @@ use crate::{
 pub const X0: Register = Register(0);
 /// `x1`: register number 1.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -57,7 +57,7 @@ pub const X0: Register = Register(0);
 pub const X1: Register = Register(1);
 /// `x2`: register number 2.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -66,7 +66,7 @@ pub const X1: Register = Register(1);
 pub const X2: Register = Register(2);
 /// `x3`: register number 3.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -75,7 +75,7 @@ pub const X2: Register = Register(2);
 pub const X3: Register = Register(3);
 /// `x4`: register number 4.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -84,7 +84,7 @@ pub const X3: Register = Register(3);
 pub const X4: Register = Register(4);
 /// `x5`: register number 5.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -93,7 +93,7 @@ pub const X4: Register = Register(4);
 pub const X5: Register = Register(5);
 /// `x6`: register number 6.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -102,7 +102,7 @@ pub const X5: Register = Register(5);
 pub const X6: Register = Register(6);
 /// `x7`: register number 7.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -111,7 +111,7 @@ pub const X6: Register = Register(6);
 pub const X7: Register = Register(7);
 /// `x8`: register number 8.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -120,7 +120,7 @@ pub const X7: Register = Register(7);
 pub const X8: Register = Register(8);
 /// `x9`: register number 9.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -129,119 +129,119 @@ pub const X8: Register = Register(8);
 pub const X9: Register = Register(9);
 /// `x10`: register number 10.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X10: Register = Register(10);
 /// `x11`: register number 11.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X11: Register = Register(11);
 /// `x12`: register number 12.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X12: Register = Register(12);
 /// `x13`: register number 13.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X13: Register = Register(13);
 /// `x14`: register number 14.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X14: Register = Register(14);
 /// `x15`: register number 15.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X15: Register = Register(15);
 /// `x16`: register number 16, IP0, the encoder's first scratch register
 /// and never an operand.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers: IP0, the intra-procedure-call scratch register).
 pub const X16: Register = Register(16);
 /// `x17`: register number 17, IP1, the encoder's second scratch register
 /// and never an operand.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers: IP1, the intra-procedure-call scratch register).
 pub const X17: Register = Register(17);
 /// `x18`: register number 18, the platform register, never an operand on
 /// any target.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers: the platform register).
 pub const X18: Register = Register(18);
 /// `x19`: register number 19.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X19: Register = Register(19);
 /// `x20`: register number 20.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X20: Register = Register(20);
 /// `x21`: register number 21.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X21: Register = Register(21);
 /// `x22`: register number 22.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X22: Register = Register(22);
 /// `x23`: register number 23.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X23: Register = Register(23);
 /// `x24`: register number 24.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X24: Register = Register(24);
 /// `x25`: register number 25.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X25: Register = Register(25);
 /// `x26`: register number 26.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X26: Register = Register(26);
 /// `x27`: register number 27.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X27: Register = Register(27);
 /// `x28`: register number 28.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 pub const X28: Register = Register(28);
 /// `x29`: register number 29, the frame pointer of the procedure call
 /// standard.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers: the frame pointer).
 pub const X29: Register = Register(29);
 /// `x30`: register number 30, the link register a call writes, owned by
 /// the call convention and never an operand.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers: the link register).
 pub const X30: Register = Register(30);
 /// `sp`, the stack pointer: register number 31 where an instruction's
 /// field reads it as the stack pointer, never the zero register, which no
 /// operand names.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers: the stack pointer).
 #[expect(
     clippy::min_ident_chars,
@@ -252,7 +252,7 @@ pub const SP: Register = Register(31);
 /// `d0`: SIMD and floating-point register number 0, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -262,7 +262,7 @@ pub const D0: FloatRegister = FloatRegister(0);
 /// `d1`: SIMD and floating-point register number 1, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -272,7 +272,7 @@ pub const D1: FloatRegister = FloatRegister(1);
 /// `d2`: SIMD and floating-point register number 2, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -282,7 +282,7 @@ pub const D2: FloatRegister = FloatRegister(2);
 /// `d3`: SIMD and floating-point register number 3, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -292,7 +292,7 @@ pub const D3: FloatRegister = FloatRegister(3);
 /// `d4`: SIMD and floating-point register number 4, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -302,7 +302,7 @@ pub const D4: FloatRegister = FloatRegister(4);
 /// `d5`: SIMD and floating-point register number 5, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -312,7 +312,7 @@ pub const D5: FloatRegister = FloatRegister(5);
 /// `d6`: SIMD and floating-point register number 6, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -322,7 +322,7 @@ pub const D6: FloatRegister = FloatRegister(6);
 /// `d7`: SIMD and floating-point register number 7, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -332,7 +332,7 @@ pub const D7: FloatRegister = FloatRegister(7);
 /// `d8`: SIMD and floating-point register number 8, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -342,7 +342,7 @@ pub const D8: FloatRegister = FloatRegister(8);
 /// `d9`: SIMD and floating-point register number 9, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -352,146 +352,146 @@ pub const D9: FloatRegister = FloatRegister(9);
 /// `d10`: SIMD and floating-point register number 10, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D10: FloatRegister = FloatRegister(10);
 /// `d11`: SIMD and floating-point register number 11, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D11: FloatRegister = FloatRegister(11);
 /// `d12`: SIMD and floating-point register number 12, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D12: FloatRegister = FloatRegister(12);
 /// `d13`: SIMD and floating-point register number 13, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D13: FloatRegister = FloatRegister(13);
 /// `d14`: SIMD and floating-point register number 14, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D14: FloatRegister = FloatRegister(14);
 /// `d15`: SIMD and floating-point register number 15, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D15: FloatRegister = FloatRegister(15);
 /// `d16`: SIMD and floating-point register number 16, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D16: FloatRegister = FloatRegister(16);
 /// `d17`: SIMD and floating-point register number 17, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D17: FloatRegister = FloatRegister(17);
 /// `d18`: SIMD and floating-point register number 18, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D18: FloatRegister = FloatRegister(18);
 /// `d19`: SIMD and floating-point register number 19, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D19: FloatRegister = FloatRegister(19);
 /// `d20`: SIMD and floating-point register number 20, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D20: FloatRegister = FloatRegister(20);
 /// `d21`: SIMD and floating-point register number 21, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D21: FloatRegister = FloatRegister(21);
 /// `d22`: SIMD and floating-point register number 22, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D22: FloatRegister = FloatRegister(22);
 /// `d23`: SIMD and floating-point register number 23, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D23: FloatRegister = FloatRegister(23);
 /// `d24`: SIMD and floating-point register number 24, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D24: FloatRegister = FloatRegister(24);
 /// `d25`: SIMD and floating-point register number 25, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D25: FloatRegister = FloatRegister(25);
 /// `d26`: SIMD and floating-point register number 26, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D26: FloatRegister = FloatRegister(26);
 /// `d27`: SIMD and floating-point register number 27, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D27: FloatRegister = FloatRegister(27);
 /// `d28`: SIMD and floating-point register number 28, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D28: FloatRegister = FloatRegister(28);
 /// `d29`: SIMD and floating-point register number 29, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D29: FloatRegister = FloatRegister(29);
 /// `d30`: SIMD and floating-point register number 30, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D30: FloatRegister = FloatRegister(30);
 /// `d31`: SIMD and floating-point register number 31, its 64-bit
 /// view.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 pub const D31: FloatRegister = FloatRegister(31);
 
 /// The number of SIMD and floating-point registers, `v0` to `v31`.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
 /// Floating-Point Registers).
 const FLOAT_REGISTER_COUNT: u8 = 32;
 
 /// The encoder's first scratch register: the immediate or displacement
 /// that does not fit its instruction, or a copy of the stack pointer.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers: IP0 may be used as a temporary register between subroutine
 /// calls).
 const SCRATCH: Register = X16;
@@ -500,7 +500,7 @@ const SCRATCH: Register = X16;
 /// word of memory, or an immediate while [`SCRATCH`] holds the stack
 /// pointer.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers: IP1 may be used as a temporary register between subroutine
 /// calls).
 const SECOND_SCRATCH: Register = X17;
@@ -509,14 +509,14 @@ const SECOND_SCRATCH: Register = X17;
 /// platform register, which some targets reserve, and the link register,
 /// which every call writes.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
 /// Registers).
 const RESERVED: [Register; 4] = [X16, X17, X18, X30];
 
 /// Register number 31 in a field that reads it as the zero register: the
 /// discarded result of `cmp` and `tst`, the stored zero of `str xzr`.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CMP--shifted-register---Compare--shifted-register---an-alias-of-SUBS--shifted-register->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CMP--shifted-register---Compare--shifted-register---an-alias-of-SUBS--shifted-register->
 const ZERO_REGISTER: u32 = 31;
 
 /// The A64 encoder. It keeps x16, x17, x18 and x30 out of every operand
@@ -527,679 +527,679 @@ pub struct Aarch64;
 /// The size in bytes of every A64 instruction, and the alignment each
 /// must have in memory.
 ///
-/// <https://developer.arm.com/documentation/ddi0487/latest> (A64
+/// <https://support.arm.com/documentation/ddi0487/latest> (A64
 /// instructions are 32 bits wide and word-aligned).
 const INSTRUCTION_BYTES: u32 = 4;
 
 /// The bytes the stack pointer moves by: it stays 16-byte aligned, so a
 /// return address or a saved register takes a slot of 16.
 ///
-/// <https://developer.arm.com/documentation/ihi0055/latest> (The Stack:
+/// <https://support.arm.com/documentation/ihi0055/latest> (The Stack:
 /// SP mod 16 = 0).
 const STACK_SLOT_BYTES: i32 = 16;
 
 /// The shift that places `Rd` or `Rt`, the destination or the transferred
 /// register, bits 4:0.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value->
 const DESTINATION_SHIFT: u32 = 0;
 
 /// The shift that places `Rn`, the first source or the base, bits 9:5.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value->
 const FIRST_SOURCE_SHIFT: u32 = 5;
 
 /// The shift that places `Rm`, the second source or the offset register,
 /// bits 20:16.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--shifted-register---Add-optionally-shifted-register--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--shifted-register---Add-optionally-shifted-register--setting-flags->
 const SECOND_SOURCE_SHIFT: u32 = 16;
 
 /// `MOVZ Xd, #imm16, LSL #shift` (64-bit, `sf` 1) — move a halfword into
 /// place, zeroing the other bits.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
 const MOVE_WIDE_ZERO: u32 = 0xD280_0000;
 
 /// `MOVN Xd, #imm16, LSL #shift` (64-bit) — move the complement of a
 /// halfword in place.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVN--Move-wide-with-NOT->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVN--Move-wide-with-NOT->
 const MOVE_WIDE_NOT: u32 = 0x9280_0000;
 
 /// `MOVK Xd, #imm16, LSL #shift` (64-bit) — replace one halfword, keeping
 /// the others.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVK--Move-wide-with-keep->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVK--Move-wide-with-keep->
 const MOVE_WIDE_KEEP: u32 = 0xF280_0000;
 
 /// The shift that places a move-wide instruction's `imm16`, bits 20:5.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
 const WIDE_IMMEDIATE_SHIFT: u32 = 5;
 
 /// The shift that places a move-wide instruction's `hw`, which halfword
 /// the immediate goes to, bits 22:21.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
 const HALFWORD_INDEX_SHIFT: u32 = 21;
 
 /// The bits of one halfword, the move-wide immediate.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
 const HALFWORD_BITS: u32 = 16;
 
 /// A halfword's value bits.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
 const HALFWORD_MASK: u64 = 0xFFFF;
 
 /// The halfwords of a 64-bit register, the values `hw` takes.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
 const HALFWORD_COUNT: u32 = 4;
 
 /// `ORR Xd, XZR, Xm` (shifted register, 64-bit), the `MOV` (register)
 /// alias with `Rn` the zero register already in place.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOV--register---Move-register-value--an-alias-of-ORR--shifted-register->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOV--register---Move-register-value--an-alias-of-ORR--shifted-register->
 const MOVE_REGISTER: u32 = 0xAA00_03E0;
 
 /// `CSEL Xd, Xn, Xm, cond` (64-bit) — `Xn` when the condition holds, `Xm`
 /// otherwise.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITIONAL_SELECT: u32 = 0x9A80_0000;
 
 /// The shift that places `CSEL`'s `cond`, bits 15:12.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_SHIFT: u32 = 12;
 
 /// `ADD Xd|SP, Xn|SP, #imm12` (64-bit) — add without setting the flags;
 /// both register fields read 31 as the stack pointer. With an immediate of
 /// 0, the `MOV` to or from `SP` alias.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value->
 const ADD_IMMEDIATE: u32 = 0x9100_0000;
 
 /// `SUB Xd|SP, Xn|SP, #imm12` (64-bit) — subtract without setting the
 /// flags.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUB--immediate---Subtract-immediate-value->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/SUB--immediate---Subtract-immediate-value->
 const SUBTRACT_IMMEDIATE: u32 = 0xD100_0000;
 
 /// `ADDS Xd, Xn|SP, #imm12` (64-bit) — add, setting the flags; `Rd` 31 is
 /// the zero register, the `CMN` alias.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
 const ADD_IMMEDIATE_SETTING_FLAGS: u32 = 0xB100_0000;
 
 /// `SUBS Xd, Xn|SP, #imm12` (64-bit) — subtract, setting the flags; `Rd`
 /// 31 is the zero register, the `CMP` alias.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--immediate---Subtract-immediate-value--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--immediate---Subtract-immediate-value--setting-flags->
 const SUBTRACT_IMMEDIATE_SETTING_FLAGS: u32 = 0xF100_0000;
 
 /// The shift that places an add or subtract's `imm12`, bits 21:10.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
 const ARITHMETIC_IMMEDIATE_SHIFT: u32 = 10;
 
 /// The largest `imm12`.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
 const IMMEDIATE_12_MAX: u64 = 0xFFF;
 
 /// The amount `sh` shifts `imm12` left by when set.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
 const IMMEDIATE_12_SHIFT_AMOUNT: u32 = 12;
 
 /// `sh`, bit 22: the immediate is shifted left by 12.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--immediate---Add-immediate--setting-flags->
 const IMMEDIATE_SHIFTED: u32 = 1 << 22;
 
 /// `ADDS Xd, Xn, Xm` (shifted register, 64-bit, no shift) — add, setting
 /// the flags; 31 is the zero register in every field.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--shifted-register---Add-optionally-shifted-register--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADDS--shifted-register---Add-optionally-shifted-register--setting-flags->
 const ADD_REGISTER_SETTING_FLAGS: u32 = 0xAB00_0000;
 
 /// `SUBS Xd, Xn, Xm` (shifted register, 64-bit, no shift) — subtract,
 /// setting the flags; `Rd` 31 is the `CMP` alias.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--shifted-register---Subtract-optionally-shifted-register--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--shifted-register---Subtract-optionally-shifted-register--setting-flags->
 const SUBTRACT_REGISTER_SETTING_FLAGS: u32 = 0xEB00_0000;
 
 /// `ADD Xd|SP, Xn|SP, Xm, UXTX` (extended register, 64-bit, `option` 011,
 /// no shift) — add a register to the stack pointer without setting the
 /// flags.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--extended-register---Add-extended-and-scaled-register->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--extended-register---Add-extended-and-scaled-register->
 const ADD_EXTENDED_REGISTER: u32 = 0x8B20_6000;
 
 /// `SUBS XZR, Xn|SP, Xm, UXTX` (extended register, 64-bit) without its
 /// `Rd`: the `CMP` whose left operand may be the stack pointer.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--extended-register---Subtract-extended-and-scaled-register--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--extended-register---Subtract-extended-and-scaled-register--setting-flags->
 const SUBTRACT_EXTENDED_REGISTER_SETTING_FLAGS: u32 = 0xEB20_6000;
 
 /// `AND Xd, Xn, Xm` (shifted register, 64-bit, no shift).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--shifted-register---Bitwise-AND--shifted-register-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--shifted-register---Bitwise-AND--shifted-register-->
 const AND_REGISTER: u32 = 0x8A00_0000;
 
 /// `ORR Xd, Xn, Xm` (shifted register, 64-bit, no shift).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register-->
 const OR_REGISTER: u32 = 0xAA00_0000;
 
 /// `ANDS XZR, Xn, Xm` (shifted register, 64-bit) without its registers,
 /// the `TST` alias.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--shifted-register---Bitwise-AND--shifted-register---setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--shifted-register---Bitwise-AND--shifted-register---setting-flags->
 const AND_REGISTER_SETTING_FLAGS: u32 = 0xEA00_0000;
 
 /// `ANDS WZR, Wn, Wm` (shifted register, 32-bit), the 32-bit `TST`.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--shifted-register---Bitwise-AND--shifted-register---setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--shifted-register---Bitwise-AND--shifted-register---setting-flags->
 const AND_WORD_REGISTER_SETTING_FLAGS: u32 = 0x6A00_0000;
 
 /// `AND Xd|SP, Xn, #bitmask` (immediate, 64-bit); `Rd` 31 is the stack
 /// pointer, `Rn` 31 the zero register.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
 const AND_IMMEDIATE: u32 = 0x9200_0000;
 
 /// `ORR Xd|SP, Xn, #bitmask` (immediate, 64-bit).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--immediate---Bitwise-OR--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--immediate---Bitwise-OR--immediate-->
 const OR_IMMEDIATE: u32 = 0xB200_0000;
 
 /// `EOR Xd|SP, Xn, #bitmask` (immediate, 64-bit).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EOR--immediate---Bitwise-exclusive-OR--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/EOR--immediate---Bitwise-exclusive-OR--immediate-->
 const EXCLUSIVE_OR_IMMEDIATE: u32 = 0xD200_0000;
 
 /// `EOR Xd, Xn, Xm` (shifted register, 64-bit, no shift).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EOR--shifted-register---Bitwise-exclusive-OR--shifted-register-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/EOR--shifted-register---Bitwise-exclusive-OR--shifted-register-->
 const EXCLUSIVE_OR_REGISTER: u32 = 0xCA00_0000;
 
 /// `ANDS XZR, Xn, #bitmask` (immediate, 64-bit), the `TST` alias.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--immediate---Bitwise-AND--immediate---setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--immediate---Bitwise-AND--immediate---setting-flags->
 const AND_IMMEDIATE_SETTING_FLAGS: u32 = 0xF200_0000;
 
 /// `ANDS WZR, Wn, #bitmask` (immediate, 32-bit), whose bitmask has no `N`
 /// bit and elements of at most 32 bits.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--immediate---Bitwise-AND--immediate---setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--immediate---Bitwise-AND--immediate---setting-flags->
 const AND_WORD_IMMEDIATE_SETTING_FLAGS: u32 = 0x7200_0000;
 
 /// The shift that places a logical immediate's `N:immr:imms`, bits 22:10.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
 const LOGICAL_IMMEDIATE_SHIFT: u32 = 10;
 
 /// The position of `N` within `N:immr:imms`: set for an element of 64
 /// bits.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
 const LOGICAL_ELEMENT_IS_REGISTER_SHIFT: u32 = 12;
 
 /// The position of `immr` within `N:immr:imms`: the right rotation of the
 /// element's run of ones.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
 const LOGICAL_ROTATION_SHIFT: u32 = 6;
 
 /// The six bits of `imms`, which hold the element size's prefix of ones and
 /// the run's length minus one.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
 const LOGICAL_SIZE_MASK: u32 = 0x3F;
 
 /// The bits of a register, the largest element of a bitmask.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
 const REGISTER_BITS: u32 = 64;
 
 /// The bits of a 32-bit register: a `W` form's bitmask repeats every 32
 /// bits or less.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--immediate---Bitwise-AND--immediate---setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--immediate---Bitwise-AND--immediate---setting-flags->
 const WORD_BITS: u32 = 32;
 
 /// The smallest element of a bitmask.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/AND--immediate---Bitwise-AND--immediate-->
 const SMALLEST_ELEMENT_BITS: u32 = 2;
 
 /// `UBFM Xd, Xn, #immr, #imms` (64-bit, `N` 1) — the `LSL` and `LSR`
 /// aliases.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UBFM--Unsigned-bitfield-move->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/UBFM--Unsigned-bitfield-move->
 const UNSIGNED_BITFIELD_MOVE: u32 = 0xD340_0000;
 
 /// `SBFM Xd, Xn, #immr, #imms` (64-bit, `N` 1) — the `ASR` alias.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SBFM--Signed-bitfield-move->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/SBFM--Signed-bitfield-move->
 const SIGNED_BITFIELD_MOVE: u32 = 0x9340_0000;
 
 /// The shift that places a bitfield move's `immr`, bits 21:16.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UBFM--Unsigned-bitfield-move->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/UBFM--Unsigned-bitfield-move->
 const BITFIELD_ROTATION_SHIFT: u32 = 16;
 
 /// The shift that places a bitfield move's `imms`, bits 15:10.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UBFM--Unsigned-bitfield-move->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/UBFM--Unsigned-bitfield-move->
 const BITFIELD_TOP_SHIFT: u32 = 10;
 
 /// `EXTR Xd, Xn, Xm, #lsb` (64-bit, `N` 1) — the low 64 bits of `Xn:Xm`
 /// shifted right by `lsb`; with `Xn` and `Xm` the same register, the
 /// `ROR` (immediate) alias.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EXTR--Extract-register->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/EXTR--Extract-register->
 const EXTRACT: u32 = 0x93C0_0000;
 
 /// The shift that places `EXTR`'s `imms`, the lowest bit extracted, bits
 /// 15:10.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EXTR--Extract-register->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/EXTR--Extract-register->
 const EXTRACT_LOWEST_BIT_SHIFT: u32 = 10;
 
 /// The highest bit of a 64-bit register, the `imms` of a right shift.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LSR--immediate---Logical-shift-right--immediate---an-alias-of-UBFM->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LSR--immediate---Logical-shift-right--immediate---an-alias-of-UBFM->
 const HIGHEST_BIT: u32 = 63;
 
 /// The widest 64-bit shift count plus one.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LSL--immediate---Logical-shift-left--immediate---an-alias-of-UBFM->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LSL--immediate---Logical-shift-left--immediate---an-alias-of-UBFM->
 const SHIFT_COUNT_LIMIT: u8 = 64;
 
 /// `STRB Wt, [Xn|SP, #imm12]` (unsigned offset), the store of the
 /// unsigned-offset family with `size` and `opc` zero; `size` and
 /// [`LOAD`] make the others.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STRB--immediate---Store-register-byte--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/STRB--immediate---Store-register-byte--immediate-->
 const UNSIGNED_OFFSET_ACCESS: u32 = 0x3900_0000;
 
 /// `STURB Wt, [Xn|SP, #simm9]` (unscaled), the unscaled family's byte
 /// store.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STURB--Store-register-byte--unscaled-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/STURB--Store-register-byte--unscaled-->
 const UNSCALED_ACCESS: u32 = 0x3800_0000;
 
 /// `STRB Wt, [Xn|SP, Xm]` (register offset, `option` 011, `S` 0), the
 /// register-offset family's byte store.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STRB--register---Store-register-byte--register-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/STRB--register---Store-register-byte--register-->
 const REGISTER_OFFSET_ACCESS: u32 = 0x3820_6800;
 
 /// `V`, bit 26: the access transfers a SIMD and floating-point register;
 /// with `size` 11, its 64-bit `d` view. The unsigned-offset, unscaled and
 /// register-offset families are otherwise the general registers'.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/LDR--immediate--SIMD-FP---Load-SIMD-FP-Register--immediate-offset-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/LDR--immediate--SIMD-FP---Load-SIMD-FP-Register--immediate-offset-->
 const FLOAT_ACCESS: u32 = 1 << 26;
 
 /// `opc` 01, bit 22: the load of the store `opc` 00 names, zero-extending.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
 const LOAD: u32 = 1 << 22;
 
 /// The shift that places a load or store's `size`, the log2 of its bytes,
 /// bits 31:30.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
 const ACCESS_SIZE_SHIFT: u32 = 30;
 
 /// `size` 00: a byte.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDRB--immediate---Load-register-byte--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDRB--immediate---Load-register-byte--immediate-->
 const SIZE_BYTE: u32 = 0b00;
 
 /// `size` 01: a halfword.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDRH--immediate---Load-register-halfword--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDRH--immediate---Load-register-halfword--immediate-->
 const SIZE_HALF: u32 = 0b01;
 
 /// `size` 10: a 32-bit word.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
 const SIZE_WORD: u32 = 0b10;
 
 /// `size` 11: a 64-bit word.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
 const SIZE_DOUBLEWORD: u32 = 0b11;
 
 /// The shift that places the unsigned offset's `imm12`, in units of the
 /// access's size, bits 21:10.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
 const OFFSET_SHIFT: u32 = 10;
 
 /// The shift that places the unscaled offset's `imm9`, bits 20:12.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDUR--Load-register--unscaled-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDUR--Load-register--unscaled-->
 const UNSCALED_OFFSET_SHIFT: u32 = 12;
 
 /// The bits of `imm9`, a two's-complement byte offset.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDUR--Load-register--unscaled-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDUR--Load-register--unscaled-->
 const UNSCALED_OFFSET_MASK: u64 = 0x1FF;
 
 /// The smallest unscaled offset.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDUR--Load-register--unscaled-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDUR--Load-register--unscaled-->
 const UNSCALED_OFFSET_MIN: i64 = -256;
 
 /// The largest unscaled offset.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDUR--Load-register--unscaled-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDUR--Load-register--unscaled-->
 const UNSCALED_OFFSET_MAX: i64 = 255;
 
 /// The condition code `eq` (Z set).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_EQUAL: u32 = 0b0000;
 
 /// The condition code `ne` (Z clear).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_NOT_EQUAL: u32 = 0b0001;
 
 /// The condition code `hs` (C set: no borrow, unsigned higher or same).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_HIGHER_OR_SAME: u32 = 0b0010;
 
 /// The condition code `lo` (C clear: unsigned lower).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_LOWER: u32 = 0b0011;
 
 /// The condition code `vs` (V set: signed overflow).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_OVERFLOW: u32 = 0b0110;
 
 /// The condition code `vc` (V clear).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_NO_OVERFLOW: u32 = 0b0111;
 
 /// The condition code `hi` (C set and Z clear: unsigned higher).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_HIGHER: u32 = 0b1000;
 
 /// The condition code `ls` (C clear or Z set: unsigned lower or same).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_LOWER_OR_SAME: u32 = 0b1001;
 
 /// The condition code `ge` (N equals V: signed greater or equal).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_GREATER_OR_EQUAL: u32 = 0b1010;
 
 /// The condition code `lt` (N differs from V: signed less).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_LESS: u32 = 0b1011;
 
 /// The condition code `gt` (Z clear and N equals V: signed greater).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_GREATER: u32 = 0b1100;
 
 /// The condition code `le` (Z set or N differs from V: signed less or
 /// equal).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_LESS_OR_EQUAL: u32 = 0b1101;
 
 /// `FMOV Dd, Xn` (general, 64-bit to double precision) — the bits of a
 /// general register into a floating-point one, unconverted.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--general---Floating-point-move-to-or-from-general-purpose-register-without-conversion->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--general---Floating-point-move-to-or-from-general-purpose-register-without-conversion->
 const FLOAT_MOVE_FROM_GENERAL: u32 = 0x9E67_0000;
 
 /// `FMOV Xd, Dn` (general, double precision to 64-bit) — the bits of a
 /// floating-point register into a general one, unconverted.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--general---Floating-point-move-to-or-from-general-purpose-register-without-conversion->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--general---Floating-point-move-to-or-from-general-purpose-register-without-conversion->
 const FLOAT_MOVE_TO_GENERAL: u32 = 0x9E66_0000;
 
 /// `FMOV Dd, Dn` (register, double precision).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--register---Floating-point-move-register-without-conversion->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--register---Floating-point-move-register-without-conversion->
 const FLOAT_MOVE_REGISTER: u32 = 0x1E60_4000;
 
 /// `FADD Dd, Dn, Dm` (scalar, double precision).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FADD--scalar---Floating-point-add--scalar-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FADD--scalar---Floating-point-add--scalar-->
 const FLOAT_ADD: u32 = 0x1E60_2800;
 
 /// `FSUB Dd, Dn, Dm` (scalar, double precision).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FSUB--scalar---Floating-point-subtract--scalar-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FSUB--scalar---Floating-point-subtract--scalar-->
 const FLOAT_SUBTRACT: u32 = 0x1E60_3800;
 
 /// `FMUL Dd, Dn, Dm` (scalar, double precision).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMUL--scalar---Floating-point-multiply--scalar-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMUL--scalar---Floating-point-multiply--scalar-->
 const FLOAT_MULTIPLY: u32 = 0x1E60_0800;
 
 /// `FDIV Dd, Dn, Dm` (scalar, double precision).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FDIV--scalar---Floating-point-divide--scalar-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FDIV--scalar---Floating-point-divide--scalar-->
 const FLOAT_DIVIDE: u32 = 0x1E60_1800;
 
 /// `FSQRT Dd, Dn` (scalar, double precision).
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FSQRT--scalar---Floating-point-square-root--scalar-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FSQRT--scalar---Floating-point-square-root--scalar-->
 const FLOAT_SQUARE_ROOT: u32 = 0x1E61_C000;
 
 /// `FRINTM Dd, Dn` (scalar, double precision) — round toward minus
 /// infinity, raising no inexact exception.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTM--scalar---Floating-point-round-to-integral--toward-minus-infinity--scalar-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTM--scalar---Floating-point-round-to-integral--toward-minus-infinity--scalar-->
 const FLOAT_ROUND_TOWARD_NEGATIVE: u32 = 0x1E65_4000;
 
 /// `FRINTP Dd, Dn` (scalar, double precision) — round toward plus
 /// infinity, raising no inexact exception.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTP--scalar---Floating-point-round-to-integral--toward-plus-infinity--scalar-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTP--scalar---Floating-point-round-to-integral--toward-plus-infinity--scalar-->
 const FLOAT_ROUND_TOWARD_POSITIVE: u32 = 0x1E64_C000;
 
 /// `FRINTZ Dd, Dn` (scalar, double precision) — round toward zero,
 /// raising no inexact exception.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTZ--scalar---Floating-point-round-to-integral--toward-zero--scalar-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTZ--scalar---Floating-point-round-to-integral--toward-zero--scalar-->
 const FLOAT_ROUND_TOWARD_ZERO: u32 = 0x1E65_C000;
 
 /// `FCMP Dn, Dm` (double precision) — the quiet compare, NZCV: unordered
 /// 0011, less 1000, equal 0110, greater 0010.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FCMP--Floating-point-quiet-compare--scalar-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FCMP--Floating-point-quiet-compare--scalar-->
 const FLOAT_COMPARE: u32 = 0x1E60_2000;
 
 /// `SCVTF Dd, Xn` (scalar, integer, 64-bit to double precision) — a
 /// signed integer converted as FPCR says: to nearest, ties to even.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/SCVTF--scalar--integer---Signed-integer-convert-to-floating-point--scalar--integer-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/SCVTF--scalar--integer---Signed-integer-convert-to-floating-point--scalar--integer-->
 const SIGNED_INTEGER_TO_FLOAT: u32 = 0x9E62_0000;
 
 /// `FCVTZS Xd, Dn` (scalar, integer, double precision to 64-bit) — a
 /// double converted to a signed integer, rounded toward zero.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FCVTZS--scalar--integer---Floating-point-convert-to-signed-integer--rounding-toward-zero--scalar--integer-->
+/// <https://support.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FCVTZS--scalar--integer---Floating-point-convert-to-signed-integer--rounding-toward-zero--scalar--integer-->
 const FLOAT_TO_SIGNED_INTEGER_TRUNCATED: u32 = 0x9E78_0000;
 
 /// `BLR Xn` — call the address in `Xn`, the return address into `x30`.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BLR--Branch-with-link-to-register->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/BLR--Branch-with-link-to-register->
 const BRANCH_WITH_LINK_REGISTER: u32 = 0xD63F_0000;
 
 /// `BR Xn` — jump to the address in `Xn`.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BR--Branch-to-register->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/BR--Branch-to-register->
 const BRANCH_REGISTER: u32 = 0xD61F_0000;
 
 /// `RET` — return to the address in `x30`, the default `Rn` already in
 /// place.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/RET--Return-from-subroutine->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/RET--Return-from-subroutine->
 const RETURN_TO_LINK_REGISTER: u32 = 0xD65F_03C0;
 
 /// `STR Xt, [Xn|SP, #simm9]!` (immediate, pre-index, 64-bit) — store, then
 /// keep the lowered address in the base: a push.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate-->
 const STORE_PRE_INDEX: u32 = 0xF800_0C00;
 
 /// `LDR Xt, [Xn|SP], #simm9` (immediate, post-index, 64-bit) — load, then
 /// raise the base: a pop.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate-->
 const LOAD_POST_INDEX: u32 = 0xF840_0400;
 
 /// `SMULH Xd, Xn, Xm` (`Ra` 31 in place) — the high 64 bits of the signed
 /// 128-bit product.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SMULH--Signed-multiply-high->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/SMULH--Signed-multiply-high->
 const SIGNED_MULTIPLY_HIGH: u32 = 0x9B40_7C00;
 
 /// `MUL Xd, Xn, Xm`, the `MADD` alias with the zero register as `Ra`
 /// already in place — the low 64 bits of the product.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MUL--Multiply--an-alias-of-MADD->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MUL--Multiply--an-alias-of-MADD->
 const MULTIPLY: u32 = 0x9B00_7C00;
 
 /// `MSUB Xd, Xn, Xm, Xa` (64-bit) — `Xa - Xn * Xm`.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MSUB--Multiply-subtract->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MSUB--Multiply-subtract->
 const MULTIPLY_SUBTRACT: u32 = 0x9B00_8000;
 
 /// The shift that places a multiply-add's `Ra`, the addend, bits 14:10.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MSUB--Multiply-subtract->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MSUB--Multiply-subtract->
 const ADDEND_SHIFT: u32 = 10;
 
 /// `SDIV Xd, Xn, Xm` (64-bit) — the signed quotient, truncated toward
 /// zero.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SDIV--Signed-divide->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/SDIV--Signed-divide->
 const SIGNED_DIVIDE: u32 = 0x9AC0_0C00;
 
 /// `shift` 0b10, bits 23:22, of a shifted-register `SUBS`: the second
 /// operand shifted right arithmetically.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--shifted-register---Subtract-optionally-shifted-register--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--shifted-register---Subtract-optionally-shifted-register--setting-flags->
 const SHIFTED_ARITHMETIC_RIGHT: u32 = 0b10 << 22;
 
 /// The shift that places a shifted-register operand's `imm6`, its shift
 /// amount, bits 15:10.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--shifted-register---Subtract-optionally-shifted-register--setting-flags->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/SUBS--shifted-register---Subtract-optionally-shifted-register--setting-flags->
 const SHIFT_AMOUNT_SHIFT: u32 = 10;
 
 /// `CCMP Xn, Xm, #nzcv, cond` (register, 64-bit) — the flags of
 /// `Xn - Xm` when `cond` holds, `nzcv` otherwise.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CCMP--register---Conditional-compare--register-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CCMP--register---Conditional-compare--register-->
 const CONDITIONAL_COMPARE_REGISTER: u32 = 0xFA40_0000;
 
 /// The `nzcv` of a conditional compare with V alone set, bits 3:0.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CCMP--register---Conditional-compare--register-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/CCMP--register---Conditional-compare--register-->
 const FLAGS_OVERFLOW_ALONE: u32 = 0b0001;
 
 /// `ADR Xd, label` — the address `immhi:immlo` bytes from the
 /// instruction.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
 const ADDRESS: u32 = 0x1000_0000;
 
 /// The bits of `ADR`'s `immlo`, the distance's low two bits, at bits
 /// 30:29.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
 const ADDRESS_LOW_BITS: u32 = 2;
 
 /// The shift that places `ADR`'s `immlo`.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
 const ADDRESS_LOW_SHIFT: u32 = 29;
 
 /// The bits of `ADR`'s signed distance, `immhi:immlo`.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/ADR--Form-PC-relative-address->
 const ADDRESS_DISTANCE_BITS: u32 = 21;
 
 /// `LDR Xt, label` (literal, 64-bit) — load the word `imm19` instructions
 /// from the instruction.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--literal---Load-register--literal-->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--literal---Load-register--literal-->
 const LOAD_LITERAL: u32 = 0x5800_0000;
 
 /// `B label` — jump `imm26` instructions from the instruction.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
 const BRANCH: u32 = 0x1400_0000;
 
 /// The bits of `B`'s signed `imm26`, in instructions, which `BL` shares.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
 const BRANCH_DISTANCE_BITS: u32 = 26;
 
 /// `BL label` — call `imm26` instructions from the instruction, the
 /// return address into `x30`.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BL--Branch-with-link->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/BL--Branch-with-link->
 const BRANCH_WITH_LINK: u32 = 0x9400_0000;
 
 /// How far `CallUnentered`'s `BL` calls: past itself and the `B` after it,
 /// to the save of `x30` (`STR`, pre-index), as `BL`'s byte distance.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BL--Branch-with-link->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/BL--Branch-with-link->
 const UNENTERED_SAVE_DISTANCE: i64 = 2 * INSTRUCTION_BYTES as i64;
 
 /// How far `CallUnentered`'s `B`, where the callee returns to, jumps: past
 /// itself, the save and the `BR`, to the next operation.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/B--Branch->
 const UNENTERED_SKIP_DISTANCE: i64 = 3 * INSTRUCTION_BYTES as i64;
 
 /// `B.cond label` — jump `imm19` instructions from the instruction when
 /// `cond`, at bits 3:0, holds.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
 const BRANCH_CONDITIONAL: u32 = 0x5400_0000;
 
 /// The bits of the signed `imm19` of `B.cond` and `LDR` (literal), in
 /// instructions.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
 const CONDITIONAL_DISTANCE_BITS: u32 = 19;
 
 /// The shift that places the `imm19` of `B.cond` and `LDR` (literal), and
 /// `ADR`'s `immhi`, bits 23:5.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/B-cond--Branch-conditionally->
 const CONDITIONAL_DISTANCE_SHIFT: u32 = 5;
 
 /// `UDF #0` — permanently undefined: the stop, and the trap.
 ///
-/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UDF--Permanently-undefined->
+/// <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/UDF--Permanently-undefined->
 const UNDEFINED: u32 = 0x0000_0000;
 
 /// A register's number for a field that reads 31 as the stack pointer:

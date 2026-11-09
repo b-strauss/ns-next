@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 fn required_citation(encoder: &str) -> &'static str {
     match encoder {
         "x64" => "Intel SDM Vol. 2",
-        "aarch64" => "https://developer.arm.com/documentation/",
+        "aarch64" => "https://support.arm.com/documentation/",
         _ => panic!("{encoder} is an encoder with no citation rule"),
     }
 }
@@ -303,13 +303,13 @@ fn body(code: &mut Vec<u8>) {
 }
 
 #[test]
-fn an_arm_constant_cites_a_developer_arm_com_page() {
+fn an_arm_constant_cites_a_support_arm_com_page() {
     let sourced = "\
-/// `MOVZ` <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ>
+/// `MOVZ` <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
 const MOVE_WIDE_ZERO: u32 = 0x5280_0000;
 ";
     assert!(violations("aarch64.rs", "aarch64", sourced).is_empty());
-    let unsourced = sourced.replace("developer.arm.com", "example.com");
+    let unsourced = sourced.replace("support.arm.com", "example.com");
     assert_eq!(violations("aarch64.rs", "aarch64", &unsourced).len(), 1);
 }
 

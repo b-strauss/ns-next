@@ -28,7 +28,7 @@
 //! Every constant of an encoder -- an opcode, a prefix, an opcode extension,
 //! a condition code, a field's bits, an instruction's size -- is a named
 //! `const` documented with its official source: the Intel SDM volume and
-//! section title for x64, the developer.arm.com page of the instruction for
+//! section title for x64, the support.arm.com page of the instruction for
 //! AArch64. A reader checks a byte against the manual instead of trusting
 //! it. `tests/encoding_sources.rs` (`every_encoding_constant_is_named_and_sourced`)
 //! holds every encoder file under `src/`, subdirectories included, to it:

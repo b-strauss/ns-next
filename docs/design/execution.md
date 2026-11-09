@@ -13350,7 +13350,7 @@ the baseline JIT's foundation moved" that of the first two.
   ("Fixed registers and the calling convention" below): `enter_called`,
   `jump_into_called` and `call_unentered`. Every constant of an
   encoder is a named `const` citing its official source -- the Intel SDM's
-  volume and section for x64, the instruction's developer.arm.com page
+  volume and section for x64, the instruction's support.arm.com page
   for AArch64 -- and no integer literal but 0 and 1 stands outside one,
   which `tests/encoding_sources.rs` holds every encoder file to; every
   encoding is checked against a disassembler, `iced-x86`'s for x64

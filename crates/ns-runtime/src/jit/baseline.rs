@@ -1755,7 +1755,7 @@ mod tests {
 
     /// The bytes of `blr x9` and `blr x10`, little-endian: `0xD63F0000`
     /// with the register in bits 5 to 9
-    /// (https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/BLR--Branch-with-link-to-register-).
+    /// (https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/BLR--Branch-with-link-to-register-).
     const BLR_X9: [u8; 4] = [0x20, 0x01, 0x3F, 0xD6];
     const BLR_X10: [u8; 4] = [0x40, 0x01, 0x3F, 0xD6];
 

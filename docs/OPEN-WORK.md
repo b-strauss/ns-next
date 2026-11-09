@@ -3062,7 +3062,7 @@ Small, deliberately left, none affecting an outcome.
 
 - The AArch64 encoder's sources are unfetched (noted 2026-11-03): every
   constant of `crates/ns-assembler/src/aarch64.rs` cites a
-  developer.arm.com page, as the convention asks, but the pages' paths
+  support.arm.com page, as the convention asks, but the pages' paths
   were written from the site's naming scheme and never opened, so a
   citation may name a page that does not exist; `tests/encoding_sources.rs`
   checks only the prefix.
