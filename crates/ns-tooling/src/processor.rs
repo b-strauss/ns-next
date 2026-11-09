@@ -16,6 +16,8 @@
 
 /// CPUID leaf 1's ECX bits of the x86-64-v2 features, with their names (Intel
 /// SDM Vol. 2, CPUID, "Feature Information Returned in the ECX Register").
+/// Only an x86_64 build asks CPUID; elsewhere no feature is required.
+#[cfg(target_arch = "x86_64")]
 const LEAF_ONE_FEATURES: [(u32, &str); 6] = [
     (1 << 0, "sse3"),
     (1 << 9, "ssse3"),
@@ -26,6 +28,7 @@ const LEAF_ONE_FEATURES: [(u32, &str); 6] = [
 ];
 
 /// The names of the x86-64-v2 features CPUID leaf 1's `ecx` does not set.
+#[cfg(target_arch = "x86_64")]
 fn missing_from_leaf_one(ecx: u32) -> Vec<&'static str> {
     LEAF_ONE_FEATURES
         .iter()
@@ -68,6 +71,7 @@ pub fn refusal_for_missing_features(program: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[cfg(target_arch = "x86_64")]
     const EVERY_BIT: u32 = u32::MAX;
 
     #[test]
@@ -75,11 +79,13 @@ mod tests {
         assert!(missing_processor_features().is_empty());
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn a_leaf_with_every_bit_set_lacks_nothing() {
         assert!(missing_from_leaf_one(EVERY_BIT).is_empty());
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn a_leaf_lacking_one_bit_names_exactly_that_feature() {
         for (bit, name) in LEAF_ONE_FEATURES {
@@ -87,6 +93,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn an_empty_leaf_lacks_every_feature() {
         assert_eq!(
