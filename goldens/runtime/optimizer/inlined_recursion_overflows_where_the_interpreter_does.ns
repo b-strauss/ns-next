@@ -1,0 +1,50 @@
+/// Recursion through a method the optimizing compiler inlines, to the depth
+/// limit: `down:` sends `step:`, small enough to be inlined into it, which
+/// sends `down:` again. First a shallow recursion runs many times, so that
+/// `down:` is optimized with `step:` inlined into it, whose send of
+/// `down:` stays a send of that optimized code; then an unbounded one,
+/// five times over, each overflow caught and the activations it reached
+/// printed -- both methods count every activation of theirs, so that an
+/// overflow raised one activation early or late changes the count, and
+/// every inlined scope is an activation the depth limit counts -- and once
+/// more uncaught, which ends the run with the interpreter's error.
+class InlinedRecursionOverflowsWhereTheInterpreterDoes = Object new (
+  |
+    limit ::= 10.
+    activations ::= 0.
+  |
+) (
+  down: depth = (
+    depth = limit ifTrue: [^0].
+    activations:: activations + 1.
+    ^1 + (self step: depth + 1).
+  )
+
+  step: depth = (
+    activations:: activations + 1.
+    ^self down: depth.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      total ::= 0.
+    |
+    1 to: 2000 do: [:index | total:: total + (self down: 0)].
+    transcript
+        show: total printString;
+        newLine.
+    limit:: -1.
+    1 to: 5 do: [:index |
+      activations:: 0.
+      [self down: 0] on: Error do: [:error | 0].
+      transcript
+          show: activations printString;
+          newLine.
+    ].
+    self down: 0.
+    transcript
+        show: 'unreachable';
+        newLine.
+  )
+)

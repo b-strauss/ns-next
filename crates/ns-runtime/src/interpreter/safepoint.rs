@@ -149,6 +149,10 @@ impl Interpreter {
                 .map(|stress| stress.due(traced_size))
             {
                 if due {
+                    // A frame a poll's light exit left goes on in
+                    // baseline code, its blocks made while every frame is
+                    // where the exit left it: no frame is after this.
+                    self.enter(crate::jit::deoptimize_stopped_at_poll);
                     rebuilt = self.enter(|mutator| match mutator.heap.suspend_activations(floor) {
                         Some(top) => {
                             mutator.resume_frame(top);

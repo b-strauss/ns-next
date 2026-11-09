@@ -470,8 +470,213 @@ fn jit_statistics_print_one_line_to_stderr() {
          # bodies optimized (# customized copies) in # ms, \
          # optimized exits (# forced, # traps), # abandoned, \
          # made not entrant, # refused for good, # invalidated copies, \
-         # dispatched calls"
+         # dispatched calls; inlining: # sites inlined, # scopes inlined, \
+         # type-case arms, \
+         # blocks eliminated, # blocks materialized, \
+         # inlined frames materialized, # budget exits \
+         (# recompilees above), # poll re-entries, \
+         # poll deoptimizations, # polls without an entry"
     );
+}
+
+/// The `jit: ` line's counts before each of `labels`, of a run of
+/// `program` with `--jit-statistics` and with neither a stress mode nor
+/// `NS_NEXT_NO_JIT`, whatever the environment says, so that what the
+/// optimizer inlines is what a plain run's budgets decide; `None` on a
+/// target without a JIT, which compiles no body.
+fn plain_jit_counts(program: &std::path::Path, stdout: &str, labels: &[&str]) -> Option<Vec<u64>> {
+    let mut command = ns_next();
+    command
+        .arg("run")
+        .arg(program)
+        .arg("--jit-statistics")
+        .env_remove("NS_NEXT_NO_JIT");
+    for mode in [
+        "MOVES",
+        "COLLECT",
+        "SCAVENGE",
+        "SUSPEND",
+        "ZONE",
+        "JIT",
+        "EXIT",
+        "OPTIMIZE",
+        "DEOPT",
+        "CACHES",
+        "INVALIDATE",
+        "WIDE",
+    ] {
+        command.env_remove(format!("NS_NEXT_STRESS_{mode}"));
+    }
+    let output = command.output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), stdout);
+    let line = stderr
+        .lines()
+        .find(|line| line.starts_with("jit: "))
+        .unwrap_or_else(|| panic!("no `jit: ` line in {stderr}"));
+    let count_before = |label: &str| -> u64 {
+        let position = line
+            .find(&format!(" {label}"))
+            .unwrap_or_else(|| panic!("no `{label}` in {line}"));
+        let digits: String = line[..position]
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect::<Vec<char>>()
+            .into_iter()
+            .rev()
+            .collect();
+        digits.parse().unwrap()
+    };
+    if count_before("bodies,") == 0 {
+        return None;
+    }
+    Some(labels.iter().map(|label| count_before(label)).collect())
+}
+
+/// `sumOf:times:`'s block sends `sumOf:`, whose `to:do:` and block its
+/// copy inlines, the block eliminated; the Floats of the second run fail
+/// the addition's speculation inside the inlined block, where the block
+/// is live in `to:do:`'s scope, so that the exit writes the inlined
+/// frames and makes the block.
+const AN_ELIMINATED_BLOCK_MADE_AT_A_TRAP: &str = indoc! {"
+    class Subject = Object new () (
+      sumOf: values = (
+        |
+          total ::= 0.
+        |
+        1 to: values size do: [:index | total:: total + (values at: index)].
+        ^total.
+      )
+
+      sumOf: values times: count = (
+        |
+          sum ::= 0.
+        |
+        1 to: count do: [:round | sum:: sum + (sumOf: values)].
+        ^sum.
+      )
+
+      public main: platform args: arguments = (
+        platform transcript
+            show: (sumOf: {1. 2. 3} times: 30000) printString;
+            newLine.
+        platform transcript
+            show: (sumOf: {1.5. 2.5} times: 30) printString;
+            newLine.
+      )
+    )
+"};
+
+/// `--jit-statistics` counts what the optimized copies inlined and what
+/// became of it: a copy whose block is eliminated inside inlined scopes,
+/// and made by the exit at a trap there, counts the sites and the scopes
+/// inlined, the type-case arms, the block eliminated and made, the
+/// inlined frames the exit wrote and the budget exits whose walk found
+/// the recompilee above, and answers the interpreter's sums; and a loop
+/// whose inlined callees allocate counts the polls it went back into its
+/// code at, after each scavenge.
+#[test]
+fn jit_statistics_count_what_inlining_did() {
+    let directory = ScratchDirectory::new("jit-statistics-inlining");
+    let program = directory.join("Subject.ns");
+    std::fs::write(&program, AN_ELIMINATED_BLOCK_MADE_AT_A_TRAP).unwrap();
+    let Some(counts) = plain_jit_counts(
+        &program,
+        "180000
+120.0
+",
+        &[
+            "sites inlined",
+            "scopes inlined",
+            "type-case arms",
+            "blocks eliminated",
+            "blocks materialized",
+            "inlined frames materialized",
+            "budget exits",
+            "recompilees above",
+        ],
+    ) else {
+        return;
+    };
+    assert!(counts.iter().all(|count| *count > 0), "{counts:?}");
+    let reentries = plain_jit_counts(
+        &common::golden("runtime/optimizer/allocating_inlined_loop"),
+        "40000400000
+40
+8200040
+",
+        &["poll re-entries", "polls without an entry"],
+    )
+    .expect("a target with a JIT");
+    assert!(reentries[0] > 0, "{reentries:?}");
+    assert_eq!(reentries[1], 0, "{reentries:?}");
+}
+
+/// Four optimizer goldens reach in a plain run the path they are written
+/// for: `an_edit_below_an_inlined_frame`'s edits each free the copy whose
+/// frame is below, `eliminated_block_seen_after_an_exit`'s traps make
+/// the blocks its copies eliminated,
+/// `a_block_made_on_a_way_not_run_traps`'s way that starts running traps
+/// at its `MakeClosure`, the trap that follows there retiring the copy,
+/// which is compiled again, and
+/// `a_block_handed_to_an_array_s_do_is_eliminated`'s copies eliminate the
+/// blocks they hand an Array's `do:`, which traps on no way.
+#[test]
+fn the_optimizer_goldens_reach_their_paths_in_a_plain_run() {
+    let Some(edits) = plain_jit_counts(
+        &common::golden("runtime/optimizer/an_edit_below_an_inlined_frame"),
+        "420000
+14000
+420000
+nil
+9
+19005
+24000
+",
+        &["invalidated copies"],
+    ) else {
+        return;
+    };
+    assert_eq!(edits, vec![2], "a copy freed at each edit");
+    let made = plain_jit_counts(
+        &common::golden("runtime/optimizer/eliminated_block_seen_after_an_exit"),
+        "420000
+16.0
+21
+90000
+4
+",
+        &["blocks eliminated", "blocks materialized", "traps"],
+    )
+    .expect("a target with a JIT");
+    assert!(made.iter().all(|count| *count > 0), "{made:?}");
+    let retired = plain_jit_counts(
+        &common::golden("runtime/optimizer/a_block_made_on_a_way_not_run_traps"),
+        "15015000
+15015000
+22515000
+",
+        &["traps", "made not entrant", "bodies optimized"],
+    )
+    .expect("a target with a JIT");
+    assert!(retired[0] > 0, "the way traps once it runs: {retired:?}");
+    assert!(retired[1] > 0, "the trap retires the copy: {retired:?}");
+    assert!(
+        retired[2] > 1,
+        "and the body is compiled again: {retired:?}"
+    );
+    let handed = plain_jit_counts(
+        &common::golden("runtime/optimizer/a_block_handed_to_an_array_s_do_is_eliminated"),
+        "2525000
+5000
+",
+        &["blocks eliminated", "traps"],
+    )
+    .expect("a target with a JIT");
+    assert!(handed[0] > 0, "the blocks are eliminated: {handed:?}");
+    assert_eq!(handed[1], 0, "and no way traps: {handed:?}");
 }
 
 /// `--collector-statistics` prints the collector's counts and pauses to

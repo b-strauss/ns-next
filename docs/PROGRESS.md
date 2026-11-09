@@ -62,7 +62,7 @@ first.
 | Doc comments: a block of `///` lines coloured and rendered in place as Markdown, a hover with a declaration's signature and doc comment, Java-style tags (`@param`, `@answers`, `@signals`, `@see`, `@factory`, `{@summary}`) as sections with the server's warnings, and the whole core library documented with them | Complete | 2026-11-01 | [doc-comment-tags](superpowers/plans/2026-11-01-1608-doc-comment-tags.md) |
 | Identity and equality documented: the contract of `==`, `=`, `hash` and `identityHash` at `Object`, what a value's identity is, and every class's own | Complete | 2026-11-01 | — |
 | `Float nan`, `Float infinity` and `Float negativeInfinity`, and why a NaN equals a NaN written out with the options weighed | Complete | 2026-11-01 | — |
-| Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md) |
+| Road step 9 (M6) — an optimizing JIT: designed in ten stages; stage 1, the foundation without speculation -- the budget baseline code spends, the snapshot, the SSA graph, linear scan between interrupt points with every value written back before each, the code through the baseline's templates, installed beside baseline code at a safepoint, abandonment, the optimize and deopt stress modes; stage 2, speculation -- copies per receiver and entered application, the dispatching entry, own slots at fixed offsets, guards and traps, versions and the refusal for good, the invalidation of stale copies, the invalidate stress mode; stage 3, inlining -- the snapshot tree and the plan, type-cases, callees always inlined, inlined scopes at the interpreter's positions, blocks with their home and their elimination, the exit that writes the scopes, the recompilee walk, the way back in at a poll, the copies' dependencies | In progress | 2026-11-06 (stage 1), 2026-11-07 (stage 2), 2026-11-09 (stage 3) | [optimizing-jit-foundation](superpowers/plans/2026-11-05-1026-optimizing-jit-foundation.md), [optimizing-jit-speculation](superpowers/plans/2026-11-06-1151-optimizing-jit-speculation.md), [optimizing-jit-inlining](superpowers/plans/2026-11-07-1457-optimizing-jit-inlining.md) |
 
 ## Notes
 
@@ -7104,3 +7104,84 @@ dispatching rows; the inlined loop condition's non-Boolean exit; the
 budget and the trapped bit shared by a body's keys; the linear search
 of keys; and the stress modes' pairs, which no gate runs. Road step 9's
 third stage, inlining, is next.
+
+## Inlining, road step 9's third stage (2026-11-09)
+
+Optimized code that inlines ([execution.md](design/execution.md),
+"Inlining"). Before a copy's graph is built, a tree of snapshots of the
+body and its callees is taken, each callee's receiver read through a
+new table from dispatch id back to application, and a plan made over
+it: candidates by estimated frequency -- loop depth times the callee's
+spent budget share -- under Strongtalk's cost model and limits, the
+block limit raised to 140 by measurement. A cached send is a type-case
+of up to four inlined callees in the cache's order, each customized to
+its receiver's application, whose fall-through traps where the site
+never trapped and every cached type has an arm and sends otherwise;
+accessors, quick methods, a lazy getter, `==`, `class`, the
+`SmallInteger` operations and an `Array`'s or a `ByteArray`'s indexed
+access are nodes. Every inlined scope lies in the physical frame where
+the interpreter would push its activation, its receiver and current
+class header bindings written back like registers, so that at every
+interrupt point every scope's words are the interpreter's and the exit
+writes each scope's header in place (decided with the user on
+2026-11-07). A block is compiled with its home, and eliminated where
+nothing lets it escape -- the ways the feedback says never ran being
+traps -- and an exit that finds it live makes one closure, its home
+married in place (decided with the user on 2026-11-07); a callee whose
+scope would create a block that escapes is sent until stage 4. The
+budget's run-out exits, and the run loop walks up the stack for the
+recompilee, Strongtalk's `findTopInlinableFrame`, from a block up to
+its home only where the home is called often. A frame that left its
+optimized code at a poll goes back into it there after the safepoint,
+unless the safepoint freed or reinstalled its copy, reified a scope or
+rebuilt the stack (decided with the user on 2026-11-07). A copy records
+the applications, code ids and feedback bases it relied on, and an
+install, a reclaim or a slide that changes one frees it at once.
+Fifteen goldens under `goldens/runtime/optimizer/` pin the stage's
+paths. Measured against `master`, three pinned builds a side, every
+process held to the performance cores: -34.0% on the geometric mean of
+the twenty-seven sources, `bench_send` and `bench_loop` 84% faster,
+Queens 76%, List 69%, Richards 31%, DeltaBlue 20%; and the elimination
+of the `do:` blocks with the walk's rule for homes -6.1% and -6.3% more
+in two sittings, Permute 70% and Storage 20% faster ("What inlining
+moved").
+
+Every end-of-batch group passed without a code change -- the first
+`linux` run found Docker Desktop stopped, and passed once it was
+started: `images` (1,078
+tests), `caches` (539), `benchmarks` (139), `release-checks` (4,854,
+and both lints), `codegen`, `stress` -- the suite under each of the
+twelve modes and without the JIT, 5,056 tests each, and `run-corpus`
+"ran 6, failed 0, skipped 205" plain and under each mode -- `linux`
+(5,055 tests, the 139 benchmark programs) and `aarch64` (5,055
+tests under QEMU).
+
+- `3be1f45b` -- the plan, with the four decisions of 2026-11-07.
+- `c739c455`, `7d5fb637`, `f8635b01` -- the snapshot tree, the table
+  from dispatch id to application, and the plan.
+- `c71a33fd`, `9c9fc2e5` -- inlined method scopes, their returns and
+  type-cases in the graph.
+- `0f840a06`, `ff2bcb0a`, `436bea41`, `9560ad6f` -- the scopes in
+  optimized code, and the exit that writes them.
+- `e4d88292`, `9d34e072`, `b8ccdb00` -- the copies' dependencies.
+- `0ed9a38f`, `17e03644` -- the callees always inlined.
+- `2a6c3724`, `f4e0fa4a`, `15d0d91b` -- blocks with their home and
+  their elimination.
+- `3cd82441`, `fa520c2e`, `4d9a22f9`, `0a18714f` -- the recompilee
+  walk.
+- `ed4400e0`, `3fbb119a`, `1621baf0`, `99ed2545` -- the way back in at
+  a poll, and a freed copy that keeps nothing it inlined.
+- `71b08aa5` to `18944be5` -- the goldens, the statistics, the
+  measurement and what it found: a scope that would create a block
+  sent, the leaves' lookups, the current class computed only before a
+  frame node, a leaf's frame written as before inlining.
+- `56efe31f` to `cf779126` -- a block handed to an Array's `do:`
+  eliminated, its failure way a trap, and the walk's rule for homes.
+- The documents' commits after them.
+
+What the stage leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "What
+the third stage's measurement left", "What the third stage's callees
+always inlined leave", "An optimized caller is never recompiled to
+inline a callee that became hot later" and "A poll whose entry cannot
+restore a value keeps the full exit". `Float` arithmetic in SSE2 comes
+next, then road step 9's fourth stage, inlined frame objects.

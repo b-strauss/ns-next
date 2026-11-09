@@ -9,6 +9,22 @@
 //! a frame that leaves optimized code there goes on in baseline code or
 //! the interpreter at its program counter.
 //!
+//! An inlined scope lies in the physical frame where the interpreter would
+//! push its activation (`docs/design/execution.md`, "Inlining"): around
+//! its frame nodes the frame register moves to the scope's register 0
+//! (`MacroAssembler::shift_frame`), and the template runs there with the
+//! scope's facts (`BodyAssembler::enter_scope`), so that it is the
+//! template the scope's own baseline code runs. Every simple node, move
+//! and write-back addresses the physical frame wherever the frame register
+//! stands; every block is entered with it at the physical register 0, and
+//! every way out of optimized code -- an exit, a trap, a poll's -- leaves
+//! it at the register 0 of the innermost scope the interrupt point stops
+//! in, whose frame the exit's walk and the leaves read. Every address
+//! inside an inlined scope's code that a leaf or an exit is handed, and
+//! every return address of its calls, is recorded with its interrupt
+//! point (`MacroAssembler::set_site`), so that the walk finds the chain of
+//! scopes it stands in (`jit::OptimizedMetadata`).
+//!
 //! A guard that fails traps (`MacroAssembler::trap`), running its
 //! instruction again in the interpreter: its write-back, as a poll's,
 //! lies on its way out alone, laid out after the body (`emit_traps`), so
@@ -24,15 +40,18 @@
 
 use std::collections::HashMap;
 
-use ns_assembler::{Condition, Label, Register};
+use ns_assembler::{Condition, Label, Memory, Register, Width};
 
 use super::allocate::{Allocation, DirtyPoint, Location, Move, PointKind, Spot};
-use super::graph::{BlockId, End, Graph, Node, ValueId, ValueKind};
+use super::graph::{
+    BlockId, ClassStart, End, Graph, IndexedKind, Node, ScopeId, ValueId, ValueKind,
+};
 use super::liveness::poll_target;
-use super::metadata::Metadata;
+use super::metadata::{Metadata, PollSource};
 use super::snapshot::{Snapshot, SnapshotInstruction};
-use crate::heap::Immediate;
-use crate::jit::baseline::{lower, BodyAssembler, TwinTransfer};
+use crate::heap::{CodeId, Heap, Immediate};
+use crate::interpreter::inline_cache::FeedbackBase;
+use crate::jit::baseline::{lower, BodyAssembler, Lowering, ScopeFacts, TwinTransfer};
 use crate::jit::macro_assembler::KnownSmallIntegers;
 use crate::jit::stubs::ExitKind;
 use crate::jit::{closures, sends, Refusal};
@@ -42,47 +61,167 @@ use crate::jit::{closures, sends, Refusal};
 pub(crate) struct OptimizedBody {
     pub(crate) code: ns_assembler::Assembled,
     /// Each send's call's return address, a label bound right after the
-    /// call, and the send's program counter, as `call_send` records them.
+    /// call, and the send's program counter in its own scope, as
+    /// `call_send` records them.
     pub(crate) returns: Vec<(Label, u32)>,
     /// The offsets in the code of its first data word and of the byte past
     /// its last, if it has any (`baseline::BaselineBody::words`).
     pub(crate) words: Option<std::ops::Range<u32>>,
-    /// The transfers into the baseline twin, one per `MakeClosure`
-    /// (`closures::transfer_to_twin`).
+    /// The transfers into the baseline twin, one per `MakeClosure` of the
+    /// body's own scope (`closures::transfer_to_twin`).
     pub(crate) twin_transfers: Vec<TwinTransfer>,
-    /// Each interrupt point's description, which the install drops: no
-    /// frame is rebuilt from it until optimized code holds a value outside
-    /// its frame word.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the deoptimization of frames whose values live outside their words"
-        )
-    )]
+    /// Each interrupt point's description: the install keeps those of the
+    /// points inside an inlined scope, whose scopes the exit's walk writes
+    /// (`jit::materialize`).
     pub(crate) metadata: Metadata,
+    /// Every address inside an inlined scope's code that a leaf or an exit
+    /// is handed, and every return address of a call made there: its
+    /// offset in the code and the index of its interrupt point in
+    /// `metadata`.
+    pub(crate) sites: Vec<(u32, u32)>,
+    /// Each scope's body and the feedback base its sends' cells are found
+    /// from, by its `ScopeId`, the body's own first; `None` for a scope
+    /// the plan made that the graph lays out no code for, which is no
+    /// scope of the copy's (`optimizing::laid_out_scopes`).
+    pub(crate) scopes: Vec<Option<LaidOutScope>>,
+    /// Every block the compile eliminated, by its `EliminatedId`: what the
+    /// exit that finds it live makes it from (`jit::materialize`).
+    pub(crate) eliminated: Vec<EliminatedBlock>,
+    /// The most scopes inlined into one another below the body's own, and
+    /// one past the highest physical register any scope's frame reaches
+    /// (`plan::InliningPlan`).
+    pub(crate) deepest_chain: u16,
+    pub(crate) deepest_extent: u32,
+    /// What the code relied on beyond its own body, which the install
+    /// records as the copy's dependencies (`jit::CopyDependencies`).
+    pub(crate) relied_on: ReliedOn,
     /// The offset in the code where the run loop's push enters, past the
     /// prologue a compiled call enters at: the body's first block.
     pub(crate) push_entry: u32,
+    /// Each back edge's poll a frame goes back into the code at once the
+    /// safepoint its exit stopped at is served.
+    pub(crate) polls: Vec<PollEntry>,
+    /// The arms of every type-case the code tests, which `--jit-statistics`
+    /// counts (`jit::JitStatistics::type_case_arms`).
+    pub(crate) type_case_arms: u32,
+    /// The sites the code lays out as their arms (`graph::Graph::inlined_sites`).
+    pub(crate) inlined_sites: u32,
     /// The `SmallInteger` tag tests the code holds, which the tests count.
     #[cfg(test)]
     pub(crate) small_integer_tag_tests: usize,
 }
 
-/// Emits `snapshot`'s optimized code, its `graph` allocated as
-/// `allocation` says, into `body`, which `BodyAssembler::for_optimized`
-/// made; answers the label the run loop's push enters at, past the
-/// prologue.
+/// A back edge's poll a frame of the code goes back in at once the
+/// safepoint its exit stopped at is served (`jit::resumed_at_poll`,
+/// `docs/design/execution.md`, "Between the tiers"): the offsets in the
+/// code of the address its exit hands over, which names the poll, and of
+/// its entry, and the index of its interrupt point. The entry restores
+/// every value live there from the frame's words a collection at the
+/// safepoint kept current (`metadata::poll_restores`), the frame register
+/// at the physical frame's register 0, as the poll stood, and goes on
+/// past the poll's test, so that a request standing still costs a turn
+/// of the loop, never a turn without one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PollEntry {
+    pub(crate) exit: u32,
+    pub(crate) entry: u32,
+    pub(crate) point: u32,
+    /// Whether the entry writes a value back into a frame word the
+    /// collector's pre-pass may have nilled, which the tests read.
+    #[cfg(test)]
+    pub(crate) rewrites_lost_words: bool,
+    /// The frame words the entry loads values into machine registers
+    /// from, which the tests read before and after the safepoint.
+    #[cfg(test)]
+    pub(crate) machine_sources: Vec<u16>,
+}
+
+/// A `PollEntry` as the emitter lays it out, before the code's offsets are
+/// known.
+pub(crate) struct EmittedPoll {
+    pub(crate) exit: Label,
+    pub(crate) entry: Label,
+    pub(crate) point: u32,
+    #[cfg(test)]
+    pub(crate) rewrites_lost_words: bool,
+    #[cfg(test)]
+    pub(crate) machine_sources: Vec<u16>,
+}
+
+/// A scope the copy laid out code for: its body, the feedback base its
+/// sends' cells are found from, and for a block's scope the block the
+/// compile eliminated whose `value` it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LaidOutScope {
+    pub(crate) code_id: CodeId,
+    pub(crate) feedback_base: FeedbackBase,
+    pub(crate) block: Option<super::plan::EliminatedId>,
+    /// How its current class is found, which the exit's walk writes
+    /// (`graph::GraphScope::class`); `None` for the root.
+    pub(crate) class: Option<super::graph::ClassRecipe>,
+}
+
+/// A block the compile eliminated, as the exit makes it: its body, the
+/// scope whose `MakeClosure` it is -- the frame it captures -- and the
+/// registers of that scope its values are copied from, which the plan
+/// keeps unwritten while it lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EliminatedBlock {
+    pub(crate) code_id: CodeId,
+    pub(crate) home: ScopeId,
+    pub(crate) copied: Vec<u16>,
+}
+
+/// What optimized code relied on beyond its own body and its key: what an
+/// edit, a full collection or a slide of the site ranges can change under
+/// it (`docs/design/execution.md`, "Invalidation").
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ReliedOn {
+    /// The guards its type-cases test their arms by, each once.
+    pub(crate) guards: Vec<crate::mixin::DispatchId>,
+    /// The applications its inlined scopes were compiled for, each once:
+    /// each scope's receiver's and the one it is entered at, whose lookup
+    /// found the callee, whose layout its slot reads and whose outer
+    /// structure its lexical sends walk; and the one each arm always
+    /// inlined was decided for, whose layout an accessor's field is.
+    pub(crate) applications: Vec<crate::heap::ApplicationIndex>,
+    /// Each inlined body -- a method's or a block's -- and the feedback
+    /// base its sends' cells are found from, in the order of its scopes,
+    /// then each eliminated block's body, whose closure an exit makes,
+    /// each once.
+    pub(crate) bodies: Vec<(CodeId, FeedbackBase)>,
+}
+
+/// One scope of the graph as the emitter lowers it: the snapshot of its
+/// body, whose sites name its traps', the facts its templates read, and
+/// the physical register its register 0 lies at.
+pub(crate) struct EmittedScope<'tree> {
+    pub(crate) snapshot: &'tree Snapshot,
+    pub(crate) facts: ScopeFacts,
+    pub(crate) offset: u16,
+}
+
+/// Emits the optimized code of the graph `graph` over `scopes` -- the
+/// body's own first -- allocated as `allocation` says and described by
+/// `metadata`, into `body`, which `BodyAssembler::for_optimized` made;
+/// answers the label the run loop's push enters at, past the prologue,
+/// and each poll a frame goes back in at.
 pub(in crate::jit) fn emit(
-    snapshot: &Snapshot,
+    scopes: &[EmittedScope<'_>],
     graph: &Graph,
     allocation: &Allocation,
+    metadata: &Metadata,
     body: &mut BodyAssembler,
-) -> Result<Label, Refusal> {
-    sends::prologue(body, &snapshot.facts);
+) -> Result<(Label, Vec<EmittedPoll>), Refusal> {
+    let root = scopes
+        .first()
+        .expect("internal: a compile has the body's own scope");
+    sends::prologue(body, &root.snapshot.facts);
     let mut emitter = Emitter {
         graph,
         allocation,
+        metadata,
+        scopes,
         labels: graph
             .blocks
             .iter()
@@ -91,11 +230,13 @@ pub(in crate::jit) fn emit(
         points: allocation
             .dirty_at
             .iter()
-            .map(|point| (point.position, point))
+            .enumerate()
+            .map(|(index, point)| (point.position, (index, point)))
             .collect(),
         polls: Vec::new(),
+        poll_entries: Vec::new(),
         traps: Vec::new(),
-        snapshot,
+        trampolines: Vec::new(),
     };
     let order = &allocation.positions.order;
     let first = *order.first().expect("internal: a graph has an entry block");
@@ -116,24 +257,34 @@ pub(in crate::jit) fn emit(
     }
     emitter.emit_polls(body);
     emitter.emit_traps(body);
+    emitter.emit_trampolines(body);
+    body.macro_assembler.set_site(None);
     body.macro_assembler.hold_values(&[]);
-    Ok(push_entry)
+    Ok((push_entry, emitter.poll_entries))
 }
 
 /// A back edge's poll, out of line: the label its test jumps to, the
-/// stores it owes the frame there, and the loop head it exits at.
+/// stores it owes the frame there, its interrupt point, whose innermost
+/// scope it exits in, at the loop head's program counter, its position,
+/// and the label past its test, where a frame that goes back in at the
+/// poll goes on.
 struct Poll {
     label: Label,
     stores: Vec<(u16, Register)>,
-    program_counter: u32,
+    point: usize,
+    position: u32,
+    resume: Label,
 }
 
 /// A guard's trap, out of line: the label its failed test jumps to, the
-/// stores it owes the frame there, the instruction it runs again and the
-/// site its speculation rested on.
+/// shift of the frame register there, the stores it owes the frame, its
+/// interrupt point, the instruction it runs again and the site its
+/// speculation rested on.
 struct Trap {
     label: Label,
+    shift: i32,
     stores: Vec<(u16, Register)>,
+    point: usize,
     program_counter: u32,
     site: u32,
 }
@@ -141,14 +292,20 @@ struct Trap {
 struct Emitter<'graph> {
     graph: &'graph Graph,
     allocation: &'graph Allocation,
+    metadata: &'graph Metadata,
+    scopes: &'graph [EmittedScope<'graph>],
     /// Each block's label, by its index.
     labels: Vec<Label>,
-    /// Each interrupt point's write-back, by its position.
-    points: HashMap<u32, &'graph DirtyPoint>,
+    /// Each interrupt point's index and write-back, by its position.
+    points: HashMap<u32, (usize, &'graph DirtyPoint)>,
     polls: Vec<Poll>,
+    /// Each poll's exit and entry, once laid out (`emit_polls`).
+    poll_entries: Vec<EmittedPoll>,
     traps: Vec<Trap>,
-    /// The snapshot, whose sites name each trap's.
-    snapshot: &'graph Snapshot,
+    /// The ways into a block from a template's jump made with the frame
+    /// register at an inlined scope's register 0: the label the template
+    /// jumps to, the shift there, and the block, entered with none.
+    trampolines: Vec<(Label, i32, Label)>,
 }
 
 impl Emitter<'_> {
@@ -157,7 +314,7 @@ impl Emitter<'_> {
     fn register_of(&self, value: ValueId, position: u32) -> Register {
         match self.allocation.location_of(value, position) {
             Location::Register(register) => register,
-            Location::FrameWord => {
+            Location::FrameWord | Location::EliminatedBlock(_) => {
                 panic!("internal: {value:?} is read in a register at {position}")
             }
         }
@@ -173,6 +330,69 @@ impl Emitter<'_> {
         let _ = (body, position);
     }
 
+    /// Tells a debug build, before a store's barrier, whose remembering
+    /// leaf keeps only the survivors, that only the values living past the
+    /// node at `use_position` are held: the allocation moved those into
+    /// the survivors, and the node's operands dying there are read no more.
+    fn hold_past_leaf_call(&self, body: &mut BodyAssembler, use_position: u32) {
+        self.hold(body, use_position + 1);
+    }
+
+    /// The address of the element the one-based index in `index` names of
+    /// the `Array` or `ByteArray` `object` names, as the row's stub finds
+    /// it (`MacroAssembler::load_element_address`, `load_byte_address`),
+    /// in the idioms' temporaries: a jump to `failed` for every receiver,
+    /// index and bound the row's leaf decides otherwise. `object` and
+    /// `index` are kept.
+    fn indexed_address(
+        body: &mut BodyAssembler,
+        kind: IndexedKind,
+        object: Register,
+        index: Register,
+        failed: Label,
+    ) -> Register {
+        let macro_assembler = &mut body.macro_assembler;
+        let temporaries = macro_assembler.roles().integer_temporaries();
+        let (index_copy, address) = (
+            macro_assembler.temporary(temporaries.right),
+            macro_assembler.temporary(temporaries.remainder),
+        );
+        macro_assembler.move_register(index_copy, index);
+        match kind {
+            IndexedKind::Array => {
+                macro_assembler.load_element_address(object, index_copy, address, failed);
+            }
+            IndexedKind::ByteArray => {
+                let size = macro_assembler.temporary(temporaries.left);
+                macro_assembler.load_byte_address(object, index_copy, address, size, failed);
+            }
+        }
+        address
+    }
+
+    /// The scope `scope` names.
+    fn scope(&self, scope: ScopeId) -> &EmittedScope<'_> {
+        &self.scopes[scope.0 as usize]
+    }
+
+    /// The site the code of the interrupt point `point` records its
+    /// addresses with: its index, for a point inside an inlined scope or
+    /// where a block the compile eliminated is live, whose closure the exit
+    /// makes; none for any other point of the body's own scope, whose
+    /// addresses name the body.
+    fn site_of(&self, point: usize) -> Option<u32> {
+        let described = &self.metadata.points[point];
+        (described.scopes.len() > 1 || described.holds_eliminated_blocks()).then(|| {
+            u32::try_from(point).expect("internal: a body's points are numbered in 32 bits")
+        })
+    }
+
+    /// Moves the frame register to the physical register `offset`.
+    fn shift_to(body: &mut BodyAssembler, offset: u16) {
+        let shift = i32::from(offset) - body.macro_assembler.frame_shift();
+        body.macro_assembler.shift_frame(shift);
+    }
+
     fn block(&mut self, body: &mut BodyAssembler, block_id: BlockId, next: Option<BlockId>) {
         let graph = self.graph;
         let positions = &self.allocation.positions;
@@ -180,6 +400,9 @@ impl Emitter<'_> {
         body.macro_assembler
             .assembler()
             .bind(self.labels[block_id.index()]);
+        // Every way into a block brings the frame register at the physical
+        // register 0.
+        body.macro_assembler.assume_frame_shift(0);
         // A debug build's refusal of a dead register names the instruction
         // being run: the block's first, then each frame node's.
         body.program_counter = block.program_counter;
@@ -207,13 +430,13 @@ impl Emitter<'_> {
         for each in self.allocation.moves_at(position) {
             match *each {
                 Move::Store { from, register, .. } => {
-                    macro_assembler.store_frame_register(register, from);
+                    macro_assembler.store_physical_register(register, from);
                 }
                 // The frame word was written by this code, or is one the
                 // interpreter reads there: never a dead register's, which
                 // a debug build's check would refuse.
                 Move::Load { register, into, .. } => {
-                    macro_assembler.load_frame_register(into, register);
+                    macro_assembler.load_physical_register(into, register);
                 }
                 Move::Transfer { from, into, .. } => {
                     let spot = |spot: Spot| match spot {
@@ -241,14 +464,15 @@ impl Emitter<'_> {
         let definition = use_position + 1;
         let defined_in = |value: ValueId| match self.allocation.location_of(value, definition) {
             Location::Register(register) => Some(register),
-            Location::FrameWord => None,
+            Location::FrameWord | Location::EliminatedBlock(_) => None,
         };
         match node {
             // A read only a frame node takes is not loaded: the frame
             // word holds it.
             Node::FrameRead { register, value } => {
                 if let Some(target) = defined_in(*value) {
-                    body.macro_assembler.load_frame_register(target, *register);
+                    body.macro_assembler
+                        .load_physical_register(target, *register);
                 }
             }
             Node::Constant { value, word } => {
@@ -256,10 +480,21 @@ impl Emitter<'_> {
                     body.macro_assembler.load_immediate_word(target, *word);
                 }
             }
+            // The block is made by the exit that finds it live; until then
+            // every frame word bound to it holds `nil`, a word the
+            // collector may trace.
+            Node::EliminatedBlock { value, .. } => {
+                if let Some(target) = defined_in(*value) {
+                    body.macro_assembler
+                        .load_immediate_word(target, Immediate::NIL.bits());
+                }
+            }
+            // The body's own receiver: an inlined scope's is its header
+            // binding's.
             Node::Receiver { value } => {
                 if let Some(target) = defined_in(*value) {
-                    let argument_count = body.argument_count;
-                    body.macro_assembler.load_receiver(target, argument_count);
+                    let receiver = Heap::receiver_register(self.scopes[0].facts.argument_count);
+                    body.macro_assembler.load_physical_header(target, receiver);
                 }
             }
             // A binding, which the write-backs store.
@@ -293,11 +528,19 @@ impl Emitter<'_> {
                     self.register_of(*left, use_position),
                     self.register_of(*right, use_position),
                 );
-                // The fast path's failure goes to its fallback, or else to
-                // its trap, whose write-back lies on that way alone.
+                // The fast path's failure goes to its fallback, entered
+                // with the frame register at the physical register 0, or
+                // else to its trap, whose write-back lies on that way
+                // alone.
                 let fallback = match fallback {
-                    Some(fallback) => self.labels[fallback.index()],
-                    None => self.trap_out_of_line(body, use_position, *program_counter),
+                    Some(fallback) => {
+                        Self::shift_to(body, 0);
+                        self.labels[fallback.index()]
+                    }
+                    None => {
+                        let scope = self.graph.block(block_id).scope;
+                        self.trap_out_of_line(body, use_position, *program_counter, scope, None)
+                    }
                 };
                 let macro_assembler = &mut body.macro_assembler;
                 let temporaries = macro_assembler.roles().integer_temporaries();
@@ -326,7 +569,204 @@ impl Emitter<'_> {
                     macro_assembler.move_register(target, result);
                 }
             }
+            // Its registers are the callee's: what the sender held there
+            // is never stored.
+            Node::Overlay { .. } => {}
+            Node::ResetOwnSlotGuard => self.reset_own_slot_guard(body, block_id),
+            Node::CurrentClass {
+                value,
+                from,
+                start,
+                steps,
+            } => {
+                let from = self.register_of(*from, use_position);
+                self.current_class(body, defined_in(*value), from, *start, *steps);
+            }
+            Node::FieldLoad {
+                value,
+                object,
+                field,
+            } => {
+                let object = self.register_of(*object, use_position);
+                if let Some(target) = defined_in(*value) {
+                    body.macro_assembler.load_field(target, object, *field);
+                }
+            }
+            Node::FieldStore {
+                object,
+                field,
+                source,
+            } => {
+                let (object, source) = (
+                    self.register_of(*object, use_position),
+                    self.register_of(*source, use_position),
+                );
+                let macro_assembler = &mut body.macro_assembler;
+                let temporaries = macro_assembler.roles().integer_temporaries();
+                let (holder, scratch) = (
+                    macro_assembler.temporary(temporaries.left),
+                    macro_assembler.temporary(temporaries.right),
+                );
+                macro_assembler.move_register(holder, object);
+                self.hold_past_leaf_call(body, use_position);
+                body.macro_assembler
+                    .store_field_with_barrier(holder, *field, source, scratch);
+            }
+            Node::IdentityCompare {
+                value,
+                left,
+                right,
+                program_counter,
+            } => {
+                let (left, right) = (
+                    self.register_of(*left, use_position),
+                    self.register_of(*right, use_position),
+                );
+                let scope = self.graph.block(block_id).scope;
+                let undecided =
+                    self.trap_out_of_line(body, use_position, *program_counter, scope, None);
+                let macro_assembler = &mut body.macro_assembler;
+                let temporaries = macro_assembler.roles().integer_temporaries();
+                let scratch = (
+                    macro_assembler.temporary(temporaries.left),
+                    macro_assembler.temporary(temporaries.right),
+                );
+                let (identical, done) = (
+                    macro_assembler.assembler().label(),
+                    macro_assembler.assembler().label(),
+                );
+                // One value on both sides -- `x == x` -- is identical, and
+                // its one register is no pair the checks can take.
+                if left == right {
+                    macro_assembler.assembler().jump(identical);
+                } else {
+                    macro_assembler.assembler().compare(left, right);
+                    macro_assembler
+                        .assembler()
+                        .jump_if(Condition::Equal, identical);
+                    // Every check runs whether or not the answer is read: a
+                    // future the leaf declines for is forced by the method.
+                    macro_assembler.jump_if_identity_undecided((left, right), scratch, undecided);
+                }
+                match defined_in(*value) {
+                    Some(target) => {
+                        macro_assembler
+                            .load_immediate_word(target, Immediate::boolean(false).bits());
+                        macro_assembler.assembler().jump(done);
+                        macro_assembler.assembler().bind(identical);
+                        macro_assembler
+                            .load_immediate_word(target, Immediate::boolean(true).bits());
+                    }
+                    None => macro_assembler.assembler().bind(identical),
+                }
+                macro_assembler.assembler().bind(done);
+            }
+            Node::ClassOf { value, object } => {
+                let object = self.register_of(*object, use_position);
+                if let Some(target) = defined_in(*value) {
+                    let macro_assembler = &mut body.macro_assembler;
+                    let class = macro_assembler
+                        .temporary(macro_assembler.roles().integer_temporaries().left);
+                    macro_assembler.load_class(class, object);
+                    macro_assembler.move_register(target, class);
+                }
+            }
+            Node::IndexedLoad {
+                kind,
+                value,
+                object,
+                index,
+                program_counter,
+            } => {
+                let (object, index) = (
+                    self.register_of(*object, use_position),
+                    self.register_of(*index, use_position),
+                );
+                let scope = self.graph.block(block_id).scope;
+                let failed =
+                    self.trap_out_of_line(body, use_position, *program_counter, scope, None);
+                let element = Self::indexed_address(body, *kind, object, index, failed);
+                let macro_assembler = &mut body.macro_assembler;
+                let loaded =
+                    macro_assembler.temporary(macro_assembler.roles().integer_temporaries().left);
+                let layout = Heap::machine_layout();
+                let assembler = macro_assembler.assembler();
+                match kind {
+                    IndexedKind::Array => assembler.load(Width::Word64, loaded, word_at(element)),
+                    IndexedKind::ByteArray => {
+                        assembler.load(Width::Byte, loaded, word_at(element));
+                        assembler.shift_left(loaded, layout.tag_bits);
+                        assembler.or_immediate(loaded, layout.small_integer_tag);
+                    }
+                }
+                if let Some(target) = defined_in(*value) {
+                    macro_assembler.move_register(target, loaded);
+                }
+            }
+            Node::IndexedStore {
+                kind,
+                object,
+                index,
+                source,
+                program_counter,
+            } => {
+                let (object, index, source) = (
+                    self.register_of(*object, use_position),
+                    self.register_of(*index, use_position),
+                    self.register_of(*source, use_position),
+                );
+                let scope = self.graph.block(block_id).scope;
+                let failed =
+                    self.trap_out_of_line(body, use_position, *program_counter, scope, None);
+                let element = Self::indexed_address(body, *kind, object, index, failed);
+                let macro_assembler = &mut body.macro_assembler;
+                let temporaries = macro_assembler.roles().integer_temporaries();
+                let layout = Heap::machine_layout();
+                match kind {
+                    IndexedKind::Array => {
+                        let (holder, scratch) = (
+                            macro_assembler.temporary(temporaries.left),
+                            macro_assembler.temporary(temporaries.right),
+                        );
+                        macro_assembler.move_register(holder, object);
+                        self.hold_past_leaf_call(body, use_position);
+                        body.macro_assembler.store_with_barrier_at(
+                            holder,
+                            word_at(element),
+                            source,
+                            scratch,
+                        );
+                    }
+                    IndexedKind::ByteArray => {
+                        // A `SmallInteger` from 0 to 255: tagged, and its
+                        // word below 256's, unsigned, which a negative
+                        // one's is not.
+                        let byte = macro_assembler.temporary(temporaries.left);
+                        let assembler = macro_assembler.assembler();
+                        assembler.test_immediate(source, layout.small_integer_tag);
+                        assembler.jump_if(Condition::Equal, failed);
+                        assembler.compare_immediate(source, BYTE_LIMIT << layout.tag_bits);
+                        assembler.jump_if(Condition::AboveOrEqual, failed);
+                        assembler.move_register(byte, source);
+                        assembler.shift_right_logical(byte, layout.tag_bits);
+                        assembler.store(Width::Byte, word_at(element), byte);
+                    }
+                }
+            }
+            Node::TrapIfNil {
+                value,
+                program_counter,
+            } => {
+                let value = self.register_of(*value, use_position);
+                let scope = self.graph.block(block_id).scope;
+                let unfilled =
+                    self.trap_out_of_line(body, use_position, *program_counter, scope, None);
+                let assembler = body.macro_assembler.assembler();
+                assembler.compare_immediate(value, Heap::machine_layout().nil_word);
+                assembler.jump_if(Condition::Equal, unfilled);
+            }
             Node::Frame {
+                scope,
                 program_counter,
                 instruction,
                 ..
@@ -334,6 +774,7 @@ impl Emitter<'_> {
                 body,
                 block_id,
                 index,
+                *scope,
                 *program_counter,
                 instruction,
                 use_position,
@@ -341,19 +782,80 @@ impl Emitter<'_> {
         }
     }
 
+    /// An inlined scope's current class into `target`, as a compiled call
+    /// computes its callee's (`sends::send_public`): `steps` superclass
+    /// steps up from the class of the value in `from`, or from the class
+    /// `from` holds.
+    fn current_class(
+        &self,
+        body: &mut BodyAssembler,
+        target: Option<Register>,
+        from: Register,
+        start: ClassStart,
+        steps: u16,
+    ) {
+        let Some(target) = target else {
+            return;
+        };
+        let macro_assembler = &mut body.macro_assembler;
+        let temporaries = macro_assembler.roles().integer_temporaries();
+        let (class, level) = (
+            macro_assembler.temporary(temporaries.left),
+            macro_assembler.temporary(temporaries.right),
+        );
+        match start {
+            ClassStart::ClassOf => macro_assembler.load_class(class, from),
+            ClassStart::Class => macro_assembler.move_register(class, from),
+        }
+        if steps > 0 {
+            // The receiver's guard, or the start the plan knows, says the
+            // chain has the level: a walk that fails is a defect.
+            let assembler = macro_assembler.assembler();
+            let (failed, walked) = (assembler.label(), assembler.label());
+            assembler.move_immediate(level, u64::from(steps));
+            macro_assembler.walk_superclasses(class, level, failed);
+            let assembler = macro_assembler.assembler();
+            assembler.jump(walked);
+            assembler.bind(failed);
+            assembler.trap();
+            assembler.bind(walked);
+        }
+        macro_assembler.move_register(target, class);
+    }
+
+    /// Makes the own-slot guard word of `block_id`'s scope `none`
+    /// (`Node::ResetOwnSlotGuard`), since no push wrote it: the first
+    /// own-slot access the scope's templates make then takes the cold
+    /// check, which records it as the push would, and no guard a frame
+    /// laid there before vouches for this scope's entered level.
+    fn reset_own_slot_guard(&self, body: &mut BodyAssembler, block_id: BlockId) {
+        let scope = self.scope(self.graph.block(block_id).scope);
+        let (guard, _) = Heap::own_slot_registers(scope.facts.argument_count);
+        let (none_word, _) = Heap::machine_own_slot_words();
+        let none_word = i32::try_from(none_word).expect("internal: the guard none is a small word");
+        body.macro_assembler
+            .store_physical_immediate(scope.offset + guard, none_word);
+    }
+
     /// A frame node: the write-back the allocation owes the frame there,
     /// then the instruction by the template the baseline's arm for it
-    /// emits, with nothing held.
+    /// emits, with nothing held, the frame register at the register 0 of
+    /// the node's scope and the scope's facts.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the node's fields, as the block's walk hands them over"
+    )]
     fn frame_node(
         &mut self,
         body: &mut BodyAssembler,
         block_id: BlockId,
         index: usize,
+        scope: ScopeId,
         program_counter: u32,
         instruction: &SnapshotInstruction,
         use_position: u32,
     ) {
-        let point = self.points[&use_position];
+        let (point_index, point) = self.points[&use_position];
         debug_assert_eq!(
             (point.block, point.kind),
             (block_id, PointKind::Frame { node: index }),
@@ -363,9 +865,15 @@ impl Emitter<'_> {
             let Location::Register(from) = location else {
                 panic!("internal: a value not in its frame word is in a register");
             };
-            body.macro_assembler.store_frame_register(*register, *from);
+            body.macro_assembler
+                .store_physical_register(*register, *from);
         }
         body.macro_assembler.hold_values(&[]);
+        let emitted = self.scope(scope);
+        let (offset, facts, inlined) = (emitted.offset, emitted.facts, scope != ScopeId::ROOT);
+        Self::shift_to(body, offset);
+        body.macro_assembler.set_site(self.site_of(point_index));
+        let own = body.enter_scope(&facts);
         body.program_counter = program_counter;
         body.macro_assembler.set_program_counter(program_counter);
         // Under the deopt stress mode the point may hand its instruction
@@ -384,7 +892,19 @@ impl Emitter<'_> {
             let label = match block.end {
                 End::FrameJump {
                     target: entered, ..
-                } if index + 1 == block.nodes.len() => self.labels[entered.index()],
+                } if index + 1 == block.nodes.len() => {
+                    let entered = self.labels[entered.index()];
+                    // A block is entered with the frame register at the
+                    // physical register 0.
+                    if offset == 0 {
+                        entered
+                    } else {
+                        let trampoline = body.macro_assembler.assembler().label();
+                        self.trampolines
+                            .push((trampoline, i32::from(offset), entered));
+                        trampoline
+                    }
+                }
                 // Only the frame node a `FrameJump` ends on jumps elsewhere:
                 // a mirror send's failure that some later change left
                 // before another node would go on after the template
@@ -402,8 +922,15 @@ impl Emitter<'_> {
         }
         // The one instruction whose snapshot form lacks what its arm reads,
         // the block's code: optimized code never reifies its frame, so its
-        // arm transfers into the twin, as a lean body's does.
+        // arm transfers into the twin, as a lean body's does -- the body's
+        // own frame's twin, which no inlined scope has: in one the
+        // interpreter makes the closure, once the exit has materialized
+        // the scopes. A transfer writes nothing of the frame but its
+        // header, so where a block the compile eliminated is live, whose
+        // registers hold `nil` for it, the exit makes it instead.
+        let eliminated = self.metadata.points[point_index].holds_eliminated_blocks();
         let lowering = match instruction {
+            SnapshotInstruction::MakeClosure { .. } if inlined || eliminated => Lowering::Exit,
             SnapshotInstruction::MakeClosure { .. } => closures::transfer_to_twin(body),
             other => lower(
                 &other
@@ -414,6 +941,8 @@ impl Emitter<'_> {
         };
         body.finish_lowering(lowering);
         body.macro_assembler.assembler().bind(after);
+        body.enter_scope(&own);
+        body.macro_assembler.set_site(None);
     }
 
     fn end(
@@ -432,7 +961,14 @@ impl Emitter<'_> {
                     .jump(labels[target.index()]);
             }
         };
-        match &graph.block(block_id).end {
+        let block = graph.block(block_id);
+        // Every block is entered with the frame register at the physical
+        // register 0; a trap leaves at its scope's, and an end that never
+        // goes on leaves it where its frame node did.
+        if !matches!(block.end, End::Trap { .. } | End::Frame) {
+            Self::shift_to(body, 0);
+        }
+        match &block.end {
             End::Jump(target) => {
                 if let Some(head) = poll_target(graph, block_id) {
                     self.back_edge(body, block_id, head, end_use);
@@ -476,7 +1012,13 @@ impl Emitter<'_> {
                         ),
                         None => (
                             vec![(true, *if_true), (false, *if_false)],
-                            self.trap_out_of_line(body, end_use, *program_counter),
+                            self.trap_out_of_line(
+                                body,
+                                end_use,
+                                *program_counter,
+                                block.scope,
+                                None,
+                            ),
                             None,
                         ),
                     };
@@ -501,12 +1043,14 @@ impl Emitter<'_> {
                 program_counter,
                 site,
             } => {
+                let (point, _) = self.points[&end_use];
                 let stores = self.trap_stores(end_use);
-                let macro_assembler = &mut body.macro_assembler;
                 for (register, from) in stores {
-                    macro_assembler.store_frame_register(register, from);
+                    body.macro_assembler.store_physical_register(register, from);
                 }
-                macro_assembler.trap(*program_counter, *site);
+                self.leave_at(body, point);
+                body.macro_assembler.trap(*program_counter, *site);
+                body.macro_assembler.set_site(None);
             }
             End::Return { value } => {
                 let value = self.register_of(*value, end_use);
@@ -553,7 +1097,58 @@ impl Emitter<'_> {
                 self.moves(body, end_definition);
                 jump_unless_next(body, &self.labels, *fall_through);
             }
+            End::TypeCase {
+                program_counter,
+                scope,
+                receiver,
+                arms,
+                fall_through,
+                site,
+            } => {
+                debug_assert!(
+                    self.allocation.moves_at(end_definition).is_empty(),
+                    "internal: a type-case's ways need no moves"
+                );
+                // The receiver's guard, as a cell's compare loads it,
+                // tested against each arm's in the cache's order.
+                let receiver = self.register_of(*receiver, end_use);
+                let otherwise = match fall_through {
+                    Some(send) => self.labels[send.index()],
+                    None => {
+                        self.trap_out_of_line(body, end_use, *program_counter, *scope, Some(*site))
+                    }
+                };
+                let macro_assembler = &mut body.macro_assembler;
+                let temporaries = macro_assembler.roles().integer_temporaries();
+                let guard = macro_assembler.temporary(temporaries.left);
+                let expected = macro_assembler.temporary(temporaries.right);
+                macro_assembler.load_guard(guard, receiver);
+                let assembler = macro_assembler.assembler();
+                for (dispatch_id, arm) in arms {
+                    match i32::try_from(dispatch_id.bits()) {
+                        Ok(bits) => assembler.compare_immediate(guard, bits),
+                        Err(_) => {
+                            assembler.move_immediate(expected, u64::from(dispatch_id.bits()));
+                            assembler.compare(guard, expected);
+                        }
+                    }
+                    assembler.jump_if(Condition::Equal, self.labels[arm.index()]);
+                }
+                if fall_through.is_none() || *fall_through != next {
+                    assembler.jump(otherwise);
+                }
+            }
         }
+    }
+
+    /// Moves the frame register to the register 0 of the innermost scope
+    /// the interrupt point `point` stops in, and records the addresses of
+    /// the exit that follows with the point: the frame the exit's walk
+    /// materializes the scopes above.
+    fn leave_at(&self, body: &mut BodyAssembler, point: usize) {
+        let innermost = &self.metadata.points[point].scopes[0];
+        Self::shift_to(body, innermost.offset);
+        body.macro_assembler.set_site(self.site_of(point));
     }
 
     /// A back edge's count and poll, whose write-back lies on the way to
@@ -566,18 +1161,23 @@ impl Emitter<'_> {
         head: BlockId,
         end_use: u32,
     ) {
-        let point = self.points[&end_use];
+        let (point_index, point) = self.points[&end_use];
         debug_assert_eq!(
             (point.block, point.kind),
             (block_id, PointKind::Poll),
             "internal: a back edge's write-back is its poll's"
+        );
+        debug_assert!(
+            self.metadata.points[point_index].scopes[0].program_counter
+                == self.graph.block(head).taint_point.1,
+            "internal: a poll exits at its loop head"
         );
         let stores = point
             .stores
             .iter()
             .map(|(register, _, location)| match location {
                 Location::Register(from) => (*register, *from),
-                Location::FrameWord => {
+                Location::FrameWord | Location::EliminatedBlock(_) => {
                     panic!("internal: a value not in its frame word is in a register")
                 }
             })
@@ -588,17 +1188,21 @@ impl Emitter<'_> {
         // whose write-back lies on its way alone.
         body.macro_assembler.count_down_to(label);
         body.macro_assembler.poll_to(label);
+        let resume = body.macro_assembler.assembler().label();
+        body.macro_assembler.assembler().bind(resume);
         self.polls.push(Poll {
             label,
             stores,
-            program_counter: self.graph.block(head).program_counter,
+            point: point_index,
+            position: end_use,
+            resume,
         });
     }
 
     /// The stores the trap at `position` owes the frame, each from the
     /// register its value is in.
     fn trap_stores(&self, position: u32) -> Vec<(u16, Register)> {
-        let point = self.points[&position];
+        let (_, point) = self.points[&position];
         debug_assert!(
             matches!(point.kind, PointKind::Trap { .. }),
             "internal: a trap's write-back is its own"
@@ -608,7 +1212,7 @@ impl Emitter<'_> {
             .iter()
             .map(|(register, _, location)| match location {
                 Location::Register(from) => (*register, *from),
-                Location::FrameWord => {
+                Location::FrameWord | Location::EliminatedBlock(_) => {
                     panic!("internal: a value not in its frame word is in a register")
                 }
             })
@@ -616,22 +1220,31 @@ impl Emitter<'_> {
     }
 
     /// The label of the trap at `position`, which runs the instruction at
-    /// `program_counter` again, its write-back and exit laid out after the
-    /// body (`emit_traps`), so that a guard that holds stores nothing.
+    /// `program_counter` of `scope` again, its write-back and exit laid
+    /// out after the body (`emit_traps`), so that a guard that holds
+    /// stores nothing. Its site is `site`, or the one the scope's own
+    /// snapshot records at the instruction.
     fn trap_out_of_line(
         &mut self,
         body: &mut BodyAssembler,
         position: u32,
         program_counter: u32,
+        scope: ScopeId,
+        site: Option<u32>,
     ) -> Label {
         let label = body.macro_assembler.assembler().label();
-        let index = usize::try_from(program_counter).expect("internal: a program counter fits");
-        let site = self.snapshot.sites[index]
-            .expect("internal: a trap rests on a site")
-            .site;
+        let site = site.unwrap_or_else(|| {
+            let index = usize::try_from(program_counter).expect("internal: a program counter fits");
+            self.scope(scope).snapshot.sites[index]
+                .expect("internal: a trap rests on a site")
+                .site
+        });
+        let (point, _) = self.points[&position];
         self.traps.push(Trap {
             label,
+            shift: body.macro_assembler.frame_shift(),
             stores: self.trap_stores(position),
+            point,
             program_counter,
             site,
         });
@@ -641,29 +1254,127 @@ impl Emitter<'_> {
     /// Each guard's way to its trap: the write-back, then the trap, which
     /// runs the instruction again in the interpreter.
     fn emit_traps(&mut self, body: &mut BodyAssembler) {
-        let macro_assembler = &mut body.macro_assembler;
         for trap in std::mem::take(&mut self.traps) {
-            macro_assembler.assembler().bind(trap.label);
+            body.macro_assembler.assembler().bind(trap.label);
+            body.macro_assembler.assume_frame_shift(trap.shift);
             for (register, from) in trap.stores {
-                macro_assembler.store_frame_register(register, from);
+                body.macro_assembler.store_physical_register(register, from);
             }
-            macro_assembler.trap(trap.program_counter, trap.site);
+            self.leave_at(body, trap.point);
+            body.macro_assembler.trap(trap.program_counter, trap.site);
+            body.macro_assembler.set_site(None);
         }
     }
 
     /// Each back edge's way to its exit: the write-back, then the exit at
-    /// the loop's head, where the interpreter takes the safepoint.
+    /// the loop's head, where the interpreter takes the safepoint; and
+    /// the poll's entry, where the frame goes back into the code once the
+    /// safepoint is served (`PollEntry`), for a poll whose every live
+    /// value it can restore (`metadata::poll_restores`).
     fn emit_polls(&mut self, body: &mut BodyAssembler) {
-        let macro_assembler = &mut body.macro_assembler;
         for poll in std::mem::take(&mut self.polls) {
-            macro_assembler.assembler().bind(poll.label);
+            body.macro_assembler.assembler().bind(poll.label);
+            body.macro_assembler.assume_frame_shift(0);
             for (register, from) in poll.stores {
-                macro_assembler.store_frame_register(register, from);
+                body.macro_assembler.store_physical_register(register, from);
             }
-            macro_assembler.exit(ExitKind::Safepoint, poll.program_counter);
+            self.leave_at(body, poll.point);
+            let program_counter = self.metadata.points[poll.point].scopes[0].program_counter;
+            let exit = body
+                .macro_assembler
+                .exit_naming_its_address(ExitKind::Safepoint, program_counter);
+            body.macro_assembler.set_site(None);
+            // A test's way to the exit of a poll without an entry, which
+            // only a value no restore rebuilds makes otherwise.
+            #[cfg(test)]
+            if body.macro_assembler.refuses_poll_entries() {
+                continue;
+            }
+            let Some(restores) = super::metadata::poll_restores(
+                self.graph,
+                self.allocation,
+                &self.metadata.points[poll.point],
+                poll.position,
+            ) else {
+                continue;
+            };
+            let entry = body.macro_assembler.assembler().label();
+            body.macro_assembler.assembler().bind(entry);
+            // The run loop enters the physical frame at its register 0,
+            // where the frame register stood at the poll.
+            body.macro_assembler.assume_frame_shift(0);
+            self.hold(body, poll.position);
+            #[cfg(test)]
+            let rewrites_lost_words = restores.iter().any(|restore| !restore.lost.is_empty());
+            #[cfg(test)]
+            let machine_sources = restores
+                .iter()
+                .filter(|restore| restore.machine.is_some())
+                .filter_map(|restore| match restore.source {
+                    PollSource::Frame(register) => Some(register),
+                    PollSource::Word(_) | PollSource::Nil => None,
+                })
+                .collect();
+            for restore in restores {
+                Self::restore(body, restore);
+            }
+            body.macro_assembler.assembler().jump(poll.resume);
+            self.poll_entries.push(EmittedPoll {
+                exit,
+                entry,
+                point: u32::try_from(poll.point)
+                    .expect("internal: a body's points are numbered in 32 bits"),
+                #[cfg(test)]
+                rewrites_lost_words,
+                #[cfg(test)]
+                machine_sources,
+            });
+        }
+    }
+
+    /// Emits `restore`: its value into its machine register, if it has
+    /// one, then into each frame word lost.
+    fn restore(body: &mut BodyAssembler, restore: super::metadata::PollRestore) {
+        let macro_assembler = &mut body.macro_assembler;
+        let held = match restore.machine {
+            Some(register) => register,
+            None => macro_assembler.temporary(macro_assembler.roles().integer_temporaries().left),
+        };
+        match restore.source {
+            PollSource::Frame(register) => macro_assembler.load_physical_register(held, register),
+            PollSource::Word(word) => macro_assembler.assembler().move_immediate(held, word),
+            PollSource::Nil => macro_assembler
+                .assembler()
+                .move_immediate(held, Immediate::NIL.bits()),
+        }
+        for register in restore.lost {
+            macro_assembler.store_physical_register(register, held);
+        }
+    }
+
+    /// Each template's jump into a block made with the frame register at
+    /// an inlined scope's register 0: the frame register moved back, then
+    /// the block.
+    fn emit_trampolines(&mut self, body: &mut BodyAssembler) {
+        for (label, shift, block) in std::mem::take(&mut self.trampolines) {
+            body.macro_assembler.assembler().bind(label);
+            body.macro_assembler.assume_frame_shift(shift);
+            body.macro_assembler.shift_frame(-shift);
+            body.macro_assembler.assembler().jump(block);
         }
     }
 }
+
+/// The word at `address`.
+fn word_at(address: Register) -> Memory {
+    Memory {
+        base: address,
+        displacement: 0,
+    }
+}
+
+/// One past the largest byte, which `at:put:` stores into a `ByteArray`.
+const BYTE_LIMIT: i32 = 256;
 
 #[cfg(test)]
 mod tests {
@@ -1122,10 +1833,47 @@ mod tests {
                     "a transfer per closure at most, an unreachable one making none"
                 );
                 assert!(optimized.metadata.points.iter().all(|point| {
-                    (point.program_counter as usize) < snapshot.instructions.len()
+                    (point.scopes[0].program_counter as usize) < snapshot.instructions.len()
                 }));
             }
         }
+    }
+
+    /// Every tree of the inlining corpus compiles with its inlined scopes
+    /// -- their type-cases, entries, returns and frame nodes at their
+    /// scopes' offsets -- under AArch64's convention, which no test here
+    /// runs, and every address recorded with an interrupt point lies in
+    /// the code and names a point inside an inlined scope or one where a
+    /// block the copy eliminated is live; and the corpus eliminates more
+    /// than five blocks. It eliminated 18, in 300 trees that inline, before
+    /// a callee that would create a block on a way that ran was sent, its
+    /// own blocks with it (`plan::Planner::creates_a_block`): 6 now, in
+    /// 266, every corpus site having run.
+    #[test]
+    fn an_inlined_body_assembles_for_aapcs64() {
+        let (mut inlined, mut eliminated) = (0, 0);
+        for tree in crate::jit::optimizing::inlining_corpus() {
+            let optimized = crate::jit::optimizing::compile_tree(
+                &tree,
+                MacroAssembler::new(Abi::Aapcs64),
+                role_of(&tree.root),
+                false,
+                Speculation::Traps,
+            )
+            .unwrap_or_else(|refusal| panic!("refused: {refusal:?}"));
+            let length = u32::try_from(optimized.code.bytes.len()).expect("small");
+            for (offset, point) in &optimized.sites {
+                assert!(*offset <= length);
+                let described = &optimized.metadata.points[*point as usize];
+                assert!(described.scopes.len() > 1 || described.holds_eliminated_blocks());
+            }
+            if optimized.deepest_chain > 0 {
+                inlined += 1;
+            }
+            eliminated += optimized.eliminated.len();
+        }
+        assert!(inlined > 10, "{inlined} trees inline");
+        assert!(eliminated > 5, "{eliminated} blocks eliminated");
     }
 
     /// `r15 := r0 + r1. r16 := r15 < r2. ^r16`, each operation's fallback
@@ -1322,5 +2070,155 @@ mod tests {
                 .unwrap_or_else(|refusal| panic!("refused under {abi:?}: {refusal:?}"));
             }
         }
+    }
+
+    /// A tree whose root, taking two arguments, sends `selector` to its
+    /// argument 0 with `arguments` of its own, its site 0 cached for each
+    /// of `cached`: a guard number of `test_receiver` and the callee it
+    /// reached, an arm always inlined.
+    fn always_inlined_tree(
+        selector: &str,
+        arguments: Vec<u16>,
+        cached: Vec<(u32, crate::jit::optimizing::tree::CalleeFacts)>,
+    ) -> crate::jit::optimizing::tree::SnapshotTree {
+        let mut root = test_snapshot_with_arguments(
+            vec![
+                Instruction::SendPublic {
+                    selector: crate::Symbol::intern(selector),
+                    receiver_register: 0,
+                    argument_base: 20,
+                    argument_sources: arguments,
+                    destination: 14,
+                    call_site: crate::bytecode::CallSite { number: 0 },
+                },
+                Instruction::Return { register: 14 },
+            ],
+            2,
+        );
+        crate::jit::optimizing::ran_site(&mut root, 0, 0);
+        let code_id = root.code_id;
+        crate::jit::optimizing::test_tree(
+            root,
+            vec![(
+                code_id,
+                0,
+                cached
+                    .into_iter()
+                    .map(|(guard, callee)| {
+                        (crate::jit::optimizing::test_receiver(guard, 1, 0), callee)
+                    })
+                    .collect(),
+            )],
+            Vec::new(),
+        )
+    }
+
+    /// The dispatch id `test_receiver(guard, ..)` names, as a guard word.
+    fn guard_word(guard: u32) -> u64 {
+        u64::from(guard + crate::mixin::DispatchId::FIRST_MINTED)
+    }
+
+    /// `tree` compiled for the host and run from the push's entry on a
+    /// frame whose arguments are `first` and `second`, every immediate of
+    /// `immediates` -- its index and the guard and class words the machine
+    /// words hold for it -- set.
+    fn run_tree(
+        tree: &crate::jit::optimizing::tree::SnapshotTree,
+        (first, second): (u64, u64),
+        immediates: &[(u64, u64, u64)],
+    ) -> MachineExit {
+        use crate::heap::machine_words::MachineWord;
+        let optimized = crate::jit::optimizing::compile_tree(
+            tree,
+            MacroAssembler::new(Abi::host()),
+            BodyRole::Method,
+            false,
+            Speculation::Traps,
+        )
+        .unwrap_or_else(|refusal| panic!("refused: {refusal:?}"));
+        let mut machine = Machine::new();
+        for (index, guard, class) in immediates {
+            let index = usize::try_from(*index).expect("small");
+            machine.set_machine_word(MachineWord::ImmediateGuard(index), *guard);
+            machine.set_machine_word(MachineWord::ImmediateClass(index), *class);
+        }
+        let start = machine.install(&optimized.code);
+        let entry = ns_memory::CodeOffset(start.0 + optimized.push_entry);
+        let mut frame = [0u64; 64];
+        frame[0] = first;
+        frame[1] = second;
+        machine.run(entry, &mut frame, 0, false, &mut (), &[]).0
+    }
+
+    /// A `SmallInteger`'s `+` always inlined at a send that is no fast
+    /// path's fallback -- which no lowering of this compiler emits, only an
+    /// image's code can hold -- answers the sum, and traps at the send,
+    /// running it again in the interpreter, on an overflow and on an
+    /// argument that is no `SmallInteger`.
+    #[test]
+    fn an_inlined_integer_arm_answers_and_traps_at_its_send() {
+        use crate::builtins::primitive::{IntegerPrimitive, Primitive};
+        let tree = always_inlined_tree(
+            "+",
+            vec![1],
+            vec![(
+                1,
+                crate::jit::optimizing::tree::CalleeFacts::Primitive(Primitive::Integer(
+                    IntegerPrimitive::Add,
+                )),
+            )],
+        );
+        let index = crate::heap::Heap::machine_layout().small_integer_index;
+        let integers = [(index, guard_word(1), 0)];
+        assert_eq!(
+            run_tree(&tree, (small_integer(37), small_integer(5)), &integers),
+            MachineExit::Returned {
+                value: small_integer(42)
+            }
+        );
+        let trap = MachineExit::Trap {
+            program_counter: 0,
+            site: 0,
+        };
+        assert_eq!(
+            run_tree(
+                &tree,
+                (small_integer(SMALL_INTEGER_MAX), small_integer(1)),
+                &integers
+            ),
+            trap
+        );
+        assert_eq!(
+            run_tree(&tree, (small_integer(1), Immediate::NIL.bits()), &integers),
+            trap
+        );
+    }
+
+    /// `class` always inlined answers an immediate's class from the machine
+    /// words, a `SmallInteger`'s and a `SmallFloat`'s each its own -- the
+    /// immediates this VM has besides the constants -- with no leaf.
+    #[test]
+    fn an_inlined_class_of_an_immediate_reads_the_machine_words() {
+        use crate::builtins::primitive::{ObjectPrimitive, Primitive};
+        let class = || {
+            crate::jit::optimizing::tree::CalleeFacts::Primitive(Primitive::Object(
+                ObjectPrimitive::Class,
+            ))
+        };
+        let tree = always_inlined_tree("class", Vec::new(), vec![(1, class()), (2, class())]);
+        let layout = crate::heap::Heap::machine_layout();
+        let immediates = [
+            (layout.small_integer_index, guard_word(1), 0x1110),
+            (layout.small_float_index, guard_word(2), 0x2220),
+        ];
+        assert_eq!(
+            run_tree(&tree, (small_integer(3), 0), &immediates),
+            MachineExit::Returned { value: 0x1110 }
+        );
+        let float = Immediate::small_float(1.5).expect("a SmallFloat").bits();
+        assert_eq!(
+            run_tree(&tree, (float, 0), &immediates),
+            MachineExit::Returned { value: 0x2220 }
+        );
     }
 }

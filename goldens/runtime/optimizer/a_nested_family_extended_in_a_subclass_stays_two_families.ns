@@ -1,0 +1,76 @@
+/// One nested family extended in a subclass of its enclosing class, hot:
+/// `Leaf`'s mixin is applied twice -- over `Base`'s `Node` in a `Base`, over
+/// `Derived`'s extended `Node` in a `Derived` -- so the code `Base` declares
+/// runs with two receiver applications at the same sites, which the
+/// optimizer customizes and inlines per application. A copy that took one
+/// family's `weight` for the other's would change the sums. A `Base`'s
+/// node weighs 1 and its leaf 11; a `Derived`'s node weighs 101 and its
+/// leaf 111. The first loop sends each family from a site of its own, the
+/// second sends both from one site, alternating: a `Derived` at odd
+/// indices, a `Base` at even ones.
+class NestedFamilyHot = Object new () (
+  class Base = Object new () (
+    public class Node = Object new () (
+      public weight = (
+        ^1.
+      )
+    )
+
+    public class Leaf = Node new () (
+      public weight = (
+        ^super weight + 10.
+      )
+    )
+
+    public makeNode = (
+      ^Node new.
+    )
+
+    public makeLeaf = (
+      ^Leaf new.
+    )
+  )
+
+  class Derived = Base new () (
+    public class Node = super Node new () (
+      public weight = (
+        ^super weight + 100.
+      )
+    )
+  )
+
+  separately: count base: base derived: derived = (
+    |
+      total ::= 0.
+    |
+    1 to: count do: [:index | total:: total + base makeLeaf weight + derived makeLeaf weight].
+    ^total.
+  )
+
+  alternately: count families: families = (
+    |
+      total ::= 0.
+    |
+    1 to: count do: [:index |
+      |
+        family = families at: index \\ 2 + 1.
+      |
+      total:: total + family makeLeaf weight + family makeNode weight.
+    ].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      base = Base new.
+      derived = Derived new.
+    |
+    transcript
+        show: (self separately: 50000 base: base derived: derived) printString;
+        newLine.
+    transcript
+        show: (self alternately: 50000 families: {base. derived}) printString;
+        newLine.
+  )
+)

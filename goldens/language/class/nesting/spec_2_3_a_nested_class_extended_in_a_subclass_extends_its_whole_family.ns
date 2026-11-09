@@ -1,0 +1,71 @@
+/// newspeak-spec.pdf 2.3: "Because all references to nested classes are
+/// message sends, nested classes can be overridden." `Derived` extends the
+/// `Node` it inherits from `Base` -- its inheritance clause `super Node`
+/// (6.1) names `Base`'s `Node` -- and every reference to `Node` in code
+/// `Base` declares is a send to the enclosing object, so a `Derived`
+/// sees the extension where `Base` wrote `Node`: `makeNode` answers an
+/// extended node, and `Leaf`, whose superclass clause `Node` is evaluated
+/// in a `Derived`, inherits the extension too, `super describe` in `Leaf`
+/// reaching `Derived`'s `Node` and from there `Base`'s. A `Base` is
+/// unchanged by `Derived`. Neither clause names its factory message: an
+/// omitted one is `new` (6.1), the primary factory of both `Node`s.
+class NestedFamilyExtended = Object new () (
+  class Base = Object new () (
+    public class Node = Object new () (
+      public describe = (
+        ^'node'.
+      )
+    )
+
+    public class Leaf = Node () (
+      public describe = (
+        ^'leaf(' , super describe , ')'.
+      )
+    )
+
+    public makeNode = (
+      ^Node new.
+    )
+
+    public makeLeaf = (
+      ^Leaf new.
+    )
+  )
+
+  class Derived = Base new () (
+    public class Node = super Node () (
+      public describe = (
+        ^'extended ' , super describe.
+      )
+
+      public extra = (
+        ^'extra'.
+      )
+    )
+  )
+
+  public main: platform args: args = (
+    |
+      t = platform transcript.
+      derived = Derived new.
+    |
+    t
+        show: Base new makeNode describe;
+        newLine.
+    t
+        show: Base new makeLeaf describe;
+        newLine.
+    t
+        show: derived makeNode describe;
+        newLine.
+    t
+        show: derived makeNode extra;
+        newLine.
+    t
+        show: derived makeLeaf describe;
+        newLine.
+    t
+        show: derived makeLeaf extra;
+        newLine.
+  )
+)

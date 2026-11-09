@@ -1,0 +1,135 @@
+/// An implicit-receiver send to the enclosing class, from inside a block
+/// an optimized copy inlines, in a mixin a body-less declaration applies:
+/// `sumOf:` hands `each:`, which the copy inlines, a block that sends
+/// `helper:` to its enclosing `Library`, a lexical send at depth 1. Run
+/// first with a `Library`, then with an `OtherLibrary`, which overrides
+/// `helper:`, the send's cell misses inside the inlined block, and the
+/// miss is decided from that block's activation, whose closure the copy
+/// never made. `helper:` answers `count` either way, so `sumOf: count`
+/// answers 6 + 3 * `count`, a run 2000 of them, 6015000, and the 40 runs
+/// 240600000.
+class LexicalSendInAnInlinedBlockOfAnAppliedMixin = Object new () (
+  class Library = Object new () (
+    public class M = Object new () (
+      public each: action = (
+        action value: 1.
+        action value: 2.
+        action value: 3.
+      )
+
+      public sumOf: count = (
+        |
+          total ::= 0.
+        |
+        self each: [:value | total:: total + value + (helper: count)].
+        ^total.
+      )
+    )
+
+    public helper: count = (
+      ^count
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          + 1
+          - 30.
+    )
+  )
+
+  class OtherLibrary = Library new () (
+    public helper: count = (
+      ^count
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          + 2
+          - 60.
+    )
+  )
+
+  class Holder on: library = Object new (
+    |
+      library = library.
+    |
+  ) (
+    public class Applied = Object new <: libraryM.
+
+    libraryM = (
+      ^library M.
+    )
+  )
+
+  run: holder = (
+    |
+      applied = holder Applied new.
+      sum ::= 0.
+    |
+    1 to: 2000 do: [:index | sum:: sum + (applied sumOf: index)].
+    ^sum.
+  )
+
+  public main: platform args: arguments = (
+    |
+      first = Holder on: Library new.
+      second = Holder on: OtherLibrary new.
+      sum ::= 0.
+    |
+    1 to: 20 do: [:index | sum:: sum + (self run: first)].
+    1 to: 20 do: [:index | sum:: sum + (self run: second)].
+    platform transcript
+        show: sum printString;
+        newLine.
+  )
+)

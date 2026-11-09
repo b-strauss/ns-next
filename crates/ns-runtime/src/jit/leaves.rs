@@ -550,7 +550,8 @@ fn miss(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     else {
         unreachable!("internal: a send's call returns into an installed body");
     };
-    let frame = materialize::leaf_frame(mutator, sender_address, return_address, program_counter);
+    let frame =
+        materialize::sender_leaf_frame(mutator, sender_address, return_address, program_counter);
     let answer = inline_cache::decide_at(mutator, frame.activation, program_counter);
     materialize::release_leaf_frame(mutator, frame);
     match answer {
@@ -585,7 +586,8 @@ fn act(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     else {
         unreachable!("internal: a send's call returns into an installed body");
     };
-    let frame = materialize::leaf_frame(mutator, sender_address, return_address, program_counter);
+    let frame =
+        materialize::sender_leaf_frame(mutator, sender_address, return_address, program_counter);
     let answer = inline_cache::act_at(mutator, frame.activation, program_counter)
         .map_or(Word::NO_VALUE_BITS, |value| {
             mutator.heap.machine_word_of(value)
@@ -689,7 +691,7 @@ fn mirror_method(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
             mutator.heap.machine_word_of(value)
         });
     }
-    let frame = materialize::leaf_frame(
+    let frame = materialize::sender_leaf_frame(
         mutator,
         sender_address,
         return_address,
@@ -892,22 +894,30 @@ fn twin(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
 /// `arguments[0]` -- the unpointed budget for a data word not pointed at
 /// a row yet -- the address of the spending frame's register 0,
 /// `arguments[1]`, and an address inside the body, `arguments[2]`: once
-/// the row the address names ran out, records the body's optimization
-/// request -- for a method's body, the copy for the frame's key -- parks
-/// the row and requests a safepoint; otherwise points the data word at
-/// the body's row, armed (`jit::budget_spent`). It runs no Newspeak code,
-/// cannot collect, reads of a frame only its own header's receiver and
-/// current class, which its call wrote, and compiles nothing: only the
-/// request list, the body's rows of copies, the budget table, a code id's
-/// registration and the body's data word change, none of which the code
-/// that called it reads before the next spend. Answers 0.
+/// the row the address names ran out, parks the row and decides whether
+/// an optimization is due -- none for a pair refused or a key that has
+/// its copy, whose budget it arms afresh, and under the optimize stress
+/// mode it records the spending frame's own request; otherwise points
+/// the data word at the body's row, armed (`jit::budget_spent`). It runs
+/// no Newspeak code, cannot collect, reads of a frame only its own
+/// header's receiver and current class, which its call wrote, and
+/// compiles nothing: only the request list, the body's rows of copies,
+/// the budget table, a code id's registration and the body's data word
+/// change, none of which the code that called it
+/// reads before the next spend. Answers 0, and `REFUSED` when the run-out
+/// asks for an optimization: the request is the run loop's to make, after
+/// the exit that follows (`stubs::ExitKind::BudgetSpent`), whose walk up
+/// the stack (`jit::find_recompilee`) reads activations a leaf may not.
 fn budget(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     let [spent_from, frame_address, code_address] = arguments;
     let Ok(code_address) = usize::try_from(code_address) else {
         unreachable!("internal: an address fits the pointer width");
     };
-    jit::budget_spent(mutator, spent_from, frame_address, code_address);
-    DONE
+    if jit::budget_spent(mutator, spent_from, frame_address, code_address) {
+        REFUSED
+    } else {
+        DONE
+    }
 }
 
 /// The divorce leaf, which the return of code that reifies its frame

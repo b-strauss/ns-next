@@ -61,6 +61,12 @@ pub(crate) enum VerifyError {
     /// `value` is said to be of a kind (`ValueKind`) its definition does
     /// not guarantee: a test the code leaves out for it would be wrong.
     KindUnfounded { value: ValueId },
+    /// A frame node of `block` reads or writes other than its own
+    /// instruction's registers where its scope lies, or names a scope
+    /// other than its block's or none of the graph's: its template, run
+    /// with the frame register at the scope's register 0, would read
+    /// another frame word than the graph bound.
+    OutOfScope { block: BlockId },
     /// The allocation's positions, blocks or interrupt points are not the
     /// graph's, or not the metadata's.
     Unaligned,
@@ -173,7 +179,61 @@ pub(crate) fn verify(graph: &Graph) -> Result<(), VerifyError> {
         }
     }
     check_kinds(graph, &reachable)?;
+    check_scopes(graph, &reachable)?;
     check_frame_lifetimes(graph, &reachable)
+}
+
+/// Every frame node of a graph that knows its scopes belongs to its
+/// block's scope and reads and writes its own instruction's registers
+/// where that scope lies, each within the registers the scope's body
+/// names.
+fn check_scopes(graph: &Graph, reachable: &dyn Fn(usize) -> bool) -> Result<(), VerifyError> {
+    if graph.scopes.is_empty() {
+        return Ok(());
+    }
+    for (index, block) in graph.blocks.iter().enumerate() {
+        if !reachable(index) {
+            continue;
+        }
+        let out_of_scope = VerifyError::OutOfScope {
+            block: BlockId::of_index(index),
+        };
+        if block.scope.0 as usize >= graph.scopes.len() {
+            return Err(out_of_scope);
+        }
+        for node in &block.nodes {
+            let Node::Frame {
+                scope,
+                instruction,
+                reads,
+                written,
+                ..
+            } = node
+            else {
+                continue;
+            };
+            if *scope != block.scope {
+                return Err(out_of_scope);
+            }
+            let owner = graph.scope(*scope);
+            let physical = |register: u16| {
+                register
+                    .checked_add(owner.offset)
+                    .filter(|physical| *physical < owner.top())
+            };
+            let expected: Option<Vec<u16>> = instruction
+                .registers_read()
+                .into_iter()
+                .map(physical)
+                .collect();
+            let read: Vec<u16> = reads.iter().map(|(register, _)| *register).collect();
+            let expected_written = instruction.register_written().map(physical);
+            if expected != Some(read) || expected_written.flatten() != *written {
+                return Err(out_of_scope);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Every value of a known kind is defined by what guarantees it: an
@@ -420,7 +480,8 @@ fn check_end(block: &Block, block_id: BlockId) -> Result<(), VerifyError> {
         | End::Branch { .. }
         | End::Return { .. }
         | End::ReturnUnlessNil { .. }
-        | End::Trap { .. } => !last.is_some_and(stops),
+        | End::Trap { .. }
+        | End::TypeCase { .. } => !last.is_some_and(stops),
     };
     if agrees && !early_stop {
         Ok(())
@@ -555,7 +616,12 @@ mod tests {
 
     fn block(program_counter: u32, nodes: Vec<Node>, end: End, predecessors: Vec<u32>) -> Block {
         Block {
+            scope: crate::jit::optimizing::graph::ScopeId::ROOT,
             program_counter,
+            taint_point: (
+                crate::jit::optimizing::graph::ScopeId::ROOT,
+                program_counter,
+            ),
             phis: Vec::new(),
             nodes,
             end,
@@ -678,6 +744,7 @@ mod tests {
                     word: 0,
                 },
                 Node::Frame {
+                    scope: crate::jit::optimizing::graph::ScopeId::ROOT,
                     program_counter: 0,
                     instruction: SnapshotInstruction::LoadOwnSlot {
                         destination: 3,

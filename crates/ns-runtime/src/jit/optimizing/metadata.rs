@@ -1,21 +1,27 @@
 //! The interrupt points' metadata (`docs/design/execution.md`, "Planned:
 //! the deoptimization contract", "Optimized frames"): for every point at
 //! which an observer may read optimized code's frame -- every frame node,
-//! every back edge's poll, every trap -- its program counter, which of the two ways a
-//! frame resumes there, and where the value of each register the leftover
-//! analysis does not taint is. In stage 1 that is always its frame word:
-//! the point's write-back (`allocate::DirtyPoint`) stores every binding
-//! that is not there yet, and `verify_allocation` holds the allocation to
-//! it by replaying every move.
+//! every back edge's poll, every trap -- the chain of scopes it stops
+//! in, innermost first, and for each its program counter, which of the
+//! two ways it resumes there, and where the value of each of its
+//! registers the leftover analysis does not taint is. That is its frame
+//! word: the point's write-back (`allocate::DirtyPoint`) stores every
+//! binding that is not there yet, and `verify_allocation` holds the
+//! allocation to it by replaying every move -- but for a register that
+//! holds a block the compile eliminated on every way there
+//! (`plan::ScopePlan::eliminated_before`), whose word holds `nil` for it:
+//! there it is that block, which the exit makes (`jit::materialize`).
 
 use std::collections::HashMap;
 use std::ops::Range;
 
 use super::allocate::{allocate, Allocation, Location, Move, PointKind, Spot};
-use super::graph::{BlockId, Graph, Node, ValueId};
+use ns_assembler::Register;
+
+use super::graph::{BlockId, Graph, GraphScope, Node, ScopeId, ValueId};
 use super::liveness::{block_order, intervals_knowing, poll_target, Positions};
-use super::snapshot::Snapshot;
 use super::verify::VerifyError;
+use crate::heap::CodeId;
 use crate::jit::macro_assembler::Roles;
 
 /// How a frame stopped at an interrupt point goes on.
@@ -27,7 +33,8 @@ pub(crate) enum Resumes {
     /// a call refused, a stub that hands the send to the interpreter --
     /// leaves the frame to re-execute the instruction at the same program
     /// counter, with the same frame words, so the point's locations hold
-    /// for either way.
+    /// for either way. Every scope an interrupt point's scope is inlined
+    /// into resumes so, at the send it is inlined at.
     Deliver,
     /// The instruction at the point runs again: a poll's loop head, a
     /// trap's instruction, and every other frame node, whose template
@@ -35,14 +42,43 @@ pub(crate) enum Resumes {
     Reexecute,
 }
 
-/// What an observer needs of a frame stopped at one interrupt point.
+/// One scope an interrupt point stops in: the activation the exit leaves
+/// of it, lying at `offset` in the physical frame -- its body, the
+/// instruction it stopped at and how it goes on there, and where each of
+/// its registers the leftover analysis does not taint is, numbered from
+/// its register 0. An inlined scope's registers end where the scope
+/// inlined into it begins, the slots of the send it is inlined at, and
+/// the header words the exit writes are not among them. A block scope's
+/// activation's closure is no register: the exit writes it into the
+/// header of the scope that runs the block (`jit::InlinedScope::block`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InterruptPoint {
+pub(crate) struct ScopeAtPoint {
+    pub(crate) scope: ScopeId,
+    pub(crate) code_id: CodeId,
     pub(crate) program_counter: u32,
     pub(crate) resumes: Resumes,
-    /// Every register the leftover analysis does not taint at the point,
-    /// and where its value is.
+    pub(crate) offset: u16,
     pub(crate) locations: Vec<(u16, Location)>,
+}
+
+/// What an observer needs of a frame stopped at one interrupt point: the
+/// chain of scopes it stops in, innermost first, the root last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InterruptPoint {
+    pub(crate) scopes: Vec<ScopeAtPoint>,
+}
+
+impl InterruptPoint {
+    /// Whether a register of a scope the point stops in holds a block the
+    /// compile eliminated, which an exit there makes.
+    pub(crate) fn holds_eliminated_blocks(&self) -> bool {
+        self.scopes.iter().any(|scope| {
+            scope
+                .locations
+                .iter()
+                .any(|(_, location)| matches!(location, Location::EliminatedBlock(_)))
+        })
+    }
 }
 
 /// The metadata of a body's interrupt points, in the order of the
@@ -52,30 +88,29 @@ pub(crate) struct Metadata {
     pub(crate) points: Vec<InterruptPoint>,
 }
 
-/// The allocation of `graph`, `snapshot`'s, under `roles` and its
-/// metadata, which a debug build verifies.
-pub(crate) fn allocate_and_describe(
-    snapshot: &Snapshot,
-    graph: &Graph,
-    roles: &Roles,
-) -> (Allocation, Metadata) {
+/// The allocation of `graph` under `roles` and its metadata, which a
+/// debug build verifies.
+pub(crate) fn allocate_and_describe(graph: &Graph, roles: &Roles) -> (Allocation, Metadata) {
     let order = block_order(graph);
-    let intervals = intervals_knowing(graph, &order, Some(&snapshot.tainted_before));
+    let intervals = intervals_knowing(graph, &order);
     let allocation = allocate(graph, &intervals, roles);
-    let metadata = metadata(graph, &allocation, snapshot);
+    let metadata = metadata(graph, &allocation);
     debug_assert_eq!(
-        verify_allocation(graph, &allocation, &metadata, snapshot),
+        verify_allocation(graph, &allocation, &metadata),
         Ok(()),
         "internal: the allocation is refused"
     );
     (allocation, metadata)
 }
 
-/// The program counter an interrupt point stores, and how it resumes.
-fn point_of(graph: &Graph, block: BlockId, kind: PointKind) -> (u32, Resumes) {
+/// The scope an interrupt point stops in, the program counter it stores
+/// and how it resumes.
+fn point_of(graph: &Graph, block: BlockId, kind: PointKind) -> (ScopeId, u32, Resumes) {
+    let scope = graph.block(block).scope;
     match kind {
         PointKind::Frame { node } => {
             let Node::Frame {
+                scope,
                 program_counter,
                 instruction,
                 ..
@@ -88,24 +123,29 @@ fn point_of(graph: &Graph, block: BlockId, kind: PointKind) -> (u32, Resumes) {
             } else {
                 Resumes::Reexecute
             };
-            (*program_counter, resumes)
+            (*scope, *program_counter, resumes)
         }
+        // The loop's head runs again: where its block begins an inlined
+        // scope's entry, the send that scope is inlined at, whose frame
+        // the poll's exit leaves before the callee's is laid.
         PointKind::Poll => {
-            let head = poll_target(graph, block).expect("internal: a poll's block jumps back");
-            (graph.block(head).program_counter, Resumes::Reexecute)
+            let head = graph
+                .block(poll_target(graph, block).expect("internal: a poll's block jumps back"));
+            let (scope, program_counter) = head.taint_point;
+            (scope, program_counter, Resumes::Reexecute)
         }
         // A trap runs its instruction again in the interpreter.
         PointKind::Trap { node: Some(node) } => {
             let program_counter = graph.block(block).nodes[node]
                 .trap()
                 .expect("internal: a trap point's node traps");
-            (program_counter, Resumes::Reexecute)
+            (scope, program_counter, Resumes::Reexecute)
         }
         PointKind::Trap { node: None } => {
             let program_counter = graph
                 .end_trap(block)
                 .expect("internal: a trap point's end traps");
-            (program_counter, Resumes::Reexecute)
+            (scope, program_counter, Resumes::Reexecute)
         }
     }
 }
@@ -114,27 +154,100 @@ fn tainted(ranges: &[Range<u16>], register: u16) -> bool {
     ranges.iter().any(|range| range.contains(&register))
 }
 
-/// The metadata of `allocation`'s interrupt points: each register the
-/// leftover analysis leaves to the frame there is in its frame word, the
-/// point's write-back having stored every one that was not.
-pub(crate) fn metadata(graph: &Graph, allocation: &Allocation, snapshot: &Snapshot) -> Metadata {
-    let register_count =
-        u16::try_from(snapshot.register_count()).expect("internal: a register number fits a u16");
+/// Where the value of `register` of `scope`, stopped before its
+/// instruction at `program_counter`, is: the block the compile eliminated
+/// that it holds on every way there, which its frame word holds `nil` for
+/// until the exit makes it, or else its frame word -- always for one at or
+/// past `callee_from`, where the callee of the send the frame stopped at
+/// lies from the call on, its arguments copied in.
+fn location_of(
+    scope: &GraphScope,
+    program_counter: u32,
+    register: u16,
+    callee_from: Option<u16>,
+) -> Location {
+    if callee_from.is_some_and(|start| register >= start) {
+        return Location::FrameWord;
+    }
+    scope
+        .eliminated_before
+        .get(program_counter as usize)
+        .and_then(|held| held.iter().find(|(holder, _)| *holder == register))
+        .map_or(Location::FrameWord, |(_, block)| {
+            Location::EliminatedBlock(*block)
+        })
+}
+
+/// Where the callee of the send a frame node of `graph` stops at lies, in
+/// its scope's numbering, for the interrupt point `kind` of `block`: from
+/// the send's argument base up, the callee's frame, which a frame below
+/// it reads none of its own blocks in; `None` for any other point -- a
+/// trap or a type-case's, whose frame runs the send again, the arguments
+/// it copies from those registers among what it reads.
+fn callee_from(graph: &Graph, block: BlockId, kind: PointKind) -> Option<u16> {
+    match kind {
+        PointKind::Frame { node } => match &graph.block(block).nodes[node] {
+            Node::Frame { instruction, .. } => instruction.argument_slots().map(|(base, _)| base),
+            _ => None,
+        },
+        PointKind::Poll | PointKind::Trap { .. } => None,
+    }
+}
+
+/// The chain of scopes a point that stops in `scope` at `program_counter`
+/// and resumes as `resumes` describes (`ScopeAtPoint`): each register of
+/// each scope the leftover analysis leaves to the frame there is in its
+/// frame word, the point's write-back having stored every one that was
+/// not, or the block the compile eliminated that it holds
+/// (`location_of`), the innermost's past `callee_from` its callee's.
+fn chain_at(
+    graph: &Graph,
+    (scope, program_counter, resumes): (ScopeId, u32, Resumes),
+    callee_from: Option<u16>,
+) -> Vec<ScopeAtPoint> {
+    let tainted_here = graph.tainted_at(scope, program_counter);
+    let mut chain = Vec::new();
+    let mut stopped = (scope, program_counter, resumes);
+    let mut end = graph.scope(scope).top();
+    // Only the innermost scope's frame reaches past a send it stopped
+    // at: every other ends where the one inlined into it begins.
+    let mut callee_from = callee_from;
+    loop {
+        let (id, program_counter, resumes) = stopped;
+        let owner = graph.scope(id);
+        chain.push(ScopeAtPoint {
+            scope: id,
+            code_id: owner.code_id,
+            program_counter,
+            resumes,
+            offset: owner.offset,
+            locations: (owner.offset..end)
+                .filter(|register| !tainted(&tainted_here, *register))
+                .map(|register| {
+                    let own = register - owner.offset;
+                    (own, location_of(owner, program_counter, own, callee_from))
+                })
+                .collect(),
+        });
+        callee_from = None;
+        let Some((sender, call)) = owner.parent else {
+            return chain;
+        };
+        end = owner.offset;
+        stopped = (sender, call, Resumes::Deliver);
+    }
+}
+
+/// The metadata of `allocation`'s interrupt points (`chain_at`).
+pub(crate) fn metadata(graph: &Graph, allocation: &Allocation) -> Metadata {
     Metadata {
         points: allocation
             .dirty_at
             .iter()
             .map(|point| {
-                let (program_counter, resumes) = point_of(graph, point.block, point.kind);
-                let tainted_here = &snapshot.tainted_before[usize::try_from(program_counter)
-                    .expect("internal: a program counter fits a usize")];
+                let stopped = point_of(graph, point.block, point.kind);
                 InterruptPoint {
-                    program_counter,
-                    resumes,
-                    locations: (0..register_count)
-                        .filter(|register| !tainted(tainted_here, *register))
-                        .map(|register| (register, Location::FrameWord))
-                        .collect(),
+                    scopes: chain_at(graph, stopped, callee_from(graph, point.block, point.kind)),
                 }
             })
             .collect(),
@@ -180,20 +293,22 @@ impl Replay {
 /// Checks `allocation` of `graph` and `metadata` against a replay of
 /// every move: every use finds its value where its definition or the last
 /// move left it; every way into a block brings what the block assumes;
-/// at every interrupt point, after its write-back, every register the
-/// leftover analysis does not taint (`snapshot.tainted_before`) holds in
-/// its frame word what the interpreter's frame would, and the metadata
-/// says so; no move names a register no value is allocated to; and no
-/// value is kept past a leaf call in a register the call clobbers.
+/// at every interrupt point, after its write-back, every physical register
+/// the leftover analysis does not taint (`Graph::tainted_at`) -- an
+/// inlined scope's receiver among them, and its current class at a frame
+/// node of the scope, whose template reads it -- holds in its frame word
+/// what the interpreter's frames would, and the metadata says
+/// so of every scope the point stops in; no move names a register no
+/// value is allocated to; and no value is kept past a leaf call in a
+/// register the call clobbers.
 pub(crate) fn verify_allocation(
     graph: &Graph,
     allocation: &Allocation,
     metadata: &Metadata,
-    snapshot: &Snapshot,
 ) -> Result<(), VerifyError> {
     let order = &allocation.positions.order;
-    let leaf_calls = intervals_knowing(graph, order, Some(&snapshot.tainted_before)).leaf_calls;
-    replay(graph, allocation, metadata, snapshot, &leaf_calls)
+    let leaf_calls = intervals_knowing(graph, order).leaf_calls;
+    replay(graph, allocation, metadata, &leaf_calls)
 }
 
 /// `verify_allocation` with the leaf calls at `leaf_calls`.
@@ -201,7 +316,6 @@ fn replay(
     graph: &Graph,
     allocation: &Allocation,
     metadata: &Metadata,
-    snapshot: &Snapshot,
     leaf_calls: &[u32],
 ) -> Result<(), VerifyError> {
     let order = &allocation.positions.order;
@@ -212,10 +326,13 @@ fn replay(
     {
         return Err(VerifyError::Unaligned);
     }
-    let lives = intervals_knowing(graph, order, Some(&snapshot.tainted_before));
-    // Counted once: the count walks every instruction, and every
-    // interrupt point compares each register with it.
-    let named_registers = snapshot.register_count();
+    let lives = intervals_knowing(graph, order);
+    let named_registers = graph
+        .scopes
+        .iter()
+        .map(|scope| usize::from(scope.top()))
+        .max()
+        .unwrap_or(0);
     let register_count = named_registers.max(lives.register_count);
     let survivors = &allocation.allocatable[..allocation.survive_leaf_calls];
     let mut points = allocation.dirty_at.iter().zip(&metadata.points);
@@ -244,12 +361,23 @@ fn replay(
         for (register, value) in &entry.machine {
             replay.machine.insert(Spot::Machine(*register), *value);
         }
+        // A register the leftover analysis taints at the block's top that
+        // holds the interpreter's word holds what no one may read: a word
+        // a callee or a popped frame left, which the collector's pre-pass
+        // nils -- and, where a frame went back into the code at a poll,
+        // the `nil` its entry restored a value no code reads on with
+        // (`poll_restores`) -- so that a read of it before a write is
+        // refused.
+        let tainted_here = graph.tainted_at_top(*block);
         for (register, binding) in entry.bindings.iter().enumerate() {
             replay.interpreter[register] = binding.value;
-            replay.words[register] = if binding.clean {
-                binding.value.map_or(Word::Original, Word::Value)
-            } else {
-                Word::Stale
+            let tainted_word =
+                u16::try_from(register).is_ok_and(|number| tainted(&tainted_here, number));
+            replay.words[register] = match (binding.clean, binding.value) {
+                (true, None) if tainted_word => Word::Stale,
+                (true, None) => Word::Original,
+                (true, Some(value)) => Word::Value(value),
+                (false, _) => Word::Stale,
             };
         }
         let nodes = &graph.block(*block).nodes;
@@ -268,15 +396,7 @@ fn replay(
                 }
                 let mut stopped = replay.clone();
                 write_back(&mut stopped, &point.stores, use_position)?;
-                interrupt(
-                    &stopped,
-                    graph,
-                    *block,
-                    point.kind,
-                    described,
-                    snapshot,
-                    named_registers,
-                )?;
+                interrupt(&stopped, graph, *block, point.kind, described)?;
                 for (register, value) in reads {
                     let register = usize::from(*register);
                     if stopped.interpreter[register] != Some(*value) || !stopped.in_sync(register) {
@@ -308,7 +428,7 @@ fn replay(
             } = node
             {
                 if graph.block(*block).exit_position(*fallback) == Some(index) {
-                    enters(&replay, graph, allocation, snapshot, *block, *fallback)?;
+                    enters(&replay, graph, allocation, (*block, *fallback), None)?;
                 }
             }
             // The trap's cold write-back, replayed on its way out.
@@ -323,15 +443,7 @@ fn replay(
                 }
                 let mut stopped = replay.clone();
                 write_back(&mut stopped, &point.stores, use_position)?;
-                interrupt(
-                    &stopped,
-                    graph,
-                    *block,
-                    point.kind,
-                    described,
-                    snapshot,
-                    named_registers,
-                )?;
+                interrupt(&stopped, graph, *block, point.kind, described)?;
             }
             if leaf_calls.binary_search(&use_position).is_ok() {
                 let clobbered: Vec<(Spot, ValueId)> = replay
@@ -368,7 +480,7 @@ fn replay(
                         replay.machine.insert(Spot::Machine(register), value);
                     }
                     Location::FrameWord if matches!(node, Node::FrameRead { .. }) => {}
-                    Location::FrameWord => {
+                    Location::FrameWord | Location::EliminatedBlock(_) => {
                         return Err(VerifyError::Misplaced {
                             value,
                             position: definition,
@@ -391,10 +503,32 @@ fn replay(
                     value,
                     ..
                 } => replay.interpreter[usize::from(*destination_register)] = Some(*value),
+                // An inlined callee's frame is laid over the registers, or
+                // left there: neither frame's value is one the replay
+                // knows, and the leftover analysis taints each there.
+                Node::Overlay { ranges } => {
+                    for range in ranges {
+                        let end = usize::from(range.end).min(replay.words.len());
+                        for register in usize::from(range.start)..end {
+                            replay.interpreter[register] = None;
+                            replay.words[register] = Word::Stale;
+                        }
+                    }
+                }
                 Node::Constant { .. }
                 | Node::Receiver { .. }
                 | Node::OwnSlotLoad { .. }
-                | Node::Frame { .. } => {}
+                | Node::CurrentClass { .. }
+                | Node::ResetOwnSlotGuard
+                | Node::Frame { .. }
+                | Node::FieldLoad { .. }
+                | Node::FieldStore { .. }
+                | Node::IdentityCompare { .. }
+                | Node::ClassOf { .. }
+                | Node::IndexedLoad { .. }
+                | Node::IndexedStore { .. }
+                | Node::TrapIfNil { .. }
+                | Node::EliminatedBlock { .. } => {}
             }
             apply(&mut replay, allocation, definition)?;
         }
@@ -412,15 +546,26 @@ fn replay(
             }
             let mut stopped = replay.clone();
             write_back(&mut stopped, &point.stores, end_use)?;
-            interrupt(
-                &stopped,
-                graph,
-                *block,
-                point.kind,
-                described,
-                snapshot,
-                named_registers,
-            )?;
+            interrupt(&stopped, graph, *block, point.kind, described)?;
+            // A frame that goes back into the code at the poll.
+            if let (Some(restores), Some(head)) = (
+                poll_restores(graph, allocation, described, end_use),
+                poll_target(graph, *block),
+            ) {
+                replay_reentry(
+                    &stopped,
+                    graph,
+                    allocation,
+                    described,
+                    &restores,
+                    (*block, head),
+                    (
+                        end_use,
+                        positions.end_definition(*block),
+                        &lives.live_in[head.index()],
+                    ),
+                )?;
+            }
         }
         if graph.end_trap(*block).is_some() {
             let Some((point, described)) = points.next() else {
@@ -431,25 +576,199 @@ fn replay(
             }
             let mut stopped = replay.clone();
             write_back(&mut stopped, &point.stores, end_use)?;
-            interrupt(
-                &stopped,
-                graph,
-                *block,
-                point.kind,
-                described,
-                snapshot,
-                named_registers,
-            )?;
+            interrupt(&stopped, graph, *block, point.kind, described)?;
         }
         apply(&mut replay, allocation, positions.end_definition(*block))?;
         for successor in graph.block(*block).end.successors() {
-            enters(&replay, graph, allocation, snapshot, *block, successor)?;
+            enters(&replay, graph, allocation, (*block, successor), None)?;
         }
     }
     if points.next().is_some() {
         return Err(VerifyError::Unaligned);
     }
     Ok(())
+}
+
+/// Where a poll's entry reads a value back from (`poll_restores`): a frame
+/// word the frame kept, a constant's word, or `nil` for a value no code
+/// past the poll reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PollSource {
+    Frame(u16),
+    Word(u64),
+    Nil,
+}
+
+/// One value a poll's entry restores: which, from where, into the machine
+/// register the code holds it in, if any, and into each frame word the
+/// collector's pre-pass may have nilled that the code reads it back from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PollRestore {
+    pub(crate) value: ValueId,
+    pub(crate) source: PollSource,
+    pub(crate) machine: Option<Register>,
+    pub(crate) lost: Vec<u16>,
+}
+
+/// The registers of the frame words the frame keeps at the interrupt
+/// point `described`, in the physical frame's numbering: every register
+/// of its chain the leftover analysis leaves to the frame, which the
+/// collector traces and keeps current.
+fn kept_at(described: &InterruptPoint) -> Vec<u16> {
+    described
+        .scopes
+        .iter()
+        .flat_map(|scope| {
+            scope
+                .locations
+                .iter()
+                .filter(|(_, location)| {
+                    matches!(location, Location::FrameWord | Location::EliminatedBlock(_))
+                })
+                .map(move |(own, _)| scope.offset + own)
+        })
+        .collect()
+}
+
+/// What a frame going back into the code at the poll `described`, at
+/// `position`, restores: every value live there in the machine register
+/// the code holds it in, and in every frame word the code after the poll
+/// reads it back from -- each from a frame word the frame kept, one of a
+/// register the leftover analysis leaves to the frame there, which the
+/// collector kept current meanwhile, or for a constant from its word,
+/// since the collector's pre-pass nils every other (`Heap::trace_stack`).
+/// A value the code past the poll never reads -- live only for the stores
+/// of its dirty bindings, as a load of a slot the loop then stores is --
+/// is read back from a kept word one of them names, which the poll's
+/// write-back stored, so that the merge's stores write it again, or else
+/// is `nil`, written only into words nothing reads, which the replay
+/// holds the code to (`replay_reentry`). `None` where a value the code
+/// reads on is in no such word and no constant: no frame goes back in
+/// there, and the poll's exit is any interrupt point's
+/// (`JitStatistics::polls_without_an_entry`).
+pub(crate) fn poll_restores(
+    graph: &Graph,
+    allocation: &Allocation,
+    described: &InterruptPoint,
+    position: u32,
+) -> Option<Vec<PollRestore>> {
+    let kept = kept_at(described);
+    let mut restores = Vec::new();
+    for polled in allocation.poll_values.get(&position)? {
+        // A value read on: every clean binding the code may read it back
+        // from; one read by nothing but the stores of its dirty bindings:
+        // none, its machine register alone.
+        let lost: Vec<u16> = if polled.read_on {
+            polled
+                .clean
+                .iter()
+                .copied()
+                .filter(|register| !kept.contains(register))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if polled.machine.is_none() && lost.is_empty() {
+            continue;
+        }
+        let source = match polled.bound.iter().find(|register| kept.contains(register)) {
+            // A dirty binding the frame keeps, which the poll's write-back
+            // stored, is a store the merge makes again.
+            Some(register) => PollSource::Frame(*register),
+            None => match graph.constant_word(polled.value) {
+                Some(word) => PollSource::Word(word),
+                None if !polled.read_on => PollSource::Nil,
+                None => return None,
+            },
+        };
+        restores.push(PollRestore {
+            value: polled.value,
+            source,
+            machine: polled.machine,
+            lost,
+        });
+    }
+    Some(restores)
+}
+
+/// What no value is: a machine register a poll's entry gave `nil`
+/// (`PollSource::Nil`), as the replay of the frame going back in knows it.
+const RESTORED_NIL: ValueId = ValueId(u32::MAX);
+
+/// Checks the frame going back into the code at a poll, whose state at
+/// the poll after its write-back is `stopped`, `described` the point, as
+/// `restores` restores it: the collector's pre-pass nils every frame word
+/// the frame does not keep there, the entry writes back what `restores`
+/// says, and the code past the poll -- the moves into the loop's head,
+/// `head`, from `block` -- brings the head everything it assumes, as
+/// `enters` checks every way in: a value no code reads on, `nil` in its
+/// machine register, is stored only into words nothing reads, and every
+/// clean binding the head assumes holds its value, but a tainted
+/// register's binding of a value not in `live_at_head`, which no one
+/// reads past the head. From the head on the
+/// replay of every block holds the code to never reading a word the
+/// analysis taints before it writes it, which a `nil` stored there is.
+fn replay_reentry(
+    stopped: &Replay,
+    graph: &Graph,
+    allocation: &Allocation,
+    described: &InterruptPoint,
+    restores: &[PollRestore],
+    (block, head): (BlockId, BlockId),
+    (end_use, end_definition, live_at_head): (u32, u32, &[ValueId]),
+) -> Result<(), VerifyError> {
+    let kept = kept_at(described);
+    let mut reentered = stopped.clone();
+    for (register, word) in reentered.words.iter_mut().enumerate() {
+        if !u16::try_from(register).is_ok_and(|number| kept.contains(&number)) {
+            *word = Word::Stale;
+        }
+    }
+    reentered.machine.clear();
+    for restore in restores {
+        let held = match restore.source {
+            PollSource::Frame(register) => {
+                if stopped.words[usize::from(register)] != Word::Value(restore.value) {
+                    return Err(VerifyError::StaleFrameWord {
+                        register,
+                        position: end_use,
+                    });
+                }
+                restore.value
+            }
+            PollSource::Word(_) => restore.value,
+            PollSource::Nil => RESTORED_NIL,
+        };
+        if let Some(register) = restore.machine {
+            reentered.machine.insert(Spot::Machine(register), held);
+        }
+        for register in &restore.lost {
+            reentered.words[usize::from(*register)] = Word::Value(held);
+        }
+    }
+    // The moves into the head: a `nil` stored is a word nothing may read.
+    for each in allocation.moves_at(end_definition) {
+        match *each {
+            Move::Store { from, register, .. }
+                if reentered.machine.get(&Spot::Machine(from)) == Some(&RESTORED_NIL) =>
+            {
+                reentered.words[usize::from(register)] = Word::Stale;
+            }
+            Move::Transfer { from, into, .. }
+                if reentered.machine.get(&from) == Some(&RESTORED_NIL) =>
+            {
+                reentered.machine.insert(into, RESTORED_NIL);
+            }
+            _ => apply_move(&mut reentered, allocation, *each, end_definition)?,
+        }
+    }
+    enters(
+        &reentered,
+        graph,
+        allocation,
+        (block, head),
+        Some(live_at_head),
+    )
 }
 
 /// Checks that `value`, read in a machine register at `position`, is
@@ -472,47 +791,58 @@ fn in_register(
 
 /// Replays the moves at `position`.
 fn apply(replay: &mut Replay, allocation: &Allocation, position: u32) -> Result<(), VerifyError> {
+    for each in allocation.moves_at(position) {
+        apply_move(replay, allocation, *each, position)?;
+    }
+    Ok(())
+}
+
+/// Replays the move `each` at `position`.
+fn apply_move(
+    replay: &mut Replay,
+    allocation: &Allocation,
+    each: Move,
+    position: u32,
+) -> Result<(), VerifyError> {
     let allocatable = |spot: Spot| match spot {
         Spot::Machine(register) => allocation.allocatable.contains(&register),
         Spot::Scratch => true,
     };
-    for each in allocation.moves_at(position) {
-        match *each {
-            Move::Store {
-                value,
-                from,
-                register,
-            } => {
-                if !allocatable(Spot::Machine(from)) {
-                    return Err(VerifyError::NotAllocatable { position });
-                }
-                if replay.machine.get(&Spot::Machine(from)) != Some(&value) {
-                    return Err(VerifyError::Misplaced { value, position });
-                }
-                replay.words[usize::from(register)] = Word::Value(value);
+    match each {
+        Move::Store {
+            value,
+            from,
+            register,
+        } => {
+            if !allocatable(Spot::Machine(from)) {
+                return Err(VerifyError::NotAllocatable { position });
             }
-            Move::Load {
-                value,
-                register,
-                into,
-            } => {
-                if !allocatable(Spot::Machine(into)) {
-                    return Err(VerifyError::NotAllocatable { position });
-                }
-                if replay.words[usize::from(register)] != Word::Value(value) {
-                    return Err(VerifyError::StaleFrameWord { register, position });
-                }
-                replay.machine.insert(Spot::Machine(into), value);
+            if replay.machine.get(&Spot::Machine(from)) != Some(&value) {
+                return Err(VerifyError::Misplaced { value, position });
             }
-            Move::Transfer { value, from, into } => {
-                if !allocatable(from) || !allocatable(into) {
-                    return Err(VerifyError::NotAllocatable { position });
-                }
-                if replay.machine.get(&from) != Some(&value) {
-                    return Err(VerifyError::Misplaced { value, position });
-                }
-                replay.machine.insert(into, value);
+            replay.words[usize::from(register)] = Word::Value(value);
+        }
+        Move::Load {
+            value,
+            register,
+            into,
+        } => {
+            if !allocatable(Spot::Machine(into)) {
+                return Err(VerifyError::NotAllocatable { position });
             }
+            if replay.words[usize::from(register)] != Word::Value(value) {
+                return Err(VerifyError::StaleFrameWord { register, position });
+            }
+            replay.machine.insert(Spot::Machine(into), value);
+        }
+        Move::Transfer { value, from, into } => {
+            if !allocatable(from) || !allocatable(into) {
+                return Err(VerifyError::NotAllocatable { position });
+            }
+            if replay.machine.get(&from) != Some(&value) {
+                return Err(VerifyError::Misplaced { value, position });
+            }
+            replay.machine.insert(into, value);
         }
     }
     Ok(())
@@ -543,30 +873,34 @@ fn write_back(
 }
 
 /// Checks the frame at an interrupt point, after its write-back: every
-/// register the leftover analysis does not taint holds the interpreter's
-/// value in its frame word, and the metadata says it is there, for each
-/// of the `named_registers` the body names (`Snapshot::register_count`).
+/// physical register the leftover analysis does not taint holds the
+/// interpreter's value in its frame word, and the metadata names the
+/// point's chain of scopes, each with every one of its registers among
+/// them in its frame word (`chain_at`).
 fn interrupt(
     stopped: &Replay,
     graph: &Graph,
     block: BlockId,
     kind: PointKind,
     described: &InterruptPoint,
-    snapshot: &Snapshot,
-    named_registers: usize,
 ) -> Result<(), VerifyError> {
-    let (program_counter, resumes) = point_of(graph, block, kind);
-    if described.program_counter != program_counter || described.resumes != resumes {
-        return Err(VerifyError::MetadataDisagrees { program_counter });
+    let (scope, program_counter, resumes) = stopped_at(graph, block, kind)?;
+    if usize::try_from(program_counter)
+        .ok()
+        .is_none_or(|index| index >= graph.scope(scope).tainted_before.len())
+    {
+        return Err(VerifyError::Unaligned);
     }
-    let tainted_here = snapshot
-        .tainted_before
-        .get(usize::try_from(program_counter).expect("internal: a program counter fits a usize"))
-        .ok_or(VerifyError::Unaligned)?;
-    let mut described_registers = described.locations.iter().peekable();
+    let tainted_here = graph.tainted_at(scope, program_counter);
+    described_chain(
+        graph,
+        described,
+        (scope, program_counter, resumes),
+        (&tainted_here, callee_from(graph, block, kind)),
+    )?;
     for register in 0..stopped.words.len() {
         let number = u16::try_from(register).expect("internal: a register number fits a u16");
-        if tainted(tainted_here, number) {
+        if tainted(&tainted_here, number) {
             continue;
         }
         if !stopped.in_sync(register) {
@@ -575,14 +909,124 @@ fn interrupt(
                 program_counter,
             });
         }
-        if register < named_registers
-            && described_registers.next() != Some(&(number, Location::FrameWord))
-        {
-            return Err(VerifyError::MetadataDisagrees { program_counter });
+    }
+    // An inlined scope's current class is the exit's to write, but at its
+    // frame node the template reads it from the frame: there it is bound
+    // to the class computed before the node and written back.
+    if matches!(kind, PointKind::Frame { .. }) && scope != ScopeId::ROOT {
+        let class = graph
+            .scope(scope)
+            .header_register(super::graph::HeaderBinding::CurrentClass);
+        let index = usize::from(class);
+        if stopped.interpreter.get(index).copied().flatten().is_none() || !stopped.in_sync(index) {
+            return Err(VerifyError::NotWrittenBack {
+                register: class,
+                program_counter,
+            });
         }
     }
-    if described_registers.next().is_some() {
-        return Err(VerifyError::MetadataDisagrees { program_counter });
+    Ok(())
+}
+
+/// Where a frame stopped at an interrupt point stands, found from the
+/// graph's blocks and nodes alone, apart from the metadata's own reading
+/// (`point_of`): the scope of the point's block -- the frame laid there --
+/// at the frame node's or the trap's instruction, or, for a poll, at the
+/// loop head's, which is the send its scope is inlined at in that block's
+/// scope where the head begins an inlined scope.
+fn stopped_at(
+    graph: &Graph,
+    block: BlockId,
+    kind: PointKind,
+) -> Result<(ScopeId, u32, Resumes), VerifyError> {
+    let here = graph.block(block);
+    match kind {
+        PointKind::Frame { node } => match &here.nodes[node] {
+            Node::Frame {
+                program_counter,
+                instruction,
+                ..
+            } => Ok((
+                here.scope,
+                *program_counter,
+                if instruction.argument_slots().is_some() {
+                    Resumes::Deliver
+                } else {
+                    Resumes::Reexecute
+                },
+            )),
+            _ => Err(VerifyError::Unaligned),
+        },
+        PointKind::Poll => {
+            let head = graph.block(poll_target(graph, block).ok_or(VerifyError::Unaligned)?);
+            let (mut scope, mut program_counter) = (head.scope, head.program_counter);
+            while scope != here.scope {
+                let (sender, call) = graph.scope(scope).parent.ok_or(VerifyError::Unaligned)?;
+                scope = sender;
+                program_counter = call;
+            }
+            Ok((scope, program_counter, Resumes::Reexecute))
+        }
+        PointKind::Trap { node: Some(node) } => here.nodes[node]
+            .trap()
+            .map(|program_counter| (here.scope, program_counter, Resumes::Reexecute))
+            .ok_or(VerifyError::Unaligned),
+        PointKind::Trap { node: None } => graph
+            .end_trap(block)
+            .map(|program_counter| (here.scope, program_counter, Resumes::Reexecute))
+            .ok_or(VerifyError::Unaligned),
+    }
+}
+
+/// Checks that `described` names the chain of scopes a frame stopped at
+/// `stopped` stands in, innermost first, each delivering at the send its
+/// inner scope is inlined at, and among each scope's locations every
+/// register of its own that `tainted_here` leaves, in its frame word, and
+/// no other.
+fn described_chain(
+    graph: &Graph,
+    described: &InterruptPoint,
+    stopped: (ScopeId, u32, Resumes),
+    (tainted_here, mut callee_from): (&[Range<u16>], Option<u16>),
+) -> Result<(), VerifyError> {
+    let (_, program_counter, _) = stopped;
+    let disagrees = VerifyError::MetadataDisagrees { program_counter };
+    let mut expected = Some(stopped);
+    let mut end = graph.scope(stopped.0).top();
+    for scope in &described.scopes {
+        let Some((id, counter, resumes)) = expected else {
+            return Err(disagrees);
+        };
+        let owner = graph.scope(id);
+        if scope.scope != id
+            || scope.code_id != owner.code_id
+            || scope.program_counter != counter
+            || scope.resumes != resumes
+            || scope.offset != owner.offset
+        {
+            return Err(disagrees);
+        }
+        let mut listed = scope.locations.iter();
+        for register in owner.offset..end {
+            if tainted(tainted_here, register) {
+                continue;
+            }
+            let own = register - owner.offset;
+            if listed.next() != Some(&(own, location_of(owner, counter, own, callee_from))) {
+                return Err(disagrees);
+            }
+        }
+        if listed.next().is_some() {
+            return Err(disagrees);
+        }
+        callee_from = None;
+        end = owner.offset;
+        expected = owner
+            .parent
+            .map(|(sender, call)| (sender, call, Resumes::Deliver));
+    }
+    if expected.is_some() {
+        return Err(disagrees);
     }
     Ok(())
 }
@@ -591,14 +1035,15 @@ fn interrupt(
 /// what `successor`'s entry assumes: each of its machine registers'
 /// values -- a phi's input for the phi -- and each register's binding,
 /// held in its frame word wherever the entry says so, or where it forgets
-/// it, unless the leftover analysis taints the register there.
+/// it, unless the leftover analysis taints the register there -- and,
+/// for a frame that went back in at a poll, `reentered_live` the values
+/// live at the head, unless the value bound is no longer read.
 fn enters(
     replay: &Replay,
     graph: &Graph,
     allocation: &Allocation,
-    snapshot: &Snapshot,
-    predecessor: BlockId,
-    successor: BlockId,
+    (predecessor, successor): (BlockId, BlockId),
+    reentered_live: Option<&[ValueId]>,
 ) -> Result<(), VerifyError> {
     let disagrees = VerifyError::EdgeDisagrees {
         predecessor,
@@ -627,6 +1072,7 @@ fn enters(
             return Err(disagrees);
         }
     }
+    let tainted_there = graph.tainted_at_top(successor);
     for (register, assumed) in entry.bindings.iter().enumerate() {
         let phi = block
             .phis
@@ -646,22 +1092,53 @@ fn enters(
             }
             (None, None) => {}
         }
-        if assumed.clean && !replay.in_sync(register) {
+        // The interpreter's word of a register tainted there is what no
+        // one reads, whatever it holds.
+        let tainted_word =
+            u16::try_from(register).is_ok_and(|number| tainted(&tainted_there, number));
+        // Past a poll's entry a tainted register's word may be the `nil`
+        // the collector's pre-pass stored, whatever binding the head keeps
+        // of it: no instruction reads it before writing it, and a value
+        // no code past the head reads is read from it by no one either.
+        let unread = tainted_word
+            && assumed.value.is_none_or(|value| {
+                reentered_live.is_some_and(|live| {
+                    !every_value_live_at_a_head()
+                        && !live.contains(&value)
+                        && block.phis.iter().all(|phi| phi.value != value)
+                })
+            });
+        if assumed.clean && !unread && !replay.in_sync(register) {
             return Err(disagrees);
         }
-        if !assumed.clean && assumed.value.is_none() {
-            let tainted_there = snapshot
-                .tainted_before
-                .get(usize::try_from(block.program_counter).unwrap_or(usize::MAX))
-                .is_some_and(|ranges| {
-                    u16::try_from(register).is_ok_and(|number| tainted(ranges, number))
-                });
-            if !tainted_there {
-                return Err(disagrees);
-            }
+        if !assumed.clean
+            && assumed.value.is_none()
+            && !u16::try_from(register).is_ok_and(|number| tainted(&tainted_there, number))
+        {
+            return Err(disagrees);
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes `enters` take every value as live at a loop's head past a
+    /// poll's entry, for a test of what the check refuses then.
+    pub(crate) static EVERY_VALUE_LIVE_AT_A_HEAD: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Whether a test asked `enters` to take every value as live at a head.
+fn every_value_live_at_a_head() -> bool {
+    #[cfg(test)]
+    {
+        EVERY_VALUE_LIVE_AT_A_HEAD.get()
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -669,8 +1146,7 @@ pub(crate) fn replay_with_leaf_calls(
     graph: &Graph,
     allocation: &Allocation,
     metadata: &Metadata,
-    snapshot: &Snapshot,
     leaf_calls: &[u32],
 ) -> Result<(), VerifyError> {
-    replay(graph, allocation, metadata, snapshot, leaf_calls)
+    replay(graph, allocation, metadata, leaf_calls)
 }

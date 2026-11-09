@@ -222,10 +222,11 @@ impl World {
     }
 
     /// Whether a body's optimization budget ran out since the last
-    /// safepoint, whose optimizing compile is pending
-    /// (`Interpreter::safepoint`).
+    /// safepoint, whose optimizing compile is pending, or whose budget
+    /// waits for one to be armed afresh (`Interpreter::safepoint`).
     pub(crate) fn optimization_requested(&self) -> bool {
         !self.mutator.jit.optimization_requests.is_empty()
+            || !self.mutator.jit.parked_for_recompilees.is_empty()
     }
 
     /// Sets the collection floor and the next limit to `floor` bytes of

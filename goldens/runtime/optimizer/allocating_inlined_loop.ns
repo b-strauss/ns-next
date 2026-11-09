@@ -1,0 +1,73 @@
+/// A hot loop whose inlined callees allocate, enough that the nursery is
+/// scavenged again and again while the optimized code runs: every turn
+/// `pairAt:` makes a `Pair` and `Pair`'s `spread` a 32-element Array,
+/// both inlined into `sum:from:keeping:`, whose loop's poll leaves for
+/// each scavenge and goes back into the same code after it, the values it
+/// holds in registers restored from the frame the scavenge updated. The
+/// loop is sent a hundred times, 2000 indices each, so that its copy is
+/// entered once it is compiled. Every 5000th index keeps its Array in a
+/// list, so that the kept ones survive the scavenges and are tenured
+/// while the rest die; the kept Arrays are read back at the end, so a
+/// stale or unforwarded handle changes a sum.
+///
+/// The pair of `index` holds `index` and `index + 1`, and `spread` puts
+/// the first at 1 and the second at 32: a turn adds 2 * index + 1, and 1
+/// to 200000 add 200000 * 200001 + 200000 = 40000400000. 40 Arrays are
+/// kept, those of 5000, 10000, ..., 200000, whose ends sum to 2 * (5000 +
+/// ... + 200000) + 40 = 2 * 5000 * 820 + 40 = 8200040.
+class AllocatingInlinedLoop = Object new () (
+  class Pair first: first second: second = Object new (
+    |
+      public first = first.
+      public second = second.
+    |
+  ) (
+    public spread = (
+      |
+        array = Array new: 32.
+      |
+      array at: 1 put: first.
+      array at: 32 put: second.
+      ^array.
+    )
+  )
+
+  pairAt: index = (
+    ^Pair first: index second: index + 1.
+  )
+
+  sum: count from: start keeping: kept = (
+    |
+      total ::= 0.
+      index ::= start.
+      array ::= nil.
+    |
+    [index < (start + count)] whileTrue: [
+      array:: (pairAt: index) spread.
+      total:: total + (array at: 1) + (array at: 32).
+      index \\ 5000 = 0 ifTrue: [kept add: array].
+      index:: index + 1.
+    ].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kept = platform collections List new.
+      sum ::= 0.
+      ends ::= 0.
+    |
+    0 to: 99 do: [:round | sum:: sum + (sum: 2000 from: round * 2000 + 1 keeping: kept)].
+    transcript
+        show: sum printString;
+        newLine.
+    kept do: [:array | ends:: ends + (array at: 1) + (array at: 32)].
+    transcript
+        show: kept size printString;
+        newLine.
+    transcript
+        show: ends printString;
+        newLine.
+  )
+)

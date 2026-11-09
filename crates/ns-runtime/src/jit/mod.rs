@@ -26,6 +26,8 @@ pub(crate) mod baseline;
 pub(crate) mod closures;
 #[cfg(ns_jit)]
 pub(crate) mod cut;
+#[cfg(all(test, ns_jit))]
+mod inlining_tests;
 #[cfg(ns_jit)]
 pub(crate) mod leaves;
 #[cfg(ns_jit)]
@@ -327,6 +329,28 @@ pub struct JitStatistics {
     /// a frame whose call returns into optimized code, or the innermost
     /// one, which left it.
     pub optimized_frames_materialized: u64,
+    /// Frames of inlined scopes of optimized code the exit's walk wrote in
+    /// place: each scope an exit or a call inside it left standing.
+    pub inlined_frames_materialized: u64,
+    /// Sites the optimized copies installed lay out as their arms rather
+    /// than send: a type-case, an unguarded inlined scope, or an accessor,
+    /// quick method or indexed access always inlined, guarded or not.
+    pub inlined_sites: u64,
+    /// Scopes the optimized copies installed inlined: each method body a
+    /// site's arm or an unguarded send inlined, and each block a `value`
+    /// send inlined, that the copy lays out code for -- so a site inlined
+    /// as a type-case of two arms counts two.
+    pub inlined_scopes: u64,
+    /// Arms of the type-cases the optimized copies installed test, one
+    /// per receiver type a site's callee was inlined for.
+    pub type_case_arms: u64,
+    /// Blocks the optimized copies installed never create, each made
+    /// only by an exit that finds it live (`materialized_blocks`).
+    pub eliminated_blocks: u64,
+    /// Closures an exit made of blocks optimized code eliminated, which it
+    /// found live (`materialize::materialize_blocks`): one per block per
+    /// exit, however many registers held it.
+    pub materialized_blocks: u64,
     /// Frames returned to (`resumed`) of a body with optimized code, which
     /// go on in its baseline code: one of `resumed_entries`.
     pub optimized_bodies_resumed: u64,
@@ -355,11 +379,38 @@ pub struct JitStatistics {
     /// Optimized copies freed because what they were compiled against
     /// changed: the copies keyed on an application an install rebuilt
     /// (`invalidate_applications`) or whose id a full collection reclaimed
-    /// (`forget_freed_copies`), every copy at a bulk forward
+    /// (`forget_freed_copies`), every copy whose recorded dependencies an
+    /// install, a reclaim or a slide changed (`CopyDependencies`), every
+    /// copy at a bulk forward
     /// (`invalidate_all_optimized`), and those the invalidate stress mode's
     /// rounds free (`invalidate_optimized_for_stress`). Neither a trap nor
     /// an exit: no version is raised for them.
     pub invalidated_copies: u64,
+    /// Exits at a budget's run-out (`stubs::ExitKind::BudgetSpent`), for
+    /// the walk that finds the recompilee (`find_recompilee`): of `exits`,
+    /// counted against no exit budget.
+    pub budget_exits: u64,
+    /// Run-outs whose walk requested a frame above the one that ran its
+    /// budget out: its sender, or a block's home.
+    pub recompilees_above: u64,
+    /// Frames of optimized code that left it at a poll and went back into
+    /// that same code at that poll once the safepoint was served
+    /// (`resumed_at_poll`): of `safepoint_exits`.
+    pub poll_reentries: u64,
+    /// Frames of optimized code that left it at a poll and could not go
+    /// back in -- the copy freed or another installed in its place, its
+    /// feedback base slid, a frame among its scopes reified, the stack
+    /// rebuilt, the room its scopes need gone (the native stack, the depth
+    /// limit, the stack's end), or the exit forced by a stress mode -- so
+    /// that the blocks its code eliminated were made and every scope went
+    /// on in baseline code (`resumed_at_poll`): of `safepoint_exits`.
+    pub poll_deoptimizations: u64,
+    /// Exits of optimized code at a poll its compile gave no entry -- one
+    /// past which it reads a value no restore rebuilds
+    /// (`optimizing::metadata`'s `poll_restores`) -- so that the frame goes
+    /// on in baseline code as after any exit. With `poll_reentries` and
+    /// `poll_deoptimizations`, every exit of optimized code at a poll.
+    pub polls_without_an_entry: u64,
 }
 
 impl JitStatistics {
@@ -556,6 +607,14 @@ pub(crate) struct JitSlot {
     /// The version of the body's one uncustomized copy, as a copy's row
     /// holds its key's (`CustomizedCopy::version`).
     optimized_version: Cell<u8>,
+    /// What the body's budget row was last armed with afresh -- the
+    /// plain budget, or a retired copy's longer wait -- and the plain
+    /// budget at that arming: what the row holds against the first says
+    /// how many instructions the body spent since, which the second
+    /// measures (`budget_share_of`). Kept on the body rather than the
+    /// row, which a full collection renumbers and arms with what was left
+    /// of it.
+    budget_arming: Cell<BudgetArming>,
     /// The traps the body's one uncustomized copy took, as a copy's row
     /// counts its key's (`CustomizedCopy::traps`).
     optimized_traps: Cell<u8>,
@@ -669,6 +728,34 @@ impl OptimizationRequest {
     }
 }
 
+/// A budget row's last arming afresh (`JitSlot::budget_arming`): what it
+/// was armed with, and the plain budget then.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BudgetArming {
+    armed: i64,
+    plain: i64,
+}
+
+impl JitSlot {
+    /// Records that the body's row was armed afresh with `armed`, the
+    /// plain budget being `plain`.
+    pub(crate) fn record_budget_arming(&self, armed: i64, plain: i64) {
+        self.budget_arming.set(BudgetArming { armed, plain });
+    }
+
+    /// Records that a cache fill raised the body's row by `raised`
+    /// (`Heap::raise_running_optimization_budget`): the raise makes the
+    /// body wait for its feedback to settle and forgets nothing it spent,
+    /// so that the arming grows by as much.
+    pub(crate) fn record_budget_raise(&self, raised: i64) {
+        let arming = self.budget_arming.get();
+        self.budget_arming.set(BudgetArming {
+            armed: arming.armed.saturating_add(raised),
+            ..arming
+        });
+    }
+}
+
 impl Default for JitSlot {
     fn default() -> JitSlot {
         JitSlot {
@@ -684,6 +771,7 @@ impl Default for JitSlot {
             back_jumps: Cell::new(0),
             optimized: Cell::new(NO_BODY),
             optimized_version: Cell::new(0),
+            budget_arming: Cell::new(BudgetArming::default()),
             optimized_traps: Cell::new(0),
             optimized_refused: Cell::new(false),
             copies: RefCell::new(Vec::new()),
@@ -1355,6 +1443,29 @@ struct InstalledBody {
     /// A method's lean body's dispatching entry and its data words
     /// (`targets::emit_dispatching_entry`); `None` for every other code.
     dispatching: Option<InstalledDispatching>,
+    /// Optimized code's interrupt points inside its inlined scopes; `None`
+    /// for code that inlines nothing, baseline code among it.
+    metadata: Option<Rc<OptimizedMetadata>>,
+    /// Optimized code's deepest chain of inlined scopes and one past the
+    /// highest physical register they reach, which a push into it holds
+    /// the depth limit and the stack's room to (`entered`); 0 for code
+    /// that inlines nothing.
+    deepest_chain: u16,
+    deepest_extent: u32,
+    /// What optimized code relied on beyond its own body and its key,
+    /// whose change frees it at once; nothing for baseline code.
+    dependencies: CopyDependencies,
+    /// Optimized code's polls a frame goes back into it at, by offsets
+    /// from the body's start, which a compaction keeps; none for baseline
+    /// code.
+    #[cfg(ns_jit)]
+    polls: Vec<optimizing::emit::PollEntry>,
+    /// Which of its state's installs this was, counted from the first:
+    /// what tells a copy a frame left at a poll from one installed for the
+    /// same body and key since that one was freed (`StoppedAtPoll`), whose
+    /// polls are another compile's.
+    #[cfg(ns_jit)]
+    installation: u64,
 }
 
 /// A method's lean body's dispatching entry as installed: the offsets
@@ -1486,6 +1597,41 @@ pub(crate) struct JitState {
     /// instruction, or, for a refused push, the code the caller's call
     /// returns into. Cleared with `walked` before every entry.
     pub(crate) walked_optimized: bool,
+    /// The frame of the optimized copy the last exit left, when the exit
+    /// left it inside an inlined scope, which the walk materialized as the
+    /// innermost frame above it: the frame whose copy the exit counts
+    /// against (`resumption_after_exit`). Cleared with `walked`.
+    pub(crate) exited_physical: Option<ActivationReference>,
+    /// The frame of optimized code the last poll's light exit left, for
+    /// the run loop's safepoint, which sends it back into its code there
+    /// unless the safepoint made that impossible (`resumed_at_poll`).
+    stopped_at_poll: Option<StoppedAtPoll>,
+    /// The blocks the light exit of the poll the walk is leaving defers:
+    /// those of the frame that left, which the frame makes only if it
+    /// cannot go back in (`materialize::defer_the_poll_s_blocks`).
+    #[cfg(ns_jit)]
+    pub(crate) deferred_blocks: Option<materialize::BlocksAt>,
+    /// Where the next stretch enters the frame `resumed_at_poll` sent back
+    /// into its optimized code (`entered_at_poll`).
+    #[cfg(ns_jit)]
+    poll_entry: Option<CodeOffset>,
+    /// How many bodies this state installed (`InstalledBody::installation`).
+    #[cfg(ns_jit)]
+    installations: u64,
+    /// What a test runs wherever a frame that left its optimized code at a
+    /// poll is about to go back in, before anything is decided
+    /// (`inlining_tests`).
+    #[cfg(all(test, ns_jit))]
+    pub(crate) before_poll_reentry: Option<fn(&mut Mutator<'_>, &StoppedAtPoll)>,
+    /// Whether optimized code compiled from now on gives no poll an entry,
+    /// so that a test reaches the exit of a poll without one
+    /// (`MacroAssembler::set_refuse_poll_entries`).
+    #[cfg(all(test, ns_jit))]
+    pub(crate) refuse_poll_entries: bool,
+    /// What a test records of every exit's stack and every leaf's frame,
+    /// once it asks (`inlining_tests`).
+    #[cfg(all(test, ns_jit))]
+    pub(crate) recorder: Option<inlining_tests::Recorder>,
     /// Whether the miss leaf refused the last call for a callee that has
     /// no machine code yet but may still be compiled -- counting its
     /// entries, never compiled or freed by a compaction: a refusal that
@@ -1568,6 +1714,14 @@ pub(crate) struct JitState {
     /// held weakly as the installed bodies are: what the optimizing
     /// compile at the next safepoint takes up.
     pub(crate) optimization_requests: Vec<OptimizationRequest>,
+    /// The bodies whose run-out the walk answered with another frame's
+    /// request (`request_recompilee`), each with the version of the copy
+    /// its frame's key had: their budgets stay parked until the next
+    /// safepoint has compiled what was requested, which reads them as
+    /// spent, as they were when the walk asked the recompilee's plan --
+    /// and so that no further run-out walks again meanwhile -- and are
+    /// armed afresh there, at that version's wait (`optimize_requested`).
+    pub(crate) parked_for_recompilees: Vec<(Weak<CompiledCode>, u8)>,
     /// The installed bodies, by index in `bodies`, whose budget word is
     /// still to be pointed at their row, which only a caller holding the
     /// heap can do (`after_compile_trigger`). Emptied by a compaction,
@@ -1855,6 +2009,20 @@ impl JitState {
             cut: cut::CutWalk::default(),
             walked: None,
             walked_optimized: false,
+            exited_physical: None,
+            stopped_at_poll: None,
+            #[cfg(ns_jit)]
+            deferred_blocks: None,
+            #[cfg(ns_jit)]
+            poll_entry: None,
+            #[cfg(ns_jit)]
+            installations: 0,
+            #[cfg(all(test, ns_jit))]
+            before_poll_reentry: None,
+            #[cfg(all(test, ns_jit))]
+            refuse_poll_entries: false,
+            #[cfg(all(test, ns_jit))]
+            recorder: None,
             refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
             block_stale: true,
@@ -1871,6 +2039,7 @@ impl JitState {
             revived_by_entries: false,
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
+            parked_for_recompilees: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: if optimize_stress {
                 0
@@ -2394,7 +2563,52 @@ impl JitState {
     pub(crate) fn return_site(&self, return_address: usize) -> Option<(Installed, u32)> {
         let site = self.call_return(return_address)?;
         let body = self.live_body(site.body)?;
-        Some((upgraded(body)?, site.program_counter))
+        Some((upgraded(body, site.body)?, site.program_counter))
+    }
+
+    /// The interrupt point of an inlined scope an address inside optimized
+    /// code belongs to -- an address `body_of` takes, or a call's return
+    /// address -- if it lies in one: what the exit's walk and the leaves
+    /// read of a frame standing for several scopes. Out of line, and asked
+    /// only of optimized code, so that a leaf of baseline code pays
+    /// nothing for it.
+    #[cfg(ns_jit)]
+    #[inline(never)]
+    pub(crate) fn inlined_at(&self, address: usize) -> Option<InlinedAt> {
+        let body = match self.call_return(address) {
+            Some(site) => self.live_body(site.body)?,
+            None => self.installed_body_at(address)?,
+        };
+        let metadata = body.metadata.as_ref()?;
+        let point = metadata.by_address.get(&self.offset_in(body, address)?)?;
+        Some(InlinedAt {
+            metadata: Rc::clone(metadata),
+            point: *point,
+        })
+    }
+
+    /// `inlined_at` for `address` in the code of the installed body at
+    /// `index` of `bodies` (`Installed::described`), found without a
+    /// second search.
+    #[cfg(ns_jit)]
+    pub(crate) fn inlined_in(&self, index: u32, address: usize) -> Option<InlinedAt> {
+        let body = self.live_body(index)?;
+        let metadata = body.metadata.as_ref()?;
+        let point = metadata.by_address.get(&self.offset_in(body, address)?)?;
+        Some(InlinedAt {
+            metadata: Rc::clone(metadata),
+            point: *point,
+        })
+    }
+
+    /// The offset of `address` from the start of `body`.
+    fn offset_in(&self, body: &InstalledBody, address: usize) -> Option<u32> {
+        let zone = self.zone.as_ref()?;
+        let start = zone
+            .writer
+            .zone()
+            .executable_address(CodeOffset(body.start));
+        u32::try_from(address.checked_sub(start)?).ok()
     }
 
     /// The send whose call returns to `return_address`, as `returns`
@@ -2433,9 +2647,21 @@ impl JitState {
         // A call's return address, which every leaf a callee calls hands
         // over, is found without a search.
         if let Some(site) = self.call_return(address) {
-            return upgraded(self.live_body(site.body)?);
+            let body = self.live_body(site.body)?;
+            return upgraded(body, site.body);
         }
-        upgraded(self.installed_body_at(address)?)
+        self.body_at_code_address(address)
+    }
+
+    /// `body_of` for an address a leaf call's `Operand::CodeAddress`
+    /// handed over: the address after the instruction that loaded it,
+    /// never a call's return address, so `returns`, which could never
+    /// answer it, is not probed on the way of every step, initializer and
+    /// own-slot leaf. Inline, as `body_of` is.
+    #[inline(always)]
+    pub(crate) fn body_at_code_address(&self, address: usize) -> Option<Installed> {
+        let index = self.installed_index_at(address)?;
+        upgraded(&self.bodies[index as usize], index)
     }
 
     /// The sending frame's register 0 and the program counter of the send
@@ -2795,15 +3021,22 @@ impl JitState {
         let zone = self.zone.as_ref()?;
         let base = zone.writer.zone().executable_address(CodeOffset(0));
         let offset = u32::try_from(return_address.checked_sub(base)?.checked_sub(1)?).ok()?;
+        // A stub's address lies below every body: a leaf a stub calls
+        // finds no body without searching for one, at every call.
+        if offset < zone.bodies_start {
+            return None;
+        }
         let holds = |index: usize| {
             self.bodies
                 .get(index)
                 .is_some_and(|body| body.start <= offset && offset < body.end && !body.free)
         };
-        let entry = self.body_lookup.entry(offset);
-        if let Some(index) = entry.get().checked_sub(1) {
-            if holds(index as usize) {
-                return Some(index);
+        let (entry, other) = self.body_lookup.entries_of(offset);
+        for each in [entry, other] {
+            if let Some(index) = each.get().checked_sub(1) {
+                if holds(index as usize) {
+                    return Some(index);
+                }
             }
         }
         #[cfg(test)]
@@ -2818,6 +3051,9 @@ impl JitState {
             return None;
         }
         let index = u32::try_from(index).ok()?;
+        // The entry's last body moves to its pair's, so that two hot
+        // bodies whose offsets meet in one entry both stay found.
+        other.set(entry.get());
         entry.set(index + 1);
         Some(index)
     }
@@ -2854,6 +3090,20 @@ impl JitState {
             cut: cut::CutWalk::default(),
             walked: None,
             walked_optimized: false,
+            exited_physical: None,
+            stopped_at_poll: None,
+            #[cfg(ns_jit)]
+            deferred_blocks: None,
+            #[cfg(ns_jit)]
+            poll_entry: None,
+            #[cfg(ns_jit)]
+            installations: 0,
+            #[cfg(all(test, ns_jit))]
+            before_poll_reentry: None,
+            #[cfg(all(test, ns_jit))]
+            refuse_poll_entries: false,
+            #[cfg(all(test, ns_jit))]
+            recorder: None,
             refused_for_an_uncompiled_callee: false,
             block: EntryBlock::new(),
             block_stale: true,
@@ -2870,6 +3120,7 @@ impl JitState {
             revived_by_entries: false,
             revival_base: REVIVAL_ENTRIES,
             optimization_requests: Vec::new(),
+            parked_for_recompilees: Vec::new(),
             budget_words_to_point: Vec::new(),
             optimization_budget: OPTIMIZATION_BUDGET,
             budget_set: OPTIMIZATION_BUDGET,
@@ -2901,6 +3152,180 @@ pub(crate) struct Installed {
     pub(crate) reifies: bool,
     /// Whether the code is the body's optimized code (`Tier::Optimized`).
     pub(crate) optimized: bool,
+    /// For optimized code that keeps the metadata of its points inside
+    /// inlined scopes or holding eliminated blocks
+    /// (`InstalledBody::metadata`), its index in `JitState::bodies`: the
+    /// only code a leaf's frame is looked up in the metadata for, found
+    /// with the body, so that every other leaf call pays nothing for it and
+    /// this one one probe of the metadata's table.
+    pub(crate) described: Option<u32>,
+}
+
+/// An address inside an inlined scope of an installed copy of optimized
+/// code: the copy's metadata, and the index of the interrupt point the
+/// address belongs to.
+#[derive(Clone)]
+pub(crate) struct InlinedAt {
+    pub(crate) metadata: Rc<OptimizedMetadata>,
+    pub(crate) point: usize,
+}
+
+impl InlinedAt {
+    /// The chain of scopes the point stops in, innermost first, the body's
+    /// own last.
+    #[cfg(ns_jit)]
+    pub(crate) fn chain(&self) -> &[optimizing::metadata::ScopeAtPoint] {
+        &self.metadata.points[self.point].scopes
+    }
+
+    /// Whether the point lies in an inlined scope: one of the body's own
+    /// is named only for the blocks it holds.
+    #[cfg(ns_jit)]
+    pub(crate) fn inlines(&self) -> bool {
+        self.chain().len() > 1
+    }
+
+    /// Whether a scope of the point's chain holds a block the copy
+    /// eliminated, or runs one, which an exit there makes.
+    #[cfg(ns_jit)]
+    pub(crate) fn holds_eliminated_blocks(&self) -> bool {
+        self.metadata.points[self.point].holds_eliminated_blocks()
+            || self.chain().iter().any(|stopped| {
+                self.metadata.scopes[stopped.scope.0 as usize]
+                    .as_ref()
+                    .is_some_and(|scope| scope.block.is_some())
+            })
+    }
+
+    /// The body, method and feedback base of the scope `scope` of the copy.
+    #[cfg(ns_jit)]
+    pub(crate) fn scope(&self, scope: optimizing::graph::ScopeId) -> &InlinedScope {
+        self.metadata.scopes[scope.0 as usize]
+            .as_ref()
+            .expect("internal: a point's inlined scope is recorded")
+    }
+}
+
+/// What an installed copy of optimized code that inlines keeps of its
+/// interrupt points (`docs/design/execution.md`, "Inlining"): each point's
+/// chain of scopes, the point every address inside an inlined scope's
+/// code belongs to -- or in the body's own where a block the copy
+/// eliminated is live -- an exit's, a leaf call's and a call's return
+/// address, by its offset from the copy's start, which a compaction
+/// keeps, the body each inlined scope runs and what each eliminated block
+/// is made from. An exit there leaves the physical frame standing for
+/// every scope of the chain, each of whose headers the exit's walk writes
+/// in place, and makes every block the point holds (`jit::materialize`).
+#[cfg(ns_jit)]
+pub(crate) struct OptimizedMetadata {
+    pub(crate) points: Vec<optimizing::metadata::InterruptPoint>,
+    pub(crate) by_address: IdentityMap<u32, usize>,
+    /// Each scope's body, by its `ScopeId`; `None` for the copy's own,
+    /// which its installed body names.
+    pub(crate) scopes: Vec<Option<InlinedScope>>,
+    /// Each block the copy eliminated, by its `EliminatedId`, which an
+    /// exit that finds it live makes (`materialize::materialize_blocks`).
+    pub(crate) blocks: Vec<EliminatedBlock>,
+}
+
+/// A block a copy of optimized code eliminated, as an exit makes it: its
+/// body, held strongly, the scope whose `MakeClosure` it is, whose frame
+/// the closure captures, and the registers of that scope its values are
+/// copied from.
+#[cfg(ns_jit)]
+pub(crate) struct EliminatedBlock {
+    pub(crate) code: Rc<CompiledCode>,
+    pub(crate) home: optimizing::graph::ScopeId,
+    pub(crate) copied: Vec<u16>,
+}
+
+/// Without a JIT no copy inlines.
+#[cfg(not(ns_jit))]
+pub(crate) struct OptimizedMetadata;
+
+/// What an installed copy of optimized code relied on beyond its own body
+/// and its key, recorded at its install (`docs/design/execution.md`,
+/// "Invalidation"): whatever changes any of it frees the copy at once,
+/// through the path every invalidation takes (`invalidate_copy`), so that
+/// its cells, dispatching rows and machine entry rows are written afresh;
+/// what the copy holds instead of relying on -- its inlined bodies' code
+/// ids, which a full collection keeps named while it lives -- never
+/// changes under it.
+/// Its key's applications are not repeated here: the key's own rules free
+/// a copy keyed on one (`invalidate_applications`, `forget_freed_copies`).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct CopyDependencies {
+    /// The instances guard of every application an arm or a customized
+    /// read relied on: each type-case arm's guard, and each inlined
+    /// scope's receiver's and entered application's -- whose chain, from
+    /// the receiver's level up to the callee's definer, the lookup walked,
+    /// whose layout a slot read takes its offset from and whose outer
+    /// structure a lexical send walks. An install rebuilds every
+    /// application one of whose levels it edits, so that replacing,
+    /// removing or adding a method anywhere on that chain -- an override
+    /// below the definer included -- rebuilds the receiver's application,
+    /// and an edit of any other class none of these
+    /// (`invalidate_applications`). A full collection that frees one
+    /// mints it again for another application, which a type-case would
+    /// take for the dead one (`forget_freed_copies`).
+    pub(crate) applications: Vec<DispatchId>,
+    /// Every inlined body's code id, a method's or a block's, by which the
+    /// copy's interrupt points name its scopes
+    /// (`optimizing::metadata::ScopeAtPoint`), and every eliminated
+    /// block's, whose closure an exit makes: a full collection names it
+    /// while the copy lives, so that it is never freed and minted again
+    /// for another body under it (`inlined_code_ids`).
+    pub(crate) code_ids: Vec<CodeId>,
+    /// Every inlined body's feedback base, from which its scope's sends
+    /// address their cells -- a block's is its home's family's -- and
+    /// every eliminated block's, which its closure is made with: a slide
+    /// that moves one leaves the copy reading and filling another family's
+    /// sites (`invalidate_copies_of_moved_bases`).
+    pub(crate) feedback_bases: Vec<FeedbackBase>,
+}
+
+impl CopyDependencies {
+    /// The dependencies of a copy that relied on `relied_on`, its
+    /// applications' guards read from `heap` at the install's safepoint,
+    /// where the tree its plan was made from was taken.
+    #[cfg(ns_jit)]
+    fn of(heap: &Heap<'_>, relied_on: &optimizing::emit::ReliedOn) -> CopyDependencies {
+        let mut applications: Vec<DispatchId> = relied_on.guards.clone();
+        for index in &relied_on.applications {
+            if let Some(application) = heap.application(*index) {
+                let guard = application.dispatch_ids.instances;
+                if guard != DispatchId::NONE && !applications.contains(&guard) {
+                    applications.push(guard);
+                }
+            }
+        }
+        CopyDependencies {
+            applications,
+            code_ids: relied_on
+                .bodies
+                .iter()
+                .map(|(code_id, _)| *code_id)
+                .collect(),
+            feedback_bases: relied_on.bodies.iter().map(|(_, base)| *base).collect(),
+        }
+    }
+}
+
+/// The body an inlined scope runs: held strongly, so that an exit can
+/// write the scope's frame -- its code's row, its method's selector --
+/// however long the copy lives, as a frame of the body would hold it.
+#[cfg(ns_jit)]
+pub(crate) struct InlinedScope {
+    pub(crate) code: Rc<CompiledCode>,
+    /// The method whose body it runs; `None` for a block's scope.
+    pub(crate) method: Option<Rc<MixinMethod>>,
+    pub(crate) feedback_base: FeedbackBase,
+    /// For a block's scope, the eliminated block whose `value` it runs:
+    /// its activation's closure, which the exit makes.
+    pub(crate) block: Option<optimizing::plan::EliminatedId>,
+    /// How its current class is found, which the exit's walk computes and
+    /// writes: optimized code computes it only before a frame node.
+    pub(crate) class: optimizing::graph::ClassRecipe,
 }
 
 /// How many bodies `BodyLookup` remembers: a power of two.
@@ -2937,24 +3362,30 @@ impl Default for BodyLookup {
 }
 
 impl BodyLookup {
-    /// The entry an offset into the zone hashes to: the offsets of one
-    /// body's leaf calls lie a few dozen bytes apart and bodies at least
-    /// sixteen, so a multiplicative hash spreads both.
-    fn entry(&self, offset: u32) -> &Cell<u32> {
+    /// The two entries an offset into the zone hashes to, the first the
+    /// one it is written into: the offsets of one body's leaf calls lie a few
+    /// dozen bytes apart and bodies at least sixteen, so a multiplicative
+    /// hash spreads both, and a pair of entries keeps two bodies whose
+    /// offsets meet -- with one, two such leaf calls of a loop searched
+    /// the bodies at every turn, bench_newarg 9% slower in a build whose
+    /// layout made them meet.
+    fn entries_of(&self, offset: u32) -> (&Cell<u32>, &Cell<u32>) {
         const SHIFT: u32 = u32::BITS - BODY_LOOKUP_ENTRIES.trailing_zeros();
         // Fibonacci hashing: 2^32 divided by the golden ratio, odd so that
         // the multiply is a bijection, whose top bits spread offsets that
         // differ in their low bits alone, as nearby leaf calls' do.
         const MULTIPLIER: u32 = 0x9E37_79B1;
-        let hashed = offset.wrapping_mul(MULTIPLIER) >> SHIFT;
-        &self.entries[hashed as usize]
+        // The pair is the hash's with its lowest bit cleared, so that two
+        // offsets meeting in it agree on which entry is the first.
+        let first = (offset.wrapping_mul(MULTIPLIER) >> SHIFT) as usize & !1;
+        (&self.entries[first], &self.entries[first + 1])
     }
 }
 
 /// `body` as `Installed`, while its code and method live. Inline, as
 /// `JitState::body_of` is.
 #[inline(always)]
-fn upgraded(body: &InstalledBody) -> Option<Installed> {
+fn upgraded(body: &InstalledBody, index: u32) -> Option<Installed> {
     let code = body.code.upgrade()?;
     let method = match &body.method {
         Some(method) => Some(method.upgrade()?),
@@ -2966,6 +3397,7 @@ fn upgraded(body: &InstalledBody) -> Option<Installed> {
         feedback_base: body.feedback_base,
         reifies: body.reifies,
         optimized: body.tier == Tier::Optimized,
+        described: body.metadata.is_some().then_some(index),
     })
 }
 
@@ -3877,14 +4309,31 @@ impl JitState {
     /// Where the run loop's push enters `code`'s optimized code for an
     /// activation with `key`, past its prologue, for an activation with
     /// `feedback_base`, when it has some.
+    #[cfg(test)]
     fn optimized_push_entry(
         &self,
         code: &CompiledCode,
         feedback_base: FeedbackBase,
         key: Option<CustomizationKey>,
     ) -> Option<CodeOffset> {
+        self.optimized_push(code, feedback_base, key)
+            .map(|(entry, _, _)| entry)
+    }
+
+    /// `optimized_push_entry`, with the copy's deepest chain of inlined
+    /// scopes and one past the highest physical register they reach.
+    fn optimized_push(
+        &self,
+        code: &CompiledCode,
+        feedback_base: FeedbackBase,
+        key: Option<CustomizationKey>,
+    ) -> Option<(CodeOffset, u16, u32)> {
         let body = self.optimized_for(code, key)?;
-        (body.feedback_base == feedback_base).then_some(CodeOffset(body.start + body.push_entry))
+        (body.feedback_base == feedback_base).then_some((
+            CodeOffset(body.start + body.push_entry),
+            body.deepest_chain,
+            body.deepest_extent,
+        ))
     }
 
     /// Where the run loop enters `code`'s baseline code at the instruction
@@ -4354,9 +4803,9 @@ fn needed_bytes(body: &baseline::BaselineBody) -> u32 {
 /// one's -- against `feedback_base`, and records its call returns,
 /// answering its index among the installed bodies: `Refusal::TooLarge`
 /// for a body the zone could not hold even with every other body freed,
-/// and `Refusal::ZoneFull` for one the room left does not hold. `baseline`
-/// names the lean body whose optimized code `body` is, `None` for baseline
-/// code.
+/// and `Refusal::ZoneFull` for one the room left does not hold.
+/// `optimized` names the lean body whose optimized code `body` is, and
+/// what the copy keeps of its inlining; `None` for baseline code.
 #[cfg(ns_jit)]
 fn install_body(
     state: &mut JitState,
@@ -4365,8 +4814,12 @@ fn install_body(
     feedback_base: FeedbackBase,
     body: baseline::BaselineBody,
     settings: CompileSettings,
-    baseline: Option<u32>,
+    optimized: Option<OptimizedInstall>,
 ) -> Result<u32, Refusal> {
+    let baseline = optimized.as_ref().map(|optimized| optimized.baseline);
+    let metadata = optimized
+        .as_ref()
+        .and_then(|optimized| optimized.metadata.clone());
     let Some(zone) = state.zone.as_mut() else {
         panic!("internal: the JIT is on without a zone");
     };
@@ -4389,9 +4842,18 @@ fn install_body(
     let offset = install_aligned(zone, &body.code.bytes, body.code.alignment)?;
     let length = u32::try_from(body.code.bytes.len()).map_err(|_| Refusal::ZoneFull)?;
     for call in &body.map.returns {
+        // A call made inside an inlined scope is its scope's body's send.
+        let scope_code = metadata.as_ref().and_then(|metadata| {
+            let point = metadata.by_address.get(&call.machine_offset)?;
+            let scope = metadata.points[*point].scopes[0].scope;
+            metadata.scopes[scope.0 as usize]
+                .as_ref()
+                .map(|scope| Rc::clone(&scope.code))
+        });
+        let call_code = scope_code.as_ref().unwrap_or(code);
         // Every call of a body is a cached send's or an initializer
         // invocation's (`sends`).
-        let Some(slots) = sends::call_slots(code, call.program_counter) else {
+        let Some(slots) = sends::call_slots(call_code, call.program_counter) else {
             unreachable!("internal: a body calls only at a cached send or an initializer's");
         };
         state.returns.insert(
@@ -4481,7 +4943,22 @@ fn install_body(
         optimized_needed: 0,
         key: None,
         dispatching,
+        metadata,
+        deepest_chain: optimized
+            .as_ref()
+            .map_or(0, |optimized| optimized.deepest_chain),
+        deepest_extent: optimized
+            .as_ref()
+            .map_or(0, |optimized| optimized.deepest_extent),
+        polls: optimized
+            .as_ref()
+            .map_or_else(Vec::new, |optimized| optimized.polls.clone()),
+        dependencies: optimized.map_or_else(CopyDependencies::default, |optimized| {
+            optimized.dependencies
+        }),
+        installation: state.installations,
     });
+    state.installations += 1;
     // Until it is pointed at its row the code spends from the unpointed
     // budget, whose first spend calls the leaf: the word is never one the
     // spend must test for.
@@ -4521,7 +4998,7 @@ fn compile_twin(state: &mut JitState, lean: u32) -> Result<u32, Refusal> {
         return Ok(twin);
     }
     let (needed, settings) = (body.twin_needed, body.settings);
-    let Some(installed) = upgraded(body) else {
+    let Some(installed) = upgraded(body, lean) else {
         unreachable!("internal: a lean body running or resumed lives");
     };
     if installed.code.jit.twin_refused.get() {
@@ -4738,10 +5215,16 @@ fn point_budget_word(
     };
     let budget = mutator.heap.optimization_budget_of(&code);
     if !budget.armed && !budget.sink {
-        let left = carried
+        let carried = carried
             .and_then(|carried| carried.get(&(Rc::as_ptr(&code) as usize)))
-            .copied()
-            .unwrap_or(mutator.jit.optimization_budget);
+            .copied();
+        // What a collection carries is what was left of the arming the
+        // body keeps.
+        if carried.is_none() {
+            let plain = mutator.jit.optimization_budget;
+            code.jit.record_budget_arming(plain, plain);
+        }
+        let left = carried.unwrap_or(mutator.jit.optimization_budget);
         mutator.heap.arm_optimization_budget(budget.id, left);
     }
     mutator.jit.write_budget_word(index, budget.address);
@@ -4754,25 +5237,38 @@ fn point_budget_word(
 /// The budget leaf's work (`leaves::budget`): a spend of the body the
 /// address inside the code `code_address` lies in left the word at
 /// `spent_from` below zero. A row that ran out -- the one the body's id
-/// names now, and armed -- requests the body's optimization, once while
-/// the request is pending, parks the row and requests a safepoint, at
-/// which the request is taken up. Anything else spent from a word that
-/// names no budget of this body's: the unpointed budget, written back
-/// negative, or a row cleared since, and the word is pointed at the
-/// body's row, armed afresh; the sink an id past the table spends from is
-/// parked again.
+/// names now, and armed -- is parked, and answers whether the run-out
+/// asks for an optimization, which the run loop requests after the exit
+/// that follows (`stubs::ExitKind::BudgetSpent`), once its walk up the
+/// stack has found the frame to request (`find_recompilee`): a walk no
+/// leaf may make. Anything else spent from a word that names no budget
+/// of this body's: the unpointed budget, written back negative, or a row
+/// cleared since, and the word is pointed at the body's row, armed
+/// afresh; the sink an id past the table spends from is parked again.
 ///
 /// A method's body is optimized per key (`CustomizationKey`), its budget
-/// still one per body: a run-out requests the copy for the key of the
-/// spending frame, at `frame_address`, read off the header its call
-/// wrote (`request_copy`).
+/// still one per body: the run-out of a frame of a key that has its copy
+/// or a refused row, or of a body refused, asks for nothing
+/// (`optimization_due`) -- read off the header its call wrote for the
+/// spending frame, at `frame_address` -- so that a run-out a request
+/// would not follow walks nothing either.
+///
+/// Under the optimize stress mode, whose budgets are armed at 0 so that
+/// each body's first spend requests that body's optimization
+/// (`JitState::set_optimize_stress`), a run-out says nothing of how often
+/// anything ran, so that no walk could find a better recompilee: the
+/// leaf requests the spending frame's own, as the walk answering it
+/// would, and the code goes on, its feedback filling as it would without
+/// the stress mode, rather than leave its frame to an interpreter that
+/// takes the safepoint -- and compiles the copy -- before the frame's
+/// next sends have run once.
 #[cfg(ns_jit)]
 pub(crate) fn budget_spent(
     mutator: &mut Mutator<'_>,
     spent_from: u64,
     frame_address: u64,
     code_address: usize,
-) {
+) -> bool {
     let Some(index) = mutator.jit.installed_index_at(code_address) else {
         unreachable!("internal: a budget is spent by an installed body");
     };
@@ -4796,7 +5292,7 @@ pub(crate) fn budget_spent(
     }
     if budget.sink || spent_from != budget.address || !budget.armed {
         point_budget_word(mutator, index, None);
-        return;
+        return false;
     }
     mutator.heap.park_optimization_budget(budget.id);
     let customized = code.kind == crate::bytecode::CodeKind::Method
@@ -4804,14 +5300,71 @@ pub(crate) fn budget_spent(
             .jit
             .live_body(index)
             .is_some_and(|body| body.method.is_some());
-    if customized && request_copy(mutator, &code, frame_address) {
-        return;
+    let frame = if customized {
+        let Some(frame) = mutator
+            .heap
+            .machine_frame_receiver_and_current_class(frame_address, code.argument_count)
+        else {
+            unreachable!("internal: a budget is spent by a frame in the activation stack");
+        };
+        Some(frame)
+    } else {
+        None
+    };
+    let due = optimization_due(mutator, &code, frame);
+    if due && mutator.jit.optimize_stress() {
+        request_optimization(mutator, &code, frame);
+        return false;
+    }
+    due
+}
+
+/// Whether the run-out of `code`'s budget by a frame of the receiver and
+/// current class `frame` names -- `None` for a body optimized as one
+/// copy, a block's or an initializer's -- asks for an optimization: the
+/// copy for the frame's key, unless the key has a refused row, whose
+/// budget is armed afresh while another pair is not refused
+/// (`rearm_for_other_pairs`), or a copy, whose frames ran baseline code
+/// only where no entry could ask for the key (a `super` or private
+/// lexical send, a frame switched into its loop), and whose budget is
+/// armed afresh at the plain wait, so that another key's run-out compiles
+/// that key's copy; for a frame without a key -- its receiver or its
+/// class of an application with no minted id -- and a body optimized as
+/// one copy, the body's one uncustomized copy, unless the body is refused,
+/// whose budget is left to `rearm_for_other_pairs`, or has that copy
+/// installed, whose budget stays parked. Requests nothing.
+#[cfg(ns_jit)]
+fn optimization_due<'gc>(
+    mutator: &mut Mutator<'gc>,
+    code: &Rc<CompiledCode>,
+    frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
+) -> bool {
+    let key = frame.and_then(|(receiver, current_class)| {
+        CustomizationKey::of(&mutator.heap, receiver, current_class)
+    });
+    if let Some(key) = key {
+        match code.jit.copy_row(key) {
+            Some(row) if row.refused => {
+                rearm_for_other_pairs(mutator, code);
+                return false;
+            }
+            // The next run-out is another key's, which has failed nothing:
+            // the plain wait.
+            Some(_) if mutator.jit.copy_of(code, key).is_some() => {
+                rearm_optimization_budget(mutator, code, 0);
+                return false;
+            }
+            _ => return true,
+        }
     }
     if code.jit.optimized_refused.get() {
-        rearm_for_other_pairs(mutator, &code);
-        return;
+        rearm_for_other_pairs(mutator, code);
+        return false;
     }
-    request(mutator, OptimizationRequest::uncustomized(&code));
+    // A frame that goes on mid-body in the baseline code of a body with
+    // its one copy installed: a request would be dropped (`optimize`), so
+    // the row stays parked, as that dropped request left it.
+    mutator.jit.optimized(code).is_none()
 }
 
 /// After a run-out by a frame of a pair refused for good -- a key's row,
@@ -4852,63 +5405,517 @@ fn request(mutator: &mut Mutator<'_>, request: OptimizationRequest) {
     }
 }
 
-/// The run-out of `code`'s budget by the frame at `frame_address`, a
-/// method's activation in baseline code: requests the copy for the
-/// frame's key -- its receiver's application and the one the frame was
-/// entered at, read off the header the call wrote, never another
-/// activation's -- unless the key has a copy, whose frames ran baseline
-/// code only where no entry could ask for the key (a `super` or private
-/// lexical send, a frame switched into its loop), or a refused row. A key
-/// with a copy has the budget armed afresh, so that another key's
-/// run-out compiles that key's copy; a refused one leaves it parked, as a
-/// refused body's is. A key first requested gets its row, which records
-/// the level the frame was entered at above the receiver's class.
-/// Answers whether the frame had a key: a frame without one -- its
-/// receiver or its class of an application with no minted id -- is
-/// requested the body's one uncustomized copy.
+/// How many frames up the stack the walk for the recompilee goes at most
+/// (`find_recompilee`): Strongtalk's `MaxRecompilationSearchLength`
+/// (`recompiler/recompiler.cpp:56-121`). The frames a block's or a block
+/// argument's home lies above the frame that went to it are counted, so
+/// that the bound is one of the stack, not of the steps.
+pub(crate) const RECOMPILEE_SEARCH_LENGTH: usize = 10;
+
+/// The frame whose optimization the run-out of `triggering`'s budget
+/// requests (`docs/design/execution.md`, "Inlining", "The recompilee walk"):
+/// Strongtalk's `findTopInlinableFrame`
+/// (`recompiler/recompiler.cpp:56-121`). From the triggering frame the
+/// walk goes up -- to a block's home, to the home of a method's block
+/// arguments, to a method's sender (`sender_or_parent_of`) -- while the
+/// frame it would go to could be optimized (`recompilable`) and its
+/// inlining plan would inline the body of the frame it comes from
+/// (`inlines`), up to `RECOMPILEE_SEARCH_LENGTH` frames: a compile of that
+/// frame takes in the hot body, and the loop around it, which a compile
+/// of the hot body alone would leave to a send. Answers `triggering`
+/// itself when it goes nowhere.
+///
+/// Run by the run loop after the exit a run-out takes, where every frame
+/// the exit left is an activation the interpreter reads, and holding none
+/// of them past it: the request it leads to names a body and a key.
 #[cfg(ns_jit)]
-fn request_copy(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, frame_address: u64) -> bool {
-    let Some((receiver, current_class)) = mutator
-        .heap
-        .machine_frame_receiver_and_current_class(frame_address, code.argument_count)
-    else {
-        unreachable!("internal: a budget is spent by a frame in the activation stack");
+pub(crate) fn find_recompilee(
+    mutator: &mut Mutator<'_>,
+    triggering: ActivationReference,
+) -> ActivationReference {
+    let mut current = triggering;
+    let mut distance = 0;
+    while let Some((next, step)) = sender_or_parent_of(mutator, current) {
+        let Some(frames) = frames_between(&mutator.heap, current, next) else {
+            break;
+        };
+        distance += frames;
+        if distance > RECOMPILEE_SEARCH_LENGTH {
+            break;
+        }
+        // A frame whose body a copy below it inlined -- a scope an exit
+        // rebuilt, now or at any earlier exit, or a frame its caller's
+        // baseline code pushed while that caller has its copy -- would
+        // have a copy of its own that the copy below never enters: the
+        // walk stops, as Strongtalk stops at a compiled frame.
+        if inlined_into_a_copy_below(mutator, next) {
+            break;
+        }
+        let Some(candidate) = recompilable(mutator, next, step) else {
+            break;
+        };
+        // A sender inlines the body at its send; a home anywhere in its
+        // plan, at a send of a body it inlines.
+        let send = match step {
+            Step::Sender => Some(mutator.heap.activation_program_counter(next)),
+            Step::Home => None,
+        };
+        if !inlines(mutator, &candidate, current, send) {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+/// Whether `activation`'s body is inlined into the copy of a frame below
+/// it: a frame down its senders, within `RECOMPILEE_SEARCH_LENGTH`, whose
+/// pair has its copy installed (`JitState::optimized_for`) and whose
+/// copy's inlined bodies (`CopyDependencies::code_ids`) hold
+/// `activation`'s and every body between. A copy that does not hold them
+/// -- a body between that is hot elsewhere and has a copy of its own,
+/// which did not inline the bodies above, while a copy further down
+/// inlined it with them -- is passed, not taken for the answer. Conservative where the copy
+/// inlines the body at another site than the one that sent it: the walk
+/// then requests the frame above, as it would without the copy.
+#[cfg(ns_jit)]
+fn inlined_into_a_copy_below(mutator: &Mutator<'_>, activation: ActivationReference) -> bool {
+    let heap = &mutator.heap;
+    let mut bodies = vec![heap.activation_code_id(activation)];
+    let mut frame = activation;
+    for _ in 0..RECOMPILEE_SEARCH_LENGTH {
+        let Some(sender) = heap.activation_sender(frame) else {
+            return false;
+        };
+        let code = heap.activation_code(sender);
+        let key = activation_key(heap, &code, sender);
+        if let Some(copy) = mutator.jit.optimized_for(&code, key) {
+            if bodies
+                .iter()
+                .all(|body| copy.dependencies.code_ids.contains(body))
+            {
+                return true;
+            }
+        }
+        bodies.push(heap.activation_code_id(sender));
+        frame = sender;
+    }
+    false
+}
+
+/// How the walk went up from a frame (`sender_or_parent_of`).
+#[cfg(ns_jit)]
+#[derive(Clone, Copy)]
+enum Step {
+    Sender,
+    Home,
+}
+
+/// Where the walk goes up from `activation`, Strongtalk's
+/// `senderOrParentOf` (`recompiler/recompiler.cpp:217-257`): a block's
+/// home, the method that made it, whose compile is the one that can
+/// inline it, when it runs below the block; a method's lowest-lying home
+/// of a block among its arguments, which can inline the method with the
+/// block, when one runs below it; and the sender otherwise, `None` at the
+/// bottom of the stack.
+#[cfg(ns_jit)]
+fn sender_or_parent_of(
+    mutator: &Mutator<'_>,
+    activation: ActivationReference,
+) -> Option<(ActivationReference, Step)> {
+    let heap = &mutator.heap;
+    let position = heap.activation_position(activation);
+    let below = |home: Option<ActivationReference>| {
+        home.filter(|home| heap.activation_position(*home) < position)
     };
+    if heap.activation_runs_a_block(activation) {
+        let home = heap
+            .activation_home(activation)
+            .and_then(|frame| heap.frame_activation(frame));
+        if let Some(home) = below(home) {
+            return Some((home, Step::Home));
+        }
+    } else {
+        let argument_count = heap.activation_code(activation).argument_count;
+        let lowest = (0..argument_count)
+            .filter_map(|index| {
+                let closure = heap
+                    .activation_local(activation, index)
+                    .as_object()
+                    .filter(|object| heap.is_closure(*object))?;
+                let home = heap
+                    .closure_home(closure)
+                    .and_then(|frame| heap.frame_activation(frame));
+                below(home)
+            })
+            .min_by_key(|home| heap.activation_position(*home));
+        if let Some(home) = lowest {
+            return Some((home, Step::Home));
+        }
+    }
+    heap.activation_sender(activation)
+        .map(|sender| (sender, Step::Sender))
+}
+
+/// How many frames `lower` lies below `upper` on the stack, counted by
+/// their senders, or `None` past `RECOMPILEE_SEARCH_LENGTH`.
+#[cfg(ns_jit)]
+fn frames_between(
+    heap: &Heap<'_>,
+    upper: ActivationReference,
+    lower: ActivationReference,
+) -> Option<usize> {
+    let mut frame = upper;
+    for frames in 1..=RECOMPILEE_SEARCH_LENGTH + 1 {
+        frame = heap.activation_sender(frame)?;
+        if Heap::activation_offset(frame) == Heap::activation_offset(lower) {
+            return Some(frames);
+        }
+    }
+    None
+}
+
+/// A frame the walk may request (`recompilable`): its body, the feedback
+/// base and key its compile would read, and its key's own-slot base.
+#[cfg(ns_jit)]
+struct Recompilable {
+    code: Rc<CompiledCode>,
+    feedback_base: FeedbackBase,
+    key: Option<CustomizationKey>,
+    customization: Option<optimizing::snapshot::Customization>,
+}
+
+/// What a compile of `activation`'s body would be made of, if a request
+/// for it would compile one: a frame whose body has baseline code here --
+/// beside which optimized code is installed -- no top-level activation,
+/// which machine code never runs, whose pair -- its key's row, or the
+/// body's one uncustomized copy, as the request would name it -- is
+/// neither refused nor has its copy, and which is entered often enough
+/// for its copy to be entered at all: until on-stack replacement into
+/// optimized code (stage 6) the running activation never enters the
+/// copy, only the calls to come do. A sender whose body has spent less
+/// than `plan::LEAST_BUDGET_SHARE` of its budget sent too rarely to be
+/// worth a compile of its own. A home reached from its block (`step`),
+/// which hands its block to a loop and spends a few instructions a call,
+/// is held to its calls instead (`called_repeatedly`): at least
+/// `LEAST_HOME_CALLS` of them, which only a body without a loop of its
+/// own can show, its back edges spending the same budget. Both are
+/// HotSpot's call predicate,
+/// which compiles an enclosing method at an inlinee's back-branch event
+/// only on its invocation count
+/// (`compiler/compilationPolicy.cpp`, `method_back_branch_event`), and
+/// Strongtalk's `MinSendsBeforeRecompile`: the walk answers the block
+/// below, whose loop's caller calls it at once, where a copy of the home
+/// would wait for the home's next call -- Bounce's `bench`, called once a
+/// run, waited a budget (`docs/design/execution.md`, "What inlining
+/// moved"). A home called often goes on being requested, its block
+/// inlined into it.
+///
+/// A copy installed stops the walk because it is young -- installed
+/// within the last `OPTIMIZATION_BUDGET` of its spend, Strongtalk's
+/// `nmethod::isYoung` (`code/nmethod.cpp:970-979`) -- and no copy is old
+/// yet: optimized code spends no budget (`BodyAssembler::spend_budget`),
+/// so that no row records a copy's spend since its install, and a request
+/// for a pair with a copy would be dropped (`optimize`).
+#[cfg(ns_jit)]
+fn recompilable(
+    mutator: &Mutator<'_>,
+    activation: ActivationReference,
+    step: Step,
+) -> Option<Recompilable> {
+    let heap = &mutator.heap;
+    if matches!(
+        heap.activation_kind(activation),
+        crate::types::ActivationKind::TopLevel
+    ) {
+        return None;
+    }
+    let code = heap.activation_code(activation);
+    let body = mutator.jit.installed(&code)?;
+    let customized = code.kind == crate::bytecode::CodeKind::Method && body.method.is_some();
+    let feedback_base = body.feedback_base;
+    let (key, current_class) = if customized {
+        let (receiver, current_class) = heap.activation_receiver_and_current_class(activation);
+        (
+            CustomizationKey::of(heap, receiver, current_class),
+            current_class,
+        )
+    } else {
+        (None, None)
+    };
+    let settled = match key {
+        Some(key) => {
+            code.jit.copy_row(key).is_some_and(|row| row.refused)
+                || mutator.jit.copy_of(&code, key).is_some()
+        }
+        None => code.jit.optimized_refused.get() || mutator.jit.optimized(&code).is_some(),
+    };
+    if settled {
+        return None;
+    }
+    let share = budget_share_of(heap, &code)?;
+    match step {
+        Step::Sender if share < optimizing::plan::LEAST_BUDGET_SHARE => return None,
+        Step::Home if !called_repeatedly(heap, &code) => return None,
+        _ => {}
+    }
+    // As `optimize` customizes the copy for the key the request names.
+    let customization = key.and_then(|key| {
+        let application = current_class.and_then(|class| heap.class_application(class))?;
+        let own_slot_base = u32::try_from(application.own_slot_base).ok()?;
+        Some(optimizing::snapshot::Customization { key, own_slot_base })
+    });
+    Some(Recompilable {
+        code,
+        feedback_base,
+        key,
+        customization,
+    })
+}
+
+/// The least calls a home must have taken, since its budget was armed,
+/// for the walk to go up to it from its block (`recompilable`): HotSpot's
+/// invocation minimum (`Tier3MinInvocationThreshold`,
+/// `compiler/compiler_globals.hpp`; `compilationPolicy.cpp`'s
+/// `call_predicate_helper`), below which a method whose back edges are
+/// hot is not compiled with a normal entry. Measured, as the plan's
+/// limits are: HotSpot's 100 kept DeltaBlueTon80's homes called 3 to 53
+/// times from their copies and ran it 5% slower than with no minimum; 4
+/// keeps all but the one called 3 times, as fast as none, and still
+/// refuses Bounce's `bench`, called once or twice
+/// (`docs/design/execution.md`, "What inlining moved").
+#[cfg(ns_jit)]
+pub(crate) const LEAST_HOME_CALLS: i64 = 4;
+
+/// Whether the home running `code` is called often enough for a copy of
+/// it to be entered: its calls since its budget was armed at least
+/// `LEAST_HOME_CALLS`, whatever budget is armed, since a home called once
+/// never enters its copy however small its budget. Only a body without a
+/// backward jump can say so: its budget is spent by its entries alone,
+/// each its instruction count, while a loop's back edges spend the same
+/// row, and a loop run once -- one the frame has left, or stands in --
+/// would read as calls. A body with a loop of its own runs out its own
+/// budget on its calls and back edges, and is optimized at its own
+/// run-out, inlining the block if its plan does; the rule holds under
+/// every budget. A budget of nothing, the optimize stress mode's, says
+/// nothing of calls: a home without a loop is taken as called often
+/// there, as before the rule, and one with a loop is refused, its own
+/// next spend running out its budget.
+#[cfg(ns_jit)]
+fn called_repeatedly(heap: &Heap<'_>, code: &Rc<CompiledCode>) -> bool {
+    let instructions = code.instructions();
+    let loops = instructions.iter().enumerate().any(|(index, instruction)| {
+        crate::bytecode::jump_target(instruction).is_some_and(|target| target as usize <= index)
+    });
+    if loops {
+        return false;
+    }
+    let arming = code.jit.budget_arming.get();
+    if arming.plain <= 0 {
+        return true;
+    }
+    let Some(remaining) = heap.armed_optimization_budget(code) else {
+        return false;
+    };
+    if remaining == i64::MAX {
+        return true;
+    }
+    let spent = arming.armed.saturating_sub(remaining).max(0);
+    let per_entry = i64::try_from(code.instruction_count())
+        .unwrap_or(i64::MAX)
+        .max(1);
+    spent / per_entry >= LEAST_HOME_CALLS
+}
+
+/// The share of the plain budget `code`'s armed budget row says the
+/// body spent since its last arming (`plan::budget_share`), `None` for a
+/// row not armed: what the walk's stop and the plan's frequency read
+/// alike.
+#[cfg(ns_jit)]
+pub(crate) fn budget_share_of(heap: &Heap<'_>, code: &Rc<CompiledCode>) -> Option<f64> {
+    let remaining = heap.armed_optimization_budget(code)?;
+    let arming = code.jit.budget_arming.get();
+    Some(optimizing::plan::budget_share(
+        remaining,
+        arming.armed,
+        arming.plain,
+    ))
+}
+
+/// Re-arms every armed budget row with `budget`
+/// (`Heap::rearm_optimization_budgets`) and records the arming on every
+/// live body, so that what a row holds is measured against it: what the
+/// test hooks that set the budget or a stress mode do.
+#[cfg(ns_jit)]
+pub(crate) fn rearm_all_budgets(mutator: &mut Mutator<'_>, budget: i64) {
+    mutator.heap.rearm_optimization_budgets(budget);
+    for body in mutator.jit.bodies.iter().filter(|body| !body.free) {
+        if let Some(code) = body.code.upgrade() {
+            code.jit.record_budget_arming(budget, budget);
+        }
+    }
+}
+
+/// Whether the inlining plan a compile of `candidate` would make inlines
+/// the body `callee` runs -- at the send at `send` of its root, when the
+/// candidate is the callee's sender, or anywhere when it is the home of
+/// the callee's block: the plan itself (`plan::plan`), on the tree the
+/// compile would take (`SnapshotTree::take`), so that the walk's answer
+/// is the compile's as of now.
+#[cfg(ns_jit)]
+fn inlines(
+    mutator: &mut Mutator<'_>,
+    candidate: &Recompilable,
+    callee: ActivationReference,
+    send: Option<usize>,
+) -> bool {
+    let callee = mutator.heap.activation_code_id(callee);
+    let tree = optimizing::tree::SnapshotTree::take(
+        &candidate.code,
+        &mut mutator.heap,
+        &mutator.caches,
+        candidate.feedback_base,
+        candidate.customization,
+        &optimizing::plan::Limits::STANDARD,
+    );
+    let plan = optimizing::plan::plan(
+        &tree,
+        optimizing::Speculation::at_version(candidate.code.jit.optimized_version(candidate.key)),
+    );
+    let parent = match send {
+        None => None,
+        Some(send) => match u32::try_from(send) {
+            Ok(send) => Some((optimizing::plan::ScopeId::ROOT, send)),
+            Err(_) => return false,
+        },
+    };
+    plan.scopes
+        .iter()
+        .any(|scope| scope.code_id == callee && (parent.is_none() || scope.parent == parent))
+}
+
+/// Requests the optimization of `recompilee`'s body, the frame the walk
+/// from `triggering`, whose budget ran out, answered (`find_recompilee`),
+/// for the key read off its header, as `budget_spent` decided it for the
+/// triggering frame (`optimization_due`): the copy for its key, or the
+/// body's one uncustomized copy. The triggering frame's own request when
+/// the walk went nowhere, its budget parked by the run-out; otherwise the
+/// recompilee's budget is parked for its request as a run-out parks it,
+/// and the triggering body's left parked until the safepoint has
+/// compiled the request, where it is armed afresh at the wait its key's
+/// copy earned (`JitState::parked_for_recompilees`), since its run-out
+/// requested nothing of its own.
+#[cfg(ns_jit)]
+fn request_recompilee(
+    mutator: &mut Mutator<'_>,
+    triggering: ActivationReference,
+    recompilee: ActivationReference,
+) {
+    if Heap::activation_offset(recompilee) != Heap::activation_offset(triggering) {
+        mutator.jit.statistics.recompilees_above += 1;
+        let code = mutator.heap.activation_code(triggering);
+        let key = frame_of(mutator, &code, triggering).and_then(|(receiver, current_class)| {
+            CustomizationKey::of(&mutator.heap, receiver, current_class)
+        });
+        let version = code.jit.optimized_version(key);
+        mutator
+            .jit
+            .parked_for_recompilees
+            .push((Rc::downgrade(&code), version));
+        let code = mutator.heap.activation_code(recompilee);
+        let budget = mutator.heap.optimization_budget_of(&code);
+        if budget.armed && !budget.sink {
+            mutator.heap.park_optimization_budget(budget.id);
+        }
+        let frame = frame_of(mutator, &code, recompilee);
+        // Due, as `recompilable` found it, unless its decision settled the
+        // pair after all.
+        if optimization_due(mutator, &code, frame) {
+            request_optimization(mutator, &code, frame);
+        }
+        return;
+    }
+    let code = mutator.heap.activation_code(triggering);
+    let frame = frame_of(mutator, &code, triggering);
+    request_optimization(mutator, &code, frame);
+}
+
+/// The receiver and current class of `activation`, which runs `code`,
+/// when its body is optimized a copy per key -- a method's whose baseline
+/// code is installed here as one, as `budget_spent` asks it -- and `None`
+/// otherwise.
+#[cfg(ns_jit)]
+fn frame_of<'gc>(
+    mutator: &Mutator<'gc>,
+    code: &CompiledCode,
+    activation: ActivationReference,
+) -> Option<(Value<'gc>, Option<ClassReference<'gc>>)> {
+    let customized = code.kind == crate::bytecode::CodeKind::Method
+        && mutator
+            .jit
+            .installed(code)
+            .is_some_and(|body| body.method.is_some());
+    customized.then(|| {
+        mutator
+            .heap
+            .activation_receiver_and_current_class(activation)
+    })
+}
+
+/// The request `optimization_due` found due for `code`, run by a frame
+/// of the receiver and current class `frame` names: the copy for the
+/// frame's key (`request_copy`), or the body's one uncustomized copy.
+#[cfg(ns_jit)]
+fn request_optimization<'gc>(
+    mutator: &mut Mutator<'gc>,
+    code: &Rc<CompiledCode>,
+    frame: Option<(Value<'gc>, Option<ClassReference<'gc>>)>,
+) {
+    if let Some((receiver, current_class)) = frame {
+        if request_copy(mutator, code, receiver, current_class) {
+            return;
+        }
+    }
+    request(mutator, OptimizationRequest::uncustomized(code));
+}
+
+/// The request of `code`'s copy for the key of a frame of `receiver` and
+/// `current_class`, a method's activation -- read off the header its call
+/// wrote, never another activation's -- which `optimization_due` found
+/// due. A key first requested gets its row, which records the level the
+/// frame was entered at above the receiver's class. Answers whether the
+/// frame had a key: a frame without one -- its receiver or its class of
+/// an application with no minted id -- is requested the body's one
+/// uncustomized copy.
+#[cfg(ns_jit)]
+fn request_copy<'gc>(
+    mutator: &mut Mutator<'gc>,
+    code: &Rc<CompiledCode>,
+    receiver: Value<'gc>,
+    current_class: Option<ClassReference<'gc>>,
+) -> bool {
     let Some(key) = CustomizationKey::of(&mutator.heap, receiver, current_class) else {
         return false;
     };
-    match code.jit.copy_row(key) {
-        Some(row) if row.refused => {
-            rearm_for_other_pairs(mutator, code);
-            return true;
+    if code.jit.copy_row(key).is_none() {
+        let level = current_class.and_then(|class| levels_to(mutator, receiver, class));
+        // A key exists only for a class of an application, whose class
+        // objects hold its word.
+        let entered_word = current_class
+            .and_then(|class| mutator.heap.class_application_word(class))
+            .unwrap_or(crate::heap::optimized_copies::VACANT);
+        if !code.jit.has_copies() {
+            mutator.jit.customized.push(Rc::downgrade(code));
         }
-        // The next run-out is another key's, which has failed nothing:
-        // the plain wait.
-        Some(_) if mutator.jit.copy_of(code, key).is_some() => {
-            rearm_optimization_budget(mutator, code, 0);
-            return true;
-        }
-        Some(_) => {}
-        None => {
-            let level = current_class.and_then(|class| levels_to(mutator, receiver, class));
-            // A key exists only for a class of an application, whose
-            // class objects hold its word.
-            let entered_word = current_class
-                .and_then(|class| mutator.heap.class_application_word(class))
-                .unwrap_or(crate::heap::optimized_copies::VACANT);
-            if !code.jit.has_copies() {
-                mutator.jit.customized.push(Rc::downgrade(code));
-            }
-            code.jit.copies.borrow_mut().push(CustomizedCopy {
-                key,
-                body: NO_BODY,
-                version: 0,
-                traps: 0,
-                refused: false,
-                level,
-                entered_word,
-            });
-        }
+        code.jit.copies.borrow_mut().push(CustomizedCopy {
+            key,
+            body: NO_BODY,
+            version: 0,
+            traps: 0,
+            refused: false,
+            level,
+            entered_word,
+        });
     }
     let entered = current_class
         .and_then(|class| mutator.heap.class_application(class))
@@ -4962,6 +5969,8 @@ fn levels_to<'gc>(
 fn rearm_optimization_budget(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>, version: u8) {
     let budget = mutator.heap.optimization_budget_of(code);
     let armed = optimization_budget_after(mutator.jit.optimization_budget, version);
+    code.jit
+        .record_budget_arming(armed, mutator.jit.optimization_budget);
     mutator.heap.arm_optimization_budget(budget.id, armed);
 }
 
@@ -4972,11 +5981,27 @@ fn rearm_optimization_budget(mutator: &mut Mutator<'_>, code: &Rc<CompiledCode>,
 /// (`Interpreter::safepoint`), between two stretches, where no return
 /// address into the zone exists; the compile reads only its snapshot, and
 /// the install only appends, so neither collects nor moves code.
+///
+/// Then the budget of every body whose run-out requested another frame
+/// (`JitState::parked_for_recompilees`) is armed afresh, unless something
+/// armed it since: should the recompilee's compile not have taken the
+/// body in -- its feedback changed, the compile was held -- its next
+/// run-out walks again.
 #[cfg(ns_jit)]
 pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
     for request in std::mem::take(&mut mutator.jit.optimization_requests) {
         if let Some(code) = request.code.upgrade() {
             optimize(mutator, &code, request.key, &request.entered);
+        }
+    }
+    for (code, version) in std::mem::take(&mut mutator.jit.parked_for_recompilees) {
+        let Some(code) = code.upgrade() else {
+            continue;
+        };
+        if mutator.heap.armed_optimization_budget(&code)
+            == Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
+        {
+            rearm_optimization_budget(mutator, &code, version);
         }
     }
 }
@@ -4985,6 +6010,7 @@ pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
 #[cfg(not(ns_jit))]
 pub(crate) fn optimize_requested(mutator: &mut Mutator<'_>) {
     mutator.jit.optimization_requests.clear();
+    mutator.jit.parked_for_recompilees.clear();
 }
 
 /// `code`'s optimized code compiled and installed, when its baseline code
@@ -5061,35 +6087,52 @@ fn optimize(
         Some(optimizing::snapshot::Customization { key, own_slot_base })
     });
     let started = std::time::Instant::now();
-    let snapshot = optimizing::snapshot::Snapshot::take(
+    let tree = optimizing::tree::SnapshotTree::take(
         code,
         &mut mutator.heap,
         &mutator.caches,
         feedback_base,
         customization,
+        &optimizing::plan::Limits::STANDARD,
     );
     let mut macro_assembler = macro_assembler::MacroAssembler::new(macro_assembler::Abi::host());
     macro_assembler.set_count_back_edges(settings.counting);
     // Under the invalidate stress mode the countdown's last point leaves
     // for the safepoint that runs its round (`invalidation_due_for_stress`).
-    macro_assembler
-        .set_deoptimize_by_countdown(mutator.jit.deopt_stress || mutator.jit.invalidate_stress);
-    macro_assembler.set_count_down_at_entry(mutator.jit.invalidate_stress);
+    // The entry is a point of the countdown under both: a copy whose
+    // callees are all inlined has no other on a path without a loop.
+    let countdown = mutator.jit.deopt_stress || mutator.jit.invalidate_stress;
+    macro_assembler.set_deoptimize_by_countdown(countdown);
+    macro_assembler.set_count_down_at_entry(countdown);
+    #[cfg(test)]
+    macro_assembler.set_refuse_poll_entries(mutator.jit.refuse_poll_entries);
     let role = baseline::BodyRole::of(code, method.is_some());
-    let installation = optimizing::compile(
-        &snapshot,
+    // What the copy inlined -- its scopes, type-case arms, eliminated
+    // blocks and sites -- counted once it is installed.
+    let mut inlined = (0_u64, 0_u64, 0_u64, 0_u64);
+    let installation = optimizing::compile_tree(
+        &tree,
         macro_assembler,
         role,
         settings.futures_exit,
         optimizing::Speculation::at_version(code.jit.optimized_version(key)),
     )
-    .and_then(|optimized| {
+    .and_then(|mut optimized| {
+        inlined = (
+            optimized.scopes.iter().skip(1).flatten().count() as u64,
+            u64::from(optimized.type_case_arms),
+            optimized.eliminated.len() as u64,
+            u64::from(optimized.inlined_sites),
+        );
+        let metadata = optimized_metadata(&mutator.heap, &mut optimized)?;
+        let dependencies = CopyDependencies::of(&mutator.heap, &optimized.relied_on);
         install_optimized(
             &mut mutator.jit,
             code,
             method.as_ref(),
             (lean, feedback_base, settings, key),
             optimized,
+            (metadata, dependencies),
         )
     });
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -5133,7 +6176,12 @@ fn optimize(
             mutator.jit.write_dispatching_rows(lean);
         }
     }
-    mutator.jit.statistics.optimized_bodies += 1;
+    let statistics = &mut mutator.jit.statistics;
+    statistics.optimized_bodies += 1;
+    statistics.inlined_scopes += inlined.0;
+    statistics.type_case_arms += inlined.1;
+    statistics.eliminated_blocks += inlined.2;
+    statistics.inlined_sites += inlined.3;
     // Its transfers go into the twin, which the baseline body may have.
     mutator.jit.write_transfer_words(index);
     // Every cell that called the baseline code is written afresh from its
@@ -5175,8 +6223,9 @@ fn defer_optimization(
 /// Installs `optimized`, the optimized code of `code` -- `method`'s body
 /// when it is one's -- beside its lean baseline body at `lean` in
 /// `bodies`, compiled against `feedback_base` under `settings` for `key`
-/// (`None` for the body's one uncustomized copy), answering its index
-/// among the installed bodies. Its call returns are recorded
+/// (`None` for the body's one uncustomized copy), with what it keeps of
+/// its inlining, `metadata`, and what it relied on, `dependencies`,
+/// answering its index among the installed bodies. Its call returns are recorded
 /// as the baseline's are, so that a leaf and the exit's walk find the
 /// send each of its calls returns to; its program-counter map has no
 /// instruction's start, since no frame goes on mid-body in optimized code.
@@ -5192,14 +6241,17 @@ fn install_optimized(
         Option<CustomizationKey>,
     ),
     optimized: optimizing::emit::OptimizedBody,
+    (metadata, dependencies): (Option<Rc<OptimizedMetadata>>, CopyDependencies),
 ) -> Result<u32, Refusal> {
     let optimizing::emit::OptimizedBody {
         code: assembled,
         returns,
         words,
         twin_transfers,
-        metadata: _,
         push_entry,
+        deepest_chain,
+        deepest_extent,
+        polls,
         ..
     } = optimized;
     let mut returns: Vec<CallReturn> = returns
@@ -5232,7 +6284,14 @@ fn install_optimized(
         feedback_base,
         body,
         settings,
-        Some(lean),
+        Some(OptimizedInstall {
+            baseline: lean,
+            metadata,
+            deepest_chain,
+            deepest_extent,
+            dependencies,
+            polls,
+        }),
     )
     .inspect_err(|refusal| {
         // What a compaction must free, and what the body waits for while
@@ -5245,6 +6304,141 @@ fn install_optimized(
     state.bodies[index as usize].push_entry = push_entry;
     state.bodies[index as usize].key = key;
     Ok(index)
+}
+
+/// What an install of optimized code takes beside its code: the lean
+/// body it is the optimized code of, by its index in `bodies`, and what
+/// it keeps of its inlining.
+#[cfg(ns_jit)]
+struct OptimizedInstall {
+    baseline: u32,
+    metadata: Option<Rc<OptimizedMetadata>>,
+    deepest_chain: u16,
+    deepest_extent: u32,
+    dependencies: CopyDependencies,
+    polls: Vec<optimizing::emit::PollEntry>,
+}
+
+/// What a copy of `optimized` keeps of its interrupt points inside
+/// inlined scopes or where a block it eliminated is live
+/// (`OptimizedMetadata`), each scope's body and each eliminated block's
+/// found in `heap`, which registered them -- a method's body with its
+/// method -- when the tree was taken at this safepoint, and `None` for
+/// each scope the graph laid no code out for
+/// (`optimizing::laid_out_scopes`); `None` for code that has no such
+/// point, and for one whose body `heap` no longer names, which no compile
+/// at the tree's safepoint meets.
+#[cfg(ns_jit)]
+fn optimized_metadata(
+    heap: &Heap<'_>,
+    optimized: &mut optimizing::emit::OptimizedBody,
+) -> Result<Option<Rc<OptimizedMetadata>>, Refusal> {
+    if optimized.sites.is_empty() {
+        return Ok(None);
+    }
+    let mut scopes = vec![None];
+    for scope in optimized.scopes.iter().skip(1) {
+        // A scope the graph laid no code out for has no point to name it,
+        // and the copy holds no body for it.
+        let Some(scope) = scope else {
+            scopes.push(None);
+            continue;
+        };
+        let Some(code) = heap.code(scope.code_id) else {
+            return Err(Refusal::Unassembled(None));
+        };
+        // A block's body is no method's: its frame is its closure's.
+        let method = match scope.block {
+            Some(_) => None,
+            None => Some(
+                heap.code_method(scope.code_id)
+                    .ok_or(Refusal::Unassembled(None))?,
+            ),
+        };
+        scopes.push(Some(InlinedScope {
+            code,
+            method,
+            feedback_base: scope.feedback_base,
+            block: scope.block,
+            class: scope.class.ok_or(Refusal::Unassembled(None))?,
+        }));
+    }
+    let blocks = optimized
+        .eliminated
+        .iter()
+        .map(|block| {
+            let code = heap.code(block.code_id).ok_or(Refusal::Unassembled(None))?;
+            Ok(EliminatedBlock {
+                code,
+                home: block.home,
+                copied: block.copied.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
+    let metadata = OptimizedMetadata {
+        points: std::mem::take(&mut optimized.metadata.points),
+        by_address: optimized
+            .sites
+            .iter()
+            .map(|(offset, point)| (*offset, *point as usize))
+            .collect(),
+        scopes,
+        blocks,
+    };
+    #[cfg(debug_assertions)]
+    verify_blocks_at_poll_entries(&metadata, &optimized.polls);
+    Ok(Some(Rc::new(metadata)))
+}
+
+/// Holds every block a poll with an entry finds live to copied values
+/// the frame keeps there: a frame that does not go back in makes the
+/// block after the safepoint's collection, whose pre-pass nils every
+/// register the leftover analysis taints at the poll
+/// (`deoptimize_at_poll`), so that a copied value's source tainted there
+/// would make the closure over `nil`. The plan keeps the sources
+/// unwritten while the block lives, and its `MakeClosure` read them
+/// untainted (`plan`'s `copied_source_written`); this says so wherever
+/// the reliance is new.
+#[cfg(all(ns_jit, debug_assertions))]
+fn verify_blocks_at_poll_entries(
+    metadata: &OptimizedMetadata,
+    polls: &[optimizing::emit::PollEntry],
+) {
+    use optimizing::allocate::Location;
+
+    for poll in polls {
+        let chain = &metadata.points[poll.point as usize].scopes;
+        let held = chain.iter().flat_map(|stopped| {
+            stopped
+                .locations
+                .iter()
+                .filter_map(|(_, location)| match location {
+                    Location::EliminatedBlock(block) => Some(*block),
+                    _ => None,
+                })
+        });
+        let run = chain.iter().filter_map(|stopped| {
+            metadata.scopes[stopped.scope.0 as usize]
+                .as_ref()
+                .and_then(|scope| scope.block)
+        });
+        for block in held.chain(run) {
+            let facts = &metadata.blocks[block.0 as usize];
+            let home = chain
+                .iter()
+                .find(|stopped| stopped.scope == facts.home)
+                .expect("internal: a live block's home is a scope of the point's chain");
+            for register in &facts.copied {
+                assert!(
+                    home.locations.iter().any(|(own, location)| {
+                        own == register
+                            && matches!(location, Location::FrameWord | Location::EliminatedBlock(_))
+                    }),
+                    "internal: a block live at a poll copies r{register}, which the frame does not keep there"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(not(ns_jit))]
@@ -5277,6 +6471,94 @@ pub(crate) enum Resumption {
     /// is: the loop pops it and applies its continuation, as for a return
     /// it ran itself (`vm::finish`).
     Returned { value: u64 },
+}
+
+/// A frame of optimized code that its poll's light exit left at a
+/// safepoint, which goes back into the code there once the safepoint is
+/// served unless the safepoint made that impossible
+/// (`docs/design/execution.md`, "Between the tiers"; `resumed_at_poll`).
+/// The exit wrote the header of every scope the poll stops in, as every
+/// exit does, but made none of the blocks the copy eliminated that are
+/// live in the frame, whose registers hold `nil` for them meanwhile.
+/// Nothing reads those words before the frame goes back in or makes the
+/// blocks: the safepoint runs no Newspeak code -- neither a mirror nor a
+/// debugger reads a frame there, and no leaf reifies one -- the
+/// collector's pre-pass and trace read a `nil` as any other word, and
+/// the one thing at a safepoint that rebuilds the stack, the suspend
+/// stress mode, makes the blocks first (`deoptimize_stopped_at_poll`).
+/// The copy is named by its body and key and by its installation, never
+/// by an address, so that a compaction that moved it, or a freeing that
+/// took it, meanwhile is found.
+#[cfg_attr(
+    not(ns_jit),
+    expect(dead_code, reason = "no frame stops in optimized code without a JIT")
+)]
+pub(crate) struct StoppedAtPoll {
+    /// The copy's physical frame.
+    physical: ActivationReference,
+    /// The physical frame's body.
+    code_id: CodeId,
+    /// The key the copy was compiled for; `None` for a body's one
+    /// uncustomized copy.
+    key: Option<CustomizationKey>,
+    /// The poll's interrupt point, by its index among the copy's.
+    point: usize,
+    /// How many scopes the poll stops in, the physical frame's own among
+    /// them: the inlined ones are activations of the stack's until the
+    /// frame goes back in.
+    scopes: u16,
+    /// The copy's install (`InstalledBody::installation`), which a copy
+    /// installed for the same body and key since this one was freed is
+    /// not.
+    installation: u64,
+    /// The blocks the light exit left unmade, which the frame makes when
+    /// it does not go back in.
+    #[cfg(ns_jit)]
+    blocks: Option<materialize::BlocksAt>,
+    /// Where the copy started in the zone when the frame left it, which
+    /// a test compares with where it is entered again.
+    #[cfg(all(test, ns_jit))]
+    exit_start: u32,
+    /// The objects the frame words the poll's entry loads machine
+    /// registers from named when the frame left, by their offsets, which
+    /// a test compares with what they name when it goes back in.
+    #[cfg(all(test, ns_jit))]
+    exit_objects: Vec<Option<u64>>,
+}
+
+impl StoppedAtPoll {
+    /// The copy's physical frame: the frame the run loop enters again.
+    pub(crate) fn physical(&self) -> ActivationReference {
+        self.physical
+    }
+}
+
+impl JitState {
+    /// The frame the last poll's light exit left, taken
+    /// (`resumed_at_poll`).
+    pub(crate) fn take_stopped_at_poll(&mut self) -> Option<StoppedAtPoll> {
+        self.stopped_at_poll.take()
+    }
+
+    /// The copy of optimized code the exit that hands over `address`
+    /// leaves, and its poll, when it is a poll a frame goes back in at.
+    #[cfg(ns_jit)]
+    fn poll_at(&self, address: usize) -> Option<(&InstalledBody, optimizing::emit::PollEntry)> {
+        let body = self.installed_body_at(address)?;
+        if body.tier != Tier::Optimized {
+            return None;
+        }
+        let offset = self.offset_in(body, address)?;
+        let poll = body.polls.iter().find(|poll| poll.exit == offset)?;
+        Some((body, poll.clone()))
+    }
+
+    /// Whether the exit that hands over `address` is a poll of optimized
+    /// code a frame goes back in at, whose exit is light.
+    #[cfg(ns_jit)]
+    pub(crate) fn poll_goes_back_in(&self, address: usize) -> bool {
+        self.poll_at(address).is_some()
+    }
 }
 
 /// A push of `activation`, whose body `code` has an armed slot, at
@@ -5345,11 +6627,25 @@ pub(crate) fn entered(
     // A push enters the body's optimized code for the frame's key once it
     // has some, unless the frame is reified already, which only the twin,
     // baseline code, keeps (`entry_of_frame`).
+    // A copy whose inlined scopes the depth limit or the stack's room would
+    // not hold above this frame is not entered either: its baseline code
+    // pushes them one by one, and overflows or grows the stack where the
+    // interpreter does, as optimized code's prologue refuses a call for
+    // them (`sends::prologue`).
     let key = activation_key(&mutator.heap, code, activation);
     let optimized = mutator
         .jit
-        .optimized_push_entry(code, feedback_base, key)
-        .filter(|_| mutator.heap.activation_reified(activation).is_none());
+        .optimized_push(code, feedback_base, key)
+        .filter(|_| mutator.heap.activation_reified(activation).is_none())
+        .filter(|(_, chain, extent)| {
+            *chain == 0
+                || mutator.heap.machine_frame_fits(
+                    Heap::register_base_words(register_base),
+                    *chain,
+                    *extent,
+                )
+        })
+        .map(|(entry, _, _)| entry);
     match optimized.or_else(|| entry_of_frame(mutator, activation, code, feedback_base, 0)) {
         Some(entry) => run_machine_code(mutator, activation, register_base, entry),
         None => Resumption::Interpreted {
@@ -5438,6 +6734,8 @@ pub(crate) fn resumed(
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     match entry_of_frame(mutator, activation, code, feedback_base, program_counter) {
         Some(entry) if native_stack_has_room() => {
+            #[cfg(all(test, ns_jit))]
+            inlining_tests::record_resumption(mutator, activation, program_counter, entry);
             mutator.jit.statistics.resumed_entries += 1;
             if mutator.jit.has_optimized_code(code) {
                 mutator.jit.statistics.optimized_bodies_resumed += 1;
@@ -5576,8 +6874,239 @@ pub(crate) fn at_back_edge(
     );
     let feedback_base = mutator.heap.activation_feedback_base(activation);
     let entry = entry_of_frame(mutator, activation, code, feedback_base, target)?;
+    #[cfg(all(test, ns_jit))]
+    inlining_tests::record_resumption(mutator, activation, target, entry);
     mutator.jit.statistics.back_edge_switches += 1;
     Some(run_machine_code(mutator, activation, register_base, entry))
+}
+
+/// Records the frame of optimized code the poll's exit `block` describes
+/// left, `physical` the copy's frame, for the run loop's safepoint to send
+/// back into the code there (`resumed_at_poll`), with the blocks its light
+/// exit left unmade (`materialize::defer_the_poll_s_blocks`); a stress
+/// mode's forced exit there makes them at once and goes on in baseline
+/// code, as that mode's exits everywhere else do, so that its runs keep
+/// covering the polls' materialization. Nothing for a poll no frame goes
+/// back in at, whose exit made its blocks.
+#[cfg(ns_jit)]
+fn stop_at_poll(
+    mutator: &mut Mutator<'_>,
+    block: &EntryBlock,
+    physical: ActivationReference,
+    forced: bool,
+) {
+    let blocks = mutator.jit.deferred_blocks.take();
+    let Ok(address) = usize::try_from(block.get(stubs::BlockWord::ExitCodeAddress.index())) else {
+        unreachable!("internal: machine code's addresses fit the pointer width");
+    };
+    let Some((key, installation, point, start, poll)) = mutator
+        .jit
+        .poll_at(address)
+        .map(|(body, poll)| (body.key, body.installation, poll.point, body.start, poll))
+    else {
+        debug_assert!(
+            blocks.is_none(),
+            "internal: only a poll a frame goes back in at defers its blocks"
+        );
+        mutator.jit.statistics.polls_without_an_entry += 1;
+        return;
+    };
+    let scopes = mutator
+        .jit
+        .inlined_at(address)
+        .map_or(1, |inlined| inlined.chain().len());
+    let stopped = StoppedAtPoll {
+        physical,
+        code_id: mutator.heap.activation_code_id(physical),
+        key,
+        point: point as usize,
+        scopes: u16::try_from(scopes).expect("internal: a chain is bounded by the plan's limits"),
+        installation,
+        blocks,
+        #[cfg(test)]
+        exit_start: start,
+        #[cfg(test)]
+        exit_objects: frame_objects(&mutator.heap, physical, &poll.machine_sources),
+    };
+    #[cfg(not(test))]
+    let _ = (start, poll);
+    if forced {
+        deoptimize_at_poll(mutator, stopped);
+        return;
+    }
+    mutator.jit.stopped_at_poll = Some(stopped);
+}
+
+/// The objects `registers` of `physical`'s frame name, by their offsets:
+/// what a test compares across a safepoint.
+#[cfg(all(test, ns_jit))]
+fn frame_objects(
+    heap: &Heap<'_>,
+    physical: ActivationReference,
+    registers: &[u16],
+) -> Vec<Option<u64>> {
+    let base = heap.activation_register_base(physical);
+    registers
+        .iter()
+        .map(|register| heap.frame_word_object_offset(base, *register))
+        .collect()
+}
+
+/// The frame `stopped` names, which left its optimized code at a poll,
+/// once the safepoint its exit stopped at is served: sent back into that
+/// code at that poll unless the safepoint made that impossible -- the
+/// copy freed or replaced, a frame among its scopes reified, the stack
+/// rebuilt, the room the copy's scopes need gone (`poll_reentry`) -- with
+/// the inlined scopes above the physical frame taken out of the stack's
+/// bookkeeping exactly as their pushes would never have counted them
+/// (`Heap::fold_inlined_scopes`), so that the frame stands as it stood at
+/// the poll; answers where the next stretch enters it
+/// (`entered_at_poll`). `None` once the blocks the copy eliminated are
+/// made, every scope going on in baseline code or the interpreter as
+/// after any exit. Out of line, as `after_safepoint`, its one caller, is.
+#[cfg(ns_jit)]
+#[cold]
+#[inline(never)]
+pub(crate) fn resumed_at_poll(
+    mutator: &mut Mutator<'_>,
+    stopped: StoppedAtPoll,
+) -> Option<CodeOffset> {
+    #[cfg(test)]
+    if let Some(hook) = mutator.jit.before_poll_reentry {
+        hook(mutator, &stopped);
+    }
+    let Some((entry, poll, start)) = poll_reentry(mutator, &stopped) else {
+        deoptimize_at_poll(mutator, stopped);
+        return None;
+    };
+    mutator
+        .heap
+        .fold_inlined_scopes(stopped.physical, stopped.scopes - 1);
+    mutator.jit.statistics.poll_reentries += 1;
+    #[cfg(test)]
+    {
+        let objects = frame_objects(&mutator.heap, stopped.physical, &poll.machine_sources);
+        let moved = stopped.exit_objects.iter().copied().zip(objects).collect();
+        inlining_tests::record_poll_reentry(
+            mutator,
+            (stopped.exit_start, start),
+            (poll.rewrites_lost_words, moved),
+        );
+    }
+    #[cfg(not(test))]
+    let _ = (poll, start);
+    mutator.jit.poll_entry = Some(entry);
+    Some(entry)
+}
+
+#[cfg(not(ns_jit))]
+pub(crate) fn resumed_at_poll(
+    _mutator: &mut Mutator<'_>,
+    _stopped: StoppedAtPoll,
+) -> Option<CodeOffset> {
+    unreachable!("internal: no frame stops in optimized code without a JIT")
+}
+
+/// Where the frame `stopped` names goes back into its copy's code: the
+/// poll's entry in the copy as it lies now, a compaction having moved it
+/// or not; `None` when the frame cannot -- the stack no longer the one
+/// the exit left, a frame among its scopes reified, which optimized code
+/// keeps no reified word for, the copy freed or another installed in its
+/// place, its feedback base slid, or the room the copy's scopes need,
+/// within the depth limit and the stack's end and on the native stack,
+/// gone.
+#[cfg(ns_jit)]
+fn poll_reentry(
+    mutator: &Mutator<'_>,
+    stopped: &StoppedAtPoll,
+) -> Option<(CodeOffset, optimizing::emit::PollEntry, u32)> {
+    let heap = &mutator.heap;
+    let inlined = stopped.scopes.checked_sub(1)?;
+    if !heap.inlined_scopes_stand(stopped.physical, inlined)
+        || heap.activation_code_id(stopped.physical) != stopped.code_id
+    {
+        return None;
+    }
+    let code = heap.activation_code(stopped.physical);
+    let body = match stopped.key {
+        Some(key) => mutator.jit.copy_of(&code, key),
+        None => mutator.jit.optimized(&code),
+    }?;
+    let poll = body
+        .polls
+        .iter()
+        .find(|poll| poll.point as usize == stopped.point)?;
+    let register_base = Heap::register_base_words(heap.activation_register_base(stopped.physical));
+    let enters = body.installation == stopped.installation
+        && body.feedback_base == heap.activation_feedback_base(stopped.physical)
+        && native_stack_has_room()
+        && heap.machine_frame_fits_without(
+            register_base,
+            (body.deepest_chain, body.deepest_extent),
+            inlined,
+        );
+    enters.then_some((
+        CodeOffset(body.start + poll.entry),
+        poll.clone(),
+        body.start,
+    ))
+}
+
+/// The frame `stopped` names goes on in baseline code or the interpreter,
+/// as after any exit: the blocks its copy eliminated made, the stack as
+/// the exit left it.
+#[cfg(ns_jit)]
+fn deoptimize_at_poll(mutator: &mut Mutator<'_>, stopped: StoppedAtPoll) {
+    if let Some(blocks) = stopped.blocks {
+        materialize::materialize_blocks(mutator, std::slice::from_ref(&blocks));
+    }
+    mutator.jit.statistics.poll_deoptimizations += 1;
+}
+
+/// Makes the frame the last poll's light exit left go on in baseline code
+/// or the interpreter, if there is one: the safepoint is about to rebuild
+/// the stack (`Interpreter::safepoint`'s suspension), after which no frame
+/// is where the exit left it, and the blocks the copy eliminated are made
+/// while it still is. Debug builds only, where the suspend stress mode
+/// exists.
+#[cfg(all(ns_jit, debug_assertions))]
+pub(crate) fn deoptimize_stopped_at_poll(mutator: &mut Mutator<'_>) {
+    if let Some(stopped) = mutator.jit.take_stopped_at_poll() {
+        deoptimize_at_poll(mutator, stopped);
+    }
+}
+
+#[cfg(all(not(ns_jit), debug_assertions))]
+pub(crate) fn deoptimize_stopped_at_poll(_mutator: &mut Mutator<'_>) {}
+
+/// The entry `resumed_at_poll` answered for `activation`, the physical
+/// frame, whose registers start at `register_base`: its optimized code
+/// run from the poll it left.
+#[cfg(ns_jit)]
+#[cold]
+#[inline(never)]
+pub(crate) fn entered_at_poll(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+) -> Resumption {
+    let Some(entry) = mutator.jit.poll_entry.take() else {
+        unreachable!("internal: a frame is entered at a poll that `resumed_at_poll` answered");
+    };
+    // `resumed_at_poll` found the native stack's room at the run loop's
+    // own depth before it took the scopes off the stack, and the frame
+    // cannot start over at its first instruction, as `run_machine_code`
+    // starts one without room.
+    enter_machine_code(mutator, activation, register_base, entry)
+}
+
+#[cfg(not(ns_jit))]
+pub(crate) fn entered_at_poll(
+    _mutator: &mut Mutator<'_>,
+    _activation: ActivationReference,
+    _register_base: RegisterBase,
+) -> Resumption {
+    unreachable!("internal: no frame stops in optimized code without a JIT")
 }
 
 /// Runs the machine code at `entry` on `activation`'s frame, whose
@@ -5597,14 +7126,25 @@ fn run_machine_code(
     register_base: RegisterBase,
     entry: CodeOffset,
 ) -> Resumption {
-    use stubs::{BlockWord, ExitKind};
-
     if !native_stack_has_room() {
         return Resumption::Interpreted {
             activation,
             program_counter: 0,
         };
     }
+    enter_machine_code(mutator, activation, register_base, entry)
+}
+
+/// `run_machine_code` once the native stack's room is known.
+#[cfg(ns_jit)]
+fn enter_machine_code(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    entry: CodeOffset,
+) -> Resumption {
+    use stubs::{BlockWord, ExitKind};
+
     let Some(zone) = mutator.jit.zone.as_ref() else {
         panic!("internal: machine code is entered without a zone");
     };
@@ -5620,6 +7160,7 @@ fn run_machine_code(
     mutator.jit.statistics.machine_entries += 1;
     mutator.jit.walked = None;
     mutator.jit.walked_optimized = false;
+    mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
     let kind = enter_block(mutator, &code, entry_stub, &block);
     // A return first: the frame the run loop entered returned, so no frame
@@ -5633,8 +7174,13 @@ fn run_machine_code(
     // compiled frame lay above it.
     let (innermost, optimized) = match mutator.jit.take_walked() {
         Some(walked) => walked,
-        // The entry's own frame exited, in the code the exit names.
-        None => (activation, mutator.jit.exited_optimized(&block)),
+        // The entry's own frame exited, in the code the exit names --
+        // inside an inlined scope of it, whose scopes the exit leaves it
+        // standing for.
+        None => match materialize::materialize_at_entry(mutator, activation, kind) {
+            Some(innermost) => (innermost, true),
+            None => (activation, mutator.jit.exited_optimized(&block)),
+        },
     };
     resumption_after_exit(mutator, &block, kind, innermost, optimized)
 }
@@ -5826,6 +7372,7 @@ fn call_through(
     mutator.jit.statistics.called_entries += 1;
     mutator.jit.walked = None;
     mutator.jit.walked_optimized = false;
+    mutator.jit.exited_physical = None;
     mutator.jit.refused_for_an_uncompiled_callee = false;
     let kind = enter_block(mutator, &zone_code, call_stub, &block);
     if kind == ExitKind::Returned as u64 {
@@ -6035,6 +7582,9 @@ fn resumption_after_exit(
 
     let exit = stubs::decode_exit(block, kind);
     mutator.jit.statistics.exits += 1;
+    // The frame of the copy the exit left, when the innermost frame is an
+    // inlined scope of it.
+    let physical = mutator.jit.exited_physical.take();
     // The deopt stress mode's forced exits count against no budget, as
     // the exit stress mode's forced polls do not: they say nothing of the
     // code, and counted they would abandon every optimized body within a
@@ -6059,48 +7609,32 @@ fn resumption_after_exit(
     if at_a_send {
         mutator.jit.statistics.send_exits += 1;
     }
-    // A push the callee's prologue refused at the depth limit word while a
-    // real safepoint request stands was refused for the request, which
-    // lowered the word to 0 -- often the optimization request a freshly
-    // compiled callee's first spend made -- whatever the depth: like a
-    // forced exit it says nothing of the caller's code, and counted it
-    // would abandon a hot caller of callees optimized one after another.
-    // The interpreter's push, at the safepoint, decides the depth limit.
-    let refused_for_a_request = matches!(exit, MachineExit::PushRefused { at_the_bound: true })
-        && mutator.heap.real_safepoint_requested();
-    // A call the miss leaf refused because its callee has no machine code
-    // yet, while the zone has room to compile it, says nothing of the
-    // caller's code either: the interpreter's push counts the callee's
-    // entry, and an entry to come compiles it (`note_call_refused`).
-    // Counted, a caller whose callees a compaction frees -- each counting
-    // its entries again -- would spend a refusal on every callee every
-    // compaction freed, and be abandoned for what the zone did.
-    let refused_for_an_uncompiled_callee =
-        std::mem::take(&mut mutator.jit.refused_for_an_uncompiled_callee)
-            && matches!(
-                exit,
-                MachineExit::PushRefused {
-                    at_the_bound: false
-                }
-            );
-    // The stress mode enters every body at every push, however often it
-    // leaves.
-    if matches!(
-        exit,
-        MachineExit::Reexecute { .. } | MachineExit::PushRefused { .. }
-    ) && !mutator.jit.install_bodies_exiting_at_once
-        && !forced
-        && !refused_for_a_request
-        && !refused_for_an_uncompiled_callee
-    {
-        let code = mutator.heap.activation_code(innermost);
+    let circumstances = ExitCircumstances {
+        real_request: mutator.heap.real_safepoint_requested(),
+        forced,
+        refused_for_an_uncompiled_callee: std::mem::take(
+            &mut mutator.jit.refused_for_an_uncompiled_callee,
+        ),
+        installed_whatever_it_exits_at: mutator.jit.install_bodies_exiting_at_once,
+    };
+    if exit_counts(exit, circumstances) {
+        // An exit inside an inlined scope is the physical frame's copy's.
+        let physical = physical.unwrap_or(innermost);
+        let code = mutator.heap.activation_code(physical);
         // The copy the frame ran is the one its key names: a copy is
         // entered only where its key holds.
         let key = optimized
-            .then(|| activation_key(&mutator.heap, &code, innermost))
+            .then(|| activation_key(&mutator.heap, &code, physical))
             .flatten();
         count_exit(mutator, &code, optimized, key);
     }
+    #[cfg(test)]
+    inlining_tests::record_exit(
+        mutator,
+        innermost,
+        physical.is_some(),
+        matches!(exit, MachineExit::Trap { .. }),
+    );
     // The innermost frame goes on interpreted from here: it no longer
     // stands in machine code, which only the frames below it still do.
     mutator.heap.clear_compiled(innermost);
@@ -6119,7 +7653,7 @@ fn resumption_after_exit(
             site,
         } => {
             debug_assert!(optimized, "internal: only optimized code traps");
-            count_trap(mutator, innermost, site);
+            count_trap(mutator, innermost, physical, site);
             Resumption::Interpreted {
                 activation: innermost,
                 program_counter,
@@ -6138,15 +7672,127 @@ fn resumption_after_exit(
         }
         MachineExit::Safepoint { program_counter } => {
             mutator.jit.statistics.safepoint_exits += 1;
+            if optimized {
+                stop_at_poll(mutator, block, physical.unwrap_or(innermost), forced);
+            }
             Resumption::Safepoint {
                 activation: innermost,
                 program_counter,
             }
         }
+        // The register is numbered in the physical frame
+        // (`MacroAssembler::load_frame_slot`): named in the innermost
+        // scope's frame where it lies in it, and in the physical frame's
+        // where it lies below it, in a scope further out.
         MachineExit::DeadRegister { register, .. } => {
-            mutator.heap.refuse_dead_register(innermost, register)
+            let (frame, register) = match physical {
+                Some(physical) => {
+                    let scope_start =
+                        Heap::register_base_index(mutator.heap.activation_register_base(innermost))
+                            - Heap::register_base_index(
+                                mutator.heap.activation_register_base(physical),
+                            );
+                    match u16::try_from(scope_start)
+                        .ok()
+                        .and_then(|start| register.checked_sub(start))
+                    {
+                        Some(register) => (innermost, register),
+                        None => (physical, register),
+                    }
+                }
+                None => (innermost, register),
+            };
+            mutator.heap.refuse_dead_register(frame, register)
+        }
+        // The budget leaf found an optimization due: the walk from the
+        // frame that ran its budget out decides which frame's, among the
+        // activations the exit left, and the frame goes on interpreted,
+        // until its next backward jump or return enters machine code
+        // again. Counted against no exit budget, above.
+        MachineExit::BudgetSpent { program_counter } => {
+            mutator.jit.statistics.budget_exits += 1;
+            let recompilee = find_recompilee(mutator, innermost);
+            request_recompilee(mutator, innermost, recompilee);
+            Resumption::Interpreted {
+                activation: innermost,
+                program_counter,
+            }
         }
     }
+}
+
+/// What beside an exit itself decides whether it counts against an exit
+/// budget (`exit_counts`): whether a real safepoint request stands,
+/// whether the deopt stress mode forced it, whether the miss leaf refused
+/// the call for a callee with no machine code yet, and whether the JIT
+/// stress mode installs every body whatever it exits at.
+#[cfg(ns_jit)]
+#[derive(Clone, Copy, Default)]
+struct ExitCircumstances {
+    real_request: bool,
+    forced: bool,
+    refused_for_an_uncompiled_callee: bool,
+    installed_whatever_it_exits_at: bool,
+}
+
+/// Whether `exit` counts against its body's exit budget (`count_exit`):
+/// an exit at an instruction and a refused push do, unless what refused
+/// it says nothing of the code; no other exit -- a poll, a trap, a
+/// return, a budget's run-out -- does.
+#[cfg(ns_jit)]
+fn exit_counts(exit: stubs::MachineExit, circumstances: ExitCircumstances) -> bool {
+    use stubs::MachineExit;
+
+    // A push the callee's prologue refused at the depth limit word while a
+    // real safepoint request stands was refused for the request, which
+    // lowered the word to 0 -- often the optimization request a freshly
+    // compiled callee's first spend made -- whatever the depth: like a
+    // forced exit it says nothing of the caller's code, and counted it
+    // would abandon a hot caller of callees optimized one after another.
+    // The interpreter's push, at the safepoint, decides the depth limit.
+    let refused_for_a_request = matches!(
+        exit,
+        MachineExit::PushRefused {
+            at_the_bound: true,
+            ..
+        }
+    ) && circumstances.real_request;
+    // Nor does a push optimized code's prologue refused for its inlined
+    // scopes alone: the interpreter's push goes on in the callee's
+    // baseline code (`entered`), which overflows only where the
+    // interpreter does.
+    let refused_for_its_inlining = matches!(
+        exit,
+        MachineExit::PushRefused {
+            for_its_inlining: true,
+            ..
+        }
+    );
+    // A call the miss leaf refused because its callee has no machine code
+    // yet, while the zone has room to compile it, says nothing of the
+    // caller's code either: the interpreter's push counts the callee's
+    // entry, and an entry to come compiles it (`note_call_refused`).
+    // Counted, a caller whose callees a compaction frees -- each counting
+    // its entries again -- would spend a refusal on every callee every
+    // compaction freed, and be abandoned for what the zone did.
+    let refused_for_an_uncompiled_callee = circumstances.refused_for_an_uncompiled_callee
+        && matches!(
+            exit,
+            MachineExit::PushRefused {
+                at_the_bound: false,
+                for_its_inlining: false,
+            }
+        );
+    // The stress mode enters every body at every push, however often it
+    // leaves.
+    matches!(
+        exit,
+        MachineExit::Reexecute { .. } | MachineExit::PushRefused { .. }
+    ) && !circumstances.installed_whatever_it_exits_at
+        && !circumstances.forced
+        && !refused_for_a_request
+        && !refused_for_its_inlining
+        && !refused_for_an_uncompiled_callee
 }
 
 /// The words of the entry block that name what lasts from one entry to
@@ -6285,20 +7931,34 @@ fn abandon_optimized(
 /// not that the code exits where it must. Between entries only, as every
 /// retirement is.
 #[cfg(ns_jit)]
-fn count_trap(mutator: &mut Mutator<'_>, innermost: ActivationReference, site: u32) {
+fn count_trap(
+    mutator: &mut Mutator<'_>,
+    innermost: ActivationReference,
+    physical: Option<ActivationReference>,
+    site: u32,
+) {
     mutator.jit.statistics.traps += 1;
-    let code = mutator.heap.activation_code(innermost);
+    // A trap inside an inlined scope counts against the physical frame's
+    // copy, at the site of the scope that trapped, whose bit every compile
+    // inlining its body reads.
+    let frame = physical.unwrap_or(innermost);
+    let code = mutator.heap.activation_code(frame);
     // The copy the frame ran is the one its key names: a copy is entered
     // only where its key holds.
-    let key = activation_key(&mutator.heap, &code, innermost);
+    let key = activation_key(&mutator.heap, &code, frame);
     let Some(body) = mutator.jit.optimized_for(&code, key) else {
         return;
     };
-    let (feedback_base, copy) = (body.feedback_base, body.key);
+    let (mut feedback_base, copy) = (body.feedback_base, body.key);
+    let mut family_size = code.family_size;
+    if physical.is_some() {
+        feedback_base = mutator.heap.activation_feedback_base(innermost);
+        family_size = mutator.heap.activation_code(innermost).family_size;
+    }
     // A site past the family runs uncached and records nothing, as one of
     // a family without a range does, and its bit would be a neighbouring
     // family's: it reads as trapped before, as the snapshot reads it.
-    let trapped_before = site >= code.family_size || mutator.caches.note_trap(feedback_base, site);
+    let trapped_before = site >= family_size || mutator.caches.note_trap(feedback_base, site);
     let traps = code.jit.count_trap(copy);
     if (trapped_before || traps >= TRAP_LIMIT) && retire_optimized(mutator, &code, copy) {
         mutator.jit.statistics.made_not_entrant += 1;
@@ -6415,7 +8075,8 @@ fn invalidate_copy(
 /// copies' versions earned (`optimization_budget_after`), so that the next
 /// copy waits for feedback gathered since -- as long as a failure of the
 /// freed one would have it wait, no longer, since an invalidation is no
-/// failure.
+/// failure -- and answers the version whose wait it armed, `None` if it
+/// freed none.
 #[cfg(ns_jit)]
 fn invalidate_copies_of(
     mutator: &mut Mutator<'_>,
@@ -6423,7 +8084,7 @@ fn invalidate_copies_of(
     stale: &dyn Fn(CustomizationKey) -> bool,
     uncustomized: bool,
     entries: &mut Vec<u64>,
-) {
+) -> Option<u8> {
     let keys: Vec<(CustomizationKey, u8)> = code
         .jit
         .copies
@@ -6445,13 +8106,73 @@ fn invalidate_copies_of(
     if let Some(version) = wait {
         rearm_optimization_budget(mutator, code, version);
     }
+    wait
+}
+
+/// Frees each of `copies` -- a body and the key of one of its copies,
+/// `None` for its uncustomized one -- as an invalidation does
+/// (`invalidate_copies_of`), adding the addresses cells may name of them
+/// to `entries`, and answers each body whose copies it freed with the
+/// version whose wait it armed its budget at.
+#[cfg(ns_jit)]
+fn invalidate_dependent_copies(
+    mutator: &mut Mutator<'_>,
+    copies: Vec<(Rc<CompiledCode>, Option<CustomizationKey>)>,
+    entries: &mut Vec<u64>,
+) -> Vec<(Rc<CompiledCode>, u8)> {
+    let mut by_body: Vec<(Rc<CompiledCode>, Vec<CustomizationKey>, bool)> = Vec::new();
+    for (code, key) in copies {
+        let position = match by_body
+            .iter()
+            .position(|(known, _, _)| Rc::ptr_eq(known, &code))
+        {
+            Some(position) => position,
+            None => {
+                by_body.push((code, Vec::new(), false));
+                by_body.len() - 1
+            }
+        };
+        match key {
+            Some(key) => by_body[position].1.push(key),
+            None => by_body[position].2 = true,
+        }
+    }
+    let mut armed = Vec::new();
+    for (code, keys, uncustomized) in by_body {
+        let stale = |key: CustomizationKey| keys.contains(&key);
+        if let Some(version) = invalidate_copies_of(mutator, &code, &stale, uncustomized, entries) {
+            armed.push((code, version));
+        }
+    }
+    armed
+}
+
+/// Records in `carried`, what a full collection carries of each body's
+/// budget to the id it has after it (`budgets_before_collection`), the
+/// arming each body of `armed` was given in the collection, or the
+/// collection would arm a body whose id it frees with what was left
+/// before.
+#[cfg(ns_jit)]
+fn carry_armings(
+    mutator: &Mutator<'_>,
+    armed: Vec<(Rc<CompiledCode>, u8)>,
+    carried: &mut IdentityMap<usize, i64>,
+) {
+    for (code, version) in armed {
+        carried.insert(
+            Rc::as_ptr(&code) as usize,
+            optimization_budget_after(mutator.jit.optimization_budget, version),
+        );
+    }
 }
 
 /// Frees every customized copy whose key names one of `rebuilt` -- the
 /// instances ids of the applications an install replaced
 /// (`Mutator::install_edit`) -- as its receiver's or its entered
 /// application: each was compiled against a layout, a lookup or an outer
-/// structure the install changed. Every other copy stays, and so does
+/// structure the install changed -- and every copy, of any key, whose
+/// dependencies name one (`CopyDependencies::applications`), since an arm
+/// or an inlined scope of it relied on the same. Every other copy stays, and so does
 /// each key's row, whose ids no receiver carries any more once the
 /// install restamped or forwarded every instance; a full collection
 /// drops the rows once it reclaims the ids (`forget_freed_copies`).
@@ -6475,6 +8196,16 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
     for code in mutator.jit.customized_codes() {
         invalidate_copies_of(mutator, &code, &stale, false, &mut entries);
     }
+    // A copy of any key, the uncustomized one too, whose arm or inlined
+    // scope relied on a rebuilt application: what its lookup found, its
+    // layout or its outer structure may have changed.
+    let dependent = mutator.jit.copies_depending(|dependencies| {
+        dependencies
+            .applications
+            .iter()
+            .any(|guard| rebuilt.contains(guard))
+    });
+    invalidate_dependent_copies(mutator, dependent, &mut entries);
     rearm_after_dropped_requests(mutator, dropped, None);
     refresh_cells_entering(mutator, entries);
 }
@@ -6592,6 +8323,33 @@ pub(crate) fn invalidate_optimized_for_stress(mutator: &mut Mutator<'_>) {
 }
 
 impl JitState {
+    /// How many bodies the installed optimized copies of `code` inlined,
+    /// counted once per copy that inlines each. For tests.
+    pub(crate) fn inlined_bodies(&self, code: &CompiledCode) -> usize {
+        let Some(lean) = self.installed(code).map(|_| code.jit.map.get()) else {
+            return 0;
+        };
+        self.optimized_copies_of(lean)
+            .into_iter()
+            .map(|index| self.bodies[index as usize].dependencies.code_ids.len())
+            .sum()
+    }
+
+    /// The body and key of every installed optimized copy whose
+    /// dependencies `depends` answers true for.
+    #[cfg(ns_jit)]
+    fn copies_depending(
+        &self,
+        depends: impl Fn(&CopyDependencies) -> bool,
+    ) -> Vec<(Rc<CompiledCode>, Option<CustomizationKey>)> {
+        self.bodies
+            .iter()
+            .filter(|body| !body.free && body.tier == Tier::Optimized)
+            .filter(|body| depends(&body.dependencies))
+            .filter_map(|body| Some((body.code.upgrade()?, body.key)))
+            .collect()
+    }
+
     /// Every live body with optimized code installed, each once.
     #[cfg(ns_jit)]
     fn codes_with_optimized_bodies(&self) -> Vec<Rc<CompiledCode>> {
@@ -6623,7 +8381,10 @@ impl JitState {
 /// request it dropped has its parked budget armed afresh at the plain
 /// wait (`rearm_after_dropped_requests`), and `carried`, what the
 /// collection carries of each body's budget to the id it has after it
-/// (`budgets_before_collection`), takes the arming too.
+/// (`budgets_before_collection`), takes the arming too. Every copy whose
+/// dependencies name a reclaimed id (`CopyDependencies::applications`)
+/// is freed as well, its key's row staying, and its body's budget armed
+/// as an invalidation arms it, which `carried` takes too.
 #[cfg(ns_jit)]
 pub(crate) fn forget_freed_copies(
     mutator: &mut Mutator<'_>,
@@ -6658,11 +8419,107 @@ pub(crate) fn forget_freed_copies(
         }
         code.jit.copies.borrow_mut().retain(|copy| !stale(copy.key));
     }
+    // A type-case's arm tests a guard the collection mints again for
+    // another application, which would run the inlined callee of the dead
+    // one: its copy goes too, its key's row staying.
+    let dependent = mutator.jit.copies_depending(|dependencies| {
+        dependencies
+            .applications
+            .iter()
+            .any(|guard| freed.guards.contains(guard))
+    });
+    let armed = invalidate_dependent_copies(mutator, dependent, &mut entries);
+    carry_armings(mutator, armed, carried);
     mutator
         .jit
         .customized
         .retain(|code| code.upgrade().is_some_and(|code| code.jit.has_copies()));
     refresh_cells_entering(mutator, entries);
+}
+
+/// The code ids every live copy of optimized code inlined
+/// (`CopyDependencies::code_ids`), which a full collection names beside
+/// the running activations' (`Mutator::reclaim_ids`): an inlined method
+/// may be run by no activation, every call of it inlined, and freeing its
+/// id at every collection would free the copy that names its scopes by
+/// it, throwing the tier's work away. Named, the id cannot go stale while
+/// the copy lives; once the copy is freed -- by its applications, its
+/// feedback bases or its key -- nothing names the id, and a later
+/// collection frees it.
+#[cfg(ns_jit)]
+pub(crate) fn inlined_code_ids(mutator: &Mutator<'_>) -> Vec<CodeId> {
+    let mut code_ids = Vec::new();
+    for body in &mutator.jit.bodies {
+        if !body.free && body.tier == Tier::Optimized {
+            code_ids.extend_from_slice(&body.dependencies.code_ids);
+        }
+    }
+    code_ids
+}
+
+/// A debug build's check, after a full collection freed the code ids
+/// nothing named, that every live copy's inlined code ids still name the
+/// bodies it inlined (`inlined_code_ids`): a freed one would be minted
+/// again for another body.
+#[cfg(all(ns_jit, debug_assertions))]
+pub(crate) fn verify_inlined_code_ids(mutator: &Mutator<'_>) {
+    for body in &mutator.jit.bodies {
+        if body.free || body.tier != Tier::Optimized {
+            continue;
+        }
+        let Some(metadata) = &body.metadata else {
+            continue;
+        };
+        let held = metadata
+            .scopes
+            .iter()
+            .flatten()
+            .map(|scope| &scope.code)
+            .chain(metadata.blocks.iter().map(|block| &block.code));
+        for held in held {
+            assert!(
+                body.dependencies.code_ids.iter().any(|code_id| {
+                    mutator
+                        .heap
+                        .code(*code_id)
+                        .is_some_and(|code| Rc::ptr_eq(&code, held))
+                }),
+                "internal: a live copy's inlined code id was reclaimed"
+            );
+        }
+    }
+}
+
+/// Frees every copy that inlined a body compiled against a feedback base
+/// `slide` moved, or one it holds no range for: the inlined scope's sends
+/// address their cells from that base, and would read and fill another
+/// family's sites, as a body compiled against it would
+/// (`JitState::free_bodies_with_moved_bases`, which frees the copies whose
+/// own base moved). Run by a full collection that slid the ranges, after
+/// the caches and the heap took the new bases, between entries.
+#[cfg(ns_jit)]
+pub(crate) fn invalidate_copies_of_moved_bases(
+    mutator: &mut Mutator<'_>,
+    slide: &crate::interpreter::inline_cache::SiteSlide,
+) {
+    let dependent = mutator.jit.copies_depending(|dependencies| {
+        dependencies
+            .feedback_bases
+            .iter()
+            .any(|base| slide.moves(*base))
+    });
+    if dependent.is_empty() {
+        return;
+    }
+    let mut entries = Vec::new();
+    invalidate_dependent_copies(mutator, dependent, &mut entries);
+    refresh_cells_entering(mutator, entries);
+}
+
+/// Without a JIT no copy inlines a body.
+#[cfg(not(ns_jit))]
+pub(crate) fn inlined_code_ids(_mutator: &Mutator<'_>) -> Vec<CodeId> {
+    Vec::new()
 }
 
 /// Without a JIT there is no optimized code to invalidate.
@@ -7448,10 +9305,11 @@ mod tests {
             // -- as after a compaction renumbered `bodies` -- or no body at
             // all is not taken: the search answers the body holding it.
             for stale in [2, 99] {
-                state
+                let (entry, other) = state
                     .body_lookup
-                    .entry(offset_of(&state, inside_first))
-                    .set(stale);
+                    .entries_of(offset_of(&state, inside_first));
+                entry.set(stale);
+                other.set(stale);
                 assert_eq!(
                     state.installed_index_at(inside_first),
                     Some(0),
@@ -7462,6 +9320,30 @@ mod tests {
             assert_eq!(searches(&state), 4);
             state.bodies[0].free = true;
             assert_eq!(state.installed_index_at(inside_first), None, "freed");
+        }
+
+        /// Offsets that meet in a pair of the body lookup's entries agree on
+        /// which of the two is the first: each one's body, written into the
+        /// first, moves the other's to the second rather than over it, so
+        /// that two leaf calls of a loop that meet keep both bodies found.
+        #[test]
+        fn offsets_meeting_in_a_pair_of_entries_agree_on_its_first() {
+            let lookup = crate::jit::BodyLookup::default();
+            let pair_of = |offset: u32| {
+                let (first, second) = lookup.entries_of(offset);
+                (std::ptr::from_ref(first), std::ptr::from_ref(second))
+            };
+            let base = pair_of(0);
+            let meeting: Vec<u32> = (1..200_000)
+                .filter(|offset| {
+                    let (first, second) = pair_of(*offset);
+                    first == base.1 || second == base.0 || (first, second) == base
+                })
+                .collect();
+            assert!(meeting.len() > 1, "offsets meet in the pair");
+            for offset in meeting {
+                assert_eq!(pair_of(offset), base, "offset {offset}");
+            }
         }
 
         #[test]
@@ -7520,12 +9402,14 @@ mod tests {
 
         /// A body's row is armed with the budget when its baseline code is
         /// installed, before the code runs, and its data word names the
-        /// row; a spend that ran the armed row out requests the body's
-        /// optimization once and parks the row, while a spend from the
-        /// unpointed budget, or from a row cleared since, points the word
-        /// and arms the row and requests nothing.
+        /// row; a spend that ran the armed row out parks the row and
+        /// answers the optimization due, which the exit that follows
+        /// requests once its walk has found the frame to request
+        /// (`find_recompilee`), while a spend from the unpointed budget, or
+        /// from a row cleared since, points the word and arms the row and
+        /// asks for nothing.
         #[test]
-        fn a_budget_that_runs_out_requests_its_body_once() {
+        fn a_budget_that_runs_out_asks_for_its_body_s_optimization() {
             let mut interpreter = pinning_the_budget();
             interpreter.enter(|mutator| {
                 let code = body_with_a_loop();
@@ -7557,28 +9441,136 @@ mod tests {
                         .executable_address(CodeOffset(body.start + 1))
                 };
                 let unpointed = mutator.jit.unpointed_budget_address();
-                crate::jit::budget_spent(mutator, unpointed, 0, inside);
                 assert!(
-                    mutator.jit.optimization_requests.is_empty(),
+                    !crate::jit::budget_spent(mutator, unpointed, 0, inside),
                     "a spend from the unpointed budget"
                 );
                 assert_eq!(word(mutator), row, "pointed again");
-                crate::jit::budget_spent(mutator, row, 0, inside);
-                crate::jit::budget_spent(mutator, row, 0, inside);
-                assert_eq!(mutator.jit.optimization_requests.len(), 1);
-                assert_eq!(mutator.jit.statistics.optimization_requests, 1, "once");
+                assert!(crate::jit::budget_spent(mutator, row, 0, inside));
                 assert_eq!(
                     mutator.heap.armed_optimization_budget(&code),
                     Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
                 );
+                assert!(
+                    mutator.jit.optimization_requests.is_empty(),
+                    "the exit's to request"
+                );
                 mutator.heap.forget_optimization_budget(&code);
-                crate::jit::budget_spent(mutator, row, 0, inside);
+                assert!(
+                    !crate::jit::budget_spent(mutator, row, 0, inside),
+                    "a cleared row asks for nothing"
+                );
                 assert_eq!(
                     mutator.heap.armed_optimization_budget(&code),
                     Some(crate::jit::OPTIMIZATION_BUDGET),
-                    "a cleared row is armed afresh, requesting nothing"
+                    "a cleared row is armed afresh"
                 );
-                assert_eq!(mutator.jit.statistics.optimization_requests, 1);
+                assert_eq!(mutator.jit.statistics.optimization_requests, 0);
+            });
+        }
+
+        /// Which exits count against an exit budget: an exit at an
+        /// instruction and a refused push, but no push refused for a real
+        /// safepoint request at the depth limit word -- the request lowered
+        /// it, whatever the depth -- nor one refused for the inlined scopes
+        /// of optimized code, nor a call refused for an uncompiled callee,
+        /// nor a forced exit, nor any exit under the JIT stress mode; and
+        /// never a poll, a trap or a budget's run-out.
+        #[test]
+        fn only_exits_that_say_something_of_the_code_count() {
+            use crate::jit::stubs::MachineExit;
+            use crate::jit::{exit_counts, ExitCircumstances};
+            let plain = ExitCircumstances::default();
+            let at_the_bound = MachineExit::PushRefused {
+                at_the_bound: true,
+                for_its_inlining: false,
+            };
+            let refused = MachineExit::PushRefused {
+                at_the_bound: false,
+                for_its_inlining: false,
+            };
+            let reexecute = MachineExit::Reexecute { program_counter: 3 };
+            assert!(exit_counts(reexecute, plain));
+            assert!(exit_counts(refused, plain));
+            assert!(exit_counts(at_the_bound, plain), "the depth limit itself");
+            let requested = ExitCircumstances {
+                real_request: true,
+                ..plain
+            };
+            assert!(
+                !exit_counts(at_the_bound, requested),
+                "refused for a request"
+            );
+            assert!(exit_counts(refused, requested));
+            let inlining = MachineExit::PushRefused {
+                at_the_bound: false,
+                for_its_inlining: true,
+            };
+            assert!(!exit_counts(inlining, plain));
+            let uncompiled = ExitCircumstances {
+                refused_for_an_uncompiled_callee: true,
+                ..plain
+            };
+            assert!(!exit_counts(refused, uncompiled));
+            assert!(exit_counts(at_the_bound, uncompiled));
+            let forced = ExitCircumstances {
+                forced: true,
+                ..plain
+            };
+            assert!(!exit_counts(reexecute, forced));
+            let stress = ExitCircumstances {
+                installed_whatever_it_exits_at: true,
+                ..plain
+            };
+            assert!(!exit_counts(reexecute, stress));
+            for exit in [
+                MachineExit::Safepoint { program_counter: 3 },
+                MachineExit::Trap {
+                    program_counter: 3,
+                    site: 0,
+                },
+                MachineExit::BudgetSpent { program_counter: 3 },
+            ] {
+                assert!(!exit_counts(exit, plain), "{exit:?}");
+            }
+        }
+
+        /// A run-out of a body optimized as one copy, by a frame that went
+        /// on mid-body in its baseline code once the copy was installed,
+        /// asks for nothing -- no exit, no walk, no request `optimize`
+        /// would drop -- and leaves the row parked, as that dropped
+        /// request left it.
+        #[test]
+        fn a_body_with_its_one_copy_installed_asks_for_nothing() {
+            let mut interpreter = pinning_the_budget();
+            interpreter.enter(|mutator| {
+                let code = body_with_a_loop();
+                enter_twice(&mut mutator.jit, &code);
+                crate::jit::after_compile_trigger(mutator);
+                mutator
+                    .jit
+                    .optimization_requests
+                    .push(crate::jit::OptimizationRequest::uncustomized(&code));
+                crate::jit::optimize_requested(mutator);
+                assert!(
+                    mutator.jit.optimized(&code).is_some(),
+                    "the copy is installed"
+                );
+                let index = code.jit.map.get();
+                let inside = {
+                    let body = &mutator.jit.bodies[index as usize];
+                    let zone = mutator.jit.zone.as_ref().expect("a zone");
+                    zone.writer
+                        .zone()
+                        .executable_address(CodeOffset(body.start + 1))
+                };
+                let row = mutator.heap.optimization_budget_of(&code).address;
+                assert!(!crate::jit::budget_spent(mutator, row, 0, inside));
+                assert_eq!(
+                    mutator.heap.armed_optimization_budget(&code),
+                    Some(crate::heap::OPTIMIZATION_BUDGET_PARKED)
+                );
+                assert!(mutator.jit.optimization_requests.is_empty());
             });
         }
 

@@ -1,0 +1,8 @@
+stdout = '''
+node
+leaf(node)
+extended node
+extra
+leaf(extended node)
+extra
+'''

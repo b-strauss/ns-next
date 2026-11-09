@@ -1476,57 +1476,74 @@ which they include and whose share was not measured.
 
 ### Against Java
 
-Measured on 2026-11-02 at `b9abfd0c` (the baseline JIT through stage 4),
-asked for by the user: how far ns-next is from the JVM on the sixteen
-programs. Both harnesses ran with `--timed --warm-up 2000 --measure 3000`,
-a steady-state throughput: the default windows of 3 and 20 ms end long
-before HotSpot's C2 has compiled anything, so they would have timed the
-JVM's interpreter and C1 rather than the JVM. ns-next: the three pinned
-release builds of the `measuring-performance` skill (a, b, c, with the
-current shipped code), pooled, three rounds rotating the order of the four
-sides, nine scores a program; the five programs whose score is a fraction
-of a run per second -- too coarse at one fraction digit -- timed instead
-with `bench --iterations 3` on each build, nine runs a program. Java:
-Amazon Corretto 27, `javac --release 21`, the JVM's default flags (C2,
-G1), one JVM a round, three scores a program. One machine, an Intel Core
-Ultra 9 285K under Windows 11; the `dumpbin` check of the three builds was
-not made, since a factor of tens, not percents, is measured.
+Measured on 2026-11-09 at `0e40701f` (the baseline JIT and the optimizing
+tier through its third stage, inlining), asked for by the user: how far
+ns-next is from the JVM on the sixteen programs. Both harnesses ran with
+`--timed --warm-up 2000 --measure 3000`, a steady-state throughput: the
+default windows of 3 and 20 ms end long before HotSpot's C2 has compiled
+anything, so they would have timed the JVM's interpreter and C1 rather
+than the JVM. ns-next: the three pinned release builds of the
+`measuring-performance` skill (a, b, c, with the current shipped code),
+pooled, three rounds rotating the order of the four sides, nine scores a
+program; the five programs whose score is a fraction of a run per second
+or a few runs -- too coarse at one fraction digit -- CD, DeltaBlue,
+Havlak, Mandelbrot and NBody, timed instead with `bench --iterations 3`
+on each build, nine runs a program. Java: Amazon Corretto 27
+(27.0.0.35.1), `javac --release 21`, the JVM's default flags (C2, G1),
+one JVM a round, three scores a program. Every timed process, on both
+sides, ran with the affinity of the eight performance cores (`0xC03C03`).
+One machine, an Intel Core Ultra 9 285K under Windows 11; the `dumpbin`
+check of the three builds was not made, since a factor of tens, not
+percents, is measured.
 
 | Program | ns-next (runs/s, median) | Java (runs/s, median) | Java is faster by |
 |---|---|---|---|
-| Bounce | 5439.6 | 191581.2 | 35.2× |
-| CD | 0.326 (3065 ms a run) | 65.3 | 200× |
-| DeltaBlue | 3.98 (251.5 ms a run) | 174.0 | 43.8× |
-| DeltaBlueTon80 | 589.2 | 20666.1 | 35.1× |
-| Havlak | 0.832 (1203 ms a run) | 44.8 | 53.9× |
-| Json | 298.3 | 3249.1 | 10.9× |
-| List | 5719.4 | 133316.4 | 23.3× |
-| Mandelbrot | 0.552 (1813 ms a run) | 23.3 | 42.2× |
-| NBody | 0.900 (1111 ms a run) | 133.0 | 148× |
-| Permute | 4156.6 | 90040.2 | 21.7× |
-| Queens | 3867.0 | 75979.3 | 19.6× |
-| Richards | 59.1 | 3095.1 | 52.4× |
-| RichardsTon80 | 682.3 | 33214.2 | 48.7× |
-| Sieve | 4403.6 | 231853.8 | 52.7× |
-| Storage | 1918.0 | 41097.7 | 21.4× |
-| Towers | 2353.7 | 48577.5 | 20.6× |
+| Bounce | 14571.8 | 191843.4 | 13.2× |
+| CD | 0.335 (2983 ms a run) | 65.6 | 196× |
+| DeltaBlue | 6.04 (166 ms a run) | 174.8 | 29.0× |
+| DeltaBlueTon80 | 1031.5 | 22098.8 | 21.4× |
+| Havlak | 1.27 (789 ms a run) | 43.7 | 34.5× |
+| Json | 509.8 | 3289.4 | 6.5× |
+| List | 20210.7 | 135139.2 | 6.7× |
+| Mandelbrot | 0.558 (1793 ms a run) | 23.5 | 42.1× |
+| NBody | 1.06 (940 ms a run) | 133.7 | 126× |
+| Permute | 16946.4 | 91314.5 | 5.4× |
+| Queens | 17536.0 | 76750.4 | 4.4× |
+| Richards | 90.1 | 3051.1 | 33.9× |
+| RichardsTon80 | 1364.1 | 33516.2 | 24.6× |
+| Sieve | 6190.6 | 233328.8 | 37.7× |
+| Storage | 2354.1 | 41078.4 | 17.4× |
+| Towers | 5743.7 | 49376.6 | 8.6× |
 
-Java is faster by 38.5× on the geometric mean of the sixteen factors (the
-median 38.7×), from 10.9× on Json to 200× on CD. ns-next's nine values
-spread at most 6.4% of their median (Towers; Json 5.3%, every other
-program under 4.2%, the `bench` timings under 3.5%); Java's three up to
-15.4% (DeltaBlueTon80's one high round; Storage 11.8%, every other program
-under 7.5%) -- noise far below the factors measured. The two far outliers, CD and
-NBody, are the two programs of floating-point arithmetic on objects'
-slots, where the JVM keeps doubles unboxed in registers and fields, and
-ns-next tags or boxes every intermediate result and sends every operator;
-the narrowest, Json, spends its time in string handling, much of it in
-leaves on both sides. What the comparison does not cover: the five slow
-programs' `bench` figures include each application's setup and only one
-discarded warm-up run where Java's are a steady state after two seconds,
-which favours Java slightly; one machine and one JVM; and no JVM tuning.
-The gap is what an optimizing tier -- road step 9 -- is for
-(OPEN-WORK.md).
+Java is faster by 21.0× on the geometric mean of the sixteen factors (the
+median 23.0×), from 4.4× on Queens to 196× on CD. At `b9abfd0c`, the
+baseline JIT alone, the geometric mean was 38.5×; Java's scores are
+within a few percent of that comparison's, so the difference is
+ns-next's. ns-next's nine values spread at most 10.4% of their median
+(Mandelbrot, for one `bench` on build c at 1968 ms, two of its three runs
+slow, the other eight 1781–1808 ms); every other program under 4.8%
+(Json 4.7%, RichardsTon80 3.8%), the other `bench` timings under 2.7%,
+NBody's nine at 926–951 ms. Java's three spread up to 25.2% (DeltaBlue,
+153–197, rising from round to round; Storage 8.7%, every other program
+under 3.3%) -- noise far below the factors measured. The two far
+outliers, CD and NBody, are the two programs of floating-point
+arithmetic on objects' slots, where the JVM keeps doubles unboxed in
+registers and fields, and ns-next tags or boxes every intermediate
+result and calls a leaf for every `Float` operator, since machine code
+has no `Float` templates yet; no profile of them was taken, so how much
+of the gap that is is not measured. The narrowest, Queens and Permute,
+under 6×, are programs of `SmallInteger` arithmetic, indexed access and
+small sends: the plan lowers the arithmetic and the indexed access to
+nodes and inlines the small sends as scopes, and inlining measured
+Queens 76% and Permute, with the `do:` block's elimination, 70% faster
+("What inlining moved"); no profile of them was taken here, so which
+costs make up their remaining gap is not measured. What the comparison does not
+cover: the five slow programs' `bench` figures include each
+application's setup and only one discarded warm-up run where Java's are
+a steady state after two seconds, which favours Java slightly; one
+machine and one JVM; and no JVM tuning. What remains of
+the gap is what `Float` arithmetic in SSE2 and the stages of road step 9
+after inlining are for (OPEN-WORK.md, "Next").
 
 ### What the eight-byte value moved
 
@@ -8744,8 +8761,7 @@ and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
   receiver's class at their own site -- stage 3's type-cases, with a
   guard and a trap in the optimized code -- would take the tests out of
   the shared stubs
-  (`OPEN-WORK.md`, "Optimized code's sends mispredict in the shared
-  stubs").
+  ("What inlining moved" measures them with the type-cases).
 - **CD churns**: 159 bodies optimized and 136 of them abandoned, with
   8,762 optimized exits, the same pattern as its baseline code's
   ("What reclamation moved"; `OPEN-WORK.md`, "A nested class's accessor
@@ -8943,8 +8959,8 @@ builds apart. What each difference is:
   code's, since send sites do not speculate in this stage ("Speculation
   and its failure"), so the mispredictions in the shared stubs stage 1
   measured stand; xperf's sampled profiles on this machine did not
-  separate them (`OPEN-WORK.md`, "Optimized code's sends mispredict in
-  the shared stubs").
+  separate them ("What inlining moved" measures them with the
+  type-cases).
 - **Placement.** `bench_block` measured +1.9% with its builds apart in a
   sitting before the last, while a sampled profile of 400 runs a side
   put 96% of its samples in machine code and the same totals to 0.1%,
@@ -9025,6 +9041,367 @@ separated; on-stack replacement into optimized code, stage 6's, so that
 Mandelbrot's one long activation still runs a copy only from its second
 `bench` send on; the compiler thread, stage 8's; and the stress and
 end-of-batch gates, which the batch's end runs.
+
+### What inlining moved
+
+**Measured 2026-11-08, `3b30e41e` against `master` (`56d65674`)**, by
+the protocol of "What speculation moved": three pinned release builds a
+side with debug information, a, b and c laid out as there, the code
+zones at the same three paddings on both sides; `vm::run` spans 44.0,
+47.4 and 51.0 KB on both sides with 451 calls, and no build has a
+`run_stretch` or a `vm::run` closure of its own. Three rounds in one
+sitting, the order of the binaries rotated each round, every process
+held to the eight performance cores (the mask `0xC03C03`) from its
+start; `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue
+and `--iterations 8` for the rest. Each cell is a side's medians per
+build pooled by geometric mean, in milliseconds. Between the two trees
+lies road step 9's third stage ("Planned: the optimizing JIT",
+"Inlining"): the snapshot tree and the inlining plan, inlined method
+scopes and their type-cases, always-inlined accessors and indexed
+access, blocks compiled with their home and eliminated, the copies'
+dependencies, the recompilee walk and the re-entry at a poll.
+
+| Program | master (ms) | master's builds | branch (ms) | builds | vs master | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.201 | 0.198–0.203 | 0.119 | 0.109–0.142 | -40.7% | faster |
+| `CD` | 3083.916 | 3070.121–3096.269 | 2996.964 | 2978.014–3008.635 | -2.8% | faster |
+| `DeltaBlue` | 222.114 | 220.768–222.826 | 177.040 | 175.656–178.431 | -20.3% | faster |
+| `DeltaBlueTon80` | 1.915 | 1.898–1.927 | 1.913 | 1.880–1.931 | -0.1% | no |
+| `Havlak` | 1097.624 | 1093.734–1101.330 | 808.850 | 806.754–812.603 | -26.3% | faster |
+| `Json` | 3.331 | 3.321–3.346 | 2.681 | 2.649–2.712 | -19.5% | faster |
+| `List` | 0.193 | 0.191–0.196 | 0.061 | 0.060–0.061 | -68.6% | faster |
+| `Mandelbrot` | 1807.938 | 1803.551–1815.071 | 1794.207 | 1780.993–1805.150 | -0.8% | no |
+| `NBody` | 1075.444 | 1062.487–1087.576 | 940.274 | 935.784–945.690 | -12.6% | faster |
+| `Permute` | 0.367 | 0.364–0.373 | 0.237 | 0.231–0.244 | -35.4% | faster |
+| `Queens` | 0.318 | 0.314–0.322 | 0.076 | 0.076–0.077 | -75.9% | faster |
+| `Richards` | 16.828 | 16.721–16.991 | 11.544 | 11.479–11.654 | -31.4% | faster |
+| `RichardsTon80` | 1.792 | 1.778–1.804 | 1.342 | 1.321–1.359 | -25.1% | faster |
+| `Sieve` | 0.362 | 0.347–0.374 | 0.403 | 0.389–0.430 | +11.4% | slower |
+| `Storage` | 0.679 | 0.659–0.693 | 0.626 | 0.619–0.634 | -7.8% | faster |
+| `Towers` | 0.466 | 0.452–0.480 | 0.270 | 0.249–0.313 | -42.2% | faster |
+| `bench_block` | 0.854 | 0.847–0.860 | 0.281 | 0.278–0.285 | -67.1% | faster |
+| `bench_loop` | 0.511 | 0.499–0.522 | 0.080 | 0.079–0.081 | -84.4% | faster |
+| `bench_megamorphic` | 0.710 | 0.700–0.720 | 0.716 | 0.705–0.723 | +0.8% | no |
+| `bench_send` | 0.502 | 0.497–0.507 | 0.082 | 0.081–0.082 | -83.8% | faster |
+| `bench_signal` | 18.981 | 18.879–19.054 | 19.108 | 19.031–19.206 | +0.7% | no |
+| `bench_while` | 5.924 | 5.794–6.008 | 3.284 | 3.160–3.452 | -44.6% | faster |
+| `bench_recursion` | 0.488 | 0.468–0.518 | 0.500 | 0.495–0.511 | +2.5% | no |
+| `bench_new` | 1.740 | 1.736–1.746 | 1.742 | 1.741–1.744 | +0.1% | no |
+| `bench_new2`, at `83ea182a` | 2.892 | 2.881–2.904 | 2.862 | 2.851–2.874 | -1.1% | faster |
+| `bench_newarg`, at `83ea182a` | 3.012 | 2.997–3.034 | 2.991 | 2.965–3.009 | -0.7% | no |
+| `bench_do` | 0.671 | 0.662–0.683 | 0.497 | 0.489–0.501 | -26.0% | faster |
+
+Every row but the two marked is of `3b30e41e`'s sitting; those two are of
+`83ea182a`, a later sitting against `master` by the same protocol
+(below, "Instantiation: the leaf's frame"), `master`'s columns of that
+sitting too. The geometric mean over the twenty-seven sources in
+`3b30e41e`'s sitting is -34.0%, and each of
+the branch's three builds lies far below each of `master`'s: 2.581,
+2.616 and 2.613 against 3.950, 3.945 and 3.944. An earlier sitting of
+`d4ae78da`, before the fixes below, measured -34.3%. What each
+difference is:
+
+- **Sends inlined.** `bench_send` and `bench_loop` run 84% faster,
+  `bench_block` 67%, List 69%, Bounce, Towers and `bench_while` 41% to
+  45%: their hot sends are type-cases of inlined callees, their
+  accessors loads and stores, and their blocks run in their homes'
+  frames. Richards, RichardsTon80, Havlak, Json and DeltaBlue are 19% to
+  31% faster, Storage 7.8%, NBody 12.6% -- its float arithmetic leaf calls as before,
+  45 sites inlined around them -- and CD 2.8%, whose churn of baseline
+  code ("What reclamation moved") inlining does not reach.
+- **Queens: blocks up to twice Strongtalk's weight.** Its blocks weigh
+  between 70 and 140, and `BLOCK_LIMIT` is 140 (below): 76% faster.
+- **Regressions the sittings found, fixed.**
+  - *Inlined scopes that create a block.* A first sitting of `1621baf0`
+    measured Towers +48%, RichardsTon80 +40% and Queens +14%, their
+    copies leaving at 129 to 320 exits a run and five copies abandoned:
+    an inlined scope that creates a block -- one that escapes, such as
+    Towers' `ifTrue:ifFalse:` arguments, whose quick method's `value`
+    stays a send -- left optimized code at its `MakeClosure` every time
+    it ran it. The plan now sends every callee whose scope would create
+    a block it does not eliminate on a way that ran: not a fast path's
+    fallback, nor, where the copy speculates, a way whose send of the
+    block never ran (`plan::Planner::creates_a_block`), whose
+    `MakeClosure` the graph lowers as a trap on that send's site: the
+    first run of the way traps and marks the site trapped, the trap that
+    follows at the site makes the copy not entrant, as every second trap
+    at a site does, and the next compile sends the callee
+    (`build::guard_of`; the golden
+    `a_block_made_on_a_way_not_run_traps`).
+    Towers 320 exits a run to 0, Queens 320 to 0, RichardsTon80 129 to
+    4, none abandoned. The rule costs blocks the plan eliminated before:
+    the inlining corpus eliminates 6 where it eliminated 18, a callee
+    that receives an eliminated block and creates another being sent.
+  - *The leaves' lookups.* `bench_new2` and `bench_newarg` measured about
+    10% slower, bisected to `0f840a06` and sampled: every leaf called
+    from optimized code asked whether its site lay inside an inlined
+    scope, finding the body again and hashing its offset with SipHash.
+    Only a body whose copy keeps metadata asks now, in that body's table,
+    which hashes by identity (`Installed::described`). A later sitting
+    still measured `bench_newarg` 7% to 9% slower in builds b and c:
+    two hot leaf calls of its loop met in one entry of the body lookup
+    and searched the bodies 100,000 times a run. Each offset has a pair
+    of entries now, the body last found moving to the second
+    (`BodyLookup::entries_of`), and a leaf a stub calls finds no body
+    without a search.
+  - *The current class at every inlined entry.* Every inlined scope
+    computed its current class at its entry and kept it bound, where
+    only a frame node's template or an exit reads it. It is computed
+    before each frame node of the scope now, and the exit's walk computes
+    and writes it for every inlined scope it materializes
+    (`graph::ClassRecipe`, `materialize::scope_class`): List and
+    `bench_send` about 7% faster and Queens about 5%, in an interim
+    measurement against `d4ae78da`.
+- **Instantiation: the leaf's frame.** `bench_new2` and `bench_newarg`
+  measured 2.7% and 3.0% slower than `master` here at `3b30e41e`, at
+  every layout and padding, each run of both trees compiling, exiting
+  and trapping alike. The processor's retired instructions, sampled
+  (xperf, `InstructionRetired` every 65,536, the same count to 0.1% from
+  run to run), said where: 1.9% and 2.1% more than `master`'s, and 0.9%
+  for `bench_new`, in proportion to the leaf calls a run makes -- four an
+  instantiation in the first two, three initializer leaves and an
+  own-slot one, two in `bench_new`, the same number in both trees.
+  Every step, initializer and own-slot leaf writes its frame's view
+  through `Heap::write_machine_frame`, which inlining had widened with
+  the header of an inlined scope -- a generation minted, a guard recorded
+  from the receiver -- inlined into every leaf's way. That way is the one
+  it was before inlining again, and an inlined scope's header is written
+  out of line (`Heap::write_inlined_scope_frame`); that alone took the
+  excess to 0.8% and 0.9%, `bench_new` level. A leaf handed the code's
+  own address finds its body without probing the call returns, which
+  never hold such an address (`JitState::body_at_code_address`): 2.4%,
+  2.1% and 2.5% fewer instructions than `master`'s. The two rows above
+  are of that commit, `83ea182a`, against `master` by the same
+  protocol, three builds a side and three rounds in a second sitting,
+  where `bench_new` measured -2.0%; a first sitting put the three at
+  -0.4%, -1.0% and -2.5%. Against `6a0ebc61`, the commit before it,
+  measured beside both, they ran 1.7% to 3.4% faster, separated in both
+  sittings, and the twenty-seven sources' geometric mean moved -0.03% and
+  -0.65%.
+- **Sieve: noise.** +11.4% with its builds apart at eight iterations, but
+  its medians of eight runs scatter by a third on every binary,
+  `master`'s too; at the four paddings above two builds a side were
+  slower and two faster, and at 200 iterations it runs 17% faster on all
+  three builds (0.114 against 0.138 ms).
+- **Unchanged.** Mandelbrot moves -0.8%, its float arithmetic leaf calls
+  as before and nothing inlined; `bench_megamorphic`, whose site gets no
+  type-case, `bench_signal`, which optimizes nothing, `bench_recursion`
+  and `bench_new` stay level.
+
+**The shared stubs' mispredictions behind optimized callers**, measured
+at `d4ae78da`. Sampled by the processor's mispredicted branches (xperf,
+`BranchMispredictions` every 4,096), DeltaBlueTon80 run 4,000 times,
+each sample placed by the code zone's layout the run printed: `master`
+took 356 samples in the polymorphic stub and 389 in the megamorphic and
+row stubs, about 760 mispredictions a run in the shared stubs, and 1,910
+in the bodies; the branch 28, 118 and 1,073, about 150 a run in the
+stubs. A type-case tests the receiver inline, so the sends optimized code
+still makes are the polymorphic and megamorphic ones it inlines no arm
+of, and the stubs' mispredictions fall by four fifths. At 4,000
+iterations the copies run DeltaBlueTon80 in 1.02 ms against `master`'s
+1.67; at the eight iterations of the table, where compiles weigh, level.
+
+**The limits of decision 6**, each halved and doubled. An interim
+measurement first: one build of layout a whose limits an environment
+variable set for the measurement alone, so that every variant ran the
+same machine code of the run loop; three rounds, the variants' order
+rotated, the iterations of the table, each variant's geometric mean
+over the twenty-seven sources against Strongtalk's limits (40, 70, 35, 1
+and the 2,000 of the plan's ruling):
+
+| Limit | halved | doubled |
+|---|---|---|
+| `METHOD_LIMIT` 40 | 20: +0.82% | 80: -0.58% |
+| `BLOCK_LIMIT` 70 | 35: +0.92% | 140: -3.43% |
+| `BLOCK_ARGUMENT_BONUS` 35 | 17: +0.93% | 70: +0.08% |
+| `COMPILE_LIMIT` 2,000 | 1,000: +0.22% | 4,000: +0.72%; 12,000: -0.25% |
+| `RECURSION_LIMIT` 1 | 0: +1.44% | 2: +0.03% |
+
+The base measured against itself in a second sitting moved 1.2%, the
+noise below which no difference of this one-layout measurement decides.
+`METHOD_LIMIT` 80 inlines more of Json (-10%) and of DeltaBlue's,
+DeltaBlueTon80's and RichardsTon80's callers, which run 4% to 8%
+slower, and with `BLOCK_LIMIT` 140 moved the mean -0.2%; `COMPILE_LIMIT`
+12,000 moved it +0.8% with `BLOCK_LIMIT` 140, DeltaBlue 5% slower: both
+stay, and with them a debug build's compile time.
+
+`BLOCK_LIMIT` 140 then by the final protocol: three pinned builds of
+each value, the layouts above, nine binaries with `master`'s in each
+round, three rounds a sitting, two sittings. The geometric mean moved
+-3.3% in the first sitting and -2.7% in the second, where `master`'s and
+70's builds moved 0.25% and 0.5% between the sittings: Queens 61% faster
+in both. No program is slower in both sittings with its builds apart.
+Towers measured +11.9% (separated) and +9.0% at the eight iterations,
+Sieve -6.0% and +7.2% (separated in the second), `bench_loop` +2.0%
+(separated in the first) and 0.0%; Towers' and Sieve's plans are the
+same at both limits (`--jit-statistics`), their medians of eight runs
+scatter by a third on every binary, and at 200 iterations Towers runs
+level at both limits on all three builds (190 to 196 µs). So
+`BLOCK_LIMIT` is 140.
+
+**The counters**, `--jit-statistics` on build a with the iterations
+above, which turns on the counts machine code otherwise leaves out and
+so changes the code: these runs time nothing.
+
+| Program | optimized (customized) | in (ms) | sites inlined | scopes inlined | type-case arms | blocks eliminated | made | inlined frames | optimized exits | traps | abandoned | budget exits (above) | poll re-entries |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `Bounce` | 3 (2) | 0.413 | 23 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (0) | 0 |
+| `CD` | 32 (19) | 6.119 | 269 | 22 | 219 | 3 | 0 | 0 | 1111 | 4 | 5 | 32 (2) | 0 |
+| `DeltaBlue` | 97 (69) | 29.038 | 1343 | 329 | 716 | 39 | 14 | 79 | 94 | 44 | 0 | 97 (28) | 3 |
+| `DeltaBlueTon80` | 14 (13) | 6.533 | 318 | 79 | 164 | 9 | 3 | 6 | 7 | 2 | 0 | 14 (6) | 0 |
+| `Havlak` | 60 (37) | 11.700 | 496 | 99 | 199 | 11 | 174 | 478 | 632 | 6 | 0 | 60 (11) | 90 |
+| `Json` | 16 (15) | 3.849 | 167 | 52 | 11 | 1 | 0 | 40 | 22 | 4 | 0 | 16 (5) | 0 |
+| `List` | 1 (1) | 0.284 | 8 | 1 | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 1 (1) | 0 |
+| `Mandelbrot` | 4 (1) | 0.894 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 2 | 0 | 4 (0) | 0 |
+| `NBody` | 7 (3) | 1.091 | 45 | 3 | 41 | 0 | 0 | 0 | 2 | 0 | 0 | 7 (1) | 0 |
+| `Permute` | 3 (2) | 0.602 | 21 | 3 | 11 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (1) | 0 |
+| `Queens` | 1 (1) | 1.365 | 55 | 11 | 30 | 2 | 0 | 0 | 0 | 0 | 0 | 1 (1) | 0 |
+| `Richards` | 18 (10) | 2.540 | 168 | 38 | 97 | 0 | 0 | 1 | 2 | 2 | 0 | 18 (2) | 0 |
+| `RichardsTon80` | 10 (8) | 1.853 | 143 | 12 | 86 | 0 | 0 | 0 | 4 | 2 | 0 | 10 (0) | 0 |
+| `Sieve` | 4 (2) | 0.517 | 7 | 3 | 6 | 1 | 0 | 0 | 0 | 0 | 0 | 4 (1) | 0 |
+| `Storage` | 3 (2) | 0.432 | 8 | 2 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (0) | 0 |
+| `Towers` | 4 (2) | 0.480 | 30 | 4 | 19 | 0 | 0 | 0 | 0 | 0 | 0 | 4 (1) | 0 |
+| `bench_block` | 3 (3) | 0.445 | 16 | 5 | 0 | 3 | 0 | 0 | 8 | 2 | 0 | 3 (0) | 2 |
+| `bench_loop` | 2 (2) | 0.281 | 13 | 0 | 0 | 0 | 0 | 0 | 7 | 2 | 0 | 2 (0) | 0 |
+| `bench_megamorphic` | 1 (1) | 0.293 | 6 | 0 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 1 (0) | 0 |
+| `bench_send` | 3 (3) | 0.319 | 13 | 2 | 0 | 0 | 0 | 0 | 6 | 2 | 0 | 3 (0) | 0 |
+| `bench_signal` | 0 (0) | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 (0) | 0 |
+| `bench_while` | 5 (2) | 0.208 | 7 | 0 | 7 | 0 | 0 | 0 | 0 | 0 | 0 | 5 (0) | 0 |
+| `bench_recursion` | 1 (1) | 0.137 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 (0) | 0 |
+| `bench_new` | 4 (2) | 0.254 | 5 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 4 (0) | 0 |
+| `bench_new2` | 5 (2) | 0.273 | 5 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 5 (0) | 0 |
+| `bench_newarg` | 5 (2) | 0.271 | 5 | 1 | 1 | 0 | 0 | 0 | 8 | 0 | 0 | 5 (0) | 0 |
+| `bench_do` | 3 (2) | 0.381 | 5 | 1 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 3 (1) | 0 |
+
+"Sites inlined" counts each send a copy lays out as its arms -- a
+type-case, an unguarded inlined scope, or an accessor, quick method or
+indexed access always inlined, guarded or not; "scopes inlined" each
+inlined body a copy lays out code for, an arm's or a block's;
+"type-case arms" every arm of a type-case, an always-inlined callee's
+among them; "made" the blocks an exit made of eliminated ones. No poll
+went without an entry, and no frame that left at a poll was kept from
+going back in. Compile time grew with inlining -- DeltaBlue's 97 copies
+take 29 ms, Havlak's 60 take 12 -- and is the mutator's until the
+compiler thread of stage 8.
+
+**What the measurement settled of the stage's open costs.**
+
+- *The current class at every inlined entry*: computed only before a
+  frame node now (above).
+- *The barrier's leaf around an inlined store*: a build whose allocation
+  took a field store for no leaf call, so that values stayed in the
+  registers the barrier's leaf clobbers, ran an inlined setter's loop
+  (`bench_setter`, a young receiver, 200,000 stores a run), DeltaBlue,
+  Richards, RichardsTon80 and DeltaBlueTon80 within 1% of the build as it
+  is, in either direction, three rounds on one binary: the moves cost
+  nothing measurable.
+- *An own-slot store in an inlined scope taking the cold leaf once per
+  entry*: counted by a build of its own, the own-slot leaf is called
+  from an inlined scope's code not once in the twenty-seven sources.
+- *A block created inside an inlined scope* left the copy at every
+  `MakeClosure`; the plan now sends such a scope (above).
+- *`ValueOfParameter` and `CullParameter`* stay sends, so a block a
+  quick method evaluates escapes and its callee is sent: Towers'
+  `ifTrue:ifFalse:` with a block that declares a temporary is one.
+- *A block handed to an Array's `do:`* escaped through `do:`'s way for
+  a receiver whose size the mirror cannot read, which hands it to
+  `super do:`; that way is a trap where the copy speculates, and the
+  block is eliminated now (below).
+- *A debug build's verification of every allocation* takes 25% to 33%
+  of its optimizing compiles: Richards' 4.8 ms against 3.6 without it,
+  DeltaBlueTon80's 8.0 against 5.4.
+
+**What eliminating an Array's `do:` block moved**, measured 2026-11-08,
+`453c1754` against `18944be5`, the commit before the change, by the
+protocol above: three pinned builds a side, the same three layouts and
+paddings, `vm::run` 44.0, 47.4 and 51.0 KB on both sides with no
+`run_stretch` or closure of its own, three rounds a sitting with the
+order rotated, the mask `0xC03C03`, two sittings. Between the two lie
+two changes. The escape analysis looks only at what the graph builds
+(`build::compiled_ways`): a way the feedback says never ran ends in a
+trap, a use at the trap lets nothing escape -- the exit materializes
+the block, as HotSpot's C2 reallocates an object that escapes only
+through an uncommon trap -- and nothing past it is built. Three gaps
+close with it: `Array>>do:`'s way to `super do:`; a conditional's
+closure for a receiver that is no Boolean, which reaches its home's
+registers by reference and kept `Set>>do:`, `Map>>do:` and
+`to:by:do:`, whose `action value:` lies in a conditional, and every
+home with such a conditional around a block's copied value from
+eliminating it, though no such receiver ever came; and a callee that
+passes a block on only on a way that never ran. And the recompilee
+walk goes up from a block to its home only when the home is called
+often enough for its copy to be entered, since until on-stack
+replacement into optimized code the home's running activation never
+enters its copy (`jit::recompilable`): at least `LEAST_HOME_CALLS`
+calls since its budget was armed, whatever budget is armed, which only
+a body without a backward jump can show -- its budget spent by its
+entries alone, each its instruction count, where a loop's back edges
+spend the same row and a loop run once would read as calls. Each cell is a
+side's medians per build pooled by geometric mean, in milliseconds, of
+the second sitting, the first sitting's difference beside it; the
+programs whose plans the two changes moved, as `--jit-statistics`
+counts them:
+
+| Program | `18944be5` (ms) | builds | `453c1754` (ms) | builds | second sitting | first sitting |
+|---|---|---|---|---|---|---|
+| `DeltaBlue` | 174.633 | 174.010–175.233 | 166.283 | 165.514–167.142 | -4.8%, faster | -5.8%, faster |
+| `Havlak` | 812.623 | 810.457–816.885 | 791.426 | 787.617–796.245 | -2.6%, faster | -2.8%, faster |
+| `NBody` | 945.667 | 937.974–951.867 | 947.128 | 941.472–952.786 | +0.2% | +7.4% |
+| `Permute` | 0.238 | 0.228–0.244 | 0.071 | 0.070–0.072 | -70.2%, faster | -69.2%, faster |
+| `Richards` | 11.697 | 11.673–11.738 | 11.687 | 11.583–11.854 | -0.1% | -0.8%, faster |
+| `Sieve` | 0.369 | 0.363–0.376 | 0.349 | 0.335–0.364 | -5.5% | -11.5%, faster |
+| `Storage` | 0.643 | 0.630–0.660 | 0.513 | 0.507–0.523 | -20.2%, faster | -17.7%, faster |
+| `bench_do` | 0.496 | 0.487–0.508 | 0.372 | 0.364–0.380 | -25.1%, faster | -25.6%, faster |
+
+The geometric mean over the twenty-seven sources is -6.09% in the
+second sitting and -6.33% in the first; the builds' means are 2.444,
+2.392 and 2.422 against 2.578, 2.577 and 2.574. The nineteen others'
+plans are the same on both sides, Bounce among them, -0.2% and +0.3%;
+of them only `bench_recursion`, +8.7%, and `bench_newarg`, -0.8%, are
+separated, each in one sitting, the first having measured +2.4% and
++0.4%. NBody's +7.4% is one round's 1,719 ms on build b, beside 938
+and 939: such a run comes about once in thirty-five since the block
+is eliminated, and never in more than seventy of `18944be5`'s; 68 runs
+with `--jit-statistics`, none of them slow, gave identical statistics
+(`OPEN-WORK.md`).
+
+- *Permute*, 70% faster: `to:by:do:`'s block, which the closure of
+  its `step < 0` conditional for a non-Boolean reached by reference,
+  is eliminated, and the copy inlines the loop with it.
+- *Storage*, 18% to 20% faster: the closure of `depth = 1 ifTrue:` for a
+  non-Boolean reaches `random`, a value `to:do:`'s block copies, by
+  reference -- one the tree has no snapshot of may reach any -- and no
+  longer counts: the block is eliminated.
+- *`bench_do`*, 25% faster: its block's home loops itself, so the walk
+  no longer requests the home, whose running activation would never
+  enter the copy, but the block, whose copy runs at the loop's next
+  turn.
+- *Havlak* eliminates 16 blocks where it eliminated 11, its `Set`s'
+  and `Map`s' `do:` blocks among them, and makes 850 at exits where it
+  made 174 -- each exit inside such a loop now materializes the block;
+  DeltaBlue lays out 295 scopes in 92 copies where it laid out 329 in
+  97: about 3% and 5% faster.
+- *Bounce*, with the escape rule alone (`56efe31f`), measured 27% and
+  34% slower at eight iterations, separated in both sittings: the
+  block `bench`'s second loop hands `balls do:` was eliminated, so the
+  walk went from it up to `bench` and requested `bench`, which runs
+  once a run, each run a fresh application whose first `Random` send
+  builds its nested class in the interpreter; `bench`'s copy exited at
+  that send, its first, at every entry -- not abandoned -- and the block
+  got a copy of its own only a budget later. The walk now stops below a
+  home called once or twice. `LEAST_HOME_CALLS` is measured: HotSpot's
+  invocation minimum, 100, refused DeltaBlueTon80's homes called 3 to
+  53 times -- none with a loop of its own -- and ran it 5% and DeltaBlue
+  3% slower than no minimum; 4 is as fast as none on both and refuses
+  `bench`. A first form of the rule counted what a home had spent
+  against the plain budget, its back edges included, and refused a
+  home only while it stood inside a loop: a home called once whose loop
+  had run before it handed its block on read as called often.
+
+**Not covered**: AArch64, which runs under QEMU only; on-stack
+replacement into optimized code, stage 6's, so that a long activation
+-- Mandelbrot's, and `main:args:` of a program run once -- runs a copy
+only from its second entry; and the compiler thread, stage 8's.
 
 ## The trampoline
 
@@ -10774,8 +11151,8 @@ is 1.34% faster than before the leftover analysis with no program slower
 
 Would change: hot code runs as optimized machine code. The baseline tier
 is built (road step 8) and the optimizing tier designed ("Planned: the
-optimizing JIT" below), its first two stages built ("The optimizing
-tier's foundation", "Speculation"); the tiering model is sketched in
+optimizing JIT" below), its first three stages built ("The optimizing
+tier's foundation", "Speculation", "Inlining"); the tiering model is sketched in
 [liveness-and-reflection.md](liveness-and-reflection.md), and the constraint
 that binds every tier is that no native code may ever enter an image. The
 tiers are the last three steps of the road to a high-performance VM (decided
@@ -10857,8 +11234,8 @@ Each step gets its own design when it comes up.
   `prior-art/newspeak-benchmarks`, a separate suite -- DeltaBlue, Richards,
   Splay, parser combinators and micro-benchmarks -- with Java versions of five of its programs.
   Designed on 2026-11-04 and 2026-11-05: "Planned: the optimizing JIT"
-  below, in ten stages, the first of them built ("The optimizing tier's
-  foundation").
+  below, in ten stages, the first three of them built ("The optimizing
+  tier's foundation", "Speculation", "Inlining").
 
 **Open: whether the interpreter tier is generated by the JIT's backend.**
 `vm::run` is a Rust `match` loop, compiled by LLVM, which decides where the
@@ -10888,11 +11265,18 @@ HotSpot's.
 
 ## Planned: the deoptimization contract
 
-Would change: nothing yet; this is the contract road steps 8 and 9 build
-to (road step 7c, decided with the user on 2026-10-27). It says where a
-compiled frame lives, how control passes between interpreted and
-compiled code, when a compiled frame becomes interpreted ones and back,
-and what each observer of an activation may assume. The interpreter
+The contract road steps 8 and 9 build to (road step 7c, decided with
+the user on 2026-10-27; its frames of inlined scopes decided again with
+the user on 2026-11-07). It says where a compiled frame lives, how
+control passes between interpreted and compiled code, when a compiled
+frame becomes interpreted ones and back, and what each observer of an
+activation may assume. The baseline JIT and the optimizing tier's first
+three stages are built to it ("The baseline JIT's foundation", "The
+optimizing tier's foundation", "Speculation", "Inlining"); what is not
+built yet is said where it stands: the raw area (the optimizing tier's
+stage 5), a frame object for an inlined activation and the non-local
+return into an inlined home (stage 4), and reading an inlined
+activation for the debugger. The interpreter
 stays the source of truth ([liveness-and-reflection.md](liveness-and-reflection.md),
 "The unifying principle"): every compiled frame can be turned into the
 interpreted activations it stands for, and nothing a program, the
@@ -10965,6 +11349,17 @@ section are to the generated C under
   ([compiler.md](compiler.md), "Readers of compiled code take the
   mixin"): a literal object is loaded through the heap's tables, so the
   collector never patches code, where Cog's has to (`cogitX64SysV.c:9453-9792`).
+- **An inlined scope lies at the interpreter's position** (decided with
+  the user on 2026-11-07): where the interpreter would push its
+  activation, on its sender's argument slots, its thirteen header
+  places between its arguments and its other registers, so that its
+  register `r` is the physical frame's register `offset + r`, `offset`
+  its sender's plus the send's `argument_base`. At every interrupt
+  point every scope's words are the interpreter's; its receiver and
+  current class are written back like registers, and the exit writes
+  every other header word of each inlined scope, so that nothing is
+  rebuilt, copied or deoptimized lazily ("Inlining", "Inlined scopes in
+  the frame").
 - **Optimized code may declare a raw area** in its frame, a range of
   words fixed per code -- not per program counter -- that the walk of the
   stack, the leftover pre-pass and the debug poison all pass over. An
@@ -10972,7 +11367,8 @@ section are to the generated C under
   with only tagged spills, a float outside the `SmallFloat64` range kept
   across a call in a hot loop would allocate a box on every iteration.
   HotSpot affords raw spills through its oop maps; one range per code is
-  the whole map ns-next needs. Baseline code declares none.
+  the whole map ns-next needs. Baseline code declares none, and
+  optimized code none until its stage 5 unboxes a number.
 
 ### The exit materializes
 
@@ -10999,12 +11395,17 @@ itself, whose reification wrote it then ("Returns" below). Everything it writes 
 address names a call site, the call site its code and program counter,
 and a callee's frame lies at a fixed offset of its caller's, the call
 site's, so the caller word follows. Each compiled frame's registers hold
-by then every value an observer can need, spilled at its send. The exit
+by then every value an observer can need, spilled at its send. In an
+optimized frame the walk writes, beside, the whole header of every
+inlined scope the interrupt point's metadata names, and makes the
+blocks the compile eliminated that the point finds live ("Inlining",
+"The exit that writes the scopes"). The exit
 then resets the native stack to where the run loop entered machine code.
 
 From the exit on, **every frame on the activation stack reads as an
-interpreted frame**: a baseline frame exactly, word for word, an
-optimized frame through its metadata ("Optimized frames" below). The
+interpreted frame**, word for word: a baseline frame as it lies, an
+optimized frame as the activations it stands for, one per scope, each
+at the interpreter's position ("Optimized frames" below). The
 collector walks it as today, `Heap::trace_stack` skipping only a raw
 area; a suspension, the unwinder and the activation leaves read it as
 today. So the stored program counter is written by no instruction of
@@ -11062,9 +11463,15 @@ sees.
   -0.9%, within the builds' spread, and `bench_megamorphic.ns` +3.7%
   beyond it, so it was reverted (measured on 2026-11-03, "What on-stack
   replacement moved"); `rbp` stays free with `r13`. An inlined scope is not counted at run time: at a
-  call site d scopes deep the compiler adds d to the push's comparison
-  and to its increment, a constant, so the count includes every
-  activation a deoptimization could rebuild there.
+  call site d scopes deep the compiled call adds d to the depth count
+  for the call's length, a constant (`BodyAssembler::call_send`), so
+  that the callee's push compares and counts every activation an exit
+  above the call writes. The prologue of a copy whose deepest inlined
+  chain is D compares the depth against the limit less D, and the
+  stack's end against the frame's deepest extent; either refusal leaves
+  for the baseline code (`stubs::REFUSED_WITHIN_THE_INLINED_DEPTH`),
+  counted against no budget, which pushes real frames and overflows
+  exactly where the interpreter does.
 
 ### Between the tiers
 
@@ -11108,29 +11515,44 @@ sees.
   the run loop's alone, so the poll exits, and the run loop enters the
   code again as it does a frame returned to. Decided with the user on
   2026-11-02.
-- **An optimized frame is deoptimized lazily**, when it would become the
-  top of the stack: one below the top whose code was invalidated is only
-  marked, and converted when control returns into it, as HotSpot defers
-  it; the top one -- the frame whose leaf invalidated its code, or whose
-  guard failed -- is converted at once. The conversion writes the k
-  activations the frame stands for as suspended frames ("Suspending and
-  resuming" above) and resumes the innermost, the others coming back as
-  returns reach them. That is Strongtalk's eager packing into an array
-  and lazy unpacking on return (`DeltaProcess::deoptimize_stretch`,
-  `runtime/process.cpp:886-915`; `unpack_frame_array`, `:784-874`),
-  with the suspended frame as the packed form, a form the suspend stress
-  mode already runs every golden through. A frame below the top that
-  must be converted at once -- only when the debugger, a stack trace or
-  a mirror asks for one of its inlined activations as an object -- is
-  converted by suspending everything from it up and resuming the top,
-  the stress mode's own path, since the callee above lies on its slots.
-- **A conversion resumes in one of two ways**: the value of the send at
-  the stored program counter is delivered to that send's destination, as
-  `vm::resume_caller` delivers a callee's value today -- every inlined
-  caller of an optimized frame, and a frame returned into, resumes so --
-  or the instruction at the stored program counter runs again, as
-  `vm::force_and_reexecute` runs one today: after a failed guard and at
-  a non-Boolean conditional. Strongtalk has the same two, a deoptimized
+- **An optimized frame becomes interpreted ones in place** (decided with
+  the user on 2026-11-07): since every inlined scope lies at the
+  interpreter's position and at every interrupt point every scope's
+  words are the interpreter's, the exit's walk writes the inlined
+  scopes' headers and makes the eliminated blocks the point finds live,
+  and from then on every scope is an activation going on in its own
+  baseline code, the innermost at the point's program counter and each
+  other at the send its callee is inlined at. Nothing is copied, rebuilt
+  or converted lazily, and a frame below the top whose copy an
+  invalidation freed needs nothing more: it was written as activations
+  at the exit the invalidation ran after, and returns into its baseline
+  code ("Inlining", "The exit that writes the scopes"). That replaces
+  the conversion into suspended frames, deferred below the top as
+  HotSpot defers it, which Strongtalk's eager packing into an array and
+  lazy unpacking on return was the model of
+  (`DeltaProcess::deoptimize_stretch`, `runtime/process.cpp:886-915`;
+  `unpack_frame_array`, `:784-874`): it needs no form of the frame but
+  the interpreter's.
+- **A frame that left its optimized code at a poll goes back into it**
+  once the safepoint is served, at that poll, unless the poll has no
+  entry, the exit was a stress mode's forced one, or the safepoint made
+  it impossible -- the stack rebuilt or its scopes no longer the
+  stack's innermost chain, a frame among them reified, its copy freed
+  or installed again, its feedback base slid, or no room left for its
+  scopes on the native stack, within the depth limit or at the stack's
+  end (`jit::resumed_at_poll`) -- when its eliminated blocks are made
+  and every scope goes on in baseline code, as after any exit
+  (decided with the user on 2026-11-07; "Inlining", "Back into
+  optimized code at a poll"). It is the one way into optimized code
+  mid-body: every other frame that goes on mid-body goes on in its
+  baseline code.
+- **A scope resumes in one of two ways** (`Resumes`): the value of the
+  send at the stored program counter is delivered to that send's
+  destination, as `vm::resume_caller` delivers a callee's value -- every
+  scope an inlined callee lies above, and a frame returned into, resumes
+  so -- or the instruction at the stored program counter runs again, as
+  `vm::force_and_reexecute` runs one: after a failed guard, a trap, and
+  at a non-Boolean conditional. Strongtalk has the same two, a deoptimized
   return from a send and a redone bytecode after an uncommon trap
   (`runtime/process.cpp:716-718`, `:759-777`). Nothing resumes inside
   an instruction, and since the VM keeps every value in a register, no
@@ -11144,25 +11566,36 @@ sees.
   Strongtalk records its scope descriptors at the same kind of points
   (`CodeGenerator::updateDebuggingInfo`, `compiler/codeGenerator.cpp:782-787`),
   Cog its pc map at every call's return address. At each, a chain of
-  scope descriptions, innermost first, each giving its code id, its
-  program counter, which of the two ways it resumes, its receiver,
-  current class and operand, and for every register of its body where
-  its value is: a frame word, a constant, an object to materialize -- an
-  eliminated closure, indirection vector or box -- or dead, which
-  becomes nil, the same deadness as the leftover analysis's
-  ([compiler.md](compiler.md), "What a callee leaves"). Strongtalk's
-  `NameDesc` kinds are the model (`code/nameDesc.hpp`); a value it
-  cannot recover becomes nil too (`runtime/vframe.cpp:525-529`).
-  Baseline code needs none of this: its registers are the frame's words.
-- **Invalidation follows the dependency keys** of
+  scope descriptions, innermost first (`optimizing::metadata`'s
+  `InterruptPoint` and `ScopeAtPoint`), each giving its code id, its
+  program counter, which of the two ways it resumes, its offset in the
+  physical frame, and for every register of its body the leftover
+  analysis does not taint where its value is: its frame word, or an
+  eliminated block to make (`allocate::Location`); a register the
+  analysis taints is dead and becomes nil, the same deadness as the
+  leftover analysis's ([compiler.md](compiler.md), "What a callee
+  leaves"). The receiver and current class of an inlined scope are
+  frame words too, written back like registers, and every other header
+  word the exit writes from the scope's code and the call it is inlined
+  at. Strongtalk's `NameDesc` kinds are the model (`code/nameDesc.hpp`);
+  a value it cannot recover becomes nil too (`runtime/vframe.cpp:525-529`).
+  Not built: a constant, an indirection vector or a box to materialize,
+  which only a value held outside its frame word across an interrupt
+  point needs -- an unboxed number (stage 5) or an object escape
+  analysis left virtual (stage 9). Baseline code needs none of this: its
+  registers are the frame's words.
+- **Invalidation follows what a copy relied on**, the dependency keys of
   [liveness-and-reflection.md](liveness-and-reflection.md), "Caches and
-  their dependency keys": optimized code records the applications and
-  mixin ids its speculation rests on, and an install or a reclaim that
-  changes one marks every code that depends on it and requests a
-  safepoint, so no marked code runs past the next one; Strongtalk walks
-  every stack and deoptimizes the frames of marked code in the same way
-  (`runtime/process.cpp:917-926`). The bulk forward deoptimizes all
-  optimized code, as Strongtalk's `become:` does (`prims/oop_prims.cpp:68`).
+  their dependency keys": a copy's key and its recorded dependencies --
+  every application an arm or a customized read relied on, every
+  inlined body's code id and feedback base (`CopyDependencies`) -- and
+  an install, a reclaim or a slide that changes one frees every copy
+  that relied on it at once, since each runs after an exit or at a
+  safepoint, where every frame is activations already ("Speculation",
+  "Invalidation"; "Inlining", "Dependencies"); Strongtalk walks every
+  stack and deoptimizes the frames of marked code instead
+  (`runtime/process.cpp:917-926`). The bulk forward frees all optimized
+  code, as Strongtalk's `become:` deoptimizes all (`prims/oop_prims.cpp:68`).
   Baseline code speculates only in its inline caches: invalidating them
   resets its call sites and touches no frame, as Cog's `unlinkAllSends`
   touches none, and code of a superseded mixin version keeps running the
@@ -11188,12 +11621,15 @@ sees.
   marks (`signal`, the handler's, the unwind marker's) stay frames of
   their own in optimized code, so every activation the exception
   machinery stops at is a whole frame.
-- **Any other request for an inlined activation as an object deoptimizes
-  its frame** -- the debugger, a stack trace, an activation mirror --
-  and every write to an activation, a restart and a forced return
-  deoptimizes it first. Reading one through its metadata, as
-  Strongtalk's `vframe`s read (`prims/vframe_prims.cpp:67-214`), stays
-  open to the debugger.
+- **Any other request for an inlined activation as an object runs after
+  an exit**, which writes it as an activation, and its frame goes on in
+  baseline code -- the debugger, a stack trace, an activation mirror;
+  every write to an activation, a restart and a forced return likewise.
+  A leaf that reads its own frame inside an inlined scope reads the
+  scope's activation as the interpreter's (`jit/materialize.rs`,
+  `inlined_leaf_frame`). Reading one through its metadata without leaving the
+  code, as Strongtalk's `vframe`s read (`prims/vframe_prims.cpp:67-214`),
+  stays open to the debugger.
 
 ### Non-local return and unwinding
 
@@ -11204,20 +11640,36 @@ sees.
   unwind-protect lies between (`prior-art/primordialsoup/vm/interpreter.cc:908-1001`).
   Otherwise it takes the exit, and the one unwinder carries the unwind
   on as today ("Unwinding" above) -- so a `^` out of a `do:` block costs
-  no exit. An unwind that must look into an optimized frame -- its
-  target, or an unwind marker, inside it -- deoptimizes that frame
-  first, which "What is observed is never inlined" makes the exception.
+  no exit. A `^` of a block compiled with its home is its home's return,
+  a jump in the compiled code ("Inlining", "Blocks with their home").
+  Where the cut would pop or return into an optimized frame inside an
+  inlined scope, it takes the exit instead, whose walk writes the
+  scopes as activations, and the unwinder carries the return on over
+  them (`jit/cut.rs`); an unwind marker never lies inside an optimized
+  frame, since "What is observed is never inlined". The cut of a
+  return into an inlined home from a block not compiled with it is
+  stage 4's ("Planned: the optimizing JIT", "Closures, frames and
+  non-local return in inlined scopes").
 
 ### A closure created in an inlined scope
 
 A closure the optimizer does not inline still reifies the frame it is
 created in, whatever it captured, since `enclosingActivation` and the
 debugger read that link ("The closure keeps its defining activation"
-above); one it inlines creates neither. Created in a scope the optimizer
-did inline, it takes as its home a frame object that stands for the
-inlined activation, which a deoptimization marries to the activation it
-rebuilds ("Planned: the optimizing JIT", "Closures, frames and
-non-local return in inlined scopes", below).
+above). One it compiles with its home and eliminates -- every use an
+inlined `value`-family send or a move -- is created by no code, and an
+exit that finds it live makes it, one closure per block per exit, its
+home's activation reified and married in place, every register that
+holds it given the same object (decided with the user on 2026-11-07;
+"Inlining", "Blocks with their home"). A block that escapes is created
+by its `MakeClosure` in the outermost scope, which transfers the frame
+into the baseline body's reifying twin; in an inlined scope the plan
+sends the callee instead, where the block would be created on a way
+that ran, and a `MakeClosure` left on a way that never ran is a trap
+or an exit. Taking a frame object that stands for the inlined
+activation as its home, so that optimized code creates such a block
+itself, is stage 4's ("Planned: the optimizing JIT", "Closures, frames
+and non-local return in inlined scopes", below).
 
 ## The optimizing tier's foundation
 
@@ -11235,7 +11687,12 @@ tier's foundation moved": -1.45% on the geometric mean of the
 twenty-seven sources against `master`. The second stage builds on it
 ("Speculation" below): what this section says of optimized code holds
 for every copy, and the next section says what a copy adds -- its key,
-its own slots at fixed offsets, its guards and their traps. **Code:**
+its own slots at fixed offsets, its guards and their traps. The third
+stage builds on both ("Inlining" below): what they say of a frame holds
+for every scope of one, and that section says what inlining adds -- the
+plan, the scopes laid out in the physical frame, the blocks compiled
+with their home, the exit that writes the scopes, the recompilee walk
+and the way back in at a poll. **Code:**
 `crates/ns-runtime/src/jit/optimizing/` -- `snapshot.rs` (the snapshot
 and `BodyFacts`), `graph.rs` (the graph), `build.rs` (its builder),
 `verify.rs` (the graph's checks), `liveness.rs` (the block order, the
@@ -11246,6 +11703,44 @@ metadata and the allocation's verifier), `emit.rs` (the code) and
 budget rows), and in `jit/mod.rs` the budget leaf's work, the request,
 the compile and install at the safepoint, the entries and abandonment.
 
+### One tier, an SSA graph, the macro assembler
+
+The shape was decided with the road step's design (2026-11-04 and
+2026-11-05); Strongtalk's, HotSpot's and V8's citations here are as in
+"Planned: the optimizing JIT" below.
+
+- **One optimizing tier above the baseline, Maglev's shape**: a control
+  flow graph in SSA form, built in one pass over a body's register
+  bytecode, abstractly interpreting its registers -- each register maps
+  to the node that last defined it, as Maglev's `InterpreterFrameState`
+  maps Ignition's (`maglev/maglev-graph-builder.cc`;
+  `compiler/maglev/compiler-maglev.md:9-83` of the design documents) -- and
+  reading the feedback as it goes. Each node emits its own code through
+  the macro assembler's idioms, with no instruction selection, and a
+  linear-scan allocator, Maglev's `StraightForwardRegisterAllocator`'s
+  kind, gives every value a register or its frame word, and a place in the raw
+  area once stage 5 unboxes a number. Rejected: a sea of nodes, which V8 left for a control-flow graph
+  in Turboshaft because nearly every operation sits on an effect chain,
+  graphs are hard to debug and compile slowly
+  (`compiler/why-cfg.md:21-52` of the design documents), all truer of Newspeak, where nearly
+  everything is a send; Strongtalk's graph, which is not SSA and keeps
+  every value live across a basic block in a stack slot
+  (`compiler/regAlloc.cpp:55-95`); and two optimizing tiers now, which
+  the graph keeps open -- Turbolev builds TurboFan's input from Maglev's
+  graph (`flags/flag-definitions.h:1789`). Strongtalk's heuristics, not
+  its IR, decide inlining and which body is recompiled.
+- **The backend is the repository's own**: `ns-assembler`'s encoders and
+  the macro assembler the baseline JIT uses, so the write barrier, the
+  call through a cell, `enter_called` and the outer walk exist once, and
+  no file under `jit/` but `macro_assembler.rs` names a register. The
+  allocation is described by the interrupt points' metadata as it is made. Rejected:
+  Cranelift, which knows stack maps but no deoptimization point -- every
+  guard would pass every live value to a cold block -- and whose calling
+  convention and frames cannot express the activation stack, the cells
+  and the return addresses on the native stack; `regalloc2` behind the
+  same interface stays possible if a measurement shows linear scan
+  limits the peak.
+
 ### The budget
 
 Every body has a budget, a signed word per code id in a reservation of
@@ -11254,9 +11749,20 @@ its own (`heap/optimization_budgets.rs`), armed with
 the body's length at its prologue and the loop's length at each back
 jump -- the load of an address, a subtract from memory and one
 branch -- and below zero calls the budget leaf (`Leaf::Budget`), which
-records the body's optimization request, parks the row at `i64::MAX`
-and requests a safepoint; it compiles nothing. Optimized code spends no
-budget. A send whose cache fill follows a miss raises the running
+parks the row at `i64::MAX` and answers whether an optimization is due
+-- none for a key whose copy is installed or a pair refused, whose
+budget it arms afresh; it compiles nothing. When one is due the code
+takes the exit `ExitKind::BudgetSpent`, counted against no exit budget,
+at the instruction the spend comes before -- the body's first at the
+prologue, the loop's head at a back jump -- and the run loop, where
+every frame the exit left is an activation, walks up the stack for the
+frame to request (`jit::find_recompilee`, "Inlining", "The recompilee
+walk" below), records its request and requests a safepoint, the frame going
+on interpreted. Under the optimize stress mode, whose budgets are armed
+at 0, the leaf records the spending frame's own request and the code
+goes on. Optimized code spends no budget. The spend is not fused with
+the back edge's poll, which would delay a safepoint by up to a budget
+of back jumps. A send whose cache fill follows a miss raises the running
 body's armed row to at least `BUDGET_AFTER_CACHE_CHANGE`, a sixth of the
 budget (`interpreter/inline_cache.rs`'s `fill`), so that a compile
 waits for its feedback to settle.
@@ -11388,13 +11894,16 @@ dead…").
 The **metadata** records, for each interrupt point, its program
 counter, whether a frame stopped there resumes by delivering a send's
 value or by running the instruction again (`Resumes`), and where the
-value of each register the leftover analysis does not taint is -- in
-stage 1 always its frame word. A debug build verifies the allocation
+value of each register the leftover analysis does not taint is --
+always its frame word, or a block the compile eliminated ("Inlining").
+A debug build verifies the allocation
 against it (`metadata::verify_allocation`), replaying every move: a use
 whose reload is left out, a value a leaf call clobbers and a way into
-a merge that disagrees are each refused. The install drops the
-metadata: no frame is rebuilt from it until optimized code holds a
-value outside its frame word.
+a merge that disagrees are each refused. The install keeps the
+metadata only for a copy with an inlined scope or an eliminated block
+(`jit::OptimizedMetadata`), which the exit's walk and the leaves read;
+a copy of the body's own scope alone needs none, its frame being its
+one activation.
 
 ### The code
 
@@ -11404,9 +11913,10 @@ registers the allocation chose, and each frame node after its
 write-back, by the very template function the baseline's arm for its
 instruction calls (`baseline::lower`), with nothing held -- so optimized
 code is a lowering of the interpreter's instructions, never a second
-implementation of one. `MakeClosure` transfers the frame into the
-baseline body's reifying twin, after the write-back, as a lean baseline
-body's does, so optimized code never reifies its frame. Between two
+implementation of one. `MakeClosure` in the body's own scope
+transfers the frame into the baseline body's reifying twin, after the
+write-back, as a lean baseline body's does, so optimized code never
+reifies its frame. Between two
 frame nodes nothing writes a register a value is held in but that
 value's own: a simple node computes in the registers no value is
 allocated to (`Roles::integer_temporaries`), each taken through
@@ -11432,9 +11942,12 @@ prologue. A frame returned to (`jit::resumed`), switched at a back edge
 (`jit::at_back_edge`) or resumed after a safepoint goes on in the
 *baseline* code at its program counter, since only baseline code has an
 entry at every instruction; optimized code's program-counter map has
-only its calls' returns. Leaving optimized code is therefore always
-going on in baseline code or the interpreter, which the frame's words,
-written back, make exact ("Between the tiers"). The exit's walk
+only its calls' returns, and its polls' entries, kept beside it
+(`InstalledBody::polls`), serve only a frame that left at that poll. Leaving optimized
+code is therefore going on in baseline code or the interpreter, which
+the frame's words, written back, make exact ("Between the tiers"), but
+for a frame that left at a poll and goes back in there ("Inlining",
+"Back into optimized code at a poll"). The exit's walk
 (`jit/materialize.rs`) and the leaves find an optimized frame's send by
 the call's return address, as a baseline frame's.
 
@@ -11526,8 +12039,17 @@ spans 600 under the zone and optimize stress modes together -- which
 then began at the same countdown every time and was never forced where
 the others fell. A forced exit
 counts against no exit budget. Beside the other stress modes, a mode
-that holds the safepoint request ends an activation's optimized code at
-its first back edge. The zone stress mode's compactions alternate:
+that holds the safepoint request -- the moves, caches, collect,
+scavenge, suspend and zone modes (`hold_safepoints_for_stress`) --
+makes an activation's optimized code leave at every back edge's poll,
+and the frame goes back in there, past the poll's test, unless the
+safepoint's own work forbids it -- the suspend mode's rebuild of the
+stack, a full collection of the collect mode whose slide frees the copy
+or moves its feedback base -- or no room is left, where it goes on in
+baseline code (`poll_deoptimizations`), among the refusals of
+"Inlining", "Back into optimized code at a poll". A compaction of the
+zone mode keeps the copy, since every body an activation runs keeps
+its copies, and the frame goes back into it where it now lies. The zone stress mode's compactions alternate:
 every other one keeps every body that has optimized code and slides it
 with the rest, so that a callee's optimized code, installed while the
 callee still ran its baseline code, is moved, run where it now lies and
@@ -11535,8 +12057,9 @@ then freed and compiled again. Every golden under
 `goldens/runtime/optimizer/` optimizes its hot body in a plain run --
 sends, a closure, a non-local return, an overflow, allocation, an
 exception through the frame, the depth limit, a mixin applied twice and
-a write in an exiting arm of a loop, and the speculation's eight
-("Speculation", "Verification" below) -- and a debug build also runs each
+a write in an exiting arm of a loop, the speculation's eight
+("Speculation", "Verification" below) and inlining's ("Inlining",
+"Verification" below) -- and a debug build also runs each
 as `golden::optimizer::<name>` under the optimize stress mode
 ([README.md](README.md), "The goldens"). Beside the verifiers above,
 every pass has its own tests over hand-written bodies and over every
@@ -11555,8 +12078,8 @@ feedback says never ran is a guard that traps; a trap counts against
 its copy, and a copy that keeps trapping or exiting is retired and
 compiled again ever more rarely, with no trap past its last version;
 an edit, a bulk forward and a reclaimed id free the copies they make
-stale. Sends keep their cells: a send site does not speculate before
-stage 3's type-cases. Measured in "What speculation moved": -3.17% on
+stale. Its sends keep their cells; a send site speculates in the third
+stage's type-cases ("Inlining" below). Measured in "What speculation moved": -3.17% on
 the geometric mean of the twenty-seven sources against `master`, and
 `fib:` a quarter faster. **Code:** in `crates/ns-runtime/src/`,
 `jit/mod.rs` (`CustomizationKey`, `CustomizedCopy` and
@@ -11589,9 +12112,11 @@ guard on the same unit.
 copy (decided with the user on 2026-11-06), whose slot accesses keep
 their guards, since a block's closures come from homes of any
 application and one machine entry row per code id names one copy; a
-block a customized home creates is compiled with its home from stage 3
-on, customized to that home's copy as Strongtalk customizes a block to
-the version of its home method (`compiler/compileTimeClosure.hpp:27-36`).
+block a customized home compiles with it is customized with that
+home's copy, its own slots read at the home's base, as Strongtalk
+customizes a block to the version of its home method
+(`compiler/compileTimeClosure.hpp:27-36`; "Inlining", "Blocks with
+their home").
 An initializer's, a factory's and a superclass clause's body has one
 copy too: its activation is entered by the initializer leaf or the run
 loop at a level the body's kind fixes, never through a
@@ -11613,8 +12138,10 @@ at above the receiver's class and the entered class's application
 word, and outlives the copy's code, so that what the row says of its
 key -- its version, its traps, its refusal -- outlives each copy. The
 request carries the entered application it was made for, all the
-snapshot needs: no table maps a dispatch id back to its application
-yet (stage 3's, whose snapshot reads callees' receivers).
+root's snapshot needs; a callee's receiver, which the snapshot tree
+reads off a cache entry's guard, is found through the table from
+dispatch id back to application (`Heap::application_of_dispatch_id`;
+"Inlining", "The snapshot tree and the plan").
 
 **A copy is entered wherever its key is known.** A cell guarded by the
 receiver's dispatch id -- a monomorphic cell, a polymorphic entry, a
@@ -11798,9 +12325,11 @@ machine entry rows written afresh: an install and a forward are mirror
 leaves machine code exits for (`MachineCall::Exit`), and a collection
 runs at a safepoint, so no return address into the zone exists and
 every frame goes on in its baseline code. No frame is converted, nor
-needs to be: a marked frame below the top that is converted when
-control returns into it exists from stage 3 on, when one frame stands
-for several activations. An invalidation is no failure of a
+needs to be, even one that stands for several inlined activations: the
+exit the install or the forward ran after wrote them as activations,
+and a collection's safepoint finds them so ("Inlining", "The exit that
+writes the scopes"). Beside the key, a copy's recorded dependencies
+free it too ("Inlining", "Dependencies"). An invalidation is no failure of a
 speculation: it raises no version and counts no trap, and the body's
 budget is armed at the longest wait the freed copies' versions earned,
 so that the next copy waits for feedback gathered since. The caches go
@@ -11839,64 +12368,411 @@ body's dispatching words and block hold exactly its copies' rows
 run at every safepoint: `a_compaction_remaps_the_dispatching_rows`
 cannot fail on its own.
 
+## Inlining
+
+Road step 9's third stage is built ("Planned: the optimizing JIT",
+"Stages" below), on the two before it: a copy inlines. Before its graph
+is built, a tree of snapshots of the body and its callees is taken and
+a plan made over it; a send whose receivers the caches recorded is a
+type-case of inlined callees, an accessor, a quick method, `==`,
+`class`, a `SmallInteger` operation and an `Array`'s or a `ByteArray`'s
+indexed access are nodes, a block is compiled with its home and never
+created where nothing lets it escape, every inlined scope lies in the
+physical frame where the interpreter would push its activation, and an
+exit writes the scopes as activations and makes the blocks it finds
+live; the recompilee is found by walking up the stack, a frame that
+left its optimized code at a poll goes back into it there, and a copy
+is freed when anything it inlined changes. Four decisions were made
+with the user on 2026-11-07, each stated where it applies: an inlined
+scope lies at the interpreter's position, a block nothing lets escape
+is eliminated, the type-cases' arms and fall-through, and the way back
+in at a poll. Measured in "What inlining moved": -34.0% on the
+geometric mean of the twenty-seven sources against `master`, and the
+`do:` blocks' elimination with the walk's rule for homes -6.1% and
+-6.3% more in two sittings. **Code:** in
+`crates/ns-runtime/src/jit/optimizing/`, `tree.rs` (the snapshot tree),
+`plan.rs` (the plan, the cost model and limits, the escape analysis),
+`build.rs` (`build_inlined`, the scopes' layout, the always-inlined
+nodes, `compiled_ways`), `graph.rs` (`GraphScope`, `Node::CurrentClass`,
+`Node::Overlay`, `Node::EliminatedBlock`, `End::TypeCase`), `metadata.rs`
+(`InterruptPoint`, `ScopeAtPoint`, `poll_restores`) and `emit.rs`; in
+`crates/ns-runtime/src/jit/`, `materialize.rs` (the scopes' headers, the
+blocks, the leaves' view of a scope) and `mod.rs` (`OptimizedMetadata`,
+`CopyDependencies`, `find_recompilee`, the poll's re-entry); and
+`heap/tables.rs`'s table from dispatch id to application.
+
+### The snapshot tree and the plan
+
+`SnapshotTree::take` snapshots the body, as stage 1 does, and walks
+every send of it and of every body it reaches: each site's cached
+receivers, in the cache's order, with what each one's callee is
+(`SiteCandidates`, `CalleeFacts`) -- a method, snapshotted once against
+its own feedback base, a slot accessor, a fast path or a primitive --
+and every block literal, snapshotted once against its home's base. A
+receiver is read off a cache entry's guard, whose application the
+table from dispatch id back to application names
+(`Heap::application_of_dispatch_id`, a row per minted id in
+`heap/tables.rs`, written where an id is minted and cleared where one
+is reclaimed); a site whose receiver cannot be described reads as
+megamorphic.
+
+`plan::plan` decides, on the tree and before the graph is built, which
+callees each scope inlines. The cost of a body is Strongtalk's model
+(`compiler/costModel.cpp:31-46`): an instruction 1, a send 5, a closure,
+an indirection vector or a non-local return 3, an `IntegerBinary` and a
+send whose site reached only accessors and fast paths 2 (`COST_CHEAP_SEND`),
+and a fallback way 1 an instruction. A method callee is inlined up to
+`METHOD_LIMIT`, 40, Strongtalk's; a block up to `BLOCK_LIMIT`, 140,
+twice Strongtalk's; either plus `BLOCK_ARGUMENT_BONUS`, 35, for each
+argument that may hold a block of the compile; a compile up to
+`COMPILE_LIMIT`, 2,000 weighted instructions; a body at most once more
+in a chain it already runs in (`RECURSION_LIMIT`, 1); and the physical
+frame's registers within `u16::MAX` (decided in the plan,
+`runtime/debug.hpp:275-297` the start; each limit halved and doubled in
+"What inlining moved"). Candidates are taken greedily by their
+estimated frequency -- their sender's, times `LOOP_WEIGHT`, 8, for
+each loop around the site, times the callee's budget share spent since
+it was armed, at least `LEAST_BUDGET_SHARE`, 1/64 -- as TurboFan queues
+its candidates (`compiler/js-inlining-heuristic.cc:225-395`), a site
+never executed excluded. What is observed is never inlined: a body
+with an unwind marker -- `on:do:`, `ensure:`, `ifCurtailed:` -- and
+every kernel method whose activation a leaf reads or marks, a mirror
+send of the `Activation` rows ("Observers" above). Nor is a callee
+whose scope would create a block the plan does not eliminate, on a way
+that ran (`Planner::creates_a_block`): optimized code creates a block
+only in its outermost scope until stage 4, and a `MakeClosure` in an
+inlined scope left the copy every time it ran.
+
+**A type-case** (decided with the user on 2026-11-07) has up to
+`POLYMORPHIC_WIDTH`, 4, arms, one per cached type whose callee is
+inlined, in the cache's order; a type not inlined has no arm. Its
+fall-through traps only where the site never trapped, is not
+megamorphic and every cached type has an arm, in a copy that
+speculates; it is the site's own send through its cell otherwise, and
+a megamorphic site gets no type-case. Each arm's callee is customized
+to its receiver's application, its own slots read at that
+application's base. A `super` send, a lexical send at depth 0 -- a
+private one, outside declaration code, fixed by the scope's entered
+application, any other by the scope's known receiver, `self`, whose
+application the arm must be -- and the `value`-family send of a block
+the compile eliminates have one arm taken without a test
+(`FallThrough::Unguarded`, `Planner::unguarded`), the receiver known.
+
+**Always inlined**, charged nothing: a slot's getter and setter, a load
+(`Node::FieldLoad`) and a store through the inline write barrier
+(`Node::FieldStore`); a quick method answering a constant, `self` or a
+parameter; a lazy slot's getter, a load and a test that traps on `nil`
+(`Node::TrapIfNil`); `==` (`Node::IdentityCompare`), which traps where
+the words alone do not decide it -- a boxed number, a future; `class`
+(`Node::ClassOf`); the `SmallInteger` operations `IntegerBinary` has;
+and `Array`'s and `ByteArray`'s `at:` and `at:put:`
+(`Node::IndexedLoad`, `Node::IndexedStore`), their bounds and kinds
+checked by traps. A node with a check is laid out only in a copy that
+speculates, at a site that never trapped (`build::Laying::expressed`);
+each trap runs the send again, whose error the interpreter raises.
+Sent, not expressed: a builtin class's accessor, whose class only the
+heap's tables name; `^<parameter> value` and `cull:`; and `Float`
+arithmetic, a leaf call until the baseline's `Float` templates in SSE2, the work
+right after this stage ([OPEN-WORK.md](../OPEN-WORK.md), "Planned: performance
+and representation"), which optimized code then emits through the same
+templates; stage 5 unboxes it. **The accesses need no guard**:
+the field the lookup resolved the accessor to for the arm's receiver
+application -- and an inlined scope's own-slot read, at the plan's base
+for that application -- is read of an object the type-case's guard, or
+for an arm taken without a test the scope's known receiver, vouched
+is of that application; what could replace the object, the bulk
+forward or an install's migration, runs in a mirror leaf machine code
+exits for, after which the frame goes on in baseline code; and the
+decoder holds every instance of a program class to its application's
+slot count, as for a copy's own slots ("Speculation", "Own slots at
+fixed offsets").
+
+### Inlined scopes in the frame
+
+**An inlined scope lies at the interpreter's position** (decided with
+the user on 2026-11-07): its register `r` is the physical register
+`offset + r`, its offset its sender's plus the send's `argument_base`,
+the header's thirteen words part of the numbering as they are of every
+frame. `build_inlined` lays the plan's scopes out as one flat body: at
+an inlined send the type-case, each arm's entry and body, the send
+itself where the type-case falls through to it, and every arm's return
+to the instruction after the send, where the returns meet in a phi. The
+entry reads the receiver and the arguments, binds the parameters, the
+named temporaries to `nil` and the scope's receiver, a header binding
+(`HeaderBinding`) written back like a register -- its current class,
+the other, is bound only where a frame node reads it (below) -- and
+ends, unwritten, every binding of the registers the callee is
+laid over (`Node::Overlay`): the leftover analysis taints them there,
+so no value of the sender's is written into the callee's frame nor
+read after its return. The frame register moves only around a scope's
+frame nodes, to its register 0 (`MacroAssembler::shift_frame`), so
+every baseline template runs unchanged and a scope without a frame
+node costs nothing; a simple node addresses a physical register at any
+shift.
+
+**The current class is computed only before a frame node** of the
+scope (`Node::CurrentClass`, from the scope's recipe,
+`graph::ClassRecipe`), as a compiled call computes its callee's from
+the chain's start and the target's level, and an exit's walk computes
+it for every scope it writes (`materialize::scope_class`) before the
+scope's header, whose write records the guard and entered level of
+that class; a debug build asserts the order in `materialize_scopes`. A
+scope whose code addresses its own slots has its own-slot guard word
+reset at its entry (`Node::ResetOwnSlotGuard`), as a push records none.
+The prologue of a copy that inlines checks its deepest chain against
+the depth limit and its deepest extent against the stack's end, and a
+call d scopes deep counts d more for its length ("Safepoints and the
+depth limit" above); the run loop's push enters such a copy only
+where both fit (`Heap::machine_frame_fits`).
+
+**An exit inside an inlined scope** counts against the physical
+copy's exit budget, and a trap there against the copy, setting the
+trapped bit of the inlined callee's own site, at its own feedback base,
+which every compile inlining that callee then reads. A leaf called in
+an inlined scope reads that scope's activation as the interpreter's
+(`materialize::inlined_leaf_frame`, its header written out of line by
+`Heap::write_inlined_scope_frame`), looked up only for a body whose
+copy keeps metadata (`Installed::described`), and the cut takes the
+exit wherever it would pop or return into an inlined scope.
+
+### Blocks with their home
+
+A `value`-family send of a block the compile creates is inlined as the
+block's scope, its receiver and current class the home's, its copied
+values the home's source registers, an outer local a move of the
+reached home's register and its `^` the return of its first home that
+is no block; so customized, its own slots are read at the home's base.
+**A block that nothing lets escape is eliminated** (decided with the
+user on 2026-11-07): created in the compile, every use an inlined
+`value`-family send, a move, a copy into a block that is eliminated
+too, or an argument of a site every way of which inlines its callee.
+The escape analysis (`Planner::decide_blocks`) also refuses a block a
+nested block reaches by reference, one whose copied values' source
+registers may be written while it lives, one a register holds beside
+something else on some way -- so that where an eliminated block lies
+is a fact of every instruction -- and one whose body reaches past the
+compile (`reaches_past_the_compile`). It looks only at the ways the
+graph builds (`build::compiled_ways`): a way the feedback says never
+ran ends in a trap, and a use there lets nothing escape -- the trap's
+exit makes the block -- as C2 reallocates an object that escapes only
+through an uncommon trap; so a block handed to `Array>>do:`, `Set>>do:`,
+`Map>>do:` or `to:by:do:` is eliminated, their ways for a receiver that
+is not what they expect being traps.
+
+An eliminated `MakeClosure` binds its register to
+`Node::EliminatedBlock`, which holds `nil`, and the metadata names the
+block as that register's location (`allocate::Location::EliminatedBlock`);
+a debug build refuses a graph in which a frame node, a return, an
+always-inlined operand or a type-case reads one
+(`build::eliminated_block_read`). **An exit that finds it live makes
+it**, after the walk: one closure per block per exit, in the order the
+blocks depend on each other, its home's activation reified and married
+in place, so that the home goes on in its twin, and every register that
+holds it, in every scope, given the same object, with the operand of
+the scope that runs it (`materialize::materialize_blocks`). A block
+that escapes is created by its `MakeClosure` in the outermost scope,
+which transfers the frame into the twin -- or exits, where an
+eliminated block is live, since the transfer writes no register; in an
+inlined scope the plan sends the callee instead, and a `MakeClosure`
+left on a way that never ran is a trap on that way's site, so that its
+first run marks the site trapped and the trap that follows there
+retires the copy (`a_block_made_on_a_way_not_run_traps`).
+
+### The exit that writes the scopes
+
+A copy with an inlined scope or an eliminated block keeps its
+metadata (`jit::OptimizedMetadata`): each interrupt point's chain of
+scopes, innermost first, by the offset of its return address or exit
+site in the body, so that a compaction moves it with the code, and per
+scope its code, its method and its feedback base (`InlinedScope`). The
+exit's walk stops the physical frame at the send its outermost inlined
+scope is inlined at, and writes every other scope's header in place,
+outermost first (`materialize_scopes`): its code, its program counter,
+its caller and top, its flags -- counted, its kind, its argument count
+-- its feedback base, `Deliver`, its guard and entered level as the
+push records them, its register count and a `nil` reified word. The
+innermost goes on at the point's program counter, every other at its
+send, and the depth count holds every scope, the call's adjustment
+having counted those below a call and the walk adding the innermost's.
+Then the blocks are made, and every scope is an activation going on
+in its own baseline code, as after any exit. An exit at the stretch's
+own entry frame, which the exit stub walks none of, is written by
+`materialize_at_entry`.
+
+### The recompilee walk
+
+The budget's cold path takes `ExitKind::BudgetSpent` when the budget
+leaf answers that an optimization is due ("The optimizing tier's
+foundation", "The budget"), and the run loop walks up the stack for the
+frame to request (`jit::find_recompilee`), Strongtalk's
+`findTopInlinableFrame` (`recompiler/recompiler.cpp:56-121`): from a
+block to its home, from a method with block arguments to their
+lowest-lying home, otherwise to its sender (`sender_or_parent_of`,
+Strongtalk's `senderOrParentOf`, `:217-257`), at most
+`RECOMPILEE_SEARCH_LENGTH`, 10, frames of the stack up, while the frame
+it would go to could be optimized and the plan a compile of it would
+make inlines the body of the frame it comes from (`inlines`, the very
+tree and plan the compile takes). It stops at a body whose copy below
+inlines it (`inlined_into_a_copy_below`), at a top-level activation, a
+pair refused or with its copy installed, and a sender that has spent
+less than `LEAST_BUDGET_SHARE` of its budget (`recompilable`). **It
+goes from a block up to its home only when the home is called often**
+(`called_repeatedly`): the home has no backward jump of its own and
+has been called at least `LEAST_HOME_CALLS`, 4, times since its budget
+was armed, its calls its spend divided by its instruction count, since
+its budget is spent by its entries alone; otherwise the walk answers
+the frame below. Until on-stack replacement into optimized code
+(stage 6), a home's running activation never enters its copy, only
+its later calls do: Bounce's `bench`, called once a run, waited a
+budget for its copy, while the block's own copy runs at its loop's
+next turn. A home with a loop of its own is optimized at its own
+run-out instead, inlining the block if its plan does, since its budget
+row cannot tell its calls from its back edges. HotSpot's call
+predicate is the model (`compiler/compilationPolicy.cpp`,
+`method_back_branch_event`); the minimum is measured ("What inlining
+moved"). A request for a frame above parks the recompilee's row and
+the trigger's, the trigger's armed again after the safepoint's compiles
+(`JitState::parked_for_recompilees`).
+
+**Every installed copy is young.** The walk stops at a caller whose key
+has its copy, Strongtalk's stop at young optimized code
+(`code/nmethod.cpp:970-979`, `isYoung`), but no copy grows old: optimized
+code spends no budget, so no row says how long a copy has run since its
+install, and a request for a pair with a copy is dropped. A caller
+optimized first thus never inlines a callee that grew hot after it; the
+callee is optimized alone ([OPEN-WORK.md](../OPEN-WORK.md), "An
+optimized caller is never recompiled to inline a callee that became hot
+later").
+
+### Back into optimized code at a poll
+
+**A frame that left its optimized code at a poll goes back into it**
+(decided with the user on 2026-11-07), after the safepoint, at that
+poll: without it, every scavenge would send a loop's frame into its
+baseline code until its next push. The poll's exit is light: the walk
+writes the scopes' headers as at every exit but defers the frame's
+eliminated blocks (`materialize::defer_the_poll_s_blocks`), and the
+run loop records the stop (`StoppedAtPoll`). `vm::after_safepoint` asks
+`jit::resumed_at_poll` before it asks `back_edge_ready`, which re-enters
+only where nothing the safepoint did made it impossible: the inlined
+scopes still the stack's innermost chain and none of them reified
+(`Heap::inlined_scopes_stand`), the frame's code the same, its copy
+found again by body and key with the same install serial
+(`InstalledBody::installation`) -- a copy freed, or freed and installed
+again, has another -- and the same feedback base, and room on the
+native stack, against the depth limit and at the stack's end
+(`Heap::machine_frame_fits_without`). Then the scopes are folded back
+into the physical frame (`Heap::fold_inlined_scopes`), the depth count
+less the scopes, and the frame enters the poll's entry as the copy now
+lies, past the poll's test, so that a request still standing costs a
+turn of the loop. Otherwise its blocks are made and every scope goes
+on in baseline code, as after any exit (`deoptimize_at_poll`); the
+suspend stress mode, the one rebuild of the stack, deoptimizes a
+stopped frame before it suspends (`jit::deoptimize_stopped_at_poll`),
+and a forced exit at a poll is deoptimized at once.
+
+**The poll's entry restores what the code past it reads**
+(`metadata::poll_restores`, which the emitter and a debug build's
+replay share): every value live at the poll back into its machine
+register and into every frame word the code reads it back from, each
+from a word the frame kept -- one the interrupt point's metadata names,
+which the leftover analysis leaves to the frame and the collector kept
+current -- or for a constant from its word, and a value the code past
+the poll never reads, live only for the stores of its dirty bindings,
+from a kept word one of them names or else as `nil`, written only into
+words nothing reads. A value read on that no such word holds gives the
+poll no entry, and its exit is any interrupt point's
+([OPEN-WORK.md](../OPEN-WORK.md), "A poll whose entry cannot restore a
+value keeps the full exit"). `--jit-statistics` counts the three
+outcomes: `poll_reentries`, `poll_deoptimizations` and
+`polls_without_an_entry`.
+
+### Dependencies
+
+A copy records at its install what it relied on beyond its key
+(`CopyDependencies`): every application an arm or a customized read
+relied on -- each type-case arm's guard, each always-inlined arm's
+application, and each inlined scope's receiver's and entered
+application, whose chain the lookup walked, whose layout a slot read
+takes its offset from and whose outer structure a lexical send walks
+-- and every inlined body's and eliminated block's code id and
+feedback base. **Whatever changes any of it frees the copy at once**,
+through the path every invalidation takes, uncounted as a failure: an
+install that rebuilds one of the applications
+(`invalidate_applications`; an install rebuilds every application one
+of whose levels it edits, so an edit anywhere on the chain from the
+receiver's level to the definer rebuilds the receiver's), a full
+collection that reclaims one (`forget_freed_copies`, since the id
+minted again would be taken for the dead one's), and a slide that
+moves one of the feedback bases (`invalidate_copies_of_moved_bases`).
+The code ids never change under a live copy: a full collection names
+every code id a live copy inlined (`jit::inlined_code_ids`), so that an
+inlined method no activation runs keeps its id. The zone frees a copy's
+metadata, dependencies and poll entries with it (`jit/zone.rs`,
+`mark_free`), or its scopes would keep every version an edit replaced
+-- and their families' sites -- alive.
+
+### Verification
+
+The goldens under `goldens/runtime/optimizer/` that this stage added
+each reach their path in a plain run, as `--jit-statistics` showed when
+each was written: callees always inlined, inlined recursion that
+overflows where the interpreter does, a type-case that widens after
+warm-up, an inlined callee that exits to a callee not compiled yet, a
+mixin applied twice inlined, a nested family extended in a subclass,
+an edit below an inlined frame, an allocating inlined loop that goes
+back in at its polls, an eliminated block seen after an exit, a block
+made on a way not run, a block handed to an Array's `do:`, an inlined
+block's return from its home, inlined `to:do:` and fallback blocks that
+write their home's local, and a lexical send in an inlined block of an
+applied mixin. The four a change of the plan could most easily take off
+their path -- the edit, the eliminated block, the way not run and the
+`do:` block -- are held to it by `crates/ns-cli/tests/cli.rs`'s
+`the_optimizer_goldens_reach_their_paths_in_a_plain_run`.
+`crates/ns-runtime/tests/jit.rs` pins the plan's choices on running
+programs, the recompilee walk and its stops, the dependencies of each
+kind, the poll's re-entry -- after a compaction moved the copy too --
+and its refusals; `jit/inlining_tests.rs` the depth and room an
+inlined frame needs, an eliminated block made once in two scopes and
+married to its home, a reified scope's and a freed copy's poll, and a
+failure way that starts running; and `plan.rs`, `build.rs` and
+`metadata.rs` their passes over hand-written bodies and, through
+`inlining_corpus`, over every body of `goldens/runtime/jit/`, whose
+graphs the verifier and the allocation's replay hold. The replay checks
+every scope's words at every interrupt point, the header bindings
+among them, and each poll's entry. Every stress mode runs every golden
+in the `stress` group; `NS_NEXT_STRESS_DEOPT` exits inside inlined
+scopes, `NS_NEXT_STRESS_INVALIDATE` frees copies with frames inlining
+below, and `NS_NEXT_STRESS_ZONE` moves copies under stopped polls.
+`--jit-statistics` prints the stage's counters: sites and scopes
+inlined, type-case arms, blocks eliminated and made, inlined frames
+written by exits, budget exits and recompilees above, and the polls'
+three outcomes.
+
 ## Planned: the optimizing JIT
 
 Would change: hot code is recompiled, along the receiver types the inline
 caches recorded, into optimized machine code that inlines sends, keeps
 numbers unboxed in machine registers and deoptimizes when a speculation
 fails. Road step 9, designed with the user on 2026-11-04 and 2026-11-05 in
-fourteen decisions, built to the contract above. Its first two stages,
-the foundation and speculation, are built ("The optimizing tier's
-foundation" and "Speculation" above); the rest is not, and this section
-says only what is not. Strongtalk's citations are to `prior-art/strongtalk/vm/`, HotSpot's to
+fourteen decisions, built to the contract above. Its first three
+stages, the foundation, speculation and inlining, are built ("The
+optimizing tier's foundation", "Speculation" and "Inlining" above); the
+rest is not, and this section says only what is not. Strongtalk's citations are to `prior-art/strongtalk/vm/`, HotSpot's to
 `prior-art/jdk/src/hotspot/share/`, V8's to `prior-art/v8/src/` but for
 its design documents, under `prior-art/v8/docs/`.
-
-### One tier, an SSA graph, the macro assembler
-
-- **One optimizing tier above the baseline, Maglev's shape**: a control
-  flow graph in SSA form, built in one pass over a body's register
-  bytecode, abstractly interpreting its registers -- each register maps
-  to the node that last defined it, as Maglev's `InterpreterFrameState`
-  maps Ignition's (`maglev/maglev-graph-builder.cc`;
-  `compiler/maglev/compiler-maglev.md:9-83` of the design documents) -- and
-  reading the feedback as it goes. Each node emits its own code through
-  the macro assembler's idioms, with no instruction selection, and a
-  linear-scan allocator, Maglev's `StraightForwardRegisterAllocator`'s
-  kind, gives every value a register, a frame slot or a place in the raw
-  area. Rejected: a sea of nodes, which V8 left for a control-flow graph
-  in Turboshaft because nearly every operation sits on an effect chain,
-  graphs are hard to debug and compile slowly
-  (`compiler/why-cfg.md:21-52` of the design documents), all truer of Newspeak, where nearly
-  everything is a send; Strongtalk's graph, which is not SSA and keeps
-  every value live across a basic block in a stack slot
-  (`compiler/regAlloc.cpp:55-95`); and two optimizing tiers now, which
-  the graph keeps open -- Turbolev builds TurboFan's input from Maglev's
-  graph (`flags/flag-definitions.h:1789`). Strongtalk's heuristics, not
-  its IR, decide inlining and which body is recompiled.
-- **The backend is the repository's own**: `ns-assembler`'s encoders and
-  the macro assembler the baseline JIT uses, so the write barrier, the
-  call through a cell, `enter_called` and the outer walk exist once, and
-  no file under `jit/` but `macro_assembler.rs` names a register. The
-  allocator writes the deoptimization metadata as it allocates. Rejected:
-  Cranelift, which knows stack maps but no deoptimization point -- every
-  guard would pass every live value to a cold block -- and whose calling
-  convention and frames cannot express the activation stack, the cells
-  and the return addresses on the native stack; `regalloc2` behind the
-  same interface stays possible if a measurement shows linear scan
-  limits the peak.
 
 ### The compiler thread and the snapshot
 
 - **The optimizing compiler runs on a thread of its own and never
-  touches the heap.** When a compile is requested, the mutator builds a
-  snapshot that can cross threads: Strongtalk's `RScope` tree
-  (`compiler/rscope.cpp`), built eagerly down to what the inlining budget
-  could take -- the bodies' instructions, each site's feedback as
-  application ids and resolved targets, each application's layout and
-  chain, an epoch per application -- and no handle, since machine code
-  loads literals through the heap's tables; a body's instructions become
-  shareable across threads for it, or are copied. The thread compiles from it
+  touches the heap.** What is built takes the snapshot tree at the
+  safepoint, Strongtalk's `RScope` tree (`compiler/rscope.cpp`), down to
+  what the inlining limits could take, with no handle, since machine
+  code loads literals through the heap's tables, and compiles it there,
+  synchronously ("Inlining", "The snapshot tree and the plan"). What is
+  not: an epoch per application in the tree, the bodies' instructions
+  made shareable across threads or copied, and the thread, which
+  compiles from the tree
   alone and writes the code through the zone's writable view. A finished
   compile requests a safepoint; there the mutator checks the epoch of
   every application the code rests on and installs it, or discards it
@@ -11920,33 +12796,15 @@ its design documents, under `prior-art/v8/docs/`.
 
 ### When a body is optimized
 
-- **A budget per body**, as V8's `interrupt_budget`
-  (`interpreter/interpreter-assembler.cc:1195-1220, 1463-1485`): baseline
-  code subtracts the body's length at each entry and the jump's distance
-  at each back jump, and below zero calls a leaf that decides. A cache
-  fill after a miss raises it, so a compile waits for stable feedback,
-  as V8's `NotifyICChanged` does (`execution/tiering-manager.cc:497-578`);
-  a pending compile parks it at its maximum. The budget is a row per
-  `CodeId` in a reservation of its own, since machine code writes it,
-  which each copy of baseline code reaches through a data word of its
-  own, pointed afresh after every full collection ("The optimizing
-  tier's foundation", "The budget"). It is not fused with the back edge's poll, which would delay a
-  safepoint by up to a budget of back jumps. The thresholds are measured:
-  240,000 instructions, and a sixth of it after a cache change ("What
-  the optimizing tier's foundation moved").
-- **The recompilee is found by walking up the stack**, Strongtalk's
-  `findTopInlinableFrame` (`recompiler/recompiler.cpp:56-121`): the
-  budget's cold path exits to the run loop, since a leaf reads no other
-  activation, and the run loop walks up from the triggering frame while
-  its body would be inlined into its caller; a block goes to its home, a
-  method with block arguments to the home of those blocks
-  (`senderOrParentOf`, `:215-252`); the walk stops after a bounded
-  number of frames, at young optimized code and at a caller that sent
-  too rarely. The loops of Newspeak are methods taking blocks --
-  `Number>>to:do:`, `Array>>do:`, `Closure>>whileTrue:` -- whose block
-  sends are shared by every caller and so megamorphic; only the body
-  that creates the block, compiled with the loop and the block inlined,
-  has the block as a constant.
+What is built decides by a budget per body, which baseline code spends
+("The optimizing tier's foundation", "The budget"), and requests the
+frame the walk up the stack finds ("Inlining", "The recompilee walk"):
+the loops of Newspeak are methods taking blocks -- `Number>>to:do:`,
+`Array>>do:`, `Closure>>whileTrue:` -- whose block sends are shared by
+every caller and so megamorphic, and only the body that creates the
+block, compiled with the loop and the block inlined, has the block as a
+constant. What is not:
+
 - **On-stack replacement into optimized code** at the back edge of the
   frame running the loop: a budget that runs out at a back jump requests,
   beside the compile the walk chose, a compile of that frame's body with
@@ -11962,22 +12820,30 @@ its design documents, under `prior-art/v8/docs/`.
   code and counts as a trap. A compile of its own per loop head, as
   HotSpot's OSR nmethods and V8's are. Without it a long activation --
   Mandelbrot's whole run is one -- never runs optimized; Strongtalk had
-  none (`interpreter/interpreter.cpp:2183-2190`).
+  none (`interpreter/interpreter.cpp:2183-2190`). With it, the
+  recompilee walk could go up to a home called once, or to one with a
+  loop of its own, whose running activation would then enter the copy
+  at its loop's head ("Inlining", "The recompilee walk").
+- **A copy grows old**: a spend measure in optimized code, so that a
+  copy installed long ago is no longer young and the walk may request
+  its frame again, and a recompile of a live copy -- its version raised,
+  compiled, installed in its place -- so that a caller optimized first
+  inlines a callee that grew hot after it, as Strongtalk recompiles an
+  old nmethod (`code/nmethod.cpp:970-979`; [OPEN-WORK.md](../OPEN-WORK.md)).
 
 ### Feedback
 
 What is built reads the feedback as layout ("The optimizing tier's
 foundation", "The snapshot") and as each site's executed and trapped
 bits, the sticky bits of an overflow, a non-Boolean and a trap
-("Speculation", "Guards and traps"). What is not:
+("Speculation", "Guards and traps"), and the receiver types as the
+cache entries, unchanged ([dispatch.md](dispatch.md), "3b — The
+caches"), the type-cases' arms in the cache's order, through the table
+from dispatch id back to application; frequencies of bodies come from
+their budgets, within a body from loop depth, as Strongtalk derives
+them from callee counts (`compiler/rscope.cpp:337-346`; "Inlining",
+"The snapshot tree and the plan"). What is not:
 
-- **Receiver types are the cache entries**, unchanged ([dispatch.md](dispatch.md),
-  "3b — The caches"), read by stage 3's type-cases. **Frequencies** of
-  bodies come from their budgets, within a body from loop depth, as
-  Strongtalk derives them from callee counts
-  (`compiler/rscope.cpp:337-346`). A **table from dispatch id back to
-  application** serves the snapshot of callees' receivers; stage 2's
-  request carries the one application its copy needs.
 - **Counts only at polymorphic and megamorphic sites**: a count per
   polymorphic entry; a megamorphic site keeps a profile of four rows of
   guard and count and a count of the rest, taken over from its
@@ -12006,59 +12872,47 @@ bits, the sticky bits of an overflow, a non-Boolean and a trap
 
 What is built customizes a method body's own slots per key
 ("Speculation", "The key and the copies", "Own slots at fixed
-offsets"). What is not: every inherited slot a fixed offset too, every
-send to `self` bound at compile time, and every outer walk's structure
-fixed (the enclosing object is still loaded, a class object existing
-per enclosing instance), each with inlining, whose fixed structure is
-what pays for it; and a block a customized home creates compiled with
-its home, customized to that home's copy as Strongtalk customizes a
-block to the version of its home method
-(`compiler/compileTimeClosure.hpp:27-36`) -- stage 3's "blocks with
-their home" ("Stages" below); a block created by baseline code has no
-home that could.
+offsets"), each inlined callee to its arm's receiver application, its
+own slots read at that application's base, and a block compiled with
+its home to that home's ("Inlining"). What is not: every inherited
+slot a fixed offset too, every send to `self` bound at compile time,
+and every outer walk's structure fixed (the enclosing object is still
+loaded, a class object existing per enclosing instance), whose fixed
+structure inlining is what pays for; a block created by baseline code
+has no home that could customize it.
 
 ### Speculation and its failure
 
 What is built traps at arithmetic, conditionals and sites never
 executed, and rules out deoptimization loops by versions
 ("Speculation", "Guards and traps", "Versions and the refusal for
-good"). What is not:
+good"); a type-case each of whose arms inlines its callee traps for a
+receiver none of its arms names, where the site never trapped and
+every cached type has an arm, and sends through the site's cell
+otherwise ("Inlining", "The snapshot tree and the plan"). What is not:
 
-- **A type guard at a send traps too**: a type-case, built with
-  inlining in stage 3 where each of its arms inlines its callee, traps
-  for a receiver none of its arms names, so that after it the type is
-  certain and no merge with an unknown path costs a test or a box; a
-  send goes through its cell until then (decided with the user on
-  2026-11-06), a monomorphic cell already comparing its guard inline,
-  since a type-case of calls built before would be rebuilt there.
 - **A trap arms its site's counting window** (stage 7, "Feedback"
   above), so that the type-case compiled after it orders its arms by
   the sends counted since.
 
 ### Inlining
 
-- **Always inlined**: slot accessors; methods that answer a constant,
-  `self`, a parameter or a slot (the `MethodFastPath` kinds); mirror
-  leaves a node can express -- `SmallInteger` and `Float` arithmetic and
-  comparisons, `at:` and `at:put:` on `Array` and `ByteArray`, `==`,
-  `class`; a lazy slot's getter as a test and a load; outer sends of
-  fixed structure. Strongtalk inlines its `always_inline` methods and
-  critical selectors regardless of size (`compiler/inliner.cpp:132-206`)
-  and its primitives through `PrimInliner` (`compiler/primInliner.cpp:823-930`).
-- **A plan on the snapshot's tree, made before the graph is built**:
-  candidates ordered by estimated frequency -- the site's loop depth, the
-  callee's budget, never-executed sites excluded -- and taken while each
-  is under a limit per callee and all under a limit per compile, as
-  TurboFan queues its larger candidates by call frequency
-  (`compiler/js-inlining-heuristic.cc:225-395`), where Strongtalk spends
-  its budget greedily in program order. The cost is instructions weighted
-  by kind, Strongtalk's `costModel.cpp` weights the start; a callee that
-  receives a block created in the same compile gets a bonus per such
-  argument (Strongtalk's 35, `MinBlockCostFraction`), and the block is
-  then inlined into it, so neither closure nor block send remains.
-  Recursion is unrolled at most once; depth is generously bounded, the
-  budget being the real bound. What is observed is never inlined
-  ("Observers" above). The numbers are measured.
+What is built plans on the snapshot tree by frequency under limits
+measured, inlines type-cases, the always-inlined callees and blocks
+with their home ("Inlining" above). What is not:
+
+- **Always inlined, still sent**: `Float` arithmetic and comparisons,
+  leaf calls until the `Float` templates in SSE2 that come right after this
+  stage, and boxed until stage 5 unboxes them; outer
+  sends of fixed structure; a builtin class's accessor; and
+  `^<parameter> value` and `cull:`, which activate a block, so that a
+  block a quick method evaluates escapes and its callee is sent.
+  Strongtalk inlines its `always_inline` methods and critical selectors
+  regardless of size (`compiler/inliner.cpp:132-206`) and its
+  primitives through `PrimInliner` (`compiler/primInliner.cpp:823-930`).
+- **A callee whose scope creates a block that escapes** is inlined once
+  optimized code creates the block itself, its home an inlined frame
+  object (stage 4, below): until then the plan sends it.
 - **Late inlining**, C2's (`opto/doCall.cpp:243-253`), inlines after
   optimization a send whose receiver the graph proved -- an object a
   callee returns, a value object made and used at once -- as a pass of
@@ -12092,19 +12946,25 @@ good"). What is not:
 
 ### Closures, frames and non-local return in inlined scopes
 
+What is built compiles a block with its home and eliminates it where
+nothing lets it escape, made by the exit that finds it live, and
+compiles its `^` as its home's return ("Inlining", "Blocks with their
+home"). What is not, stage 4:
+
 - **A frame object in the state "inlined"** stands for an activation the
   optimizer inlined: inlined code that creates a closure leaving the
   compile allocates one, naming the physical frame and the scope's index
   in its metadata, shared by every closure of that scope; a closure
   costs no more than it does today, where its creation reifies its
   frame. Every read of such an object -- `enclosingActivation`, the
-  debugger, a mirror, a sender, a variable -- deoptimizes the physical
-  frame first, and the deoptimization marries the object to the
-  activation it rebuilds; a normal return of the physical frame
-  divorces it. Every reader of frame objects -- the unwinder, the leaves
+  debugger, a mirror, a sender, a variable -- runs after an exit, whose
+  walk writes the scopes as activations and marries the object to the
+  scope's; a normal return of the physical frame divorces it. The plan
+  then inlines a callee whose scope creates a block that escapes,
+  which it sends today. Every reader of frame objects -- the unwinder, the leaves
   that read activations, the collector, the mirrors, the image encoder
   -- knows the state; it never reaches an image, which is written after
-  a deoptimization. A block compiled on its own reads its home only
+  an exit. A block compiled on its own reads its home only
   through this chain and checks nothing at its entry, since the object
   is always valid: inlined, married or divorced. Strongtalk's compiled
   contexts are the model: real
@@ -12115,8 +12975,9 @@ good"). What is not:
   is cut by `cut.rs` down to the physical frame, which continues at the
   scope's non-local-return continuation, as Strongtalk's `NLRTestNode`
   compares home and scope (`compiler/oldCodeGenerator.cpp:1355-1402`;
-  `code/stubRoutines.cpp:463-479`); outside the stretch it deoptimizes, as
-  "Non-local return and unwinding" above says.
+  `code/stubRoutines.cpp:463-479`); outside the stretch it takes the
+  exit, as "Non-local return and unwinding" above says, as the cut does
+  today for every return into an inlined scope.
 
 ### Escape analysis
 
@@ -12125,7 +12986,7 @@ good"). What is not:
 a program's objects alike: an allocation starts virtual, its fields SSA
 values, and is materialized only on the path where it escapes; a merge
 of differing states materializes before the merge; an interrupt point
-describes each virtual object in its metadata, and a deoptimization
+describes each virtual object in its metadata, and an exit, as it makes an eliminated block,
 materializes them before anything else, as V8's does
 (`runtime/runtime-compiler.cc:587-618`) and HotSpot's `realloc_objects`
 (`runtime/deoptimization.cpp:356-425`). Graal's partial escape analysis
@@ -12144,16 +13005,16 @@ flattened into other objects and arrays
 
 What is built frees the copies an install, a bulk forward or a
 reclaimed id makes stale, by their keys, at once ("Speculation",
-"Invalidation"). What is not: optimized code that inlines records each
-application whose layout, method lookup or outer structure it relied
-on -- the set whose epochs its installation checks once a compile runs
-on its own thread -- and each application keeps the list of the code
-that depends on it. An install marks the code of exactly the
-applications it rebuilds, those built from the replaced mixin and every
-one whose chain holds them; it points their cells and machine entry
-rows back at baseline code and raises the epochs, and a marked frame
-below the top, which stands for several activations once code inlines,
-deoptimizes as "Optimized frames" above says. Strongtalk marks by class
+"Invalidation"), and those whose recorded dependencies -- the
+applications an arm or a customized read relied on, the inlined
+bodies' code ids and feedback bases -- an install, a reclaim or a
+slide changes ("Inlining", "Dependencies"): each runs after an exit or
+at a safepoint, so a frame below the top that stands for several
+activations is one already. What is not: each application's epoch,
+which a compile on its own thread checks for every application it
+relied on before it installs (stage 8), and a list per application of
+the code that depends on it, where the install today scans every
+copy's dependencies (`JitState::copies_depending`). Strongtalk marks by class
 (`code/zone.cpp:634-650`), HotSpot by its dependency kinds
 (`code/dependencies.hpp:105-170`; `oops/instanceKlass.cpp:1772-1792`), V8
 by its `DependentCode` groups (`objects/dependent-code.h:37-70`).
@@ -12163,17 +13024,19 @@ by its `DependentCode` groups (`objects/dependent-code.h:37-70`).
 Built: `NS_NEXT_STRESS_OPTIMIZE` and `NS_NEXT_STRESS_DEOPT` ("The
 optimizing tier's foundation", "Verification") and
 `NS_NEXT_STRESS_INVALIDATE` ("Speculation", "Verification"), with the
-graph's and the allocation's verifiers and the optimizer's goldens. Not
+graph's and the allocation's verifiers, the replay of every inlined
+scope's words and of each poll's entry, and the optimizer's goldens
+("Inlining", "Verification"). Not
 built: on-stack replacement at the first back jump under
 `NS_NEXT_STRESS_OPTIMIZE`, as V8's `stress_maglev`
 (`flags/flag-definitions.h:601`), with stage 6;
 `NS_NEXT_STRESS_INLINED_FRAMES`, every read of an inlined frame object
-deoptimizing and every non-local return into an inlined home taken in
+taking an exit and every non-local return into an inlined home taken in
 turn by its continuation and by the unwinder, with stage 4; the
 verification of representations after every pass, as Maglev's
 `maglev_assert` (`:679-682, 757`), and of each interrupt point's
 metadata against the leftover analysis's liveness once a value lives
-outside its frame word, and assertions in the generated code of the
+outside its frame word and its eliminated blocks, and assertions in the generated code of the
 types the compiler assumed; and differential tests that run generated
 arithmetic over `SmallInteger`, `LargeInteger`, `SmallFloat` and boxed
 `Float` at the 61-bit, 64-bit and `SmallFloat` bounds optimized and
@@ -12204,8 +13067,13 @@ the next:
    invalidation per application, `NS_NEXT_STRESS_INVALIDATE`; sends keep
    their cells. It measured what customization and traps move ("What
    speculation moved").
-3. **Inlining**: the plan, the walk up the stack, blocks with their home,
-   type-cases in the order the types first appeared.
+3. **Inlining**, built ("Inlining" above): the snapshot tree and the
+   plan, inlined scopes at the interpreter's positions, type-cases in
+   the cache's order, the callees always inlined, blocks with their
+   home and their elimination, the exit that writes the scopes and
+   makes the blocks, the walk up the stack, the way back in at a poll
+   and the copies' dependencies. It measured what inlining moves and
+   its limits ("What inlining moved").
 4. **Inlined frame objects** and the non-local return into an inlined
    home, `NS_NEXT_STRESS_INLINED_FRAMES`.
 5. **Numbers**: the representations, phi untagging, the range checked at

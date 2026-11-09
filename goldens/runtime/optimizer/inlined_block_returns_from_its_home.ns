@@ -1,0 +1,42 @@
+/// `^` out of blocks an optimized copy inlines, each a return from the
+/// home it lies in: `find:` returns ten times `target` from the block it
+/// hands `to:do:`, and `findNested:` the number of `target`'s tens and
+/// ones from a block two homes deep, each -1 for a `target` the scan never
+/// meets. `run:` sums both for every `target` from 0 to 119 in turn: one
+/// such turn sums 50480 and 55530, so 12000 sends, 100 turns, answer
+/// 10601000; and 5 sends, of 1 to 5, 150 and 515, so 665.
+class InlinedBlockReturnsFromItsHome = Object new () (
+  find: target = (
+    1 to: 100 do: [:each | each = target ifTrue: [^each * 10]].
+    ^-1.
+  )
+
+  findNested: target = (
+    1 to: 10 do: [:tens |
+      1 to: 10 do: [:ones | (tens - 1) * 10 + ones = target ifTrue: [^tens * 100 + ones]].
+    ].
+    ^-1.
+  )
+
+  run: count = (
+    |
+      sum ::= 0.
+    |
+    1 to: count do: [:index |
+      sum:: sum + (self find: index \\ 120) + (self findNested: index \\ 120).
+    ].
+    ^sum.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self run: 12000) printString;
+        newLine.
+    transcript
+        show: (self run: 5) printString;
+        newLine.
+  )
+)

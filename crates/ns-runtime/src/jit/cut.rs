@@ -116,6 +116,17 @@ pub(crate) fn cut(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
     else {
         unreachable!("internal: the cut is called from an installed body");
     };
+    // No inlined scope's `NonLocalReturn` is a template: an inlined
+    // block's is a jump to its home's return, and the plan inlines no
+    // method that holds one.
+    debug_assert!(
+        !installed.optimized
+            || usize::try_from(code_address)
+                .ok()
+                .and_then(|address| mutator.jit.inlined_at(address))
+                .is_none_or(|inlined| !inlined.inlines()),
+        "internal: the cut is called from no inlined scope"
+    );
     let code = &installed.code;
     let Instruction::NonLocalReturn { register } = code.instruction(program_counter as usize)
     else {
@@ -209,6 +220,19 @@ pub(crate) fn cut_frame(mutator: &mut Mutator<'_>, arguments: [u64; 3]) -> u64 {
         mutator.jit.cut.reset();
         return u64::from(EXIT);
     };
+    // A caller that called inside an inlined scope stands for several
+    // activations, which the exit's walk materializes and the unwinder
+    // pops one by one; one that called where a block its code eliminated
+    // is live is left to the exit too, which makes the block.
+    if caller.optimized
+        && usize::try_from(return_address)
+            .ok()
+            .and_then(|address| mutator.jit.inlined_at(address))
+            .is_some()
+    {
+        mutator.jit.cut.reset();
+        return u64::from(EXIT);
+    }
     let Some(slots) = call_slots(&caller.code, program_counter) else {
         unreachable!("internal: a compiled call's return address names a send or an initializer's");
     };

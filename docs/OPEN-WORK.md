@@ -47,14 +47,31 @@ executed; versions against deoptimization loops, an abandonment one
 too, the last compiled without traps; the invalidation of copies by an
 edit, a bulk forward and a reclaimed id, and `NS_NEXT_STRESS_INVALIDATE`;
 measured -3.17% on the geometric mean against `master` ("What
-speculation moved"). Next is its **third stage, inlining**: the plan on
-the snapshot's tree, the walk up the stack for the recompilee, blocks
-compiled with their home and type-cases in the order the types first
-appeared ("Planned: the optimizing JIT", "Inlining", "Stages"), which
-gets its design questions and its plan next.
-Beside it stand what the first two stages left (the items under step 9)
-and what the baseline's stages left to the steps after them (the items
-under step 8).
+speculation moved"). Its third stage, inlining, is built (2026-11-07
+to 2026-11-09; "Inlining"): a plan over a tree of snapshots of the body
+and its callees, by frequency under limits measured; type-cases of up
+to four inlined callees in the cache's order; accessors, quick methods,
+`==`, `class`, `SmallInteger` operations and indexed access as nodes;
+every inlined scope at the interpreter's position in the physical
+frame; blocks compiled with their home and eliminated where nothing
+lets them escape, made by the exit that finds them live; the
+recompilee found by walking up the stack; a frame that left at a poll
+gone back into its optimized code there; and a copy freed when anything
+it inlined changes; measured -34.0% on the geometric mean against
+`master` ("What inlining moved").
+
+The work right after the inlining branch is **`Float` arithmetic in
+SSE2, and the CPU's features asked once** (its entry under "Planned:
+performance and representation" below). The next stage of road step 9
+after it is the **fourth, inlined frame objects and the non-local
+return into an inlined home**, with `NS_NEXT_STRESS_INLINED_FRAMES`
+("Planned: the optimizing JIT", "Closures, frames and non-local return
+in inlined scopes", "Stages"), which lifts the plan's rule that sends
+every callee whose scope would create a block that escapes; it gets its
+design questions and its plan when it comes up.
+Beside them stand what the first three stages left (the items under
+step 9) and what the baseline's stages left to the steps after them
+(the items under step 8).
 
 Road step 8 is complete (2026-11-04): the baseline JIT, Cog's class,
 in six stages ("The baseline JIT's foundation", "Sends, returns and the
@@ -780,21 +797,24 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class, designed with the user
   on 2026-11-04 and 2026-11-05 ([execution.md](design/execution.md),
-  "Planned: the optimizing JIT"), in ten stages, the first two built:
+  "Planned: the optimizing JIT"), in ten stages, the first three built:
   the foundation (2026-11-06; "The optimizing tier's foundation");
   speculation with customization, traps and invalidation (2026-11-06
-  and 2026-11-07; "Speculation"); inlining, next; frame objects for
-  inlined activations; numbers, with the raw area; on-stack replacement
-  into optimized code; counting at polymorphic and megamorphic sites;
-  the compiler thread; escape analysis with late inlining; range
-  analysis. The first stage measured the budget (240,000 instructions,
-  a sixth of it after a cache change) and its spend in baseline code
-  ("What the optimizing tier's foundation moved"), the second the trap
-  limit (5) and the last version (3), both kept ("What speculation
-  moved"). Left by the design to measurement, each in the stage that
-  builds it: the inlining plan's limits, the share of polymorphic and
-  megamorphic sends in the benchmarks before their counting is built,
-  and the counting window's size and rhythm. What the first stage left:
+  and 2026-11-07; "Speculation"); inlining (2026-11-07 to 2026-11-09;
+  "Inlining"); then frame objects for inlined activations, next;
+  numbers, with the raw area; on-stack replacement into optimized code;
+  counting at polymorphic and megamorphic sites; the compiler thread;
+  escape analysis with late inlining; range analysis. The first stage
+  measured the budget (240,000 instructions, a sixth of it after a
+  cache change) and its spend in baseline code ("What the optimizing
+  tier's foundation moved"), the second the trap limit (5) and the last
+  version (3), both kept ("What speculation moved"), the third the
+  inlining plan's limits, `BLOCK_LIMIT` raised to 140 and the others
+  kept, and the walk's least home calls, 4 ("What inlining moved").
+  Left by the design to measurement, each in the stage that builds it:
+  the share of polymorphic and megamorphic sends in the benchmarks
+  before their counting is built, and the counting window's size and
+  rhythm. What the first stage left:
   - **Register allocation over a body** (decided with the user on
     2026-11-03): a frame register's value kept in a machine register
     across instructions and merges is built in the first stage, a
@@ -851,26 +871,64 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       to of every body that has optimized code, not only of frames that
       ran it, and `deepest_forced_exit` counts the points since the last
       safepoint across all optimized code, not per activation.
-  - **Optimized code's sends mispredict in the shared stubs**
-    (2026-11-05). At the first stage, DeltaBlueTon80's optimized bodies
-    took 3.3% fewer samples than their baseline code, but the
-    polymorphic stub and the row stubs they call took 6.8% more, their
-    type tests mispredicting more often behind an optimized caller, so
-    the program ran level with a build that optimizes nothing. The
-    second stage's customized copies run it about 2% ahead of its
-    baseline code (2026-11-06), but its sends still go through the same
-    cells and shared stubs, since send sites do not speculate before
-    stage 3's type-cases, and the mispredictions were not measured
-    again: this machine's sampled profiles did not separate them. To be
-    measured again with stage 3. [execution.md](design/execution.md),
-    "What the optimizing tier's foundation moved", "What speculation
-    moved".
+  - **What the third stage's measurement left** (2026-11-08), none a
+    wrong answer; [execution.md](design/execution.md), "What inlining
+    moved":
+    - *An inlined scope that would create a block is sent*: until
+      optimized code creates blocks itself (stage 4), a `MakeClosure` in
+      an inlined scope leaves the copy, so the plan sends every callee
+      whose scope would create a block it does not eliminate on a way
+      that ran (`plan::Planner::creates_a_block`). The rule is stage 4's
+      to lift, and it costs eliminated blocks: a callee handed one that
+      creates another is sent, and the block handed to it escapes -- the
+      inlining corpus eliminates 6 blocks with the rule, 18 without it.
+    - *A home with a loop of its own is never taken by the walk*: the
+      walk goes up from a block to its home only when the home has been
+      called `LEAST_HOME_CALLS` times since its budget was armed, which
+      only a body without a backward jump can show (`jit::recompilable`,
+      `called_repeatedly`; [execution.md](design/execution.md),
+      "Inlining", "The recompilee walk"). A home with a loop of its own
+      is refused even when called often, and is optimized at its own
+      run-out instead: its budget row cannot tell its entries from its
+      back edges; no cost was measured on the twenty-seven sources. A count of entries
+      apart from the back edges' spend would let the walk take it, and
+      on-stack replacement into optimized code (stage 6) would let a
+      home called once be entered at its loop's head.
+    - *NBody's rare slow run*: since NBody's `do:` block is eliminated,
+      about one run in thirty-five takes 1.01 s or more against 0.93 to
+      0.96 s; `18944be5` had none in seventy. No slow run has been seen
+      with its statistics: 68 runs with `--jit-statistics`, none of them
+      slow, gave identical statistics, and the flag changes the code.
+      Not found
+      ([execution.md](design/execution.md), "What inlining moved").
+      The steady-state comparison against Java (2026-11-09) showed no
+      slow NBody run: its nine `bench` medians lay at 926 to 951 ms
+      ([execution.md](design/execution.md), "Against Java").
+    - *Mandelbrot's one slow median*: in the same steady-state
+      comparison one of Mandelbrot's nine `bench` medians, on build c,
+      was 1968 ms, two of its three runs slow,
+      against 1781 to 1808 ms for the other eight. Not looked into.
+    - *A block handed on through a local loses its bonus*: the snapshot
+      tree weighs a callee against `METHOD_LIMIT` plus the block
+      argument bonus only for an argument a `MakeClosure` wrote, or a
+      parameter or copied value (`tree::block_registers`), while the
+      plan counts every register that may hold a block of the compile,
+      through moves. A block stored in a named temporary and then handed
+      to `do:` -- `| add = [...] | collection do: add` -- leaves the tree
+      recording a callee heavier than `METHOD_LIMIT` alone (`Array`'s
+      `do:` weighs 47 where its loop never ran) as one no plan could
+      inline (`CalleeFacts::Other`), so the plan never sees it and the
+      block escapes into the send.
+    - *`ValueOfParameter` and `CullParameter` stay sends*, and the
+      "cheap" weight of a send counts their fast paths, the mirror's and
+      a closure's `value` among them, at an accessor's 2 though they may
+      run a whole block.
+    - *Compile time*: a debug build's verification of every allocation
+      takes a quarter to a third of its optimizing compiles; DeltaBlue's
+      97 copies take 29 ms in a release build.
   - **What the second stage left** (2026-11-06), none a wrong answer;
     [execution.md](design/execution.md), "Speculation":
-    - *For stage 3*: no table maps a dispatch id back to its
-      application; a request carries the entered application its copy
-      needs, and stage 3's snapshot, which reads callees' receivers,
-      builds the table (decided in the plan, 2026-11-06). The budget
+    - *For stage 6*: the budget
       leaf receives the frame register in place of the program counter,
       so stage 6's on-stack replacement into optimized code, which
       wanted the counter at the leaf, needs another way to learn it.
@@ -908,6 +966,49 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
       allocation's verification ran cubic in a body's size (`e5fb65f5`,
       `d0e8f458`, `7096a52e`). A gate of the pairs that touch the
       optimizer would keep such failures found.
+  - **What the third stage's callees always inlined leave** (2026-11-07),
+    none a wrong answer; [execution.md](design/execution.md),
+    "Inlining":
+    - *Sent, not expressed*: a builtin class's accessor
+      (`MethodFastPath::BuiltinClass`), whose class only the heap's
+      tables name, which no simple node reads; `^<parameter> value` and
+      `cull:`, which activate a block, whose scope a quick method has no
+      way to lay out, so that the block escapes; and every arm with a check in a copy that speculates
+      nothing or at a site that trapped (`build::Laying::expressed`).
+    - *Traps that recur*: a lazy slot's getter traps for every instance
+      whose slot is still empty, and `==` for every pair that holds a
+      future; such a site is sent once its trap retired the copy.
+    - *Costs*: the barrier of a setter and of an `Array`'s `at:put:`
+      calls the remembering leaf out of line, so that every value live
+      across either leaves the registers the call clobbers -- moved into
+      a survivor or written back -- on the straight line too.
+  - **An optimized caller is never recompiled to inline a callee that
+    became hot later** (2026-11-08). The recompilee walk
+    (`jit::find_recompilee`) stops at every caller whose key has a copy
+    installed: optimized code spends no budget, so no row says how long
+    a copy has run since its install, and `optimize` drops a request for
+    a pair that has its copy. A caller optimized first keeps sending a
+    callee that grew hot afterwards, which is then optimized alone.
+    Strongtalk recompiles an old nmethod when its own counters fire
+    (`recompiler/recompiler.cpp`, `shouldNotRecompileNMethod`,
+    `code/nmethod.cpp`'s `isYoung`). The fix needs a spend measure in
+    optimized code and a way to recompile a live copy: raise its version,
+    compile, install in its place.
+  - **A poll whose entry cannot restore a value keeps the full exit**
+    (2026-11-08). A frame of optimized code that left at a poll goes back
+    in at the poll's entry, which reads every value the code reads past
+    the poll back from a frame word the leftover analysis leaves to the
+    frame there, or from a constant's word (`optimizing::metadata`'s
+    `poll_restores`). A value read past the poll that is bound only to
+    registers the analysis taints at the loop's head, and no constant,
+    has no such source: the compile gives that poll no entry, and every
+    scavenge sends the frame on in baseline code until its next push
+    (`JitStatistics::polls_without_an_entry`). Among `ns-runtime`'s
+    tests only graphs built by hand compile one; a value the copy loads
+    across the back edge without the interpreter holding it -- a receiver
+    or a field load hoisted out of the loop -- would, and is rebuilt only
+    once a rule shows that no store between the load and the poll wrote
+    the field.
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any
@@ -937,11 +1038,78 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   the comparison fair, so it is decided then, from the heap composition
   of real programs, not before; a large homogeneous run of numbers is
   served meanwhile by the typed arrays of the kernel's fifth sub-project.
+- **Last of all, once everything above is done: machine-level
+  experiments, each measured** (noted with the user on 2026-11-09, for
+  future optimization). Small gains, none worth a step of its own
+  before the structural ones above; each needs the encoder form, its
+  `iced-x86` check, the AArch64 counterpart where one applies, and a
+  measurement. The encoder today has `move_if` (`cmov`) and
+  `multiply_checked`, none of these:
+  - **`lea` for tagged arithmetic**: an addition with a constant, an
+    index or an address computed into another register without
+    touching the flags, a `mov` saved per operation (`SmallInteger`
+    with a constant, `at:`).
+  - **`setcc`/`cmov` for a Boolean result**: a comparison whose value
+    is stored or answered rather than branched on made `true` or
+    `false` without a jump; pays only where the comparison predicts
+    badly. First check what the templates emit for it.
+  - **Prefetch at allocation (`prefetchw`)**: the lines past the bump
+    pointer fetched ahead, HotSpot's `AllocatePrefetch`; for
+    allocation-heavy programs (CD, Storage, Richards); strongly
+    CPU-dependent.
+  - **`rep stosq` to initialize a large object**: an `Array new:` of
+    about 1-2 KB and more filled with `nil` in one instruction, unrolled
+    stores below.
+  - **Loop heads aligned** to 32 or 64 bytes for the micro-op cache and
+    the front end, HotSpot's `OptoLoopAlignment`; 0-3%, sometimes
+    negative.
+  - **`crc32` (SSE4.2) for the runtime's hash tables**, such as the
+    mirror method leaf's lookup by return address; Rust code, so the
+    `#[target_feature]` question of the SSE2 entry under "Planned:
+    performance and representation" comes with it.
 
 Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
 
+- **`Float` arithmetic in SSE2, and the CPU's features asked once** (noted
+  with the user on 2026-11-09, to be taken up after the inlining
+  branch). The x64 encoder emits no SSE instruction, so every `Float`
+  comparison and arithmetic operation is a mirror method leaf call (the
+  step 8 entry's "`Float`'s comparisons and arithmetic are such leaf
+  calls", 83 million of CD's 85 million leaf calls a run). SSE2 is part
+  of every x86-64 CPU, so templates for them -- the `SmallFloat64` tag
+  taken apart inline, `addsd`, `subsd`, `mulsd`, `divsd`, `ucomisd`,
+  `sqrtsd`, `cvtsi2sd` on an `xmm` register role, and their AArch64
+  counterparts `fadd`, `fsub`, `fmul`, `fdiv`, `fcmp` -- need no
+  detection; they serve the baseline code and are what stage 5's
+  unboxed floats build on. Beside them, the JIT asks the CPU's
+  features once at start (`std::arch::is_x86_feature_detected!`, safe)
+  and records them in the macro assembler, which emits an extension's
+  form only where the CPU has it and the base form otherwise: SSE4.1's
+  `roundsd` for `floor`, `truncated` and `rounded`, `lzcnt`, `popcnt`,
+  BMI2's `shlx` and `sarx`, as HotSpot's `VM_Version` and V8's
+  `CpuFeatures` do. Each form is checked against `iced-x86`, and a
+  stress mode forces the base forms, or no test on a machine with the
+  extensions runs them. The Rust side stays built for the x86-64
+  baseline: per-function `#[target_feature]` with a runtime switch
+  needs `unsafe` and would pay only in `LargeInteger`'s digit loops
+  (`mulx`, `adcx`, `adox`), which no benchmark leans on.
+  Unmeasured.
+- **The recompilee walk takes a snapshot tree and a plan at every step**
+  (noted at the inlining branch's final review, 2026-11-09).
+  `jit::find_recompilee` asks `inlines` at each frame it goes up to,
+  which takes a whole `SnapshotTree` and makes a plan of the candidate
+  every time, and `inlined_into_a_copy_below` reads up to
+  `RECOMPILEE_SEARCH_LENGTH`, ten, senders per step: up to ten trees and
+  a hundred frame reads per budget exit. Budget exits are rare -- one
+  per body per budget, counted by `budget_exits` -- and the walk's cost
+  was not separated from the rest in the measurements of "Inlining".
+  What would find out whether it matters: the time of the run loop's
+  budget-exit path, by the protocol of "Measuring", on the benchmarks
+  with the most `budget_exits`; if it shows, the tree and plan cached
+  per candidate body within one walk.
+  [execution.md](design/execution.md), "The recompilee walk".
 - **The depth flag a continuation's push takes is dead** (2026-10-27).
   `Mutator::push_continuation` takes `replaced_counted`, whether the
   activation a continuation replaces counted against the depth limit,
@@ -3019,6 +3187,31 @@ Small, deliberately left, none affecting an outcome.
   precondition lines lack a blank `///` before them.
 
 ## Goldens and documentation
+
+- **A golden cannot name the stress modes it is written for**
+  (2026-11-08). Only a directory binds a mode today: every golden under
+  `goldens/runtime/optimizer/` runs a second time in a debug build as
+  `golden::optimizer::<name>` with `NS_NEXT_STRESS_OPTIMIZE=1`
+  ([README.md](design/README.md), "The goldens"); every other mode
+  reaches a golden only through the `stress` gate at the end of a batch.
+  A golden written for a mode -- an exit inside an inlined scope for
+  `DEOPT`, a freed copy for `INVALIDATE`, a moved frame for `MOVES` --
+  should say so in its `.toml` (a key such as `stress_modes = ["DEOPT",
+  "INVALIDATE"]`), and the default suite in a debug build should run it
+  under each mode it names, so that a defect in the very scenario it pins
+  is found at the commit, not at the batch's end, and which golden pins
+  which mode is recorded rather than left to comments. It adds to the
+  `stress` gate's run of every golden under every mode, never replaces
+  it: most defects the modes found were in code not written with that
+  mode in mind (24 `fix:` commits name a mode, a lower bound, since a
+  defect found during a feature is fixed in its own commit). There is no
+  opt-out key: a golden's outcome is the same under every mode, and a
+  mode that makes its scenario impossible still checks its output. The
+  directory rule then goes: each of the 33 goldens under
+  `goldens/runtime/optimizer/` names `OPTIMIZE` (several also `DEOPT` or
+  `INVALIDATE`), `crates/ns-cli/tests/run_goldens.rs` drops its prefix
+  test, and a test holds every golden under that directory to naming
+  `OPTIMIZE`, so that a new one cannot lose the run by forgetting the key.
 
 - **The reflective checks back in goldens** (2026-10-18): what only the
   representation showed while `class` and `Object`'s class accessors are

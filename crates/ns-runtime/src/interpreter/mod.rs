@@ -955,6 +955,16 @@ impl Interpreter {
         })
     }
 
+    /// The application the dispatch id `id` was minted for, while it is
+    /// registered (`Heap::application_of_dispatch_id`). A test hook.
+    #[doc(hidden)]
+    pub fn application_of_dispatch_id(
+        &mut self,
+        id: crate::mixin::DispatchId,
+    ) -> Option<crate::heap::ApplicationIndex> {
+        self.enter(|mutator| mutator.heap.application_of_dispatch_id(id))
+    }
+
     /// The feedback base the closure `closure` holds, raw, or `None` when
     /// it is no closure: what a slide of the site ranges rewrites
     /// (`InlineCaches::plan_slide`). A test hook.
@@ -1142,6 +1152,60 @@ impl Interpreter {
         })
     }
 
+    /// How many bodies the optimized copies of `method`'s body that this
+    /// interpreter's zone holds inlined, counted once per copy that
+    /// inlines each (`jit::CopyDependencies`). A test hook.
+    #[doc(hidden)]
+    pub fn jit_inlined_bodies(&mut self, class: &Root, side: MethodSide, method: Symbol) -> usize {
+        self.enter(|mutator| {
+            method_code(mutator, class, side, method)
+                .map_or(0, |code| mutator.jit.inlined_bodies(&code))
+        })
+    }
+
+    /// `method`'s body's code id now, if it has one -- a full collection
+    /// frees it once nothing names it -- as its row number. A test hook.
+    #[doc(hidden)]
+    pub fn jit_code_id(&mut self, class: &Root, side: MethodSide, method: Symbol) -> Option<usize> {
+        #[cfg(ns_jit)]
+        {
+            self.enter(|mutator| {
+                let code = method_code(mutator, class, side, method)?;
+                mutator.heap.minted_code_id(&code).map(|id| id.index())
+            })
+        }
+        #[cfg(not(ns_jit))]
+        {
+            let _ = (class, side, method);
+            None
+        }
+    }
+
+    /// Whether a live copy of optimized code names `method`'s body's code
+    /// id as one of the bodies it inlined, which a full collection keeps
+    /// (`jit::inlined_code_ids`). A test hook.
+    #[doc(hidden)]
+    pub fn jit_code_id_named_by_a_copy(
+        &mut self,
+        class: &Root,
+        side: MethodSide,
+        method: Symbol,
+    ) -> bool {
+        #[cfg(ns_jit)]
+        {
+            self.enter(|mutator| {
+                method_code(mutator, class, side, method)
+                    .and_then(|code| mutator.heap.minted_code_id(&code))
+                    .is_some_and(|id| crate::jit::inlined_code_ids(mutator).contains(&id))
+            })
+        }
+        #[cfg(not(ns_jit))]
+        {
+            let _ = (class, side, method);
+            false
+        }
+    }
+
     /// The machine entries the dispatching rows of `method`'s body name, in
     /// the rows' order, and those of the customized copies of it this
     /// interpreter's zone holds, sorted: what a `super` or private lexical
@@ -1317,7 +1381,7 @@ impl Interpreter {
         self.enter(|mutator| {
             let budget = mutator.jit.set_optimize_stress(stress);
             #[cfg(ns_jit)]
-            mutator.heap.rearm_optimization_budgets(budget);
+            crate::jit::rearm_all_budgets(mutator, budget);
             #[cfg(not(ns_jit))]
             let _ = budget;
         });
@@ -1335,7 +1399,7 @@ impl Interpreter {
         self.enter(|mutator| {
             let budget = mutator.jit.set_deopt_stress(stress);
             #[cfg(ns_jit)]
-            mutator.heap.rearm_optimization_budgets(budget);
+            crate::jit::rearm_all_budgets(mutator, budget);
             #[cfg(not(ns_jit))]
             let _ = budget;
         });
@@ -1353,7 +1417,7 @@ impl Interpreter {
         self.enter(|mutator| {
             let budget = mutator.jit.set_invalidate_stress(stress);
             #[cfg(ns_jit)]
-            mutator.heap.rearm_optimization_budgets(budget);
+            crate::jit::rearm_all_budgets(mutator, budget);
             #[cfg(not(ns_jit))]
             let _ = budget;
         });
@@ -1391,7 +1455,7 @@ impl Interpreter {
         self.enter(|mutator| {
             let armed = mutator.jit.set_optimization_budget(budget);
             #[cfg(ns_jit)]
-            mutator.heap.rearm_optimization_budgets(armed);
+            crate::jit::rearm_all_budgets(mutator, armed);
             #[cfg(not(ns_jit))]
             let _ = armed;
         });

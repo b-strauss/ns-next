@@ -272,6 +272,7 @@ impl Heap<'_> {
             .free_applications
             .free(u32::try_from(index.index()).expect("an application index is 32 bits"));
         self.record_application_row(index.index(), Self::vacant_application_row());
+        self.record_dispatch_id_application(application.dispatch_ids.instances, None);
         application
     }
 
@@ -282,12 +283,17 @@ impl Heap<'_> {
         self.tables.successors.retain(|old, _| live(*old));
     }
 
-    /// Gives back the application table's trailing free rows.
+    /// Gives back the application table's trailing free rows, and those of
+    /// the table from dispatch id to application.
     pub(crate) fn truncate_application_rows(&mut self) {
         super::ids::truncate_trailing(
             &mut self.tables.applications,
             &mut self.tables.free_applications,
         );
+        let dispatch_ids = &mut self.tables.dispatch_id_applications;
+        while matches!(dispatch_ids.last(), Some(None)) {
+            dispatch_ids.pop();
+        }
         self.record_application_rows();
     }
 

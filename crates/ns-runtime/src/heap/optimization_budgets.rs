@@ -1,5 +1,6 @@
 //! Each body's optimization budget by its code id, in a reservation of
-//! its own (`docs/design/execution.md`, "When a body is optimized"):
+//! its own (`docs/design/execution.md`, "The optimizing tier's
+//! foundation", "The budget"):
 //! baseline machine code subtracts the body's length at each entry and the
 //! jump's distance at each back jump from the body's row, and once the
 //! row falls below zero calls the budget leaf (`jit::leaves`), which
@@ -143,11 +144,15 @@ impl OptimizationBudgets {
     /// Raises an armed `row` to `at_least` when it holds less, so that a
     /// body whose feedback just changed waits for it to settle; a raise
     /// never lowers a budget, and leaves a row that is not armed alone.
-    pub(crate) fn raise(&mut self, row: CodeId, at_least: i64) {
+    /// Answers by how much it raised it.
+    pub(crate) fn raise(&mut self, row: CodeId, at_least: i64) -> i64 {
         let index = row.index();
-        if self.is_armed(row) && self.read(index) < at_least {
+        let held = self.read(index);
+        if self.is_armed(row) && held < at_least {
             self.write(index, at_least);
+            return at_least - held;
         }
+        0
     }
 
     /// Parks an armed `row` at the most it holds: its body's optimization

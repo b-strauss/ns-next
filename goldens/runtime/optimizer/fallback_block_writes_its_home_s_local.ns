@@ -1,0 +1,60 @@
+/// A conditional whose receiver is no Boolean: `Truthy`'s `ifTrue:`
+/// evaluates its argument, so the optimized lowering's fallback closure
+/// runs -- a block that reads and writes its home's local by reference --
+/// and an optimized copy inlining `ifTrue:` with that block reaches the
+/// local as its home's register. `bump:` adds `one`, 1, to `count`
+/// through the block -- a send of `one`, which weighs too much to inline,
+/// is an interrupt point inside the inlined block -- then 10: 11.
+/// `early:` adds 1 to 3 and returns 400 out of the block, a `^` to its
+/// home. A run of 3000 passes sums 411 each, 1233000, and 100 runs
+/// 123300000.
+class FallbackBlockWritesItsHomeSLocal = Object new () (
+  class Truthy = () (
+    public ifTrue: action = (
+      ^action value.
+    )
+  )
+
+  one = (
+    ^1 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0.
+  )
+
+  bump: condition = (
+    |
+      count ::= 0.
+    |
+    condition ifTrue: [count:: count + self one].
+    count:: count + 10.
+    ^count.
+  )
+
+  early: condition = (
+    |
+      count ::= 3.
+    |
+    condition ifTrue: [
+      count:: count + 1.
+      ^count * 100.
+    ].
+    ^count.
+  )
+
+  run: truthy = (
+    |
+      sum ::= 0.
+    |
+    1 to: 3000 do: [:index | sum:: sum + (self bump: truthy) + (self early: truthy)].
+    ^sum.
+  )
+
+  public main: platform args: arguments = (
+    |
+      truthy = Truthy new.
+      sum ::= 0.
+    |
+    1 to: 100 do: [:index | sum:: sum + (self run: truthy)].
+    platform transcript
+        show: sum printString;
+        newLine.
+  )
+)

@@ -4,7 +4,9 @@
 //! `yourself`/`==`/`=`/`printString`, and -- most importantly --
 //! `Object`'s real, spec-shaped `doesNotUnderstand:`
 //! (`builtins::object_class`), not the interpreter's internal
-//! "no doesNotUnderstand: found" fallback string.
+//! "no doesNotUnderstand: found" fallback string. A number and a string
+//! reach `Value`'s `==` instead, which optimized code's inlined `==`
+//! relies on.
 
 use ns_runtime::{
     BuiltinClass, Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind,
@@ -209,4 +211,75 @@ fn a_builtins_own_implementation_still_wins_over_objects() {
             "Integer's own printString must win over Object's generic default"
         );
     });
+}
+
+/// Optimized code's inlined `==` (`Node::IdentityCompare`, emitted by the
+/// macro assembler's `jump_if_identity_undecided`) answers `false` for two
+/// different words, where `Object>>==`'s leaf answers `true` for two boxed
+/// floats of the same bits: it is right only because no number and no
+/// string reaches that leaf on its left, every one of them a `Value`,
+/// whose `==` is `=`. This pins both halves of that: the lookup of `==`
+/// from every number and string class finds `Value`'s method, never the
+/// mirror's identity row nor a method of their own, and that method's
+/// body in `Kernel.ns` is `^self = other`. Held here, by the lookup and
+/// the shipped source, rather than by a golden: two boxed floats of the
+/// same bits are identical by the interpreter's leaf too, so no program's
+/// output would change unless the optimizer happened to inline that very
+/// send, and a golden would then pin a path rather than the rule.
+#[test]
+fn every_number_and_string_compares_identity_by_values_equality() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let selector = Symbol::intern("==");
+        for kind in [
+            BuiltinClass::Number,
+            BuiltinClass::Integer,
+            BuiltinClass::LargeInteger,
+            BuiltinClass::Float,
+            BuiltinClass::Fraction,
+            BuiltinClass::String,
+            BuiltinClass::Symbol,
+        ] {
+            let class = mutator.builtin_class(kind);
+            let heap = mutator.heap();
+            match ns_runtime::dispatch::lookup_public(heap, class, selector) {
+                ns_runtime::dispatch::Lookup::Method(_, defining_class) => assert_eq!(
+                    heap.class_name(defining_class),
+                    Some(Symbol::intern("Value")),
+                    "{kind:?}'s `==` is `Value`'s"
+                ),
+                _ => panic!("{kind:?}'s `==` is not found as a method"),
+            }
+        }
+    });
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("core-library/Kernel.ns");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let Ok(module) = ns_syntax::parse(&source) else {
+        panic!("Kernel.ns does not parse");
+    };
+    let Some(value) = module
+        .root_class
+        .instance_side
+        .nested_classes()
+        .find(|class| class.name.name == "Value")
+    else {
+        panic!("Kernel.ns declares no Value");
+    };
+    let Some(identity) = value.instance_side.methods().find(|method| {
+        matches!(
+            &method.pattern,
+            ns_syntax::ast::MessagePattern::Binary { selector, .. } if selector.name == "=="
+        )
+    }) else {
+        panic!("Value declares no `==`");
+    };
+    let text = &source[identity.span.start as usize..identity.span.end as usize];
+    let words: Vec<&str> = text.split_whitespace().collect();
+    assert_eq!(
+        words.join(" "),
+        "public == other = ( ^self = other. )",
+        "Value>>== is `=`, which optimized code's inlined `==` relies on"
+    );
 }

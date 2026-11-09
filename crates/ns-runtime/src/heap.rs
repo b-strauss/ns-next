@@ -1028,6 +1028,13 @@ pub(crate) struct MachineFrame {
     /// -- so that its return divorces a reified frame as the pop does. A
     /// frame running lean code is never reified.
     pub(crate) reifies: bool,
+    /// Whether the frame is an inlined scope of optimized code, which no
+    /// prologue wrote: only its receiver and current class are its code's
+    /// (`jit::optimizing::emit`), and every other header word is written
+    /// here as the interpreter's push writes it -- its guard and entered
+    /// level as the push records them, its flags word whole, with a
+    /// generation of its own in a debug build.
+    pub(crate) inlined: bool,
     /// The caller's offset and the top the frame was pushed at; `None`
     /// for a leaf's view of its own frame, whose caller nothing reads.
     pub(crate) caller: Option<(u32, usize)>,
@@ -1068,6 +1075,9 @@ enum MachineOperand {
     CurrentClass,
     /// The operand word the frame's prologue wrote.
     Recorded,
+    /// `nil`, for an inlined block's closure no one made yet
+    /// (`MachineKind::inlined_closure`).
+    NotMadeYet,
 }
 
 #[cfg(ns_jit)]
@@ -1117,6 +1127,17 @@ impl MachineKind {
         MachineKind {
             tag: MachineKindTag::Constant(kind_tag::SUPERCLASS_CLAUSE),
             operand: MachineOperand::Recorded,
+        }
+    }
+
+    /// An inlined block's activation in optimized code, whose closure the
+    /// compile eliminated: no closure exists for it yet, so its operand is
+    /// `nil` until the exit that made the activation makes the closure and
+    /// writes it there (`Heap::set_closure_of_inlined_scope`).
+    pub(crate) fn inlined_closure() -> MachineKind {
+        MachineKind {
+            tag: MachineKindTag::Constant(kind_tag::CLOSURE),
+            operand: MachineOperand::NotMadeYet,
         }
     }
 
@@ -5715,7 +5736,49 @@ impl<'gc> Heap<'gc> {
         let application = Rc::new(application);
         self.tables.applications[row] = Some(application.clone());
         self.record_application_row(row, Self::application_row(Some(&application)));
+        self.record_dispatch_id_application(application.dispatch_ids.instances, Some(index));
         application
+    }
+
+    /// Records `application` as what `id` names (`Tables::dispatch_id_applications`),
+    /// or clears its row with `None`; a reserved id -- `NONE`, which an
+    /// application without an id of its own carries -- names no one
+    /// application and has no row.
+    fn record_dispatch_id_application(
+        &mut self,
+        id: DispatchId,
+        application: Option<ApplicationIndex>,
+    ) {
+        if id.bits() < DispatchId::FIRST_MINTED {
+            return;
+        }
+        let row = id.bits() as usize;
+        let rows = &mut self.tables.dispatch_id_applications;
+        if rows.len() <= row {
+            if application.is_none() {
+                return;
+            }
+            rows.resize(row + 1, None);
+        }
+        // An id is minted again only after its application left the table.
+        debug_assert!(
+            application.is_none() || rows[row].is_none(),
+            "internal: dispatch id {} minted for two live applications",
+            id.bits()
+        );
+        rows[row] = application;
+    }
+
+    /// The application the dispatch id `id` was minted for, while it is
+    /// registered; `None` for a reserved id and for one a collection gave
+    /// back. A cache entry's guard names its receiver's application
+    /// through it (`optimizing::tree`).
+    pub(crate) fn application_of_dispatch_id(&self, id: DispatchId) -> Option<ApplicationIndex> {
+        self.tables
+            .dispatch_id_applications
+            .get(id.bits() as usize)
+            .copied()
+            .flatten()
     }
 
     /// What the application id table records of `application`, or of a row
@@ -5775,7 +5838,9 @@ impl<'gc> Heap<'gc> {
     /// Whether the application id table records, for every row of the
     /// application table and nothing past it, that row's instances id, own
     /// slot base and flags -- zeros for a free row -- and the machine words
-    /// its address and bound.
+    /// its address and bound; and whether every dispatch id a registered
+    /// application carries, and no other, answers that application
+    /// (`application_of_dispatch_id`).
     #[cfg(all(test, debug_assertions))]
     pub(crate) fn verify_application_ids(&self) -> Result<(), String> {
         let rows = self.tables.applications.len();
@@ -5799,6 +5864,37 @@ impl<'gc> Heap<'gc> {
         }
         if self.application_ids.row_words(rows).is_some() {
             return Err("the table records a row past its bound".to_owned());
+        }
+        // The table from dispatch id back to application names exactly the
+        // registered applications with an id of their own.
+        let mut minted = 0;
+        for (row, application) in self.tables.applications.iter().enumerate() {
+            let Some(application) = application else {
+                continue;
+            };
+            let id = application.dispatch_ids.instances;
+            if id.bits() < DispatchId::FIRST_MINTED {
+                continue;
+            }
+            minted += 1;
+            if self.application_of_dispatch_id(id) != ApplicationIndex::from_index(row) {
+                return Err(format!(
+                    "dispatch id {} answers {:?}, its application is row {row}",
+                    id.bits(),
+                    self.application_of_dispatch_id(id)
+                ));
+            }
+        }
+        let recorded = self
+            .tables
+            .dispatch_id_applications
+            .iter()
+            .flatten()
+            .count();
+        if recorded != minted {
+            return Err(format!(
+                "{recorded} dispatch ids name an application, {minted} applications carry one"
+            ));
         }
         Ok(())
     }
@@ -6867,7 +6963,12 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn raise_running_optimization_budget(&mut self, at_least: i64) {
         if let Some(activation) = self.top_activation() {
             let id = self.activation_code_id(activation);
-            self.optimization_budgets.raise(id, at_least);
+            let raised = self.optimization_budgets.raise(id, at_least);
+            if raised > 0 {
+                self.activation_code(activation)
+                    .jit
+                    .record_budget_raise(raised);
+            }
         }
     }
 
@@ -6876,9 +6977,16 @@ impl<'gc> Heap<'gc> {
     /// (`jit::point_budget_words_after_collection`).
     #[cfg(ns_jit)]
     pub(crate) fn has_code_id(&self, code: &CompiledCode) -> bool {
+        self.minted_code_id(code).is_some()
+    }
+
+    /// `code`'s code id, if it has one now, without minting one.
+    #[cfg(ns_jit)]
+    pub(crate) fn minted_code_id(&self, code: &CompiledCode) -> Option<CodeId> {
         self.tables
             .code_ids
-            .contains_key(&(std::ptr::from_ref(code) as usize))
+            .get(&(std::ptr::from_ref(code) as usize))
+            .copied()
     }
 
     /// What is left of `code`'s optimization budget, if it has a code id
@@ -8873,6 +8981,21 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// Where the object physical register `index` of the frame whose
+    /// registers start at `base` names lies, if it names one, read past
+    /// the frame's window too: what a test compares before and after a
+    /// safepoint, a word of an inlined scope's registers among them.
+    #[cfg(all(test, ns_jit))]
+    pub(crate) fn frame_word_object_offset(&self, base: RegisterBase, index: u16) -> Option<u64> {
+        Word::from_bits(
+            self.stack
+                .frames
+                .committed_word(base.index as usize + index as usize),
+        )
+        .object_offset()
+        .map(std::num::NonZeroU64::get)
+    }
+
     /// Register `index` of the window `base` names: one index into the
     /// register file. A debug build checks the base is still its
     /// activation's and the register inside its window.
@@ -8978,6 +9101,50 @@ impl<'gc> Heap<'gc> {
     ) -> ApplicationIndex {
         self.check_activation(activation);
         self.activation_entered_level_of(activation.offset)
+    }
+
+    /// The receiver and the current class the header at `offset` holds,
+    /// of a frame the exit's walk is writing above the stack's top, which
+    /// it adopts once the walk is done (`jit::materialize`): no handle
+    /// names it yet.
+    #[cfg(ns_jit)]
+    pub(crate) fn walked_receiver_and_current_class(
+        &self,
+        offset: u32,
+    ) -> (Value<'gc>, Option<ClassReference<'gc>>) {
+        let word = |field: usize| {
+            Word::from_bits(self.stack.frames.committed_word(offset as usize + field))
+        };
+        let (receiver, current_class) = (
+            word(frame_header::RECEIVER),
+            word(frame_header::CURRENT_CLASS),
+        );
+        (
+            self.load(receiver),
+            current_class
+                .object_offset()
+                .map(|class| self.object_handle(class)),
+        )
+    }
+
+    /// The application the header at `offset` records its frame entered
+    /// at, of a frame the exit's walk is writing
+    /// (`walked_receiver_and_current_class`).
+    #[cfg(all(ns_jit, debug_assertions))]
+    pub(crate) fn walked_entered_level(&self, offset: u32) -> ApplicationIndex {
+        self.activation_entered_level_of(offset)
+    }
+
+    /// Writes `class` as the current class of the header at `offset`, a
+    /// frame the exit's walk is writing (`walked_receiver_and_current_class`):
+    /// the walk computes an inlined scope's, which optimized code computes
+    /// only before a frame node of the scope.
+    #[cfg(ns_jit)]
+    pub(crate) fn set_walked_current_class(&mut self, offset: u32, class: ClassReference<'gc>) {
+        let word = self.store(Value::object(class));
+        self.stack
+            .frames
+            .set_committed_word(offset as usize + frame_header::CURRENT_CLASS, word.bits());
     }
 
     /// Records `guard` as the one `activation`'s own-slot instructions
@@ -9283,6 +9450,30 @@ impl<'gc> Heap<'gc> {
             .map(|caller| self.activation_handle(caller))
     }
 
+    /// Whether `activation` runs a block: a closure's activation, its
+    /// closure made or, for an inlined block's activation a leaf runs in,
+    /// not yet (`closure_not_made`). Read from the kind tag alone.
+    pub(crate) fn activation_runs_a_block(&self, activation: ActivationReference) -> bool {
+        self.check_activation(activation);
+        self.stack.flags(activation.offset).kind_tag == kind_tag::CLOSURE
+    }
+
+    /// Whether `activation` is an inlined block's activation whose closure
+    /// optimized code never made (`jit::materialize`'s leaf view of it):
+    /// a closure's kind with `nil` for its closure, which `activation_kind`
+    /// cannot answer. Only a leaf called inside the inlined block meets
+    /// one; every reader a leaf reaches decides what it asks of the
+    /// closure from the activation's code instead.
+    fn closure_not_made(&self, activation: ActivationReference) -> bool {
+        let offset = activation.offset;
+        self.stack.flags(offset).kind_tag == kind_tag::CLOSURE
+            && self
+                .stack
+                .header_word(offset, frame_header::OPERAND)
+                .object_offset()
+                .is_none()
+    }
+
     /// What `activation` was activated for.
     pub fn activation_kind(&self, activation: ActivationReference) -> ActivationKind<'gc> {
         self.check_activation(activation);
@@ -9352,6 +9543,14 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
     ) -> bool {
         self.check_activation(activation);
+        // An inlined block's activation a leaf runs in names no closure
+        // yet, so no captured frame to walk: its code says, as it says for
+        // every block made in a body-less declaration's own code
+        // (`CompiledCode::mark_declaration_code`), whose activations run at
+        // that declaration's class object alone.
+        if self.closure_not_made(activation) {
+            return self.activation_code(activation).is_declaration_code();
+        }
         let closure = match self.activation_kind(activation) {
             ActivationKind::Initializer(level, InitializerBody::Full) => return level.same(class),
             ActivationKind::Closure(closure) => closure,
@@ -9647,9 +9846,24 @@ impl<'gc> Heap<'gc> {
 
     /// Where `base`'s registers start, in words from the activation
     /// stack's base (`jit::stubs::BlockWord::RegisterBase`).
-    #[cfg(ns_jit)]
     pub(crate) fn register_base_words(base: RegisterBase) -> u64 {
         u64::from(base.index)
+    }
+
+    /// Whether the frame whose registers start `register_base` words into
+    /// the stack, pushed
+    /// and counted, has room for `chain` more counted activations within
+    /// the depth limit word, and its registers up to `extent` within the
+    /// ordinary stack's end: what optimized code whose inlined scopes nest
+    /// `chain` deep and reach `extent` needs of the frame it is entered
+    /// for (`jit::entered`), as its prologue compares them for a call.
+    pub(crate) fn machine_frame_fits(&self, register_base: u64, chain: u16, extent: u32) -> bool {
+        let words = &self.machine_words;
+        let depth = words.get(MachineWord::DepthCount);
+        let limit = words.get(MachineWord::DepthLimit);
+        let end = words.get(MachineWord::OrdinaryStackEnd);
+        depth.saturating_add(u64::from(chain)) <= limit
+            && register_base.saturating_add(u64::from(extent)) <= end
     }
 
     /// The register number machine code reads a frame's current class at:
@@ -9992,6 +10206,13 @@ impl<'gc> Heap<'gc> {
     /// frame. Answers the frame's handle.
     #[cfg(ns_jit)]
     pub(crate) fn write_machine_frame(&mut self, frame: &MachineFrame) -> ActivationReference {
+        // Every leaf call writes its frame's view here, nearly always one
+        // a prologue wrote: an inlined scope's, which no prologue wrote,
+        // is written out of line, so that the leaves' way stays as short
+        // as it is without inlining.
+        if frame.inlined {
+            return self.write_inlined_scope_frame(frame);
+        }
         let offset = frame.offset as usize;
         let header_word = |heap: &Self, field: usize| {
             Word::from_bits(heap.stack.frames.committed_word(offset + field))
@@ -10035,15 +10256,6 @@ impl<'gc> Heap<'gc> {
                         & Self::machine_call_shift_mask()),
             ),
         };
-        let caller = match frame.caller {
-            Some((caller, top)) => frames::caller_link_word(caller, frame.start(), top),
-            None => Word::NIL,
-        };
-        let operand = match frame.kind.operand {
-            MachineOperand::Selector(selector) => frames::number_word(selector.index() as u64),
-            MachineOperand::CurrentClass => header_word(self, frame_header::CURRENT_CLASS),
-            MachineOperand::Recorded => header_word(self, frame_header::OPERAND),
-        };
         // The program counter a frame that reifies holds is the one the
         // interpreter would hold there -- its push's 0, or the last one it
         // stored, at a send, which its templates store too -- and its
@@ -10057,6 +10269,139 @@ impl<'gc> Heap<'gc> {
             header_word(self, frame_header::PROGRAM_COUNTER)
         } else {
             frames::number_word(u64::from(frame.program_counter))
+        };
+        self.write_machine_header_words(frame, reified, flags_word, program_counter);
+        // Code that addresses its own slots had its prologue write its
+        // guard and entered level (`jit::sends::prologue`), and its own-slot
+        // instructions record the guard their cold check verified there
+        // since, which a rewrite here would throw away at every leaf call.
+        // Every other frame records none, as the push does.
+        if !frame.addresses_own_slots {
+            self.write_machine_guard_words(
+                offset,
+                DispatchId::NONE,
+                ApplicationIndex::UNREGISTERED,
+            );
+        }
+        self.activation_handle_at(frame.offset)
+    }
+
+    /// `write_machine_frame` of an inlined scope of optimized code
+    /// (`MachineFrame::inlined`), which no prologue wrote: only its
+    /// receiver and current class are its code's (`jit::optimizing::emit`),
+    /// and every other header word is written as the interpreter's push
+    /// writes it -- unreified and counted, a block's among them, since
+    /// only the reference lowering's control flow pushes an uncounted one,
+    /// which no copy inlines; its flags word whole, shifted by no call,
+    /// with a generation of its own in a debug build wherever a stale
+    /// handle could name it; and its guard and
+    /// entered level as the push records them, from its receiver, which
+    /// its code wrote back, and its current class, which its code wrote
+    /// back at a leaf's frame node and the exit's walk wrote before this
+    /// write (`jit::materialize`).
+    #[cfg(ns_jit)]
+    #[inline(never)]
+    fn write_inlined_scope_frame(&mut self, frame: &MachineFrame) -> ActivationReference {
+        let offset = frame.offset as usize;
+        let header_word = |heap: &Self, field: usize| {
+            Word::from_bits(heap.stack.frames.committed_word(offset + field))
+        };
+        let (MachineKindTag::Constant(tag), false) = (frame.kind.tag, frame.reifies) else {
+            unreachable!(
+                "internal: an inlined scope's frame records nothing, no prologue having written it"
+            );
+        };
+        let flags = FrameFlags {
+            compiled: true,
+            ..FrameFlags::new(tag, frame.argument_count, true, false)
+        };
+        // A generation of its own only where a stale handle could name the
+        // offset, as a push takes one and a leaf's view of a prologue's
+        // frame keeps it: a header at this offset that a compiled prologue
+        // or an earlier scope write left for a frame of the same code -- nil
+        // caller and reified word, the same code, the same flags but for
+        // the generation, which may be another activation of that code --
+        // keeps that generation, since no handle a leaf's view mints should
+        // outlive its leaf (`jit::materialize::release_leaf_frame`); what
+        // the check gives up is a leaf's handle wrongly kept past that
+        // release, which a later activation at the offset no longer
+        // catches. Any other header, a
+        // frame an exit materialized or the interpreter pushed among them,
+        // whose handles the run loop may have kept past their pop, and
+        // every write by the exit's walk, which makes the scope an
+        // activation the interpreter holds, take a fresh one.
+        #[cfg(debug_assertions)]
+        let flags = {
+            let code = frames::number_word(frame.code.index() as u64);
+            let kept = if frame.caller.is_none()
+                && header_word(self, frame_header::CALLER).bits() == Word::NIL.bits()
+                && header_word(self, frame_header::REIFIED).bits() == Word::NIL.bits()
+                && header_word(self, frame_header::CODE).bits() == code.bits()
+            {
+                flags.generation_if_same(header_word(self, frame_header::FLAGS))
+            } else {
+                None
+            };
+            match kept {
+                Some(generation) => flags.with_generation(generation),
+                None => {
+                    let generation = self.stack.peek_next_generation();
+                    self.stack.advance_generation();
+                    flags.with_generation(generation)
+                }
+            }
+        };
+        let program_counter = frames::number_word(u64::from(frame.program_counter));
+        self.write_machine_header_words(frame, Word::NIL, flags.word(), program_counter);
+        if frame.addresses_own_slots {
+            let receiver = self.load(header_word(self, frame_header::RECEIVER));
+            let entered_level = header_word(self, frame_header::CURRENT_CLASS)
+                .object_offset()
+                .and_then(|class| self.class_application_index(self.object_handle(class)))
+                .unwrap_or(ApplicationIndex::UNREGISTERED);
+            let recorded_guard = if self.receiver_has_level(receiver, entered_level) {
+                self.dispatch_id(receiver)
+            } else {
+                DispatchId::NONE
+            };
+            self.write_machine_guard_words(offset, recorded_guard, entered_level);
+        } else {
+            self.write_machine_guard_words(
+                offset,
+                DispatchId::NONE,
+                ApplicationIndex::UNREGISTERED,
+            );
+        }
+        self.activation_handle_at(frame.offset)
+    }
+
+    /// The header words of machine code's frame `frame` its two writers
+    /// write alike -- its operand, the selector or the current class; its
+    /// code; its feedback base; its caller link; no continuation; its
+    /// register count -- with the `reified` word, the flags word and the
+    /// program counter each decided.
+    #[cfg(ns_jit)]
+    #[inline(always)]
+    fn write_machine_header_words(
+        &mut self,
+        frame: &MachineFrame,
+        reified: Word,
+        flags_word: Word,
+        program_counter: Word,
+    ) {
+        let offset = frame.offset as usize;
+        let header_word = |heap: &Self, field: usize| {
+            Word::from_bits(heap.stack.frames.committed_word(offset + field))
+        };
+        let caller = match frame.caller {
+            Some((caller, top)) => frames::caller_link_word(caller, frame.start(), top),
+            None => Word::NIL,
+        };
+        let operand = match frame.kind.operand {
+            MachineOperand::Selector(selector) => frames::number_word(selector.index() as u64),
+            MachineOperand::CurrentClass => header_word(self, frame_header::CURRENT_CLASS),
+            MachineOperand::Recorded => header_word(self, frame_header::OPERAND),
+            MachineOperand::NotMadeYet => Word::NIL,
         };
         let words = [
             (frame_header::OPERAND, operand),
@@ -10083,28 +10428,100 @@ impl<'gc> Heap<'gc> {
                 .frames
                 .set_committed_word(offset + field, word.bits());
         }
-        // Code that addresses its own slots had its prologue write its
-        // guard and entered level (`jit::sends::prologue`), and its own-slot
-        // instructions record the guard their cold check verified there
-        // since, which a rewrite here would throw away at every leaf call.
-        // Every other frame records none, as the push does.
-        if !frame.addresses_own_slots {
-            for (field, word) in [
-                (
-                    frame_header::GUARD,
-                    frames::number_word(u64::from(DispatchId::NONE.bits())),
-                ),
-                (
-                    frame_header::ENTERED_LEVEL,
-                    frames::number_word(ApplicationIndex::UNREGISTERED.index() as u64),
-                ),
-            ] {
-                self.stack
-                    .frames
-                    .set_committed_word(offset + field, word.bits());
-            }
+    }
+
+    /// The guard and entered level words of the frame header at `offset`.
+    #[cfg(ns_jit)]
+    #[inline(always)]
+    fn write_machine_guard_words(
+        &mut self,
+        offset: usize,
+        guard: DispatchId,
+        entered_level: ApplicationIndex,
+    ) {
+        for (field, word) in [
+            (
+                frame_header::GUARD,
+                frames::number_word(u64::from(guard.bits())),
+            ),
+            (
+                frame_header::ENTERED_LEVEL,
+                frames::number_word(entered_level.index() as u64),
+            ),
+        ] {
+            self.stack
+                .frames
+                .set_committed_word(offset + field, word.bits());
         }
-        self.activation_handle_at(frame.offset)
+    }
+
+    /// The selector of `activation`'s method, if it is a method's: what a
+    /// test reads of any activation, an inlined block's whose closure no
+    /// exit made yet among them, which `activation_kind` refuses.
+    #[cfg(all(test, ns_jit))]
+    pub(crate) fn activation_method_selector(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<Symbol> {
+        self.check_activation(activation);
+        let offset = activation.offset;
+        (self.stack.flags(offset).kind_tag == kind_tag::METHOD).then(|| {
+            Symbol::from_index(frames::number_as_u32(
+                self.stack.header_word(offset, frame_header::OPERAND),
+            ))
+        })
+    }
+
+    /// The closure of `activation`, if it is a closure's and its closure
+    /// exists: an inlined block's waits for the exit to make it.
+    #[cfg(all(test, ns_jit))]
+    pub(crate) fn activation_closure(
+        &self,
+        activation: ActivationReference,
+    ) -> Option<ObjectReference<'gc>> {
+        self.check_activation(activation);
+        let offset = activation.offset;
+        if self.stack.flags(offset).kind_tag != kind_tag::CLOSURE {
+            return None;
+        }
+        self.stack
+            .header_word(offset, frame_header::OPERAND)
+            .object_offset()
+            .map(|object| self.object_handle(object))
+    }
+
+    /// The activation whose header lies at `offset`: a frame the exit's
+    /// walk wrote and made the stack's (`adopt_machine_frames`), an
+    /// inlined scope's among them, which no push made and so no handle
+    /// names yet.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_activation_at(&self, offset: u32) -> ActivationReference {
+        let activation = self.activation_handle_at(offset);
+        self.check_activation(activation);
+        activation
+    }
+
+    /// Makes `closure` the closure of `activation`, an inlined block's
+    /// activation an exit wrote while no closure of it existed
+    /// (`MachineKind::inlined_closure`): the exit made the closure since,
+    /// as the interpreter's push would have found it.
+    #[cfg(ns_jit)]
+    pub(crate) fn set_closure_of_inlined_scope(
+        &mut self,
+        activation: ActivationReference,
+        closure: ObjectReference<'gc>,
+    ) {
+        self.check_activation(activation);
+        let offset = activation.offset;
+        debug_assert!(
+            self.stack.flags(offset).kind_tag == kind_tag::CLOSURE
+                && self.stack.header_word(offset, frame_header::OPERAND).bits() == Word::NIL.bits(),
+            "internal: only an inlined block's activation waits for its closure"
+        );
+        let word = self.store(Value::object(closure));
+        self.stack
+            .frames
+            .set_committed_word(offset as usize + frame_header::OPERAND, word.bits());
     }
 
     /// The handle of the frame whose header lies at `offset`, whatever the
@@ -10252,6 +10669,87 @@ impl<'gc> Heap<'gc> {
         self.stack.frames.set_top(top);
         self.stack.innermost = innermost;
         self.stack.live += added;
+    }
+
+    /// Whether the stack still holds what a light exit of optimized code at
+    /// a poll left (`jit::StoppedAtPoll`): `inlined` activations above
+    /// `physical`, the innermost first, each the callee of the next, the
+    /// last `physical`'s, and none of them nor `physical` reified, since
+    /// optimized code keeps no reified word. Reads offsets only, so that a
+    /// rebuilt stack answers `false` rather than a stale handle's check.
+    #[cfg(ns_jit)]
+    pub(crate) fn inlined_scopes_stand(&self, physical: ActivationReference, inlined: u16) -> bool {
+        let reified = |offset: u32| {
+            self.stack
+                .header_word(offset, frame_header::REIFIED)
+                .object_offset()
+                .is_some()
+        };
+        let mut offset = self.stack.innermost;
+        for _ in 0..inlined {
+            if offset == NO_FRAME || reified(offset) {
+                return false;
+            }
+            match self.stack.caller(offset) {
+                Some(caller) => offset = caller,
+                None => return false,
+            }
+        }
+        offset == physical.offset && !reified(offset)
+    }
+
+    /// Takes the `inlined` activations above `physical` -- the inlined
+    /// scopes a light exit of its optimized code at a poll wrote, which
+    /// `inlined_scopes_stand` found standing -- out of the stack's
+    /// bookkeeping, as a frame that goes back into the code there stands
+    /// for them: `physical` the innermost again, the top what it was when
+    /// the outermost was laid, and the live count and the depth count as
+    /// many lower, as their pushes, which never happened, would have
+    /// counted them. Their words stay, the copy's registers among them,
+    /// which its code reads on: none is given back as a pop gives a dead
+    /// register back.
+    #[cfg(ns_jit)]
+    pub(crate) fn fold_inlined_scopes(&mut self, physical: ActivationReference, inlined: u16) {
+        debug_assert!(
+            self.inlined_scopes_stand(physical, inlined),
+            "internal: the scopes a poll's exit wrote stand above its frame"
+        );
+        let mut offset = self.stack.innermost;
+        let mut top = self.stack.frames.top();
+        let mut counted = 0;
+        for _ in 0..inlined {
+            let flags = self.stack.flags(offset);
+            let caller = self.stack.header_word(offset, frame_header::CALLER);
+            top = self.stack.top_without(offset, flags, caller);
+            counted += i64::from(flags.counted);
+            offset = frames::caller_offset_of(caller);
+        }
+        self.stack.frames.set_top(top);
+        self.stack.innermost = physical.offset;
+        self.stack.live -= usize::from(inlined);
+        self.adjust_counted_depth(-counted);
+    }
+
+    /// `machine_frame_fits` for a frame that goes back into its optimized
+    /// code mid-body, `inlined` of its scopes standing above it on the
+    /// stack until it does: the depth they count is taken off, and the
+    /// depth limit read without a safepoint request's lowering of its
+    /// word, since the frame entered the code at its push already and the
+    /// code's polls take a request that stands.
+    #[cfg(ns_jit)]
+    pub(crate) fn machine_frame_fits_without(
+        &self,
+        register_base: u64,
+        (chain, extent): (u16, u32),
+        inlined: u16,
+    ) -> bool {
+        let words = &self.machine_words;
+        let depth = words
+            .get(MachineWord::DepthCount)
+            .saturating_sub(u64::from(inlined));
+        let end = words.get(MachineWord::OrdinaryStackEnd);
+        depth.saturating_add(u64::from(chain)) <= self.depth_limit as u64
+            && register_base.saturating_add(u64::from(extent)) <= end
     }
 
     /// The stack's top and innermost frame, which a leaf's view of its own
@@ -11018,6 +11516,7 @@ impl<'gc> Heap<'gc> {
             code_ids: self.tables.codes.len(),
             mixin_rows: self.tables.mixins.len(),
             application_rows: self.tables.applications.len(),
+            dispatch_id_rows: self.tables.dispatch_id_applications.len(),
             program_symbols: self.program_symbols.len(),
             stack_committed_bytes: self.stack.frames.committed_words() * 8,
             stack_used_bytes: self.stack.frames.top() * 8,
@@ -14522,6 +15021,7 @@ mod tests {
             register_count: heap.stack.register_count(activation.offset),
             addresses_own_slots: false,
             reifies,
+            inlined: false,
             caller,
         }
     }
@@ -14717,6 +15217,7 @@ mod tests {
             feedback_base: FeedbackBase::NOT_ASSIGNED,
             reifies: false,
             optimized: false,
+            described: None,
         };
         let frame = crate::jit::materialize::machine_frame(
             &mut heap,
@@ -19626,6 +20127,28 @@ mod tests {
         assert_eq!(
             heap.machine_word(MachineWord::DepthLimit),
             (MAX_ACTIVATION_DEPTH + DEPTH_RESERVE) as u64
+        );
+    }
+
+    /// A frame fits optimized code that inlines only where both its
+    /// deepest chain of scopes stays within the depth limit word and its
+    /// deepest register within the ordinary stack's end: either failing,
+    /// the push goes on in baseline code (`jit::entered`).
+    #[test]
+    fn a_frame_fits_its_inlining_within_both_the_depth_and_the_room() {
+        let heap = Heap::new();
+        heap.machine_words.set(MachineWord::DepthCount, 10);
+        heap.machine_words.set(MachineWord::DepthLimit, 13);
+        heap.machine_words.set(MachineWord::OrdinaryStackEnd, 1000);
+        assert!(heap.machine_frame_fits(900, 3, 100), "both at their bounds");
+        assert!(!heap.machine_frame_fits(900, 4, 100), "one scope too deep");
+        assert!(
+            !heap.machine_frame_fits(900, 3, 101),
+            "one register past the room"
+        );
+        assert!(
+            !heap.machine_frame_fits(901, 3, 100),
+            "the frame one word higher"
         );
     }
 

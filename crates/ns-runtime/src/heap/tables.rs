@@ -172,6 +172,19 @@ pub(crate) struct Tables {
     /// index (`Heap::retain_successors`), so an index minted again never
     /// inherits a successor.
     pub(crate) successors: IdentityMap<ApplicationIndex, ApplicationIndex>,
+    /// Per minted dispatch id, by its bits, the application it was minted
+    /// for, or `None` for an id no registered application carries
+    /// (`Heap::application_of_dispatch_id`): a cache entry holds its
+    /// receiver's id alone, and the optimizing compiler's snapshot of a
+    /// callee needs the application behind it -- its layout and its
+    /// chain. Written where an application with an id enters the table
+    /// and cleared where it leaves it, the one place its id is given back
+    /// (`interpreter::reclaim`), so that an id minted again never answers
+    /// the application it named before. One id per application: the rows
+    /// in use never pass the application rows', whose growth limit
+    /// requests the collection that reclaims both, and the trailing free
+    /// rows go with theirs (`Heap::truncate_application_rows`).
+    pub(crate) dispatch_id_applications: Vec<Option<ApplicationIndex>>,
     /// Per id, the body, or `None` for an id a collection freed because
     /// no closure or frame named it any more.
     pub(crate) codes: Vec<Option<CodeEntry>>,

@@ -61,7 +61,7 @@ Rust 1.98.0, edition 2021, seven crates:
   `execution.md`, "The baseline JIT's foundation", "Sends, returns and
   the exit that materializes", "The entry at a send", "Stage 4: closures,
   non-local return, allocation and the barrier", "The code zone"), the
-  optimizing JIT's first two stages beside it (`jit/optimizing/`: a body whose
+  optimizing JIT's first three stages beside it (`jit/optimizing/`: a body whose
   budget -- a row per code id in `heap/optimization_budgets.rs`, which
   its baseline code spends through a data word of each copy's -- runs
   out is snapshotted at the next safepoint (`snapshot.rs`), built into
@@ -70,7 +70,12 @@ Rust 1.98.0, edition 2021, seven crates:
   `metadata.rs`) and emitted through the baseline's templates
   (`emit.rs`), installed beside its baseline code, entered at a push or
   a compiled call and left for the baseline code wherever a frame goes
-  on mid-body; a method's body optimized a copy per receiver
+  on mid-body, but for a frame that left at a poll's safepoint, which
+  goes back in there unless the poll has no entry, the exit was forced
+  by a stress mode, or the safepoint rebuilt the stack, reified one of
+  its scopes, freed or reinstalled its copy, slid its feedback base or
+  left its scopes no room (`vm::after_safepoint`, `jit::resumed_at_poll`;
+  `execution.md`, "Inlining", "Back into optimized code at a poll"); a method's body optimized a copy per receiver
   application and entered application (`jit/mod.rs`'s
   `CustomizationKey`, `JitSlot::copies`), entered by a receiver-guarded
   cell, the push and, for a `super`, a private lexical or an
@@ -80,8 +85,18 @@ Rust 1.98.0, edition 2021, seven crates:
   site the caches' executed and trapped bits say never ran a guard that
   traps, a copy that keeps trapping or exiting retired with its version
   raised, past the last compiled without traps, and the copies an edit,
-  a bulk forward or a reclaimed id makes stale freed at once;
-  `execution.md`, "The optimizing tier's foundation", "Speculation") and
+  a bulk forward or a reclaimed id makes stale freed at once; and
+  inlining: a plan over a tree of snapshots of the body and its callees
+  (`tree.rs`, `plan.rs`), a cached send a type-case of inlined callees,
+  accessors, quick methods, `==`, `class` and indexed access nodes, each
+  inlined scope laid out where the interpreter would push its
+  activation, a block compiled with its home and eliminated where
+  nothing lets it escape, the exit writing every scope's header and
+  making the blocks it finds live (`jit/materialize.rs`), the
+  recompilee found by walking up the stack (`jit::find_recompilee`),
+  and a copy freed when anything it inlined changes
+  (`CopyDependencies`); `execution.md`, "The optimizing tier's
+  foundation", "Speculation", "Inlining") and
   the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
@@ -419,7 +434,17 @@ forward of the receiver runs in a mirror leaf machine code exits for,
 which ends the frame's optimized code, and the decoder holds every
 instance of a program class to its application's slot count
 (`execution.md`, "Speculation", "Own slots at fixed offsets";
-`image-format.md`, "Verification").
+`image-format.md`, "Verification"). Nor do an inlined callee's slot
+accesses: an always-inlined getter's, setter's and lazy getter's
+field (`Node::FieldLoad`, `Node::FieldStore`), the one the lookup
+resolved for the arm's receiver application -- a private or super
+accessor taken without a test included -- and an inlined scope's
+own-slot read (`Node::OwnSlotLoad` at the plan's base for that
+application), since the type-case's guard, or the scope's known
+receiver where no test is taken, verified the object's application,
+and the same forward and decoder rules hold (`execution.md`,
+"Inlining", "The snapshot tree and the plan"). An inlined scope's
+own-slot templates keep their guard, reset at the scope's entry.
 
 **`outer` walks the *lexical* declaration chain, never the receiver's dynamic
 class** — `current_class`, then each class object's declaring-class field
@@ -498,8 +523,12 @@ hands the instruction to the interpreter, never re-applies it. A leaf
 (`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
 activation and never pushes; only the miss leaf, the initializer leaf
 and the forcing leaf compile and install a callee, and the twin leaf
-the running body's twin -- the budget leaf only records a body's
-optimization request, which the run loop's safepoint compiles and
+the running body's twin -- the budget leaf only parks or re-arms its body's
+budget and answers whether an optimization is due, whose exit
+(`ExitKind::BudgetSpent`) the run loop takes to walk up the stack for
+the frame to request (`jit::find_recompilee`) and record its request
+-- under the optimize stress mode the leaf records the spending
+frame's own request -- which the run loop's safepoint compiles and
 installs (`jit::optimize_requested`), or points its own body's budget
 word and dispatching word, the latter at its code id's block of
 dispatching rows (`jit::point_budget_word`); and a leaf answers "re-execute" only
@@ -537,10 +566,17 @@ lower as a simple node -- register arithmetic that emits no call --
 through the very template function the baseline's arm for it calls,
 after writing back into the frame every value it holds that the frame
 word does not hold yet, so that at every interrupt point the frame is
-the interpreter's word for word; it leaves no store out, its code is
-entered only at its prologue, or just past it at a push, never mid-body,
-and a frame that goes on mid-body goes on in the baseline code (`execution.md`, "The optimizing tier's
-foundation"); the run loop
+the interpreter's word for word -- every scope's, an inlined scope's
+receiver and current class among its bindings, the current class
+computed only before the scope's frame nodes and by the exit's walk
+before it writes the scope's header; it leaves no store out, its code is
+entered only at its prologue, or just past it at a push, or at the
+entry of the poll a frame left it at, once the safepoint is served,
+where the entry restores every value the code past the poll reads
+from a frame word the frame kept or a constant's (`metadata::poll_restores`,
+which the emitter and the replay share) and a poll it cannot restore has no
+entry; never otherwise mid-body, and a frame that goes on mid-body goes on in the baseline code (`execution.md`, "The optimizing tier's
+foundation", "Inlining"); the run loop
 enters machine code through `jit::entered` and `jit::resumed`, a send it
 delivers through `jit::called` and `jit::called_closure` (`mod.rs`);
 the entry block's lasting words -- what does not move between entries --

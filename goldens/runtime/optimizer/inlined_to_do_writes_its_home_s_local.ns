@@ -1,0 +1,39 @@
+/// A `to:do:` loop whose block writes a local of the method it lies in:
+/// `sumTo:` adds 1 to `count` into `total` from inside the block it hands
+/// `to:do:`, which an optimized copy inlines, with `to:do:` and the block
+/// both -- the block's write of `total` a write of its home's register,
+/// reached by reference under the reference lowering and through its
+/// indirection vector under the optimized one -- and `run:` sends
+/// `sumTo:` from inside a `to:do:` block of its own, whose writes of `sum`
+/// are its home's too. `sumTo:` answers `count * (count + 1) / 2`; `run:`
+/// sends it 1 to 10 in turn, whose sums add to 220 in each turn of ten:
+/// 440000 for 20000 sends, and for 7, of 2 to 8, 119.
+class InlinedToDoWritesItsHomeSLocal = Object new () (
+  sumTo: count = (
+    |
+      total ::= 0.
+    |
+    1 to: count do: [:index | total:: total + index].
+    ^total.
+  )
+
+  run: count = (
+    |
+      sum ::= 0.
+    |
+    1 to: count do: [:index | sum:: sum + (self sumTo: index \\ 10 + 1)].
+    ^sum.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self run: 20000) printString;
+        newLine.
+    transcript
+        show: (self run: 7) printString;
+        newLine.
+  )
+)

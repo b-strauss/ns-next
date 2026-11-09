@@ -20,7 +20,9 @@ use crate::heap::{register_number, ActivationReference, ArgumentSlots, RegisterB
 use crate::interpreter::future::{not_a_closure, value_for_a_value_slot, Resolution};
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
-use crate::interpreter::literals::{body_too_large_error, unresolved_identifier_error};
+use crate::interpreter::literals::{
+    body_named, body_too_large_error_named, unresolved_identifier_error, BLOCK_BODY,
+};
 use crate::interpreter::locals::{
     check_own_slots, filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
     receiver_keeps_entered_level, store_instance_field, store_vector, write_local,
@@ -93,6 +95,9 @@ enum Arrival {
     /// An interpreted backward jump to the frame's program counter, the
     /// loop's head: on-stack replacement (`jit::at_back_edge`).
     BackEdge,
+    /// A frame of optimized code that left it at a poll, going back in
+    /// there once the safepoint is served (`jit::entered_at_poll`).
+    AtPoll,
 }
 
 /// Where control goes after a send, a return, an unwind or a forcing: one
@@ -281,8 +286,13 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
 /// (`jit::back_edge_ready`, which counts the jump the safepoint skipped).
 /// Without it a loop that allocates would leave its machine code at the
 /// poll of its first scavenge and run interpreted until a later backward
-/// jump switched it back. Out of line, so that the run loop pays for it
-/// only at a safepoint.
+/// jump switched it back. A frame of optimized code its poll left goes
+/// back into that code at that poll instead, its physical frame the one
+/// the loop goes on with, unless the safepoint made that impossible
+/// (`jit::resumed_at_poll`): only optimized code holds what its inlining
+/// and its eliminated blocks need, and its frame never enters it mid-body
+/// otherwise. Out of line, so that the run loop pays for it only at a
+/// safepoint.
 #[cold]
 #[inline(never)]
 fn after_safepoint(
@@ -290,6 +300,14 @@ fn after_safepoint(
     frame: &mut FrameRegisters,
     at_loop_head: bool,
 ) -> Option<Arrival> {
+    if let Some(stopped) = mutator.jit.take_stopped_at_poll() {
+        let physical = stopped.physical();
+        if crate::jit::resumed_at_poll(mutator, stopped).is_some() {
+            let program_counter = mutator.heap.activation_program_counter(physical);
+            *frame = FrameRegisters::of(mutator, physical, program_counter);
+            return Some(Arrival::AtPoll);
+        }
+    }
     frame.feedback_base = mutator.heap.activation_feedback_base(frame.activation);
     let switches = at_loop_head
         && frame.code.jit.back_edge_is_armed()
@@ -2713,6 +2731,7 @@ fn machine_code_switch<'gc>(
                         program_counter: arrived_at,
                     })
             }
+            Arrival::AtPoll => crate::jit::entered_at_poll(mutator, activation, register_base),
         };
         match resumption {
             Resumption::Interpreted {
@@ -3361,8 +3380,14 @@ fn make_value<'gc>(
         }
         Literal::BodyTooLarge(limit) => {
             let receiver = mutator.heap.activation_receiver(activation);
-            let kind = mutator.heap.activation_kind(activation);
-            return Err(body_too_large_error(kind, receiver, *limit));
+            // The activation of an inlined block a leaf runs in names no
+            // closure yet: a block's body is named without it.
+            let named = if mutator.heap.activation_runs_a_block(activation) {
+                BLOCK_BODY
+            } else {
+                body_named(mutator.heap.activation_kind(activation))
+            };
+            return Err(body_too_large_error_named(named, receiver, *limit));
         }
     })
 }

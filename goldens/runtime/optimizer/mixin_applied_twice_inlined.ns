@@ -1,0 +1,73 @@
+/// One mixin applied twice in one chain and once in another, its method
+/// inlined into a hot caller at every level it runs at, each inlined
+/// copy reading its own level's private slot: `Twice` is `Base new <:
+/// Marker step: 1 <: Middle <: Marker step: 10` and `Once` is `Base new
+/// <: Marker step: 100`, so `Twice`'s upper Marker level's `step` is 10,
+/// its lower one's 1 and `Once`'s 100 (newspeak-spec.pdf 6.2: each
+/// application is its own level, with its own subobject). A private
+/// member is reached lexically, so each level reads its own (5.9).
+///
+/// `sweep:` sends `scaled:` to a `Twice` and a `Once` in turn at one
+/// site, which inlines Marker's one `scaled:` twice, an arm per receiver,
+/// each customized to its receiver's level, and sends `lowerScaled:` to
+/// the `Twice`, Middle's, whose `super scaled:` reaches the lower Marker
+/// level. Over the indices 1 to 1000, which sum to 500500, a sweep adds
+/// (10 + 100 + 1) * 500500 = 55555500; thirty sweeps sum to 1666665000.
+/// A sweep of 3 adds 111 * 6 = 666.
+class MixinAppliedTwiceInlined = Object new () (
+  class Base = Object new () ()
+
+  class Marker step: amount = Object new (
+    |
+      private step = amount.
+    |
+  ) (
+    public scaled: count = (
+      ^step * count.
+    )
+  )
+
+  class Middle = Object new () (
+    public lowerScaled: count = (
+      ^super scaled: count.
+    )
+  )
+
+  class Twice = Base new <: Marker step: 1 <: Middle <: Marker step: 10 () ()
+
+  class Once = Base new <: Marker step: 100 () ()
+
+  sweep: count over: receivers lower: twice = (
+    |
+      total ::= 0.
+      index ::= 1.
+      position ::= 0.
+    |
+    [index <= count] whileTrue: [
+      position:: 1.
+      [position <= receivers size] whileTrue: [
+        total:: total + ((receivers at: position) scaled: index).
+        position:: position + 1.
+      ].
+      total:: total + (twice lowerScaled: index).
+      index:: index + 1.
+    ].
+    ^total.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      twice = Twice new.
+      receivers = {twice. Once new}.
+      sum ::= 0.
+    |
+    1 to: 30 do: [:round | sum:: sum + (sweep: 1000 over: receivers lower: twice)].
+    transcript
+        show: sum printString;
+        newLine.
+    transcript
+        show: (sweep: 3 over: receivers lower: twice) printString;
+        newLine.
+  )
+)

@@ -12,7 +12,9 @@ pub(crate) mod graph;
 pub(crate) mod liveness;
 #[cfg(ns_jit)]
 pub(crate) mod metadata;
+pub(crate) mod plan;
 pub(crate) mod snapshot;
+pub(crate) mod tree;
 pub(crate) mod verify;
 
 /// How far a compile speculates (`docs/design/execution.md`, "Speculation",
@@ -44,9 +46,29 @@ impl Speculation {
     }
 }
 
-/// The optimized code of `snapshot`'s body, compiled as `role` with
+/// The optimized code of `snapshot`'s body alone, inlining nothing
+/// (`compile_tree`): the passes' tests' compile of a hand-written body.
+#[cfg(all(test, ns_jit))]
+pub(crate) fn compile(
+    snapshot: &snapshot::Snapshot,
+    macro_assembler: crate::jit::macro_assembler::MacroAssembler,
+    role: crate::jit::baseline::BodyRole,
+    futures_exit: bool,
+    speculation: Speculation,
+) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
+    compile_tree(
+        &tree::SnapshotTree::alone(snapshot.clone()),
+        macro_assembler,
+        role,
+        futures_exit,
+        speculation,
+    )
+}
+
+/// The optimized code of `tree`'s root, compiled as `role` with
 /// `macro_assembler` (`docs/design/execution.md`, "Planned: the
-/// optimizing JIT"): its graph built (and, in a debug build, verified),
+/// optimizing JIT"): the callees the inlining plan takes inlined
+/// (`plan::plan`), its graph built (and, in a debug build, verified),
 /// its values allocated to registers and its interrupt points described
 /// (the allocation verified in a debug build), then emitted. A refusal is
 /// one the baseline makes of the same body: too many instructions, or
@@ -55,15 +77,17 @@ impl Speculation {
 /// that both tiers are the same lowering. `speculation` says which sites
 /// the feedback says never ran become guards.
 #[cfg(ns_jit)]
-pub(crate) fn compile(
-    snapshot: &snapshot::Snapshot,
+pub(crate) fn compile_tree(
+    tree: &tree::SnapshotTree,
     macro_assembler: crate::jit::macro_assembler::MacroAssembler,
     role: crate::jit::baseline::BodyRole,
     futures_exit: bool,
     speculation: Speculation,
 ) -> Result<emit::OptimizedBody, crate::jit::Refusal> {
+    use crate::jit::baseline::{BodyRole, ScopeFacts};
     use crate::jit::Refusal;
 
+    let snapshot = &tree.root;
     let roles = macro_assembler.roles();
     let mut body = crate::jit::baseline::BodyAssembler::for_optimized(
         macro_assembler,
@@ -72,9 +96,54 @@ pub(crate) fn compile(
         role,
         futures_exit,
     )?;
-    let graph = build::build(snapshot, speculation);
-    let (allocation, metadata) = metadata::allocate_and_describe(snapshot, &graph, &roles);
-    let push_entry = emit::emit(snapshot, &graph, &allocation, &mut body)?;
+    let plan = plan::plan(tree, speculation);
+    body.deepest_chain = plan.deepest_chain;
+    body.deepest_extent = plan.deepest_extent;
+    let graph = build::build_inlined(tree, &plan, speculation);
+    let (allocation, metadata) = metadata::allocate_and_describe(&graph, &roles);
+    // Each scope's facts, as its own baseline code would read them: an
+    // inlined scope is a method's, as many scopes deep as its chain.
+    let scopes: Vec<emit::EmittedScope<'_>> = graph
+        .scopes
+        .iter()
+        .enumerate()
+        .map(|(index, scope)| {
+            let scope_snapshot = if index == 0 {
+                snapshot
+            } else {
+                tree.snapshot_of(scope.code_id)
+                    .expect("internal: every inlined scope's body is snapshotted")
+            };
+            let mut depth = 0_u16;
+            let mut parent = scope.parent;
+            while let Some((sender, _)) = parent {
+                depth += 1;
+                parent = graph.scope(sender).parent;
+            }
+            // An inlined block's scope is lowered as a method's too: its
+            // templates never return, reach an outer local or make a
+            // closure, which are what a block's role changes -- its return
+            // and its `^` are jumps, its outer locals its homes' registers
+            // and its `MakeClosure` an exit (`build`, `emit`).
+            let scope_role = if index == 0 { role } else { BodyRole::Method };
+            emit::EmittedScope {
+                snapshot: scope_snapshot,
+                facts: ScopeFacts::of(
+                    &scope_snapshot.facts,
+                    scope_snapshot.feedback_base,
+                    scope_role,
+                    depth,
+                ),
+                offset: scope.offset,
+            }
+        })
+        .collect();
+    let (push_entry, polls) = emit::emit(&scopes, &graph, &allocation, &metadata, &mut body)?;
+    // The one answer to which scopes the copy inlined: what it keeps of
+    // them, what it names in a collection and what it depends on are all
+    // read off it, so that none of them can name a scope the others miss.
+    let laid_out = laid_out_scopes(&graph);
+    let eliminated = eliminated_blocks(&plan, tree);
     let returns = body.take_call_returns();
     let words = body.macro_assembler.body_words_label();
     let word_bytes =
@@ -82,25 +151,208 @@ pub(crate) fn compile(
     let twin_transfers = std::mem::take(&mut body.twin_transfers);
     #[cfg(test)]
     let small_integer_tag_tests = body.macro_assembler.small_integer_tag_tests();
-    let code = body
+    let (code, site_labels) = body
         .macro_assembler
-        .finish()
+        .finish_with_sites()
         .map_err(|error| Refusal::Unassembled(Some(error)))?;
     let words = words
         .and_then(|label| code.label_offsets[label.index()])
         .map(|start| start..start + word_bytes);
     let push_entry =
         code.label_offsets[push_entry.index()].expect("internal: the first block is bound");
+    let sites = site_labels
+        .iter()
+        .map(|(label, point)| {
+            let offset =
+                code.label_offsets[label.index()].expect("internal: every site's label is bound");
+            (offset, *point)
+        })
+        .collect();
+    let bound = |label: ns_assembler::Label| {
+        code.label_offsets[label.index()].expect("internal: every poll's labels are bound")
+    };
+    let polls = polls
+        .iter()
+        .map(|poll| emit::PollEntry {
+            exit: bound(poll.exit),
+            entry: bound(poll.entry),
+            point: poll.point,
+            #[cfg(test)]
+            rewrites_lost_words: poll.rewrites_lost_words,
+            #[cfg(test)]
+            machine_sources: poll.machine_sources.clone(),
+        })
+        .collect();
     Ok(emit::OptimizedBody {
         code,
         returns,
         words,
         twin_transfers,
         metadata,
+        sites,
+        scopes: scopes
+            .iter()
+            .zip(&laid_out)
+            .zip(&graph.scopes)
+            .map(|((scope, laid_out), graph_scope)| {
+                laid_out.then_some(emit::LaidOutScope {
+                    class: graph_scope.class,
+                    code_id: scope.snapshot.code_id,
+                    feedback_base: scope.snapshot.feedback_base,
+                    block: graph_scope.block,
+                })
+            })
+            .collect(),
+        deepest_chain: plan.deepest_chain,
+        deepest_extent: plan.deepest_extent,
+        relied_on: relied_on(&plan, &graph, &scopes, &laid_out, &eliminated, tree),
+        eliminated,
         push_entry,
+        polls,
+        type_case_arms: type_case_arms(&graph),
+        inlined_sites: graph.inlined_sites,
         #[cfg(test)]
         small_integer_tag_tests,
     })
+}
+
+/// The arms of every type-case `graph` lays out.
+#[cfg(ns_jit)]
+fn type_case_arms(graph: &graph::Graph) -> u32 {
+    graph
+        .blocks
+        .iter()
+        .map(|block| match &block.end {
+            graph::End::TypeCase { arms, .. } => u32::try_from(arms.len()).unwrap_or(u32::MAX),
+            _ => 0,
+        })
+        .fold(0, u32::saturating_add)
+}
+
+/// Whether `graph` lays out code for each of its scopes, by its index:
+/// the root always, an inlined scope only where some block holds its
+/// instructions. A scope the plan made whose site the graph sends instead
+/// -- a lexical send past depth 0, an arm the graph does not express --
+/// is no scope of the copy: it has no interrupt point, and the copy
+/// relies on its body no more than on any send's.
+#[cfg(ns_jit)]
+fn laid_out_scopes(graph: &graph::Graph) -> Vec<bool> {
+    let mut laid_out = vec![false; graph.scopes.len()];
+    if let Some(root) = laid_out.first_mut() {
+        *root = true;
+    }
+    for block in &graph.blocks {
+        laid_out[block.scope.0 as usize] = true;
+    }
+    laid_out
+}
+
+/// Every block `plan` eliminates, by its `EliminatedId`, as the exit makes
+/// it (`emit::EliminatedBlock`): its body, its home and the registers its
+/// `MakeClosure` copies.
+#[cfg(ns_jit)]
+fn eliminated_blocks(
+    plan: &plan::InliningPlan,
+    tree: &tree::SnapshotTree,
+) -> Vec<emit::EliminatedBlock> {
+    let mut eliminated: Vec<(plan::EliminatedId, emit::EliminatedBlock)> = plan
+        .blocks
+        .iter()
+        .filter_map(|((home, program_counter), planned)| {
+            let plan::BlockPlan::Eliminated(id) = planned else {
+                return None;
+            };
+            let snapshot = tree
+                .snapshot_of(plan.scopes[home.0 as usize].code_id)
+                .expect("internal: the tree holds every planned scope's snapshot");
+            let snapshot::SnapshotInstruction::MakeClosure { block, copied, .. } =
+                &snapshot.instructions[*program_counter as usize]
+            else {
+                panic!("internal: an eliminated block is a `MakeClosure`'s");
+            };
+            Some((
+                *id,
+                emit::EliminatedBlock {
+                    code_id: *block,
+                    home: *home,
+                    copied: copied.clone(),
+                },
+            ))
+        })
+        .collect();
+    eliminated.sort_unstable_by_key(|(id, _)| *id);
+    debug_assert!(
+        eliminated
+            .iter()
+            .enumerate()
+            .all(|(index, (id, _))| id.0 as usize == index),
+        "internal: the eliminated blocks are numbered from 0 without a gap"
+    );
+    eliminated.into_iter().map(|(_, block)| block).collect()
+}
+
+/// What the code `graph` lays out relied on (`emit::ReliedOn`): the
+/// guards its type-cases test, the applications its arms always inlined
+/// were decided for, of every inlined scope `laid_out` says it lays out
+/// the receiver's and entered applications `plan` customized it to and
+/// its body and feedback base, as `scopes` emitted it -- a block's scope
+/// among them -- and the body of every block it eliminated, `eliminated`,
+/// whose closure an exit makes, as `tree` snapshotted it.
+#[cfg(ns_jit)]
+fn relied_on(
+    plan: &plan::InliningPlan,
+    graph: &graph::Graph,
+    scopes: &[emit::EmittedScope<'_>],
+    laid_out: &[bool],
+    eliminated: &[emit::EliminatedBlock],
+    tree: &tree::SnapshotTree,
+) -> emit::ReliedOn {
+    let mut relied_on = emit::ReliedOn::default();
+    for block in &graph.blocks {
+        if let graph::End::TypeCase { arms, .. } = &block.end {
+            for (guard, _) in arms {
+                if !relied_on.guards.contains(guard) {
+                    relied_on.guards.push(*guard);
+                }
+            }
+        }
+    }
+    // A field an accessor's node addresses is its arm's application's.
+    for application in &graph.arm_applications {
+        if !relied_on.applications.contains(application) {
+            relied_on.applications.push(*application);
+        }
+    }
+    for (index, scope_plan) in plan.scopes.iter().enumerate().skip(1) {
+        if !laid_out[index] {
+            continue;
+        }
+        for application in [scope_plan.receiver, scope_plan.entered]
+            .into_iter()
+            .flatten()
+        {
+            if !relied_on.applications.contains(&application) {
+                relied_on.applications.push(application);
+            }
+        }
+        let body = (
+            scopes[index].snapshot.code_id,
+            scopes[index].snapshot.feedback_base,
+        );
+        if !relied_on.bodies.contains(&body) {
+            relied_on.bodies.push(body);
+        }
+    }
+    for block in eliminated {
+        let snapshot = tree
+            .snapshot_of(block.code_id)
+            .expect("internal: the tree holds every eliminated block's snapshot");
+        let body = (block.code_id, snapshot.feedback_base);
+        if !relied_on.bodies.contains(&body) {
+            relied_on.bodies.push(body);
+        }
+    }
+    relied_on
 }
 
 /// The snapshot of a method of `instructions`, none of which makes a
@@ -183,6 +435,363 @@ pub(crate) fn test_send(
         call_site: crate::bytecode::CallSite { number: 0 },
     }
 }
+
+/// Records the site of `snapshot`'s instruction at `index` as `site`, run
+/// and never trapped: a send the plan may inline.
+#[cfg(test)]
+pub(crate) fn ran_site(snapshot: &mut snapshot::Snapshot, index: usize, site: u32) {
+    snapshot.sites[index] = Some(snapshot::SiteFacts {
+        site,
+        executed: true,
+        trapped: false,
+    });
+}
+
+/// What a cache entry of the passes' tests records of a receiver: the
+/// guard `guard`, of the application `application`, whose own slots
+/// start at `own_slot_base` at its own level and its superclass's -- the
+/// same application again, so that a `super` send of one of its methods
+/// finds a cached arm.
+#[cfg(test)]
+pub(crate) fn test_receiver(
+    guard: u32,
+    application: u32,
+    own_slot_base: u32,
+) -> tree::ReceiverFacts {
+    let application = crate::heap::ApplicationIndex::from_raw(application);
+    tree::ReceiverFacts {
+        dispatch_id: crate::mixin::DispatchId::from_counter(
+            crate::mixin::DispatchId::FIRST_MINTED + guard,
+        ),
+        application,
+        applications: vec![application, application],
+        own_slot_bases: vec![own_slot_base, own_slot_base],
+    }
+}
+
+/// A site of `test_tree`: its body's code id, its number and its arms.
+#[cfg(test)]
+pub(crate) type TestSite = (
+    crate::heap::CodeId,
+    u32,
+    Vec<(tree::ReceiverFacts, tree::CalleeFacts)>,
+);
+
+/// The tree of `root` whose sites hold `sites` -- each the body's code
+/// id, the site's number and its arms -- over the method bodies
+/// `callees`, as the passes' tests make one by hand.
+#[cfg(test)]
+pub(crate) fn test_tree(
+    root: snapshot::Snapshot,
+    sites: Vec<TestSite>,
+    callees: Vec<snapshot::Snapshot>,
+) -> tree::SnapshotTree {
+    tree::SnapshotTree {
+        root,
+        sites: sites
+            .into_iter()
+            .map(|(code_id, site, arms)| {
+                (
+                    (code_id, site),
+                    tree::SiteCandidates {
+                        site,
+                        megamorphic: false,
+                        private: false,
+                        arms,
+                    },
+                )
+            })
+            .collect(),
+        blocks: std::collections::HashMap::new(),
+        callees: callees
+            .into_iter()
+            .map(|callee| (callee.code_id, callee))
+            .collect(),
+        budgets: std::collections::HashMap::new(),
+        root_receiver: None,
+        root_entered: None,
+    }
+}
+
+/// The tree of `selector`'s body on the instance side of the class
+/// `source` declares, taken after one run of its `run`, so that the
+/// caches hold that run's feedback.
+#[cfg(test)]
+pub(crate) fn tree_of_run(source: &str, selector: &str) -> tree::SnapshotTree {
+    use crate::interpreter::inline_cache::MethodSide;
+    use crate::{HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol};
+
+    fn expect_ok(result: HostResult, what: &str) -> Root {
+        match result {
+            Ok(root) => root,
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => {
+                panic!("{what}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = crate::resolve(module, source.into(), SourceOrigin::File("tree.ns".into()))
+        .unwrap_or_else(|_| panic!("the module resolves"));
+    let mut interpreter = Interpreter::bootstrap_with(Lowering::Optimized);
+    // The run's feedback is what the tree reads: the cache stress mode
+    // would vacate it at the run's safepoints.
+    #[cfg(debug_assertions)]
+    interpreter.set_stress_caches(false);
+    let class = interpreter.load_module(&resolved);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("run"), &[]),
+        "run",
+    );
+    interpreter.enter(|mutator| {
+        let code = crate::interpreter::method_code(
+            mutator,
+            &class,
+            MethodSide::Instance,
+            Symbol::intern(selector),
+        )
+        .expect("the method");
+        let base = mutator.caches.known_base(&code).expect("it ran");
+        tree::SnapshotTree::take(
+            &code,
+            &mut mutator.heap,
+            &mutator.caches,
+            base,
+            None,
+            &plan::Limits::STANDARD,
+        )
+    })
+}
+
+/// A tree over every body of `corpus_of_bodies()` as its root, with
+/// synthetic feedback: each send of each body walked a site whose cache
+/// recorded a callee of the corpus that takes as many arguments -- one,
+/// or for every third site two, and for every fifth of at most two
+/// arguments two arms always inlined beside them: a unary one's slot
+/// getter and `class` or a lazy slot's getter, a one-argument one's
+/// setter and `==` or an `Array`'s `at:` and a `SmallInteger`'s `+`, and
+/// a two-argument one's `at:put:` of an `Array` and of a `ByteArray` --
+/// each its own guard's, all of one application, so that a `super` or
+/// lexical send in an inlined scope is taken without a test; a
+/// `value`-family send a closure's leaf, as a send to a block records it,
+/// every block a walked body makes walked as a callee is; and every
+/// seventh site left never run; walked from the root three callees deep. The inlining passes' sweeps
+/// hold every scope, return, type-case and trap such trees make to their
+/// checks.
+#[cfg(test)]
+pub(crate) fn inlining_corpus() -> Vec<tree::SnapshotTree> {
+    use std::collections::{HashMap, HashSet};
+
+    use crate::builtins::primitive::{
+        BlockPrimitive, BytePrimitive, CollectionPrimitive, IntegerPrimitive, ObjectPrimitive,
+        Primitive,
+    };
+    use crate::bytecode::CodeKind;
+
+    // The mark of a `value`-family send, whose one arm is a closure's leaf.
+    const BLOCK_VALUE: u16 = u16::MAX;
+    use crate::heap::CodeId;
+    use crate::mixin::AccessorKind;
+    use snapshot::Snapshot;
+    use tree::CalleeFacts;
+
+    let bodies = corpus_of_bodies();
+    // A lazy slot's getter, its own slot 0 filled with 1 when empty: a
+    // callee the plan always inlines as a load and a test.
+    let mut lazy_getter = test_snapshot(vec![
+        crate::bytecode::Instruction::ReturnSlotIfFilled { own_index: 0 },
+        crate::bytecode::Instruction::LoadLiteral {
+            destination: 13,
+            literal: crate::bytecode::Literal::SmallInteger(1),
+        },
+        crate::bytecode::Instruction::InitializeSlot {
+            source: 13,
+            own_index: 0,
+        },
+        crate::bytecode::Instruction::Return { register: 13 },
+    ]);
+    lazy_getter.code_id = CodeId::from_raw(u32::MAX - 1);
+    let by_id: HashMap<CodeId, &Snapshot> =
+        bodies.iter().map(|body| (body.code_id, body)).collect();
+    let mut methods: HashMap<u16, Vec<CodeId>> = HashMap::new();
+    for body in &bodies {
+        if body.facts.kind == CodeKind::Method {
+            methods
+                .entry(body.facts.argument_count)
+                .or_default()
+                .push(body.code_id);
+        }
+    }
+    let raw = |code_id: CodeId| {
+        u32::try_from(code_id.index()).expect("internal: a test's code ids are few")
+    };
+    // Each body's sends, each with the callees its synthetic cache
+    // recorded, and the body with those sites run.
+    let fed = |body: &Snapshot| {
+        let mut fed = body.clone();
+        let mut sites = Vec::new();
+        for (index, instruction) in body.instructions.iter().enumerate() {
+            let Some((_, sources)) = instruction.argument_slots() else {
+                continue;
+            };
+            let Some(facts) = body.sites[index] else {
+                continue;
+            };
+            if matches!(
+                instruction,
+                snapshot::SnapshotInstruction::SendMirror { .. }
+                    | snapshot::SnapshotInstruction::InitializeSuperclass { .. }
+                    | snapshot::SnapshotInstruction::InitializeAppliedLevel { .. }
+            ) {
+                continue;
+            }
+            let seed = raw(body.code_id) * 31 + facts.site;
+            if seed % 7 == 6 {
+                continue;
+            }
+            let arity = u16::try_from(sources.len()).expect("a send's arguments fit a u16");
+            // A `value`-family send reached a closure's leaf, as every send
+            // of one to a block records it: the plan inlines the block
+            // where the receiver can only be one the body makes.
+            let block_value = matches!(
+                instruction,
+                snapshot::SnapshotInstruction::SendPublic { selector, .. }
+                    if ["value", "value:", "value:value:", "value:value:value:"]
+                        .contains(&selector.as_str())
+            );
+            if block_value {
+                ran_site(&mut fed, index, facts.site);
+                sites.push((facts.site, Vec::new(), Some((BLOCK_VALUE, false))));
+                continue;
+            }
+            let Some(pool) = methods.get(&arity) else {
+                continue;
+            };
+            let pick = |turn: u32| pool[(seed + turn) as usize % pool.len()];
+            let mut arms = vec![pick(0)];
+            if seed % 3 == 0 {
+                arms.push(pick(1));
+            }
+            ran_site(&mut fed, index, facts.site);
+            sites.push((
+                facts.site,
+                arms,
+                (seed % 5 == 0).then_some((arity, seed % 2 == 0)),
+            ));
+        }
+        (fed, sites)
+    };
+    bodies
+        .iter()
+        .map(|root| {
+            let (fed_root, root_sites) = fed(root);
+            let mut tree_sites = Vec::new();
+            let mut callees: Vec<Snapshot> = Vec::new();
+            let mut walked: HashSet<CodeId> = HashSet::from([root.code_id]);
+            let mut pending = vec![(root.code_id, root_sites, 0)];
+            let mut blocks = HashMap::new();
+            while let Some((code_id, sites, depth)) = pending.pop() {
+                // Its blocks, walked as its own sends are.
+                for instruction in &by_id[&code_id].instructions {
+                    if let snapshot::SnapshotInstruction::MakeClosure { block, .. } = instruction {
+                        if walked.insert(*block) {
+                            let (fed_block, block_sites) = fed(by_id[block]);
+                            blocks.insert(*block, fed_block);
+                            pending.push((*block, block_sites, depth));
+                        }
+                    }
+                }
+                for (site, arms, accessor) in sites {
+                    let mut facts = Vec::new();
+                    for (turn, callee) in (0_u32..).zip(&arms) {
+                        let (fed_callee, callee_sites) = fed(by_id[callee]);
+                        if depth < 3 && walked.insert(*callee) {
+                            pending.push((*callee, callee_sites, depth + 1));
+                            callees.push(fed_callee.clone());
+                        }
+                        facts.push((
+                            test_receiver(raw(*callee) * 4 + turn, 0, 2),
+                            CalleeFacts::Method {
+                                snapshot: Box::new(fed_callee),
+                                level: 0,
+                            },
+                        ));
+                    }
+                    let slot = |kind| CalleeFacts::Slot {
+                        field: 2,
+                        kind,
+                        level: crate::heap::ApplicationIndex::from_raw(0),
+                    };
+                    let always = match accessor {
+                        Some((BLOCK_VALUE, _)) => vec![CalleeFacts::Primitive(Primitive::Block(
+                            BlockPrimitive::Value,
+                        ))],
+                        Some((0, true)) => vec![
+                            slot(AccessorKind::Getter),
+                            CalleeFacts::Primitive(Primitive::Object(ObjectPrimitive::Class)),
+                        ],
+                        Some((0, false)) => vec![
+                            slot(AccessorKind::Getter),
+                            CalleeFacts::Method {
+                                snapshot: Box::new(lazy_getter.clone()),
+                                level: 0,
+                            },
+                        ],
+                        Some((1, true)) => vec![
+                            slot(AccessorKind::Setter),
+                            CalleeFacts::Primitive(Primitive::Object(ObjectPrimitive::Identical)),
+                        ],
+                        Some((1, false)) => vec![
+                            CalleeFacts::Primitive(Primitive::Collection(
+                                CollectionPrimitive::ElementAt,
+                            )),
+                            CalleeFacts::Primitive(Primitive::Integer(IntegerPrimitive::Add)),
+                        ],
+                        Some((2, _)) => vec![
+                            CalleeFacts::Primitive(Primitive::Collection(
+                                CollectionPrimitive::ElementAtPut,
+                            )),
+                            CalleeFacts::Primitive(Primitive::Bytes(BytePrimitive::ElementAtPut)),
+                        ],
+                        _ => Vec::new(),
+                    };
+                    for (turn, callee) in (0_u32..).zip(always) {
+                        facts.push((
+                            test_receiver(raw(code_id) * 4 + 3 + turn * (1 << 20), 0, 2),
+                            callee,
+                        ));
+                    }
+                    tree_sites.push((code_id, site, facts));
+                }
+            }
+            // An arm whose callee lies past the walk is snapshotted but not
+            // walked: the plan takes it, and its own sends trap.
+            for (_, _, arms) in &tree_sites {
+                for (_, callee) in arms {
+                    if let CalleeFacts::Method { snapshot, .. } = callee {
+                        if walked.insert(snapshot.code_id) {
+                            callees.push((**snapshot).clone());
+                        }
+                    }
+                }
+            }
+            let mut tree = test_tree(fed_root, tree_sites, callees);
+            tree.blocks = blocks;
+            tree
+        })
+        .collect()
+}
+
+/// The limits the inlining sweeps plan under: room for more of the
+/// corpus's callees than the standard method limit leaves, under the
+/// standard compile limit.
+#[cfg(test)]
+pub(crate) const SWEEP_LIMITS: plan::Limits = plan::Limits {
+    method: 200,
+    ..plan::Limits::STANDARD
+};
 
 /// The snapshot of every method and block body of the modules under
 /// `goldens/runtime/jit/`, compiled with the optimized lowering: the
@@ -412,7 +1021,7 @@ mod tests {
         assert_eq!(integer_paths, 2, "`iteration < 50` and `iteration + 1`");
         let roles =
             crate::jit::macro_assembler::Roles::of(crate::jit::macro_assembler::Abi::host());
-        let (allocation, _) = super::metadata::allocate_and_describe(&snapshot, &graph, &roles);
+        let (allocation, _) = super::metadata::allocate_and_describe(&graph, &roles);
         // The four locals the float operations write: each is stored once
         // before the loop, on its way in, and once in the loop, right where
         // the interpreter's `StoreLocal` writes it, and reloaded only on

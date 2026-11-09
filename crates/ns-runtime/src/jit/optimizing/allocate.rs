@@ -40,6 +40,7 @@ use ns_assembler::Register;
 
 use super::graph::{BlockId, Graph, Node, ValueId};
 use super::liveness::{bind, poll_target, Binding, Intervals, Positions};
+use super::plan::EliminatedId;
 use crate::jit::macro_assembler::Roles;
 
 /// Where a value is at a position.
@@ -48,6 +49,12 @@ pub(crate) enum Location {
     Register(Register),
     /// The frame word of every bytecode register bound to the value.
     FrameWord,
+    /// A block the compile never creates, which an exit that finds it
+    /// live materializes (`docs/design/execution.md`, "Inlining"): a
+    /// register's location in an interrupt point's metadata, never a
+    /// value's in the allocation, which holds the block's `nil` like any
+    /// other value.
+    EliminatedBlock(EliminatedId),
 }
 
 /// A place a move reads or writes.
@@ -135,7 +142,29 @@ pub(crate) struct Allocation {
     pub(crate) entries: Vec<Option<Entry>>,
     pub(crate) allocatable: &'static [Register],
     pub(crate) survive_leaf_calls: usize,
+    /// Each back edge's poll, by its position: every value live there, as
+    /// a frame going back into the code at the poll after its safepoint
+    /// finds it again (`emit`'s poll entry).
+    pub(crate) poll_values: BTreeMap<u32, Vec<PolledValue>>,
     ranges: Vec<Vec<(u32, u32)>>,
+}
+
+/// A value live at a back edge's poll: the machine register it is in, if
+/// it is in one, every bytecode register bound to it -- each of whose
+/// frame words holds it once the poll's write-back stored the dirty ones
+/// -- and of those the ones whose frame words the code after the poll
+/// takes to hold it, which it may read it back from; and whether the code
+/// past the poll reads it at all: it is live into the loop's head, or the
+/// input of a phi there that is, rather than live only for the stores of
+/// its dirty bindings, the poll's on its way out and the merge's on its
+/// way in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PolledValue {
+    pub(crate) value: ValueId,
+    pub(crate) machine: Option<Register>,
+    pub(crate) bound: Vec<u16>,
+    pub(crate) clean: Vec<u16>,
+    pub(crate) read_on: bool,
 }
 
 impl Allocation {
@@ -182,7 +211,7 @@ impl Allocation {
                 let value = ValueId(u32::try_from(index).expect("internal: a value id fits a u32"));
                 match self.location_of(value, position) {
                     Location::Register(register) => Some(register),
-                    Location::FrameWord => None,
+                    Location::FrameWord | Location::EliminatedBlock(_) => None,
                 }
             })
             .collect()
@@ -212,6 +241,7 @@ pub(crate) fn allocate(graph: &Graph, intervals: &Intervals, roles: &Roles) -> A
             entries: vec![None; graph.blocks.len()],
             allocatable: roles.allocatable,
             survive_leaf_calls: roles.survive_leaf_calls,
+            poll_values: BTreeMap::new(),
             ranges: intervals.ranges.clone(),
         },
     };
@@ -527,7 +557,9 @@ impl Allocator<'_> {
                     register: exit.frame_word_of(value),
                     into: *into,
                 }),
-                None => panic!("internal: a value live into a merge is placed on every way in"),
+                Some(Location::EliminatedBlock(_)) | None => {
+                    panic!("internal: a value live into a merge is placed on every way in")
+                }
             }
         }
         moves.extend(sequence(transfers));
@@ -640,7 +672,9 @@ impl Allocator<'_> {
                 self.state.placed.insert(value, Location::Register(into));
                 self.record(value, position, Location::Register(into));
             }
-            None => panic!("internal: {value:?} is used where it is not placed"),
+            Some(Location::EliminatedBlock(_)) | None => {
+                panic!("internal: {value:?} is used where it is not placed")
+            }
         }
     }
 
@@ -670,6 +704,59 @@ impl Allocator<'_> {
             .collect()
     }
 
+    /// Every value live at a poll, here, where it is and the registers
+    /// bound to it (`PolledValue`).
+    fn polled_values(&self, block: BlockId) -> Vec<PolledValue> {
+        let number = |register: usize| {
+            u16::try_from(register).expect("internal: a register number fits a u16")
+        };
+        let graph = self.graph;
+        let positions = self.positions();
+        let head = poll_target(graph, block).expect("internal: a poll's block jumps back");
+        let way = graph
+            .block(head)
+            .predecessors
+            .iter()
+            .position(|predecessor| *predecessor == block);
+        let read_on = |value: ValueId| {
+            self.intervals.live_at(value, positions.entry(head))
+                || way.is_some_and(|way| {
+                    graph.block(head).phis.iter().any(|phi| {
+                        phi.inputs[way] == value
+                            && self
+                                .intervals
+                                .live_at(phi.value, positions.phi_definition(head) + 1)
+                    })
+                })
+        };
+        self.state
+            .placed
+            .iter()
+            .map(|(value, location)| {
+                let bound = || {
+                    self.state
+                        .bindings
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, binding)| binding.value == Some(*value))
+                };
+                PolledValue {
+                    value: *value,
+                    machine: match location {
+                        Location::Register(register) => Some(*register),
+                        Location::FrameWord | Location::EliminatedBlock(_) => None,
+                    },
+                    bound: bound().map(|(register, _)| number(register)).collect(),
+                    clean: bound()
+                        .filter(|(_, binding)| binding.clean)
+                        .map(|(register, _)| number(register))
+                        .collect(),
+                    read_on: read_on(*value),
+                }
+            })
+            .collect()
+    }
+
     fn node(&mut self, block: BlockId, index: usize) {
         let graph = self.graph;
         let intervals = self.intervals;
@@ -678,14 +765,10 @@ impl Allocator<'_> {
         let definition = use_position + 1;
         self.free_dead(use_position);
         let mut moves = Vec::new();
+        // A frame node's reads are its frame words, written back before it.
         let operands = match node {
-            Node::Copy { source, .. } => vec![*source],
-            Node::OwnSlotLoad { receiver, .. } => vec![*receiver],
-            Node::IntegerBinary { left, right, .. } => vec![*left, *right],
-            Node::FrameRead { .. }
-            | Node::Constant { .. }
-            | Node::Receiver { .. }
-            | Node::Frame { .. } => Vec::new(),
+            Node::Frame { .. } => Vec::new(),
+            _ => node.uses(),
         };
         for operand in &operands {
             self.ensure_register(*operand, use_position, &operands, &mut moves);
@@ -842,6 +925,8 @@ impl Allocator<'_> {
                 kind: PointKind::Poll,
                 stores,
             });
+            let values = self.polled_values(block);
+            self.allocation.poll_values.insert(use_position, values);
         }
         if graph.end_trap(block).is_some() {
             let stores = self.dirty_stores();

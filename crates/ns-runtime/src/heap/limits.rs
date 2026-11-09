@@ -433,6 +433,9 @@ pub struct TableSizes {
     pub mixin_rows: usize,
     /// Rows of the application table, freed ones included.
     pub application_rows: usize,
+    /// Rows of the table from dispatch id to application, freed ones
+    /// included.
+    pub dispatch_id_rows: usize,
     /// Inline-cache sites, free ranges included.
     pub sites: usize,
     /// Live symbols a program made.

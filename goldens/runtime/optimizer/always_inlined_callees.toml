@@ -1,0 +1,15 @@
+stdout = '''
+1250025000
+50000
+5000000000
+2500050000
+100000
+50000
+25000
+50000
+7575000
+2525000
+6368040
+index 101 out of range: valid indices are 1..100 (size 100)
+at:put: requires an Integer from 0 to 255, got 300
+'''

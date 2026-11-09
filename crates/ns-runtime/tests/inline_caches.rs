@@ -1177,7 +1177,19 @@ const FAMILY_CHURN: &str = indoc! {"
 /// Answers the interpreter, the module's class and its instance.
 #[cfg(debug_assertions)]
 fn churned(edits: i64) -> (Interpreter, Root, Root) {
+    churned_optimizing(edits, false)
+}
+
+/// `churned`, with the optimize stress mode on when `optimizing` says so:
+/// every body's first spend requests its optimization, so that `churn:`
+/// runs in a copy that inlines each version of `answer`, which every edit
+/// frees.
+#[cfg(debug_assertions)]
+fn churned_optimizing(edits: i64, optimizing: bool) -> (Interpreter, Root, Root) {
     let (mut interpreter, class) = load(FAMILY_CHURN);
+    if optimizing {
+        interpreter.set_optimize_stress(true);
+    }
     interpreter.set_stress_collect(false);
     interpreter.set_collection_floor(1 << 30);
     interpreter.set_table_floors(ns_runtime::TableFloors::all(1 << 24));
@@ -1233,6 +1245,28 @@ fn a_churn_of_families_keeps_the_site_table_bounded() {
     if let Err(message) = interpreter.verify_cells() {
         panic!("after the slide: {message}");
     }
+}
+
+/// The churn of `a_churn_of_families_keeps_the_site_table_bounded` run in
+/// optimized code: each edit frees the copy of `churn:` that inlined the
+/// version it replaced, and a freed copy keeps nothing it inlined, so that
+/// the full collection ends every replaced version's family as it does in
+/// baseline code and the interpreter.
+#[cfg(debug_assertions)]
+#[test]
+fn a_churn_of_families_in_optimized_code_keeps_the_site_table_bounded() {
+    let (mut once, _, _) = churned_optimizing(1, true);
+    once.collect_now();
+    let live = once.table_sizes().sites;
+    let (mut interpreter, _, churn) = churned_optimizing(2_000, true);
+    interpreter.collect_now();
+    let sites = interpreter.table_sizes().sites;
+    assert!(
+        sites <= 2 * live,
+        "{sites} sites after the churn, {live} after a single edit"
+    );
+    let kept = send(&mut interpreter, &churn, "keeper", &[]);
+    assert_eq!(small_integer(&mut interpreter, &kept), 2_000);
 }
 
 /// The churn of `a_churn_of_families_keeps_the_site_table_bounded`, with

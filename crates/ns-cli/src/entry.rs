@@ -56,7 +56,8 @@ pub(crate) fn print_collector_statistics(statistics: &ns_runtime::CollectorStati
 }
 
 /// `--jit-statistics`'s one line, always to stderr: the baseline's counts,
-/// then the optimizing tier's. Both compile times are what a compiler
+/// then the optimizing tier's, then what its copies inlined and what
+/// became of the scopes and blocks they inlined. Both compile times are what a compiler
 /// thread of its own would take off the mutator.
 pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
     eprintln!(
@@ -65,7 +66,12 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
          {} bodies optimized ({} customized copies) in {:.3} ms, \
          {} optimized exits ({} forced, {} traps), {} abandoned, \
          {} made not entrant, {} refused for good, {} invalidated copies, \
-         {} dispatched calls",
+         {} dispatched calls; inlining: {} sites inlined, {} scopes inlined, \
+         {} type-case arms, \
+         {} blocks eliminated, {} blocks materialized, \
+         {} inlined frames materialized, {} budget exits \
+         ({} recompilees above), {} poll re-entries, \
+         {} poll deoptimizations, {} polls without an entry",
         statistics.compiled_bodies,
         statistics.compiled_twins,
         statistics.compile_nanoseconds as f64 / 1_000_000.0,
@@ -84,6 +90,17 @@ pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
         statistics.refused_for_good,
         statistics.invalidated_copies,
         statistics.dispatched_calls,
+        statistics.inlined_sites,
+        statistics.inlined_scopes,
+        statistics.type_case_arms,
+        statistics.eliminated_blocks,
+        statistics.materialized_blocks,
+        statistics.inlined_frames_materialized,
+        statistics.budget_exits,
+        statistics.recompilees_above,
+        statistics.poll_reentries,
+        statistics.poll_deoptimizations,
+        statistics.polls_without_an_entry,
     );
 }
 

@@ -43,7 +43,7 @@ use crate::hash::IdentityMap;
 use crate::interpreter::inline_cache::SiteSlide;
 use crate::interpreter::Mutator;
 
-use super::{InstalledBody, JitState, BODY_ALIGNMENT, COMPILED};
+use super::{CopyDependencies, InstalledBody, JitState, BODY_ALIGNMENT, COMPILED};
 
 /// A body a slide freed (`JitState::free_bodies_with_moved_bases`): its
 /// code, while it lives, whose machine entry row names it, and its entry's
@@ -359,6 +359,15 @@ impl JitState {
             return false;
         }
         body.free = true;
+        // What a freed copy inlined is no one's any more: its scopes hold
+        // the inlined bodies' code, which would keep every version an edit
+        // replaced -- and its family's sites -- alive until a compaction
+        // reuses the row. A frame stopped at one of its polls holds the
+        // metadata of its own.
+        body.metadata = None;
+        body.dependencies = CopyDependencies::default();
+        #[cfg(ns_jit)]
+        body.polls.clear();
         let size = body.size();
         let customized_beside = body.key.and(body.baseline);
         let own_block = body.dispatching.map(|dispatching| dispatching.rows);
@@ -1406,6 +1415,10 @@ impl Mutator<'_> {
 
     /// `free_code_of_moved_bases`'s work, before its check.
     fn free_moved_code(&mut self, slide: &SiteSlide) {
+        // A copy whose own base stayed but which inlined a body whose base
+        // moved goes as an invalidation frees it, its baseline code staying.
+        #[cfg(ns_jit)]
+        crate::jit::invalidate_copies_of_moved_bases(self, slide);
         let freed = self.jit.free_bodies_with_moved_bases(slide);
         if freed.is_empty() {
             return;

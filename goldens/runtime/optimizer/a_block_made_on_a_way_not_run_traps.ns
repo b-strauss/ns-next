@@ -1,0 +1,64 @@
+/// An inlined callee that makes a block only on a way that never ran
+/// before its caller's copy was compiled: `run:` adds `remember:` of every
+/// index, and `remember:`, which the copy inlines, hands `keep:` a block
+/// only for an index past `limit`. Thirty runs with `limit` at 100000
+/// never take that way, so the copy lowers its `MakeClosure` as a trap on
+/// the site of `keep:`, which never ran. Then `limit` drops to 500: the
+/// first index past it traps, marking the site of `keep:`, the trap that
+/// follows at that site makes the copy not entrant, and the copy
+/// compiled after it sends `remember:`, whose own code makes the block.
+/// Each run answers 1 + ... + 1000 = 500500, thirty runs 15015000;
+/// `keep:` adds twice each index from 501 to 1000, 750500 a run, so the
+/// second thirty runs keep 22515000.
+class ABlockMadeOnAWayNotRunTraps = Object new (
+  |
+    limit ::= 100000.
+    kept ::= 0.
+  |
+) (
+  keep: action = (
+    kept:: kept + action value.
+    ^0.
+  )
+
+  remember: number = (
+    number > limit ifTrue: [self keep: [number * 2]].
+    ^number.
+  )
+
+  run: count = (
+    |
+      total ::= 0.
+      index ::= 1.
+    |
+    [index <= count] whileTrue: [
+      total:: total + (remember: index).
+      index:: index + 1.
+    ].
+    ^total.
+  )
+
+  runs: count = (
+    |
+      sum ::= 0.
+    |
+    1 to: count do: [:round | sum:: sum + (run: 1000)].
+    ^sum.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (runs: 30) printString;
+        newLine.
+    limit:: 500.
+    transcript
+        show: (runs: 30) printString;
+        newLine.
+    transcript
+        show: kept printString;
+        newLine.
+  )
+)
