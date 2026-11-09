@@ -1096,6 +1096,20 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   needs `unsafe` and would pay only in `LargeInteger`'s digit loops
   (`mulx`, `adcx`, `adox`), which no benchmark leans on.
   Unmeasured.
+- **The recompilee walk takes a snapshot tree and a plan at every step**
+  (noted at the inlining branch's final review, 2026-11-09).
+  `jit::find_recompilee` asks `inlines` at each frame it goes up to,
+  which takes a whole `SnapshotTree` and makes a plan of the candidate
+  every time, and `inlined_into_a_copy_below` reads up to
+  `RECOMPILEE_SEARCH_LENGTH`, ten, senders per step: up to ten trees and
+  a hundred frame reads per budget exit. Budget exits are rare -- one
+  per body per budget, counted by `budget_exits` -- and the walk's cost
+  was not separated from the rest in the measurements of "Inlining".
+  What would find out whether it matters: the time of the run loop's
+  budget-exit path, by the protocol of "Measuring", on the benchmarks
+  with the most `budget_exits`; if it shows, the tree and plan cached
+  per candidate body within one walk.
+  [execution.md](design/execution.md), "The recompilee walk".
 - **The depth flag a continuation's push takes is dead** (2026-10-27).
   `Mutator::push_continuation` takes `replaced_counted`, whether the
   activation a continuation replaces counted against the depth limit,

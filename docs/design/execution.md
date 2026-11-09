@@ -12451,10 +12451,12 @@ megamorphic and every cached type has an arm, in a copy that
 speculates; it is the site's own send through its cell otherwise, and
 a megamorphic site gets no type-case. Each arm's callee is customized
 to its receiver's application, its own slots read at that
-application's base. A `super` send, a private lexical send at depth 0
-and the `value`-family send of a block the compile eliminates have
-one arm taken without a test (`FallThrough::Unguarded`), the receiver
-known.
+application's base. A `super` send, a lexical send at depth 0 -- a
+private one, outside declaration code, fixed by the scope's entered
+application, any other by the scope's known receiver, `self`, whose
+application the arm must be -- and the `value`-family send of a block
+the compile eliminates have one arm taken without a test
+(`FallThrough::Unguarded`, `Planner::unguarded`), the receiver known.
 
 **Always inlined**, charged nothing: a slot's getter and setter, a load
 (`Node::FieldLoad`) and a store through the inline write barrier
