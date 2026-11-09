@@ -1209,27 +1209,36 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "integer:add:ifFail:",
-        "+",
-        Primitive::Integer(IntegerPrimitive::Add),
-    )),
+    stubbed(
+        mirror(
+            "integer:add:ifFail:",
+            "+",
+            Primitive::Integer(IntegerPrimitive::Add),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "integer:subtract:ifFail:",
-        "-",
-        Primitive::Integer(IntegerPrimitive::Subtract),
-    )),
+    stubbed(
+        mirror(
+            "integer:subtract:ifFail:",
+            "-",
+            Primitive::Integer(IntegerPrimitive::Subtract),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "integer:multiply:ifFail:",
-        "*",
-        Primitive::Integer(IntegerPrimitive::Multiply),
-    )),
+    stubbed(
+        mirror(
+            "integer:multiply:ifFail:",
+            "*",
+            Primitive::Integer(IntegerPrimitive::Multiply),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
@@ -1241,43 +1250,58 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "integer:lessThan:ifFail:",
-        "<",
-        Primitive::Integer(IntegerPrimitive::Less),
-    )),
+    stubbed(
+        mirror(
+            "integer:lessThan:ifFail:",
+            "<",
+            Primitive::Integer(IntegerPrimitive::Less),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "integer:greaterThan:ifFail:",
-        ">",
-        Primitive::Integer(IntegerPrimitive::Greater),
-    )),
+    stubbed(
+        mirror(
+            "integer:greaterThan:ifFail:",
+            ">",
+            Primitive::Integer(IntegerPrimitive::Greater),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "integer:lessOrEqual:ifFail:",
-        "<=",
-        Primitive::Integer(IntegerPrimitive::LessOrEqual),
-    )),
+    stubbed(
+        mirror(
+            "integer:lessOrEqual:ifFail:",
+            "<=",
+            Primitive::Integer(IntegerPrimitive::LessOrEqual),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "integer:greaterOrEqual:ifFail:",
-        ">=",
-        Primitive::Integer(IntegerPrimitive::GreaterOrEqual),
-    )),
+    stubbed(
+        mirror(
+            "integer:greaterOrEqual:ifFail:",
+            ">=",
+            Primitive::Integer(IntegerPrimitive::GreaterOrEqual),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "integer:equals:ifFail:",
-        "=",
-        Primitive::Integer(IntegerPrimitive::Equal),
-    )),
+    stubbed(
+        mirror(
+            "integer:equals:ifFail:",
+            "=",
+            Primitive::Integer(IntegerPrimitive::Equal),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
@@ -1907,11 +1931,14 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "integerAsFloat:ifFail:",
-        "asFloat",
-        Primitive::Integer(IntegerPrimitive::AsFloat),
-    )),
+    stubbed(
+        mirror(
+            "integerAsFloat:ifFail:",
+            "asFloat",
+            Primitive::Integer(IntegerPrimitive::AsFloat),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
@@ -2417,11 +2444,14 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "number:divide:ifFail:",
-        "/",
-        Primitive::Number(NumberPrimitive::Divide),
-    )),
+    stubbed(
+        mirror(
+            "number:divide:ifFail:",
+            "/",
+            Primitive::Number(NumberPrimitive::Divide),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).

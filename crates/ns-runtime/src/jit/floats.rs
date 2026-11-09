@@ -844,36 +844,25 @@ mod tests {
         }
     }
 
-    /// Every row marked with the float stub is one machine code computes
-    /// a `Float` operation for, which its stub emits; `Float`'s binary
-    /// operations are among them.
+    /// The rows marked with the float stub are exactly those machine
+    /// code computes a `Float` operation for, which their stub emits:
+    /// `Float`'s binary, unary and rounding operations, and a
+    /// `SmallInteger`'s arithmetic, orderings, `=` and `asFloat` with a
+    /// `Float`.
     #[test]
-    fn every_row_with_a_float_stub_has_its_operation() {
-        let stubbed: Vec<&str> = MIRROR
-            .iter()
-            .filter(|entry| entry.machine_call == MachineCall::Stub(RowStub::Float))
-            .inspect(|entry| {
-                assert!(
-                    FloatOperation::of(entry.primitive).is_some(),
-                    "{}",
-                    entry.selector
-                );
-            })
-            .map(|entry| entry.selector)
-            .collect();
-        for selector in [
-            "float:add:ifFail:",
-            "float:subtract:ifFail:",
-            "float:multiply:ifFail:",
-            "float:divide:ifFail:",
-            "float:lessThan:ifFail:",
-            "float:greaterThan:ifFail:",
-            "float:lessOrEqual:ifFail:",
-            "float:greaterOrEqual:ifFail:",
-            "float:equals:ifFail:",
-        ] {
-            assert!(stubbed.contains(&selector), "{selector}");
+    fn every_row_with_a_float_operation_has_the_float_stub() {
+        let mut stubbed = 0;
+        for entry in MIRROR {
+            let has_stub = entry.machine_call == MachineCall::Stub(RowStub::Float);
+            assert_eq!(
+                FloatOperation::of(entry.primitive).is_some(),
+                has_stub,
+                "{}",
+                entry.selector
+            );
+            stubbed += usize::from(has_stub);
         }
+        assert_eq!(stubbed, 30, "nine binary, eleven unary and ten mixed rows");
     }
 
     /// The dispatch id the tests' `Float` application guards on.

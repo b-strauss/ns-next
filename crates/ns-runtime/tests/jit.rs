@@ -4680,6 +4680,53 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// A `SmallInteger` receiver's `+ - * / < > <= >= =` with a `Float`
+/// argument, and its `asFloat`, sent from a compiled loop: each cell
+/// names its row's stub.
+const MIXED_ARITHMETIC: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          sum ::= 0.0.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          sum:: sum + (index + 0.5) + (index - 0.25) + (index * 1.5).
+          sum:: sum + (index / 4.0) + index asFloat.
+          (index < 500.5) ifTrue: [count:: count + 1].
+          (index > 500.5) ifTrue: [count:: count + 1].
+          (index <= 500.0) ifTrue: [count:: count + 1].
+          (index >= 500.0) ifTrue: [count:: count + 1].
+          (index = 500.0) ifTrue: [count:: count + 1].
+          index:: index + 1.
+        ].
+        ^count + sum asInteger.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A `SmallInteger`'s arithmetic, orderings and `=` with a `Float`,
+    /// and its `asFloat`, run in their rows' stubs: the third run's sends
+    /// leave machine code for nothing and call no leaf, and the answer is
+    /// the interpreter's.
+    fn mixed_arithmetic_calls_no_leaf(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(MIXED_ARITHMETIC, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(MIXED_ARITHMETIC, lowering, false);
+        assert!(interpreted[0] > 2001, "{interpreted:?}");
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.miss_leaf_calls, 0);
+            assert_eq!(
+                statistics.act_leaf_calls, 0,
+                "every mixed operation ran in its row's stub"
+            );
+        }
+    }
+}
+
 /// How many boxed `Float`s `FLOAT_BOXES`' loop makes per run.
 const FLOAT_BOX_COUNT: u64 = 2000;
 
