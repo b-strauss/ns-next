@@ -19,6 +19,11 @@ any names the upstream file it comes from in a header:
   CD files add the BSD-3 notice of CDx, which `CD.ns` carries (below). The Java
   translations of `RichardsTon80.ns` and `DeltaBlueTon80.ns` beside them
   carry those files' Apache License 2.0 header.
+- Python code in `benchmarks/are-we-fast-yet/python/`: the Python versions of
+  the benchmarks, their harness and the SOM class library from Are We Fast
+  Yet, under the same licences as the Java versions (below); each copied file
+  keeps its upstream notice in its header, and a file with none upstream has
+  none here.
 
 Each of these licences requires its notice below to accompany every copy.
 
