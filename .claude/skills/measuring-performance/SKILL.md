@@ -26,13 +26,13 @@ the re-entries moved", has the full measurement protocol and its history.
    included.** In PowerShell:
 
    ```powershell
-   $env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"
+   $env:RUSTFLAGS = "-C target-feature=+crt-static -C target-cpu=x86-64-v2 -C llvm-args=-align-all-functions=6"
    cargo build --workspace --release
    Remove-Item Env:RUSTFLAGS
    ```
 
-   `RUSTFLAGS` replaces the configuration's flags, so `+crt-static` is
-   repeated; a Linux or macOS build carries the alignment flag alone. Without
+   `RUSTFLAGS` replaces the configuration's flags, so `+crt-static` and `target-cpu`
+   are repeated; a Linux or macOS build carries the alignment flag alone. Without
    the pin, identical machine code measured 1–2% apart through a 64-byte phase
    shift of every hot function. The shipped build does not carry the pin: it
    costs about 110 KB (5.6%) and measured no faster.
