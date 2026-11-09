@@ -258,6 +258,19 @@ impl FrameFlags {
         FrameFlags { generation, ..self }
     }
 
+    /// The generation the flags word `word` holds when it holds these
+    /// flags but for their generation, and nothing else; `None` for any
+    /// other word.
+    #[cfg(debug_assertions)]
+    pub(super) fn generation_if_same(self, word: Word) -> Option<u32> {
+        if !word.is_non_negative_small_integer() {
+            return None;
+        }
+        let found = FrameFlags::of(word);
+        (found.word().bits() == word.bits() && found.with_generation(self.generation) == self)
+            .then_some(found.generation)
+    }
+
     /// The flags as the `SmallInteger` word the header stores.
     #[inline(always)]
     pub(super) fn word(self) -> Word {

@@ -10293,7 +10293,8 @@ impl<'gc> Heap<'gc> {
     /// writes it -- unreified and counted, a block's among them, since
     /// only the reference lowering's control flow pushes an uncounted one,
     /// which no copy inlines; its flags word whole, shifted by no call,
-    /// with a generation of its own in a debug build; and its guard and
+    /// with a generation of its own in a debug build wherever a stale
+    /// handle could name it; and its guard and
     /// entered level as the push records them, from its receiver, which
     /// its code wrote back, and its current class, which its code wrote
     /// back at a leaf's frame node and the exit's walk wrote before this
@@ -10314,11 +10315,37 @@ impl<'gc> Heap<'gc> {
             compiled: true,
             ..FrameFlags::new(tag, frame.argument_count, true, false)
         };
+        // A generation of its own only where a stale handle could name the
+        // offset, as a push takes one and a leaf's view of a prologue's
+        // frame keeps it: a leaf's view whose header a leaf's view of the
+        // same frame wrote -- nil caller and reified word, the same code,
+        // the same flags but for the generation -- keeps that generation,
+        // since no handle a leaf's view mints outlives its leaf
+        // (`jit::materialize::release_leaf_frame`). Any other header, a
+        // frame an exit materialized or the interpreter pushed among them,
+        // whose handles the run loop may have kept past their pop, and
+        // every write by the exit's walk, which makes the scope an
+        // activation the interpreter holds, take a fresh one.
         #[cfg(debug_assertions)]
         let flags = {
-            let generation = self.stack.peek_next_generation();
-            self.stack.advance_generation();
-            flags.with_generation(generation)
+            let code = frames::number_word(frame.code.index() as u64);
+            let kept = if frame.caller.is_none()
+                && header_word(self, frame_header::CALLER).bits() == Word::NIL.bits()
+                && header_word(self, frame_header::REIFIED).bits() == Word::NIL.bits()
+                && header_word(self, frame_header::CODE).bits() == code.bits()
+            {
+                flags.generation_if_same(header_word(self, frame_header::FLAGS))
+            } else {
+                None
+            };
+            match kept {
+                Some(generation) => flags.with_generation(generation),
+                None => {
+                    let generation = self.stack.peek_next_generation();
+                    self.stack.advance_generation();
+                    flags.with_generation(generation)
+                }
+            }
         };
         let program_counter = frames::number_word(u64::from(frame.program_counter));
         self.write_machine_header_words(frame, Word::NIL, flags.word(), program_counter);
