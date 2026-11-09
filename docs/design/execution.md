@@ -1242,8 +1242,8 @@ There are two ways to measure, and they report different things:
   ArgumentError`. A flag without `--timed`, a repeated flag, a flag without
   its value or any other value signals the usage error, whose text names
   the flags. Every `--timed` score in this section was taken with the
-  default windows. The Java counterparts (below) take the same flags with
-  the same defaults (decided with the user on 2026-10-22).
+  default windows. The Java and Python counterparts (below) take the same
+  flags with the same defaults (decided with the user on 2026-10-22).
 
 Either way the protocol of the `measuring-performance` skill applies, as it
 does to every figure in this section: release builds only, and every binary
@@ -1419,12 +1419,44 @@ output. The trials:
   (through the test hook) and **`java::missing-jdk-is-named`** (a
   `JAVA_HOME` that holds no JDK is named in the failure, and an empty one
   answers the tool's bare name, for `PATH`).
-- **`flags::ns-next::*` and `flags::java::*`**, on both harnesses:
+- **`flags::ns-next::*`, `flags::java::*` and `flags::python::*`**, on
+  the three harnesses:
   `windows-print-a-score` and `either-order` run `--timed --warm-up 0
   --measure 1 Sieve` and the flags swapped, and print a score of the right
   shape; `rejected` holds `--warm-up 5` without `--timed`, `--measure x`,
   `--measure -1`, a repeated `--warm-up` and `--measure` without a value
   to a non-zero exit, nothing on stdout and the usage on stderr.
+
+The same gate holds the Python counterparts under
+`benchmarks/are-we-fast-yet/python/` to the same record, so the profile
+`benchmarks-verify` needs Python as well: the `python` on `PATH`, with no
+variable to name another (decided with the user on 2026-11-10); the
+harness, `are_we_fast_yet.py`, runs the protocol above, an unknown name
+and a malformed command line ending the run with exit status 1 and the
+message on stderr, and its one test hook is the environment variable
+`ARE_WE_FAST_YET_FAIL_FIRST_CHECK=true`, which replaces the first
+selected benchmark with one whose check always fails. A missing `python`
+fails the trials and says the gate needs it, as a missing JDK does. Each
+trial runs `python -E -S -B are_we_fast_yet.py ...` in that directory:
+`-E` ignores every `PYTHON*` variable of the environment --
+`PYTHONSTARTUP`, `PYTHONPATH`, `PYTHONWARNINGS`, `PYTHONINSPECT` and any
+a later release adds -- which could change the output or what is run,
+where removing them by name would miss one; `-S` imports no `site`, so no
+installed package's `.pth` file runs, the harness needing the standard
+library alone; `-B` writes no `__pycache__` into the source tree, which
+`-E` would otherwise allow by ignoring `PYTHONDONTWRITEBYTECODE`. `-I`
+would do the first two but also leave the script's directory off the
+module path, from which the harness imports its benchmarks. The hook's
+variable is removed from every trial but the one that sets it. The
+trials mirror Java's:
+
+- **`python::<Name>`**, each held to its line of
+  `benchmarks/are-we-fast-yet/newspeak.toml` with nothing on stderr, and
+  **`python-timed::<Name>`**, its score's shape checked.
+- **`python::unknown-benchmark`**, **`python::a-failing-check-prints-no-ok`**
+  (through the hook) and **`python::missing-python-is-named`** (a program
+  not on `PATH` fails with an error naming it and Python).
+- **`flags::python::*`**, as above.
 
 The default windows suit an interpreter; a JIT is still compiling after
 3 ms. A peak comparison gives both sides the same longer windows, for
@@ -15546,7 +15578,9 @@ lookup's remembered answers ("The code zone").
   image by its digest, every Ubuntu package from the archive's snapshot
   at one moment (`APT::Snapshot`), Rust 1.98.0 with both targets,
   rustup-init, `cargo-nextest` and QEMU by their versions, a headless
-  OpenJDK 25 for the benchmarks' Java counterparts. QEMU is built in a
+  OpenJDK 25 for the benchmarks' Java counterparts and the snapshot's
+  `python3`, named `python` by `python-is-python3`, for their Python
+  counterparts. QEMU is built in a
   stage of its own from the newest stable release's tarball, checked
   against its SHA-256, `qemu-aarch64` alone and static. **QEMU 8.1 or
   newer** is what the suite needs: the code zone writes through its

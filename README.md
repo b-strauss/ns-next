@@ -49,7 +49,7 @@ Rust 1.98.0, pinned by `rust-toolchain.toml` — `rustup` picks it up automatica
 The test suites run under `cargo-nextest`, installed once per machine with
 `cargo install cargo-nextest --locked`. The `codegen` gate needs `cargo-show-asm`
 (`cargo install cargo-show-asm --locked`) and the target `x86_64-pc-windows-msvc`;
-the `benchmarks` gate needs a JDK. The project has no external runtime
+the `benchmarks` gate needs a JDK and a `python` on `PATH`. The project has no external runtime
 dependencies. On x86_64 the binaries require an x86-64-v2 processor (SSE4.2,
 POPCNT) and say so at start when theirs lacks one. On Windows it needs
 Windows 10 version 1803 or Windows Server 2019, for the placeholders the JIT's
@@ -124,8 +124,8 @@ cargo xtask gates images
 cargo xtask gates caches
 # a commit touching crates/ns-memory: its clippy for Linux and macOS
 cargo xtask gates memory
-# the benchmark programs verified at full size, and their Java counterparts;
-# needs a JDK
+# the benchmark programs verified at full size, and their Java and Python
+# counterparts; needs a JDK and a `python` on PATH
 cargo xtask gates benchmarks
 # the suite without debug assertions, which runs the size tests
 cargo xtask gates release-checks

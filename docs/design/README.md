@@ -94,13 +94,15 @@ Real programs to measure the runtime on, beside the microbenchmarks under
 `benchmarks/are-we-fast-yet/newspeak/`, the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, their harness and the SOM
 collection library they share (`Som.ns`), with
-their Java counterparts under `benchmarks/are-we-fast-yet/java/`, which
+their Java and Python counterparts under `benchmarks/are-we-fast-yet/java/`
+and `benchmarks/are-we-fast-yet/python/`, which
 [execution.md](execution.md), "The Are We Fast Yet benchmarks", describes.
 Every benchmark program is held to the outcome recorded beside it --
 `benchmarks/micro/<name>.toml`, `benchmarks/are-we-fast-yet/newspeak.toml` -- by
 `crates/ns-cli/tests/run_benchmarks.rs`, under both lowerings, and each Java
-counterpart to the same line of `benchmarks/are-we-fast-yet/newspeak.toml`, in the
-nextest profile `benchmarks-verify` only, which needs a JDK: a benchmark is
+and Python counterpart to the same line of `benchmarks/are-we-fast-yet/newspeak.toml`,
+in the nextest profile `benchmarks-verify` only, which needs a JDK and a `python`
+on `PATH`: a benchmark is
 sized to be measured, not to run on every commit. The profile verifies; it
 measures nothing.
 
@@ -469,7 +471,7 @@ is the repository's code: the checkout is mounted read-only and rsynced
 into a working copy in a named volume first, so uncommitted work is
 checked too: `linux` the suite for `x86_64-unknown-linux-gnu`, System V's
 convention and Linux's memory layer, and the benchmark programs with their
-Java counterparts, and `aarch64` the suite cross-compiled for
+Java and Python counterparts, and `aarch64` the suite cross-compiled for
 `aarch64-unknown-linux-gnu` and run through the image's own pinned
 `qemu-aarch64` as the target's runner, the only run of AArch64's machine
 code; what the host needs is `CLAUDE.md`'s, "Working in this repository",

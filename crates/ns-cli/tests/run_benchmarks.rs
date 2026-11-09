@@ -12,10 +12,18 @@
 //! each benchmark of the harness its own: run as one process over all of
 //! them, the full-size benchmarks took minutes one after another.
 //!
-//! The Java counterparts under `benchmarks/are-we-fast-yet/java/` are held
-//! to the same record: `java::<Name>` runs the Java harness by name and
-//! expects the harness's `<Name>: ok` line, and `java-timed::<Name>` checks
-//! a timed run's score as `timed::<Name>` does. They are compiled once, with
+//! The Java and Python counterparts under `benchmarks/are-we-fast-yet/java/`
+//! and `benchmarks/are-we-fast-yet/python/` are held to the same record:
+//! `java::<Name>` and `python::<Name>` run their harness by name and expect
+//! the harness's `<Name>: ok` line and nothing on stderr, and
+//! `java-timed::<Name>` and `python-timed::<Name>` check a timed run's score
+//! as `timed::<Name>` does. Each of the two harnesses refuses an unknown
+//! benchmark (`<side>::unknown-benchmark`) and prints no `ok` line for a
+//! benchmark whose check fails, which its one test hook forces
+//! (`<side>::a-failing-check-prints-no-ok`), and a missing tool is named
+//! (`java::missing-jdk-is-named`, `python::missing-python-is-named`).
+//!
+//! The Java counterparts are compiled once, with
 //! the JDK's `javac` from `JAVA_HOME`, or from `PATH` when `JAVA_HOME` is not
 //! set or empty. Without a JDK they fail and say so: a gate that passes
 //! without running is no gate. Every `java` and `javac` runs without the
@@ -26,7 +34,20 @@
 //! beside it that belongs to another key, an older compilation or a
 //! leftover temporary one, is removed.
 //!
-//! Both harnesses take `--warm-up <milliseconds>` and `--measure
+//! The Python counterparts run under the `python` on `PATH`, in their own
+//! directory; without one they fail and say so. Python runs with `-E`,
+//! which ignores every `PYTHON*` variable of the environment
+//! (`PYTHONSTARTUP`, `PYTHONPATH`, `PYTHONWARNINGS`, `PYTHONINSPECT` and
+//! whatever a later release adds), where removing them by name would miss
+//! one; with `-S`, which imports no `site` and so runs no `.pth` file of an
+//! installed package, the harness needing the standard library alone; and
+//! with `-B`, which writes no `__pycache__` into the source tree (`-E`
+//! ignores `PYTHONDONTWRITEBYTECODE`). Not `-I`: it would also leave the
+//! script's directory off the module path, from which the harness imports
+//! the benchmarks. The hook's variable, `ARE_WE_FAST_YET_FAIL_FIRST_CHECK`,
+//! is removed from every run but the one that sets it.
+//!
+//! The three harnesses take `--warm-up <milliseconds>` and `--measure
 //! <milliseconds>` after `--timed`: `flags::<side>::*` runs each harness
 //! with short windows, in either order, and with malformed flags, which
 //! end the run with the usage.
@@ -61,34 +82,41 @@ fn main() {
             prints_a_score(Side::NsNext, &["--timed"], &name)
         }));
     }
-    for name in names {
-        let expectation = common::Expectation {
-            status: 0,
-            stdout: format!("{name}: ok\n"),
-            stderr: String::new(),
-            skipped: None,
-            arguments: vec![name.clone()],
-            reaches_a_table_limit: None,
-        };
-        let checked = name.clone();
-        trials.push(Trial::test(format!("java::{name}"), move || {
-            java_answers_ok(&checked, &expectation)
-        }));
-        trials.push(Trial::test(format!("java-timed::{name}"), move || {
-            prints_a_score(Side::Java, &["--timed"], &name)
-        }));
+    for side in Side::COUNTERPARTS {
+        for name in names.clone() {
+            let expectation = common::Expectation {
+                status: 0,
+                stdout: format!("{name}: ok\n"),
+                stderr: String::new(),
+                skipped: None,
+                arguments: vec![name.clone()],
+                reaches_a_table_limit: None,
+            };
+            let checked = name.clone();
+            trials.push(Trial::test(format!("{}::{name}", side.name()), move || {
+                answers_ok(side, &checked, &expectation)
+            }));
+            trials.push(Trial::test(
+                format!("{}-timed::{name}", side.name()),
+                move || prints_a_score(side, &["--timed"], &name),
+            ));
+        }
+        trials.push(Trial::test(
+            format!("{}::unknown-benchmark", side.name()),
+            move || refuses_an_unknown_benchmark(side),
+        ));
+        trials.push(Trial::test(
+            format!("{}::a-failing-check-prints-no-ok", side.name()),
+            move || prints_no_ok_for_a_failing_check(side),
+        ));
     }
-    trials.push(Trial::test(
-        "java::unknown-benchmark",
-        java_refuses_an_unknown_benchmark,
-    ));
-    trials.push(Trial::test(
-        "java::a-failing-check-prints-no-ok",
-        java_prints_no_ok_for_a_failing_check,
-    ));
     trials.push(Trial::test(
         "java::missing-jdk-is-named",
         java_names_a_missing_jdk,
+    ));
+    trials.push(Trial::test(
+        "python::missing-python-is-named",
+        python_names_a_missing_python,
     ));
     for side in Side::ALL {
         trials.push(Trial::test(
@@ -155,21 +183,26 @@ fn ns_next_harness(harness: &Path, arguments: &[&str]) -> Result<std::process::O
         .map_err(|error| format!("run ns-next: {error}"))
 }
 
-/// One of the two harnesses that take the same command line.
+/// One of the three harnesses that take the same command line.
 #[derive(Clone, Copy)]
 enum Side {
     NsNext,
     Java,
+    Python,
 }
 
 impl Side {
-    const ALL: [Side; 2] = [Side::NsNext, Side::Java];
+    const ALL: [Side; 3] = [Side::NsNext, Side::Java, Side::Python];
+
+    /// The counterparts held to the Newspeak harness's record.
+    const COUNTERPARTS: [Side; 2] = [Side::Java, Side::Python];
 
     /// The side's name in a trial's name.
     fn name(self) -> &'static str {
         match self {
             Side::NsNext => "ns-next",
             Side::Java => "java",
+            Side::Python => "python",
         }
     }
 
@@ -181,16 +214,58 @@ impl Side {
                 arguments,
             ),
             Side::Java => java_harness(arguments),
+            Side::Python => python_harness(PYTHON, arguments),
         }
     }
+
+    /// The side's harness run with `arguments` and its test hook set, which
+    /// makes the first selected benchmark's check fail: the system property
+    /// `areWeFastYet.failFirstCheck` for Java, the environment variable
+    /// `ARE_WE_FAST_YET_FAIL_FIRST_CHECK` for Python. The Newspeak harness
+    /// has no hook.
+    fn run_failing_first_check(self, arguments: &[&str]) -> Result<std::process::Output, String> {
+        let mut command = match self {
+            Side::NsNext => return Err("the ns-next harness has no test hook".to_owned()),
+            Side::Java => {
+                let mut command = java_command("java")?;
+                command
+                    .arg("-DareWeFastYet.failFirstCheck=true")
+                    .arg("-cp")
+                    .arg(java_classes()?)
+                    .arg("AreWeFastYet");
+                command
+            }
+            Side::Python => {
+                let mut command = python_command(PYTHON);
+                command.env(PYTHON_FAIL_FIRST_CHECK, "true");
+                command
+            }
+        };
+        command
+            .args(arguments)
+            .output()
+            .map_err(|error| format!("run {}: {error}", self.name()))
+    }
+}
+
+/// `side`'s harness run with `name` exits zero and prints `<name>: ok` and
+/// nothing else.
+fn answers_ok(side: Side, name: &str, expectation: &common::Expectation) -> Result<(), Failed> {
+    let output = side.run(&[name])?;
+    common::compare(
+        &output,
+        expectation,
+        &format!("under the {} harness", side.name()),
+    )
+    .map_err(Failed::from)
 }
 
 /// `side`'s harness run with `arguments`, which start with `--timed`,
 /// followed by `name` succeeds and prints `<name>: <runs per second>` with
 /// one fraction digit; the number differs between runs, so only its shape
-/// is checked. `timed::<name>` and `java-timed::<name>` pass `--timed`
-/// alone; `flags::<side>::*` set the measuring windows as well, in either
-/// order.
+/// is checked. `timed::<name>`, `java-timed::<name>` and
+/// `python-timed::<name>` pass `--timed` alone; `flags::<side>::*` set the
+/// measuring windows as well, in either order.
 fn prints_a_score(side: Side, arguments: &[&str], name: &str) -> Result<(), Failed> {
     let mut arguments = arguments.to_vec();
     arguments.push(name);
@@ -248,17 +323,10 @@ fn score_is_shaped(stdout: &str, name: &str) -> bool {
         })
 }
 
-/// The Java harness run with `name` exits zero and prints `<name>: ok`
-/// and nothing else.
-fn java_answers_ok(name: &str, expectation: &common::Expectation) -> Result<(), Failed> {
-    let output = java_harness(&[name])?;
-    common::compare(&output, expectation, "under the Java harness").map_err(Failed::from)
-}
-
-/// A name the Java harness does not know ends the run non-zero, with
+/// A name `side`'s harness does not know ends the run non-zero, with
 /// nothing on stdout and the name on stderr.
-fn java_refuses_an_unknown_benchmark() -> Result<(), Failed> {
-    let output = java_harness(&["NoSuchBenchmark"])?;
+fn refuses_an_unknown_benchmark(side: Side) -> Result<(), Failed> {
+    let output = side.run(&["NoSuchBenchmark"])?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if output.status.success()
         || !output.stdout.is_empty()
@@ -275,18 +343,11 @@ fn java_refuses_an_unknown_benchmark() -> Result<(), Failed> {
     Ok(())
 }
 
-/// A benchmark whose check fails leaves no `ok` line. The harness's one
-/// test hook, the system property `areWeFastYet.failFirstCheck`, throws in
-/// place of the first `bench()`; the run ends non-zero with nothing on
-/// stdout.
-fn java_prints_no_ok_for_a_failing_check() -> Result<(), Failed> {
-    let output = java_command("java")?
-        .arg("-DareWeFastYet.failFirstCheck=true")
-        .arg("-cp")
-        .arg(java_classes()?)
-        .args(["AreWeFastYet", "Sieve"])
-        .output()
-        .map_err(|error| format!("run java: {error}"))?;
+/// A benchmark whose check fails leaves no `ok` line. `side`'s one test
+/// hook (`Side::run_failing_first_check`) fails in place of the first
+/// `bench`; the run ends non-zero with nothing on stdout.
+fn prints_no_ok_for_a_failing_check(side: Side) -> Result<(), Failed> {
+    let output = side.run_failing_first_check(&["Sieve"])?;
     if output.status.success() || !output.stdout.is_empty() {
         return Err(format!(
             "expected a non-zero exit and no stdout, got {:?}\nstdout:\n{}\nstderr:\n{}",
@@ -321,6 +382,57 @@ fn java_names_a_missing_jdk() -> Result<(), Failed> {
         .into()),
         Err(error) => Err(format!("an empty JAVA_HOME should count as unset: {error}").into()),
     }
+}
+
+/// The program that runs the Python counterparts, found on `PATH`.
+const PYTHON: &str = "python";
+
+/// The Python harness's test hook (`Side::run_failing_first_check`).
+const PYTHON_FAIL_FIRST_CHECK: &str = "ARE_WE_FAST_YET_FAIL_FIRST_CHECK";
+
+/// A `python` that is not there is named in the failure, with what the
+/// gate needs, rather than as a bare error of the system's.
+fn python_names_a_missing_python() -> Result<(), Failed> {
+    match python_harness("ns-next-no-such-python", &["Sieve"]) {
+        Ok(output) => Err(format!(
+            "expected an error, got exit status {:?}",
+            output.status.code()
+        )
+        .into()),
+        Err(error)
+            if error.contains("ns-next-no-such-python") && error.contains("needs Python") =>
+        {
+            Ok(())
+        }
+        Err(error) => {
+            Err(format!("the error names neither the program nor Python: {error}").into())
+        }
+    }
+}
+
+/// The Python harness run with `arguments` by `program`, a name found on
+/// `PATH`.
+fn python_harness(program: &str, arguments: &[&str]) -> Result<std::process::Output, String> {
+    python_command(program)
+        .args(arguments)
+        .output()
+        .map_err(|error| {
+            format!("run {program}: {error}; the benchmarks gate needs Python, `{PYTHON}` on PATH")
+        })
+}
+
+/// A command running the Python harness by `program`, in its directory,
+/// with nothing of the environment that changes its output or behaviour:
+/// `-E` ignores every `PYTHON*` variable, `-S` imports no `site`, `-B`
+/// writes no bytecode beside the sources, and the hook's variable is
+/// removed (the module's doc comment says why not `-I`).
+fn python_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command
+        .current_dir(common::repository_root().join("benchmarks/are-we-fast-yet/python"))
+        .args(["-E", "-S", "-B", "are_we_fast_yet.py"])
+        .env_remove(PYTHON_FAIL_FIRST_CHECK);
+    command
 }
 
 /// The Java harness run with `arguments`, from the classes `java_classes`

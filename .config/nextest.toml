@@ -9,8 +9,10 @@
 # benchmark, `ns-cli`'s `run_benchmarks`) held to their recorded outcomes,
 # the hints' behaviour oracle over them, and a timed run of each Are We Fast
 # Yet benchmark, its score's shape checked; and the Java counterparts under
-# `benchmarks/are-we-fast-yet/java/`, compiled with the JDK's `javac` and held
-# to the same record, so this profile needs a JDK (`JAVA_HOME` or `PATH`).
+# `benchmarks/are-we-fast-yet/java/`, compiled with the JDK's `javac`, and the
+# Python counterparts under `benchmarks/are-we-fast-yet/python/`, held to the
+# same record, so this profile needs a JDK (`JAVA_HOME` or `PATH`) and a
+# `python` on `PATH`.
 # It verifies the benchmarks; it measures nothing. The full-size benchmarks
 # take seconds to a minute each in a debug build and much longer under the
 # stress modes, so they run on demand, when benchmarking, and once at the end
