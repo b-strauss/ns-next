@@ -5,7 +5,10 @@
 /// a nonzero number by a zero answers the infinity of that sign, and the
 /// two zeros compare equal. Each operation is a block run on every pair,
 /// so that machine code runs it once the block is compiled. The unary
-/// operations that answer a zero keep its sign as well.
+/// operations that answer a zero keep its sign as well: a rounding of a
+/// number between -1 and 0 answers `-0.0`, as `sqrt` of `-0.0` does, while
+/// `abs` clears the sign and `asInteger` answers the one integer zero;
+/// each is a block run on every one of those receivers, too.
 class FloatSignedZero = () (
   public main: platform args: arguments = (
     |
@@ -22,6 +25,20 @@ class FloatSignedZero = () (
         {'<='. [:left :right | left <= right]}.
         {'>='. [:left :right | left >= right]}.
         {'='. [:left :right | left = right]}.
+      }.
+      unaryReceivers = {0.0. -0.0. 0.4. -0.4. -0.5. -0.6}.
+      unaryOperations = {
+        {'floor'. [:receiver | receiver floor]}.
+        {'ceiling'. [:receiver | receiver ceiling]}.
+        {'rounded'. [:receiver | receiver rounded]}.
+        {'truncated'. [:receiver | receiver truncated]}.
+        {'asInteger'. [:receiver | receiver asInteger]}.
+        {'sqrt'. [:receiver | receiver sqrt]}.
+        {'negated'. [:receiver | receiver negated]}.
+        {'abs'. [:receiver | receiver abs]}.
+        {'isNaN'. [:receiver | receiver isNaN]}.
+        {'isFinite'. [:receiver | receiver isFinite]}.
+        {'isInfinite'. [:receiver | receiver isInfinite]}.
       }.
     |
     operations do: [:operation |
@@ -52,5 +69,14 @@ class FloatSignedZero = () (
         show: ' ';
         print: -0.0 * 1;
         newLine.
+    unaryOperations do: [:operation |
+      transcript show: (operation at: 1).
+      unaryReceivers do: [:receiver |
+        transcript
+            show: ' | ';
+            print: ((operation at: 2) value: receiver).
+      ].
+      transcript newLine.
+    ].
   )
 )

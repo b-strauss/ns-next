@@ -4630,11 +4630,62 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `Float`'s unary and rounding operations sent from a compiled loop,
+/// every operand and result a `SmallFloat64` or a `SmallInteger`: each
+/// cell names its row's stub.
+const FLOAT_UNARY_OPERATIONS: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          value ::= 0.75.
+          scaled ::= 0.0.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          value:: (value + 1.5) sqrt negated abs.
+          value isNaN ifFalse: [count:: count + 1].
+          value isFinite ifTrue: [count:: count + 1].
+          value isInfinite ifFalse: [count:: count + 1].
+          scaled:: value * 10.0.
+          count:: count + scaled floor asInteger + scaled ceiling asInteger.
+          count:: count + scaled rounded asInteger + scaled truncated asInteger.
+          index:: index + 1.
+        ].
+        ^count.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `Float`'s `sqrt negated abs isNaN isFinite isInfinite floor
+    /// ceiling rounded truncated asInteger` run in their rows' stubs: the
+    /// third run's sends leave machine code for nothing and call no leaf,
+    /// and the count is the interpreter's.
+    fn float_unary_operations_call_no_leaf(lowering) {
+        let (compiled, statistics) =
+            run_thrice_on_one_instance(FLOAT_UNARY_OPERATIONS, lowering, true);
+        let (interpreted, _) =
+            run_thrice_on_one_instance(FLOAT_UNARY_OPERATIONS, lowering, false);
+        assert!(interpreted[0] > 3000, "{interpreted:?}");
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.miss_leaf_calls, 0);
+            assert_eq!(
+                statistics.act_leaf_calls, 0,
+                "every float operation ran in its row's stub"
+            );
+        }
+    }
+}
+
 /// How many boxed `Float`s `FLOAT_BOXES`' loop makes per run.
 const FLOAT_BOX_COUNT: u64 = 2000;
 
 /// A loop whose every sum is a `Float` outside the `SmallFloat64` range,
-/// boxed in eden, and one `asInteger`, a leaf, at its end.
+/// boxed in eden, and one `asInteger`, of a `SmallInteger`'s value, at
+/// its end.
 const FLOAT_BOXES: &str = indoc! {"
     class Subject = Object new () (
       public run = (
@@ -4666,7 +4717,7 @@ fn a_float_boxed_with_eden_full_is_the_leaf_s() {
     assert_eq!(compiled, interpreted);
     assert!(interpreted[0] > 10_000_000_000, "{interpreted:?}");
     if !a_stress_mode_is_on() {
-        // The one `asInteger` besides the boxes the leaf made.
+        // Every leaf call is a box that found eden full.
         assert!(
             statistics.act_leaf_calls > 1,
             "some boxes found eden full: {}",

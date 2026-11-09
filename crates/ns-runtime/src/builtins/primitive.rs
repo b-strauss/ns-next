@@ -2056,11 +2056,14 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatSquareRoot:ifFail:",
-        "sqrt",
-        Primitive::Float(FloatPrimitive::SquareRoot),
-    )),
+    stubbed(
+        mirror(
+            "floatSquareRoot:ifFail:",
+            "sqrt",
+            Primitive::Float(FloatPrimitive::SquareRoot),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads the text and allocates at most what it answers -- a String,
     // an interned Symbol, a ByteArray -- writing no object; a decline and
     // every error write nothing (`builtins::text`).
@@ -2200,83 +2203,113 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatFloor:ifFail:",
-        "floor",
-        Primitive::Float(FloatPrimitive::Floor),
-    )),
+    stubbed(
+        mirror(
+            "floatFloor:ifFail:",
+            "floor",
+            Primitive::Float(FloatPrimitive::Floor),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatCeiling:ifFail:",
-        "ceiling",
-        Primitive::Float(FloatPrimitive::Ceiling),
-    )),
+    stubbed(
+        mirror(
+            "floatCeiling:ifFail:",
+            "ceiling",
+            Primitive::Float(FloatPrimitive::Ceiling),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatRounded:ifFail:",
-        "rounded",
-        Primitive::Float(FloatPrimitive::Rounded),
-    )),
+    stubbed(
+        mirror(
+            "floatRounded:ifFail:",
+            "rounded",
+            Primitive::Float(FloatPrimitive::Rounded),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatTruncated:ifFail:",
-        "truncated",
-        Primitive::Float(FloatPrimitive::Truncated),
-    )),
+    stubbed(
+        mirror(
+            "floatTruncated:ifFail:",
+            "truncated",
+            Primitive::Float(FloatPrimitive::Truncated),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatNegated:ifFail:",
-        "negated",
-        Primitive::Float(FloatPrimitive::Negated),
-    )),
+    stubbed(
+        mirror(
+            "floatNegated:ifFail:",
+            "negated",
+            Primitive::Float(FloatPrimitive::Negated),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatAbsolute:ifFail:",
-        "abs",
-        Primitive::Float(FloatPrimitive::Absolute),
-    )),
+    stubbed(
+        mirror(
+            "floatAbsolute:ifFail:",
+            "abs",
+            Primitive::Float(FloatPrimitive::Absolute),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatIsNaN:ifFail:",
-        "isNaN",
-        Primitive::Float(FloatPrimitive::IsNaN),
-    )),
+    stubbed(
+        mirror(
+            "floatIsNaN:ifFail:",
+            "isNaN",
+            Primitive::Float(FloatPrimitive::IsNaN),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatIsFinite:ifFail:",
-        "isFinite",
-        Primitive::Float(FloatPrimitive::IsFinite),
-    )),
+    stubbed(
+        mirror(
+            "floatIsFinite:ifFail:",
+            "isFinite",
+            Primitive::Float(FloatPrimitive::IsFinite),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatIsInfinite:ifFail:",
-        "isInfinite",
-        Primitive::Float(FloatPrimitive::IsInfinite),
-    )),
+    stubbed(
+        mirror(
+            "floatIsInfinite:ifFail:",
+            "isInfinite",
+            Primitive::Float(FloatPrimitive::IsInfinite),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).
-    leaf(mirror(
-        "floatAsInteger:ifFail:",
-        "asInteger",
-        Primitive::Float(FloatPrimitive::AsInteger),
-    )),
+    stubbed(
+        mirror(
+            "floatAsInteger:ifFail:",
+            "asInteger",
+            Primitive::Float(FloatPrimitive::AsInteger),
+        ),
+        RowStub::Float,
+    ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
     // (`builtins::numbers`).

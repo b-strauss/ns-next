@@ -1329,9 +1329,9 @@ const _: () = assert!(crate::mixin::DispatchId::NONE.bits() == 0);
 /// names -- read, or written with the value in slot 1 and the value
 /// answered -- once the receiver and the index are checked as the row's
 /// leaf checks them; for a `Float` row, its operation on the receiver
-/// and the argument in slot 0 (`floats::emit`). Every other case
-/// continues at `mirror_method` with the row's number in the field's
-/// role, so that the row's leaf decides it. `registers` are three
+/// and, for a binary one, the argument in slot 0 (`floats::emit`).
+/// Every other case continues at `mirror_method` with the row's number
+/// in the field's role, so that the row's leaf decides it. `registers` are three
 /// registers it may clobber: none is the receiver's, the field's or the
 /// answer's.
 fn emit_row_stub(
@@ -1348,7 +1348,21 @@ fn emit_row_stub(
     let (entry, fallback) = (assembler.label(), assembler.label());
     assembler.bind(entry);
     assembler.enter_called();
-    assembler.load(Width::Word64, index, argument_slot(roles, 0));
+    // A unary operation's send has no slot 0, so its stub reads none.
+    let float_operation = match stub {
+        RowStub::Float => {
+            let Some(operation) = FloatOperation::of(MIRROR[row].primitive) else {
+                unreachable!("internal: a row with a float stub is a float operation's");
+            };
+            Some(operation)
+        }
+        RowStub::ArrayAt | RowStub::ArrayAtPut | RowStub::ByteArrayAt | RowStub::ByteArrayAtPut => {
+            None
+        }
+    };
+    if float_operation.is_none_or(|operation| operation.argument_count() > 0) {
+        assembler.load(Width::Word64, index, argument_slot(roles, 0));
+    }
     match stub {
         RowStub::ArrayAt => {
             macro_assembler.load_element_address(receiver, index, element, fallback);
@@ -1389,8 +1403,8 @@ fn emit_row_stub(
             assembler.store(Width::Byte, word_at(element), spare);
         }
         RowStub::Float => {
-            let Some(operation) = FloatOperation::of(MIRROR[row].primitive) else {
-                unreachable!("internal: a row with a float stub is a float operation's");
+            let Some(operation) = float_operation else {
+                unreachable!("internal: a float stub's operation was found above");
             };
             // The answer's register is no operand's, and a decline writes
             // only it, the element's and the idiom scratch register, none
