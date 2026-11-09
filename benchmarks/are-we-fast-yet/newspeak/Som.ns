@@ -15,9 +15,8 @@
 /// answering a negative Integer, 0 or a positive one, as Java's
 /// Vector.sort does, where Core.ns's takes a Boolean block, and swaps
 /// where Java's signals NotImplemented, no benchmark sorting more than one
-/// element; Random starts at the seed 74755, as Java's and Python's do,
-/// rather than taking it as an argument; Set and Dictionary drop the
-/// methods no port sends; every loop over indices is a whileTrue: loop,
+/// element; Random starts at the seed 74755, as Harness.ns's does; Set and Dictionary
+/// drop the methods no port sends; every loop over indices is a whileTrue: loop,
 /// as SOMns inlines Core.ns's to:do:; & is bitAnd:, >>> is >>, the same
 /// for the non-negative hashes the benchmarks give, and ifNil: is == nil;
 /// names are written out.

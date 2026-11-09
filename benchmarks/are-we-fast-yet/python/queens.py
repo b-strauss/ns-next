@@ -3,7 +3,8 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/queens.py).
 # Changed for ns-next: benchmark and verify_result are bench, which runs once
 # and checks its own result, raising a RuntimeError with the message of
-# benchmarks/are-we-fast-yet/newspeak/Queens.ns; names are written out.
+# benchmarks/are-we-fast-yet/newspeak/Queens.ns; names are written out; the arrays are filled in a loop, as the
+# Newspeak port does, because ns-next's core library has no native fill.
 
 # This code is based on the SOM class library.
 #
@@ -44,10 +45,18 @@ class Queens(Benchmark):
             raise RuntimeError("Queens: expected true, got false")
 
     def queens(self):
-        self._free_rows = [True] * 8
-        self._free_maxs = [True] * 16
-        self._free_mins = [True] * 16
-        self._queen_rows = [-1] * 8
+        self._free_rows = [False] * 8
+        for index in range(8):
+            self._free_rows[index] = True
+        self._free_maxs = [False] * 16
+        for index in range(16):
+            self._free_maxs[index] = True
+        self._free_mins = [False] * 16
+        for index in range(16):
+            self._free_mins[index] = True
+        self._queen_rows = [0] * 8
+        for index in range(8):
+            self._queen_rows[index] = -1
 
         return self.place_queen(0)
 

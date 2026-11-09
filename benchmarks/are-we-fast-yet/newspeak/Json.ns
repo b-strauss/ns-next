@@ -394,8 +394,8 @@ class Json usingPlatform: platform som: som = (
         slot
       |
       slot:: hashSlotFor: name.
-      index < 255 ifTrue: [
-        hashTable at: slot put: (index + 1 bitAnd: 255).
+      index < 256 ifTrue: [
+        hashTable at: slot put: (index bitAnd: 255).
       ] ifFalse: [
         hashTable at: slot put: 0.
       ].
@@ -408,9 +408,9 @@ class Json usingPlatform: platform som: som = (
       |
       slot:: hashSlotFor: name.
       entry:: hashTable at: slot.
-      entry isNil ifTrue: [^-1].
-      /// subtract 1, 0 stands for empty
-      ^(entry bitAnd: 255) - 1.
+      entry isNil ifTrue: [^0].
+      /// 0 stands for empty
+      ^entry bitAnd: 255.
     )
 
     /// Are We Fast Yet's portable hash, the name's length times 1402589:
@@ -672,7 +672,7 @@ class Json usingPlatform: platform som: som = (
         position
       |
       position:: table at: name.
-      ((position = -1) not and: [name = (names at: position)]) ifTrue: [^position].
+      ((position = 0) not and: [name = (names at: position)]) ifTrue: [^position].
       ^lastIndexOf: name.
     )
 

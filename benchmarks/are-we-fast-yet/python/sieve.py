@@ -3,8 +3,8 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/sieve.py).
 # Changed for ns-next: benchmark and verify_result are bench, which runs once
 # and checks its own result, raising a RuntimeError with the message of
-# benchmarks/are-we-fast-yet/newspeak/Sieve.ns; names are written out; the flags are filled in a loop, as the Newspeak
-# port does, because ns-next's core library has no native fill.
+# benchmarks/are-we-fast-yet/newspeak/Sieve.ns; names are written out; the flags are filled in a loop, as the
+# Newspeak port does, because ns-next's core library has no native fill.
 
 # This code is based on the SOM class library.
 #

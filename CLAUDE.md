@@ -226,7 +226,8 @@ Code included, through the server's formatting), and a structure view of its
 own over the server's document symbols.
 
 `benchmarks/are-we-fast-yet/newspeak/` — the fourteen Are We Fast Yet benchmarks,
-Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
+Primordial Soup's Ton80 Richards and DeltaBlue, their harness and the SOM
+collection library they share (`Som.ns`), one
 project, with their Java counterparts under
 `benchmarks/are-we-fast-yet/java/`, compiled with plain
 `javac`; `benchmarks/micro/` — the microbenchmarks `ns-next bench` times.

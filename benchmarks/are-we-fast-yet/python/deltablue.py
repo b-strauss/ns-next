@@ -33,6 +33,12 @@ class DeltaBlue(Benchmark):
         _Planner.projection_test(12000)
 
 
+class _StrengthOrder:
+    @staticmethod
+    def compare(first, second):
+        return -1 if first.strength.stronger(second.strength) else 1
+
+
 class _Plan(Vector):
     def __init__(self):
         super().__init__(15)
@@ -226,12 +232,7 @@ class _Planner:
 
             self._constraints_consuming(variable, recalculate)
 
-        class Order:
-            @staticmethod
-            def compare(first, second):
-                return -1 if first.strength.stronger(second.strength) else 1
-
-        unsatisfied.sort(Order)
+        unsatisfied.sort(_StrengthOrder)
         return unsatisfied
 
     # This is the standard DeltaBlue benchmark. A long chain of
