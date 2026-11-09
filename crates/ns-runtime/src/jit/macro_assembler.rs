@@ -608,6 +608,7 @@ enum ColdPath {
         rejoin: Label,
     },
     #[cfg(debug_assertions)]
+    /// `register` is the physical frame's (`load_frame_slot`).
     DeadRegister {
         label: Label,
         register: u16,
@@ -1056,12 +1057,20 @@ impl MacroAssembler {
     /// never relies on the flags across it, in either build.
     pub(crate) fn load_frame_register(&mut self, target: Register, register: u16) {
         let slot = self.frame_slot(register);
-        self.load_frame_slot(target, slot, register);
+        let Ok(physical) = u16::try_from(i32::from(register) + self.frame_shift) else {
+            unreachable!("internal: a frame's register lies in its physical frame");
+        };
+        self.load_frame_slot(target, slot, physical);
     }
 
-    /// `target :=` the frame word at `slot`, register `register`, refused
-    /// in a debug build as `load_frame_register` refuses a dead one.
-    fn load_frame_slot(&mut self, target: Register, slot: Memory, register: u16) {
+    /// `target :=` the frame word at `slot`, the physical frame's register
+    /// `physical`, refused in a debug build as `load_frame_register`
+    /// refuses a dead one. The refusal names the register by its number in
+    /// the physical frame, from which the exit finds it in the scope it
+    /// lies in (`jit::resumption_after_exit`): a template in an inlined
+    /// scope names its register in the scope's frame, a simple node in the
+    /// physical one, and the exit knows neither.
+    fn load_frame_slot(&mut self, target: Register, slot: Memory, physical: u16) {
         debug_assert_ne!(
             target, self.roles.idiom_scratch,
             "the check of a dead register needs the idiom scratch register"
@@ -1077,12 +1086,12 @@ impl MacroAssembler {
             self.assembler.jump_if(Condition::Equal, label);
             self.push_cold_path(ColdPath::DeadRegister {
                 label,
-                register,
+                register: physical,
                 program_counter: self.program_counter,
             });
         }
         #[cfg(not(debug_assertions))]
-        let _ = register;
+        let _ = physical;
     }
 
     /// `target :=` the receiver of a frame whose code takes
@@ -3958,6 +3967,40 @@ mod tests {
             }
         );
         assert_eq!(frame[5], 0, "the read stopped the body");
+    }
+
+    /// A dead register is named by its number in the physical frame
+    /// wherever the frame register stands -- a template's read in an
+    /// inlined scope and a simple node's alike -- so that the exit can
+    /// name it in the scope it lies in (`jit::resumption_after_exit`).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_dead_register_is_named_in_the_physical_frame() {
+        let [first] = scratch();
+        for physical_read in [false, true] {
+            let mut machine = Machine::new();
+            let body = machine.body(|macro_assembler| {
+                macro_assembler.set_program_counter(9);
+                macro_assembler.shift_frame(2);
+                if physical_read {
+                    macro_assembler.load_physical_register(first, 3);
+                } else {
+                    macro_assembler.load_frame_register(first, 1);
+                }
+                macro_assembler.shift_frame(-2);
+                macro_assembler.exit(ExitKind::Reexecute, 10);
+            });
+            let mut frame = [0u64; 8];
+            frame[3] = crate::heap::Word::DEAD_REGISTER_BITS;
+            let (exit, _) = machine.run(body, &mut frame, 0, false, &mut (), &[]);
+            assert_eq!(
+                exit,
+                MachineExit::DeadRegister {
+                    program_counter: 9,
+                    register: 3
+                }
+            );
+        }
     }
 
     /// A fake class object for the walks below: words the machine code

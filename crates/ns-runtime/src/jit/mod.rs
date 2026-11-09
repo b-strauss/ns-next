@@ -7680,8 +7680,29 @@ fn resumption_after_exit(
                 program_counter,
             }
         }
+        // The register is numbered in the physical frame
+        // (`MacroAssembler::load_frame_slot`): named in the innermost
+        // scope's frame where it lies in it, and in the physical frame's
+        // where it lies below it, in a scope further out.
         MachineExit::DeadRegister { register, .. } => {
-            mutator.heap.refuse_dead_register(innermost, register)
+            let (frame, register) = match physical {
+                Some(physical) => {
+                    let scope_start =
+                        Heap::register_base_index(mutator.heap.activation_register_base(innermost))
+                            - Heap::register_base_index(
+                                mutator.heap.activation_register_base(physical),
+                            );
+                    match u16::try_from(scope_start)
+                        .ok()
+                        .and_then(|start| register.checked_sub(start))
+                    {
+                        Some(register) => (innermost, register),
+                        None => (physical, register),
+                    }
+                }
+                None => (innermost, register),
+            };
+            mutator.heap.refuse_dead_register(frame, register)
         }
         // The budget leaf found an optimization due: the walk from the
         // frame that ran its budget out decides which frame's, among the
