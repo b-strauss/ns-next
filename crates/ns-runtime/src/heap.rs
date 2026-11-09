@@ -398,6 +398,10 @@ impl BuiltinGuards {
 /// guard an immediate one dispatches on, both instances of `Float`.
 const FLOAT_DISPATCH_INDEX: usize = 4;
 
+/// The words after a boxed `Float`'s header: its class word and its one
+/// field, the double's bits (`allocate_float`, `set_float_class`).
+const BOXED_FLOAT_WORDS: usize = 2;
+
 /// What `MachineWord::SafepointRequested` reads while only a stress mode
 /// holds the request (`Heap::set_safepoint_requested`,
 /// `Heap::hold_safepoint_request`); a real request writes 1 over it.
@@ -795,6 +799,28 @@ pub(crate) struct MachineLayout {
     pub(crate) small_float_index: u64,
     /// How far a constant's payload lies above its tag: its index.
     pub(crate) tag_bits: u8,
+    /// What a `SmallFloat`'s encoding takes off a double's bits rotated
+    /// left by one, unless they are ±0.0's, before it shifts them above
+    /// the tag, and its decoding adds back (`Value::small_float`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the float idioms, which the row stubs call"
+        )
+    )]
+    pub(crate) small_float_exponent_offset: u64,
+    /// The header word's format bits of a `LargeInteger` and a boxed
+    /// `Float`, under `instance_format_bits`, whose one field
+    /// `Heap::float_value` reads for a boxed `Float`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by the float idioms, which the row stubs call"
+        )
+    )]
+    pub(crate) sixty_four_bit_format: i32,
     /// The header word's format bits, all clear exactly for an instance's
     /// format, whose fields `Heap::instance_field` reads.
     pub(crate) instance_format_bits: i32,
@@ -3089,7 +3115,7 @@ impl<'gc> Heap<'gc> {
             self.immediate_dispatch_ids[FLOAT_DISPATCH_INDEX],
             Format::SixtyFourBit,
             0,
-            2,
+            BOXED_FLOAT_WORDS,
         );
         debug_assert_eq!(header.guard(), self.header_dispatch_id(class));
         if let Some((offset, block)) = self.space.bump_object_array::<3>(header, class_word.bits())
@@ -6746,6 +6772,25 @@ impl<'gc> Heap<'gc> {
         self.machine_words.set(MachineWord::ArrayHeader, header.0);
     }
 
+    /// Records the kernel's `Float` class as the `FloatClass` word, and
+    /// the header of a boxed `Float` as the `FloatHeader` word -- the
+    /// whole header, its count included, guarding on the immediates'
+    /// float id as `allocate_float` writes it: what machine code's box of
+    /// a result outside the `SmallFloat64` range writes
+    /// (`MacroAssembler::box_float`). Called with `set_array_class`, for
+    /// the same reason.
+    pub(crate) fn set_float_class(&self, class: ClassReference<'gc>) {
+        let word = self.store(Value::object(class));
+        self.machine_words.set(MachineWord::FloatClass, word.bits());
+        let header = Header::new(
+            self.immediate_dispatch_ids[FLOAT_DISPATCH_INDEX],
+            Format::SixtyFourBit,
+            0,
+            BOXED_FLOAT_WORDS,
+        );
+        self.machine_words.set(MachineWord::FloatHeader, header.0);
+    }
+
     /// Records the kernel's `Closure` class and the `Activation` class
     /// every frame object is an instance of (`set_activation_class`) as
     /// the `ClosureClass` and `FrameClass` words, and the header of an
@@ -9964,6 +10009,8 @@ impl<'gc> Heap<'gc> {
             small_integer_index: SMALL_INTEGER_DISPATCH_INDEX as u64,
             small_float_index: FLOAT_DISPATCH_INDEX as u64,
             tag_bits: small_count(value::machine::TAG_BITS),
+            small_float_exponent_offset: value::machine::SMALL_FLOAT_EXPONENT_OFFSET,
+            sixty_four_bit_format: small(header::SIXTY_FOUR_BIT_BITS),
             instance_format_bits: small(header::FORMAT_BITS),
             word_count_shift: small_count(header::WORD_COUNT_SHIFT),
             fields_displacement: displacement(FIELDS),

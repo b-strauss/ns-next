@@ -26,6 +26,8 @@ pub(crate) mod baseline;
 pub(crate) mod closures;
 #[cfg(ns_jit)]
 pub(crate) mod cut;
+#[cfg(ns_jit)]
+pub(crate) mod floats;
 #[cfg(all(test, ns_jit))]
 mod inlining_tests;
 #[cfg(ns_jit)]

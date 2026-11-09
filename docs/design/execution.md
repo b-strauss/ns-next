@@ -14018,14 +14018,18 @@ of an empty closure, frame object and future (`ClosureClass`,
 `ClosureHeader`, `FrameClass`, `FrameHeader`, `FutureClass`,
 `FutureHeader`), what `MakeClosure`, its reification of the frame and
 `MakeFuture` write, the future's header 0 until the heap has made a
-future, which only Rust records; the code table's epoch
+future, which only Rust records; the kernel's `Float` class as a stored
+word and the whole header of a boxed `Float` (`FloatClass`,
+`FloatHeader`, rewritten with the immediates' classes), what machine
+code's box of a result outside the `SmallFloat64` range writes; the code
+table's epoch
 (`CodeTableEpoch`), which a closure site and an outer-local site compare
 theirs with; the rows of the machine entry table committed
 (`MachineEntryRows`), which a closure stub compares a code id with; and
 the closure and its depth count an interpreter's `value` send hands the
 closure call stub (`CalleeClosure`, `CalleeCounted`), read only right
 after they were written. The area keeps room for the later stages'
-words (40 words, 33 of them taken). Eden's top and limit, which machine code bumps in place, are not
+words (40 words, 37 of them taken). Eden's top and limit, which machine code bumps in place, are not
 among them: they are the object space reservation's own cursor, which
 lies in an allocation of `ns-memory`'s for the same reason
 (`ns_memory::SharedCursor`; [memory.md](memory.md), "The memory

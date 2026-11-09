@@ -1625,8 +1625,8 @@ impl<'gc> Mutator<'gc> {
         self.heap.set_builtin_guards(guards);
     }
 
-    /// Writes the immediates' class objects, and the `Array`, `Closure`,
-    /// `Activation` and `FutureImplementation` classes an allocation in
+    /// Writes the immediates' class objects, and the `Array`, `Float`,
+    /// `Closure`, `Activation` and `FutureImplementation` classes an allocation in
     /// machine code writes, into their machine words, from
     /// the builtin classes: at the bootstrap and again after every mover
     /// (`World::scavenge`, `collect`, `move_everything`, `forward_identity`),
@@ -1643,6 +1643,8 @@ impl<'gc> Mutator<'gc> {
         self.heap.set_immediate_classes(classes);
         self.heap
             .set_array_class(self.builtin_class(BuiltinClass::Array));
+        self.heap
+            .set_float_class(self.builtin_class(BuiltinClass::Float));
         self.heap
             .set_reification_classes(self.builtin_class(BuiltinClass::Closure));
         self.heap.set_future_class(
