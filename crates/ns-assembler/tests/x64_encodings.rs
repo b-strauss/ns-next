@@ -468,8 +468,8 @@ fn float_register_operations() {
     // `roundsd`'s immediate: the rounding mode, and bit 3, which
     // suppresses the precision exception.
     let roundings = [
-        (Rounding::Down, "9"),
-        (Rounding::Up, "0Ah"),
+        (Rounding::TowardNegative, "9"),
+        (Rounding::TowardPositive, "0Ah"),
         (Rounding::TowardZero, "0Bh"),
     ];
     for target in float_registers() {

@@ -72,17 +72,18 @@ pub enum FloatArithmetic {
     Divide,
 }
 
-/// The direction [`Operation::FloatRound`] rounds to an integral value in.
+/// The direction [`Operation::FloatRound`] rounds to an integral value in,
+/// named as IEEE 754 names its rounding-direction attributes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[expect(
-    clippy::min_ident_chars,
-    reason = "`Up` is a whole word, the counterpart of `Down`"
+    clippy::enum_variant_names,
+    reason = "IEEE 754's names of the directions, each \"toward\" one"
 )]
 pub enum Rounding {
     /// Toward negative infinity: the floor.
-    Down,
+    TowardNegative,
     /// Toward positive infinity: the ceiling.
-    Up,
+    TowardPositive,
     /// Toward zero: the truncation.
     TowardZero,
 }

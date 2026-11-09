@@ -372,19 +372,21 @@ const SQUARE_ROOT_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x51];
 /// Values.
 const ROUND_SCALAR_DOUBLE: [u8; 3] = [0x0F, 0x3A, 0x0B];
 
-/// `ROUNDSD`'s immediate rounding down: rounding control 01b (toward
-/// negative infinity), bit 3 set to suppress the precision exception.
+/// `ROUNDSD`'s immediate rounding toward negative infinity: rounding
+/// control 01b (round down), bit 3 set to suppress the
+/// precision exception.
 ///
 /// Intel SDM Vol. 2B, 4.3 ROUNDSD, Table 4-18 Rounding Modes and Encoding
 /// of Rounding Control (RC) Field.
-const ROUND_DOWN_IMMEDIATE: u8 = 0x09;
+const ROUND_TOWARD_NEGATIVE_IMMEDIATE: u8 = 0x09;
 
-/// `ROUNDSD`'s immediate rounding up: rounding control 10b (toward
-/// positive infinity), bit 3 set to suppress the precision exception.
+/// `ROUNDSD`'s immediate rounding toward positive infinity: rounding
+/// control 10b (round up), bit 3 set to suppress the
+/// precision exception.
 ///
 /// Intel SDM Vol. 2B, 4.3 ROUNDSD, Table 4-18 Rounding Modes and Encoding
 /// of Rounding Control (RC) Field.
-const ROUND_UP_IMMEDIATE: u8 = 0x0A;
+const ROUND_TOWARD_POSITIVE_IMMEDIATE: u8 = 0x0A;
 
 /// `ROUNDSD`'s immediate rounding toward zero: rounding control 11b
 /// (truncate), bit 3 set to suppress the precision exception.
@@ -1272,8 +1274,8 @@ impl Encoder for X64 {
                     float_number(source),
                 );
                 code.push(match rounding {
-                    Rounding::Down => ROUND_DOWN_IMMEDIATE,
-                    Rounding::Up => ROUND_UP_IMMEDIATE,
+                    Rounding::TowardNegative => ROUND_TOWARD_NEGATIVE_IMMEDIATE,
+                    Rounding::TowardPositive => ROUND_TOWARD_POSITIVE_IMMEDIATE,
                     Rounding::TowardZero => ROUND_TOWARD_ZERO_IMMEDIATE,
                 });
             }

@@ -1012,13 +1012,13 @@ const FLOAT_SQUARE_ROOT: u32 = 0x1E61_C000;
 /// infinity, raising no inexact exception.
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTM--scalar---Floating-point-round-to-integral--toward-minus-infinity--scalar-->
-const FLOAT_ROUND_DOWN: u32 = 0x1E65_4000;
+const FLOAT_ROUND_TOWARD_NEGATIVE: u32 = 0x1E65_4000;
 
 /// `FRINTP Dd, Dn` (scalar, double precision) — round toward plus
 /// infinity, raising no inexact exception.
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTP--scalar---Floating-point-round-to-integral--toward-plus-infinity--scalar-->
-const FLOAT_ROUND_UP: u32 = 0x1E64_C000;
+const FLOAT_ROUND_TOWARD_POSITIVE: u32 = 0x1E64_C000;
 
 /// `FRINTZ Dd, Dn` (scalar, double precision) — round toward zero,
 /// raising no inexact exception.
@@ -1907,8 +1907,8 @@ impl Encoder for Aarch64 {
                 source,
             } => {
                 let opcode = match rounding {
-                    Rounding::Down => FLOAT_ROUND_DOWN,
-                    Rounding::Up => FLOAT_ROUND_UP,
+                    Rounding::TowardNegative => FLOAT_ROUND_TOWARD_NEGATIVE,
+                    Rounding::TowardPositive => FLOAT_ROUND_TOWARD_POSITIVE,
                     Rounding::TowardZero => FLOAT_ROUND_TOWARD_ZERO,
                 };
                 emit(

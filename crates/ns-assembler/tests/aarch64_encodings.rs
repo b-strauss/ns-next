@@ -835,8 +835,8 @@ fn float_register_operations() {
         (FloatArithmetic::Divide, "fdiv"),
     ];
     let roundings = [
-        (Rounding::Down, "frintm"),
-        (Rounding::Up, "frintp"),
+        (Rounding::TowardNegative, "frintm"),
+        (Rounding::TowardPositive, "frintp"),
         (Rounding::TowardZero, "frintz"),
     ];
     for target in float_registers() {
