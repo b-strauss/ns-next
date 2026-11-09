@@ -123,6 +123,17 @@ const ANALYZER_STACK_BYTES: usize = 8 * 1024 * 1024;
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> ExitCode {
+    // First, before anything else runs: the workspace's crates are built for
+    // x86-64-v2, the precompiled standard library is not, so nothing before
+    // this check executes a v2 instruction.
+    let missing = ns_tooling::processor::missing_processor_features();
+    if !missing.is_empty() {
+        eprintln!(
+            "ns-next-analyzer requires an x86-64-v2 processor (SSE4.2, POPCNT); this one lacks: {}",
+            missing.join(", ")
+        );
+        return ExitCode::from(1);
+    }
     let command = Cli::parse().command;
     let worker = std::thread::Builder::new()
         .name("ns-next-analyzer".to_string())

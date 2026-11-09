@@ -10,4 +10,5 @@
 //! `ns-analyzer` and never reach `ns-next`. It depends on `ns-syntax` and
 //! `ns-runtime` only.
 
+pub mod processor;
 pub mod source;
