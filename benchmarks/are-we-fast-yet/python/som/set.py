@@ -1,7 +1,10 @@
 # Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/set.py).
-# Changed for ns-next: names are written out.
+# Changed for ns-next: names are written out; has_some and get_one answer
+# their result, as the Java and Newspeak sets do -- upstream drops it, so
+# contains always answered false and add kept every duplicate, which made
+# Havlak do more work than its other ports.
 
 # This code is based on the SOM class library.
 #
@@ -39,10 +42,10 @@ class Set:
         self._items.for_each(block)
 
     def has_some(self, block):
-        self._items.has_some(block)
+        return self._items.has_some(block)
 
     def get_one(self, block):
-        self._items.get_one(block)
+        return self._items.get_one(block)
 
     def add(self, element):
         if not self.contains(element):
