@@ -54,7 +54,7 @@ fn main() {
             ));
         }
     }
-    let harness = common::repository_root().join("benchmarks/are-we-fast-yet");
+    let harness = common::repository_root().join("benchmarks/are-we-fast-yet/newspeak");
     let names = common::benchmark_names(&common::expectation_of(&harness));
     for name in names.clone() {
         trials.push(Trial::test(format!("timed::{name}"), move || {
@@ -177,7 +177,7 @@ impl Side {
     fn run(self, arguments: &[&str]) -> Result<std::process::Output, String> {
         match self {
             Side::NsNext => ns_next_harness(
-                &common::repository_root().join("benchmarks/are-we-fast-yet"),
+                &common::repository_root().join("benchmarks/are-we-fast-yet/newspeak"),
                 arguments,
             ),
             Side::Java => java_harness(arguments),

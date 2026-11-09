@@ -2,7 +2,7 @@
 # (https://github.com/smarr/are-we-fast-yet, commit
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/havlak.py).
 # Changed for ns-next: inner_benchmark_loop, benchmark and verify_result are
-# bench, which runs once at the size of benchmarks/are-we-fast-yet/Havlak.ns,
+# bench, which runs once at the size of benchmarks/are-we-fast-yet/newspeak/Havlak.ns,
 # 1500 dummy loops, 50 loop-finding iterations and 10, 10 and 5 nested loops,
 # as upstream runs it at that size, and checks 6102 loops in 5213 nodes,
 # raising a RuntimeError with that port's message; the checks for upstream's

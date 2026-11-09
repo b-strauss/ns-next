@@ -93,7 +93,7 @@
 > `crates/ns-memory/src/code_zone.rs` (the code zone and the
 > entry into machine code), `crates/ns-cli/src/main.rs` (the interpreter thread and
 > its stack), `crates/ns-cli/src/commands/bench.rs` and
-> `benchmarks/are-we-fast-yet/` (what "Measurements" times).
+> `benchmarks/are-we-fast-yet/newspeak/` (what "Measurements" times).
 
 This is the consumer side. What produces the bytecode — the instruction set,
 lowering, register allocation, inlining — is [compiler.md](compiler.md).
@@ -1119,7 +1119,7 @@ about the code.
 
 ### The Are We Fast Yet benchmarks
 
-`benchmarks/are-we-fast-yet/` holds real programs to measure on, beside the
+`benchmarks/are-we-fast-yet/newspeak/` holds real programs to measure on, beside the
 microbenchmarks under `benchmarks/micro/`: all fourteen Are We Fast Yet
 benchmarks -- Bounce, CD, DeltaBlue, Havlak, Json, List, Mandelbrot,
 NBody, Permute, Queens, Richards, Sieve, Storage and Towers -- and
@@ -1177,7 +1177,7 @@ to 557 ulps all gave 10830 (checked on 2026-10-01, while planning stage 3).
 So the tests that run every benchmark are not part of the suite.
 `crates/ns-cli/tests/run_benchmarks.rs` runs the harness on each benchmark
 by name, at full size, under both lowerings, each run a test of its own,
-and holds it to its line of `benchmarks/are-we-fast-yet.toml`,
+and holds it to its line of `benchmarks/are-we-fast-yet/newspeak.toml`,
 `<Name>: ok`; the hints' behaviour oracle does the same, every hint
 applied; the microbenchmarks under `benchmarks/micro/` go the same way
 against the `.toml` beside each; and `timed::<Name>` runs each benchmark
@@ -1200,7 +1200,7 @@ cargo nextest run --workspace --profile benchmarks-verify
 
 There are two ways to measure, and they report different things:
 
-- **`ns-next bench benchmarks/are-we-fast-yet -- <Name>`**,
+- **`ns-next bench benchmarks/are-we-fast-yet/newspeak -- <Name>`**,
   from the repository root, times the harness
   without `--timed`, which runs the benchmark named -- or, with no name,
   all sixteen in turn -- once and prints `<Name>: ok`. `bench` reports the
@@ -1215,8 +1215,8 @@ There are two ways to measure, and they report different things:
   compiling are. What carries over from the discarded run is what one
   interpreter keeps between sends: the inline caches and the platform's
   lazy members. The untimed run does the same work every time, which is
-  what lets `benchmarks/are-we-fast-yet.toml` pin its output and `bench` time it.
-- **`ns-next run benchmarks/are-we-fast-yet -- --timed [--warm-up <milliseconds>] [--measure <milliseconds>] [<Name>]`**
+  what lets `benchmarks/are-we-fast-yet/newspeak.toml` pin its output and `bench` time it.
+- **`ns-next run benchmarks/are-we-fast-yet/newspeak -- --timed [--warm-up <milliseconds>] [--measure <milliseconds>] [<Name>]`**
   lets the
   harness measure itself, as Primordial Soup's does: for each benchmark, or
   the one named, it runs `bench` repeatedly for at least the warm-up window,
@@ -1401,7 +1401,7 @@ processes. A compilation error fails every Java trial with `javac`'s
 output. The trials:
 
 - **`java::<Name>`**, for each benchmark: the Java harness run by name,
-  held to that benchmark's line of `benchmarks/are-we-fast-yet.toml`
+  held to that benchmark's line of `benchmarks/are-we-fast-yet/newspeak.toml`
   (`<Name>: ok`), so the `.ns` and Java programs share one record of what
   each must answer.
 - **`java-timed::<Name>`**: `--timed <Name>`, its score's shape checked as
@@ -1425,7 +1425,7 @@ a release build pinned as the `measuring-performance` skill says:
 ```bash
 javac --release 21 -encoding UTF-8 -d .temp/are-we-fast-yet-java $(find benchmarks/are-we-fast-yet/java -name '*.java')
 java -cp .temp/are-we-fast-yet-java AreWeFastYet --timed --warm-up 10000 Richards
-ns-next run benchmarks/are-we-fast-yet -- --timed --warm-up 10000 Richards
+ns-next run benchmarks/are-we-fast-yet/newspeak -- --timed --warm-up 10000 Richards
 ```
 
 Measure one benchmark per JVM or ns-next invocation, as the example does.
@@ -7047,7 +7047,7 @@ in its own `--target-dir`; all six binaries distinct, none importing
 spec-conformant lookup moved", `ns-next bench <source> --iterations 30`,
 five rounds a sitting, the six binaries rotating by one position from round
 to round; every run printed its recorded answer. Are We Fast Yet: `ns-next
-bench benchmarks/are-we-fast-yet --iterations N -- <Name>`, N = 3 for CD,
+bench benchmarks/are-we-fast-yet/newspeak --iterations N -- <Name>`, N = 3 for CD,
 Havlak, Mandelbrot, NBody and DeltaBlue and 10 for the rest, three rounds
 rotating; every run printed `<Name>: ok`.
 
@@ -10760,7 +10760,7 @@ heap allocation the loop chased on every send, and `LoadLiteral` matched on
 the literal's kind every time it ran, a constant included.
 
 **What the code holds**, counted on 2026-10-02 over the sixteen benchmark
-programs and the harness under `benchmarks/are-we-fast-yet/`,
+programs and the harness under `benchmarks/are-we-fast-yet/newspeak/`,
 `PlatformFactory.ns` and `CollectionsFactory.ns` under the optimized
 lowering (`Kernel.ns` left out, since only `resolve_kernel` compiles it):
 1,642 bodies, 23,635 instructions; the highest register index is 45, so

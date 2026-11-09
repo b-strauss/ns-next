@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/richards/ProcessFunction.java).
  * Changed for ns-next: names are written out (RBObject is RichardsObject, as
- * in benchmarks/are-we-fast-yet/Richards.ns).
+ * in benchmarks/are-we-fast-yet/newspeak/Richards.ns).
  */
 /*
  * This benchmark is derived from Mario Wolczko's Java and Smalltalk version of

@@ -34,7 +34,7 @@ Not built yet, and the limits worth knowing before trying it on real code:
   `Stopwatch`. Six of the 211 corpus modules run end to end; the rest ask for
   collections, streams and mirrors that do not exist yet. The fourteen Are We Fast
   Yet benchmarks and Primordial Soup's Ton80 Richards and DeltaBlue run under
-  their harness in `benchmarks/are-we-fast-yet/`.
+  their harness in `benchmarks/are-we-fast-yet/newspeak/`.
 - **No actors, no reflection API, no debugger.** An eventual send runs
   synchronously and answers its value rather than a promise, a pattern literal
   evaluates to **nil**, and Typed-Newspeak annotations parse and are discarded.
@@ -244,11 +244,11 @@ picks one, and without a name all sixteen run in turn
 
 ```bash
 # run each benchmark once and verify its result: prints `<Name>: ok`
-cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet -- Richards
+cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet/newspeak -- Richards
 # time one run of the benchmark: median, minimum and maximum of ten
-cargo run --release -p ns-cli -- bench benchmarks/are-we-fast-yet -- Richards
+cargo run --release -p ns-cli -- bench benchmarks/are-we-fast-yet/newspeak -- Richards
 # let the harness measure itself: runs per second after a warm-up
-cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet -- --timed
+cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet/newspeak -- --timed
 # the same, as tests: every benchmark verified at its full size
 cargo nextest run -p ns-cli --profile benchmarks
 ```

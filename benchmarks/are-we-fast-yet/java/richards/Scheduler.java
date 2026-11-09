@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/richards/Scheduler.java).
  * Changed for ns-next: the tracing, which upstream never switches on, is
- * left out, as benchmarks/are-we-fast-yet/Richards.ns leaves it out;
+ * left out, as benchmarks/are-we-fast-yet/newspeak/Richards.ns leaves it out;
  * getQueuePacketCount and getHoldCount are added, so that Richards can name
  * both counts in the port's message when start answers false; names are
  * written out (RBObject is RichardsObject, as in that port). The parameter

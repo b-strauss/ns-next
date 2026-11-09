@@ -4,7 +4,7 @@
  * benchmarks/Java/src/deltablue/Planner.java).
  * Changed for ns-next: the checks of chainTest and projectionTest throw
  * IllegalStateException with the messages of
- * benchmarks/are-we-fast-yet/DeltaBlue.ns ('Chain test failed!!' and
+ * benchmarks/are-we-fast-yet/newspeak/DeltaBlue.ns ('Chain test failed!!' and
  * 'Projection test 1 failed!!' to 'Projection test 4 failed!!') where
  * upstream throws RuntimeException with one exclamation mark; names are
  * written out; the parameters of addConstraintsConsumingTo and the edit

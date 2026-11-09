@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/richards/RBObject.java).
  * Changed for ns-next: names are written out; RBObject is RichardsObject, as
- * in benchmarks/are-we-fast-yet/Richards.ns, and NUM_TYPES is
+ * in benchmarks/are-we-fast-yet/newspeak/Richards.ns, and NUM_TYPES is
  * NUMBER_OF_TYPES.
  */
 /*

@@ -1015,7 +1015,7 @@ None has an accessor on `Object`, since a program reaches them through the
 platform it is given.
 
 **`platform time` is Primordial Soup's `Time` facet, narrowed to its
-`Stopwatch`.** Both came in for `benchmarks/are-we-fast-yet/AreWeFastYet.ns`,
+`Stopwatch`.** Both came in for `benchmarks/are-we-fast-yet/newspeak/AreWeFastYet.ns`,
 which measures with them ("The on-demand rule" below). `Time` is a value
 like the other members, and its one method, `Stopwatch`, is a class
 accessor, so an image names that class by its declaration,
@@ -1149,7 +1149,7 @@ whole core API ("The kernel completed to Primordial Soup's core API"
 below; decided with the user on 2026-10-06). An accessor exists because a module on `corpus/runnable.toml` or
 a program under `benchmarks/` needs it, and the whitelist entry or the
 program that demanded it is named in a comment beside it: the comments of
-`Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/AreWeFastYet.ns`.
+`Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/newspeak/AreWeFastYet.ns`.
 The kernel facet, `platform kernel`, is outside the rule (decided with the
 user on 2026-10-11): it only hands out classes of `Kernel.ns`, which the
 kernel completion governs, and reaches no host, so `KernelNamespace>>Collection`

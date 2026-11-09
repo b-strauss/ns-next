@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/nbody/Body.java).
  * Changed for ns-next: names are written out, PI as PI_VALUE (the piValue
- * of benchmarks/are-we-fast-yet/NBody.ns) and DAYS_PER_YER as
+ * of benchmarks/are-we-fast-yet/newspeak/NBody.ns) and DAYS_PER_YER as
  * DAYS_PER_YEAR; the constructor's parameters, too long for two lines with
  * those names, are spread over three. Upstream's file carries no licence
  * notice; its comment follows as it is.

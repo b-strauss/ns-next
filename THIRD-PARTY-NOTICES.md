@@ -6,7 +6,7 @@ any names the upstream file it comes from in a header:
 - Rust code from num-bigint and num-integer, in
   `crates/ns-runtime/src/arbitrary_integer/`. Both are licensed MIT OR
   Apache-2.0 at the licensee's choice; `ns-next` takes them under MIT.
-- Newspeak code in `benchmarks/are-we-fast-yet/`: the benchmarks from SOMns,
+- Newspeak code in `benchmarks/are-we-fast-yet/newspeak/`: the benchmarks from SOMns,
   licensed MIT, except that `Mandelbrot.ns`, `Havlak.ns` and `CD.ns` keep
   their upstream files' own licence texts in their headers (BSD-3, Apache
   License 2.0 and BSD-3); and the harness, `RichardsTon80.ns` and
@@ -582,7 +582,7 @@ whose BSD-3 notice (Copyright (c) 2001-2010, Purdue University; Copyright
 (C) 2015 Apple Inc.) upstream's `benchmarks/JavaScript/cd.js` and
 `benchmarks/Smalltalk/CD/*.som` carry. Here `CD.java` and every file of
 `cd/` carry that notice in their headers, copied from the header of
-`benchmarks/are-we-fast-yet/CD.ns`, as `CD.ns` does; its text is given in
+`benchmarks/are-we-fast-yet/newspeak/CD.ns`, as `CD.ns` does; its text is given in
 full under SOMns above.
 
 `RichardsTon80.java`, `DeltaBlueTon80.java` and the files of

@@ -3,7 +3,7 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/json.py).
 # Changed for ns-next: benchmark and verify_result are bench, which parses the
 # input once and checks what upstream's verify_result checks, raising a
-# RuntimeError with the messages of benchmarks/are-we-fast-yet/Json.ns, one for
+# RuntimeError with the messages of benchmarks/are-we-fast-yet/newspeak/Json.ns, one for
 # each check; names are written out.
 
 # This code is derived from the SOM benchmarks, see AUTHORS.md file.

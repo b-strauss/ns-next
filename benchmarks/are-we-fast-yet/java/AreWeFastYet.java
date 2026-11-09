@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Harness.java
  * and benchmarks/Java/src/Run.java), folded into one file.
  * Changed for ns-next: the command line, the measuring loop and the output
- * are those of benchmarks/are-we-fast-yet/AreWeFastYet.ns, so that both
+ * are those of benchmarks/are-we-fast-yet/newspeak/AreWeFastYet.ns, so that both
  * harnesses run one protocol; the benchmarks are registered in that
  * harness's order; names are written out.
  *

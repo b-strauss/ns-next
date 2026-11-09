@@ -3,7 +3,7 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/deltablue.py).
 # Changed for ns-next: inner_benchmark_loop, benchmark and verify_result are
 # bench, which runs chain_test and projection_test once at the size of
-# benchmarks/are-we-fast-yet/DeltaBlue.ns, 12000; their checks are the
+# benchmarks/are-we-fast-yet/newspeak/DeltaBlue.ns, 12000; their checks are the
 # benchmark's own, as in that port, and raise a RuntimeError with its messages
 # ('Chain test failed!!' and 'Projection test 1 failed!!' to 'Projection test 4
 # failed!!') where upstream raises an Exception with one exclamation mark;

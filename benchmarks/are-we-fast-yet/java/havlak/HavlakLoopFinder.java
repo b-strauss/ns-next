@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/havlak/HavlakLoopFinder.java).
  * Changed for ns-next: names are written out, as in
- * benchmarks/are-we-fast-yet/Havlak.ns, the basic block kinds included
+ * benchmarks/are-we-fast-yet/newspeak/Havlak.ns, the basic block kinds included
  * (BB_NONHEADER is NON_HEADER, BB_SELF is SELF_LOOP, and so on); the
  * constructor's parameters, the parameters of stepEProcessNonBackPredecessors
  * and the createNewLoop call in findLoops, longer for the names, are split

@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Richards.java).
  * Changed for ns-next: benchmark and verifyResult are bench, which runs once
  * and checks its own result, with the message of
- * benchmarks/are-we-fast-yet/Richards.ns, which names both counts; the class
+ * benchmarks/are-we-fast-yet/newspeak/Richards.ns, which names both counts; the class
  * is final.
  */
 /*

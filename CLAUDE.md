@@ -225,9 +225,10 @@ module (`LexerComparisonTest`), the connection to `ns-next-analyzer` (Reformat
 Code included, through the server's formatting), and a structure view of its
 own over the server's document symbols.
 
-`benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
+`benchmarks/are-we-fast-yet/newspeak/` — the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
-project, with their Java counterparts under `java/`, compiled with plain
+project, with their Java counterparts under
+`benchmarks/are-we-fast-yet/java/`, compiled with plain
 `javac`; `benchmarks/micro/` — the microbenchmarks `ns-next bench` times.
 Both are held to the outcomes recorded beside them, the Java counterparts
 to the same record, by
@@ -760,7 +761,7 @@ before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable.
 Ground each decision in `prior-art/` (the `making-design-decisions` skill;
 `prior-art/PROVENANCE.md`). Copying code out of `prior-art/` is a licensing
 decision, made so far only for `num-bigint` and `num-integer`
-(`arbitrary_integer/`), SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/`),
+(`arbitrary_integer/`), SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/newspeak/`),
 and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
 
 ## Conventions

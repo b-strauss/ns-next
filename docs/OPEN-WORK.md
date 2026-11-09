@@ -223,8 +223,8 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
   with the user on 2026-09-29, so that every later step is measured on real
   programs rather than only on the microbenchmarks under `benchmarks/micro/`).
   The Newspeak versions in `prior-art/somns/core-lib/Benchmarks` come into
-  `benchmarks/are-we-fast-yet/`, each a module of the harness's project,
-  verified under both lowerings against `benchmarks/are-we-fast-yet.toml` and measured as
+  `benchmarks/are-we-fast-yet/newspeak/`, each a module of the harness's project,
+  verified under both lowerings against `benchmarks/are-we-fast-yet/newspeak.toml` and measured as
   [execution.md](design/execution.md), "The Are We Fast Yet benchmarks",
   describes. Each one widens the platform on demand, as `CLAUDE.md` asks,
   so the Newspeak side grows with them. Stage 1 -- Sieve, Permute, Queens,

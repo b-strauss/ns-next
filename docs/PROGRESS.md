@@ -3677,7 +3677,7 @@ Commits: `072a102` (the plan's) to the commit of this entry.
 
 Seven of the Are We Fast Yet benchmarks -- Sieve, Permute, Queens, Towers,
 Bounce, Storage and List -- are runnable programs in
-`benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
+`benchmarks/are-we-fast-yet/newspeak/`, ported from SOMns into Primordial Soup's
 module shape and protocol (decided with the user on 2026-09-30, for stage
 1), under a harness adapted from Primordial Soup's `BenchmarkRunner.ns`:
 the root of the project in that directory, which reaches each
@@ -3729,7 +3729,7 @@ and "The numeric tower".
 Commits: `5699ab0` (the plan's) to the commit of this entry.
 
 Mandelbrot, NBody and Richards join the seven benchmarks of stage 1 in
-`benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
+`benchmarks/are-we-fast-yet/newspeak/`, ported from SOMns into Primordial Soup's
 module shape, and Primordial Soup's own Richards, the Ton80 version, comes
 in beside them as `RichardsTon80`: eleven programs under the one harness.
 Mandelbrot runs at SOMns's verified 750 and NBody at Are We Fast Yet's
@@ -3801,7 +3801,7 @@ Commits: `192c6d0` (the plan's) to the commit of this entry.
 
 DeltaBlue, Havlak, CD and Json, the last four Are We Fast Yet benchmarks,
 join the eleven programs of stages 1 and 2 in
-`benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
+`benchmarks/are-we-fast-yet/newspeak/`, ported from SOMns into Primordial Soup's
 module shape, and Primordial Soup's own DeltaBlue comes in beside them as
 `DeltaBlueTon80`: sixteen programs under the one harness. A `String` is now
 its code points, one byte or four each, so `size` and `at:` are one access.
@@ -5237,7 +5237,7 @@ and which gate ran when stood in five places that had drifted apart.
   profile, as had the hints' oracle (`hints`); the suite went to 26 s.
 - **The benchmarks out of the goldens.** The microbenchmarks moved from
   `goldens/tool/bench/` to `benchmarks/micro/`, the Are We Fast Yet
-  verification to `benchmarks/are-we-fast-yet.toml`, and the three other
+  verification to `benchmarks/are-we-fast-yet/newspeak.toml`, and the three other
   `awfy` goldens, which tested the harness's argument handling, are gone. A
   runner, `crates/ns-cli/tests/run_benchmarks.rs`, holds every benchmark
   program to its outcome, each Are We Fast Yet benchmark on its own, and
@@ -5835,7 +5835,7 @@ Plan: [java-benchmarks](superpowers/plans/2026-10-22-1522-java-benchmarks.md);
 `THIRD-PARTY-NOTICES.md`, "Are We Fast Yet"; `prior-art/PROVENANCE.md`.
 
 Decided with the user on 2026-10-22. Every program of
-`benchmarks/are-we-fast-yet/` has a Java counterpart under `java/` that
+`benchmarks/are-we-fast-yet/newspeak/` has a Java counterpart under `benchmarks/are-we-fast-yet/java/` that
 does the same work, so ns-next's scores can be put beside a JVM's under one
 protocol. Are We Fast Yet is a submodule at `prior-art/are-we-fast-yet`,
 pinned at `74306fec`; its Java versions of the fourteen benchmarks and of
@@ -5853,7 +5853,7 @@ Java counterpart.
 
 The `benchmarks` gate compiles the Java sources with `javac --release 21`
 once per content, from `JAVA_HOME` or `PATH`, and holds each Java
-benchmark to its line of `benchmarks/are-we-fast-yet.toml`
+benchmark to its line of `benchmarks/are-we-fast-yet/newspeak.toml`
 (`java::<Name>`), its timed score to the harness's shape
 (`java-timed::<Name>`), and both harnesses' flags to a score and to the
 usage error (`flags::{ns-next,java}::*`); the default profile needs no JDK.

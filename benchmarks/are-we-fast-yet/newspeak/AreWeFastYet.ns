@@ -15,7 +15,7 @@
 /// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 /// and in THIRD-PARTY-NOTICES.md at the repository root.
 ///
-/// ns-next run benchmarks/are-we-fast-yet --
+/// ns-next run benchmarks/are-we-fast-yet/newspeak --
 ///     [--timed [--warm-up <milliseconds>] [--measure <milliseconds>]] [Benchmark]:
 /// without --timed, runs each benchmark (or the one named) once and prints
 /// '<Name>: ok'; with it, measures each for at least --measure
@@ -118,7 +118,7 @@ class AreWeFastYet packageUsing: manifest = (
     )
 
     public usage = (
-      Error signal: 'usage: ns-next run benchmarks/are-we-fast-yet -- [--timed [--warm-up <milliseconds>] [--measure <milliseconds>]] [Benchmark]'.
+      Error signal: 'usage: ns-next run benchmarks/are-we-fast-yet/newspeak -- [--timed [--warm-up <milliseconds>] [--measure <milliseconds>]] [Benchmark]'.
     )
   )
 

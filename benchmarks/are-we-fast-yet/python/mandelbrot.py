@@ -2,7 +2,7 @@
 # (https://github.com/smarr/are-we-fast-yet, commit
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/mandelbrot.py).
 # Changed for ns-next: inner_benchmark_loop, benchmark and verify_result are
-# bench, which runs once at benchmarks/are-we-fast-yet/Mandelbrot.ns's size,
+# bench, which runs once at benchmarks/are-we-fast-yet/newspeak/Mandelbrot.ns's size,
 # 750, and checks its result, 50, raising a RuntimeError with that port's
 # message; the checks for upstream's other sizes, 500 and 1, and the printing
 # of an unknown size's result are dropped; names are written out.

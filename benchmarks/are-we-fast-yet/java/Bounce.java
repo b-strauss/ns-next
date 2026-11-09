@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Bounce.java).
  * Changed for ns-next: benchmark and verifyResult are bench, which runs once
  * and checks its own result, with the message of
- * benchmarks/are-we-fast-yet/Bounce.ns; names are written out, and the four
+ * benchmarks/are-we-fast-yet/newspeak/Bounce.ns; names are written out, and the four
  * if statements of bounce, too long for one line each with those names, are
  * spread over several.
  */

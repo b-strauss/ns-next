@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Java/src/Sieve.java).
  * Changed for ns-next: benchmark and verifyResult are bench, which runs once
  * and checks its own result, with the message of
- * benchmarks/are-we-fast-yet/Sieve.ns; the class is final; names are written
+ * benchmarks/are-we-fast-yet/newspeak/Sieve.ns; the class is final; names are written
  * out.
  */
 /* This code is based on the SOM class library.

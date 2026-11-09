@@ -3,7 +3,7 @@
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/Havlak.java).
  * Changed for ns-next: innerBenchmarkLoop, benchmark and verifyResult are
- * bench, which runs once at the size of benchmarks/are-we-fast-yet/Havlak.ns,
+ * bench, which runs once at the size of benchmarks/are-we-fast-yet/newspeak/Havlak.ns,
  * 1500 dummy loops, 50 loop-finding iterations and 10, 10 and 5 nested loops,
  * as upstream runs it at that size, and checks 6102 loops in 5213 nodes with
  * that port's message; the checks for upstream's other sizes and the printing

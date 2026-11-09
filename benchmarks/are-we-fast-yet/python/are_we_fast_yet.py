@@ -3,7 +3,7 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/harness.py and
 # benchmarks/Python/run.py), folded into one file.
 # Changed for ns-next: the command line, the measuring loop and the output
-# are those of benchmarks/are-we-fast-yet/AreWeFastYet.ns and
+# are those of benchmarks/are-we-fast-yet/newspeak/AreWeFastYet.ns and
 # java/AreWeFastYet.java, so that the three harnesses run one protocol; the
 # benchmarks are registered in that harness's order; names are written out.
 #

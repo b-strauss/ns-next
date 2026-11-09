@@ -4,7 +4,7 @@
  * benchmarks/Java/src/cd/Simulator.java).
  * Changed for ns-next: names are written out. Upstream's Java file omits the
  * licence notice, but it derives from Purdue University's CDx, under the BSD-3
- * notice below, copied from the header of benchmarks/are-we-fast-yet/CD.ns,
+ * notice below, copied from the header of benchmarks/are-we-fast-yet/newspeak/CD.ns,
  * which upstream's JavaScript and SOM versions of CD carry as well.
  */
 /*

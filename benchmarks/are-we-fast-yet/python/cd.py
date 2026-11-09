@@ -3,12 +3,12 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/cd.py).
 # Changed for ns-next: inner_benchmark_loop, benchmark and verify_result are
 # bench, which runs _benchmark once at the size of
-# benchmarks/are-we-fast-yet/CD.ns, 250 aircraft, and checks 10830 collisions,
+# benchmarks/are-we-fast-yet/newspeak/CD.ns, 250 aircraft, and checks 10830 collisions,
 # raising a RuntimeError with that port's message; the checks for upstream's
 # other sizes and the printing of an unknown size's result are dropped; names
 # are written out, as in java/cd/. Upstream's Python file carries only the MIT
 # notice below, but it derives from Purdue University's CDx, so the BSD-3
-# notice after it, copied from the header of benchmarks/are-we-fast-yet/CD.ns
+# notice after it, copied from the header of benchmarks/are-we-fast-yet/newspeak/CD.ns
 # and carried by upstream's JavaScript and SOM versions of CD, follows.
 
 # Copyright (c) 2001-2021 Stefan Marr

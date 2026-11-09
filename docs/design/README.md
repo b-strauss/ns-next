@@ -91,14 +91,14 @@ guarantee it gives up or the complexity it adds.
 
 Real programs to measure the runtime on, beside the microbenchmarks under
 `benchmarks/micro/`, live in `benchmarks/`: today
-`benchmarks/are-we-fast-yet/`, the fourteen Are We Fast Yet benchmarks,
+`benchmarks/are-we-fast-yet/newspeak/`, the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, with
-their Java counterparts under `java/`, which
+their Java counterparts under `benchmarks/are-we-fast-yet/java/`, which
 [execution.md](execution.md), "The Are We Fast Yet benchmarks", describes.
 Every benchmark program is held to the outcome recorded beside it --
-`benchmarks/micro/<name>.toml`, `benchmarks/are-we-fast-yet.toml` -- by
+`benchmarks/micro/<name>.toml`, `benchmarks/are-we-fast-yet/newspeak.toml` -- by
 `crates/ns-cli/tests/run_benchmarks.rs`, under both lowerings, and each Java
-counterpart to the same line of `benchmarks/are-we-fast-yet.toml`, in the
+counterpart to the same line of `benchmarks/are-we-fast-yet/newspeak.toml`, in the
 nextest profile `benchmarks-verify` only, which needs a JDK: a benchmark is
 sized to be measured, not to run on every commit. The profile verifies; it
 measures nothing.
@@ -410,7 +410,7 @@ the `.ns`, so that it sits with the program it
 explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `.toml` holds the recorded answer and nothing else. A new Are
 We Fast Yet benchmark is added to the harness tuple, its project file and
-`benchmarks/are-we-fast-yet.toml`, because the harness names each benchmark
+`benchmarks/are-we-fast-yet/newspeak.toml`, because the harness names each benchmark
 when it is instantiated; `run_benchmarks` takes the list of benchmarks it
 runs one by one from that `.toml`.
 

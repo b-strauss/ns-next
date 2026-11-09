@@ -4,14 +4,14 @@
  * benchmarks/Java/src/CD.java).
  * Changed for ns-next: innerBenchmarkLoop, benchmark() and verifyResult are
  * bench, which runs benchmark once at the size of
- * benchmarks/are-we-fast-yet/CD.ns, 250 aircraft, and checks 10830 collisions
+ * benchmarks/are-we-fast-yet/newspeak/CD.ns, 250 aircraft, and checks 10830 collisions
  * with that port's message; the checks for upstream's other sizes and the
  * printing of an unknown size's result are dropped; names are written out.
  * That port's other departures concern the Newspeak sources it adapts and
  * Primordial Soup's protocol; none is needed here. Upstream's Java file
  * carries only the MIT notice below, but its benchmark loop, like the
  * files of cd/, derives from Purdue University's CDx, so the BSD-3 notice
- * after it, copied from the header of benchmarks/are-we-fast-yet/CD.ns and
+ * after it, copied from the header of benchmarks/are-we-fast-yet/newspeak/CD.ns and
  * carried by upstream's JavaScript and SOM versions of CD, follows.
  */
 /*

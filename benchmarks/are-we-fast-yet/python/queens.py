@@ -3,7 +3,7 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/queens.py).
 # Changed for ns-next: benchmark and verify_result are bench, which runs once
 # and checks its own result, raising a RuntimeError with the message of
-# benchmarks/are-we-fast-yet/Queens.ns; names are written out.
+# benchmarks/are-we-fast-yet/newspeak/Queens.ns; names are written out.
 
 # This code is based on the SOM class library.
 #
