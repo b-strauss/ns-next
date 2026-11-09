@@ -379,7 +379,9 @@ pub struct JitStatistics {
     /// Optimized copies freed because what they were compiled against
     /// changed: the copies keyed on an application an install rebuilt
     /// (`invalidate_applications`) or whose id a full collection reclaimed
-    /// (`forget_freed_copies`), every copy at a bulk forward
+    /// (`forget_freed_copies`), every copy whose recorded dependencies an
+    /// install, a reclaim or a slide changed (`CopyDependencies`), every
+    /// copy at a bulk forward
     /// (`invalidate_all_optimized`), and those the invalidate stress mode's
     /// rounds free (`invalidate_optimized_for_stress`). Neither a trap nor
     /// an exit: no version is raised for them.
@@ -405,7 +407,7 @@ pub struct JitStatistics {
     pub poll_deoptimizations: u64,
     /// Exits of optimized code at a poll its compile gave no entry -- one
     /// past which it reads a value no restore rebuilds
-    /// (`optimizing::emit`'s `poll_restores`) -- so that the frame goes
+    /// (`optimizing::metadata`'s `poll_restores`) -- so that the frame goes
     /// on in baseline code as after any exit. With `poll_reentries` and
     /// `poll_deoptimizations`, every exit of optimized code at a poll.
     pub polls_without_an_entry: u64,
@@ -5510,7 +5512,7 @@ enum Step {
 }
 
 /// Where the walk goes up from `activation`, Strongtalk's
-/// `senderOrParentOf` (`recompiler/recompiler.cpp:199-237`): a block's
+/// `senderOrParentOf` (`recompiler/recompiler.cpp:217-257`): a block's
 /// home, the method that made it, whose compile is the one that can
 /// inline it, when it runs below the block; a method's lowest-lying home
 /// of a block among its arguments, which can inline the method with the
