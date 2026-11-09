@@ -211,8 +211,8 @@ for the control-flow loops between steps 7 and 8. Steps 1 to 6 give a very good
 interpreter on a modern object representation; road step 8 reaches Cog's class,
 road step 9 Strongtalk's and HotSpot's, measured against Java with the Are We
 Fast Yet benchmarks (Newspeak versions in `prior-art/somns/core-lib/Benchmarks`,
-Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
-`prior-art/newspeak-benchmarks`.
+Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
+`benchmarks/are-we-fast-yet/python/`) and `prior-art/newspeak-benchmarks`.
 
 - **Step 1, the memory layer -- built** (`crates/ns-memory`;
   [memory.md](design/memory.md), "The memory layer").
@@ -1941,6 +1941,16 @@ classes and a class from source with no predecessor are not edited
 
 ## Open design questions
 
+- **A comparison in containers** (2026-11-10). The three-language
+  comparison ran natively on Windows, ns-next, Java and CPython only. A
+  second mode is open: ns-next, Java, CPython and PyPy each in a
+  container from a pinned image, kept beside the native mode, so that the
+  comparison is repeatable on Linux and includes a JIT for Python. The gate image (`xtask/docker/Dockerfile`) already has a JDK and
+  Python 3.14.4 and runs ns-next, Java and Python; what drives the runs
+  and collects the scores, and how PyPy enters the image, are open, and
+  are to be decided with the user ([execution.md](design/execution.md),
+  "Against Java and CPython").
+
 - **A NaN's payload after arithmetic on two NaNs** (2026-11-09). `+`
   and `*` of two NaNs answer the left operand's payload in machine code
   and whatever LLVM's code for the Rust leaf answers, which nothing
@@ -2102,6 +2112,34 @@ classes and a class from source with no predecessor are not edited
   stage 3.
 
 ## Unexplained measurements and unmeasured decisions
+
+- **CD runs slower on ns-next than on CPython** (2026-11-10). In the
+  three-language comparison CD made 0.4 runs a second on ns-next, 1.1 on
+  CPython 3.15's interpreter and 64.7 on the JVM: the one program ns-next
+  loses to an interpreter, and its largest gap to Java, 162×. Its `Float`
+  arithmetic is already in machine code, so the time goes elsewhere --
+  allocating its `Vector2D` and `Vector3D` objects, the red-black tree,
+  the SOM collections or its sends are guesses, since CD was not
+  profiled. It matters because the optimizing tier's remaining stages are
+  chosen by where the time goes, and a program an interpreter beats
+  points at a cost the stages may not address. What would settle it: a
+  profile of CD on a release build, the share of its time in optimized
+  code, baseline code, the interpreter, the leaves and the collector, and
+  the same program's profile under CPython for comparison
+  ([execution.md](design/execution.md), "Against Java and CPython").
+- **The send- and object-heavy programs are barely ahead of CPython**
+  (2026-11-10). Richards is 1.2×, DeltaBlue 1.4× and Storage 1.5× faster
+  on ns-next than on CPython's interpreter, Havlak, Json and Sieve 1.7×,
+  where the programs of `SmallInteger` arithmetic and small sends are
+  4.5× to 9.2× ahead. The cost per send, per allocation and per collection
+  operation in the code these programs run is high relative to CPython's
+  specializing interpreter, and how much of their time runs in optimized
+  code rather than baseline code or the interpreter was not measured.
+  What would settle it: profiles of Richards, DeltaBlue and Storage on a
+  release build, with `--jit-statistics` for the share of optimized code,
+  the per-send and per-allocation cost taken from them and set beside
+  CPython's on the same programs ([execution.md](design/execution.md),
+  "Against Java and CPython").
 
 - **The interpreter's eight helpers `vm::run` no longer inlines are
   not measured by the final protocol** (2026-11-03). Since road step 8's
