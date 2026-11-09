@@ -8,7 +8,9 @@
 # raising a RuntimeError with that port's message; the checks for upstream's
 # other sizes and the printing of an unknown size's result are dropped; names
 # are written out, as in java/havlak/, the basic block kinds included
-# (BB_NONHEADER is NON_HEADER, BB_SELF is SELF_LOOP, and so on).
+# (BB_NONHEADER is NON_HEADER, BB_SELF is SELF_LOOP, and so on); the depth-first
+# search walks the successors with an index loop, as the Newspeak and Java ports
+# do, where upstream created a closure per visit.
 
 # Adapted based on SOM benchmark.
 # Copyright 2011 Google Inc.
@@ -324,12 +326,10 @@ class _HavlakLoopFinder:
         last_id = current
         outer_blocks = current_node.out_edges
 
-        def each(target):
-            nonlocal last_id
+        for index in range(outer_blocks.size()):
+            target = outer_blocks.at(index)
             if self._number.at(target) == _UNVISITED:
                 last_id = self._depth_first_search(target, last_id + 1)
-
-        outer_blocks.for_each(each)
 
         self._last[current] = last_id
         return last_id

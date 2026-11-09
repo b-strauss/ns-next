@@ -2,7 +2,10 @@
  * (https://github.com/smarr/are-we-fast-yet, commit
  * 74306fec151070fd07157cefeacf19e7e0bcdc89,
  * benchmarks/Java/src/json/JsonPureStringParser.java).
- * Changed for ns-next: names are written out.
+ * Changed for ns-next: names are written out; the characters are read as an
+ * int by charAt, -1 at the end of the input, where upstream allocated a String
+ * per character read and compared it with equals, the only port that allocated
+ * a String per character.
  */
 /*******************************************************************************
  * Copyright (c) 2015 Stefan Marr
@@ -33,7 +36,7 @@ public final class JsonPureStringParser {
   private int index;
   private int line;
   private int column;
-  private String current;
+  private int current;
   private String captureBuffer;
   private int captureStart;
 
@@ -43,7 +46,7 @@ public final class JsonPureStringParser {
     line = 1;
     captureStart = -1;
     column = 0;
-    current = null;
+    current = -1;
     captureBuffer = "";
   }
 
@@ -60,29 +63,29 @@ public final class JsonPureStringParser {
 
   private JsonValue readValue() {
     switch(current) {
-    case "n":
+    case 'n':
       return readNull();
-    case "t":
+    case 't':
       return readTrue();
-    case "f":
+    case 'f':
       return readFalse();
-    case "\"":
+    case '"':
       return readString();
-    case "[":
+    case '[':
       return readArray();
-    case "{":
+    case '{':
       return readObject();
-    case "-":
-    case "0":
-    case "1":
-    case "2":
-    case "3":
-    case "4":
-    case "5":
-    case "6":
-    case "7":
-    case "8":
-    case "9":
+    case '-':
+    case '0':
+    case '1':
+    case '2':
+    case '3':
+    case '4':
+    case '5':
+    case '6':
+    case '7':
+    case '8':
+    case '9':
       return readNumber();
     default:
       throw expected("value");
@@ -93,15 +96,15 @@ public final class JsonPureStringParser {
     read();
     JsonArray array = new JsonArray();
     skipWhiteSpace();
-    if (readCharacter("]")) {
+    if (readCharacter(']')) {
       return array;
     }
     do {
       skipWhiteSpace();
       array.add(readValue());
       skipWhiteSpace();
-    } while (readCharacter(","));
-    if (!readCharacter("]")) {
+    } while (readCharacter(','));
+    if (!readCharacter(']')) {
       throw expected("',' or ']'");
     }
     return array;
@@ -111,29 +114,29 @@ public final class JsonPureStringParser {
     read();
     JsonObject object = new JsonObject();
     skipWhiteSpace();
-    if (readCharacter("}")) {
+    if (readCharacter('}')) {
       return object;
     }
     do {
       skipWhiteSpace();
       String name = readName();
       skipWhiteSpace();
-      if (!readCharacter(":")) {
+      if (!readCharacter(':')) {
         throw expected("':'");
       }
       skipWhiteSpace();
       object.add(name, readValue());
       skipWhiteSpace();
-    } while (readCharacter(","));
+    } while (readCharacter(','));
 
-    if (!readCharacter("}")) {
+    if (!readCharacter('}')) {
       throw expected("',' or '}'");
     }
     return object;
   }
 
   private String readName() {
-    if (!current.equals("\"")) {
+    if (current != '"') {
       throw expected("name");
     }
     return readStringInternal();
@@ -141,30 +144,30 @@ public final class JsonPureStringParser {
 
   private JsonValue readNull() {
     read();
-    readRequiredCharacter("u");
-    readRequiredCharacter("l");
-    readRequiredCharacter("l");
+    readRequiredCharacter('u');
+    readRequiredCharacter('l');
+    readRequiredCharacter('l');
     return JsonLiteral.NULL;
   }
 
   private JsonValue readTrue() {
     read();
-    readRequiredCharacter("r");
-    readRequiredCharacter("u");
-    readRequiredCharacter("e");
+    readRequiredCharacter('r');
+    readRequiredCharacter('u');
+    readRequiredCharacter('e');
     return JsonLiteral.TRUE;
   }
 
   private JsonValue readFalse() {
     read();
-    readRequiredCharacter("a");
-    readRequiredCharacter("l");
-    readRequiredCharacter("s");
-    readRequiredCharacter("e");
+    readRequiredCharacter('a');
+    readRequiredCharacter('l');
+    readRequiredCharacter('s');
+    readRequiredCharacter('e');
     return JsonLiteral.FALSE;
   }
 
-  private void readRequiredCharacter(final String character) {
+  private void readRequiredCharacter(final char character) {
     if (!readCharacter(character)) {
       throw expected("'" + character + "'");
     }
@@ -177,8 +180,8 @@ public final class JsonPureStringParser {
   private String readStringInternal() {
     read();
     startCapture();
-    while (!current.equals("\"")) {
-      if (current.equals("\\")) {
+    while (current != '"') {
+      if (current == '\\') {
         pauseCapture();
         readEscape();
         startCapture();
@@ -194,24 +197,24 @@ public final class JsonPureStringParser {
   private void readEscape() {
     read();
     switch(current) {
-    case "\"":
-    case "/":
-    case "\\":
-      captureBuffer += current;
+    case '"':
+    case '/':
+    case '\\':
+      captureBuffer += (char) current;
       break;
-    case "b":
+    case 'b':
       captureBuffer += "\b";
       break;
-    case "f":
+    case 'f':
       captureBuffer += "\f";
       break;
-    case "n":
+    case 'n':
       captureBuffer += "\n";
       break;
-    case "r":
+    case 'r':
       captureBuffer += "\r";
       break;
-    case "t":
+    case 't':
       captureBuffer += "\t";
       break;
     default:
@@ -222,12 +225,12 @@ public final class JsonPureStringParser {
 
   private JsonValue readNumber() {
     startCapture();
-    readCharacter("-");
-    String firstDigit = current;
+    readCharacter('-');
+    int firstDigit = current;
     if (!readDigit()) {
       throw expected("digit");
     }
-    if (!firstDigit.equals("0")) {
+    if (firstDigit != '0') {
       // Checkstyle: stop
       while (readDigit()) { }
      // Checkstyle: resume
@@ -238,7 +241,7 @@ public final class JsonPureStringParser {
   }
 
   private boolean readFraction() {
-    if (!readCharacter(".")) {
+    if (!readCharacter('.')) {
       return false;
     }
     if (!readDigit()) {
@@ -251,11 +254,11 @@ public final class JsonPureStringParser {
   }
 
   private boolean readExponent() {
-    if (!readCharacter("e") && !readCharacter("E")) {
+    if (!readCharacter('e') && !readCharacter('E')) {
       return false;
     }
-    if (!readCharacter("+")) {
-      readCharacter("-");
+    if (!readCharacter('+')) {
+      readCharacter('-');
     }
     if (!readDigit()) {
       throw expected("digit");
@@ -267,8 +270,8 @@ public final class JsonPureStringParser {
     return true;
   }
 
-  private boolean readCharacter(final String character) {
-    if (!current.equals(character)) {
+  private boolean readCharacter(final char character) {
+    if (current != character) {
       return false;
     }
     read();
@@ -290,15 +293,15 @@ public final class JsonPureStringParser {
   }
 
   private void read() {
-    if ("\n".equals(current)) {
+    if (current == '\n') {
       line++;
       column = 0;
     }
     index++;
     if (index < input.length()) {
-      current = input.substring(index, index + 1);
+      current = input.charAt(index);
     } else {
-      current = null;
+      current = -1;
     }
   }
 
@@ -307,13 +310,13 @@ public final class JsonPureStringParser {
   }
 
   private void pauseCapture() {
-    int end = current == null ? index : index - 1;
+    int end = current == -1 ? index : index - 1;
     captureBuffer += input.substring(captureStart, end + 1);
     captureStart = -1;
   }
 
   private String endCapture() {
-    int end = current == null ? index : index - 1;
+    int end = current == -1 ? index : index - 1;
     String captured;
     if ("".equals(captureBuffer)) {
       captured = input.substring(captureStart, end + 1);
@@ -338,23 +341,23 @@ public final class JsonPureStringParser {
   }
 
   private boolean isWhiteSpace() {
-    return " ".equals(current) || "\t".equals(current) || "\n".equals(current) || "\r".equals(current);
+    return current == ' ' || current == '\t' || current == '\n' || current == '\r';
   }
 
   private boolean isDigit() {
-    return "0".equals(current) ||
-        "1".equals(current) ||
-        "2".equals(current) ||
-        "3".equals(current) ||
-        "4".equals(current) ||
-        "5".equals(current) ||
-        "6".equals(current) ||
-        "7".equals(current) ||
-        "8".equals(current) ||
-        "9".equals(current);
+    return current == '0' ||
+        current == '1' ||
+        current == '2' ||
+        current == '3' ||
+        current == '4' ||
+        current == '5' ||
+        current == '6' ||
+        current == '7' ||
+        current == '8' ||
+        current == '9';
   }
 
   private boolean isEndOfText() {
-    return current == null;
+    return current == -1;
   }
 }

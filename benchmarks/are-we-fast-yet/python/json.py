@@ -4,7 +4,8 @@
 # Changed for ns-next: benchmark and verify_result are bench, which parses the
 # input once and checks what upstream's verify_result checks, raising a
 # RuntimeError with the messages of benchmarks/are-we-fast-yet/newspeak/Json.ns, one for
-# each check; names are written out.
+# each check; names are written out. The exponent is parsed as java/json/
+# does: upstream inverted the digit test and returned early after the sign.
 
 # This code is derived from the SOM benchmarks, see AUTHORS.md file.
 # This benchmark is based on the minimal-json Java library maintained at:
@@ -314,9 +315,9 @@ class _Parser:
             return False
 
         if not self._read_character("+"):
-            return self._read_character("-")
+            self._read_character("-")
 
-        if self._read_digit():
+        if not self._read_digit():
             raise self._expected("digit")
 
         while self._read_digit():

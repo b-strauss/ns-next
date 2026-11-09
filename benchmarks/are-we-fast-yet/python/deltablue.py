@@ -7,7 +7,10 @@
 # benchmark's own, as in that port, and raise a RuntimeError with its messages
 # ('Chain test failed!!' and 'Projection test 1 failed!!' to 'Projection test 4
 # failed!!') where upstream raises an Exception with one exclamation mark;
-# names are written out, as in java/deltablue/.
+# names are written out, as in java/deltablue/. ScaleConstraint divides with //
+# where upstream wrote /, which made some variables floats, and the sort is
+# given a comparator object with compare, as the Vector calls it, where upstream
+# passed a function that crashed for two or more elements.
 
 # This benchmark is derived from Mario Wolczko's Java and Smalltalk version of
 # DeltaBlue.
@@ -223,10 +226,12 @@ class _Planner:
 
             self._constraints_consuming(variable, recalculate)
 
-        def compare(first, second):
-            return -1 if first.strength.stronger(second.strength) else 1
+        class Order:
+            @staticmethod
+            def compare(first, second):
+                return -1 if first.strength.stronger(second.strength) else 1
 
-        unsatisfied.sort(compare)
+        unsatisfied.sort(Order)
         return unsatisfied
 
     # This is the standard DeltaBlue benchmark. A long chain of
@@ -735,7 +740,7 @@ class _ScaleConstraint(_BinaryConstraint):
         if self._direction is _Direction.FORWARD:
             self._second.value = self._first.value * self._scale.value + self._offset.value
         else:
-            self._first.value = (self._second.value - self._offset.value) / self._scale.value
+            self._first.value = (self._second.value - self._offset.value) // self._scale.value
 
     def inputs_do(self, function):
         if self._direction is _Direction.FORWARD:
