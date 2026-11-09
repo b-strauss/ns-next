@@ -1,7 +1,12 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/deltablue.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/deltablue.py).
+# Changed for ns-next: inner_benchmark_loop, benchmark and verify_result are
+# bench, which runs chain_test and projection_test once at the size of
+# benchmarks/are-we-fast-yet/DeltaBlue.ns, 12000; their checks are the
+# benchmark's own, as in that port, and raise a RuntimeError with its messages
+# ('Chain test failed!!' and 'Projection test 1 failed!!' to 'Projection test 4
+# failed!!') where upstream raises an Exception with one exclamation mark.
 
 # This benchmark is derived from Mario Wolczko's Java and Smalltalk version of
 # DeltaBlue.
@@ -19,16 +24,9 @@ from som.vector import Vector, vector_with
 
 
 class DeltaBlue(Benchmark):
-    def inner_benchmark_loop(self, inner_iterations):
-        _Planner.chain_test(inner_iterations)
-        _Planner.projection_test(inner_iterations)
-        return True
-
-    def benchmark(self):
-        raise Exception("should never be reached")
-
-    def verify_result(self, result):
-        raise Exception("should never be reached")
+    def bench(self):
+        _Planner.chain_test(12000)
+        _Planner.projection_test(12000)
 
 
 class _Plan(Vector):
@@ -264,7 +262,7 @@ class _Planner:
             variables[0].value = i
             plan.execute()
             if variables[n].value != i:
-                raise Exception("Chain test failed!")
+                raise RuntimeError("Chain test failed!!")
 
         edit_c.destroy_constraint(planner)
 
@@ -292,21 +290,21 @@ class _Planner:
 
         planner.change(src, 17)
         if dst.value != 1170:
-            raise Exception("Projection test 1 failed!")
+            raise RuntimeError("Projection test 1 failed!!")
 
         planner.change(dst, 1050)
         if src.value != 5:
-            raise Exception("Projection test 2 failed!")
+            raise RuntimeError("Projection test 2 failed!!")
 
         planner.change(scale, 5)
         for i in range(n - 1):
             if dests.at(i).value != (i + 1) * 5 + 1000:
-                raise Exception("Projection test 3 failed!")
+                raise RuntimeError("Projection test 3 failed!!")
 
         planner.change(offset, 2000)
         for i in range(n - 1):
             if dests.at(i).value != (i + 1) * 5 + 2000:
-                raise Exception("Projection test 4 failed!")
+                raise RuntimeError("Projection test 4 failed!!")
 
 
 class _Sym:

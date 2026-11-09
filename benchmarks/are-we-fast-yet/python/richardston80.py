@@ -4,8 +4,8 @@
 # benchmark, originally written in BCPL by Martin Richards, in the version
 # derived from the Dart Ton80 one. It is not the Are We Fast Yet Richards,
 # which is richards.py beside it. The module's slots are the module-private
-# constants below; the checks of both counts, which the port's bench makes,
-# are `verify_result`'s.
+# constants below; bench checks both counts, as the port's bench does, and
+# raises a RuntimeError with its message where the port signals an Error.
 
 # Copyright 2008, the Newspeak project authors.
 #
@@ -336,7 +336,7 @@ class _Scheduler:
 
 
 class RichardsTon80(Benchmark):
-    def benchmark(self):
+    def bench(self):
         scheduler = _Scheduler()
         scheduler.add_idle_task(_IDLE_IDENTITY, 0, None, _IDLE_COUNT)
 
@@ -358,7 +358,13 @@ class RichardsTon80(Benchmark):
         scheduler.add_device_task(_DEVICE_B_IDENTITY, 5000, None)
 
         scheduler.schedule()
-        return scheduler
-
-    def verify_result(self, result):
-        return result.queue_count == 2322 and result.hold_count == 928
+        if scheduler.queue_count != 2322:
+            raise RuntimeError(
+                "RichardsTon80: expected queue count 2322, got "
+                + str(scheduler.queue_count)
+            )
+        if scheduler.hold_count != 928:
+            raise RuntimeError(
+                "RichardsTon80: expected hold count 928, got "
+                + str(scheduler.hold_count)
+            )

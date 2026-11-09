@@ -1,7 +1,9 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/benchmark.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/benchmark.py).
+# Changed for ns-next: benchmark, verify_result and inner_benchmark_loop are
+# one method, bench, which runs the workload once and raises a RuntimeError
+# when its result is wrong, as the Newspeak ports' bench does.
 
 # This code is based on the SOM class library.
 #
@@ -29,15 +31,6 @@ from abc import abstractmethod
 
 class Benchmark:
     @abstractmethod
-    def benchmark(self):
-        pass
-
-    @abstractmethod
-    def verify_result(self, result):
-        pass
-
-    def inner_benchmark_loop(self, inner_iterations):
-        for _ in range(inner_iterations):
-            if not self.verify_result(self.benchmark()):
-                return False
-        return True
+    def bench(self):
+        """Runs the workload once, and raises a RuntimeError when its result
+        is wrong."""

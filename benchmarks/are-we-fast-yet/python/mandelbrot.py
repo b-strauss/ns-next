@@ -1,7 +1,11 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/mandelbrot.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/mandelbrot.py).
+# Changed for ns-next: inner_benchmark_loop, benchmark and verify_result are
+# bench, which runs once at benchmarks/are-we-fast-yet/Mandelbrot.ns's size,
+# 750, and checks its result, 50, raising a RuntimeError with that port's
+# message; the checks for upstream's other sizes, 500 and 1, and the printing
+# of an unknown size's result are dropped.
 
 # This benchmark has been modified based on the SOM benchmark.
 #
@@ -49,27 +53,10 @@ from benchmark import Benchmark
 
 
 class Mandelbrot(Benchmark):
-    def inner_benchmark_loop(self, inner_iterations):
-        return self._verify_result(self._mandelbrot(inner_iterations), inner_iterations)
-
-    def benchmark(self):
-        raise Exception("Should never be reached")
-
-    def verify_result(self, result):
-        raise Exception("Should never be reached")
-
-    @staticmethod
-    def _verify_result(result, inner_iterations):
-        if inner_iterations == 500:
-            return result == 191
-        if inner_iterations == 750:
-            return result == 50
-        if inner_iterations == 1:
-            return result == 128
-
-        print("No verification result for " + str(inner_iterations) + " found")
-        print("Result is: " + str(result))
-        return False
+    def bench(self):
+        result = self._mandelbrot(750)
+        if result != 50:
+            raise RuntimeError("Mandelbrot: expected 50, got " + str(result))
 
     @staticmethod
     def _mandelbrot(size):

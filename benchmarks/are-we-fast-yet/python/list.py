@@ -1,7 +1,10 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/list.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/list.py).
+# Changed for ns-next: benchmark and verify_result are bench, which runs once
+# and checks its own result, raising a RuntimeError with the message of
+# benchmarks/are-we-fast-yet/List.ns; names in the benchmark class are written
+# out.
 
 # This code is based on the SOM class library.
 #
@@ -39,40 +42,39 @@ class Element:
 
 
 class List(Benchmark):
-    def benchmark(self):
+    def bench(self):
         result = self.tail(self.make_list(15), self.make_list(10), self.make_list(6))
-        return result.length()
+        length = result.length()
+        if length != 10:
+            raise RuntimeError("List: expected 10, got " + str(length))
 
     def make_list(self, length):
         if length == 0:
             return None
 
-        e = Element(length)
-        e.next = self.make_list(length - 1)
-        return e
+        element = Element(length)
+        element.next = self.make_list(length - 1)
+        return element
 
     @staticmethod
-    def is_shorter_than(x, y):
-        x_tail = x
-        y_tail = y
+    def is_shorter_than(first, second):
+        first_tail = first
+        second_tail = second
 
-        while y_tail is not None:
-            if x_tail is None:
+        while second_tail is not None:
+            if first_tail is None:
                 return True
 
-            x_tail = x_tail.next
-            y_tail = y_tail.next
+            first_tail = first_tail.next
+            second_tail = second_tail.next
 
         return False
 
-    def tail(self, x, y, z):
-        if self.is_shorter_than(y, x):  # pylint: disable=arguments-out-of-order
+    def tail(self, first, second, third):
+        if self.is_shorter_than(second, first):  # pylint: disable=arguments-out-of-order
             return self.tail(
-                self.tail(x.next, y, z),
-                self.tail(y.next, z, x),
-                self.tail(z.next, x, y),
+                self.tail(first.next, second, third),
+                self.tail(second.next, third, first),
+                self.tail(third.next, first, second),
             )
-        return z
-
-    def verify_result(self, result):
-        return result == 10
+        return third

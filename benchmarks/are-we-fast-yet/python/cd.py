@@ -1,7 +1,12 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/cd.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/cd.py).
+# Changed for ns-next: inner_benchmark_loop, benchmark and verify_result are
+# bench, which runs _benchmark once at the size of
+# benchmarks/are-we-fast-yet/CD.ns, 250 aircraft, and checks 10830 collisions,
+# raising a RuntimeError with that port's message; the checks for upstream's
+# other sizes and the printing of an unknown size's result are dropped; names
+# in the benchmark class are written out.
 
 # Copyright (c) 2001-2021 Stefan Marr
 #
@@ -779,47 +784,22 @@ class _Simulator:
 
 class CD(Benchmark):
     @staticmethod
-    def _benchmark(num_aircraft):
-        num_frames = 200
+    def _benchmark(aircraft_count):
+        frame_count = 200
 
-        simulator = _Simulator(num_aircraft)
+        simulator = _Simulator(aircraft_count)
         detector = _CollisionDetector()
 
         actual_collisions = 0
 
-        for i in range(num_frames):
-            time = i / 10.0
+        for frame in range(frame_count):
+            time = frame / 10.0
             collisions = detector.handle_new_frame(simulator.simulate(time))
             actual_collisions += collisions.size()
 
         return actual_collisions
 
-    def inner_benchmark_loop(self, inner_iterations):
-        return self._verify_result(self._benchmark(inner_iterations), inner_iterations)
-
-    @staticmethod
-    def _verify_result(actual_collisions, num_aircraft):
-        if num_aircraft == 1000:
-            return actual_collisions == 14484
-        if num_aircraft == 500:
-            return actual_collisions == 14484
-        if num_aircraft == 250:
-            return actual_collisions == 10830
-        if num_aircraft == 200:
-            return actual_collisions == 8655
-        if num_aircraft == 100:
-            return actual_collisions == 4305
-        if num_aircraft == 10:
-            return actual_collisions == 390
-        if num_aircraft == 2:
-            return actual_collisions == 42
-
-        print("No verification result for " + str(num_aircraft) + " found")
-        print("Result is: " + str(actual_collisions))
-        return False
-
-    def benchmark(self):
-        raise Exception("Should never be reached")
-
-    def verify_result(self, result):
-        raise Exception("Should never be reached")
+    def bench(self):
+        collisions = self._benchmark(250)
+        if collisions != 10830:
+            raise RuntimeError("CD: expected 10830, got " + str(collisions))

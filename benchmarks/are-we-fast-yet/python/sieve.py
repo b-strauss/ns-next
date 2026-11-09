@@ -1,7 +1,10 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/sieve.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/sieve.py).
+# Changed for ns-next: benchmark and verify_result are bench, which runs once
+# and checks its own result, raising a RuntimeError with the message of
+# benchmarks/are-we-fast-yet/Sieve.ns; names in the benchmark class are written
+# out.
 
 # This code is based on the SOM class library.
 #
@@ -28,23 +31,22 @@ from benchmark import Benchmark
 
 
 class Sieve(Benchmark):
-    def benchmark(self):
+    def bench(self):
         flags = [True] * 5000
-        return self._sieve(flags, 5000)
+        result = self._sieve(flags, 5000)
+        if result != 669:
+            raise RuntimeError("Sieve: expected 669, got " + str(result))
 
     @staticmethod
     def _sieve(flags, size):
         prime_count = 0
 
-        for i in range(2, size + 1):
-            if flags[i - 1]:
+        for candidate in range(2, size + 1):
+            if flags[candidate - 1]:
                 prime_count += 1
-                k = i + i
-                while k <= size:
-                    flags[k - 1] = False
-                    k += i
+                multiple = candidate + candidate
+                while multiple <= size:
+                    flags[multiple - 1] = False
+                    multiple += candidate
 
         return prime_count
-
-    def verify_result(self, result):
-        return result == 669

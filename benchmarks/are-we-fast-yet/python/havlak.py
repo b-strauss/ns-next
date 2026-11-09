@@ -1,7 +1,12 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/havlak.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/havlak.py).
+# Changed for ns-next: inner_benchmark_loop, benchmark and verify_result are
+# bench, which runs once at the size of benchmarks/are-we-fast-yet/Havlak.ns,
+# 1500 dummy loops, 50 loop-finding iterations and 10, 10 and 5 nested loops,
+# as upstream runs it at that size, and checks 6102 loops in 5213 nodes,
+# raising a RuntimeError with that port's message; the checks for upstream's
+# other sizes and the printing of an unknown size's result are dropped.
 
 # Adapted based on SOM benchmark.
 # Copyright 2011 Google Inc.
@@ -32,33 +37,15 @@ sys.setrecursionlimit(1500)
 
 
 class Havlak(Benchmark):
-    def inner_benchmark_loop(self, inner_iterations):
-        return self._verify_result(
-            _LoopTesterApp().main(inner_iterations, 50, 10, 10, 5), inner_iterations
-        )
-
-    @staticmethod
-    def _verify_result(result, inner_iterations):
-        if inner_iterations == 15_000:
-            return result[0] == 46_602 and result[1] == 5213
-        if inner_iterations == 1_500:
-            return result[0] == 6_102 and result[1] == 5213
-        if inner_iterations == 150:
-            return result[0] == 2_052 and result[1] == 5213
-        if inner_iterations == 15:
-            return result[0] == 1_647 and result[1] == 5213
-        if inner_iterations == 1:
-            return result[0] == 1_605 and result[1] == 5213
-
-        print("No verification result for " + str(inner_iterations) + " found")
-        print("Result is: " + str(result[0]) + ", " + str(result[1]))
-        return False
-
-    def benchmark(self):
-        raise Exception("should not be reached")
-
-    def verify_result(self, result):
-        raise Exception("should not be reached")
+    def bench(self):
+        result = _LoopTesterApp().main(1500, 50, 10, 10, 5)
+        if result[0] != 6102 or result[1] != 5213:
+            raise RuntimeError(
+                "Havlak: expected 6102 loops and 5213 nodes, got "
+                + str(result[0])
+                + " and "
+                + str(result[1])
+            )
 
 
 class _BasicBlock:

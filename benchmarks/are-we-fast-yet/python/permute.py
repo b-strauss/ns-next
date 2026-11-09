@@ -1,7 +1,10 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/permute.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/permute.py).
+# Changed for ns-next: benchmark and verify_result are bench, which runs once
+# and checks its own result, raising a RuntimeError with the message of
+# benchmarks/are-we-fast-yet/Permute.ns; names in the benchmark class are
+# written out.
 
 # This code is based on the SOM class library.
 #
@@ -30,29 +33,27 @@ from benchmark import Benchmark
 class Permute(Benchmark):
     def __init__(self):
         self._count = 0
-        self._v = None
+        self._values = None
 
-    def benchmark(self):
+    def bench(self):
         self._count = 0
-        self._v = [0] * 6
+        self._values = [0] * 6
         self._permute(6)
 
-        return self._count
+        if self._count != 8660:
+            raise RuntimeError("Permute: expected 8660, got " + str(self._count))
 
-    def _permute(self, n):
+    def _permute(self, size):
         self._count += 1
-        if n != 0:
-            n1 = n - 1
-            self._permute(n1)
-            for i in range(n1, -1, -1):
-                self._swap(n1, i)
-                self._permute(n1)
-                self._swap(n1, i)
+        if size != 0:
+            last_index = size - 1
+            self._permute(last_index)
+            for index in range(last_index, -1, -1):
+                self._swap(last_index, index)
+                self._permute(last_index)
+                self._swap(last_index, index)
 
-    def _swap(self, i, j):
-        tmp = self._v[i]
-        self._v[i] = self._v[j]
-        self._v[j] = tmp
-
-    def verify_result(self, result):
-        return result == 8660
+    def _swap(self, first, second):
+        temp = self._values[first]
+        self._values[first] = self._values[second]
+        self._values[second] = temp

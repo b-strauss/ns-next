@@ -1,7 +1,10 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/bounce.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/bounce.py).
+# Changed for ns-next: benchmark and verify_result are bench, which runs once
+# and checks its own result, raising a RuntimeError with the message of
+# benchmarks/are-we-fast-yet/Bounce.ns; names in the benchmark class are
+# written out.
 
 # This code is based on the SOM class library.
 #
@@ -67,22 +70,20 @@ class Ball:
 
 
 class Bounce(Benchmark):
-    def benchmark(self):
+    def bench(self):
         random = Random()
 
         ball_count = 100
         bounces = 0
         balls = [None] * ball_count
 
-        for i in range(ball_count):
-            balls[i] = Ball(random)
+        for index in range(ball_count):
+            balls[index] = Ball(random)
 
-        for i in range(50):
+        for _ in range(50):
             for ball in balls:
                 if ball.bounce():
                     bounces += 1
 
-        return bounces
-
-    def verify_result(self, result):
-        return result == 1331
+        if bounces != 1331:
+            raise RuntimeError("Bounce: expected 1331, got " + str(bounces))

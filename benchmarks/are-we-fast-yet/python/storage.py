@@ -1,7 +1,10 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/storage.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/storage.py).
+# Changed for ns-next: benchmark and verify_result are bench, which runs once
+# and checks its own result, raising a RuntimeError with the message of
+# benchmarks/are-we-fast-yet/Storage.ns; names in the benchmark class are
+# written out.
 
 # This code is based on the SOM class library.
 #
@@ -32,21 +35,19 @@ class Storage(Benchmark):
     def __init__(self):
         self._count = 0
 
-    def benchmark(self):
+    def bench(self):
         random = Random()
         self._count = 0
         self._build_tree_depth(7, random)
-        return self._count
+        if self._count != 5461:
+            raise RuntimeError("Storage: expected 5461, got " + str(self._count))
 
     def _build_tree_depth(self, depth, random):
         self._count += 1
         if depth == 1:
             return [None] * (random.next() % 10 + 1)
 
-        arr = [None] * 4
-        for i in range(4):
-            arr[i] = self._build_tree_depth(depth - 1, random)
-        return arr
-
-    def verify_result(self, result):
-        return result == 5461
+        array = [None] * 4
+        for index in range(4):
+            array[index] = self._build_tree_depth(depth - 1, random)
+        return array

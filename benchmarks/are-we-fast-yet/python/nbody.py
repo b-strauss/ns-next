@@ -1,7 +1,12 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/nbody.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/nbody.py).
+# Changed for ns-next: inner_benchmark_loop, benchmark and verify_result are
+# bench, which runs once at benchmarks/are-we-fast-yet/NBody.ns's size, 250000
+# steps, and checks its energy, -0.1690859889909308, raising a RuntimeError
+# with that port's message; the check for upstream's other size, 1, and the
+# printing of an unknown size's result are dropped. Upstream's file carries no
+# licence notice; its comment follows as it is.
 
 # The Computer Language Benchmarks Game
 # http://shootout.alioth.debian.org/
@@ -159,27 +164,13 @@ class NBodySystem:
 
 
 class NBody(Benchmark):
-    def inner_benchmark_loop(self, inner_iterations):
+    def bench(self):
         system = NBodySystem()
-        for _ in range(inner_iterations):
+        for _ in range(250000):
             system.advance(0.01)
 
-        return self._verify_result(system.energy(), inner_iterations)
-
-    @staticmethod
-    def _verify_result(result, inner_iterations):
-        if inner_iterations == 250000:
-            return result == -0.1690859889909308
-
-        if inner_iterations == 1:
-            return result == -0.16907495402506745
-
-        print("No verification result for " + str(inner_iterations) + " found")
-        print("Result is: " + str(result))
-        return False
-
-    def benchmark(self):
-        raise Exception("Should never be reached")
-
-    def verify_result(self, result):
-        raise Exception("Should never be reached")
+        energy = system.energy()
+        if energy != -0.1690859889909308:
+            raise RuntimeError(
+                "NBody: expected -0.1690859889909308, got " + str(energy)
+            )

@@ -1,7 +1,10 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/json.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/json.py).
+# Changed for ns-next: benchmark and verify_result are bench, which parses the
+# input once and checks what upstream's verify_result checks, raising a
+# RuntimeError with the messages of benchmarks/are-we-fast-yet/Json.ns, one for
+# each check.
 
 # This code is derived from the SOM benchmarks, see AUTHORS.md file.
 # This benchmark is based on the minimal-json Java library maintained at:
@@ -33,18 +36,21 @@ _RAP_BENCHMARK_MINIFIED = '{"head":{"requestCounter":4},"operations":[["destroy"
 
 
 class Json(Benchmark):
-    def benchmark(self):
-        return _Parser(_RAP_BENCHMARK_MINIFIED).parse()
-
-    def verify_result(self, result):
+    def bench(self):
+        result = _Parser(_RAP_BENCHMARK_MINIFIED).parse()
         if not result.is_object():
-            return False
-        if not result.as_object().get("head").is_object():
-            return False
-        if not result.as_object().get("operations").is_array():
-            return False
-
-        return result.as_object().get("operations").as_array().size() == 156
+            raise RuntimeError("Json: expected an object, got " + str(result))
+        head = result.as_object().get("head")
+        if not head.is_object():
+            raise RuntimeError("Json: expected head to be an object, got " + str(head))
+        operations = result.as_object().get("operations")
+        if not operations.is_array():
+            raise RuntimeError(
+                "Json: expected operations to be an array, got " + str(operations)
+            )
+        size = operations.as_array().size()
+        if size != 156:
+            raise RuntimeError("Json: expected 156 operations, got " + str(size))
 
 
 class _JsonValue:

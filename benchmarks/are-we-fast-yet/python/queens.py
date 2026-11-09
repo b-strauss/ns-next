@@ -1,7 +1,10 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/queens.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/queens.py).
+# Changed for ns-next: benchmark and verify_result are bench, which runs once
+# and checks its own result, raising a RuntimeError with the message of
+# benchmarks/are-we-fast-yet/Queens.ns; names in the benchmark class are
+# written out.
 
 # This code is based on the SOM class library.
 #
@@ -34,14 +37,12 @@ class Queens(Benchmark):
         self._free_mins = None
         self._queen_rows = None
 
-    def benchmark(self):
+    def bench(self):
         result = True
         for _ in range(10):
             result = result and self.queens()
-        return result
-
-    def verify_result(self, result):
-        return result
+        if not result:
+            raise RuntimeError("Queens: expected true, got false")
 
     def queens(self):
         self._free_rows = [True] * 8
@@ -51,26 +52,28 @@ class Queens(Benchmark):
 
         return self.place_queen(0)
 
-    def place_queen(self, c):
-        for r in range(8):
-            if self.get_row_column(r, c):
-                self._queen_rows[r] = c
-                self.set_row_column(r, c, False)
+    def place_queen(self, column):
+        for row in range(8):
+            if self.get_row_column(row, column):
+                self._queen_rows[row] = column
+                self.set_row_column(row, column, False)
 
-                if c == 7:
+                if column == 7:
                     return True
-                if self.place_queen(c + 1):
+                if self.place_queen(column + 1):
                     return True
 
-                self.set_row_column(r, c, True)
+                self.set_row_column(row, column, True)
         return False
 
-    def get_row_column(self, r, c):
+    def get_row_column(self, row, column):
         return (
-            self._free_rows[r] and self._free_maxs[c + r] and self._free_mins[c - r + 7]
+            self._free_rows[row]
+            and self._free_maxs[column + row]
+            and self._free_mins[column - row + 7]
         )
 
-    def set_row_column(self, r, c, v):
-        self._free_rows[r] = v
-        self._free_maxs[c + r] = v
-        self._free_mins[c - r + 7] = v
+    def set_row_column(self, row, column, value):
+        self._free_rows[row] = value
+        self._free_maxs[column + row] = value
+        self._free_mins[column - row + 7] = value

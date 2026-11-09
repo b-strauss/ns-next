@@ -4,7 +4,8 @@
 # idiomatic Python. The tracing, which Are We Fast Yet never switches on, is
 # left out, as `Richards.ns` leaves it out. `Richards.ns`'s
 # RichardsBenchmarks is `_Scheduler`, as in the Java version; the check
-# `start` makes of both counts is `verify_result`'s.
+# `start` makes of both counts is `bench`'s, which raises a RuntimeError with
+# `Richards.ns`'s message.
 
 # This benchmark is derived from Mario Wolczko's Java and Smalltalk version of
 # Richards.
@@ -356,10 +357,13 @@ class _Scheduler:
 
 
 class Richards(Benchmark):
-    def benchmark(self):
+    def bench(self):
         scheduler = _Scheduler()
         scheduler.start()
-        return scheduler
-
-    def verify_result(self, result):
-        return result.queue_packet_count == 23246 and result.hold_count == 9297
+        if scheduler.queue_packet_count != 23246 or scheduler.hold_count != 9297:
+            raise RuntimeError(
+                "Richards: expected 23246 queued packets and 9297 holds, got "
+                + str(scheduler.queue_packet_count)
+                + " and "
+                + str(scheduler.hold_count)
+            )

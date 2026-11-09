@@ -1,7 +1,10 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/towers.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/towers.py).
+# Changed for ns-next: benchmark and verify_result are bench, which runs once
+# and checks its own result, raising a RuntimeError with the message of
+# benchmarks/are-we-fast-yet/Towers.ns; names in the benchmark class are
+# written out.
 
 # This code is based on the SOM class library.
 #
@@ -73,12 +76,10 @@ class Towers(Benchmark):
             self._move_top_disk(from_pile, to_pile)
             self._move_disks(disks - 1, other_pile, to_pile)
 
-    def benchmark(self):
+    def bench(self):
         self._piles = [None, None, None]
         self._build_tower_at(0, 13)
         self._moves_done = 0
         self._move_disks(13, 0, 1)
-        return self._moves_done
-
-    def verify_result(self, result):
-        return result == 8191
+        if self._moves_done != 8191:
+            raise RuntimeError("Towers: expected 8191, got " + str(self._moves_done))

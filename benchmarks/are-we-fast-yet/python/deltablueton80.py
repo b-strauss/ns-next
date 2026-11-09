@@ -8,7 +8,8 @@
 # The port's List is som.Vector, its `add:` append and `at: index + 1`
 # at(index), the same element of a list counted from 0; its constraints
 # reach their enclosing Planner lexically, here as a constructor argument;
-# its Errors are RuntimeErrors with their messages.
+# its Errors are RuntimeErrors with their messages. bench answers nothing
+# where the port answers true.
 
 # Copyright 2008, the Newspeak project authors.
 #
@@ -747,10 +748,6 @@ class DeltaBlueTon80(Benchmark):
     def __init__(self):
         self._planner = _Planner()
 
-    def benchmark(self):
+    def bench(self):
         self._planner.chain_test(100)
         self._planner.projection_test(100)
-        return True
-
-    def verify_result(self, result):
-        return result
