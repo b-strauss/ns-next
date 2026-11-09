@@ -8,6 +8,9 @@
 //! `movn` and `movk`, which keep the flags, so an operation that keeps
 //! them never sets them on the way.
 //!
+//! A double lives in a SIMD and floating-point register's low 64 bits, its
+//! `d` view ([`D0`] … [`D31`]); the encoder keeps none of them for itself.
+//!
 //! Register 31 is the stack pointer in this crate's numbering ([`SP`]),
 //! and the zero register in many encodings. The encoder decides per
 //! instruction which the field means, never names the zero register as an
@@ -30,7 +33,8 @@
 //! encoder file to that.
 
 use crate::{
-    BranchForm, BranchKind, Condition, Encoder, LabelReference, Memory, Operation, Register, Width,
+    BranchForm, BranchKind, Condition, Encoder, FloatArithmetic, FloatRegister, LabelReference,
+    Memory, Operation, Register, Rounding, Width,
 };
 
 /// `x0`: register number 0, as an instruction's register fields name it.
@@ -244,6 +248,245 @@ pub const X30: Register = Register(30);
     reason = "the architecture's own name of the register"
 )]
 pub const SP: Register = Register(31);
+
+/// `d0`: SIMD and floating-point register number 0, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D0: FloatRegister = FloatRegister(0);
+/// `d1`: SIMD and floating-point register number 1, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D1: FloatRegister = FloatRegister(1);
+/// `d2`: SIMD and floating-point register number 2, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D2: FloatRegister = FloatRegister(2);
+/// `d3`: SIMD and floating-point register number 3, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D3: FloatRegister = FloatRegister(3);
+/// `d4`: SIMD and floating-point register number 4, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D4: FloatRegister = FloatRegister(4);
+/// `d5`: SIMD and floating-point register number 5, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D5: FloatRegister = FloatRegister(5);
+/// `d6`: SIMD and floating-point register number 6, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D6: FloatRegister = FloatRegister(6);
+/// `d7`: SIMD and floating-point register number 7, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D7: FloatRegister = FloatRegister(7);
+/// `d8`: SIMD and floating-point register number 8, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D8: FloatRegister = FloatRegister(8);
+/// `d9`: SIMD and floating-point register number 9, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+#[expect(
+    clippy::min_ident_chars,
+    reason = "the architecture's own name of the register"
+)]
+pub const D9: FloatRegister = FloatRegister(9);
+/// `d10`: SIMD and floating-point register number 10, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D10: FloatRegister = FloatRegister(10);
+/// `d11`: SIMD and floating-point register number 11, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D11: FloatRegister = FloatRegister(11);
+/// `d12`: SIMD and floating-point register number 12, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D12: FloatRegister = FloatRegister(12);
+/// `d13`: SIMD and floating-point register number 13, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D13: FloatRegister = FloatRegister(13);
+/// `d14`: SIMD and floating-point register number 14, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D14: FloatRegister = FloatRegister(14);
+/// `d15`: SIMD and floating-point register number 15, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D15: FloatRegister = FloatRegister(15);
+/// `d16`: SIMD and floating-point register number 16, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D16: FloatRegister = FloatRegister(16);
+/// `d17`: SIMD and floating-point register number 17, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D17: FloatRegister = FloatRegister(17);
+/// `d18`: SIMD and floating-point register number 18, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D18: FloatRegister = FloatRegister(18);
+/// `d19`: SIMD and floating-point register number 19, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D19: FloatRegister = FloatRegister(19);
+/// `d20`: SIMD and floating-point register number 20, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D20: FloatRegister = FloatRegister(20);
+/// `d21`: SIMD and floating-point register number 21, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D21: FloatRegister = FloatRegister(21);
+/// `d22`: SIMD and floating-point register number 22, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D22: FloatRegister = FloatRegister(22);
+/// `d23`: SIMD and floating-point register number 23, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D23: FloatRegister = FloatRegister(23);
+/// `d24`: SIMD and floating-point register number 24, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D24: FloatRegister = FloatRegister(24);
+/// `d25`: SIMD and floating-point register number 25, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D25: FloatRegister = FloatRegister(25);
+/// `d26`: SIMD and floating-point register number 26, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D26: FloatRegister = FloatRegister(26);
+/// `d27`: SIMD and floating-point register number 27, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D27: FloatRegister = FloatRegister(27);
+/// `d28`: SIMD and floating-point register number 28, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D28: FloatRegister = FloatRegister(28);
+/// `d29`: SIMD and floating-point register number 29, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D29: FloatRegister = FloatRegister(29);
+/// `d30`: SIMD and floating-point register number 30, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D30: FloatRegister = FloatRegister(30);
+/// `d31`: SIMD and floating-point register number 31, its 64-bit
+/// view.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+pub const D31: FloatRegister = FloatRegister(31);
+
+/// The number of SIMD and floating-point registers, `v0` to `v31`.
+///
+/// <https://developer.arm.com/documentation/ihi0055/latest> (SIMD and
+/// Floating-Point Registers).
+const FLOAT_REGISTER_COUNT: u8 = 32;
 
 /// The encoder's first scratch register: the immediate or displacement
 /// that does not fit its instruction, or a copy of the stack pointer.
@@ -475,6 +718,16 @@ const AND_IMMEDIATE: u32 = 0x9200_0000;
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--immediate---Bitwise-OR--immediate-->
 const OR_IMMEDIATE: u32 = 0xB200_0000;
 
+/// `EOR Xd|SP, Xn, #bitmask` (immediate, 64-bit).
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EOR--immediate---Bitwise-exclusive-OR--immediate-->
+const EXCLUSIVE_OR_IMMEDIATE: u32 = 0xD200_0000;
+
+/// `EOR Xd, Xn, Xm` (shifted register, 64-bit, no shift).
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EOR--shifted-register---Bitwise-exclusive-OR--shifted-register-->
+const EXCLUSIVE_OR_REGISTER: u32 = 0xCA00_0000;
+
 /// `ANDS XZR, Xn, #bitmask` (immediate, 64-bit), the `TST` alias.
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ANDS--immediate---Bitwise-AND--immediate---setting-flags->
@@ -546,6 +799,19 @@ const BITFIELD_ROTATION_SHIFT: u32 = 16;
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UBFM--Unsigned-bitfield-move->
 const BITFIELD_TOP_SHIFT: u32 = 10;
 
+/// `EXTR Xd, Xn, Xm, #lsb` (64-bit, `N` 1) — the low 64 bits of `Xn:Xm`
+/// shifted right by `lsb`; with `Xn` and `Xm` the same register, the
+/// `ROR` (immediate) alias.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EXTR--Extract-register->
+const EXTRACT: u32 = 0x93C0_0000;
+
+/// The shift that places `EXTR`'s `imms`, the lowest bit extracted, bits
+/// 15:10.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/EXTR--Extract-register->
+const EXTRACT_LOWEST_BIT_SHIFT: u32 = 10;
+
 /// The highest bit of a 64-bit register, the `imms` of a right shift.
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LSR--immediate---Logical-shift-right--immediate---an-alias-of-UBFM->
@@ -574,6 +840,13 @@ const UNSCALED_ACCESS: u32 = 0x3800_0000;
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STRB--register---Store-register-byte--register-->
 const REGISTER_OFFSET_ACCESS: u32 = 0x3820_6800;
+
+/// `V`, bit 26: the access transfers a SIMD and floating-point register;
+/// with `size` 11, its 64-bit `d` view. The unsigned-offset, unscaled and
+/// register-offset families are otherwise the general registers'.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/LDR--immediate--SIMD-FP---Load-SIMD-FP-Register--immediate-offset-->
+const FLOAT_ACCESS: u32 = 1 << 26;
 
 /// `opc` 01, bit 22: the load of the store `opc` 00 names, zero-extending.
 ///
@@ -692,6 +965,84 @@ const CONDITION_GREATER: u32 = 0b1100;
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CSEL--Conditional-select->
 const CONDITION_LESS_OR_EQUAL: u32 = 0b1101;
+
+/// `FMOV Dd, Xn` (general, 64-bit to double precision) — the bits of a
+/// general register into a floating-point one, unconverted.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--general---Floating-point-move-to-or-from-general-purpose-register-without-conversion->
+const FLOAT_MOVE_FROM_GENERAL: u32 = 0x9E67_0000;
+
+/// `FMOV Xd, Dn` (general, double precision to 64-bit) — the bits of a
+/// floating-point register into a general one, unconverted.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--general---Floating-point-move-to-or-from-general-purpose-register-without-conversion->
+const FLOAT_MOVE_TO_GENERAL: u32 = 0x9E66_0000;
+
+/// `FMOV Dd, Dn` (register, double precision).
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--register---Floating-point-move-register-without-conversion->
+const FLOAT_MOVE_REGISTER: u32 = 0x1E60_4000;
+
+/// `FADD Dd, Dn, Dm` (scalar, double precision).
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FADD--scalar---Floating-point-add--scalar-->
+const FLOAT_ADD: u32 = 0x1E60_2800;
+
+/// `FSUB Dd, Dn, Dm` (scalar, double precision).
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FSUB--scalar---Floating-point-subtract--scalar-->
+const FLOAT_SUBTRACT: u32 = 0x1E60_3800;
+
+/// `FMUL Dd, Dn, Dm` (scalar, double precision).
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMUL--scalar---Floating-point-multiply--scalar-->
+const FLOAT_MULTIPLY: u32 = 0x1E60_0800;
+
+/// `FDIV Dd, Dn, Dm` (scalar, double precision).
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FDIV--scalar---Floating-point-divide--scalar-->
+const FLOAT_DIVIDE: u32 = 0x1E60_1800;
+
+/// `FSQRT Dd, Dn` (scalar, double precision).
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FSQRT--scalar---Floating-point-square-root--scalar-->
+const FLOAT_SQUARE_ROOT: u32 = 0x1E61_C000;
+
+/// `FRINTM Dd, Dn` (scalar, double precision) — round toward minus
+/// infinity, raising no inexact exception.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTM--scalar---Floating-point-round-to-integral--toward-minus-infinity--scalar-->
+const FLOAT_ROUND_DOWN: u32 = 0x1E65_4000;
+
+/// `FRINTP Dd, Dn` (scalar, double precision) — round toward plus
+/// infinity, raising no inexact exception.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTP--scalar---Floating-point-round-to-integral--toward-plus-infinity--scalar-->
+const FLOAT_ROUND_UP: u32 = 0x1E64_C000;
+
+/// `FRINTZ Dd, Dn` (scalar, double precision) — round toward zero,
+/// raising no inexact exception.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FRINTZ--scalar---Floating-point-round-to-integral--toward-zero--scalar-->
+const FLOAT_ROUND_TOWARD_ZERO: u32 = 0x1E65_C000;
+
+/// `FCMP Dn, Dm` (double precision) — the quiet compare, NZCV: unordered
+/// 0011, less 1000, equal 0110, greater 0010.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FCMP--Floating-point-quiet-compare--scalar-->
+const FLOAT_COMPARE: u32 = 0x1E60_2000;
+
+/// `SCVTF Dd, Xn` (scalar, integer, 64-bit to double precision) — a
+/// signed integer converted as FPCR says: to nearest, ties to even.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/SCVTF--scalar--integer---Signed-integer-convert-to-floating-point--scalar--integer-->
+const SIGNED_INTEGER_TO_FLOAT: u32 = 0x9E62_0000;
+
+/// `FCVTZS Xd, Dn` (scalar, integer, double precision to 64-bit) — a
+/// double converted to a signed integer, rounded toward zero.
+///
+/// <https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FCVTZS--scalar--integer---Floating-point-convert-to-signed-integer--rounding-toward-zero--scalar--integer-->
+const FLOAT_TO_SIGNED_INTEGER_TRUNCATED: u32 = 0x9E78_0000;
 
 /// `BLR Xn` — call the address in `Xn`, the return address into `x30`.
 ///
@@ -876,6 +1227,16 @@ fn general(register: Register, operation: &str) -> u32 {
         "the stack pointer is no operand of {operation}"
     );
     number
+}
+
+/// A floating-point register's number; every one may be an operand.
+fn float(register: FloatRegister) -> u32 {
+    assert!(
+        register.0 < FLOAT_REGISTER_COUNT,
+        "AArch64 has no float register {}; d registers are numbered 0 to 31",
+        register.0
+    );
+    u32::from(register.0)
 }
 
 /// The number of a register the encoder names itself: a scratch register
@@ -1078,14 +1439,41 @@ fn logical(
 /// width below 4096 of them, the unscaled one within -256 to 255, else the
 /// displacement into [`SCRATCH`] and the register offset.
 fn access(code: &mut Vec<u8>, width: Width, load: bool, register: u32, memory: Memory) {
-    let base = general_or_stack(memory.base);
     let size = match width {
         Width::Byte => SIZE_BYTE,
         Width::Half => SIZE_HALF,
         Width::Word32 => SIZE_WORD,
         Width::Word64 => SIZE_DOUBLEWORD,
     };
-    let kind = (size << ACCESS_SIZE_SHIFT) | if load { LOAD } else { 0 };
+    access_of_size(code, size, 0, load, register, memory);
+}
+
+/// A load (`load`) or a store of the double in `register` at `memory`, in
+/// the forms [`access`] takes for a 64-bit word.
+fn float_access(code: &mut Vec<u8>, load: bool, register: FloatRegister, memory: Memory) {
+    access_of_size(
+        code,
+        SIZE_DOUBLEWORD,
+        FLOAT_ACCESS,
+        load,
+        float(register),
+        memory,
+    );
+}
+
+/// The access of [`access`], `size` the log2 of its bytes and `family`
+/// the bits that choose the register file: 0 for a general register,
+/// [`FLOAT_ACCESS`] for a floating-point one.
+fn access_of_size(
+    code: &mut Vec<u8>,
+    size: u32,
+    family: u32,
+    load: bool,
+    register: u32,
+    memory: Memory,
+) {
+    let base = general_or_stack(memory.base);
+    let kind = (size << ACCESS_SIZE_SHIFT) | family | if load { LOAD } else { 0 };
     let displacement = i64::from(memory.displacement);
     let scale = 1_i64 << size;
     let scaled = displacement / scale;
@@ -1185,6 +1573,15 @@ fn bitfield_move(code: &mut Vec<u8>, opcode: u32, target: Register, rotation: u3
     );
 }
 
+/// `ror target, target, #amount`: `extr` of the register with itself.
+fn rotate_register_right(code: &mut Vec<u8>, target: Register, amount: u32) {
+    let target = general(target, "a rotation");
+    emit(
+        code,
+        three_registers(EXTRACT, target, target, target) | (amount << EXTRACT_LOWEST_BIT_SHIFT),
+    );
+}
+
 fn shift_count(count: u8) -> u32 {
     assert!(
         count < SHIFT_COUNT_LIMIT,
@@ -1251,13 +1648,16 @@ fn condition_code(condition: Condition) -> u32 {
         Condition::NotEqual => CONDITION_NOT_EQUAL,
         Condition::AboveOrEqual => CONDITION_HIGHER_OR_SAME,
         Condition::Below => CONDITION_LOWER,
-        Condition::Overflow => CONDITION_OVERFLOW,
-        Condition::NoOverflow => CONDITION_NO_OVERFLOW,
+        // `fcmp` sets V for unordered alone, with C; `gt` (Z clear, N
+        // equal to V) and `ge` (N equal to V) hold for greater and equal
+        // and fail on unordered, where V is set and N clear.
+        Condition::Overflow | Condition::Unordered => CONDITION_OVERFLOW,
+        Condition::NoOverflow | Condition::Ordered => CONDITION_NO_OVERFLOW,
         Condition::Above => CONDITION_HIGHER,
         Condition::BelowOrEqual => CONDITION_LOWER_OR_SAME,
-        Condition::GreaterOrEqual => CONDITION_GREATER_OR_EQUAL,
+        Condition::GreaterOrEqual | Condition::FloatGreaterOrEqual => CONDITION_GREATER_OR_EQUAL,
         Condition::Less => CONDITION_LESS,
-        Condition::Greater => CONDITION_GREATER,
+        Condition::Greater | Condition::FloatGreater => CONDITION_GREATER,
         Condition::LessOrEqual => CONDITION_LESS_OR_EQUAL,
     }
 }
@@ -1440,6 +1840,101 @@ impl Encoder for Aarch64 {
             Operation::ShiftRightArithmetic { target, count } => {
                 let count = shift_count(count);
                 bitfield_move(code, SIGNED_BITFIELD_MOVE, target, count, HIGHEST_BIT);
+            }
+            Operation::XorImmediate { target, value } => {
+                logical(
+                    code,
+                    EXCLUSIVE_OR_IMMEDIATE,
+                    EXCLUSIVE_OR_REGISTER,
+                    target,
+                    value,
+                );
+            }
+            // A rotation left is one right by the complement; by 0 it is
+            // `ror #0`, since `ror` takes no amount of 64.
+            Operation::RotateLeft { target, count } => {
+                let count = shift_count(count);
+                rotate_register_right(code, target, (REGISTER_BITS - count) % REGISTER_BITS);
+            }
+            Operation::RotateRight { target, count } => {
+                rotate_register_right(code, target, shift_count(count));
+            }
+            Operation::MoveToFloat { target, source } => {
+                let source = general(source, "a move to a float register");
+                emit(
+                    code,
+                    three_registers(FLOAT_MOVE_FROM_GENERAL, float(target), source, 0),
+                );
+            }
+            Operation::MoveFromFloat { target, source } => {
+                let target = general(target, "a move from a float register");
+                emit(
+                    code,
+                    three_registers(FLOAT_MOVE_TO_GENERAL, target, float(source), 0),
+                );
+            }
+            Operation::MoveFloat { target, source } => {
+                emit(
+                    code,
+                    three_registers(FLOAT_MOVE_REGISTER, float(target), float(source), 0),
+                );
+            }
+            Operation::LoadFloat { target, source } => float_access(code, true, target, source),
+            Operation::StoreFloat { target, source } => float_access(code, false, source, target),
+            Operation::FloatArithmetic {
+                operation,
+                target,
+                source,
+            } => {
+                let opcode = match operation {
+                    FloatArithmetic::Add => FLOAT_ADD,
+                    FloatArithmetic::Subtract => FLOAT_SUBTRACT,
+                    FloatArithmetic::Multiply => FLOAT_MULTIPLY,
+                    FloatArithmetic::Divide => FLOAT_DIVIDE,
+                };
+                let target = float(target);
+                emit(code, three_registers(opcode, target, target, float(source)));
+            }
+            Operation::FloatSquareRoot { target, source } => {
+                emit(
+                    code,
+                    three_registers(FLOAT_SQUARE_ROOT, float(target), float(source), 0),
+                );
+            }
+            Operation::FloatRound {
+                rounding,
+                target,
+                source,
+            } => {
+                let opcode = match rounding {
+                    Rounding::Down => FLOAT_ROUND_DOWN,
+                    Rounding::Up => FLOAT_ROUND_UP,
+                    Rounding::TowardZero => FLOAT_ROUND_TOWARD_ZERO,
+                };
+                emit(
+                    code,
+                    three_registers(opcode, float(target), float(source), 0),
+                );
+            }
+            Operation::FloatCompare { left, right } => {
+                emit(
+                    code,
+                    three_registers(FLOAT_COMPARE, 0, float(left), float(right)),
+                );
+            }
+            Operation::IntegerToFloat { target, source } => {
+                let source = general(source, "a conversion to a double");
+                emit(
+                    code,
+                    three_registers(SIGNED_INTEGER_TO_FLOAT, float(target), source, 0),
+                );
+            }
+            Operation::FloatToIntegerTruncated { target, source } => {
+                let target = general(target, "a conversion from a double");
+                emit(
+                    code,
+                    three_registers(FLOAT_TO_SIGNED_INTEGER_TRUNCATED, target, float(source), 0),
+                );
             }
             Operation::Compare { left, right } => {
                 let mut right = general_or_stack(right);

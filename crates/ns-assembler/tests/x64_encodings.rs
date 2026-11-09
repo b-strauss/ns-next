@@ -4,8 +4,8 @@
 
 use iced_x86::{Code, Decoder, DecoderOptions, Formatter, Instruction, IntelFormatter, Mnemonic};
 use ns_assembler::{
-    x64, Assembled, Assembler, AssemblyError, Condition, Encoder, Label, Memory, Register, Width,
-    X64,
+    x64, Assembled, Assembler, AssemblyError, Condition, Encoder, FloatArithmetic, FloatRegister,
+    Label, Memory, Register, Rounding, Width, X64,
 };
 
 const QUADWORD_NAMES: [&str; 16] = [
@@ -37,6 +37,14 @@ fn registers() -> impl Iterator<Item = Register> {
 
 fn name(register: Register) -> &'static str {
     QUADWORD_NAMES[usize::from(register.0)]
+}
+
+fn float_registers() -> impl Iterator<Item = FloatRegister> {
+    (0..16).map(FloatRegister)
+}
+
+fn float_name(register: FloatRegister) -> String {
+    format!("xmm{}", register.0)
 }
 
 /// A number as the Intel formatter writes it: nine and below in decimal,
@@ -327,6 +335,10 @@ fn immediate_operations() {
                 format!("or {register},{operand}")
             );
             assert_eq!(
+                text(|assembler| assembler.xor_immediate(target, value)),
+                format!("xor {register},{operand}")
+            );
+            assert_eq!(
                 text(|assembler| assembler.add_immediate(target, value)),
                 format!("add {register},{operand}")
             );
@@ -375,8 +387,151 @@ fn shifts() {
                 text(|assembler| assembler.shift_right_logical(target, count)),
                 format!("shr {},{}", name(target), number(u64::from(count)))
             );
+            assert_eq!(
+                text(|assembler| assembler.rotate_left(target, count)),
+                format!("rol {},{}", name(target), number(u64::from(count)))
+            );
+            assert_eq!(
+                text(|assembler| assembler.rotate_right(target, count)),
+                format!("ror {},{}", name(target), number(u64::from(count)))
+            );
         }
     }
+}
+
+#[test]
+#[should_panic(expected = "shift by 64")]
+fn a_rotation_by_sixty_four_is_refused() {
+    let _ = bytes(|assembler| assembler.rotate_left(x64::RAX, 64));
+}
+
+#[test]
+fn the_float_register_constants_are_the_machine_numbers() {
+    let constants = [
+        x64::XMM0,
+        x64::XMM1,
+        x64::XMM2,
+        x64::XMM3,
+        x64::XMM4,
+        x64::XMM5,
+        x64::XMM6,
+        x64::XMM7,
+        x64::XMM8,
+        x64::XMM9,
+        x64::XMM10,
+        x64::XMM11,
+        x64::XMM12,
+        x64::XMM13,
+        x64::XMM14,
+        x64::XMM15,
+    ];
+    for (number, constant) in constants.into_iter().enumerate() {
+        assert_eq!(usize::from(constant.0), number);
+    }
+}
+
+#[test]
+fn moves_and_conversions_between_general_and_float_registers() {
+    for float in float_registers() {
+        for general in registers() {
+            let (float_text, general_text) = (float_name(float), name(general));
+            assert_eq!(
+                text(|assembler| assembler.move_to_float(float, general)),
+                format!("movq {float_text},{general_text}")
+            );
+            assert_eq!(
+                text(|assembler| assembler.move_from_float(general, float)),
+                format!("movq {general_text},{float_text}")
+            );
+            // The `xorps` breaks the dependency on the target's upper half,
+            // which `cvtsi2sd` keeps.
+            assert_eq!(
+                text(|assembler| assembler.integer_to_float(float, general)),
+                format!("xorps {float_text},{float_text}\ncvtsi2sd {float_text},{general_text}")
+            );
+            assert_eq!(
+                text(|assembler| assembler.float_to_integer_truncated(general, float)),
+                format!("cvttsd2si {general_text},{float_text}")
+            );
+        }
+    }
+}
+
+#[test]
+fn float_register_operations() {
+    let arithmetic = [
+        (FloatArithmetic::Add, "addsd"),
+        (FloatArithmetic::Subtract, "subsd"),
+        (FloatArithmetic::Multiply, "mulsd"),
+        (FloatArithmetic::Divide, "divsd"),
+    ];
+    // `roundsd`'s immediate: the rounding mode, and bit 3, which
+    // suppresses the precision exception.
+    let roundings = [
+        (Rounding::Down, "9"),
+        (Rounding::Up, "0Ah"),
+        (Rounding::TowardZero, "0Bh"),
+    ];
+    for target in float_registers() {
+        for source in float_registers() {
+            let (left, right) = (float_name(target), float_name(source));
+            assert_eq!(
+                text(|assembler| assembler.move_float(target, source)),
+                format!("movaps {left},{right}")
+            );
+            for (operation, mnemonic) in arithmetic {
+                assert_eq!(
+                    text(|assembler| assembler.float_arithmetic(operation, target, source)),
+                    format!("{mnemonic} {left},{right}")
+                );
+            }
+            assert_eq!(
+                text(|assembler| assembler.float_square_root(target, source)),
+                format!("sqrtsd {left},{right}")
+            );
+            for (rounding, immediate) in roundings {
+                assert_eq!(
+                    text(|assembler| assembler.float_round(rounding, target, source)),
+                    format!("roundsd {left},{right},{immediate}")
+                );
+            }
+            assert_eq!(
+                text(|assembler| assembler.float_compare(target, source)),
+                format!("ucomisd {left},{right}")
+            );
+        }
+    }
+    assert_eq!(
+        text(|assembler| assembler.float_arithmetic(FloatArithmetic::Add, x64::XMM9, x64::XMM3)),
+        "addsd xmm9,xmm3"
+    );
+    assert_eq!(
+        text(|assembler| assembler.float_round(Rounding::TowardZero, x64::XMM2, x64::XMM2)),
+        "roundsd xmm2,xmm2,0Bh"
+    );
+}
+
+#[test]
+fn a_float_load_and_store_take_every_displacement_form() {
+    for register in float_registers() {
+        for memory in memories() {
+            let (float_text, operand) = (float_name(register), memory_text(memory));
+            assert_eq!(
+                text(|assembler| assembler.load_float(register, memory)),
+                format!("movsd {float_text},{operand}")
+            );
+            assert_eq!(
+                text(|assembler| assembler.store_float(memory, register)),
+                format!("movsd {operand},{float_text}")
+            );
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "no float register 16")]
+fn a_float_register_beyond_xmm15_is_refused() {
+    let _ = bytes(|assembler| assembler.move_float(x64::XMM0, FloatRegister(16)));
 }
 
 #[test]
@@ -434,7 +589,7 @@ fn calls_and_the_stack() {
     assert_eq!(text(Assembler::trap), "ud2");
 }
 
-const CONDITIONS: [(Condition, Mnemonic); 12] = [
+const CONDITIONS: [(Condition, Mnemonic); 16] = [
     (Condition::Equal, Mnemonic::Je),
     (Condition::NotEqual, Mnemonic::Jne),
     (Condition::Less, Mnemonic::Jl),
@@ -447,6 +602,10 @@ const CONDITIONS: [(Condition, Mnemonic); 12] = [
     (Condition::AboveOrEqual, Mnemonic::Jae),
     (Condition::Overflow, Mnemonic::Jo),
     (Condition::NoOverflow, Mnemonic::Jno),
+    (Condition::Unordered, Mnemonic::Jp),
+    (Condition::Ordered, Mnemonic::Jnp),
+    (Condition::FloatGreater, Mnemonic::Ja),
+    (Condition::FloatGreaterOrEqual, Mnemonic::Jae),
 ];
 
 /// The last instruction of `bytes`: a branch, its length and its target.
@@ -612,7 +771,7 @@ fn an_assembler_over_a_configured_encoder() {
 
 /// The conditional move's mnemonic suffix of each condition, as the
 /// Intel formatter writes it.
-const MOVE_SUFFIXES: [(Condition, &str); 12] = [
+const MOVE_SUFFIXES: [(Condition, &str); 16] = [
     (Condition::Equal, "e"),
     (Condition::NotEqual, "ne"),
     (Condition::Less, "l"),
@@ -625,6 +784,10 @@ const MOVE_SUFFIXES: [(Condition, &str); 12] = [
     (Condition::AboveOrEqual, "ae"),
     (Condition::Overflow, "o"),
     (Condition::NoOverflow, "no"),
+    (Condition::Unordered, "p"),
+    (Condition::Ordered, "np"),
+    (Condition::FloatGreater, "a"),
+    (Condition::FloatGreaterOrEqual, "ae"),
 ];
 
 #[test]

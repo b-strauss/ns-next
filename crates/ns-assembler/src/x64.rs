@@ -3,7 +3,14 @@
 //! Every operation is one instruction, the shortest whose semantics are the
 //! operation's: an immediate that fits a signed byte takes the byte form, a
 //! displacement likewise, and a 64-bit constant the 32-bit move when its
-//! upper half is zero, since that move clears it.
+//! upper half is zero, since that move clears it. The exceptions are the
+//! signed division, whose dividend `cqo` sign-extends first, and the
+//! conversion of an integer to a double, whose `cvtsi2sd` follows an
+//! `xorps` of its target.
+//!
+//! A double is an SSE2 scalar in an `xmm` register's low 64 bits; the one
+//! instruction beyond SSE2, `roundsd`, is SSE4.1's, which the x86-64-v2
+//! level the binary requires includes.
 //!
 //! Every opcode, prefix, opcode extension and encoding field is a named
 //! constant whose documentation cites the Intel 64 and IA-32 Architectures
@@ -15,7 +22,8 @@
 //! `tests/encoding_sources.rs` holds every encoder file to that.
 
 use crate::{
-    BranchForm, BranchKind, Condition, Encoder, LabelReference, Memory, Operation, Register, Width,
+    BranchForm, BranchKind, Condition, Encoder, FloatArithmetic, FloatRegister, LabelReference,
+    Memory, Operation, Register, Rounding, Width,
 };
 
 /// `rax`: register number 0, as ModRM, SIB and opcode fields name it.
@@ -90,6 +98,87 @@ pub const R14: Register = Register(14);
 ///
 /// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
 pub const R15: Register = Register(15);
+
+/// `xmm0`: register number 0, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM0: FloatRegister = FloatRegister(0);
+/// `xmm1`: register number 1, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM1: FloatRegister = FloatRegister(1);
+/// `xmm2`: register number 2, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM2: FloatRegister = FloatRegister(2);
+/// `xmm3`: register number 3, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM3: FloatRegister = FloatRegister(3);
+/// `xmm4`: register number 4, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM4: FloatRegister = FloatRegister(4);
+/// `xmm5`: register number 5, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM5: FloatRegister = FloatRegister(5);
+/// `xmm6`: register number 6, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM6: FloatRegister = FloatRegister(6);
+/// `xmm7`: register number 7, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM7: FloatRegister = FloatRegister(7);
+/// `xmm8`: register number 8, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM8: FloatRegister = FloatRegister(8);
+/// `xmm9`: register number 9, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM9: FloatRegister = FloatRegister(9);
+/// `xmm10`: register number 10, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM10: FloatRegister = FloatRegister(10);
+/// `xmm11`: register number 11, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM11: FloatRegister = FloatRegister(11);
+/// `xmm12`: register number 12, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM12: FloatRegister = FloatRegister(12);
+/// `xmm13`: register number 13, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM13: FloatRegister = FloatRegister(13);
+/// `xmm14`: register number 14, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM14: FloatRegister = FloatRegister(14);
+/// `xmm15`: register number 15, as the ModRM fields of an SSE
+/// instruction name it.
+///
+/// Intel SDM Vol. 2A, 2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes.
+pub const XMM15: FloatRegister = FloatRegister(15);
 
 /// The register `IDIV r/m64` divides and leaves its quotient in: the low
 /// half of the dividend `RDX:RAX`.
@@ -199,6 +288,138 @@ const REX_RM_EXTENSION: u8 = 0b1;
 ///
 /// Intel SDM Vol. 2A, 2.1.1 Instruction Prefixes.
 const OPERAND_SIZE_PREFIX: u8 = 0x66;
+
+/// The `66` prefix as the mandatory prefix of `MOVQ`, `UCOMISD` and
+/// `ROUNDSD`, which selects their double-precision or quadword form; it
+/// stands before the REX prefix.
+///
+/// Intel SDM Vol. 2A, 2.1.1 Instruction Prefixes; 2.2.1 REX Prefixes.
+const DOUBLE_PRECISION_PREFIX: u8 = 0x66;
+
+/// The `F2` prefix as the mandatory prefix of the scalar double
+/// instructions (`MOVSD`, `ADDSD`, `CVTSI2SD`, …); it stands before the
+/// REX prefix.
+///
+/// Intel SDM Vol. 2A, 2.1.1 Instruction Prefixes; 2.2.1 REX Prefixes.
+const SCALAR_DOUBLE_PREFIX: u8 = 0xF2;
+
+/// `MOVQ xmm, r/m64` (`66 REX.W 0F 6E /r`) — move a quadword into a
+/// register's low half, zeroing the rest.
+///
+/// Intel SDM Vol. 2B, MOVD/MOVQ—Move Doubleword/Move Quadword.
+const MOVE_QUADWORD_TO_FLOAT: [u8; 2] = [0x0F, 0x6E];
+
+/// `MOVQ r/m64, xmm` (`66 REX.W 0F 7E /r`) — move a register's low
+/// quadword out.
+///
+/// Intel SDM Vol. 2B, MOVD/MOVQ—Move Doubleword/Move Quadword.
+const MOVE_QUADWORD_FROM_FLOAT: [u8; 2] = [0x0F, 0x7E];
+
+/// `MOVAPS xmm1, xmm2` (`0F 28 /r`) — the move between `xmm` registers:
+/// it copies the whole register, so unlike `MOVSD`'s register form it
+/// depends on nothing of the target.
+///
+/// Intel SDM Vol. 2B, MOVAPS—Move Aligned Packed Single Precision
+/// Floating-Point Values.
+const MOVE_ALIGNED_PACKED_SINGLE: [u8; 2] = [0x0F, 0x28];
+
+/// `MOVSD xmm1, m64` (`F2 0F 10 /r`) — load a double, zeroing the upper
+/// half.
+///
+/// Intel SDM Vol. 2B, MOVSD—Move or Merge Scalar Double Precision
+/// Floating-Point Value.
+const LOAD_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x10];
+
+/// `MOVSD m64, xmm1` (`F2 0F 11 /r`) — store a double.
+///
+/// Intel SDM Vol. 2B, MOVSD—Move or Merge Scalar Double Precision
+/// Floating-Point Value.
+const STORE_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x11];
+
+/// `ADDSD xmm1, xmm2/m64` (`F2 0F 58 /r`).
+///
+/// Intel SDM Vol. 2A, ADDSD—Add Scalar Double Precision Floating-Point
+/// Values.
+const ADD_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x58];
+
+/// `SUBSD xmm1, xmm2/m64` (`F2 0F 5C /r`).
+///
+/// Intel SDM Vol. 2B, SUBSD—Subtract Scalar Double Precision
+/// Floating-Point Value.
+const SUBTRACT_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x5C];
+
+/// `MULSD xmm1, xmm2/m64` (`F2 0F 59 /r`).
+///
+/// Intel SDM Vol. 2B, MULSD—Multiply Scalar Double Precision
+/// Floating-Point Value.
+const MULTIPLY_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x59];
+
+/// `DIVSD xmm1, xmm2/m64` (`F2 0F 5E /r`).
+///
+/// Intel SDM Vol. 2A, DIVSD—Divide Scalar Double Precision Floating-Point
+/// Value.
+const DIVIDE_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x5E];
+
+/// `SQRTSD xmm1, xmm2/m64` (`F2 0F 51 /r`).
+///
+/// Intel SDM Vol. 2B, SQRTSD—Compute Square Root of Scalar Double
+/// Precision Floating-Point Value.
+const SQUARE_ROOT_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x51];
+
+/// `ROUNDSD xmm1, xmm2/m64, imm8` (`66 0F 3A 0B /r ib`), SSE4.1.
+///
+/// Intel SDM Vol. 2B, ROUNDSD—Round Scalar Double Precision Floating-Point
+/// Values.
+const ROUND_SCALAR_DOUBLE: [u8; 3] = [0x0F, 0x3A, 0x0B];
+
+/// `ROUNDSD`'s immediate rounding down: rounding control 01b (toward
+/// negative infinity), bit 3 set to suppress the precision exception.
+///
+/// Intel SDM Vol. 2B, 4.3 ROUNDSD, Table 4-18 Rounding Modes and Encoding
+/// of Rounding Control (RC) Field.
+const ROUND_DOWN_IMMEDIATE: u8 = 0x09;
+
+/// `ROUNDSD`'s immediate rounding up: rounding control 10b (toward
+/// positive infinity), bit 3 set to suppress the precision exception.
+///
+/// Intel SDM Vol. 2B, 4.3 ROUNDSD, Table 4-18 Rounding Modes and Encoding
+/// of Rounding Control (RC) Field.
+const ROUND_UP_IMMEDIATE: u8 = 0x0A;
+
+/// `ROUNDSD`'s immediate rounding toward zero: rounding control 11b
+/// (truncate), bit 3 set to suppress the precision exception.
+///
+/// Intel SDM Vol. 2B, 4.3 ROUNDSD, Table 4-18 Rounding Modes and Encoding
+/// of Rounding Control (RC) Field.
+const ROUND_TOWARD_ZERO_IMMEDIATE: u8 = 0x0B;
+
+/// `UCOMISD xmm1, xmm2/m64` (`66 0F 2E /r`) — compare two doubles into
+/// ZF, PF and CF: unordered 111, less 001, equal 100, greater 000.
+///
+/// Intel SDM Vol. 2B, UCOMISD—Unordered Compare Scalar Double Precision
+/// Floating-Point Values and Set EFLAGS.
+const UNORDERED_COMPARE_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x2E];
+
+/// `XORPS xmm1, xmm2/m128` (`0F 57 /r`) — of a register with itself, the
+/// zero that breaks `CVTSI2SD`'s dependency on its target.
+///
+/// Intel SDM Vol. 2C, XORPS—Bitwise Logical XOR of Packed Single
+/// Precision Floating-Point Values.
+const XOR_PACKED_SINGLE: [u8; 2] = [0x0F, 0x57];
+
+/// `CVTSI2SD xmm1, r/m64` (`F2 REX.W 0F 2A /r`) — convert a signed
+/// quadword to a double, rounded as MXCSR says: to nearest, ties to even.
+///
+/// Intel SDM Vol. 2A, CVTSI2SD—Convert Doubleword Integer to Scalar Double
+/// Precision Floating-Point Value.
+const CONVERT_INTEGER_TO_SCALAR_DOUBLE: [u8; 2] = [0x0F, 0x2A];
+
+/// `CVTTSD2SI r64, xmm1/m64` (`F2 REX.W 0F 2C /r`) — convert a double to
+/// a signed quadword, truncated toward zero.
+///
+/// Intel SDM Vol. 2A, CVTTSD2SI—Convert With Truncation Scalar Double
+/// Precision Floating-Point Value to Signed Integer.
+const CONVERT_TRUNCATED_SCALAR_DOUBLE_TO_INTEGER: [u8; 2] = [0x0F, 0x2C];
 
 /// `MOV r/m64, r64` (`89 /r`) — move a register to a register or memory;
 /// also the 32-bit and, behind [`OPERAND_SIZE_PREFIX`], 16-bit store.
@@ -344,6 +565,11 @@ const GROUP_ONE_OR: u8 = 1;
 /// Intel SDM Vol. 2A, AND—Logical AND.
 const GROUP_ONE_AND: u8 = 4;
 
+/// The `/6` extension of the immediate group: `XOR r/m64, imm`.
+///
+/// Intel SDM Vol. 2C, XOR—Logical Exclusive OR.
+const GROUP_ONE_XOR: u8 = 6;
+
 /// The `/5` extension of the immediate group: `SUB r/m64, imm`.
 ///
 /// Intel SDM Vol. 2B, SUB—Subtract.
@@ -359,6 +585,16 @@ const GROUP_ONE_COMPARE: u8 = 7;
 ///
 /// Intel SDM Vol. 2B, SAL/SAR/SHL/SHR—Shift.
 const SHIFT_BY_IMMEDIATE: u8 = 0xC1;
+
+/// The `/0` extension of [`SHIFT_BY_IMMEDIATE`]: `ROL r/m64, imm8`.
+///
+/// Intel SDM Vol. 2B, RCL/RCR/ROL/ROR—Rotate.
+const ROTATE_LEFT_EXTENSION: u8 = 0;
+
+/// The `/1` extension of [`SHIFT_BY_IMMEDIATE`]: `ROR r/m64, imm8`.
+///
+/// Intel SDM Vol. 2B, RCL/RCR/ROL/ROR—Rotate.
+const ROTATE_RIGHT_EXTENSION: u8 = 1;
 
 /// The `/4` extension of [`SHIFT_BY_IMMEDIATE`]: `SHL r/m64, imm8`.
 ///
@@ -520,6 +756,17 @@ const CONDITION_BELOW_OR_EQUAL: u8 = 0x6;
 /// Intel SDM Vol. 2A, Jcc—Jump if Condition Is Met.
 const CONDITION_ABOVE: u8 = 0x7;
 
+/// The condition code `cc` of `JP` (parity, PF=1): after `UCOMISD`,
+/// unordered.
+///
+/// Intel SDM Vol. 2A, Jcc—Jump if Condition Is Met.
+const CONDITION_PARITY: u8 = 0xA;
+
+/// The condition code `cc` of `JNP` (PF=0): after `UCOMISD`, ordered.
+///
+/// Intel SDM Vol. 2A, Jcc—Jump if Condition Is Met.
+const CONDITION_NO_PARITY: u8 = 0xB;
+
 /// The condition code `cc` of `JL` (signed less, SF≠OF).
 ///
 /// Intel SDM Vol. 2A, Jcc—Jump if Condition Is Met.
@@ -566,6 +813,15 @@ fn number(register: Register) -> u8 {
     register.0
 }
 
+fn float_number(register: FloatRegister) -> u8 {
+    assert!(
+        register.0 < REGISTER_COUNT,
+        "x64 has no float register {}; xmm registers are numbered 0 to 15",
+        register.0
+    );
+    register.0
+}
+
 /// Writes the REX prefix of an instruction whose ModRM `reg` field (or
 /// opcode extension) is `reg_field` and whose `rm` field, or opcode
 /// register, is `rm_field`, both full register numbers. `forced` writes it
@@ -597,6 +853,42 @@ fn register_register(code: &mut Vec<u8>, opcode: &[u8], reg_field: Register, rm_
     rex(code, true, reg_field, rm_field, false);
     code.extend_from_slice(opcode);
     code.push(modrm(MODRM_MODE_REGISTER, reg_field, rm_field));
+}
+
+/// An SSE instruction on two registers, full register numbers: its
+/// mandatory `prefix`, if any, before the REX prefix, then `opcode`.
+fn prefixed_register_register(
+    code: &mut Vec<u8>,
+    prefix: Option<u8>,
+    wide: bool,
+    opcode: &[u8],
+    reg_field: u8,
+    rm_field: u8,
+) {
+    if let Some(prefix) = prefix {
+        code.push(prefix);
+    }
+    rex(code, wide, reg_field, rm_field, false);
+    code.extend_from_slice(opcode);
+    code.push(modrm(MODRM_MODE_REGISTER, reg_field, rm_field));
+}
+
+/// A scalar double instruction (`F2`) whose operands are the `xmm`
+/// registers `reg_field` and `rm_field`.
+fn scalar_double(
+    code: &mut Vec<u8>,
+    opcode: &[u8],
+    reg_field: FloatRegister,
+    rm_field: FloatRegister,
+) {
+    prefixed_register_register(
+        code,
+        Some(SCALAR_DOUBLE_PREFIX),
+        false,
+        opcode,
+        float_number(reg_field),
+        float_number(rm_field),
+    );
 }
 
 /// `opcode` with a register or opcode extension `reg_field` and a memory
@@ -685,11 +977,16 @@ fn condition_code(condition: Condition) -> u8 {
         Condition::Overflow => CONDITION_OVERFLOW,
         Condition::NoOverflow => CONDITION_NO_OVERFLOW,
         Condition::Below => CONDITION_BELOW,
-        Condition::AboveOrEqual => CONDITION_ABOVE_OR_EQUAL,
+        // `UCOMISD` sets CF for less and unordered, ZF for equal and
+        // unordered, so "neither" -- above -- is greater and false when
+        // unordered, and CF clear greater or equal.
+        Condition::AboveOrEqual | Condition::FloatGreaterOrEqual => CONDITION_ABOVE_OR_EQUAL,
         Condition::Equal => CONDITION_EQUAL,
         Condition::NotEqual => CONDITION_NOT_EQUAL,
         Condition::BelowOrEqual => CONDITION_BELOW_OR_EQUAL,
-        Condition::Above => CONDITION_ABOVE,
+        Condition::Above | Condition::FloatGreater => CONDITION_ABOVE,
+        Condition::Unordered => CONDITION_PARITY,
+        Condition::Ordered => CONDITION_NO_PARITY,
         Condition::Less => CONDITION_LESS,
         Condition::GreaterOrEqual => CONDITION_GREATER_OR_EQUAL,
         Condition::LessOrEqual => CONDITION_LESS_OR_EQUAL,
@@ -883,6 +1180,137 @@ impl Encoder for X64 {
             }
             Operation::ShiftRightLogical { target, count } => {
                 shift(code, SHIFT_RIGHT_LOGICAL_EXTENSION, target, count);
+            }
+            Operation::XorImmediate { target, value } => {
+                immediate_group(code, GROUP_ONE_XOR, target, value);
+            }
+            Operation::RotateLeft { target, count } => {
+                shift(code, ROTATE_LEFT_EXTENSION, target, count);
+            }
+            Operation::RotateRight { target, count } => {
+                shift(code, ROTATE_RIGHT_EXTENSION, target, count);
+            }
+            Operation::MoveToFloat { target, source } => {
+                prefixed_register_register(
+                    code,
+                    Some(DOUBLE_PRECISION_PREFIX),
+                    true,
+                    &MOVE_QUADWORD_TO_FLOAT,
+                    float_number(target),
+                    number(source),
+                );
+            }
+            Operation::MoveFromFloat { target, source } => {
+                prefixed_register_register(
+                    code,
+                    Some(DOUBLE_PRECISION_PREFIX),
+                    true,
+                    &MOVE_QUADWORD_FROM_FLOAT,
+                    float_number(source),
+                    number(target),
+                );
+            }
+            Operation::MoveFloat { target, source } => {
+                prefixed_register_register(
+                    code,
+                    None,
+                    false,
+                    &MOVE_ALIGNED_PACKED_SINGLE,
+                    float_number(target),
+                    float_number(source),
+                );
+            }
+            Operation::LoadFloat { target, source } => {
+                code.push(SCALAR_DOUBLE_PREFIX);
+                register_memory(
+                    code,
+                    false,
+                    false,
+                    &LOAD_SCALAR_DOUBLE,
+                    float_number(target),
+                    source,
+                );
+            }
+            Operation::StoreFloat { target, source } => {
+                code.push(SCALAR_DOUBLE_PREFIX);
+                register_memory(
+                    code,
+                    false,
+                    false,
+                    &STORE_SCALAR_DOUBLE,
+                    float_number(source),
+                    target,
+                );
+            }
+            Operation::FloatArithmetic {
+                operation,
+                target,
+                source,
+            } => {
+                let opcode = match operation {
+                    FloatArithmetic::Add => &ADD_SCALAR_DOUBLE,
+                    FloatArithmetic::Subtract => &SUBTRACT_SCALAR_DOUBLE,
+                    FloatArithmetic::Multiply => &MULTIPLY_SCALAR_DOUBLE,
+                    FloatArithmetic::Divide => &DIVIDE_SCALAR_DOUBLE,
+                };
+                scalar_double(code, opcode, target, source);
+            }
+            Operation::FloatSquareRoot { target, source } => {
+                scalar_double(code, &SQUARE_ROOT_SCALAR_DOUBLE, target, source);
+            }
+            Operation::FloatRound {
+                rounding,
+                target,
+                source,
+            } => {
+                prefixed_register_register(
+                    code,
+                    Some(DOUBLE_PRECISION_PREFIX),
+                    false,
+                    &ROUND_SCALAR_DOUBLE,
+                    float_number(target),
+                    float_number(source),
+                );
+                code.push(match rounding {
+                    Rounding::Down => ROUND_DOWN_IMMEDIATE,
+                    Rounding::Up => ROUND_UP_IMMEDIATE,
+                    Rounding::TowardZero => ROUND_TOWARD_ZERO_IMMEDIATE,
+                });
+            }
+            Operation::FloatCompare { left, right } => {
+                prefixed_register_register(
+                    code,
+                    Some(DOUBLE_PRECISION_PREFIX),
+                    false,
+                    &UNORDERED_COMPARE_SCALAR_DOUBLE,
+                    float_number(left),
+                    float_number(right),
+                );
+            }
+            Operation::IntegerToFloat { target, source } => {
+                // `cvtsi2sd` writes only the low half and so waits for
+                // whatever last wrote the target; zeroing it first breaks
+                // that dependency.
+                let target = float_number(target);
+                prefixed_register_register(code, None, false, &XOR_PACKED_SINGLE, target, target);
+                prefixed_register_register(
+                    code,
+                    Some(SCALAR_DOUBLE_PREFIX),
+                    true,
+                    &CONVERT_INTEGER_TO_SCALAR_DOUBLE,
+                    target,
+                    number(source),
+                );
+            }
+            Operation::FloatToIntegerTruncated { target, source } => {
+                prefixed_register_register(
+                    code,
+                    Some(SCALAR_DOUBLE_PREFIX),
+                    true,
+                    &CONVERT_TRUNCATED_SCALAR_DOUBLE_TO_INTEGER,
+                    number(target),
+                    float_number(source),
+                );
             }
             Operation::Compare { left, right } => {
                 register_register(code, &COMPARE_RM_WITH_REGISTER, right, left);
