@@ -1393,7 +1393,9 @@ fn emit_row_stub(
                 unreachable!("internal: a row with a float stub is a float operation's");
             };
             // The answer's register is no operand's, and a decline writes
-            // only it and the element's, which the leaf does not read.
+            // only it, the element's and the idiom scratch register, none
+            // of which `mirror_method` reads before it writes it: the
+            // idiom scratch register it loads with the machine words.
             let registers = FloatRegisters {
                 receiver,
                 argument: index,

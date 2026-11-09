@@ -8741,7 +8741,10 @@ ns_runtime::for_each_lowering! {
         let count = 500;
         let source = leaving_bodies(count);
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(32_768);
+        // Room for a few dozen `leave` bodies, far fewer than the five
+        // hundred, past the stubs, whose size differs by architecture
+        // and grows with every row stub.
+        set_zone_room(&mut interpreter, 20_928);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let before = interpreter.jit_statistics();
         assert_eq!(
