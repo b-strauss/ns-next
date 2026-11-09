@@ -4728,11 +4728,13 @@ ns_runtime::for_each_lowering! {
 }
 
 /// How many boxed `Float`s `FLOAT_BOXES`' loop makes per run.
+#[cfg(debug_assertions)]
 const FLOAT_BOX_COUNT: u64 = 2000;
 
 /// A loop whose every sum is a `Float` outside the `SmallFloat64` range,
 /// boxed in eden, and one `asInteger`, of a `SmallInteger`'s value, at
 /// its end.
+#[cfg(debug_assertions)]
 const FLOAT_BOXES: &str = indoc! {"
     class Subject = Object new () (
       public run = (
@@ -4753,7 +4755,9 @@ const FLOAT_BOXES: &str = indoc! {"
 /// declines to the row's leaf, which allocates where the interpreter does
 /// and asks for the scavenge: with a threshold of a few hundred floats,
 /// the answers are the interpreter's, some sums boxed inline and some by
-/// the leaf.
+/// the leaf. Debug builds only, where a test sets the scavenge
+/// threshold.
+#[cfg(debug_assertions)]
 #[test]
 fn a_float_boxed_with_eden_full_is_the_leaf_s() {
     let small_eden = |interpreter: &mut Interpreter| interpreter.set_scavenge_threshold(4096);

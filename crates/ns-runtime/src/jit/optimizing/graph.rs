@@ -15,7 +15,7 @@ use std::ops::Range;
 
 use crate::bytecode::{IntegerOperation, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId, Immediate};
-use crate::jit::floats::FloatOperation;
+use crate::jit::float_operations::FloatOperation;
 use crate::mixin::DispatchId;
 
 pub(crate) use super::plan::{EliminatedId, ScopeId};
@@ -335,7 +335,7 @@ pub(crate) enum Node {
         mixed: Option<FloatOperation>,
     },
     /// An arm always inlined whose callee is a row machine code computes
-    /// (`floats::FloatOperation`), at the send at `program_counter`: a
+    /// (`float_operations::FloatOperation`), at the send at `program_counter`: a
     /// `Float` receiver's operation, or a `SmallInteger` receiver's mixed
     /// one, of `receiver` and, for a binary operation, `argument`, tagged
     /// in and out, a result outside the `SmallFloat64` range boxed in

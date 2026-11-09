@@ -35,7 +35,7 @@ use crate::builtins::primitive::{
 };
 use crate::bytecode::{CodeKind, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId};
-use crate::jit::floats::{FloatOperation, FloatReceiver};
+use crate::jit::float_operations::{FloatOperation, FloatReceiver};
 use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, QuickConstant};
 use crate::types::BuiltinClass;
 use crate::Symbol;

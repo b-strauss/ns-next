@@ -35,7 +35,8 @@
 
 use ns_assembler::{Assembled, Condition, Label, Memory, Register, Width};
 
-use super::floats::{self, FloatOperation, FloatRegisters};
+use super::float_operations::FloatOperation;
+use super::floats::{self, FloatRegisters};
 use super::leaves::Leaf;
 use super::macro_assembler::{Abi, MacroAssembler, Operand, Roles};
 use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};

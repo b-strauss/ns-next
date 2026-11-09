@@ -59,7 +59,7 @@ use crate::builtins::primitive::{
 };
 use crate::bytecode::IntegerOperation;
 use crate::heap::{ApplicationIndex, Immediate};
-use crate::jit::floats::{FloatOperation, FloatReceiver};
+use crate::jit::float_operations::{FloatOperation, FloatReceiver};
 use crate::mixin::{DispatchId, QuickConstant};
 
 use super::graph::{
@@ -6235,7 +6235,7 @@ pub(crate) mod inlining_tests {
     /// argument: no send, and no interrupt point on its way.
     #[test]
     fn a_float_arm_is_a_float_operation_node() {
-        use crate::jit::floats::{FloatOperation, FloatReceiver};
+        use crate::jit::float_operations::{FloatOperation, FloatReceiver};
         use ns_assembler::FloatArithmetic;
         let tree = tree_of_run(FLOATS, "add:");
         let (_, graph) = built(&tree);
@@ -6297,7 +6297,7 @@ pub(crate) mod inlining_tests {
         use super::{expressed_primitive, Expressed};
         use crate::builtins::primitive::{IntegerPrimitive, NumberPrimitive, Primitive};
         use crate::bytecode::IntegerOperation;
-        use crate::jit::floats::{FloatComparison, FloatOperation, FloatReceiver};
+        use crate::jit::float_operations::{FloatComparison, FloatOperation, FloatReceiver};
         use ns_assembler::FloatArithmetic;
         assert_eq!(
             expressed_primitive(Primitive::Integer(IntegerPrimitive::Less), 1, true),

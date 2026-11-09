@@ -50,7 +50,8 @@ Rust 1.98.0, edition 2021, seven crates:
   mixed row's -- computing its operation bit for bit as the row's leaf
   does, a result outside the `SmallFloat64` range boxed in eden, by the
   code `jit/floats.rs` writes once for them and for optimized code's
-  `Node::FloatOperation`, and continuing at the mirror method stub
+  `Node::FloatOperation`, the rows it computes classified by
+  `jit/float_operations.rs`, compiled without a JIT too, and continuing at the mirror method stub
   wherever it declines; `execution.md`, "Floats in machine code"), the
   callee returns by `ret`, the miss leaf decides
   what the cell did not and may compile the callee, every body compiles

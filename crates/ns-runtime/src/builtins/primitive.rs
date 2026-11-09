@@ -1027,7 +1027,7 @@ pub enum RowStub {
     /// A ByteArray's `at:put:` (`bytes::element_at_put`).
     ByteArrayAtPut,
     /// The `Float` operation the row's primitive is
-    /// (`jit::floats::FloatOperation::of`), its result boxed inline
+    /// (`jit::float_operations::FloatOperation::of`), its result boxed inline
     /// (`builtins::numbers`' `float`, `integer` and `tower`).
     Float,
 }

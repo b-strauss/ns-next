@@ -76,7 +76,8 @@
 > idioms in `jit/macro_assembler.rs`, the entry, call, exit and cut stubs
 > in `jit/stubs.rs`, the sends in `jit/sends.rs` and the stubs a cell
 > names in `jit/targets.rs`, the `Float` operations its row stubs and
-> optimized code's nodes compute in `jit/floats.rs`, the closures, outer
+> optimized code's nodes compute in `jit/floats.rs` (which rows they
+> are, in `jit/float_operations.rs`), the closures, outer
 > locals and futures in
 > `jit/closures.rs`, the cut of a non-local return in `jit/cut.rs`, the
 > exit's walk in `jit/materialize.rs`, the leaves in `jit/leaves.rs`, and
@@ -14587,7 +14588,9 @@ Decided with the user on 2026-11-09, after reading Cog, HotSpot and V8
 for it. The rows that compute a `Float` operation in one instruction or
 a few run in machine code, written once against the macro assembler's
 idioms for the baseline's row stubs and optimized code's nodes alike
-(`jit/floats.rs`, `floats::emit`). Every one answers bit for bit what
+(`jit/floats.rs`, `floats::emit`; which rows, `jit/float_operations.rs`'s
+`FloatOperation::of`, compiled on every target, since optimized code's
+graph and plan, compiled without a JIT too, name it). Every one answers bit for bit what
 its row's leaf answers (`builtins/numbers/float.rs`, `integer.rs`,
 `tower.rs`), or declines before it has written anything but its own
 result and spare registers, and the leaf decides the case: a receiver
