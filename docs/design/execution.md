@@ -12464,18 +12464,30 @@ the compile eliminates have one arm taken without a test
 parameter; a lazy slot's getter, a load and a test that traps on `nil`
 (`Node::TrapIfNil`); `==` (`Node::IdentityCompare`), which traps where
 the words alone do not decide it -- a boxed number, a future; `class`
-(`Node::ClassOf`); the `SmallInteger` operations `IntegerBinary` has;
-and `Array`'s and `ByteArray`'s `at:` and `at:put:`
+(`Node::ClassOf`); the `SmallInteger` operations `IntegerBinary` has,
+each of whose rows that also takes a `Float` argument -- `Integer`'s
+`+ - * < > <= >= =` -- tries its mixed operation out of line where the
+fast path fails (`Node::IntegerBinary`'s `mixed`), so that two
+`SmallInteger`s run what they ran before; every row `jit::floats`
+computes (`Node::FloatOperation`): a `Float` receiver's arithmetic,
+orderings, `=`, `sqrt`, sign, class tests, roundings and `asInteger`,
+and a `SmallInteger` receiver's `asFloat` and `Number`'s `/` -- the
+mixed ones only for a `SmallInteger`'s arm (`plan::expressed`) --
+tagged in and out, a result outside the `SmallFloat64` range boxed in
+eden, emitted by the very code the baseline's row stubs run
+(`floats::emit`), declining to a trap where the row's leaf decides --
+stage 5 unboxes it; and `Array`'s and `ByteArray`'s `at:` and `at:put:`
 (`Node::IndexedLoad`, `Node::IndexedStore`), their bounds and kinds
 checked by traps. A node with a check is laid out only in a copy that
 speculates, at a site that never trapped (`build::Laying::expressed`);
 each trap runs the send again, whose error the interpreter raises.
-Sent, not expressed: a builtin class's accessor, whose class only the
-heap's tables name; `^<parameter> value` and `cull:`; and `Float`
-arithmetic, a leaf call until the baseline's `Float` templates in SSE2, the work
-right after this stage ([OPEN-WORK.md](../OPEN-WORK.md), "Planned: performance
-and representation"), which optimized code then emits through the same
-templates; stage 5 unboxes it. **The accesses need no guard**:
+At an `IntegerBinary`'s fallback send, where its test already failed,
+a `SmallInteger` row is its mixed operation alone. Two `NaN`s' sum
+carries the left operand's payload in machine code and LLVM's choice in
+the leaf; no program text depends on a `NaN`'s payload. Sent, not
+expressed: a builtin class's accessor, whose class only the heap's
+tables name; and `^<parameter> value` and `cull:`. **The accesses need
+no guard**:
 the field the lookup resolved the accessor to for the arm's receiver
 application -- and an inlined scope's own-slot read, at the plan's base
 for that application -- is read of an object the type-case's guard, or
@@ -12901,15 +12913,15 @@ What is built plans on the snapshot tree by frequency under limits
 measured, inlines type-cases, the always-inlined callees and blocks
 with their home ("Inlining" above). What is not:
 
-- **Always inlined, still sent**: `Float` arithmetic and comparisons,
-  leaf calls until the `Float` templates in SSE2 that come right after this
-  stage, and boxed until stage 5 unboxes them; outer
-  sends of fixed structure; a builtin class's accessor; and
+- **Always inlined, still sent**: outer sends of fixed structure; a builtin class's accessor; and
   `^<parameter> value` and `cull:`, which activate a block, so that a
   block a quick method evaluates escapes and its callee is sent.
   Strongtalk inlines its `always_inline` methods and critical selectors
   regardless of size (`compiler/inliner.cpp:132-206`) and its
   primitives through `PrimInliner` (`compiler/primInliner.cpp:823-930`).
+- **`Float` operations are tagged** in optimized code: each node
+  decodes its operands and encodes or boxes its result, until stage 5
+  keeps a `Float64` in a register between them.
 - **A callee whose scope creates a block that escapes** is inlined once
   optimized code creates the block itself, its home an inlined frame
   object (stage 4, below): until then the plan sends it.

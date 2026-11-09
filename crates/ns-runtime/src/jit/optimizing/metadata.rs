@@ -422,13 +422,9 @@ fn replay(
                     });
                 }
             }
-            if let Node::IntegerBinary {
-                fallback: Some(fallback),
-                ..
-            } = node
-            {
-                if graph.block(*block).exit_position(*fallback) == Some(index) {
-                    enters(&replay, graph, allocation, (*block, *fallback), None)?;
+            if let Some(fallback) = node.fallback() {
+                if graph.block(*block).exit_position(fallback) == Some(index) {
+                    enters(&replay, graph, allocation, (*block, fallback), None)?;
                 }
             }
             // The trap's cold write-back, replayed on its way out.
@@ -499,6 +495,11 @@ fn replay(
                     source,
                 } => replay.interpreter[usize::from(*destination_register)] = Some(*source),
                 Node::IntegerBinary {
+                    destination_register,
+                    value,
+                    ..
+                }
+                | Node::FloatOperation {
                     destination_register,
                     value,
                     ..

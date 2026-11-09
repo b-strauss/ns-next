@@ -360,13 +360,9 @@ fn check_frame_lifetimes(
         };
         let ends = block.end.successors();
         for node in &block.nodes {
-            if let Node::IntegerBinary {
-                fallback: Some(fallback),
-                ..
-            } = node
-            {
-                if !ends.contains(fallback) {
-                    check_inputs(&set, *fallback)?;
+            if let Some(fallback) = node.fallback() {
+                if !ends.contains(&fallback) {
+                    check_inputs(&set, fallback)?;
                 }
             }
             for value in node.uses() {
@@ -409,13 +405,9 @@ fn leaving_sets(block: &Block, top: ValueSet) -> Vec<(BlockId, ValueSet)> {
     let ends = block.end.successors();
     let mut leaving = Vec::new();
     for node in &block.nodes {
-        if let Node::IntegerBinary {
-            fallback: Some(fallback),
-            ..
-        } = node
-        {
-            if !ends.contains(fallback) {
-                leaving.push((*fallback, set.clone()));
+        if let Some(fallback) = node.fallback() {
+            if !ends.contains(&fallback) {
+                leaving.push((fallback, set.clone()));
             }
         }
         apply(node, &mut set);
@@ -793,6 +785,7 @@ mod tests {
                         left: ValueId(0),
                         right: ValueId(1),
                         fallback: Some(BlockId(2)),
+                        mixed: None,
                     },
                 ],
                 End::Jump(BlockId(1)),

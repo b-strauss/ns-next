@@ -4778,6 +4778,135 @@ fn a_float_boxed_with_eden_full_is_the_leaf_s() {
     }
 }
 
+/// `source`'s `run` sent `runs` times to one instance, the JIT on or
+/// off, under the optimize stress mode (`Interpreter::set_optimize_stress`),
+/// which optimizes every body run twice: the answers, what the JIT did
+/// over all the runs, and what it did in the last.
+fn run_optimize_stressed(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+    runs: usize,
+) -> (Vec<i64>, JitStatistics, JitStatistics) {
+    let (mut interpreter, class) = load_with(source, lowering);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_stress(jit);
+    interpreter.set_jit_counting(jit);
+    interpreter.set_optimize_stress(jit);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let before = interpreter.jit_statistics();
+    let mut last = before;
+    let mut answers = Vec::new();
+    for _ in 0..runs {
+        last = interpreter.jit_statistics();
+        answers.push(send_unary(&mut interpreter, &subject, "run"));
+    }
+    let after = interpreter.jit_statistics();
+    (answers, since(after, before), since(after, last))
+}
+
+/// A body's two points orbiting a centre, as NBody's `advance:` moves
+/// them: every operand and result a `Float` -- `+ - * /`, `sqrt`, `<`, a
+/// `SmallInteger` receiver's `*` with a `Float` and `Number`'s `/`,
+/// `rounded` and `asInteger` -- in one loop.
+const FLOAT_ORBIT: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          x ::= 0.5.
+          y ::= 1.25.
+          velocityX ::= 0.01.
+          velocityY ::= -0.02.
+          distance ::= 1.0.
+          energy ::= 0.0.
+          scaled ::= 0.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 2000] whileTrue: [
+          distance:: (x * x + (y * y)) sqrt.
+          velocityX:: velocityX - (x * 0.01 / distance).
+          velocityY:: velocityY - (y * 0.01 / distance).
+          x:: x + (velocityX * 0.01).
+          y:: y + (velocityY * 0.01).
+          energy:: energy + (velocityX * velocityX + (velocityY * velocityY) * 0.5)
+            - (1.0 / distance) + (index * 0.000001) + (index / 1000000.0).
+          energy < 0.0 ifTrue: [count:: count + 1].
+          scaled:: (energy * 1000.0) rounded asInteger.
+          index:: index + 1.
+        ].
+        ^count + scaled.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Under the optimize stress mode `run` is optimized, its every float
+    /// operation a node of its copy: past the optimization the loop sends
+    /// nothing through a cell, calls no leaf and never leaves its machine
+    /// code, and the answers are the interpreter's.
+    fn an_optimized_float_loop_sends_nothing(lowering) {
+        let (compiled, statistics, last) =
+            run_optimize_stressed(FLOAT_ORBIT, lowering, true, 6);
+        let (interpreted, _, _) = run_optimize_stressed(FLOAT_ORBIT, lowering, false, 6);
+        assert_eq!(compiled, interpreted);
+        assert!(interpreted[0] != 0, "{interpreted:?}");
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(statistics.optimized_bodies >= 1, "{statistics:?}");
+            assert_eq!(last.compiled_calls, 0, "no send reached a cell: {last:?}");
+            assert_eq!(last.leaf_calls, 0, "no leaf was called: {last:?}");
+            assert_eq!(last.optimized_exits, 0, "nothing trapped: {last:?}");
+            assert_eq!(last.send_exits, 0, "{last:?}");
+        }
+    }
+}
+
+/// A loop whose `Float` operations take a `Float` until its 1500th turn,
+/// and then a `String` -- which `=` answers `false` for -- and a
+/// `LargeInteger` -- which `+` takes in the row's leaf.
+const FLOATS_TURNING_INTO_STRINGS: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          value ::= 0.5.
+          other ::= 0.25.
+          addend ::= 1.0.
+          scaled ::= 0.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 2000] whileTrue: [
+          index = 1500 ifTrue: [
+            other:: 'a string'.
+            addend:: 1000000000000000000000.
+          ].
+          value:: value * 1.0001 + addend.
+          value = other ifFalse: [count:: count + 1].
+          scaled:: (value / 1.0e18) truncated asInteger.
+          index:: index + 1.
+        ].
+        ^count + scaled.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A float operation whose operand turns into one it does not take
+    /// traps, running its send again in the interpreter, whose leaf
+    /// decides: every run answers what the interpreter's does.
+    fn a_float_node_s_trap_deoptimizes_exactly(lowering) {
+        let (compiled, statistics, _) =
+            run_optimize_stressed(FLOATS_TURNING_INTO_STRINGS, lowering, true, 3);
+        let (interpreted, _, _) =
+            run_optimize_stressed(FLOATS_TURNING_INTO_STRINGS, lowering, false, 3);
+        assert_eq!(compiled, interpreted);
+        assert!(interpreted[0] > 2000, "{interpreted:?}");
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(statistics.traps >= 1, "a float operation trapped: {statistics:?}");
+        }
+    }
+}
+
 /// A public setter sent a thousand times from a compiled loop, of field
 /// 0 and of a field holding Arrays: its cell names the setter stub, which
 /// stores through the inline barrier.

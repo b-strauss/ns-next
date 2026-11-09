@@ -59,6 +59,7 @@ use crate::builtins::primitive::{
 };
 use crate::bytecode::IntegerOperation;
 use crate::heap::{ApplicationIndex, Immediate};
+use crate::jit::floats::{FloatOperation, FloatReceiver};
 use crate::mixin::{DispatchId, QuickConstant};
 
 use super::graph::{
@@ -769,6 +770,17 @@ enum Expressed {
     IndexedStore(IndexedKind),
     /// `SmallInteger` arithmetic or comparison.
     Integer(IntegerOperation),
+    /// A `Float` row's operation, or a `SmallInteger` receiver's mixed
+    /// one that has no `SmallInteger` fast path: `Number`'s `/` and
+    /// `Integer`'s `asFloat`.
+    Float(FloatOperation),
+    /// A `SmallInteger` receiver's arithmetic or comparison whose row also
+    /// takes a `Float` argument: the fast path, and the mixed operation
+    /// where it fails (`Node::IntegerBinary`'s `mixed`).
+    IntegerOrMixedFloat {
+        integer: IntegerOperation,
+        float: FloatOperation,
+    },
 }
 
 /// A step and where it comes from: its scope, and its program counter in
@@ -1395,7 +1407,8 @@ impl Laying<'_, '_> {
     /// tables name, which no simple node reads, and `^<parameter> value`
     /// and `cull:` activate a block, a scope of its own: both are sent.
     /// `SmallInteger` arithmetic is not expressed at a fast path's
-    /// fallback send, where the same test already failed.
+    /// fallback send, where the same test already failed: there a row
+    /// that also takes a `Float` argument is its mixed operation alone.
     fn expressed(
         &self,
         snapshot: &Snapshot,
@@ -1434,10 +1447,15 @@ impl Laying<'_, '_> {
                 Expressed::Parameter(usize::from(position))
             }
             AlwaysInlined::Primitive(primitive) => {
-                return expressed_primitive(primitive, argument_count, checks).filter(|expressed| {
-                    !matches!(expressed, Expressed::Integer(_))
-                        || !is_fallback_send(snapshot, program_counter)
-                })
+                let expressed = expressed_primitive(primitive, argument_count, checks)?;
+                if !is_fallback_send(snapshot, program_counter) {
+                    return Some(expressed);
+                }
+                return match expressed {
+                    Expressed::Integer(_) => None,
+                    Expressed::IntegerOrMixedFloat { float, .. } => Some(Expressed::Float(float)),
+                    other => Some(other),
+                };
             }
             AlwaysInlined::SlotLoad { .. }
             | AlwaysInlined::SlotStore { .. }
@@ -1757,12 +1775,19 @@ impl Laying<'_, '_> {
 
 /// What the graph expresses of the leaf `primitive` sent with
 /// `argument_count` arguments, `checks` saying whether a callee with a
-/// check is expressed (`Laying::expressed`): only `class` has none.
+/// check is expressed (`Laying::expressed`): only `class` has none. A
+/// `SmallInteger` row that also takes a `Float` argument is both its
+/// fast path and its mixed operation; every other row machine code
+/// computes a float operation of is that operation (`FloatOperation::of`),
+/// whose arm the plan takes only for the receivers its row's operation
+/// is for (`plan::expressed`).
 fn expressed_primitive(
     primitive: Primitive,
     argument_count: usize,
     checks: bool,
 ) -> Option<Expressed> {
+    let float = FloatOperation::of(primitive)
+        .filter(|operation| operation.argument_count() == argument_count);
     let expressed = match (primitive, argument_count) {
         (Primitive::Object(ObjectPrimitive::Class), 0) => return Some(Expressed::ClassOf),
         (Primitive::Object(ObjectPrimitive::Identical), 1) => Expressed::Identity,
@@ -1789,10 +1814,34 @@ fn expressed_primitive(
             IntegerPrimitive::GreaterOrEqual => IntegerOperation::GreaterOrEqual,
             IntegerPrimitive::Equal => IntegerOperation::Equal,
             _ => return None,
-        }),
-        _ => return None,
+        })
+        .mixed_with(float),
+        _ => Expressed::Float(float?),
     };
     checks.then_some(expressed)
+}
+
+impl Expressed {
+    /// An integer fast path whose row also takes a `Float` argument: the
+    /// fast path, then the mixed operation (`IntegerOrMixedFloat`).
+    fn mixed_with(self, float: Option<FloatOperation>) -> Expressed {
+        match (self, float) {
+            (
+                Expressed::Integer(integer),
+                Some(
+                    float @ (FloatOperation::Arithmetic {
+                        receiver: FloatReceiver::SmallInteger,
+                        ..
+                    }
+                    | FloatOperation::Compare {
+                        receiver: FloatReceiver::SmallInteger,
+                        ..
+                    }),
+                ),
+            ) => Expressed::IntegerOrMixedFloat { integer, float },
+            (expressed, _) => expressed,
+        }
+    }
 }
 
 /// Whether the send at `program_counter` of `snapshot` is an integer fast
@@ -3057,6 +3106,7 @@ impl<'flat> Builder<'flat> {
                     left,
                     right,
                     fallback,
+                    mixed: None,
                 });
                 self.bind(state, destination, value);
                 None
@@ -3360,6 +3410,34 @@ impl<'flat> Builder<'flat> {
                     value,
                     left: receiver,
                     right: argument(0),
+                    fallback: None,
+                    mixed: None,
+                });
+                value
+            }
+            Expressed::IntegerOrMixedFloat { integer, float } => {
+                let value = self.new_value(None);
+                self.blocks[block].nodes.push(Node::IntegerBinary {
+                    operation: integer,
+                    program_counter,
+                    destination_register: always.destination,
+                    value,
+                    left: receiver,
+                    right: argument(0),
+                    fallback: None,
+                    mixed: Some(float),
+                });
+                value
+            }
+            Expressed::Float(operation) => {
+                let value = self.new_value(None);
+                self.blocks[block].nodes.push(Node::FloatOperation {
+                    operation,
+                    program_counter,
+                    destination_register: always.destination,
+                    value,
+                    receiver,
+                    argument: (operation.argument_count() == 1).then(|| argument(0)),
                     fallback: None,
                 });
                 value
@@ -6127,5 +6205,129 @@ pub(crate) mod inlining_tests {
         }
         assert!(inlined > 0 && type_cases > 0);
         assert!(always.iter().all(|count| *count > 0), "{always:?}");
+    }
+
+    /// `add:` sends `+` to a `Float` with a `Float` argument: its fast
+    /// path fails, and its fallback send's one cached arm is `Float>>+`.
+    const FLOATS: &str = indoc! {"
+        class Floats = () (
+          public add: number = (
+            ^number + 1.5
+          )
+          public run = (
+            ^self add: 2.5
+          )
+        )
+    "};
+
+    /// The float operations of `graph`.
+    fn float_operations(graph: &Graph) -> Vec<&Node> {
+        graph
+            .blocks
+            .iter()
+            .flat_map(|block| &block.nodes)
+            .filter(|node| matches!(node, Node::FloatOperation { .. }))
+            .collect()
+    }
+
+    /// A type-case arm of a `Float` receiver whose callee is `Float>>+`
+    /// is the float operation, at its send, of the receiver and the
+    /// argument: no send, and no interrupt point on its way.
+    #[test]
+    fn a_float_arm_is_a_float_operation_node() {
+        use crate::jit::floats::{FloatOperation, FloatReceiver};
+        use ns_assembler::FloatArithmetic;
+        let tree = tree_of_run(FLOATS, "add:");
+        let (_, graph) = built(&tree);
+        let send = send_of(&tree.root, "+");
+        let [Node::FloatOperation {
+            operation,
+            program_counter,
+            argument,
+            ..
+        }] = float_operations(&graph)[..]
+        else {
+            panic!("one float operation: {graph:#?}");
+        };
+        assert_eq!(
+            *operation,
+            FloatOperation::Arithmetic {
+                operation: FloatArithmetic::Add,
+                receiver: FloatReceiver::Float,
+            }
+        );
+        assert_eq!(*program_counter, send);
+        assert!(argument.is_some());
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .flat_map(|block| &block.nodes)
+                .all(|node| !matches!(node, Node::Frame { .. })),
+            "nothing is sent: {graph:#?}"
+        );
+    }
+
+    /// A float operation at a site that never trapped has no fallback
+    /// block: its decline traps, running the send again; at a site that
+    /// trapped the arm is its send, whose cell's stub decides.
+    #[test]
+    fn a_never_trapped_float_site_traps() {
+        let mut tree = tree_of_run(FLOATS, "add:");
+        let send = send_of(&tree.root, "+");
+        let (_, graph) = built(&tree);
+        let [node] = float_operations(&graph)[..] else {
+            panic!("one float operation: {graph:#?}");
+        };
+        assert!(matches!(node, Node::FloatOperation { fallback: None, .. }));
+        assert_eq!(node.trap(), Some(send));
+        tree.root.sites[send as usize]
+            .as_mut()
+            .expect("a site")
+            .trapped = true;
+        let (_, graph) = built(&tree);
+        assert!(float_operations(&graph).is_empty(), "{graph:#?}");
+    }
+
+    /// A `SmallInteger` row that also takes a `Float` argument is its fast
+    /// path and its mixed operation; `//`, which has no mixed row, is the
+    /// fast path alone; `asFloat` and `Number`'s `/` are float operations.
+    #[test]
+    fn a_small_integer_row_with_a_mixed_counterpart_is_both() {
+        use super::{expressed_primitive, Expressed};
+        use crate::builtins::primitive::{IntegerPrimitive, NumberPrimitive, Primitive};
+        use crate::bytecode::IntegerOperation;
+        use crate::jit::floats::{FloatComparison, FloatOperation, FloatReceiver};
+        use ns_assembler::FloatArithmetic;
+        assert_eq!(
+            expressed_primitive(Primitive::Integer(IntegerPrimitive::Less), 1, true),
+            Some(Expressed::IntegerOrMixedFloat {
+                integer: IntegerOperation::Less,
+                float: FloatOperation::Compare {
+                    comparison: FloatComparison::Less,
+                    receiver: FloatReceiver::SmallInteger,
+                },
+            })
+        );
+        assert_eq!(
+            expressed_primitive(Primitive::Integer(IntegerPrimitive::FloorDivide), 1, true),
+            Some(Expressed::Integer(IntegerOperation::FloorDivide))
+        );
+        assert_eq!(
+            expressed_primitive(Primitive::Integer(IntegerPrimitive::AsFloat), 0, true),
+            Some(Expressed::Float(FloatOperation::IntegerAsFloat))
+        );
+        assert_eq!(
+            expressed_primitive(Primitive::Number(NumberPrimitive::Divide), 1, true),
+            Some(Expressed::Float(FloatOperation::Arithmetic {
+                operation: FloatArithmetic::Divide,
+                receiver: FloatReceiver::SmallInteger,
+            }))
+        );
+        assert_eq!(
+            expressed_primitive(Primitive::Number(NumberPrimitive::Divide), 1, false),
+            None,
+            "a copy that speculates nothing sends it"
+        );
     }
 }
