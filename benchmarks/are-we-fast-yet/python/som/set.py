@@ -1,7 +1,7 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/set.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/set.py).
+# Changed for ns-next: names are written out.
 
 # This code is based on the SOM class library.
 #
@@ -44,14 +44,14 @@ class Set:
     def get_one(self, block):
         self._items.get_one(block)
 
-    def add(self, obj):
-        if not self.contains(obj):
-            self._items.append(obj)
+    def add(self, element):
+        if not self.contains(element):
+            self._items.append(element)
 
     def collect(self, block):
-        coll = Vector()
-        self.for_each(lambda e: coll.append(block(e)))
-        return coll
+        collection = Vector()
+        self.for_each(lambda each: collection.append(block(each)))
+        return collection
 
-    def contains(self, obj):
-        return self.has_some(lambda it: it == obj)
+    def contains(self, element):
+        return self.has_some(lambda each: each == element)

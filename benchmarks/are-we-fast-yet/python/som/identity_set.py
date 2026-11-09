@@ -1,7 +1,7 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/identity_set.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/identity_set.py).
+# Changed for ns-next: names are written out.
 
 # This code is based on the SOM class library.
 #
@@ -28,5 +28,5 @@ from som.set import Set
 
 
 class IdentitySet(Set):
-    def contains(self, obj):
-        return self.has_some(lambda it: it is obj)
+    def contains(self, element):
+        return self.has_some(lambda each: each is element)

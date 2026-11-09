@@ -1,7 +1,7 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
-# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/dictionary.py),
-# unchanged.
+# 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/dictionary.py).
+# Changed for ns-next: names are written out.
 
 # This code is based on the SOM class library.
 #
@@ -59,40 +59,40 @@ class Dictionary:
     def is_empty(self):
         return self._size == 0
 
-    def _get_bucket_idx(self, hash_):
+    def _get_bucket_index(self, hash_):
         return (len(self._buckets) - 1) & hash_
 
     def _get_bucket(self, hash_):
-        return self._buckets[self._get_bucket_idx(hash_)]
+        return self._buckets[self._get_bucket_index(hash_)]
 
     def at(self, key):
         hash_ = _hash(key)
-        e = self._get_bucket(hash_)
+        entry = self._get_bucket(hash_)
 
-        while e is not None:
-            if e.match(hash_, key):
-                return e.value
-            e = e.next
+        while entry is not None:
+            if entry.match(hash_, key):
+                return entry.value
+            entry = entry.next
         return None
 
     def contains_key(self, key):
         hash_ = _hash(key)
-        e = self._get_bucket(hash_)
+        entry = self._get_bucket(hash_)
 
-        while e is not None:
-            if e.match(hash_, key):
+        while entry is not None:
+            if entry.match(hash_, key):
                 return True
-            e = e.next
+            entry = entry.next
         return False
 
     def at_put(self, key, value):
         hash_ = _hash(key)
-        i = self._get_bucket_idx(hash_)
+        index = self._get_bucket_index(hash_)
 
-        current = self._buckets[i]
+        current = self._buckets[index]
 
         if current is None:
-            self._buckets[i] = self._new_entry(key, value, hash_)
+            self._buckets[index] = self._new_entry(key, value, hash_)
             self._size += 1
         else:
             self._insert_bucket_entry(key, value, hash_, current)
@@ -126,44 +126,44 @@ class Dictionary:
         self._transfer_entries(old_storage)
 
     def _transfer_entries(self, old_storage):
-        for i in range(len(old_storage)):  # pylint: disable=consider-using-enumerate
-            current = old_storage[i]
+        for index in range(len(old_storage)):  # pylint: disable=consider-using-enumerate
+            current = old_storage[index]
             if current is not None:
-                old_storage[i] = None
+                old_storage[index] = None
 
                 if current.next is None:
                     self._buckets[current.hash & (len(self._buckets) - 1)] = current
                 else:
-                    self._split_bucket(old_storage, i, current)
+                    self._split_bucket(old_storage, index, current)
 
-    def _split_bucket(self, old_storage, i, head):
-        lo_head = None
-        lo_tail = None
-        hi_head = None
-        hi_tail = None
+    def _split_bucket(self, old_storage, index, head):
+        low_head = None
+        low_tail = None
+        high_head = None
+        high_tail = None
         current = head
 
         while current is not None:
             if (current.hash & len(old_storage)) == 0:
-                if lo_tail is None:
-                    lo_head = current
+                if low_tail is None:
+                    low_head = current
                 else:
-                    lo_tail.next = current
-                lo_tail = current
+                    low_tail.next = current
+                low_tail = current
             else:
-                if hi_tail is None:
-                    hi_head = current
+                if high_tail is None:
+                    high_head = current
                 else:
-                    hi_tail.next = current
-                hi_tail = current
+                    high_tail.next = current
+                high_tail = current
             current = current.next
 
-        if lo_tail is not None:
-            lo_tail.next = None
-            self._buckets[i] = lo_head
-        if hi_tail is not None:
-            hi_tail.next = None
-            self._buckets[i + len(old_storage)] = hi_head
+        if low_tail is not None:
+            low_tail.next = None
+            self._buckets[index] = low_head
+        if high_tail is not None:
+            high_tail.next = None
+            self._buckets[index + len(old_storage)] = high_head
 
     def remove_all(self):
         self._buckets = [None] * len(self._buckets)
@@ -171,8 +171,8 @@ class Dictionary:
 
     def get_keys(self):
         keys = Vector(self._size)
-        for i in range(len(self._buckets)):
-            current = self._buckets[i]
+        for index in range(len(self._buckets)):
+            current = self._buckets[index]
             while current is not None:
                 keys.append(current.key)
                 current = current.next
@@ -180,8 +180,8 @@ class Dictionary:
 
     def get_values(self):
         values = Vector(self._size)
-        for i in range(len(self._buckets)):
-            current = self._buckets[i]
+        for index in range(len(self._buckets)):
+            current = self._buckets[index]
             while current is not None:
                 values.append(current.value)
                 current = current.next

@@ -3,8 +3,7 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/list.py).
 # Changed for ns-next: benchmark and verify_result are bench, which runs once
 # and checks its own result, raising a RuntimeError with the message of
-# benchmarks/are-we-fast-yet/List.ns; names in the benchmark class are written
-# out.
+# benchmarks/are-we-fast-yet/List.ns; names are written out.
 
 # This code is based on the SOM class library.
 #
@@ -31,8 +30,8 @@ from benchmark import Benchmark
 
 
 class Element:
-    def __init__(self, v):
-        self._val = v
+    def __init__(self, value):
+        self._value = value
         self.next = None
 
     def length(self):

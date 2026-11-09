@@ -4,7 +4,7 @@
 # Changed for ns-next: benchmark and verify_result are bench, which parses the
 # input once and checks what upstream's verify_result checks, raising a
 # RuntimeError with the messages of benchmarks/are-we-fast-yet/Json.ns, one for
-# each check.
+# each check; names are written out.
 
 # This code is derived from the SOM benchmarks, see AUTHORS.md file.
 # This benchmark is based on the minimal-json Java library maintained at:
@@ -170,45 +170,45 @@ class _Parser:
         self._read()
         array = _JsonArray()
         self._skip_white_space()
-        if self._read_char("]"):
+        if self._read_character("]"):
             return array
 
         self._read_array_element(array)
-        while self._read_char(","):
+        while self._read_character(","):
             self._read_array_element(array)
 
-        if not self._read_char("]"):
+        if not self._read_character("]"):
             raise self._expected("',' or ']'")
 
         return array
 
-    def _read_object_key_value_pair(self, obj):
+    def _read_object_key_value_pair(self, object_):
         self._skip_white_space()
         name = self._read_name()
         self._skip_white_space()
 
-        if not self._read_char(":"):
+        if not self._read_character(":"):
             raise self._expected("':'")
 
         self._skip_white_space()
-        obj.add(name, self._read_value())
+        object_.add(name, self._read_value())
         self._skip_white_space()
 
     def _read_object(self):
         self._read()
-        obj = _JsonObject()
+        object_ = _JsonObject()
         self._skip_white_space()
-        if self._read_char("}"):
-            return obj
+        if self._read_character("}"):
+            return object_
 
-        self._read_object_key_value_pair(obj)
-        while self._read_char(","):
-            self._read_object_key_value_pair(obj)
+        self._read_object_key_value_pair(object_)
+        while self._read_character(","):
+            self._read_object_key_value_pair(object_)
 
-        if not self._read_char("}"):
+        if not self._read_character("}"):
             raise self._expected("',' or '}'")
 
-        return obj
+        return object_
 
     def _read_name(self):
         if self._current != '"':
@@ -217,29 +217,29 @@ class _Parser:
 
     def _read_null(self):
         self._read()
-        self._read_required_char("u")
-        self._read_required_char("l")
-        self._read_required_char("l")
+        self._read_required_character("u")
+        self._read_required_character("l")
+        self._read_required_character("l")
         return _LITERAL_NULL
 
     def _read_true(self):
         self._read()
-        self._read_required_char("r")
-        self._read_required_char("u")
-        self._read_required_char("e")
+        self._read_required_character("r")
+        self._read_required_character("u")
+        self._read_required_character("e")
         return _LITERAL_TRUE
 
     def _read_false(self):
         self._read()
-        self._read_required_char("a")
-        self._read_required_char("l")
-        self._read_required_char("s")
-        self._read_required_char("e")
+        self._read_required_character("a")
+        self._read_required_character("l")
+        self._read_required_character("s")
+        self._read_required_character("e")
         return _LITERAL_FALSE
 
-    def _read_required_char(self, ch):
-        if not self._read_char(ch):
-            raise self._expected("'" + ch + "'")
+    def _read_required_character(self, character):
+        if not self._read_character(character):
+            raise self._expected("'" + character + "'")
 
     def _read_string(self):
         return _JsonString(self._read_string_internal())
@@ -258,7 +258,7 @@ class _Parser:
         self._read()
         return string
 
-    def _read_escape_char(self):
+    def _read_escape_character(self):
         if self._current == '"':
             return '"'
         if self._current == "/":
@@ -279,12 +279,12 @@ class _Parser:
 
     def _read_escape(self):
         self._read()
-        self._capture_buffer += self._read_escape_char()
+        self._capture_buffer += self._read_escape_character()
         self._read()
 
     def _read_number(self):
         self._start_capture()
-        self._read_char("-")
+        self._read_character("-")
         first_digit = self._current
         if not self._read_digit():
             raise self._expected("digit")
@@ -298,7 +298,7 @@ class _Parser:
         return _JsonNumber(self._end_capture())
 
     def _read_fraction(self):
-        if not self._read_char("."):
+        if not self._read_character("."):
             return False
 
         if not self._read_digit():
@@ -310,11 +310,11 @@ class _Parser:
         return True
 
     def _read_exponent(self):
-        if not self._read_char("e") and not self._read_char("E"):
+        if not self._read_character("e") and not self._read_character("E"):
             return False
 
-        if not self._read_char("+"):
-            return self._read_char("-")
+        if not self._read_character("+"):
+            return self._read_character("-")
 
         if self._read_digit():
             raise self._expected("digit")
@@ -324,8 +324,8 @@ class _Parser:
 
         return True
 
-    def _read_char(self, ch):
-        if self._current != ch:
+    def _read_character(self, character):
+        if self._current != character:
             return False
         self._read()
         return True
@@ -426,10 +426,10 @@ class _HashIndexTable:
         return (self._hash_table[slot] & 0xFF) - 1
 
     @staticmethod
-    def _string_hash(s):
+    def _string_hash(string):
         # this is not a proper hash, but sufficient for the benchmark,
         # and very portable!
-        return len(s) * 1_402_589
+        return len(string) * 1_402_589
 
     def _hash_slot_for(self, element):
         return self._string_hash(element) & len(self._hash_table) - 1

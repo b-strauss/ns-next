@@ -5,7 +5,7 @@
 # bench, which runs once at benchmarks/are-we-fast-yet/Mandelbrot.ns's size,
 # 750, and checks its result, 50, raising a RuntimeError with that port's
 # message; the checks for upstream's other sizes, 500 and 1, and the printing
-# of an unknown size's result are dropped.
+# of an unknown size's result are dropped; names are written out.
 
 # This benchmark has been modified based on the SOM benchmark.
 #
@@ -61,49 +61,49 @@ class Mandelbrot(Benchmark):
     @staticmethod
     def _mandelbrot(size):
         _sum = 0
-        byte_acc = 0
-        bit_num = 0
+        byte_accumulator = 0
+        bit_number = 0
 
-        y = 0
+        row = 0
 
-        while y < size:
-            ci = (2.0 * y / size) - 1.0
-            x = 0
+        while row < size:
+            imaginary_constant = (2.0 * row / size) - 1.0
+            column = 0
 
-            while x < size:
-                zrzr = 0.0
-                zi = 0.0
-                zizi = 0.0
-                cr = (2.0 * x / size) - 1.5
+            while column < size:
+                real_squared = 0.0
+                imaginary = 0.0
+                imaginary_squared = 0.0
+                real_constant = (2.0 * column / size) - 1.5
 
-                z = 0
+                iteration = 0
                 not_done = True
                 escape = 0
-                while not_done and z < 50:
-                    zr = zrzr - zizi + cr
-                    zi = 2.0 * zr * zi + ci
+                while not_done and iteration < 50:
+                    real = real_squared - imaginary_squared + real_constant
+                    imaginary = 2.0 * real * imaginary + imaginary_constant
 
-                    zrzr = zr * zr
-                    zizi = zi * zi
+                    real_squared = real * real
+                    imaginary_squared = imaginary * imaginary
 
-                    if zrzr + zizi > 4.0:
+                    if real_squared + imaginary_squared > 4.0:
                         not_done = False
                         escape = 1
-                    z += 1
+                    iteration += 1
 
-                byte_acc = (byte_acc << 1) + escape
-                bit_num = bit_num + 1
+                byte_accumulator = (byte_accumulator << 1) + escape
+                bit_number = bit_number + 1
 
-                if bit_num == 8:
-                    _sum ^= byte_acc
-                    byte_acc = 0
-                    bit_num = 0
-                elif x == size - 1:
-                    byte_acc <<= 8 - bit_num
-                    _sum ^= byte_acc
-                    byte_acc = 0
-                    bit_num = 0
-                x += 1
-            y += 1
+                if bit_number == 8:
+                    _sum ^= byte_accumulator
+                    byte_accumulator = 0
+                    bit_number = 0
+                elif column == size - 1:
+                    byte_accumulator <<= 8 - bit_number
+                    _sum ^= byte_accumulator
+                    byte_accumulator = 0
+                    bit_number = 0
+                column += 1
+            row += 1
 
         return _sum

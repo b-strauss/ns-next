@@ -6,7 +6,9 @@
 # 1500 dummy loops, 50 loop-finding iterations and 10, 10 and 5 nested loops,
 # as upstream runs it at that size, and checks 6102 loops in 5213 nodes,
 # raising a RuntimeError with that port's message; the checks for upstream's
-# other sizes and the printing of an unknown size's result are dropped.
+# other sizes and the printing of an unknown size's result are dropped; names
+# are written out, as in java/havlak/, the basic block kinds included
+# (BB_NONHEADER is NON_HEADER, BB_SELF is SELF_LOOP, and so on).
 
 # Adapted based on SOM benchmark.
 # Copyright 2011 Google Inc.
@@ -54,28 +56,28 @@ class _BasicBlock:
         self.in_edges = Vector(2)
         self.out_edges = Vector(2)
 
-    def get_num_pred(self):
+    def get_predecessor_count(self):
         return self.in_edges.size()
 
-    def add_out_edge(self, to):
-        self.out_edges.append(to)
+    def add_out_edge(self, to_block):
+        self.out_edges.append(to_block)
 
-    def add_in_edge(self, from_):
-        self.in_edges.append(from_)
+    def add_in_edge(self, from_block):
+        self.in_edges.append(from_block)
 
     def custom_hash(self):
         return self._name
 
 
 class _BasicBlockEdge:
-    def __init__(self, cfg, from_name, to_name):
-        self._from = cfg.create_node(from_name)
-        self._to = cfg.create_node(to_name)
+    def __init__(self, control_flow_graph, from_name, to_name):
+        self._from_block = control_flow_graph.create_node(from_name)
+        self._to_block = control_flow_graph.create_node(to_name)
 
-        self._from.add_out_edge(self._to)
-        self._to.add_in_edge(self._from)
+        self._from_block.add_out_edge(self._to_block)
+        self._to_block.add_in_edge(self._from_block)
 
-        cfg.add_edge(self)
+        control_flow_graph.add_edge(self)
 
 
 class _ControlFlowGraph:
@@ -91,14 +93,14 @@ class _ControlFlowGraph:
             node = _BasicBlock(name)
             self.basic_blocks.at_put(name, node)
 
-        if self.num_nodes() == 1:
+        if self.get_node_count() == 1:
             self.start_basic_block = node
         return node
 
     def add_edge(self, edge):
         self._edge_list.append(edge)
 
-    def num_nodes(self):
+    def get_node_count(self):
         return self.basic_blocks.size()
 
 
@@ -112,37 +114,37 @@ class _LoopStructureGraph:
         self._loop_counter += 1
         self._loops.append(self._root)
 
-    def create_new_loop(self, bb, is_reducible):
-        loop = _SimpleLoop(bb, is_reducible)
+    def create_new_loop(self, basic_block, is_reducible):
+        loop = _SimpleLoop(basic_block, is_reducible)
         loop.counter = self._loop_counter
         self._loop_counter += 1
         self._loops.append(loop)
         return loop
 
     def calculate_nesting_level(self):
-        def each(liter):
-            if not liter.is_root:
-                if liter.parent is None:
-                    liter.set_parent(self._root)
+        def each(loop):
+            if not loop.is_root:
+                if loop.parent is None:
+                    loop.set_parent(self._root)
 
         self._loops.for_each(each)
-        self._calculate_nesting_level_rec(self._root, 0)
+        self._calculate_nesting_level_recursive(self._root, 0)
 
-    def _calculate_nesting_level_rec(self, loop, depth):
+    def _calculate_nesting_level_recursive(self, loop, depth):
         loop.depth_level = depth
 
-        def each(liter):
-            self._calculate_nesting_level_rec(liter, depth + 1)
-            loop.set_nesting_level(max(loop.nesting_level, 1 + liter.nesting_level))
+        def each(child):
+            self._calculate_nesting_level_recursive(child, depth + 1)
+            loop.set_nesting_level(max(loop.nesting_level, 1 + child.nesting_level))
 
         loop.children.for_each(each)
 
-    def num_loops(self):
+    def get_loop_count(self):
         return self._loops.size()
 
 
 class _SimpleLoop:
-    def __init__(self, bb, is_reducible):
+    def __init__(self, basic_block, is_reducible):
         self._is_reducible = is_reducible
         self.parent = None
         self.is_root = False
@@ -152,13 +154,13 @@ class _SimpleLoop:
         self._basic_blocks = IdentitySet()
         self.children = IdentitySet()
 
-        if bb is not None:
-            self._basic_blocks.add(bb)
+        if basic_block is not None:
+            self._basic_blocks.add(basic_block)
 
-        self._header = bb
+        self._header = basic_block
 
-    def add_node(self, bb):
-        self._basic_blocks.add(bb)
+    def add_node(self, basic_block):
+        self._basic_blocks.add(basic_block)
 
     def add_child_loop(self, loop):
         self.children.add(loop)
@@ -176,14 +178,14 @@ class _SimpleLoop:
 class _UnionFindNode:
     def __init__(self):
         self.parent = None
-        self.bb = None
-        self.dfs_number = 0
+        self.basic_block = None
+        self.depth_first_number = 0
         self.loop = None
 
-    def init_node(self, bb, dfs_number):
+    def initialize_node(self, basic_block, depth_first_number):
         self.parent = self
-        self.bb = bb
-        self.dfs_number = dfs_number
+        self.basic_block = basic_block
+        self.depth_first_number = depth_first_number
         self.loop = None
 
     def find_set(self):
@@ -195,7 +197,7 @@ class _UnionFindNode:
                 node_list.append(node)
             node = node.parent
 
-        node_list.for_each(lambda i: i.union(self.parent))
+        node_list.for_each(lambda each: each.union(self.parent))
         return node
 
     def union(self, basic_block):
@@ -204,107 +206,107 @@ class _UnionFindNode:
 
 class _LoopTesterApp:
     def __init__(self):
-        self._cfg = _ControlFlowGraph()
-        self._lsg = _LoopStructureGraph()
-        self._cfg.create_node(0)
+        self._control_flow_graph = _ControlFlowGraph()
+        self._loop_structure_graph = _LoopStructureGraph()
+        self._control_flow_graph.create_node(0)
 
     def _build_diamond(self, start):
-        bb0 = start
-        _BasicBlockEdge(self._cfg, bb0, bb0 + 1)
-        _BasicBlockEdge(self._cfg, bb0, bb0 + 2)
-        _BasicBlockEdge(self._cfg, bb0 + 1, bb0 + 3)
-        _BasicBlockEdge(self._cfg, bb0 + 2, bb0 + 3)
-        return bb0 + 3
+        basic_block = start
+        _BasicBlockEdge(self._control_flow_graph, basic_block, basic_block + 1)
+        _BasicBlockEdge(self._control_flow_graph, basic_block, basic_block + 2)
+        _BasicBlockEdge(self._control_flow_graph, basic_block + 1, basic_block + 3)
+        _BasicBlockEdge(self._control_flow_graph, basic_block + 2, basic_block + 3)
+        return basic_block + 3
 
     def _build_connect(self, start, end_):
-        _BasicBlockEdge(self._cfg, start, end_)
+        _BasicBlockEdge(self._control_flow_graph, start, end_)
 
-    def _build_straight(self, start, n):
-        for i in range(n):
-            self._build_connect(start + i, start + i + 1)
-        return start + n
+    def _build_straight(self, start, length):
+        for index in range(length):
+            self._build_connect(start + index, start + index + 1)
+        return start + length
 
     def _build_base_loop(self, from_):
         header = self._build_straight(from_, 1)
-        diamond1 = self._build_diamond(header)
-        d11 = self._build_straight(diamond1, 1)
-        diamond2 = self._build_diamond(d11)
-        footer = self._build_straight(diamond2, 1)
-        self._build_connect(diamond2, d11)
-        self._build_connect(diamond1, header)
+        first_diamond = self._build_diamond(header)
+        between = self._build_straight(first_diamond, 1)
+        second_diamond = self._build_diamond(between)
+        footer = self._build_straight(second_diamond, 1)
+        self._build_connect(second_diamond, between)
+        self._build_connect(first_diamond, header)
 
         self._build_connect(footer, from_)
         footer = self._build_straight(footer, 1)
         return footer
 
     def main(
-        self, num_dummy_loops, find_loop_iterations, par_loops, ppar_loops, pppar_loops
+        self, dummy_loop_count, find_loop_iterations, parallel_loops, nested_loops, base_loops
     ):
-        self._construct_simple_cfg()
-        self._add_dummy_loops(num_dummy_loops)
-        self._construct_cfg(par_loops, ppar_loops, pppar_loops)
+        self._construct_simple_control_flow_graph()
+        self._add_dummy_loops(dummy_loop_count)
+        self._construct_control_flow_graph(parallel_loops, nested_loops, base_loops)
 
-        self._find_loops(self._lsg)
+        self._find_loops(self._loop_structure_graph)
         for _ in range(find_loop_iterations):
             self._find_loops(_LoopStructureGraph())
 
-        self._lsg.calculate_nesting_level()
-        return [self._lsg.num_loops(), self._cfg.num_nodes()]
+        self._loop_structure_graph.calculate_nesting_level()
+        return [self._loop_structure_graph.get_loop_count(), self._control_flow_graph.get_node_count()]
 
-    def _construct_cfg(self, par_loops, ppar_loops, pppar_loops):
-        n = 2
+    def _construct_control_flow_graph(self, parallel_loops, nested_loops, base_loops):
+        current = 2
 
-        for _ in range(par_loops):
-            self._cfg.create_node(n + 1)
-            self._build_connect(2, n + 1)
-            n += 1
+        for _ in range(parallel_loops):
+            self._control_flow_graph.create_node(current + 1)
+            self._build_connect(2, current + 1)
+            current += 1
 
-            for _ in range(ppar_loops):
-                top = n
-                n = self._build_straight(n, 1)
-                for _ in range(pppar_loops):
-                    n = self._build_base_loop(n)
-                bottom = self._build_straight(n, 1)
-                self._build_connect(n, top)
-                n = bottom
+            for _ in range(nested_loops):
+                top = current
+                current = self._build_straight(current, 1)
+                for _ in range(base_loops):
+                    current = self._build_base_loop(current)
+                bottom = self._build_straight(current, 1)
+                self._build_connect(current, top)
+                current = bottom
 
-            self._build_connect(n, 1)
+            self._build_connect(current, 1)
 
-    def _add_dummy_loops(self, num_dummy_loops):
-        for _ in range(num_dummy_loops):
-            self._find_loops(self._lsg)
+    def _add_dummy_loops(self, dummy_loop_count):
+        for _ in range(dummy_loop_count):
+            self._find_loops(self._loop_structure_graph)
 
     def _find_loops(self, loop_structure):
-        finder = _HavlakLoopFinder(self._cfg, loop_structure)
+        finder = _HavlakLoopFinder(self._control_flow_graph, loop_structure)
         finder.find_loops()
 
-    def _construct_simple_cfg(self):
-        self._cfg.create_node(0)
+    def _construct_simple_control_flow_graph(self):
+        self._control_flow_graph.create_node(0)
         self._build_base_loop(0)
-        self._cfg.create_node(1)
-        _BasicBlockEdge(self._cfg, 0, 2)
+        self._control_flow_graph.create_node(1)
+        _BasicBlockEdge(self._control_flow_graph, 0, 2)
 
 
 _UNVISITED = 2_147_483_647
-_MAXNONBACKPREDS = 32 * 1024
+_MAX_NON_BACK_PREDECESSORS = 32 * 1024
 
 
 class _BasicBlockClass(Enum):
-    BB_TOP = 0  # uninitialized
-    BB_NONHEADER = 1  # a regular BB
-    BB_REDUCIBLE = 2  # reducible loop
-    BB_SELF = 3  # single BB loop
-    BB_IRREDUCIBLE = 4  # irreducible loop
-    BB_DEAD = 5  # a dead BB
-    BB_LAST = 6  # Sentinel
+    TOP = 0  # uninitialized
+    NON_HEADER = 1  # a regular BB
+    REDUCIBLE = 2  # reducible loop
+    SELF_LOOP = 3  # single BB loop
+    IRREDUCIBLE = 4  # irreducible loop
+    DEAD = 5  # a dead BB
+    LAST = 6  # Sentinel
 
 
 class _HavlakLoopFinder:
-    def __init__(self, cfg, lsg):
-        self._cfg = cfg
-        self._lsg = lsg
-        self._non_back_preds = Vector()
-        self._back_preds = Vector()
+    def __init__(self, control_flow_graph, loop_structure_graph):
+        self._control_flow_graph = control_flow_graph
+        self._loop_structure_graph = loop_structure_graph
+        self._non_back_predecessors = Vector()
+        self._back_predecessors = Vector()
         self._number = IdentityDictionary()
         self._max_size = 0
         self._header = None
@@ -312,11 +314,11 @@ class _HavlakLoopFinder:
         self._last = None
         self._nodes = None
 
-    def _is_ancestor(self, w, v):
-        return w <= v and v <= self._last[w]
+    def _is_ancestor(self, ancestor, descendant):
+        return ancestor <= descendant and descendant <= self._last[ancestor]
 
-    def _do_dfs(self, current_node, current):
-        self._nodes[current].init_node(current_node, current)
+    def _depth_first_search(self, current_node, current):
+        self._nodes[current].initialize_node(current_node, current)
         self._number.at_put(current_node, current)
 
         last_id = current
@@ -325,49 +327,49 @@ class _HavlakLoopFinder:
         def each(target):
             nonlocal last_id
             if self._number.at(target) == _UNVISITED:
-                last_id = self._do_dfs(target, last_id + 1)
+                last_id = self._depth_first_search(target, last_id + 1)
 
         outer_blocks.for_each(each)
 
         self._last[current] = last_id
         return last_id
 
-    def _init_all_nodes(self):
-        self._cfg.basic_blocks.for_each(lambda bb: self._number.at_put(bb, _UNVISITED))
+    def _initialize_all_nodes(self):
+        self._control_flow_graph.basic_blocks.for_each(lambda basic_block: self._number.at_put(basic_block, _UNVISITED))
 
-        self._do_dfs(self._cfg.start_basic_block, 0)
+        self._depth_first_search(self._control_flow_graph.start_basic_block, 0)
 
     def _identify_edges(self, size):
-        for w in range(size):
-            self._header[w] = 0
-            self._type[w] = _BasicBlockClass.BB_NONHEADER
+        for candidate in range(size):
+            self._header[candidate] = 0
+            self._type[candidate] = _BasicBlockClass.NON_HEADER
 
-            node_w = self._nodes[w].bb
-            if node_w is None:
-                self._type[w] = _BasicBlockClass.BB_DEAD
+            candidate_block = self._nodes[candidate].basic_block
+            if candidate_block is None:
+                self._type[candidate] = _BasicBlockClass.DEAD
             else:
-                self._process_edges(node_w, w)
+                self._process_edges(candidate_block, candidate)
 
-    def _process_edges(self, node_w, w):
-        if node_w.get_num_pred() > 0:
+    def _process_edges(self, candidate_block, candidate):
+        if candidate_block.get_predecessor_count() > 0:
 
-            def each(node_v):
-                v = self._number.at(node_v)
-                if v != _UNVISITED:
-                    if self._is_ancestor(w, v):
-                        self._back_preds.at(w).append(v)
+            def each(predecessor_block):
+                predecessor = self._number.at(predecessor_block)
+                if predecessor != _UNVISITED:
+                    if self._is_ancestor(candidate, predecessor):
+                        self._back_predecessors.at(candidate).append(predecessor)
                     else:
-                        self._non_back_preds.at(w).add(v)
+                        self._non_back_predecessors.at(candidate).add(predecessor)
 
-            node_w.in_edges.for_each(each)
+            candidate_block.in_edges.for_each(each)
 
     def find_loops(self):
-        if self._cfg.start_basic_block is None:
+        if self._control_flow_graph.start_basic_block is None:
             return
 
-        size = self._cfg.num_nodes()
-        self._non_back_preds.remove_all()
-        self._back_preds.remove_all()
+        size = self._control_flow_graph.get_node_count()
+        self._non_back_predecessors.remove_all()
+        self._back_predecessors.remove_all()
         self._number.remove_all()
 
         if size > self._max_size:
@@ -377,78 +379,78 @@ class _HavlakLoopFinder:
             self._nodes = [None] * size
             self._max_size = size
 
-        for i in range(size):
-            self._non_back_preds.append(Set())
-            self._back_preds.append(Vector())
-            self._nodes[i] = _UnionFindNode()
+        for index in range(size):
+            self._non_back_predecessors.append(Set())
+            self._back_predecessors.append(Vector())
+            self._nodes[index] = _UnionFindNode()
 
-        self._init_all_nodes()
+        self._initialize_all_nodes()
         self._identify_edges(size)
 
         self._header[0] = 0
 
-        for w in range(size - 1, -1, -1):
+        for candidate in range(size - 1, -1, -1):
             node_pool = Vector()
-            node_w = self._nodes[w].bb
-            if node_w is not None:
-                self._step_d(w, node_pool)
+            candidate_block = self._nodes[candidate].basic_block
+            if candidate_block is not None:
+                self._step_d(candidate, node_pool)
 
                 work_list = Vector()
                 node_pool.for_each(work_list.append)
 
                 if node_pool.size() != 0:
-                    self._type[w] = _BasicBlockClass.BB_REDUCIBLE
+                    self._type[candidate] = _BasicBlockClass.REDUCIBLE
 
                 while not work_list.is_empty():
-                    x = work_list.remove_first()
+                    work_node = work_list.remove_first()
 
-                    non_back_size = self._non_back_preds.at(x.dfs_number).size()
-                    if non_back_size > _MAXNONBACKPREDS:
+                    non_back_size = self._non_back_predecessors.at(work_node.depth_first_number).size()
+                    if non_back_size > _MAX_NON_BACK_PREDECESSORS:
                         return
 
-                    self._step_e_process_non_back_preds(w, node_pool, work_list, x)
+                    self._step_e_process_non_back_predecessors(candidate, node_pool, work_list, work_node)
 
-            if node_pool.size() > 0 or self._type[w] == _BasicBlockClass.BB_SELF:
-                loop = self._lsg.create_new_loop(
-                    node_w, self._type[w] != _BasicBlockClass.BB_IRREDUCIBLE
+            if node_pool.size() > 0 or self._type[candidate] == _BasicBlockClass.SELF_LOOP:
+                loop = self._loop_structure_graph.create_new_loop(
+                    candidate_block, self._type[candidate] != _BasicBlockClass.IRREDUCIBLE
                 )
-                self._set_loop_attributes(w, node_pool, loop)
+                self._set_loop_attributes(candidate, node_pool, loop)
 
-    def _step_e_process_non_back_preds(self, w, node_pool, work_list, x):
-        def each(i):
-            y = self._nodes[i]
-            ydash = y.find_set()
+    def _step_e_process_non_back_predecessors(self, candidate, node_pool, work_list, work_node):
+        def each(predecessor):
+            predecessor_node = self._nodes[predecessor]
+            representative = predecessor_node.find_set()
 
-            if not self._is_ancestor(w, ydash.dfs_number):
-                self._type[w] = _BasicBlockClass.BB_IRREDUCIBLE
-                self._non_back_preds.at(w).add(ydash.dfs_number)
+            if not self._is_ancestor(candidate, representative.depth_first_number):
+                self._type[candidate] = _BasicBlockClass.IRREDUCIBLE
+                self._non_back_predecessors.at(candidate).add(representative.depth_first_number)
             else:
-                if ydash.dfs_number != w:
-                    if not node_pool.has_some(lambda e: e == ydash):
-                        work_list.append(ydash)
-                        node_pool.append(ydash)
+                if representative.depth_first_number != candidate:
+                    if not node_pool.has_some(lambda each: each == representative):
+                        work_list.append(representative)
+                        node_pool.append(representative)
 
-        self._non_back_preds.at(x.dfs_number).for_each(each)
+        self._non_back_predecessors.at(work_node.depth_first_number).for_each(each)
 
-    def _set_loop_attributes(self, w, node_pool, loop):
-        self._nodes[w].loop = loop
+    def _set_loop_attributes(self, candidate, node_pool, loop):
+        self._nodes[candidate].loop = loop
 
         def each(node):
-            self._header[node.dfs_number] = w
-            node.union(self._nodes[w])
+            self._header[node.depth_first_number] = candidate
+            node.union(self._nodes[candidate])
 
             if node.loop is not None:
                 node.loop.set_parent(loop)
             else:
-                loop.add_node(node.bb)
+                loop.add_node(node.basic_block)
 
         node_pool.for_each(each)
 
-    def _step_d(self, w, node_pool):
-        def each(v):
-            if v != w:
-                node_pool.append(self._nodes[v].find_set())
+    def _step_d(self, candidate, node_pool):
+        def each(predecessor):
+            if predecessor != candidate:
+                node_pool.append(self._nodes[predecessor].find_set())
             else:
-                self._type[w] = _BasicBlockClass.BB_SELF
+                self._type[candidate] = _BasicBlockClass.SELF_LOOP
 
-        self._back_preds.at(w).for_each(each)
+        self._back_predecessors.at(candidate).for_each(each)

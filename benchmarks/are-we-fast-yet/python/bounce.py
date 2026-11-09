@@ -3,8 +3,7 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/bounce.py).
 # Changed for ns-next: benchmark and verify_result are bench, which runs once
 # and checks its own result, raising a RuntimeError with the message of
-# benchmarks/are-we-fast-yet/Bounce.ns; names in the benchmark class are
-# written out.
+# benchmarks/are-we-fast-yet/Bounce.ns; names are written out.
 
 # This code is based on the SOM class library.
 #
@@ -33,37 +32,37 @@ from som.random import Random
 
 class Ball:
     def __init__(self, random):
-        self._x = random.next() % 500
-        self._y = random.next() % 500
-        self._x_vel = (random.next() % 300) - 150
-        self._y_vel = (random.next() % 300) - 150
+        self._horizontal = random.next() % 500
+        self._vertical = random.next() % 500
+        self._horizontal_velocity = (random.next() % 300) - 150
+        self._vertical_velocity = (random.next() % 300) - 150
 
     def bounce(self):
-        x_limit = 500
-        y_limit = 500
+        horizontal_limit = 500
+        vertical_limit = 500
         bounced = False
 
-        self._x += self._x_vel
-        self._y += self._y_vel
+        self._horizontal += self._horizontal_velocity
+        self._vertical += self._vertical_velocity
 
-        if self._x > x_limit:
-            self._x = x_limit
-            self._x_vel = -abs(self._x_vel)
+        if self._horizontal > horizontal_limit:
+            self._horizontal = horizontal_limit
+            self._horizontal_velocity = -abs(self._horizontal_velocity)
             bounced = True
 
-        if self._x < 0:
-            self._x = 0
-            self._x_vel = abs(self._x_vel)
+        if self._horizontal < 0:
+            self._horizontal = 0
+            self._horizontal_velocity = abs(self._horizontal_velocity)
             bounced = True
 
-        if self._y > y_limit:
-            self._y = y_limit
-            self._y_vel = -abs(self._y_vel)
+        if self._vertical > vertical_limit:
+            self._vertical = vertical_limit
+            self._vertical_velocity = -abs(self._vertical_velocity)
             bounced = True
 
-        if self._y < 0:
-            self._y = 0
-            self._y_vel = abs(self._y_vel)
+        if self._vertical < 0:
+            self._vertical = 0
+            self._vertical_velocity = abs(self._vertical_velocity)
             bounced = True
 
         return bounced

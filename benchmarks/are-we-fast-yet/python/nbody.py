@@ -5,8 +5,9 @@
 # bench, which runs once at benchmarks/are-we-fast-yet/NBody.ns's size, 250000
 # steps, and checks its energy, -0.1690859889909308, raising a RuntimeError
 # with that port's message; the check for upstream's other size, 1, and the
-# printing of an unknown size's result are dropped. Upstream's file carries no
-# licence notice; its comment follows as it is.
+# printing of an unknown size's result are dropped; names are written out,
+# DAYS_PER_YER's misspelling corrected. Upstream's file carries no licence
+# notice; its comment follows as it is.
 
 # The Computer Language Benchmarks Game
 # http://shootout.alioth.debian.org/
@@ -16,25 +17,25 @@ from math import sqrt
 
 from benchmark import Benchmark
 
-PI = 3.141592653589793
-SOLAR_MASS = 4 * PI * PI
-DAYS_PER_YER = 365.24
+PI_VALUE = 3.141592653589793
+SOLAR_MASS = 4 * PI_VALUE * PI_VALUE
+DAYS_PER_YEAR = 365.24
 
 
 class _Body:
-    def __init__(self, x, y, z, vx, vy, vz, mass):
-        self.x = x
-        self.y = y
-        self.z = z
-        self.vx = vx * DAYS_PER_YER
-        self.vy = vy * DAYS_PER_YER
-        self.vz = vz * DAYS_PER_YER
+    def __init__(self, position_x, position_y, position_z, velocity_x, velocity_y, velocity_z, mass):
+        self.position_x = position_x
+        self.position_y = position_y
+        self.position_z = position_z
+        self.velocity_x = velocity_x * DAYS_PER_YEAR
+        self.velocity_y = velocity_y * DAYS_PER_YEAR
+        self.velocity_z = velocity_z * DAYS_PER_YEAR
         self.mass = mass * SOLAR_MASS
 
-    def offset_momentum(self, px, py, pz):
-        self.vx = -(px / SOLAR_MASS)
-        self.vy = -(py / SOLAR_MASS)
-        self.vz = -(pz / SOLAR_MASS)
+    def offset_momentum(self, momentum_x, momentum_y, momentum_z):
+        self.velocity_x = -(momentum_x / SOLAR_MASS)
+        self.velocity_y = -(momentum_y / SOLAR_MASS)
+        self.velocity_z = -(momentum_z / SOLAR_MASS)
 
 
 def jupiter():
@@ -97,70 +98,70 @@ class NBodySystem:
     def _create_bodies():
         bodies = [sun(), jupiter(), saturn(), uranus(), neptune()]
 
-        px = 0.0
-        py = 0.0
-        pz = 0.0
+        momentum_x = 0.0
+        momentum_y = 0.0
+        momentum_z = 0.0
 
-        for b in bodies:
-            px += b.vx * b.mass
-            py += b.vy * b.mass
-            pz += b.vz * b.mass
+        for body in bodies:
+            momentum_x += body.velocity_x * body.mass
+            momentum_y += body.velocity_y * body.mass
+            momentum_z += body.velocity_z * body.mass
 
-        bodies[0].offset_momentum(px, py, pz)
+        bodies[0].offset_momentum(momentum_x, momentum_y, momentum_z)
         return bodies
 
-    def advance(self, dt):
-        for i in range(len(self._bodies)):
-            i_body = self._bodies[i]
+    def advance(self, time_step):
+        for first in range(len(self._bodies)):
+            first_body = self._bodies[first]
 
-            for j in range(i + 1, len(self._bodies)):
-                j_body = self._bodies[j]
+            for second in range(first + 1, len(self._bodies)):
+                second_body = self._bodies[second]
 
-                dx = i_body.x - j_body.x
-                dy = i_body.y - j_body.y
-                dz = i_body.z - j_body.z
+                delta_x = first_body.position_x - second_body.position_x
+                delta_y = first_body.position_y - second_body.position_y
+                delta_z = first_body.position_z - second_body.position_z
 
-                d_squared = dx * dx + dy * dy + dz * dz
-                distance = sqrt(d_squared)
-                mag = dt / (d_squared * distance)
+                distance_squared = delta_x * delta_x + delta_y * delta_y + delta_z * delta_z
+                distance = sqrt(distance_squared)
+                magnitude = time_step / (distance_squared * distance)
 
-                i_body.vx = i_body.vx - (dx * j_body.mass * mag)
-                i_body.vy = i_body.vy - (dy * j_body.mass * mag)
-                i_body.vz = i_body.vz - (dz * j_body.mass * mag)
+                first_body.velocity_x = first_body.velocity_x - (delta_x * second_body.mass * magnitude)
+                first_body.velocity_y = first_body.velocity_y - (delta_y * second_body.mass * magnitude)
+                first_body.velocity_z = first_body.velocity_z - (delta_z * second_body.mass * magnitude)
 
-                j_body.vx = j_body.vx + (dx * i_body.mass * mag)
-                j_body.vy = j_body.vy + (dy * i_body.mass * mag)
-                j_body.vz = j_body.vz + (dz * i_body.mass * mag)
+                second_body.velocity_x = second_body.velocity_x + (delta_x * first_body.mass * magnitude)
+                second_body.velocity_y = second_body.velocity_y + (delta_y * first_body.mass * magnitude)
+                second_body.velocity_z = second_body.velocity_z + (delta_z * first_body.mass * magnitude)
 
         for body in self._bodies:
-            body.x = body.x + dt * body.vx
-            body.y = body.y + dt * body.vy
-            body.z = body.z + dt * body.vz
+            body.position_x = body.position_x + time_step * body.velocity_x
+            body.position_y = body.position_y + time_step * body.velocity_y
+            body.position_z = body.position_z + time_step * body.velocity_z
 
     def energy(self):
-        e = 0.0
+        energy = 0.0
 
-        for i in range(len(self._bodies)):
-            i_body = self._bodies[i]
-            e += (
+        for first in range(len(self._bodies)):
+            first_body = self._bodies[first]
+            energy += (
                 0.5
-                * i_body.mass
+                * first_body.mass
                 * (
-                    i_body.vx * i_body.vx
-                    + i_body.vy * i_body.vy
-                    + i_body.vz * i_body.vz
+                    first_body.velocity_x * first_body.velocity_x
+                    + first_body.velocity_y * first_body.velocity_y
+                    + first_body.velocity_z * first_body.velocity_z
                 )
             )
 
-            for j in range(i + 1, len(self._bodies)):
-                j_body = self._bodies[j]
-                dx = i_body.x - j_body.x
-                dy = i_body.y - j_body.y
-                dz = i_body.z - j_body.z
+            for second in range(first + 1, len(self._bodies)):
+                second_body = self._bodies[second]
+                delta_x = first_body.position_x - second_body.position_x
+                delta_y = first_body.position_y - second_body.position_y
+                delta_z = first_body.position_z - second_body.position_z
 
-                distance = sqrt(dx * dx + dy * dy + dz * dz)
-                e -= (i_body.mass * j_body.mass) / distance
-        return e
+                distance = sqrt(delta_x * delta_x + delta_y * delta_y + delta_z * delta_z)
+                energy -= (first_body.mass * second_body.mass) / distance
+        return energy
 
 
 class NBody(Benchmark):

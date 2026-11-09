@@ -1,9 +1,9 @@
-# Copied for ns-next from Are We Fast Yet
+# Adapted for ns-next from Are We Fast Yet
 # (https://github.com/smarr/are-we-fast-yet, commit
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/som/vector.py).
-# Changed for ns-next: remove_last, which upstream's Vector lacks, is added
-# for deltablueton80, whose port takes its work lists from the end, as the
-# Java Vector beside it adds removeLast.
+# Changed for ns-next: names are written out; remove_last, which upstream's
+# Vector lacks, is added for deltablueton80, whose port takes its work lists
+# from the end, as the Java Vector beside it adds removeLast.
 
 # This code is based on the SOM class library.
 #
@@ -29,10 +29,10 @@
 from som.constants import INITIAL_SIZE
 
 
-def vector_with(elem):
-    v = Vector(1)
-    v.append(elem)
-    return v
+def vector_with(element):
+    vector = Vector(1)
+    vector.append(element)
+    return vector
 
 
 # Porting notes:
@@ -41,82 +41,82 @@ def vector_with(elem):
 class Vector:
     def __init__(self, size=0):
         self._storage = None if size == 0 else [None] * size
-        self._first_idx = 0
-        self._last_idx = 0
+        self._first_index = 0
+        self._last_index = 0
 
-    def at(self, idx):
-        if self._storage is None or idx >= len(self._storage):
+    def at(self, index):
+        if self._storage is None or index >= len(self._storage):
             return None
-        return self._storage[idx]
+        return self._storage[index]
 
-    def at_put(self, idx, val):
+    def at_put(self, index, value):
         if self._storage is None:
-            self._storage = [None] * max(idx + 1, INITIAL_SIZE)
-        elif idx >= len(self._storage):
+            self._storage = [None] * max(index + 1, INITIAL_SIZE)
+        elif index >= len(self._storage):
             new_length = len(self._storage)
-            while new_length <= idx:
+            while new_length <= index:
                 new_length *= 2
 
             new_storage = [None] * new_length
-            for i in range(len(self._storage)):
-                new_storage[i] = self._storage[i]
+            for position in range(len(self._storage)):
+                new_storage[position] = self._storage[position]
             self._storage = new_storage
 
-        self._storage[idx] = val
-        if self._last_idx < idx + 1:
-            self._last_idx = idx + 1
+        self._storage[index] = value
+        if self._last_index < index + 1:
+            self._last_index = index + 1
 
-    def append(self, elem):
+    def append(self, element):
         if self._storage is None:
             self._storage = [None] * INITIAL_SIZE
-        elif self._last_idx >= len(self._storage):
+        elif self._last_index >= len(self._storage):
             # Need to expand capacity first
             new_storage = [None] * (2 * len(self._storage))
-            for i in range(len(self._storage)):
-                new_storage[i] = self._storage[i]
+            for index in range(len(self._storage)):
+                new_storage[index] = self._storage[index]
             self._storage = new_storage
 
-        self._storage[self._last_idx] = elem
-        self._last_idx += 1
+        self._storage[self._last_index] = element
+        self._last_index += 1
 
     def is_empty(self):
-        return self._last_idx == self._first_idx
+        return self._last_index == self._first_index
 
-    def for_each(self, fn):
-        for i in range(self._first_idx, self._last_idx):
-            fn(self._storage[i])
+    def for_each(self, function):
+        for index in range(self._first_index, self._last_index):
+            function(self._storage[index])
 
-    def has_some(self, fn):
-        for i in range(self._first_idx, self._last_idx):
-            if fn(self._storage[i]):
+    def has_some(self, function):
+        for index in range(self._first_index, self._last_index):
+            if function(self._storage[index]):
                 return True
         return False
 
-    def get_one(self, fn):
-        for i in range(self._first_idx, self._last_idx):
-            e = self._storage[i]
-            if fn(e):
-                return e
+    def get_one(self, function):
+        for index in range(self._first_index, self._last_index):
+            element = self._storage[index]
+            if function(element):
+                return element
         return None
 
     def first(self):
         if self.is_empty():
             return None
-        return self._storage[self._first_idx]
+        return self._storage[self._first_index]
 
     def remove_first(self):
         if self.is_empty():
             return None
-        self._first_idx += 1
-        return self._storage[self._first_idx - 1]
+        self._first_index += 1
+        return self._storage[self._first_index - 1]
 
     def remove_last(self):
         if self.is_empty():
             return None
-        self._last_idx -= 1
-        return self._storage[self._last_idx]
+        self._last_index -= 1
+        return self._storage[self._last_index]
 
-    def remove(self, obj):
+    def remove(self, element):
         if self._storage is None or self.is_empty():
             return False
 
@@ -124,88 +124,88 @@ class Vector:
         new_last = 0
         found = False
 
-        def each(it):
+        def each(candidate):
             nonlocal new_last
             nonlocal found
-            if it is obj:
+            if candidate is element:
                 found = True
             else:
-                new_array[new_last] = it
+                new_array[new_last] = candidate
                 new_last += 1
 
         self.for_each(each)
 
         self._storage = new_array
-        self._last_idx = new_last
-        self._first_idx = 0
+        self._last_index = new_last
+        self._first_index = 0
         return found
 
     def remove_all(self):
-        self._first_idx = 0
-        self._last_idx = 0
+        self._first_index = 0
+        self._last_index = 0
 
         if self._storage is not None:
             self._storage = [None] * len(self._storage)
 
     def size(self):
-        return self._last_idx - self._first_idx
+        return self._last_index - self._first_index
 
     def capacity(self):
         return 0 if self._storage is None else len(self._storage)
 
     def sort(self, comparator):
         if self.size() > 0:
-            self._sort(self._first_idx, self._last_idx - 1, comparator)
+            self._sort(self._first_index, self._last_index - 1, comparator)
 
-    def _sort(self, i, j, c):
-        if c is None:
-            self._default_sort(i, j)
+    def _sort(self, first, last, comparator):
+        if comparator is None:
+            self._default_sort(first, last)
 
-        n = j + 1 - i
-        if n <= 1:
+        length = last + 1 - first
+        if length <= 1:
             return
 
-        di = self._storage[i]
-        dj = self._storage[j]
+        first_element = self._storage[first]
+        last_element = self._storage[last]
 
-        if c.compare(di, dj) > 0:
-            self._swap(self._storage, i, j)
-            di, dj = dj, di
+        if comparator.compare(first_element, last_element) > 0:
+            self._swap(self._storage, first, last)
+            first_element, last_element = last_element, first_element
 
-        if n > 2:
-            ij = (i + j) // 2
-            dij = self._storage[ij]
+        if length > 2:
+            middle = (first + last) // 2
+            middle_element = self._storage[middle]
 
-            if c.compare(di, dij) <= 0:
-                if c.compare(dij, dj) > 0:
-                    self._swap(self._storage, j, ij)
-                    dij = dj
+            if comparator.compare(first_element, middle_element) <= 0:
+                if comparator.compare(middle_element, last_element) > 0:
+                    self._swap(self._storage, last, middle)
+                    middle_element = last_element
             else:
-                self._swap(self._storage, i, ij)
-                dij = di
+                self._swap(self._storage, first, middle)
+                middle_element = first_element
 
-            if n > 3:
-                k = i
-                l = j - 1
+            if length > 3:
+                left = first
+                right = last - 1
 
                 while True:
-                    while k <= l and c.compare(dij, self._storage[l]) <= 0:
-                        l -= 1
+                    while left <= right and comparator.compare(middle_element, self._storage[right]) <= 0:
+                        right -= 1
 
-                    k += 1
-                    while k <= l and c.compare(self._storage[k], dij) <= 0:
-                        k += 1
+                    left += 1
+                    while left <= right and comparator.compare(self._storage[left], middle_element) <= 0:
+                        left += 1
 
-                    if k > l:
+                    if left > right:
                         break
 
-                    self._swap(self._storage, k, l)
+                    self._swap(self._storage, left, right)
 
-                self._sort(i, l, c)
-                self._sort(k, j, c)
+                self._sort(first, right, comparator)
+                self._sort(left, last, comparator)
 
-    def _swap(self, storage, i, j):
+    def _swap(self, storage, first, second):
         raise NotImplementedError()
 
-    def _default_sort(self, i, j):
+    def _default_sort(self, first, last):
         raise NotImplementedError()

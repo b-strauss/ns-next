@@ -6,7 +6,10 @@
 # benchmarks/are-we-fast-yet/CD.ns, 250 aircraft, and checks 10830 collisions,
 # raising a RuntimeError with that port's message; the checks for upstream's
 # other sizes and the printing of an unknown size's result are dropped; names
-# in the benchmark class are written out.
+# are written out, as in java/cd/. Upstream's Python file carries only the MIT
+# notice below, but it derives from Purdue University's CDx, so the BSD-3
+# notice after it, copied from the header of benchmarks/are-we-fast-yet/CD.ns
+# and carried by upstream's JavaScript and SOM versions of CD, follows.
 
 # Copyright (c) 2001-2021 Stefan Marr
 #
@@ -27,6 +30,31 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
+
+# Copyright (c) 2001-2010, Purdue University. All rights reserved.
+# Copyright (C) 2015 Apple Inc. All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#  * Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#  * Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#  * Neither the name of the Purdue University nor the
+#    names of its contributors may be used to endorse or promote products
+#    derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 from enum import Enum
 from math import sqrt, cos, sin
 
@@ -43,56 +71,56 @@ PROXIMITY_RADIUS = 1.0
 GOOD_VOXEL_SIZE = PROXIMITY_RADIUS * 2.0
 
 
-def _compare_numbers(a, b):
-    if a == b:
+def _compare_numbers(left, right):
+    if left == right:
         return 0
 
-    if a < b:
+    if left < right:
         return -1
 
-    if a > b:
+    if left > right:
         return 1
 
     # We say that NaN is smaller than non-NaN.
-    if a == a:  # pylint: disable=comparison-with-itself
+    if left == left:  # pylint: disable=comparison-with-itself
         return 1
 
     return -1
 
 
 class _Vector2D:
-    def __init__(self, x, y):
-        self.x = x
-        self.y = y
+    def __init__(self, coordinate_x, coordinate_y):
+        self.coordinate_x = coordinate_x
+        self.coordinate_y = coordinate_y
 
     def plus(self, other):
-        return _Vector2D(self.x + other.x, self.y + other.y)
+        return _Vector2D(self.coordinate_x + other.coordinate_x, self.coordinate_y + other.coordinate_y)
 
     def minus(self, other):
-        return _Vector2D(self.x - other.x, self.y - other.y)
+        return _Vector2D(self.coordinate_x - other.coordinate_x, self.coordinate_y - other.coordinate_y)
 
     def compare_to(self, other):
-        result = _compare_numbers(self.x, other.x)
+        result = _compare_numbers(self.coordinate_x, other.coordinate_x)
         if result != 0:
             return result
 
-        return _compare_numbers(self.y, other.y)
+        return _compare_numbers(self.coordinate_y, other.coordinate_y)
 
 
 class _Vector3D:
-    def __init__(self, x, y, z):
-        self.x = x
-        self.y = y
-        self.z = z
+    def __init__(self, coordinate_x, coordinate_y, coordinate_z):
+        self.coordinate_x = coordinate_x
+        self.coordinate_y = coordinate_y
+        self.coordinate_z = coordinate_z
 
     def plus(self, other):
-        return _Vector3D(self.x + other.x, self.y + other.y, self.z + other.z)
+        return _Vector3D(self.coordinate_x + other.coordinate_x, self.coordinate_y + other.coordinate_y, self.coordinate_z + other.coordinate_z)
 
     def minus(self, other):
-        return _Vector3D(self.x - other.x, self.y - other.y, self.z - other.z)
+        return _Vector3D(self.coordinate_x - other.coordinate_x, self.coordinate_y - other.coordinate_y, self.coordinate_z - other.coordinate_z)
 
     def dot(self, other):
-        return self.x * other.x + self.y * other.y + self.z * other.z
+        return self.coordinate_x * other.coordinate_x + self.coordinate_y * other.coordinate_y + self.coordinate_z * other.coordinate_z
 
     def squared_magnitude(self):
         return self.dot(self)
@@ -101,7 +129,7 @@ class _Vector3D:
         return sqrt(self.squared_magnitude())
 
     def times(self, amount):
-        return _Vector3D(self.x * amount, self.y * amount, self.z * amount)
+        return _Vector3D(self.coordinate_x * amount, self.coordinate_y * amount, self.coordinate_z * amount)
 
 
 _horizontal = _Vector2D(GOOD_VOXEL_SIZE, 0.0)
@@ -113,8 +141,8 @@ class _Color(Enum):
     BLACK = 2
 
 
-def _tree_minimum(x):
-    current = x
+def _tree_minimum(node):
+    current = node
     while current.left is not None:
         current = current.left
 
@@ -131,16 +159,16 @@ class _Node:
         self.color = _Color.RED
 
     def successor(self):
-        x = self
-        if x.right is not None:
-            return _tree_minimum(x.right)
+        node = self
+        if node.right is not None:
+            return _tree_minimum(node.right)
 
-        y = x.parent
-        while y is not None and x is y.right:
-            x = y
-            y = y.parent
+        ancestor = node.parent
+        while ancestor is not None and node is ancestor.right:
+            node = ancestor
+            ancestor = ancestor.parent
 
-        return y
+        return ancestor
 
 
 class _Entry:
@@ -165,108 +193,108 @@ class _RedBlackTree:
         if not insertion_result.is_new_entry:
             return insertion_result.old_value
 
-        x = insertion_result.new_node
+        node = insertion_result.new_node
 
-        while x is not self._root and x.parent.color is _Color.RED:
-            if x.parent is x.parent.parent.left:
-                y = x.parent.parent.right
-                if y is not None and y.color is _Color.RED:
+        while node is not self._root and node.parent.color is _Color.RED:
+            if node.parent is node.parent.parent.left:
+                uncle = node.parent.parent.right
+                if uncle is not None and uncle.color is _Color.RED:
                     # Case 1
-                    x.parent.color = _Color.BLACK
-                    y.color = _Color.BLACK
-                    x.parent.parent.color = _Color.RED
-                    x = x.parent.parent
+                    node.parent.color = _Color.BLACK
+                    uncle.color = _Color.BLACK
+                    node.parent.parent.color = _Color.RED
+                    node = node.parent.parent
                 else:
-                    if x is x.parent.right:
+                    if node is node.parent.right:
                         # Case 2
-                        x = x.parent
-                        self._left_rotate(x)
+                        node = node.parent
+                        self._left_rotate(node)
 
                     # Case 3
-                    x.parent.color = _Color.BLACK
-                    x.parent.parent.color = _Color.RED
-                    self._right_rotate(x.parent.parent)
+                    node.parent.color = _Color.BLACK
+                    node.parent.parent.color = _Color.RED
+                    self._right_rotate(node.parent.parent)
 
             else:
                 # Same as "then" clause with "right" and "left" exchanged.
-                y = x.parent.parent.left
-                if y is not None and y.color is _Color.RED:
+                uncle = node.parent.parent.left
+                if uncle is not None and uncle.color is _Color.RED:
                     # Case 1
-                    x.parent.color = _Color.BLACK
-                    y.color = _Color.BLACK
-                    x.parent.parent.color = _Color.RED
-                    x = x.parent.parent
+                    node.parent.color = _Color.BLACK
+                    uncle.color = _Color.BLACK
+                    node.parent.parent.color = _Color.RED
+                    node = node.parent.parent
                 else:
-                    if x is x.parent.left:
+                    if node is node.parent.left:
                         # Case 2
-                        x = x.parent
-                        self._right_rotate(x)
+                        node = node.parent
+                        self._right_rotate(node)
 
                     # Case 3
-                    x.parent.color = _Color.BLACK
-                    x.parent.parent.color = _Color.RED
-                    self._left_rotate(x.parent.parent)
+                    node.parent.color = _Color.BLACK
+                    node.parent.parent.color = _Color.RED
+                    self._left_rotate(node.parent.parent)
 
         self._root.color = _Color.BLACK
         return None
 
     def remove(self, key):
-        z = self._find_node(key)
-        if z is None:
+        target = self._find_node(key)
+        if target is None:
             return None
 
         # y is the node to be unlinked from the tree.
-        if z.left is None or z.right is None:
-            y = z
+        if target.left is None or target.right is None:
+            spliced = target
         else:
-            y = z.successor()
+            spliced = target.successor()
 
         # y is guaranteed to be non-null at this point.
-        if y.left is not None:
-            x = y.left
+        if spliced.left is not None:
+            child = spliced.left
         else:
-            x = y.right
+            child = spliced.right
 
         # x is the child of y which might potentially replace y in the tree. X might be null at
         # this point.
-        if x is not None:
-            x.parent = y.parent
-            x_parent = x.parent
+        if child is not None:
+            child.parent = spliced.parent
+            child_parent = child.parent
         else:
-            x_parent = y.parent
+            child_parent = spliced.parent
 
-        if y.parent is None:
-            self._root = x
+        if spliced.parent is None:
+            self._root = child
         else:
-            if y is y.parent.left:
-                y.parent.left = x
+            if spliced is spliced.parent.left:
+                spliced.parent.left = child
             else:
-                y.parent.right = x
+                spliced.parent.right = child
 
-        if y is not z:
-            if y.color is _Color.BLACK:
-                self._remove_fixup(x, x_parent)
+        if spliced is not target:
+            if spliced.color is _Color.BLACK:
+                self._remove_fixup(child, child_parent)
 
-            y.parent = z.parent
-            y.color = z.color
-            y.left = z.left
-            y.right = z.right
+            spliced.parent = target.parent
+            spliced.color = target.color
+            spliced.left = target.left
+            spliced.right = target.right
 
-            if z.left is not None:
-                z.left.parent = y
-            if z.right is not None:
-                z.right.parent = y
-            if z.parent is not None:
-                if z.parent.left == z:
-                    z.parent.left = y
+            if target.left is not None:
+                target.left.parent = spliced
+            if target.right is not None:
+                target.right.parent = spliced
+            if target.parent is not None:
+                if target.parent.left == target:
+                    target.parent.left = spliced
                 else:
-                    z.parent.right = y
+                    target.parent.right = spliced
             else:
-                self._root = y
-        elif y.color is _Color.BLACK:
-            self._remove_fixup(x, x_parent)
+                self._root = spliced
+        elif spliced.color is _Color.BLACK:
+            self._remove_fixup(child, child_parent)
 
-        return z.value
+        return target.value
 
     def get(self, key):
         node = self._find_node(key)
@@ -275,13 +303,13 @@ class _RedBlackTree:
 
         return node.value
 
-    def for_each(self, fn):
+    def for_each(self, function):
         if self._root is None:
             return
 
         current = _tree_minimum(self._root)
         while current is not None:
-            fn(_Entry(current.key, current.value))
+            function(_Entry(current.key, current.value))
             current = current.successor()
 
     def _find_node(self, key):
@@ -297,154 +325,154 @@ class _RedBlackTree:
         return None
 
     def _tree_insert(self, key, value):
-        y = None
-        x = self._root
+        parent = None
+        current = self._root
 
-        while x is not None:
-            y = x
-            comparison_result = key.compare_to(x.key)
+        while current is not None:
+            parent = current
+            comparison_result = key.compare_to(current.key)
             if comparison_result < 0:
-                x = x.left
+                current = current.left
             elif comparison_result > 0:
-                x = x.right
+                current = current.right
             else:
-                old_value = x.value
-                x.value = value
+                old_value = current.value
+                current.value = value
                 return _InsertResult(False, None, old_value)
 
-        z = _Node(key, value)
-        z.parent = y
-        if y is None:
-            self._root = z
+        new_node = _Node(key, value)
+        new_node.parent = parent
+        if parent is None:
+            self._root = new_node
         else:
-            if key.compare_to(y.key) < 0:
-                y.left = z
+            if key.compare_to(parent.key) < 0:
+                parent.left = new_node
             else:
-                y.right = z
-        return _InsertResult(True, z, None)
+                parent.right = new_node
+        return _InsertResult(True, new_node, None)
 
-    def _left_rotate(self, x):
-        y = x.right
+    def _left_rotate(self, node):
+        pivot = node.right
 
         # Turn y's left subtree into x's right subtree.
-        x.right = y.left
-        if y.left is not None:
-            y.left.parent = x
+        node.right = pivot.left
+        if pivot.left is not None:
+            pivot.left.parent = node
 
         # Link x's parent to y.
-        y.parent = x.parent
-        if x.parent is None:
-            self._root = y
+        pivot.parent = node.parent
+        if node.parent is None:
+            self._root = pivot
         else:
-            if x is x.parent.left:
-                x.parent.left = y
+            if node is node.parent.left:
+                node.parent.left = pivot
             else:
-                x.parent.right = y
+                node.parent.right = pivot
 
         # Put x on y's left.
-        y.left = x
-        x.parent = y
+        pivot.left = node
+        node.parent = pivot
 
-        return y
+        return pivot
 
-    def _right_rotate(self, y):
-        x = y.left
+    def _right_rotate(self, node):
+        pivot = node.left
 
         # Turn x's right subtree into y's left subtree.
-        y.left = x.right
-        if x.right is not None:
-            x.right.parent = y
+        node.left = pivot.right
+        if pivot.right is not None:
+            pivot.right.parent = node
 
         # Link y's parent to x;
-        x.parent = y.parent
-        if y.parent is None:
-            self._root = x
+        pivot.parent = node.parent
+        if node.parent is None:
+            self._root = pivot
         else:
-            if y is y.parent.left:
-                y.parent.left = x
+            if node is node.parent.left:
+                node.parent.left = pivot
             else:
-                y.parent.right = x
+                node.parent.right = pivot
 
-        x.right = y
-        y.parent = x
+        pivot.right = node
+        node.parent = pivot
 
-        return x
+        return pivot
 
-    def _remove_fixup(self, x, x_parent):
-        while x is not self._root and (x is None or x.color is _Color.BLACK):
-            if x is x_parent.left:
+    def _remove_fixup(self, child, child_parent):
+        while child is not self._root and (child is None or child.color is _Color.BLACK):
+            if child is child_parent.left:
                 # Note: the text points out that w cannot be null. The reason is not obvious from
                 # simply looking at the code; it comes about from the properties of the red-black
                 # tree.
-                w = x_parent.right
-                if w.color is _Color.RED:
+                sibling = child_parent.right
+                if sibling.color is _Color.RED:
                     # Case 1
-                    w.color = _Color.BLACK
-                    x_parent.color = _Color.RED
-                    self._left_rotate(x_parent)
-                    w = x_parent.right
+                    sibling.color = _Color.BLACK
+                    child_parent.color = _Color.RED
+                    self._left_rotate(child_parent)
+                    sibling = child_parent.right
 
-                if (w.left is None or w.left.color is _Color.BLACK) and (
-                    w.right is None or w.right.color is _Color.BLACK
+                if (sibling.left is None or sibling.left.color is _Color.BLACK) and (
+                    sibling.right is None or sibling.right.color is _Color.BLACK
                 ):
                     # Case 2
-                    w.color = _Color.RED
-                    x = x_parent
-                    x_parent = x.parent
+                    sibling.color = _Color.RED
+                    child = child_parent
+                    child_parent = child.parent
                 else:
-                    if w.right is None or w.right.color is _Color.BLACK:
+                    if sibling.right is None or sibling.right.color is _Color.BLACK:
                         # Case 3
-                        w.left.color = _Color.BLACK
-                        w.color = _Color.RED
-                        self._right_rotate(w)
-                        w = x_parent.right
+                        sibling.left.color = _Color.BLACK
+                        sibling.color = _Color.RED
+                        self._right_rotate(sibling)
+                        sibling = child_parent.right
 
                     # Case 4
-                    w.color = x_parent.color
-                    x_parent.color = _Color.BLACK
-                    if w.right is not None:
-                        w.right.color = _Color.BLACK
+                    sibling.color = child_parent.color
+                    child_parent.color = _Color.BLACK
+                    if sibling.right is not None:
+                        sibling.right.color = _Color.BLACK
 
-                    self._left_rotate(x_parent)
-                    x = self._root
-                    x_parent = x.parent
+                    self._left_rotate(child_parent)
+                    child = self._root
+                    child_parent = child.parent
             else:
                 # Same as "then" clause with "right" and "left" exchanged.
-                w = x_parent.left
-                if w.color is _Color.RED:
+                sibling = child_parent.left
+                if sibling.color is _Color.RED:
                     # Case 1
-                    w.color = _Color.BLACK
-                    x_parent.color = _Color.RED
-                    self._right_rotate(x_parent)
-                    w = x_parent.left
+                    sibling.color = _Color.BLACK
+                    child_parent.color = _Color.RED
+                    self._right_rotate(child_parent)
+                    sibling = child_parent.left
 
-                if (w.right is None or w.right.color is _Color.BLACK) and (
-                    w.left is None or w.left.color is _Color.BLACK
+                if (sibling.right is None or sibling.right.color is _Color.BLACK) and (
+                    sibling.left is None or sibling.left.color is _Color.BLACK
                 ):
                     # Case 2
-                    w.color = _Color.RED
-                    x = x_parent
-                    x_parent = x.parent
+                    sibling.color = _Color.RED
+                    child = child_parent
+                    child_parent = child.parent
                 else:
-                    if w.left is None or w.left.color is _Color.BLACK:
+                    if sibling.left is None or sibling.left.color is _Color.BLACK:
                         # Case 3
-                        w.right.color = _Color.BLACK
-                        w.color = _Color.RED
-                        self._left_rotate(w)
-                        w = x_parent.left
+                        sibling.right.color = _Color.BLACK
+                        sibling.color = _Color.RED
+                        self._left_rotate(sibling)
+                        sibling = child_parent.left
 
                     # Case 4
-                    w.color = x_parent.color
-                    x_parent.color = _Color.BLACK
-                    if w.left is not None:
-                        w.left.color = _Color.BLACK
+                    sibling.color = child_parent.color
+                    child_parent.color = _Color.BLACK
+                    if sibling.left is not None:
+                        sibling.left.color = _Color.BLACK
 
-                    self._right_rotate(x_parent)
-                    x = self._root
-                    x_parent = x.parent
+                    self._right_rotate(child_parent)
+                    child = self._root
+                    child_parent = child.parent
 
-        if x is not None:
-            x.color = _Color.BLACK
+        if child is not None:
+            child.color = _Color.BLACK
 
 
 class _CallSign:
@@ -490,9 +518,9 @@ class _CollisionDetector:
         # Remove aircraft that are no longer present.
         to_remove = Vector()
 
-        def for_removal(e):
-            if not seen.get(e.key):
-                to_remove.append(e.key)
+        def for_removal(entry):
+            if not seen.get(entry.key):
+                to_remove.append(entry.key)
 
         self._state.for_each(for_removal)
 
@@ -502,14 +530,14 @@ class _CollisionDetector:
         collisions = Vector()
 
         def find_collisions(reduced):
-            for i in range(reduced.size()):
-                motion1 = reduced.at(i)
-                for j in range(i + 1, reduced.size()):
-                    motion2 = reduced.at(j)
-                    collision = motion1.find_intersection(motion2)
+            for first in range(reduced.size()):
+                motion_one = reduced.at(first)
+                for second in range(first + 1, reduced.size()):
+                    motion_two = reduced.at(second)
+                    collision = motion_one.find_intersection(motion_two)
                     if collision is not None:
                         collisions.append(
-                            _Collision(motion1.call_sign, motion2.call_sign, collision)
+                            _Collision(motion_one.call_sign, motion_two.call_sign, collision)
                         )
 
         all_reduced.for_each(find_collisions)
@@ -517,57 +545,57 @@ class _CollisionDetector:
         return collisions
 
 
-_inf_positive = float("inf")
-_inf_negative = float("-inf")
+_positive_infinity = float("inf")
+_negative_infinity = float("-inf")
 
 
 def _is_in_voxel(voxel, motion):
-    if voxel.x > MAX_X or voxel.x < MIN_X or voxel.y > MAX_Y or voxel.y < MIN_Y:
+    if voxel.coordinate_x > MAX_X or voxel.coordinate_x < MIN_X or voxel.coordinate_y > MAX_Y or voxel.coordinate_y < MIN_Y:
         return False
 
-    init = motion.pos_one
-    fin = motion.pos_two
+    start = motion.position_one
+    finish = motion.position_two
 
-    v_s = GOOD_VOXEL_SIZE
-    r = PROXIMITY_RADIUS / 2.0
+    voxel_size = GOOD_VOXEL_SIZE
+    radius = PROXIMITY_RADIUS / 2.0
 
-    v_x = voxel.x
-    x0 = init.x
-    xv = fin.x - init.x
+    voxel_x = voxel.coordinate_x
+    start_x = start.coordinate_x
+    delta_x = finish.coordinate_x - start.coordinate_x
 
-    v_y = voxel.y
-    y0 = init.y
-    yv = fin.y - init.y
+    voxel_y = voxel.coordinate_y
+    start_y = start.coordinate_y
+    delta_y = finish.coordinate_y - start.coordinate_y
 
-    if xv == 0.0:
-        low_x = _inf_negative if (v_x - r - x0) < 0.0 else _inf_positive
-        high_x = _inf_negative if (v_x + v_s + r - x0) < 0.0 else _inf_positive
+    if delta_x == 0.0:
+        low_x = _negative_infinity if (voxel_x - radius - start_x) < 0.0 else _positive_infinity
+        high_x = _negative_infinity if (voxel_x + voxel_size + radius - start_x) < 0.0 else _positive_infinity
     else:
-        low_x = (v_x - r - x0) / xv
-        high_x = (v_x + v_s + r - x0) / xv
+        low_x = (voxel_x - radius - start_x) / delta_x
+        high_x = (voxel_x + voxel_size + radius - start_x) / delta_x
 
-    if xv < 0.0:
+    if delta_x < 0.0:
         low_x, high_x = high_x, low_x
 
-    if yv == 0.0:
-        low_y = _inf_negative if (v_y - r - y0) < 0.0 else _inf_positive
-        high_y = _inf_negative if (v_y + v_s + r - y0) < 0.0 else _inf_positive
+    if delta_y == 0.0:
+        low_y = _negative_infinity if (voxel_y - radius - start_y) < 0.0 else _positive_infinity
+        high_y = _negative_infinity if (voxel_y + voxel_size + radius - start_y) < 0.0 else _positive_infinity
     else:
-        low_y = (v_y - r - y0) / yv
-        high_y = (v_y + v_s + r - y0) / yv
+        low_y = (voxel_y - radius - start_y) / delta_y
+        high_y = (voxel_y + voxel_size + radius - start_y) / delta_y
 
-    if yv < 0.0:
+    if delta_y < 0.0:
         low_y, high_y = high_y, low_y
 
     return (
         (
-            (xv == 0.0 and v_x <= x0 + r and x0 - r <= v_x + v_s)
+            (delta_x == 0.0 and voxel_x <= start_x + radius and start_x - radius <= voxel_x + voxel_size)
             or (low_x <= 1.0 and 1.0 <= high_x)  # no motion in x
             or (low_x <= 0.0 and 0.0 <= high_x)
             or (0.0 <= low_x and high_x <= 1.0)
         )
         and (
-            (yv == 0.0 and v_y <= y0 + r and y0 - r <= v_y + v_s)
+            (delta_y == 0.0 and voxel_y <= start_y + radius and start_y - radius <= voxel_y + voxel_size)
             or (  # no motion in y
                 (low_y <= 1.0 and 1.0 <= high_y)
                 or (low_y <= 0.0 and 0.0 <= high_y)
@@ -575,8 +603,8 @@ def _is_in_voxel(voxel, motion):
             )
         )
         and (
-            xv == 0.0
-            or yv == 0.0
+            delta_x == 0.0
+            or delta_y == 0.0
             or (low_y <= high_x and high_x <= high_y)  # no motion in x or y or both
             or (low_y <= low_x and low_x <= high_y)
             or (low_x <= low_y and high_y <= high_x)
@@ -617,49 +645,49 @@ def _reduce_collision_set(motions):
 
     result = Vector()
 
-    def each(e):
-        if e.value.size() > 1:
-            result.append(e.value)
+    def each(entry):
+        if entry.value.size() > 1:
+            result.append(entry.value)
 
     voxel_map.for_each(each)
     return result
 
 
 def _voxel_hash(position):
-    x_div = position.x // GOOD_VOXEL_SIZE
-    y_div = position.y // GOOD_VOXEL_SIZE
+    quotient_x = position.coordinate_x // GOOD_VOXEL_SIZE
+    quotient_y = position.coordinate_y // GOOD_VOXEL_SIZE
 
-    x = GOOD_VOXEL_SIZE * x_div
-    y = GOOD_VOXEL_SIZE * y_div
+    voxel_x = GOOD_VOXEL_SIZE * quotient_x
+    voxel_y = GOOD_VOXEL_SIZE * quotient_y
 
-    if position.x < 0.0:
-        x -= GOOD_VOXEL_SIZE
+    if position.coordinate_x < 0.0:
+        voxel_x -= GOOD_VOXEL_SIZE
 
-    if position.y < 0.0:
-        y -= GOOD_VOXEL_SIZE
+    if position.coordinate_y < 0.0:
+        voxel_y -= GOOD_VOXEL_SIZE
 
-    return _Vector2D(x, y)
+    return _Vector2D(voxel_x, voxel_y)
 
 
 def _draw_motion_on_voxel_map(voxel_map, motion):
     seen = _RedBlackTree()
-    _recurse(voxel_map, seen, _voxel_hash(motion.pos_one), motion)
+    _recurse(voxel_map, seen, _voxel_hash(motion.position_one), motion)
 
 
 class _Motion:
-    def __init__(self, call_sign, pos_one, pos_two):
+    def __init__(self, call_sign, position_one, position_two):
         self.call_sign = call_sign
-        self.pos_one = pos_one
-        self.pos_two = pos_two
+        self.position_one = position_one
+        self.position_two = position_two
 
     def delta(self):
-        return self.pos_two.minus(self.pos_one)
+        return self.position_two.minus(self.position_one)
 
     def find_intersection(self, other):
-        init1 = self.pos_one
-        init2 = other.pos_one
-        vec1 = self.delta()
-        vec2 = other.delta()
+        initial_one = self.position_one
+        initial_two = other.position_one
+        vector_one = self.delta()
+        vector_two = other.delta()
         radius = PROXIMITY_RADIUS
 
         # this test is not geometrical 3-d intersection test,
@@ -674,9 +702,9 @@ class _Motion:
         # vec2 is vector of aircraft 2
 
         # a = (V2 - V1)^T * (V2 - V1)
-        a = vec2.minus(vec1).squared_magnitude()
+        squared_speed = vector_two.minus(vector_one).squared_magnitude()
 
-        if a != 0.0:
+        if squared_speed != 0.0:
             # we are first looking for instances of time when the planes are
             # exactly r from each other at least one plane is moving ;
             # if the planes are moving in parallel, they do not have constant speed
@@ -699,42 +727,42 @@ class _Motion:
             #   0 = c + bv + av^2
 
             # b = 2 * <I1-I2, V1-V2>
-            b = 2.0 * init1.minus(init2).dot(vec1.minus(vec2))
+            linear = 2.0 * initial_one.minus(initial_two).dot(vector_one.minus(vector_two))
 
             # c = -r^2 + (I2 - I1)^T * (I2 - I1)
-            c = -radius * radius + init2.minus(init1).squared_magnitude()
+            constant = -radius * radius + initial_two.minus(initial_one).squared_magnitude()
 
-            discr = b * b - 4.0 * a * c
-            if discr < 0.0:
+            discriminant = linear * linear - 4.0 * squared_speed * constant
+            if discriminant < 0.0:
                 return None
 
-            v1 = (-b - sqrt(discr)) / (2.0 * a)
-            v2 = (-b + sqrt(discr)) / (2.0 * a)
+            time_one = (-linear - sqrt(discriminant)) / (2.0 * squared_speed)
+            time_two = (-linear + sqrt(discriminant)) / (2.0 * squared_speed)
 
-            if v1 <= v2 and (
-                (v1 <= 1.0 and 1.0 <= v2)
-                or (v1 <= 0.0 and 0.0 <= v2)
-                or (0.0 <= v1 and v2 <= 1.0)
+            if time_one <= time_two and (
+                (time_one <= 1.0 and 1.0 <= time_two)
+                or (time_one <= 0.0 and 0.0 <= time_two)
+                or (0.0 <= time_one and time_two <= 1.0)
             ):
                 # Pick a good "time" at which to report the collision.
-                if v1 <= 0.0:
+                if time_one <= 0.0:
                     # The collision started before this frame. Report it at the start of the frame.
-                    v = 0.0
+                    time = 0.0
                 else:
                     # The collision started during this frame. Report it at that moment.
-                    v = v1
+                    time = time_one
 
-                result1 = init1.plus(vec1.times(v))
-                result2 = init2.plus(vec2.times(v))
+                result_one = initial_one.plus(vector_one.times(time))
+                result_two = initial_two.plus(vector_two.times(time))
 
-                result = result1.plus(result2).times(0.5)
+                result = result_one.plus(result_two).times(0.5)
                 if (
-                    result.x >= MIN_X
-                    and result.x <= MAX_X
-                    and result.y >= MIN_Y
-                    and result.y <= MAX_Y
-                    and result.z >= MIN_Z
-                    and result.z <= MAX_Z
+                    result.coordinate_x >= MIN_X
+                    and result.coordinate_x <= MAX_X
+                    and result.coordinate_y >= MIN_Y
+                    and result.coordinate_y <= MAX_Y
+                    and result.coordinate_z >= MIN_Z
+                    and result.coordinate_z <= MAX_Z
                 ):
                     return result
 
@@ -744,9 +772,9 @@ class _Motion:
         # they  thus have the same distance all the time ; we calculate it from the initial point
 
         # dist = || i2 - i1 || = sqrt(  ( i2 - i1 )^T * ( i2 - i1 ) )
-        dist = init2.minus(init1).magnitude()
-        if dist <= radius:
-            return init1.plus(init2).times(0.5)
+        distance = initial_two.minus(initial_one).magnitude()
+        if distance <= radius:
+            return initial_one.plus(initial_two).times(0.5)
 
         return None
 
@@ -758,25 +786,25 @@ class _Aircraft:
 
 
 class _Simulator:
-    def __init__(self, num_aircraft):
+    def __init__(self, aircraft_count):
         self._aircraft = Vector()
-        for i in range(num_aircraft):
-            self._aircraft.append(_CallSign(i))
+        for index in range(aircraft_count):
+            self._aircraft.append(_CallSign(index))
 
     def simulate(self, time):
         frame = Vector()
-        for i in range(0, self._aircraft.size(), 2):
+        for index in range(0, self._aircraft.size(), 2):
             frame.append(
                 _Aircraft(
-                    self._aircraft.at(i),
-                    _Vector3D(time, cos(time) * 2.0 + i * 3.0, 10.0),
+                    self._aircraft.at(index),
+                    _Vector3D(time, cos(time) * 2.0 + index * 3.0, 10.0),
                 )
             )
 
             frame.append(
                 _Aircraft(
-                    self._aircraft.at(i + 1),
-                    _Vector3D(time, sin(time) * 2.0 + i * 3.0, 10.0),
+                    self._aircraft.at(index + 1),
+                    _Vector3D(time, sin(time) * 2.0 + index * 3.0, 10.0),
                 )
             )
         return frame

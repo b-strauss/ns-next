@@ -3,8 +3,7 @@
 # 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/Python/towers.py).
 # Changed for ns-next: benchmark and verify_result are bench, which runs once
 # and checks its own result, raising a RuntimeError with the message of
-# benchmarks/are-we-fast-yet/Towers.ns; names in the benchmark class are
-# written out.
+# benchmarks/are-we-fast-yet/Towers.ns; names are written out.
 
 # This code is based on the SOM class library.
 #
@@ -64,8 +63,8 @@ class Towers(Benchmark):
         self._moves_done += 1
 
     def _build_tower_at(self, pile, disks):
-        for i in range(disks, -1, -1):
-            self._push_disk(_TowersDisk(i), pile)
+        for size in range(disks, -1, -1):
+            self._push_disk(_TowersDisk(size), pile)
 
     def _move_disks(self, disks, from_pile, to_pile):
         if disks == 1:
