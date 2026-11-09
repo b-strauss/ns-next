@@ -248,7 +248,7 @@ fn every_number_and_string_compares_identity_by_values_equality() {
                     Some(Symbol::intern("Value")),
                     "{kind:?}'s `==` is `Value`'s"
                 ),
-                _ => panic!("{kind:?}'s `==` is no method: the identity row would answer it"),
+                _ => panic!("{kind:?}'s `==` is not found as a method"),
             }
         }
     });

@@ -10317,11 +10317,15 @@ impl<'gc> Heap<'gc> {
         };
         // A generation of its own only where a stale handle could name the
         // offset, as a push takes one and a leaf's view of a prologue's
-        // frame keeps it: a leaf's view whose header a leaf's view of the
-        // same frame wrote -- nil caller and reified word, the same code,
-        // the same flags but for the generation -- keeps that generation,
-        // since no handle a leaf's view mints outlives its leaf
-        // (`jit::materialize::release_leaf_frame`). Any other header, a
+        // frame keeps it: a header at this offset that a compiled prologue
+        // or an earlier scope write left for a frame of the same code -- nil
+        // caller and reified word, the same code, the same flags but for
+        // the generation, which may be another activation of that code --
+        // keeps that generation, since no handle a leaf's view mints should
+        // outlive its leaf (`jit::materialize::release_leaf_frame`); what
+        // the check gives up is a leaf's handle wrongly kept past that
+        // release, which a later activation at the offset no longer
+        // catches. Any other header, a
         // frame an exit materialized or the interpreter pushed among them,
         // whose handles the run loop may have kept past their pop, and
         // every write by the exit's walk, which makes the scope an
