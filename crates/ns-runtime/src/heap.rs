@@ -803,6 +803,10 @@ pub(crate) struct MachineLayout {
     /// left by one, unless they are ±0.0's, before it shifts them above
     /// the tag, and its decoding adds back (`Value::small_float`).
     pub(crate) small_float_exponent_offset: u64,
+    /// The words after a boxed `Float`'s header: its class word and its
+    /// one field, the double's bits (`allocate_float`, `set_float_class`,
+    /// `MacroAssembler::box_float`).
+    pub(crate) boxed_float_words: usize,
     /// The header word's format bits of a `LargeInteger` and a boxed
     /// `Float`, under `instance_format_bits`, whose one field
     /// `Heap::float_value` reads for a boxed `Float`.
@@ -9996,6 +10000,7 @@ impl<'gc> Heap<'gc> {
             small_float_index: FLOAT_DISPATCH_INDEX as u64,
             tag_bits: small_count(value::machine::TAG_BITS),
             small_float_exponent_offset: value::machine::SMALL_FLOAT_EXPONENT_OFFSET,
+            boxed_float_words: BOXED_FLOAT_WORDS,
             sixty_four_bit_format: small(header::SIXTY_FOUR_BIT_BITS),
             instance_format_bits: small(header::FORMAT_BITS),
             word_count_shift: small_count(header::WORD_COUNT_SHIFT),
@@ -17197,6 +17202,24 @@ mod tests {
             frame: heap.header_dispatch_id(frame),
         };
         heap.set_builtin_guards(guards);
+    }
+
+    /// The `FloatHeader` word machine code writes over a box is the header
+    /// word `allocate_float` writes: a drift between the two calls of
+    /// `Header::new` would pass every test that builds its header from the
+    /// machine layout the way the production code does.
+    #[test]
+    fn the_float_header_word_is_the_header_of_an_allocated_float() {
+        let mut heap = frame_heap();
+        let class = builtin_named_class(&mut heap, "Float", Some(BuiltinClass::Float));
+        let activation = heap.activation_class.expect("frame_heap records one");
+        set_guards_from(&mut heap, class, activation);
+        heap.set_float_class(class);
+        let float = heap.allocate_float(class, 1e300);
+        assert_eq!(
+            heap.header(float).0,
+            heap.machine_word(MachineWord::FloatHeader)
+        );
     }
 
     #[test]

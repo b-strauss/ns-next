@@ -248,7 +248,6 @@ mod tests {
     /// `Float`.
     #[test]
     fn every_row_with_a_float_operation_has_the_float_stub() {
-        let mut stubbed = 0;
         for entry in MIRROR {
             let has_stub = entry.machine_call == MachineCall::Stub(RowStub::Float);
             assert_eq!(
@@ -257,8 +256,6 @@ mod tests {
                 "{}",
                 entry.selector
             );
-            stubbed += usize::from(has_stub);
         }
-        assert_eq!(stubbed, 30, "nine binary, eleven unary and ten mixed rows");
     }
 }

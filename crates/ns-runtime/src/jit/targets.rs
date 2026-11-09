@@ -1350,27 +1350,18 @@ fn emit_row_stub(
     assembler.bind(entry);
     assembler.enter_called();
     // A unary operation's send has no slot 0, so its stub reads none.
-    let float_operation = match stub {
-        RowStub::Float => {
-            let Some(operation) = FloatOperation::of(MIRROR[row].primitive) else {
-                unreachable!("internal: a row with a float stub is a float operation's");
-            };
-            Some(operation)
-        }
-        RowStub::ArrayAt | RowStub::ArrayAtPut | RowStub::ByteArrayAt | RowStub::ByteArrayAtPut => {
-            None
-        }
-    };
+    // Only a float stub's row has one (`every_row_with_a_float_operation_has_the_float_stub`).
+    let float_operation = FloatOperation::of(MIRROR[row].primitive);
     if float_operation.is_none_or(|operation| operation.argument_count() > 0) {
         assembler.load(Width::Word64, index, argument_slot(roles, 0));
     }
-    match stub {
-        RowStub::ArrayAt => {
+    match (stub, float_operation) {
+        (RowStub::ArrayAt, _) => {
             macro_assembler.load_element_address(receiver, index, element, fallback);
             let assembler = macro_assembler.assembler();
             assembler.load(Width::Word64, answer, word_at(element));
         }
-        RowStub::ArrayAtPut => {
+        (RowStub::ArrayAtPut, _) => {
             macro_assembler.load_element_address(receiver, index, element, fallback);
             macro_assembler
                 .assembler()
@@ -1382,14 +1373,14 @@ fn emit_row_stub(
                 .assembler()
                 .load(Width::Word64, answer, argument_slot(roles, 1));
         }
-        RowStub::ByteArrayAt => {
+        (RowStub::ByteArrayAt, _) => {
             macro_assembler.load_byte_address(receiver, index, element, spare, fallback);
             let assembler = macro_assembler.assembler();
             assembler.load(Width::Byte, answer, word_at(element));
             assembler.shift_left(answer, layout.tag_bits);
             assembler.or_immediate(answer, layout.small_integer_tag);
         }
-        RowStub::ByteArrayAtPut => {
+        (RowStub::ByteArrayAtPut, _) => {
             macro_assembler.load_byte_address(receiver, index, element, spare, fallback);
             let assembler = macro_assembler.assembler();
             assembler.load(Width::Word64, answer, argument_slot(roles, 1));
@@ -1403,10 +1394,10 @@ fn emit_row_stub(
             assembler.shift_right_logical(spare, layout.tag_bits);
             assembler.store(Width::Byte, word_at(element), spare);
         }
-        RowStub::Float => {
-            let Some(operation) = float_operation else {
-                unreachable!("internal: a float stub's operation was found above");
-            };
+        (RowStub::Float, None) => {
+            unreachable!("internal: a row with a float stub is a float operation's");
+        }
+        (RowStub::Float, Some(operation)) => {
             // The answer's register is no operand's, and a decline writes
             // only it, the element's and the idiom scratch register, none
             // of which `mirror_method` reads before it writes it: the

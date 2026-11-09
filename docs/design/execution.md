@@ -9426,7 +9426,7 @@ Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest. Each
 cell is a side's medians per build pooled by geometric mean, in
 milliseconds. Between the two trees lie the float operations of
 "Floats in machine code": the row stubs, `Node::FloatOperation`, the
-mixed operation of an `IntegerBinary`, and the x86-64-v2 requirement.
+mixed operation of an `IntegerBinary`, and the start check.
 
 | Program | master (ms) | master's builds | branch (ms) | builds | vs master | separated |
 |---|---|---|---|---|---|---|
@@ -14590,9 +14590,9 @@ a few run in machine code, written once against the macro assembler's
 idioms for the baseline's row stubs and optimized code's nodes alike
 (`jit/floats.rs`, `floats::emit`; which rows, `jit/float_operations.rs`'s
 `FloatOperation::of`, compiled on every target, since optimized code's
-graph and plan, compiled without a JIT too, name it). Every one answers bit for bit what
-its row's leaf answers (`builtins/numbers/float.rs`, `integer.rs`,
-`tower.rs`), or declines before it has written anything but its own
+graph and plan, compiled without a JIT too, name it). Every one answers
+bit for bit what its row's leaf answers (`builtins/numbers/float.rs`,
+`integer.rs`, `tower.rs`), or declines before it has written anything but its own
 result and spare registers, and the leaf decides the case: a receiver
 or an argument the operation does not take, an `=` of two `Float`s that
 compare unordered, an `asInteger` not finite or of a magnitude of 2^60
@@ -14674,7 +14674,7 @@ or more, and a result to box with eden full. The goldens under
   across a leaf call, an exit or a node's end.
 - **The binary requires x86-64-v2.** Every x86_64 target is built with
   `target-cpu=x86-64-v2` (`.cargo/config.toml`: SSE3, SSSE3, SSE4.1,
-  SSE4.2, POPCNT, CMPXCHG16B), and the templates emit SSE4.1's `roundsd`
+  SSE4.2, POPCNT, CMPXCHG16B, LAHF-SAHF), and the templates emit SSE4.1's `roundsd`
   without a choice. `ns-next` and `ns-next-analyzer` ask the processor
   first thing in `main` and refuse with a message naming what it lacks
   (`ns_tooling::processor`). They ask CPUID itself: under the v2 flags

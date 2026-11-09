@@ -54,7 +54,8 @@ dependencies. On x86_64 the binaries require an x86-64-v2 processor (SSE4.2,
 POPCNT) and say so at start when theirs lacks one. On Windows it needs
 Windows 10 version 1803 or Windows Server 2019, for the placeholders the JIT's
 code zone is mapped into, and the zone commits at least 1 MiB, its chunk; on an
-older Windows the JIT is off, which `run` and `load` say on stderr and `bench` refuses.
+older Windows the JIT is off, which `run` and `load` say on stderr and
+`bench` refuses.
 
 ## Build and test
 

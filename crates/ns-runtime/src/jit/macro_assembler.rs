@@ -585,10 +585,6 @@ pub(crate) enum FloatOperand {
     FloatOrSmallInteger,
 }
 
-/// The words after a boxed `Float`'s header, its class word and its one
-/// field, as `Heap::allocate_float` places them.
-const BOXED_FLOAT_WORDS: usize = 2;
-
 /// Code placed after the body's last instruction, out of the straight
 /// line: the paths a check takes only when it fails.
 #[derive(Clone, Copy, Debug)]
@@ -2025,7 +2021,7 @@ impl MacroAssembler {
             distinct(&[object, scratch, idiom_scratch]),
             "internal: a box's registers are distinct and none is the idiom scratch register"
         );
-        let size = ObjectSize::Constant(BOXED_FLOAT_WORDS);
+        let size = ObjectSize::Constant(layout.boxed_float_words);
         let Some(overflow_word) = self.bump_eden(object, size, slow) else {
             unreachable!("internal: a boxed Float lies far below the large-object threshold");
         };
