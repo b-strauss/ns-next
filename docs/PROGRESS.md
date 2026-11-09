@@ -7183,5 +7183,61 @@ What the stage leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "What
 the third stage's measurement left", "What the third stage's callees
 always inlined leave", "An optimized caller is never recompiled to
 inline a callee that became hot later" and "A poll whose entry cannot
-restore a value keeps the full exit". `Float` arithmetic in SSE2 comes
+restore a value keeps the full exit". `Float` in machine code came
 next, then road step 9's fourth stage, inlined frame objects.
+
+## `Float` in machine code (2026-11-09)
+
+`Float` operations computed in machine code
+([execution.md](design/execution.md), "Floats in machine code"),
+decided with the user on 2026-11-09 in six decisions. `jit/floats.rs`
+writes each operation once against the macro assembler's new float
+idioms -- a `SmallFloat64` decoded and encoded by Spur's rotation, a
+result outside its range boxed inline in eden -- and the baseline's row
+stubs and optimized code's nodes both emit it: `Float`'s `+ - * /`,
+`< > <= >= =`, `sqrt`, `negated`, `abs`, `isNaN`, `isFinite`,
+`isInfinite`, `floor`, `ceiling`, `truncated`, `rounded` and
+`asInteger`, and a `SmallInteger` receiver's mixed rows with a `Float`
+argument, `asFloat` and `Number`'s `/`. Every one answers bit for bit
+what its row's leaf answers, a `SmallInteger` compared exactly with a
+`Float` by Cog's sequence, or declines to the leaf before it wrote
+anything. In baseline code a float row's method is reached through a
+row stub of its own, Cog's compiled primitive; in optimized code a
+type-case arm on a `Float` is a tagged `Node::FloatOperation`, and an
+`Integer` arm whose row also takes a `Float` an `IntegerBinary` that
+tries its mixed operation out of line. `ns-assembler` gained the
+double-precision operations, their x64 forms through SSE4.1 and their
+AArch64 forms, each checked against `iced-x86` and `yaxpeax-arm`. Every
+x86_64 target is built for x86-64-v2, and `ns-next` and
+`ns-next-analyzer` ask CPUID first in `main` and refuse a processor
+without it (`ns_tooling::processor`). The shortest float text breaks a
+tie between two shortest digit strings to the even digit, as Primordial
+Soup's printer does (`900719925474099.25` prints as
+`900719925474099.2`). Six goldens under `goldens/library/number/float/`
+pin signed zeros, the edges of the `SmallFloat64` range, the roundings,
+the predicates and a `SmallInteger` meeting a `Float` at 2^53 and 2^59.
+Measured against `master`, three pinned builds a side, both built for
+x86-64-v2: -10.1% on the geometric mean of the twenty-three sources,
+Mandelbrot 75%, NBody 72% and CD 16% faster, their act-leaf calls down
+by 98% to 99.6%, and no program slower with its builds apart ("What
+floats in machine code moved").
+
+- `f429dcd4` -- the plan, with the six decisions of 2026-11-09.
+- `3615700f`, `6273a546` -- the x86-64-v2 build flags and the start
+  check through CPUID.
+- `c3afa720`, `93d6439c` -- the floating-point operations in
+  `ns-assembler`, the rounding directions named as IEEE 754 names them.
+- `41963186` -- the macro assembler's float idioms and `jit/floats.rs`.
+- `c1ebf6cc`, `c9ade104`, `2378243f` -- `Float`'s binary operations
+  through row stubs, the float text's tie to even, and a zone test sized
+  past the stubs.
+- `bd3d7179`, `6d2fc2c9` -- the unary and rounding operations, and the
+  mixed `SmallInteger` and `Float` rows.
+- `893213ba` -- `Float` operations as nodes in optimized code.
+- The documents' commits after them.
+
+What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Templates for
+`Integer`'s bit operations", "Whether x86-64-v2 pays on the Rust side",
+"The float row stubs could share their tail", "What `Float` in machine
+code left" and "A NaN's payload after arithmetic on two NaNs". Road step
+9's fourth stage, inlined frame objects, is next.
