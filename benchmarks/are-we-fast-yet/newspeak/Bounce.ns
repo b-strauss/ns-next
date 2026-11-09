@@ -3,7 +3,9 @@
 /// core-lib/Benchmarks/Bounce.ns), one of the Are We Fast Yet benchmarks.
 /// Changed for ns-next: a module in Primordial Soup's shape, whose bench
 /// runs once and checks its own result; only Primordial Soup's protocol is
-/// sent; names are written out.
+/// sent; the generator is the one of the SOM library the harness hands
+/// every benchmark (Som.ns), as the Java and Python ports take som.Random,
+/// where SOMns's comes from its harness; names are written out.
 ///
 /// Copyright (c) 2001-2015 see AUTHORS file
 ///
@@ -24,7 +26,11 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class Bounce usingPlatform: platform = () (
+class Bounce usingPlatform: platform som: som = (
+  |
+    private Random = som Random.
+  |
+) (
   public bench = (
     |
       ballCount
@@ -32,7 +38,7 @@ class Bounce usingPlatform: platform = () (
       bounces
       random
     |
-    random:: Random new: 74755.
+    random:: Random new.
     ballCount:: 100.
     bounces:: 0.
     balls:: Array new: ballCount.
@@ -42,18 +48,6 @@ class Bounce usingPlatform: platform = () (
     1 to: 50 do: [:index | balls do: [:ball | ball bounce ifTrue: [bounces:: bounces + 1]]].
     bounces = 1331 ifFalse: [Error signal: 'Bounce: expected 1331, got ' , bounces printString].
     ^bounces.
-  )
-
-  /// The Are We Fast Yet harness's generator (SOMns's Harness.ns).
-  class Random new: initialSeed = (
-    |
-      seed ::= initialSeed.
-    |
-  ) (
-    public next = (
-      seed:: seed * 1309 + 13849 bitAnd: 65535.
-      ^seed.
-    )
   )
 
   class Ball new: random = (

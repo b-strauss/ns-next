@@ -1,0 +1,613 @@
+/// Adapted for ns-next from Are We Fast Yet
+/// (https://github.com/smarr/are-we-fast-yet, commit
+/// 74306fec151070fd07157cefeacf19e7e0bcdc89, benchmarks/SOMns/Core.ns),
+/// the collection library Are We Fast Yet's SOMns benchmarks use, itself a
+/// simplification of SOMns's own (https://github.com/smarr/SOMns, commit
+/// e56f4c2815cef4cae2045a9b05dc1fd190315ba6, core-lib/Collections.ns and
+/// the Vector of core-lib/Kernel.ns); Random is the generator of Are We
+/// Fast Yet's SOMns harness (benchmarks/SOMns/Harness.ns).
+/// Changed for ns-next: the SOM library every Are We Fast Yet port carries
+/// in its own language, method by method the one of the Java and Python
+/// ports beside it (java/som, python/som): a module in Primordial Soup's
+/// shape, which the harness instantiates once and hands to every
+/// benchmark; Vector gains removeLast, which DeltaBlueTon80 takes its work
+/// lists from, as the Java and Python Vectors do; sort: takes a comparator
+/// answering a negative Integer, 0 or a positive one, as Java's
+/// Vector.sort does, where Core.ns's takes a Boolean block, and swaps
+/// where Java's signals NotImplemented, no benchmark sorting more than one
+/// element; Random starts at the seed 74755, as Java's and Python's do,
+/// rather than taking it as an argument; Set and Dictionary drop the
+/// methods no port sends; every loop over indices is a whileTrue: loop,
+/// as SOMns inlines Core.ns's to:do:; & is bitAnd:, >>> is >>, the same
+/// for the non-negative hashes the benchmarks give, and ifNil: is == nil;
+/// names are written out.
+///
+/// Copyright (c) 2001-2016 see AUTHORS.md file
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the 'Software'), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+///
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+///
+/// THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
+class Som usingPlatform: platform = (
+  |
+    private InitialSize = 10.
+    private InitialCapacity = 16.
+  |
+) (
+  /// A growable array. Its storage is allocated at the first store, not
+  /// before, unless a size is given, and doubles whenever it is full;
+  /// removeFirst moves the first index on and never gives the slot back.
+  public class Vector new: size = (
+    |
+      private firstIndex ::= 1.
+      private lastIndex ::= 1.
+      private storage ::= size = 0 ifTrue: [nil] ifFalse: [Array new: size].
+    |
+  ) (
+    /// Answers the element at `index` of the storage, or nil past its end.
+    public at: index = (
+      (storage == nil or: [index > storage size]) ifTrue: [^nil].
+      ^storage at: index.
+    )
+
+    public at: index put: value = (
+      storage == nil ifTrue: [
+        storage:: Array new: (index max: InitialSize).
+      ] ifFalse: [
+        index > storage size ifTrue: [
+          |
+            newLength
+          |
+          newLength:: storage size.
+          [newLength < index] whileTrue: [newLength:: newLength * 2].
+          growTo: newLength.
+        ].
+      ].
+      storage at: index put: value.
+      lastIndex < (index + 1) ifTrue: [lastIndex:: index + 1].
+    )
+
+    public append: element = (
+      storage == nil ifTrue: [
+        storage:: Array new: InitialSize.
+      ] ifFalse: [
+        /// Need to expand capacity first
+        lastIndex > storage size ifTrue: [growTo: 2 * storage size].
+      ].
+      storage at: lastIndex put: element.
+      lastIndex:: lastIndex + 1.
+    )
+
+    public isEmpty = (
+      ^lastIndex = firstIndex.
+    )
+
+    public forEach: block = (
+      |
+        index ::= firstIndex.
+      |
+      [index < lastIndex] whileTrue: [
+        block value: (storage at: index).
+        index:: index + 1.
+      ].
+    )
+
+    public hasSome: block = (
+      |
+        index ::= firstIndex.
+      |
+      [index < lastIndex] whileTrue: [
+        (block value: (storage at: index)) ifTrue: [^true].
+        index:: index + 1.
+      ].
+      ^false.
+    )
+
+    public getOne: block = (
+      |
+        index ::= firstIndex.
+      |
+      [index < lastIndex] whileTrue: [
+        |
+          element
+        |
+        element:: storage at: index.
+        (block value: element) ifTrue: [^element].
+        index:: index + 1.
+      ].
+      ^nil.
+    )
+
+    public first = (
+      isEmpty ifTrue: [^nil].
+      ^storage at: firstIndex.
+    )
+
+    public removeFirst = (
+      isEmpty ifTrue: [^nil].
+      firstIndex:: firstIndex + 1.
+      ^storage at: firstIndex - 1.
+    )
+
+    public removeLast = (
+      isEmpty ifTrue: [^nil].
+      lastIndex:: lastIndex - 1.
+      ^storage at: lastIndex.
+    )
+
+    /// Removes every element identical to `object` by copying the others
+    /// into new storage of the same capacity; answers whether there was
+    /// one.
+    public remove: object = (
+      |
+        newArray
+        newLast
+        found
+      |
+      (storage == nil or: [isEmpty]) ifTrue: [^false].
+      newArray:: Array new: capacity.
+      newLast:: 1.
+      found:: false.
+      self forEach: [:each |
+        each == object ifTrue: [
+          found:: true.
+        ] ifFalse: [
+          newArray at: newLast put: each.
+          newLast:: newLast + 1.
+        ].
+      ].
+      storage:: newArray.
+      lastIndex:: newLast.
+      firstIndex:: 1.
+      ^found.
+    )
+
+    /// Empties the vector, keeping its capacity.
+    public removeAll = (
+      firstIndex:: 1.
+      lastIndex:: 1.
+      storage == nil ifFalse: [storage:: Array new: storage size].
+    )
+
+    public size = (
+      ^lastIndex - firstIndex.
+    )
+
+    public capacity = (
+      storage == nil ifTrue: [^0].
+      ^storage size.
+    )
+
+    /// Sorts the elements in place by `comparator`, a block of two
+    /// arguments answering a positive Integer when the first goes after
+    /// the second.
+    public sort: comparator = (
+      size > 0 ifTrue: [sort: firstIndex to: lastIndex - 1 with: comparator].
+    )
+
+    private sort: first to: last with: comparator = (
+      |
+        length
+        firstElement
+        lastElement
+      |
+      comparator == nil ifTrue: [Error signal: 'Vector>>sort: needs a comparator'].
+      length:: last + 1 - first.
+      length <= 1 ifTrue: [^self].
+      firstElement:: storage at: first.
+      lastElement:: storage at: last.
+      (comparator value: firstElement value: lastElement) > 0 ifTrue: [
+        |
+          temp
+        |
+        swap: first with: last.
+        temp:: firstElement.
+        firstElement:: lastElement.
+        lastElement:: temp.
+      ].
+      length > 2 ifTrue: [
+        |
+          middle
+          middleElement
+        |
+        middle:: (first + last) // 2.
+        middleElement:: storage at: middle.
+        (comparator value: firstElement value: middleElement) <= 0 ifTrue: [
+          (comparator value: middleElement value: lastElement) > 0 ifTrue: [
+            swap: last with: middle.
+            middleElement:: lastElement.
+          ].
+        ] ifFalse: [
+          swap: first with: middle.
+          middleElement:: firstElement.
+        ].
+        length > 3 ifTrue: [
+          |
+            left
+            right
+          |
+          left:: first.
+          right:: last - 1.
+          [
+            [
+              left <= right and: [
+                (comparator value: middleElement value: (storage at: right)) <= 0.
+              ].
+            ] whileTrue: [right:: right - 1].
+            left:: left + 1.
+            [
+              left <= right and: [(comparator value: (storage at: left) value: middleElement) <= 0].
+            ] whileTrue: [left:: left + 1].
+            left <= right.
+          ] whileTrue: [swap: left with: right].
+          sort: first to: right with: comparator.
+          sort: left to: last with: comparator.
+        ].
+      ].
+    )
+
+    private swap: first with: second = (
+      |
+        temp
+      |
+      temp:: storage at: first.
+      storage at: first put: (storage at: second).
+      storage at: second put: temp.
+    )
+
+    /// Copies the storage into new storage of `newLength` slots, element by
+    /// element.
+    private growTo: newLength = (
+      |
+        newStorage
+        index ::= 1.
+      |
+      newStorage:: Array new: newLength.
+      [index <= storage size] whileTrue: [
+        newStorage at: index put: (storage at: index).
+        index:: index + 1.
+      ].
+      storage:: newStorage.
+    )
+  ) : (
+    public new = (
+      ^self new: 0.
+    )
+
+    public with: element = (
+      |
+        vector
+      |
+      vector:: self new: 1.
+      vector append: element.
+      ^vector.
+    )
+  )
+
+  /// A set kept in a Vector, which add: searches linearly, comparing with =.
+  public class Set new: size = (
+    |
+      private items = Vector new: size.
+    |
+  ) (
+    public size = (
+      ^items size.
+    )
+
+    public forEach: block = (
+      items forEach: block.
+    )
+
+    public hasSome: block = (
+      ^items hasSome: block.
+    )
+
+    public getOne: block = (
+      ^items getOne: block.
+    )
+
+    public add: object = (
+      (self contains: object) ifFalse: [items append: object].
+    )
+
+    public collect: block = (
+      |
+        collection
+      |
+      collection:: Vector new.
+      self forEach: [:element | collection append: (block value: element)].
+      ^collection.
+    )
+
+    public contains: object = (
+      ^self hasSome: [:element | element = object].
+    )
+
+    public removeAll = (
+      items removeAll.
+    )
+  ) : (
+    public new = (
+      ^self new: InitialSize.
+    )
+  )
+
+  /// A Set whose search compares with ==.
+  public class IdentitySet new: size = Set new: size () (
+    public contains: object = (
+      ^self hasSome: [:element | element == object].
+    )
+  ) : (
+    public new = (
+      ^self new: InitialSize.
+    )
+  )
+
+  /// A hash table of chained entries, its key's customHash the hash, its
+  /// number of buckets a power of two that doubles once it holds more
+  /// entries than buckets; keys compare with =.
+  public class Dictionary new: size = (
+    |
+      protected buckets ::= Array new: size.
+      protected entryCount ::= 0.
+    |
+  ) (
+    protected class Entry new: hash key: key value: value next: next = (
+      |
+        public hash = hash.
+        public key = key.
+        public value ::= value.
+        public next ::= next.
+      |
+    ) (
+      public match: otherHash key: otherKey = (
+        ^hash = otherHash and: [otherKey = key].
+      )
+    )
+
+    private hash: key = (
+      |
+        customHash
+      |
+      key == nil ifTrue: [^0].
+      customHash:: key customHash.
+      ^customHash bitXor: customHash >> 16.
+    )
+
+    private bucketIndex: hash = (
+      ^1 + (buckets size - 1 bitAnd: hash).
+    )
+
+    private bucket: hash = (
+      ^buckets at: (bucketIndex: hash).
+    )
+
+    public size = (
+      ^entryCount.
+    )
+
+    public isEmpty = (
+      ^entryCount = 0.
+    )
+
+    public at: key = (
+      |
+        hash
+        entry
+      |
+      hash:: hash: key.
+      entry:: bucket: hash.
+      [entry == nil] whileFalse: [
+        (entry match: hash key: key) ifTrue: [^entry value].
+        entry:: entry next.
+      ].
+      ^nil.
+    )
+
+    public containsKey: key = (
+      |
+        hash
+        entry
+      |
+      hash:: hash: key.
+      entry:: bucket: hash.
+      [entry == nil] whileFalse: [
+        (entry match: hash key: key) ifTrue: [^true].
+        entry:: entry next.
+      ].
+      ^false.
+    )
+
+    public at: key put: value = (
+      |
+        hash
+        index
+        current
+      |
+      hash:: hash: key.
+      index:: bucketIndex: hash.
+      current:: buckets at: index.
+      current == nil ifTrue: [
+        buckets at: index put: (newEntry: key value: value hash: hash).
+        entryCount:: entryCount + 1.
+      ] ifFalse: [
+        insertBucketEntry: key value: value hash: hash head: current.
+      ].
+      entryCount > buckets size ifTrue: [resize].
+    )
+
+    protected newEntry: key value: value hash: hash = (
+      ^Entry new: hash key: key value: value next: nil.
+    )
+
+    private insertBucketEntry: key value: value hash: hash head: head = (
+      |
+        current
+      |
+      current:: head.
+      [true] whileTrue: [
+        (current match: hash key: key) ifTrue: [
+          current value: value.
+          ^self.
+        ].
+        current next == nil ifTrue: [
+          entryCount:: entryCount + 1.
+          current next: (newEntry: key value: value hash: hash).
+          ^self.
+        ].
+        current:: current next.
+      ].
+    )
+
+    private resize = (
+      |
+        oldStorage
+      |
+      oldStorage:: buckets.
+      buckets:: Array new: oldStorage size * 2.
+      transferEntries: oldStorage.
+    )
+
+    private transferEntries: oldStorage = (
+      |
+        index ::= 1.
+      |
+      [index <= oldStorage size] whileTrue: [
+        |
+          current
+        |
+        current:: oldStorage at: index.
+        current == nil ifFalse: [
+          oldStorage at: index put: nil.
+          current next == nil ifTrue: [
+            buckets at: 1 + (current hash bitAnd: buckets size - 1) put: current.
+          ] ifFalse: [
+            splitBucket: oldStorage bucket: index head: current.
+          ].
+        ].
+        index:: index + 1.
+      ].
+    )
+
+    private splitBucket: oldStorage bucket: index head: head = (
+      |
+        lowHead
+        lowTail
+        highHead
+        highTail
+        current
+      |
+      current:: head.
+      [current == nil] whileFalse: [
+        (current hash bitAnd: oldStorage size) = 0 ifTrue: [
+          lowTail == nil ifTrue: [lowHead:: current] ifFalse: [lowTail next: current].
+          lowTail:: current.
+        ] ifFalse: [
+          highTail == nil ifTrue: [highHead:: current] ifFalse: [highTail next: current].
+          highTail:: current.
+        ].
+        current:: current next.
+      ].
+      lowTail == nil ifFalse: [
+        lowTail next: nil.
+        buckets at: index put: lowHead.
+      ].
+      highTail == nil ifFalse: [
+        highTail next: nil.
+        buckets at: index + oldStorage size put: highHead.
+      ].
+    )
+
+    public removeAll = (
+      buckets:: Array new: buckets size.
+      entryCount:: 0.
+    )
+
+    public keys = (
+      |
+        keys
+        index ::= 1.
+      |
+      keys:: Vector new: entryCount.
+      [index <= buckets size] whileTrue: [
+        |
+          current
+        |
+        current:: buckets at: index.
+        [current == nil] whileFalse: [
+          keys append: current key.
+          current:: current next.
+        ].
+        index:: index + 1.
+      ].
+      ^keys.
+    )
+
+    public values = (
+      |
+        values
+        index ::= 1.
+      |
+      values:: Vector new: entryCount.
+      [index <= buckets size] whileTrue: [
+        |
+          current
+        |
+        current:: buckets at: index.
+        [current == nil] whileFalse: [
+          values append: current value.
+          current:: current next.
+        ].
+        index:: index + 1.
+      ].
+      ^values.
+    )
+  ) : (
+    public new = (
+      ^self new: InitialCapacity.
+    )
+  )
+
+  /// A Dictionary whose keys compare with ==.
+  public class IdentityDictionary new: size = Dictionary new: size () (
+    protected class IdentityEntry new: hash key: key value: value next: next
+        = Entry new: hash key: key value: value next: next () (
+      public match: otherHash key: otherKey = (
+        ^hash = otherHash and: [key == otherKey].
+      )
+    )
+
+    protected newEntry: key value: value hash: hash = (
+      ^IdentityEntry new: hash key: key value: value next: nil.
+    )
+  ) : (
+    public new = (
+      ^self new: InitialCapacity.
+    )
+  )
+
+  /// The generator every Are We Fast Yet port shares.
+  public class Random = (
+    |
+      private seed ::= 74755.
+    |
+  ) (
+    public next = (
+      seed:: seed * 1309 + 13849 bitAnd: 65535.
+      ^seed.
+    )
+  )
+)

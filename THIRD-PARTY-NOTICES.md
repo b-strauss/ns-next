@@ -9,9 +9,11 @@ any names the upstream file it comes from in a header:
 - Newspeak code in `benchmarks/are-we-fast-yet/newspeak/`: the benchmarks from SOMns,
   licensed MIT, except that `Mandelbrot.ns`, `Havlak.ns` and `CD.ns` keep
   their upstream files' own licence texts in their headers (BSD-3, Apache
-  License 2.0 and BSD-3); and the harness, `RichardsTon80.ns` and
-  `DeltaBlueTon80.ns` from Primordial Soup, licensed under the Apache
-  License 2.0.
+  License 2.0 and BSD-3); `Som.ns`, the SOM class library the benchmarks
+  share, from Are We Fast Yet's SOMns benchmarks (`Core.ns`, a
+  simplification of SOMns's own collections), licensed MIT (below); and
+  the harness, `RichardsTon80.ns` and `DeltaBlueTon80.ns` from Primordial
+  Soup, licensed under the Apache License 2.0.
 - Java code in `benchmarks/are-we-fast-yet/java/`: the Java versions of the
   benchmarks and their harness from Are We Fast Yet, whose files carry
   several licences (below); each adapted file keeps its upstream notice in
@@ -415,7 +417,9 @@ The harness, the SOM class library (`som/`, but `IdentityDictionary.java`,
 which carries no notice) and the benchmarks Bounce, List,
 Permute, Queens, Sieve, Storage and Towers carry this notice (MIT); CD and
 Havlak carry the same text with its first two lines replaced by the
-copyright line `Copyright (c) 2001-2016 Stefan Marr`:
+copyright line `Copyright (c) 2001-2016 Stefan Marr`. Upstream's
+`benchmarks/SOMns/Core.ns`, which `newspeak/Som.ns` adapts, carries the
+notice without its first line, and so does `Som.ns`:
 
 ```
 This code is based on the SOM class library.

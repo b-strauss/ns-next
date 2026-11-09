@@ -1133,9 +1133,18 @@ folded into `CD.ns` as nested classes of `CD`, so CD too is reached as
 `manifest CD` (decided with the user on 2026-10-01). The benchmarks are
 adapted from SOMns's Newspeak versions
 (`prior-art/somns/core-lib/Benchmarks/`, MIT) into Primordial Soup's
-module shape and protocol: each is a module `usingPlatform:` whose one
+module shape and protocol: each is a module `usingPlatform:som:` whose one
 public method, `bench`, runs the workload once and signals an `Error` when
-its result is not the one Are We Fast Yet expects. The harness is adapted
+its result is not the one Are We Fast Yet expects. Its second argument is
+the one instance of `Som.ns`, which the harness makes: the SOM class
+library -- `Vector`, `Set`, `IdentitySet`, `Dictionary`,
+`IdentityDictionary` and `Random` -- that Are We Fast Yet has every
+language carry in its own code, so that every port does the same work in
+its collections, adapted from Are We Fast Yet's SOMns benchmarks'
+`Core.ns` (`prior-art/are-we-fast-yet/benchmarks/SOMns/Core.ns`, MIT) and
+method by method the `som` library of the Java and Python ports beside
+them; no benchmark uses the platform's collections (decided with the user
+on 2026-11-09). The harness is adapted
 from Primordial Soup's `BenchmarkRunner.ns`
 (`prior-art/primordialsoup/newspeak/BenchmarkRunner.ns`, Apache 2.0),
 `RichardsTon80.ns` from its `Richards.ns`

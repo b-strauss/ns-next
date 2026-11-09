@@ -4,8 +4,13 @@
 /// which says of itself: "This is a rough port of minijson from Java."
 /// Changed for ns-next: a module in Primordial Soup's shape, whose bench
 /// parses the input once and checks what upstream's verifyResult: checks;
-/// only Primordial Soup's protocol is sent, so String at: answers a
-/// character's code, every character is compared as its code, and an
+/// a Vector is the SOM library's the harness hands every benchmark
+/// (Som.ns), as the Java and Python ports use theirs; HashIndexTable hashes
+/// a name as Are We Fast Yet's Java and Python ports do, by its length
+/// times 1402589, where SOMns sends hashcode, and leaves its table
+/// unfilled, a nil slot being empty, where SOMns fills it with zeroes;
+/// otherwise only Primordial Soup's protocol is sent, so String at: answers
+/// a character's code, every character is compared as its code, and an
 /// escape appends String with: the code it answers; a parse error signals
 /// an Error naming its line and column instead of printing and answering a
 /// ParseException; the unsupported-operation errors describe the receiver
@@ -13,17 +18,17 @@
 /// without end; code the benchmark never runs and that cannot run as
 /// upstream wrote it is left out: JsonValue's class-side string: and
 /// boolean:, which send JsonLiteral NULL, TRUE and FALSE, and every method
-/// sending them or the absent JsonValue number:; JsonValue>>writeTo:,
-/// which sends the absent writeTo:with:, and writeOn:, whose
+/// sending them or the absent JsonValue number:; JsonValue>>writeTo:, which
+/// sends the absent writeTo:with:, and writeOn:, whose
 /// subclassResponsibility Primordial Soup does not define;
 /// JsonObject>>updateHashIndex, which sends the absent add:put:;
-/// JsonObject>>=, which reads another object's private values; JsonObject>>remove: and
-/// HashIndexTable>>remove:, which pass a name for an index and add 1 to a
-/// Boolean; JsonArray>>removeAt:, which Primordial Soup's List lacks;
-/// the unused number API, which needs endsWith: or Integer and Float
-/// parse:, is left out too (JsonValue's class-side integer:, double: and
-/// cutOffPointZero:, asInteger and asDouble, and the JsonArray and
-/// JsonObject methods sending them); names are written out.
+/// JsonObject>>=, which reads another object's private values;
+/// JsonObject>>remove: and HashIndexTable>>remove:, which pass a name for
+/// an index and add 1 to a Boolean; JsonArray>>removeAt:, which the SOM
+/// library's Vector lacks; the unused number API, which needs endsWith: or
+/// Integer and Float parse:, is left out too (JsonValue's class-side
+/// integer:, double: and cutOffPointZero:, asInteger and asDouble, and the
+/// JsonArray and JsonObject methods sending them); names are written out.
 ///
 /// Copyright (c) 2001-2015 see AUTHORS file
 ///
@@ -44,9 +49,9 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class Json usingPlatform: platform = (
+class Json usingPlatform: platform som: som = (
   |
-    private List = platform collections List.
+    private Vector = som Vector.
     private NULL = JsonLiteral new: 'null'.
     private TRUE = JsonLiteral new: 'true'.
     private FALSE = JsonLiteral new: 'false'.
@@ -378,31 +383,40 @@ class Json usingPlatform: platform = (
 
   class HashIndexTable = (
     |
+      /// A slot is nil or 0 when empty: the table is not filled, as the
+      /// Java and Python ports' arrays of zeroes are allocated already
+      /// filled.
       private hashTable = Array new: 32.
     |
-    /// SOMns's `Array new: 32 withAll: 0`; Primordial Soup's `Array` has
-    /// no `new:withAll:`.
-    1 to: 32 do: [:slot | hashTable at: slot put: 0].
   ) (
     public at: name put: index = (
       |
         slot
       |
       slot:: hashSlotFor: name.
-      index < 255 ifTrue: [hashTable at: slot put: index + 1] ifFalse: [hashTable at: slot put: 0].
+      index < 255 ifTrue: [
+        hashTable at: slot put: (index + 1 bitAnd: 255).
+      ] ifFalse: [
+        hashTable at: slot put: 0.
+      ].
     )
 
     public at: name = (
       |
         slot
+        entry
       |
       slot:: hashSlotFor: name.
+      entry:: hashTable at: slot.
+      entry isNil ifTrue: [^-1].
       /// subtract 1, 0 stands for empty
-      ^((hashTable at: slot) bitAnd: 255) - 1.
+      ^(entry bitAnd: 255) - 1.
     )
 
+    /// Are We Fast Yet's portable hash, the name's length times 1402589:
+    /// not a proper hash, but sufficient for the benchmark.
     hashSlotFor: element = (
-      ^(element hash bitAnd: 31) + 1.
+      ^(element size * 1402589 bitAnd: hashTable size - 1) + 1.
     )
   )
 
@@ -462,12 +476,12 @@ class Json usingPlatform: platform = (
 
   class JsonArray = JsonValue (
     |
-      public values = List new.
+      public values = Vector new.
     |
   ) (
     public add: value = (
       value isNil ifTrue: [Error signal: 'value is null'].
-      values add: value.
+      values append: value.
     )
 
     public at: index put: value = (
@@ -571,16 +585,16 @@ class Json usingPlatform: platform = (
 
   class JsonObject = JsonValue (
     |
-      public names = List new.
-      private values = List new.
+      public names = Vector new.
+      private values = Vector new.
       private table = HashIndexTable new.
     |
   ) (
     public add: name with: jsonValue = (
       name isNil ifTrue: [Error signal: 'name is null'].
       jsonValue isNil ifTrue: [Error signal: 'jsonValue is null'].
-      names add: name.
-      values add: jsonValue.
+      names append: name.
+      values append: jsonValue.
       table at: name put: names size.
     )
 
@@ -594,8 +608,8 @@ class Json usingPlatform: platform = (
       (position = -1) not ifTrue: [
         values at: position put: jsonValue.
       ] ifFalse: [
-        names add: name.
-        values add: jsonValue.
+        names append: name.
+        values append: jsonValue.
         table at: name put: names size.
       ].
     )
@@ -662,8 +676,8 @@ class Json usingPlatform: platform = (
       ^lastIndexOf: name.
     )
 
-    /// SOMns's Vector>>lastIndexOf:; Primordial Soup's List has
-    /// indexOf: but no lastIndexOf:.
+    /// SOMns's Vector>>lastIndexOf:, which the SOM library's Vector does
+    /// not have.
     lastIndexOf: name = (
       names size to: 1 by: -1 do: [:position | (names at: position) = name ifTrue: [^position]].
       ^-1.

@@ -5,7 +5,7 @@
 # not the Are We Fast Yet DeltaBlue, which is deltablue.py beside it. The
 # module's slots are the module-private constants below and the planner of
 # `DeltaBlueTon80`, which, as in the port, serves every run of one instance.
-# The port's List is som.Vector, its `add:` append and `at: index + 1`
+# The port's Vector, the SOM library's, is som.Vector, and `at: index + 1`
 # at(index), the same element of a list counted from 0; its constraints
 # reach their enclosing Planner lexically, here as a constructor argument;
 # its Errors are RuntimeErrors with their messages. bench answers nothing

@@ -5,7 +5,10 @@
 /// a run without --timed verifies each benchmark once instead of
 /// measuring it, so its output can be pinned; the command line selects a
 /// benchmark by name; output goes through the platform's transcript
-/// rather than Object>>out; names are written out.
+/// rather than Object>>out; every benchmark is instantiated with the
+/// platform and the one instance of Som, the SOM collection library Are We
+/// Fast Yet has each language carry in its own code; names are written
+/// out.
 ///
 /// Copyright 2012 Google Inc.
 /// Copyright 2013 Ryan Macnak
@@ -43,6 +46,7 @@ class AreWeFastYet packageUsing: manifest = (
       manifest Storage.
       manifest Towers.
     }.
+    private Som = manifest Som.
   |
 ) (
   class Benchmarking usingPlatform: platform = (
@@ -51,6 +55,7 @@ class AreWeFastYet packageUsing: manifest = (
       private ArgumentError = platform kernel ArgumentError.
       private transcript = platform transcript.
       private benchmarkPlatform = platform.
+      private som = Som usingPlatform: platform.
     |
   ) (
     /// Primordial Soup's measure: runs the block until the time is
@@ -79,7 +84,7 @@ class AreWeFastYet packageUsing: manifest = (
         instance
         result
       |
-      instance:: benchmark usingPlatform: benchmarkPlatform.
+      instance:: benchmark usingPlatform: benchmarkPlatform som: som.
       timed ifTrue: [
         measure: [instance bench] forAtLeast: warmUpNanoseconds.
         result:: (measure: [instance bench] forAtLeast: measureNanoseconds) asStringFixed: 1.

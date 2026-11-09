@@ -2,7 +2,7 @@
  * Primordial Soup's `DeltaBlue.ns`, commit
  * `338f0bb342a618f5608ab72ab1b1fae9b226e472`.
  * This file is its class Planner; its nested classes are the other files of
- * deltablueton80/. The port's List is som.Vector, its `add:` append, and
+ * deltablueton80/. The port's Vector, the SOM library's, is som.Vector, and
  * `at: index + 1` at(index), the same element of a list counted from 0. A
  * mark is a long: one Planner serves every run of the benchmark, so
  * currentMark grows with the number of runs, without bound. The port's

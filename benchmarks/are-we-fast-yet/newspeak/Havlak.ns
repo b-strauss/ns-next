@@ -5,11 +5,12 @@
 /// runs once and checks its own result; it runs Are We Fast Yet's workload
 /// at its size 1500, 1500 dummy loops, 50 loop-finding iterations and 10,
 /// 10 and 5 nested loops, where SOMns's harness derives all five from one
-/// iteration count (50 n, 5 n, n, n and 5); Vector is Primordial Soup's
-/// List, IdentityDictionary is Map and IdentitySet and Set are Set, the
-/// basic blocks and loops being keys and elements by identity because they
-/// define no =; BasicBlock's customHash, which only SOMns's collections
-/// ask for, is left out; only Primordial Soup's protocol is sent; names are
+/// iteration count (50 n, 5 n, n, n and 5); Vector, Set, IdentitySet and
+/// IdentityDictionary are the SOM library's the harness hands every
+/// benchmark (Som.ns), at the places and with the initial sizes of the Java
+/// and Python ports, so the graph's nodes are stored by at:put: under their
+/// names, as they are there, and the root loop is reducible, as it is
+/// there; otherwise only Primordial Soup's protocol is sent; names are
 /// written out, the basic block kinds included.
 ///
 /// Copyright 2011 Google Inc.
@@ -18,11 +19,12 @@
 /// may not use this file except in compliance with the License. You may
 /// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 /// and in THIRD-PARTY-NOTICES.md at the repository root.
-class Havlak usingPlatform: platform = (
+class Havlak usingPlatform: platform som: som = (
   |
-    private List = platform collections List.
-    private Map = platform collections Map.
-    private Set = platform collections Set.
+    private Vector = som Vector.
+    private IdentityDictionary = som IdentityDictionary.
+    private Set = som Set.
+    private IdentitySet = som IdentitySet.
   |
 ) (
   public bench = (
@@ -45,8 +47,8 @@ class Havlak usingPlatform: platform = (
 
   class BasicBlock new: name = (
     |
-      public inEdges = List new: 2.
-      public outEdges = List new: 2.
+      public inEdges = Vector new: 2.
+      public outEdges = Vector new: 2.
       private name = name.
     |
   ) (
@@ -55,11 +57,16 @@ class Havlak usingPlatform: platform = (
     )
 
     public addOutEdge: to = (
-      outEdges add: to.
+      outEdges append: to.
     )
 
     public addInEdge: from = (
-      inEdges add: from.
+      inEdges append: from.
+    )
+
+    /// The key's hash an IdentityDictionary asks for.
+    public customHash = (
+      ^name.
     )
   )
 
@@ -75,27 +82,27 @@ class Havlak usingPlatform: platform = (
 
   class ControlFlowGraph = (
     |
-      private basicBlockMap = List new.
+      private basicBlockMap = Vector new.
       private startNode ::= nil.
-      private edgeList = List new.
+      private edgeList = Vector new.
     |
   ) (
     public createNode: name = (
       |
         node
       |
-      basicBlockMap size >= name ifTrue: [
+      (basicBlockMap at: name) notNil ifTrue: [
         node:: basicBlockMap at: name.
       ] ifFalse: [
         node:: BasicBlock new: name.
-        basicBlockMap add: node.
+        basicBlockMap at: name put: node.
       ].
       nodeCount = 1 ifTrue: [startNode:: node].
       ^node.
     )
 
     public addEdge: edge = (
-      edgeList add: edge.
+      edgeList append: edge.
     )
 
     public nodeCount = (
@@ -113,14 +120,14 @@ class Havlak usingPlatform: platform = (
 
   class LoopStructureGraph = (
     |
-      private root = SimpleLoop basicBlock: nil reducible: false.
-      private loops = List new.
+      private root = SimpleLoop basicBlock: nil reducible: true.
+      private loops = Vector new.
       private loopCounter ::= 0.
     |
     root nestingLevel: 0.
     root counter: loopCounter.
     loopCounter:: loopCounter + 1.
-    loops add: root.
+    loops append: root.
   ) (
     public createNewLoop: basicBlock reducible: isReducible = (
       |
@@ -129,18 +136,18 @@ class Havlak usingPlatform: platform = (
       loop:: SimpleLoop basicBlock: basicBlock reducible: isReducible.
       loop counter: loopCounter.
       loopCounter:: loopCounter + 1.
-      loops add: loop.
+      loops append: loop.
       ^loop.
     )
 
     public calculateNestingLevel = (
-      loops do: [:loop | loop isRoot ifFalse: [loop parent isNil ifTrue: [loop parent: root]]].
+      loops forEach: [:loop | loop isRoot ifFalse: [loop parent isNil ifTrue: [loop parent: root]]].
       calculateNestingLevelOf: root depth: 0.
     )
 
     private calculateNestingLevelOf: loop depth: depth = (
       loop depthLevel: depth.
-      loop children do: [:child |
+      loop children forEach: [:child |
         calculateNestingLevelOf: child depth: depth + 1.
         loop nestingLevel: (loop nestingLevel max: 1 + child nestingLevel).
       ].
@@ -160,8 +167,8 @@ class Havlak usingPlatform: platform = (
       private nestingLevel_ ::= 0.
       private header = basicBlock.
       private isReducible = isReducible.
-      private basicBlocks = Set new.
-      public children = Set new.
+      private basicBlocks = IdentitySet new.
+      public children = IdentitySet new.
     |
     basicBlock notNil ifTrue: [basicBlocks add: basicBlock].
   ) (
@@ -220,13 +227,13 @@ class Havlak usingPlatform: platform = (
         nodeList
         node
       |
-      nodeList:: List new.
+      nodeList:: Vector new.
       node:: self.
       [(node == node parent) not] whileTrue: [
-        (node parent == node parent parent) not ifTrue: [nodeList add: node].
+        (node parent == node parent parent) not ifTrue: [nodeList append: node].
         node:: node parent.
       ].
-      nodeList do: [:each | each union: parent_].
+      nodeList forEach: [:each | each union: parent_].
       ^node.
     )
 
@@ -358,9 +365,9 @@ class Havlak usingPlatform: platform = (
       private loopStructureGraph = loopStructureGraph.
       private Unvisited = 2147483647.
       private MaxNonBackPredecessors = 32 * 1024.
-      private nonBackPredecessors = List new.
-      private backPredecessors = List new.
-      private number = Map new.
+      private nonBackPredecessors = Vector new.
+      private backPredecessors = Vector new.
+      private number = IdentityDictionary new.
       private maxSize ::= 0.
       private header ::= nil.
       private type ::= nil.
@@ -397,7 +404,7 @@ class Havlak usingPlatform: platform = (
     )
 
     private initializeAllNodes = (
-      controlFlowGraph basicBlocks do: [:basicBlock | number at: basicBlock put: Unvisited].
+      controlFlowGraph basicBlocks forEach: [:basicBlock | number at: basicBlock put: Unvisited].
       depthFirstSearch: controlFlowGraph startBasicBlock current: 1.
     )
 
@@ -419,14 +426,14 @@ class Havlak usingPlatform: platform = (
 
     private processEdges: candidateBlock candidate: candidate = (
       candidateBlock predecessorCount > 0 ifTrue: [
-        candidateBlock inEdges do: [:predecessorBlock |
+        candidateBlock inEdges forEach: [:predecessorBlock |
           |
             predecessor
           |
           predecessor:: number at: predecessorBlock.
           (predecessor = Unvisited) not ifTrue: [
             (isAncestor: candidate of: predecessor) ifTrue: [
-              (backPredecessors at: candidate) add: predecessor.
+              (backPredecessors at: candidate) append: predecessor.
             ] ifFalse: [
               (nonBackPredecessors at: candidate) add: predecessor.
             ].
@@ -452,8 +459,8 @@ class Havlak usingPlatform: platform = (
         maxSize:: size.
       ].
       1 to: size do: [:index |
-        nonBackPredecessors add: Set new.
-        backPredecessors add: List new.
+        nonBackPredecessors append: Set new.
+        backPredecessors append: Vector new.
         nodes at: index put: UnionFindNode new.
       ].
       initializeAllNodes.
@@ -464,15 +471,15 @@ class Havlak usingPlatform: platform = (
           nodePool
           candidateBlock
         |
-        nodePool:: List new.
+        nodePool:: Vector new.
         candidateBlock:: (nodes at: candidate) basicBlock.
         candidateBlock notNil ifTrue: [
           |
             workList
           |
           collectBackPredecessors: candidate nodePool: nodePool.
-          workList:: List new.
-          nodePool do: [:each | workList add: each].
+          workList:: Vector new.
+          nodePool forEach: [:each | workList append: each].
           (nodePool size = 0) not ifTrue: [type at: candidate put: #reducible].
           [workList isEmpty] whileFalse: [
             |
@@ -504,7 +511,7 @@ class Havlak usingPlatform: platform = (
         nodePool: nodePool
         workList: workList
         node: workNode = (
-      (nonBackPredecessors at: workNode depthFirstNumber) do: [:predecessor |
+      (nonBackPredecessors at: workNode depthFirstNumber) forEach: [:predecessor |
         |
           representative
         |
@@ -514,9 +521,9 @@ class Havlak usingPlatform: platform = (
           (nonBackPredecessors at: candidate) add: representative depthFirstNumber.
         ] ifFalse: [
           (representative depthFirstNumber = candidate) not ifTrue: [
-            (nodePool anySatisfy: [:each | each == representative]) ifFalse: [
-              workList add: representative.
-              nodePool add: representative.
+            (nodePool hasSome: [:each | each == representative]) ifFalse: [
+              workList append: representative.
+              nodePool append: representative.
             ].
           ].
         ].
@@ -525,7 +532,7 @@ class Havlak usingPlatform: platform = (
 
     private setLoopAttribute: candidate nodePool: nodePool loop: loop = (
       (nodes at: candidate) loop: loop.
-      nodePool do: [:node |
+      nodePool forEach: [:node |
         header at: node depthFirstNumber put: candidate.
         node union: (nodes at: candidate).
         node loop notNil ifTrue: [node loop parent: loop] ifFalse: [loop addNode: node basicBlock].
@@ -534,9 +541,9 @@ class Havlak usingPlatform: platform = (
 
     /// Step d of Havlak's algorithm.
     private collectBackPredecessors: candidate nodePool: nodePool = (
-      (backPredecessors at: candidate) do: [:predecessor |
+      (backPredecessors at: candidate) forEach: [:predecessor |
         (predecessor = candidate) not ifTrue: [
-          nodePool add: (nodes at: predecessor) findSet.
+          nodePool append: (nodes at: predecessor) findSet.
         ] ifFalse: [
           type at: candidate put: #selfLoop.
         ].

@@ -3,7 +3,9 @@
 /// core-lib/Benchmarks/Mandelbrot.ns), one of the Are We Fast Yet benchmarks.
 /// Changed for ns-next: a module in Primordial Soup's shape, whose bench
 /// runs once and checks its own result; only Primordial Soup's protocol is
-/// sent; names are written out.
+/// sent; its factory takes, besides the platform, the SOM collection
+/// library the harness hands every benchmark (Som.ns), which it does not
+/// use; names are written out.
 ///
 /// SOMns's own header of the file:
 ///
@@ -53,7 +55,7 @@
 /// #  modified by Peter Zotov
 /// #
 /// # http://benchmarksgame.alioth.debian.org/u64q/program.php?test=mandelbrot&lang=yarv&id=3
-class Mandelbrot usingPlatform: platform = () (
+class Mandelbrot usingPlatform: platform som: som = () (
   public bench = (
     |
       result

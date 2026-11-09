@@ -1,13 +1,10 @@
 /* Translated for ns-next from `DeltaBlueTon80.ns`, itself adapted from
  * Primordial Soup's `DeltaBlue.ns`, commit
  * `338f0bb342a618f5608ab72ab1b1fae9b226e472`.
- * This file is its class Planner's class Variable; the port's List is
- * som.Vector, whose remove takes out the constraint as the port's
- * `remove:ifAbsent:` does (a constraint is on a variable's list at most
- * once). A mark is a long, as Planner's currentMark is.
- * The one known difference in work: som.Vector's remove, upstream's
- * implementation, copies the remaining constraints into a new array on each
- * removal, where the port's List remove:ifAbsent: shifts them in place.
+ * This file is its class Planner's class Variable; the port's Vector, the
+ * SOM library's, is som.Vector, whose remove copies the remaining
+ * constraints into a new array, as the port's `remove:` does. A mark is a
+ * long, as Planner's currentMark is.
  */
 /* Copyright 2008, the Newspeak project authors.
  *

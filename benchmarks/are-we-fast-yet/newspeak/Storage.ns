@@ -3,7 +3,9 @@
 /// core-lib/Benchmarks/Storage.ns), one of the Are We Fast Yet benchmarks.
 /// Changed for ns-next: a module in Primordial Soup's shape, whose bench
 /// runs once and checks its own result; only Primordial Soup's protocol is
-/// sent; names are written out.
+/// sent; the generator is the one of the SOM library the harness hands
+/// every benchmark (Som.ns), as the Java and Python ports take som.Random,
+/// where SOMns's comes from its harness; names are written out.
 ///
 /// Copyright (c) 2001-2015 see AUTHORS file
 ///
@@ -24,14 +26,15 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class Storage usingPlatform: platform = (
+class Storage usingPlatform: platform som: som = (
   |
+    private Random = som Random.
     count.
   |
 ) (
   public bench = (
     count:: 0.
-    buildTreeDepth: 7 with: (Random new: 74755).
+    buildTreeDepth: 7 with: Random new.
     count = 5461 ifFalse: [Error signal: 'Storage: expected 5461, got ' , count printString].
     ^count.
   )
@@ -47,17 +50,5 @@ class Storage usingPlatform: platform = (
     /// in index order.
     1 to: 4 do: [:index | array at: index put: (buildTreeDepth: depth - 1 with: random)].
     ^array.
-  )
-
-  /// The Are We Fast Yet harness's generator (SOMns's Harness.ns).
-  class Random new: initialSeed = (
-    |
-      seed ::= initialSeed.
-    |
-  ) (
-    public next = (
-      seed:: seed * 1309 + 13849 bitAnd: 65535.
-      ^seed.
-    )
   )
 )

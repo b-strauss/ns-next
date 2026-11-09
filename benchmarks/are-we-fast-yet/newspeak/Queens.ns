@@ -3,7 +3,11 @@
 /// core-lib/Benchmarks/Queens.ns), one of the Are We Fast Yet benchmarks.
 /// Changed for ns-next: a module in Primordial Soup's shape, whose bench
 /// runs once and checks its own result; only Primordial Soup's protocol is
-/// sent; names are written out.
+/// sent; the test of a free square and bench's conjunction of the runs
+/// short-circuit with and:, as the Java and Python ports' && and and do,
+/// where SOMns's & evaluates every operand; its factory takes, besides the
+/// platform, the SOM collection library the harness hands every benchmark
+/// (Som.ns), which it does not use; names are written out.
 ///
 /// Copyright (c) 2001-2015 see AUTHORS file
 ///
@@ -24,7 +28,7 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class Queens usingPlatform: platform = (
+class Queens usingPlatform: platform som: som = (
   |
     freeMaxs.
     freeRows.
@@ -37,7 +41,7 @@ class Queens usingPlatform: platform = (
       result
     |
     result:: true.
-    1 to: 10 do: [:index | result:: result & queens].
+    1 to: 10 do: [:index | result:: result and: [queens]].
     result ifFalse: [Error signal: 'Queens: expected true, got false'].
     ^result.
   )
@@ -64,7 +68,7 @@ class Queens usingPlatform: platform = (
   )
 
   row: row column: column = (
-    ^(freeRows at: row) & (freeMaxs at: column + row) & (freeMins at: column - row + 8).
+    ^(freeRows at: row) and: [(freeMaxs at: column + row) and: [freeMins at: column - row + 8]].
   )
 
   row: row column: column put: value = (

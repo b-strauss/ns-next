@@ -8,7 +8,9 @@
 /// that both sit in one harness; bench signals an Error rather than an
 /// Exception and answers the queue count; quo: 2 is // 2, the same for the
 /// never negative control word; next: queueHead is the assignment it
-/// means; names are written out.
+/// means; its factory takes, besides the platform, the SOM collection
+/// library the harness hands every benchmark (Som.ns), which it does not
+/// use; names are written out.
 ///
 /// Copyright 2008, the Newspeak project authors.
 ///
@@ -16,7 +18,7 @@
 /// may not use this file except in compliance with the License. You may
 /// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 /// and in THIRD-PARTY-NOTICES.md at the repository root.
-class RichardsTon80 usingPlatform: platform = (
+class RichardsTon80 usingPlatform: platform som: som = (
   |
     dataSize = 4.
     idleCount = 1000.

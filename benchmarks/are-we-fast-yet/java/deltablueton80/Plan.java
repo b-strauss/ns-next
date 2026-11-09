@@ -1,7 +1,7 @@
 /* Translated for ns-next from `DeltaBlueTon80.ns`, itself adapted from
  * Primordial Soup's `DeltaBlue.ns`, commit
  * `338f0bb342a618f5608ab72ab1b1fae9b226e472`.
- * This file is its class Plan; the port's List is som.Vector.
+ * This file is its class Plan; the port's Vector is som.Vector.
  */
 /* Copyright 2008, the Newspeak project authors.
  *

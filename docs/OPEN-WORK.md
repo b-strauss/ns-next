@@ -2406,7 +2406,7 @@ classes and a class from source with no predecessor are not edited
   is unmeasured; measure it per the `measuring-performance` skill
   ([execution.md](design/execution.md)'s protocol) before the next
   performance step.
-- **The collections' remaining cost on Havlak and DeltaBlue.** With `List`,
+- **The collections' remaining cost.** With `List`,
   `Map` and `Set` written here and their modification count, measured at
   `7a661484` against `master` `eeaa1d90` (release builds, three builds by
   three rounds): Havlak 3,491 ms to 3,711 ms, +6.3%, and DeltaBlue
@@ -2421,7 +2421,11 @@ classes and a class from source with no predecessor are not edited
   the user on 2026-10-10. Two ways out were identified and not measured: a
   compiler-side direct load for a read of a private slot, in place of the
   getter send, and an inlined `to:do:` ("Inlining `to:do:` and
-  `to:by:do:`" above). [core-library.md](design/core-library.md), "What is
+  `to:by:do:`" above). Those benchmarks now carry the SOM collection
+  library of their own (`benchmarks/are-we-fast-yet/newspeak/Som.ns`), so
+  measuring either way out needs a program that uses `List`, `Map` and
+  `Set` (a microbenchmark, or the benchmarks at a commit before
+  `Som.ns`). [core-library.md](design/core-library.md), "What is
   measured".
 - **`StringBuilder`'s state check on every member is unmeasured.** Every
   member that reads a builder's slots sends the private `checkState:`
