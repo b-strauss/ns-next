@@ -7222,6 +7222,19 @@ Mandelbrot 75%, NBody 72% and CD 16% faster, their act-leaf calls down
 by 98% to 99.6%, and no program slower with its builds apart ("What
 floats in machine code moved").
 
+The end-of-batch groups passed once two build defects they found were
+fixed: `release-checks` found a test of an eden-full box calling a
+debug-only hook, and `ns-runtime` not compiling without a JIT, its
+optimizing tier naming the float classification from the JIT-only
+`jit/floats.rs`, which moved into `jit/float_operations.rs`, compiled on
+every target; `aarch64` found the CPUID decoder dead code off x86_64.
+`commit` (5,118 tests), `images` (1,090), `caches` (545), `benchmarks`
+(139), `codegen`, `release-checks` (4,914, and both lints), `stress` --
+the suite under each of the twelve modes and without the JIT, 5,118
+tests each, and `run-corpus` "ran 6, failed 0, skipped 205" plain and
+under each mode -- `linux` (5,117 tests, the 139 benchmark programs) and
+`aarch64` (5,114 tests under QEMU).
+
 - `f429dcd4` -- the plan, with the six decisions of 2026-11-09.
 - `3615700f`, `6273a546` -- the x86-64-v2 build flags and the start
   check through CPUID.
@@ -7235,6 +7248,8 @@ floats in machine code moved").
   mixed `SmallInteger` and `Float` rows.
 - `893213ba` -- `Float` operations as nodes in optimized code.
 - The documents' commits after them.
+- `b30cc539`, `c627f41f` -- the float classification compiled without
+  a JIT, a debug-only test gated, and the CPUID decoder only on x86_64.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Templates for
 `Integer`'s bit operations", "Whether x86-64-v2 pays on the Rust side",
