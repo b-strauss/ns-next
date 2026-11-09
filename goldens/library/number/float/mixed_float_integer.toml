@@ -1,0 +1,149 @@
+stdout = '''
+3 + | 3.0 | 3.0 | 3.5 | 6.0 | 6.5 | 0.75 | 9007199254740996.0 | 576460752303423500.0 | 1152921504606847000.0 | Infinity | -Infinity | NaN | 1e+300 | 6 | 7 | + requires a numeric argument, got nil
+-7 + | -7.0 | -7.0 | -6.5 | -4.0 | -3.5 | -9.25 | 9007199254740985.0 | 576460752303423500.0 | 1152921504606847000.0 | Infinity | -Infinity | NaN | 1e+300 | -4 | -3 | + requires a numeric argument, got nil
+0 + | 0.0 | 0.0 | 0.5 | 3.0 | 3.5 | -2.25 | 9007199254740992.0 | 576460752303423500.0 | 1152921504606847000.0 | Infinity | -Infinity | NaN | 1e+300 | 3 | 4 | + requires a numeric argument, got nil
+9007199254740993 + | 9007199254740992.0 | 9007199254740992.0 | 9007199254740992.0 | 9007199254740996.0 | 9007199254740996.0 | 9007199254740990.0 | 18014398509481984.0 | 585467951558164500.0 | 1161928703861588000.0 | Infinity | -Infinity | NaN | 1e+300 | 9007199254740996 | 9007199254740997 | + requires a numeric argument, got nil
+-9007199254740993 + | -9007199254740992.0 | -9007199254740992.0 | -9007199254740992.0 | -9007199254740989.0 | -9007199254740988.0 | -9007199254740994.0 | 0.0 | 567453553048682500.0 | 1143914305352106000.0 | Infinity | -Infinity | NaN | 1e+300 | -9007199254740990 | -9007199254740989 | + requires a numeric argument, got nil
+576460752303423489 + | 576460752303423500.0 | 576460752303423500.0 | 576460752303423500.0 | 576460752303423500.0 | 576460752303423500.0 | 576460752303423500.0 | 585467951558164500.0 | 1152921504606847000.0 | 1729382256910270500.0 | Infinity | -Infinity | NaN | 1e+300 | 576460752303423492 | 576460752303423493 | + requires a numeric argument, got nil
+1152921504606846975 + | 1152921504606847000.0 | 1152921504606847000.0 | 1152921504606847000.0 | 1152921504606847000.0 | 1152921504606847000.0 | 1152921504606847000.0 | 1161928703861588000.0 | 1729382256910270500.0 | 2305843009213694000.0 | Infinity | -Infinity | NaN | 1e+300 | 1152921504606846978 | 1152921504606846979 | + requires a numeric argument, got nil
+-1152921504606846976 + | -1152921504606847000.0 | -1152921504606847000.0 | -1152921504606847000.0 | -1152921504606847000.0 | -1152921504606847000.0 | -1152921504606847000.0 | -1143914305352106000.0 | -576460752303423500.0 | 0.0 | Infinity | -Infinity | NaN | 1e+300 | -1152921504606846973 | -1152921504606846972 | + requires a numeric argument, got nil
+18446744073709551616 + | 18446744073709552000.0 | 18446744073709552000.0 | 18446744073709552000.0 | 18446744073709552000.0 | 18446744073709552000.0 | 18446744073709552000.0 | 18455751272964293000.0 | 19023204826012975000.0 | 19599665578316400000.0 | Infinity | -Infinity | NaN | 1e+300 | 18446744073709551619 | 18446744073709551620 | + requires a numeric argument, got nil
+3 - | 3.0 | 3.0 | 2.5 | 0.0 | -0.5 | 5.25 | -9007199254740989.0 | -576460752303423500.0 | -1152921504606847000.0 | -Infinity | Infinity | NaN | -1e+300 | 0 | -1 | - requires a numeric argument, got nil
+-7 - | -7.0 | -7.0 | -7.5 | -10.0 | -10.5 | -4.75 | -9007199254741000.0 | -576460752303423500.0 | -1152921504606847000.0 | -Infinity | Infinity | NaN | -1e+300 | -10 | -11 | - requires a numeric argument, got nil
+0 - | 0.0 | 0.0 | -0.5 | -3.0 | -3.5 | 2.25 | -9007199254740992.0 | -576460752303423500.0 | -1152921504606847000.0 | -Infinity | Infinity | NaN | -1e+300 | -3 | -4 | - requires a numeric argument, got nil
+9007199254740993 - | 9007199254740992.0 | 9007199254740992.0 | 9007199254740992.0 | 9007199254740989.0 | 9007199254740988.0 | 9007199254740994.0 | 0.0 | -567453553048682500.0 | -1143914305352106000.0 | -Infinity | Infinity | NaN | -1e+300 | 9007199254740990 | 9007199254740989 | - requires a numeric argument, got nil
+-9007199254740993 - | -9007199254740992.0 | -9007199254740992.0 | -9007199254740992.0 | -9007199254740996.0 | -9007199254740996.0 | -9007199254740990.0 | -18014398509481984.0 | -585467951558164500.0 | -1161928703861588000.0 | -Infinity | Infinity | NaN | -1e+300 | -9007199254740996 | -9007199254740997 | - requires a numeric argument, got nil
+576460752303423489 - | 576460752303423500.0 | 576460752303423500.0 | 576460752303423500.0 | 576460752303423500.0 | 576460752303423500.0 | 576460752303423500.0 | 567453553048682500.0 | 0.0 | -576460752303423500.0 | -Infinity | Infinity | NaN | -1e+300 | 576460752303423486 | 576460752303423485 | - requires a numeric argument, got nil
+1152921504606846975 - | 1152921504606847000.0 | 1152921504606847000.0 | 1152921504606847000.0 | 1152921504606847000.0 | 1152921504606847000.0 | 1152921504606847000.0 | 1143914305352106000.0 | 576460752303423500.0 | 0.0 | -Infinity | Infinity | NaN | -1e+300 | 1152921504606846972 | 1152921504606846971 | - requires a numeric argument, got nil
+-1152921504606846976 - | -1152921504606847000.0 | -1152921504606847000.0 | -1152921504606847000.0 | -1152921504606847000.0 | -1152921504606847000.0 | -1152921504606847000.0 | -1161928703861588000.0 | -1729382256910270500.0 | -2305843009213694000.0 | -Infinity | Infinity | NaN | -1e+300 | -1152921504606846979 | -1152921504606846980 | - requires a numeric argument, got nil
+18446744073709551616 - | 18446744073709552000.0 | 18446744073709552000.0 | 18446744073709552000.0 | 18446744073709552000.0 | 18446744073709552000.0 | 18446744073709552000.0 | 18437736874454810000.0 | 17870283321406128000.0 | 17293822569102705000.0 | -Infinity | Infinity | NaN | -1e+300 | 18446744073709551613 | 18446744073709551612 | - requires a numeric argument, got nil
+3 * | 0.0 | -0.0 | 1.5 | 9.0 | 10.5 | -6.75 | 27021597764222976.0 | 1729382256910270500.0 | 3458764513820541000.0 | Infinity | -Infinity | NaN | 3e+300 | 9 | 12 | * requires a numeric argument, got nil
+-7 * | -0.0 | 0.0 | -3.5 | -21.0 | -24.5 | 15.75 | -63050394783186940.0 | -4035225266123964400.0 | -8070450532247929000.0 | -Infinity | Infinity | NaN | -7e+300 | -21 | -28 | * requires a numeric argument, got nil
+0 * | 0.0 | -0.0 | 0.0 | 0.0 | 0.0 | -0.0 | 0.0 | 0.0 | 0.0 | NaN | NaN | NaN | 0.0 | 0 | 0 | * requires a numeric argument, got nil
+9007199254740993 * | 0.0 | -0.0 | 4503599627370496.0 | 27021597764222976.0 | 31525197391593470.0 | -20266198323167230.0 | 8.112963841460668e+31 | 5.192296858534828e+33 | 1.0384593717069655e+34 | Infinity | -Infinity | NaN | Infinity | 27021597764222979 | 36028797018963972 | * requires a numeric argument, got nil
+-9007199254740993 * | -0.0 | 0.0 | -4503599627370496.0 | -27021597764222976.0 | -31525197391593470.0 | 20266198323167230.0 | -8.112963841460668e+31 | -5.192296858534828e+33 | -1.0384593717069655e+34 | -Infinity | Infinity | NaN | -Infinity | -27021597764222979 | -36028797018963972 | * requires a numeric argument, got nil
+576460752303423489 * | 0.0 | -0.0 | 288230376151711740.0 | 1729382256910270500.0 | 2017612633061982200.0 | -1297036692682702800.0 | 5.192296858534828e+33 | 3.32306998946229e+35 | 6.64613997892458e+35 | Infinity | -Infinity | NaN | Infinity | 1729382256910270467 | 2305843009213693956 | * requires a numeric argument, got nil
+1152921504606846975 * | 0.0 | -0.0 | 576460752303423500.0 | 3458764513820541000.0 | 4035225266123964400.0 | -2594073385365405700.0 | 1.0384593717069655e+34 | 6.64613997892458e+35 | 1.329227995784916e+36 | Infinity | -Infinity | NaN | Infinity | 3458764513820540925 | 4611686018427387900 | * requires a numeric argument, got nil
+-1152921504606846976 * | -0.0 | 0.0 | -576460752303423500.0 | -3458764513820541000.0 | -4035225266123964400.0 | 2594073385365405700.0 | -1.0384593717069655e+34 | -6.64613997892458e+35 | -1.329227995784916e+36 | -Infinity | Infinity | NaN | -Infinity | -3458764513820540928 | -4611686018427387904 | * requires a numeric argument, got nil
+18446744073709551616 * | 0.0 | -0.0 | 9223372036854776000.0 | 55340232221128655000.0 | 64563604257983430000.0 | -41505174165846490000.0 | 1.661534994731145e+35 | 1.0633823966279327e+37 | 2.1267647932558654e+37 | Infinity | -Infinity | NaN | Infinity | 55340232221128654848 | 73786976294838206464 | * requires a numeric argument, got nil
+3 / | Infinity | -Infinity | 6.0 | 1.0 | 0.8571428571428571 | -1.3333333333333333 | 3.3306690738754696e-16 | 5.204170427930421e-18 | 2.6020852139652106e-18 | 0.0 | -0.0 | NaN | 2.9999999999999996e-300 | 1 | (3/4) | / requires a numeric argument, got nil
+-7 / | -Infinity | Infinity | -14.0 | -2.3333333333333335 | -2.0 | 3.111111111111111 | -7.771561172376096e-16 | -1.214306433183765e-17 | -6.071532165918825e-18 | -0.0 | 0.0 | NaN | -6.999999999999999e-300 | (-7/3) | (-7/4) | / requires a numeric argument, got nil
+0 / | NaN | NaN | 0.0 | 0.0 | 0.0 | -0.0 | 0.0 | 0.0 | 0.0 | 0.0 | -0.0 | NaN | 0.0 | 0 | 0 | / requires a numeric argument, got nil
+9007199254740993 / | Infinity | -Infinity | 18014398509481984.0 | 3002399751580330.5 | 2573485501354569.0 | -4003199668773774.0 | 1.0 | 0.015625 | 0.0078125 | 0.0 | -0.0 | NaN | 9.007199254740992e-285 | 3002399751580331 | (9007199254740993/4) | / requires a numeric argument, got nil
+-9007199254740993 / | -Infinity | Infinity | -18014398509481984.0 | -3002399751580330.5 | -2573485501354569.0 | 4003199668773774.0 | -1.0 | -0.015625 | -0.0078125 | -0.0 | 0.0 | NaN | -9.007199254740992e-285 | -3002399751580331 | (-9007199254740993/4) | / requires a numeric argument, got nil
+576460752303423489 / | Infinity | -Infinity | 1152921504606847000.0 | 192153584101141150.0 | 164703072086692400.0 | -256204778801521540.0 | 64.0 | 1.0 | 0.5 | 0.0 | -0.0 | NaN | 5.764607523034235e-283 | 192153584101141163 | (576460752303423489/4) | / requires a numeric argument, got nil
+1152921504606846975 / | Infinity | -Infinity | 2305843009213694000.0 | 384307168202282300.0 | 329406144173384800.0 | -512409557603043100.0 | 128.0 | 2.0 | 1.0 | 0.0 | -0.0 | NaN | 1.152921504606847e-282 | 384307168202282325 | (1152921504606846975/4) | / requires a numeric argument, got nil
+-1152921504606846976 / | -Infinity | Infinity | -2305843009213694000.0 | -384307168202282300.0 | -329406144173384800.0 | 512409557603043100.0 | -128.0 | -2.0 | -1.0 | -0.0 | 0.0 | NaN | -1.152921504606847e-282 | (-1152921504606846976/3) | -288230376151711744 | / requires a numeric argument, got nil
+18446744073709551616 / | Infinity | -Infinity | 36893488147419103000.0 | 6148914691236517000.0 | 5270498306774157000.0 | -8198552921648689000.0 | 2048.0 | 32.0 | 16.0 | 0.0 | -0.0 | NaN | 1.8446744073709552e-281 | (18446744073709551616/3) | 4611686018427387904 | / requires a numeric argument, got nil
+3 < | false | false | false | false | true | false | true | true | true | true | false | false | true | false | true | < requires a numeric argument, got nil
+-7 < | true | true | true | true | true | true | true | true | true | true | false | false | true | true | true | < requires a numeric argument, got nil
+0 < | false | false | true | true | true | false | true | true | true | true | false | false | true | true | true | < requires a numeric argument, got nil
+9007199254740993 < | false | false | false | false | false | false | false | true | true | true | false | false | true | false | false | < requires a numeric argument, got nil
+-9007199254740993 < | true | true | true | true | true | true | true | true | true | true | false | false | true | true | true | < requires a numeric argument, got nil
+576460752303423489 < | false | false | false | false | false | false | false | false | true | true | false | false | true | false | false | < requires a numeric argument, got nil
+1152921504606846975 < | false | false | false | false | false | false | false | false | true | true | false | false | true | false | false | < requires a numeric argument, got nil
+-1152921504606846976 < | true | true | true | true | true | true | true | true | true | true | false | false | true | true | true | < requires a numeric argument, got nil
+18446744073709551616 < | false | false | false | false | false | false | false | false | false | true | false | false | true | false | false | < requires a numeric argument, got nil
+3 > | true | true | true | false | false | true | false | false | false | false | true | false | false | false | false | > requires a numeric argument, got nil
+-7 > | false | false | false | false | false | false | false | false | false | false | true | false | false | false | false | > requires a numeric argument, got nil
+0 > | false | false | false | false | false | true | false | false | false | false | true | false | false | false | false | > requires a numeric argument, got nil
+9007199254740993 > | true | true | true | true | true | true | true | false | false | false | true | false | false | true | true | > requires a numeric argument, got nil
+-9007199254740993 > | false | false | false | false | false | false | false | false | false | false | true | false | false | false | false | > requires a numeric argument, got nil
+576460752303423489 > | true | true | true | true | true | true | true | true | false | false | true | false | false | true | true | > requires a numeric argument, got nil
+1152921504606846975 > | true | true | true | true | true | true | true | true | false | false | true | false | false | true | true | > requires a numeric argument, got nil
+-1152921504606846976 > | false | false | false | false | false | false | false | false | false | false | true | false | false | false | false | > requires a numeric argument, got nil
+18446744073709551616 > | true | true | true | true | true | true | true | true | true | false | true | false | false | true | true | > requires a numeric argument, got nil
+3 <= | false | false | false | true | true | false | true | true | true | true | false | false | true | true | true | <= requires a numeric argument, got nil
+-7 <= | true | true | true | true | true | true | true | true | true | true | false | false | true | true | true | <= requires a numeric argument, got nil
+0 <= | true | true | true | true | true | false | true | true | true | true | false | false | true | true | true | <= requires a numeric argument, got nil
+9007199254740993 <= | false | false | false | false | false | false | false | true | true | true | false | false | true | false | false | <= requires a numeric argument, got nil
+-9007199254740993 <= | true | true | true | true | true | true | true | true | true | true | false | false | true | true | true | <= requires a numeric argument, got nil
+576460752303423489 <= | false | false | false | false | false | false | false | false | true | true | false | false | true | false | false | <= requires a numeric argument, got nil
+1152921504606846975 <= | false | false | false | false | false | false | false | false | true | true | false | false | true | false | false | <= requires a numeric argument, got nil
+-1152921504606846976 <= | true | true | true | true | true | true | true | true | true | true | false | false | true | true | true | <= requires a numeric argument, got nil
+18446744073709551616 <= | false | false | false | false | false | false | false | false | false | true | false | false | true | false | false | <= requires a numeric argument, got nil
+3 >= | true | true | true | true | false | true | false | false | false | false | true | false | false | true | false | >= requires a numeric argument, got nil
+-7 >= | false | false | false | false | false | false | false | false | false | false | true | false | false | false | false | >= requires a numeric argument, got nil
+0 >= | true | true | false | false | false | true | false | false | false | false | true | false | false | false | false | >= requires a numeric argument, got nil
+9007199254740993 >= | true | true | true | true | true | true | true | false | false | false | true | false | false | true | true | >= requires a numeric argument, got nil
+-9007199254740993 >= | false | false | false | false | false | false | false | false | false | false | true | false | false | false | false | >= requires a numeric argument, got nil
+576460752303423489 >= | true | true | true | true | true | true | true | true | false | false | true | false | false | true | true | >= requires a numeric argument, got nil
+1152921504606846975 >= | true | true | true | true | true | true | true | true | false | false | true | false | false | true | true | >= requires a numeric argument, got nil
+-1152921504606846976 >= | false | false | false | false | false | false | false | false | false | false | true | false | false | false | false | >= requires a numeric argument, got nil
+18446744073709551616 >= | true | true | true | true | true | true | true | true | true | false | true | false | false | true | true | >= requires a numeric argument, got nil
+3 = | false | false | false | true | false | false | false | false | false | false | false | false | false | true | false | false
+-7 = | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false
+0 = | true | true | false | false | false | false | false | false | false | false | false | false | false | false | false | false
+9007199254740993 = | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false
+-9007199254740993 = | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false
+576460752303423489 = | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false
+1152921504606846975 = | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false
+-1152921504606846976 = | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false
+18446744073709551616 = | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false | false
+0.0 < | true | false | false | true | false | true | true | false | true
+-0.0 < | true | false | false | true | false | true | true | false | true
+0.5 < | true | false | false | true | false | true | true | false | true
+3.0 < | false | false | false | true | false | true | true | false | true
+3.5 < | false | false | false | true | false | true | true | false | true
+-2.25 < | true | false | true | true | false | true | true | false | true
+9007199254740992.0 < | false | false | false | true | false | true | true | false | true
+576460752303423500.0 < | false | false | false | false | false | true | true | false | true
+1152921504606847000.0 < | false | false | false | false | false | false | false | false | true
+Infinity < | false | false | false | false | false | false | false | false | false
+-Infinity < | true | true | true | true | true | true | true | true | true
+NaN < | false | false | false | false | false | false | false | false | false
+1e+300 < | false | false | false | false | false | false | false | false | false
+0.0 > | false | true | false | false | true | false | false | true | false
+-0.0 > | false | true | false | false | true | false | false | true | false
+0.5 > | false | true | true | false | true | false | false | true | false
+3.0 > | false | true | true | false | true | false | false | true | false
+3.5 > | true | true | true | false | true | false | false | true | false
+-2.25 > | false | true | false | false | true | false | false | true | false
+9007199254740992.0 > | true | true | true | false | true | false | false | true | false
+576460752303423500.0 > | true | true | true | true | true | false | false | true | false
+1152921504606847000.0 > | true | true | true | true | true | true | true | true | false
+Infinity > | true | true | true | true | true | true | true | true | true
+-Infinity > | false | false | false | false | false | false | false | false | false
+NaN > | false | false | false | false | false | false | false | false | false
+1e+300 > | true | true | true | true | true | true | true | true | true
+0.0 <= | true | false | true | true | false | true | true | false | true
+-0.0 <= | true | false | true | true | false | true | true | false | true
+0.5 <= | true | false | false | true | false | true | true | false | true
+3.0 <= | true | false | false | true | false | true | true | false | true
+3.5 <= | false | false | false | true | false | true | true | false | true
+-2.25 <= | true | false | true | true | false | true | true | false | true
+9007199254740992.0 <= | false | false | false | true | false | true | true | false | true
+576460752303423500.0 <= | false | false | false | false | false | true | true | false | true
+1152921504606847000.0 <= | false | false | false | false | false | false | false | false | true
+Infinity <= | false | false | false | false | false | false | false | false | false
+-Infinity <= | true | true | true | true | true | true | true | true | true
+NaN <= | false | false | false | false | false | false | false | false | false
+1e+300 <= | false | false | false | false | false | false | false | false | false
+0.0 >= | false | true | true | false | true | false | false | true | false
+-0.0 >= | false | true | true | false | true | false | false | true | false
+0.5 >= | false | true | true | false | true | false | false | true | false
+3.0 >= | true | true | true | false | true | false | false | true | false
+3.5 >= | true | true | true | false | true | false | false | true | false
+-2.25 >= | false | true | false | false | true | false | false | true | false
+9007199254740992.0 >= | true | true | true | false | true | false | false | true | false
+576460752303423500.0 >= | true | true | true | true | true | false | false | true | false
+1152921504606847000.0 >= | true | true | true | true | true | true | true | true | false
+Infinity >= | true | true | true | true | true | true | true | true | true
+-Infinity >= | false | false | false | false | false | false | false | false | false
+NaN >= | false | false | false | false | false | false | false | false | false
+1e+300 >= | true | true | true | true | true | true | true | true | true
+0.0 = | false | false | true | false | false | false | false | false | false
+-0.0 = | false | false | true | false | false | false | false | false | false
+0.5 = | false | false | false | false | false | false | false | false | false
+3.0 = | true | false | false | false | false | false | false | false | false
+3.5 = | false | false | false | false | false | false | false | false | false
+-2.25 = | false | false | false | false | false | false | false | false | false
+9007199254740992.0 = | false | false | false | false | false | false | false | false | false
+576460752303423500.0 = | false | false | false | false | false | false | false | false | false
+1152921504606847000.0 = | false | false | false | false | false | false | false | false | false
+Infinity = | false | false | false | false | false | false | false | false | false
+-Infinity = | false | false | false | false | false | false | false | false | false
+NaN = | false | false | false | false | false | false | false | false | false
+1e+300 = | false | false | false | false | false | false | false | false | false
+asFloat | 3.0 | -7.0 | 0.0 | 9007199254740992.0 | -9007199254740992.0 | 576460752303423500.0 | 1152921504606847000.0 | -1152921504606847000.0 | 18446744073709552000.0
+'''

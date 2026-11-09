@@ -36,7 +36,8 @@
 //! held in but that value's own: a simple node computes in the registers
 //! no value is allocated to (`Roles::integer_temporaries`) and takes each
 //! through `MacroAssembler::temporary`, which a debug build checks against
-//! the registers `hold_values` names.
+//! the registers `hold_values` names; a float operation computes in the
+//! float scratch registers besides, which hold no value across a node.
 
 use std::collections::HashMap;
 
@@ -52,6 +53,8 @@ use super::snapshot::{Snapshot, SnapshotInstruction};
 use crate::heap::{CodeId, Heap, Immediate};
 use crate::interpreter::inline_cache::FeedbackBase;
 use crate::jit::baseline::{lower, BodyAssembler, Lowering, ScopeFacts, TwinTransfer};
+use crate::jit::float_operations::FloatOperation;
+use crate::jit::floats::{self, FloatRegisters};
 use crate::jit::macro_assembler::KnownSmallIntegers;
 use crate::jit::stubs::ExitKind;
 use crate::jit::{closures, sends, Refusal};
@@ -236,6 +239,7 @@ pub(in crate::jit) fn emit(
         polls: Vec::new(),
         poll_entries: Vec::new(),
         traps: Vec::new(),
+        mixed_paths: Vec::new(),
         trampolines: Vec::new(),
     };
     let order = &allocation.positions.order;
@@ -256,6 +260,7 @@ pub(in crate::jit) fn emit(
         emitter.block(body, *block, order.get(index + 1).copied());
     }
     emitter.emit_polls(body);
+    emitter.emit_mixed_paths(body);
     emitter.emit_traps(body);
     emitter.emit_trampolines(body);
     body.macro_assembler.set_site(None);
@@ -274,6 +279,24 @@ struct Poll {
     point: usize,
     position: u32,
     resume: Label,
+}
+
+/// A `SmallInteger` fast path's mixed operation, out of line
+/// (`Node::IntegerBinary`'s `mixed`): the label the fast path's failure
+/// jumps to, the frame register's shift and the position there, the
+/// operation and its operands' registers, the register its answer is
+/// defined in, if any, the label its decline jumps to -- the fallback's
+/// or the trap's -- and the label past the fast path, where it goes on.
+struct MixedPath {
+    label: Label,
+    shift: i32,
+    position: u32,
+    operation: FloatOperation,
+    receiver: Register,
+    argument: Register,
+    target: Option<Register>,
+    declined: Label,
+    done: Label,
 }
 
 /// A guard's trap, out of line: the label its failed test jumps to, the
@@ -302,6 +325,7 @@ struct Emitter<'graph> {
     /// Each poll's exit and entry, once laid out (`emit_polls`).
     poll_entries: Vec<EmittedPoll>,
     traps: Vec<Trap>,
+    mixed_paths: Vec<MixedPath>,
     /// The ways into a block from a template's jump made with the frame
     /// register at an inlined scope's register 0: the label the template
     /// jumps to, the shift there, and the block, entered with none.
@@ -517,6 +541,7 @@ impl Emitter<'_> {
                 left,
                 right,
                 fallback,
+                mixed,
                 ..
             } => {
                 // A known `SmallInteger` operand is not tested again.
@@ -557,17 +582,70 @@ impl Emitter<'_> {
                 // block is entered with.
                 macro_assembler.move_register(temporaries.left, left);
                 macro_assembler.move_register(temporaries.right, right);
+                // A mixed operation is tried out of line, so that two
+                // `SmallInteger`s run what they run without one.
+                let failed = match mixed {
+                    Some(_) => macro_assembler.assembler().label(),
+                    None => fallback,
+                };
                 let result = macro_assembler.small_integer_operation(
                     *operation,
                     temporaries,
                     known,
                     &mut |macro_assembler, condition| {
-                        macro_assembler.assembler().jump_if(condition, fallback);
+                        macro_assembler.assembler().jump_if(condition, failed);
                     },
                 );
-                if let Some(target) = defined_in(*value) {
+                let target = defined_in(*value);
+                if let Some(target) = target {
                     macro_assembler.move_register(target, result);
                 }
+                if let Some(operation) = mixed {
+                    let done = macro_assembler.assembler().label();
+                    macro_assembler.assembler().bind(done);
+                    self.mixed_paths.push(MixedPath {
+                        label: failed,
+                        shift: macro_assembler.frame_shift(),
+                        position: use_position,
+                        operation: *operation,
+                        receiver: left,
+                        argument: right,
+                        target,
+                        declined: fallback,
+                        done,
+                    });
+                }
+            }
+            Node::FloatOperation {
+                operation,
+                program_counter,
+                value,
+                receiver,
+                argument,
+                fallback,
+                ..
+            } => {
+                let receiver = self.register_of(*receiver, use_position);
+                // A unary operation reads no argument: its register is
+                // the receiver's, which `floats::emit` never reads twice.
+                let argument = argument.map_or(receiver, |argument| {
+                    self.register_of(argument, use_position)
+                });
+                // The decline goes to the fallback, entered with the frame
+                // register at the physical register 0, or else to the trap,
+                // whose write-back lies on that way alone.
+                let declined = match fallback {
+                    Some(fallback) => {
+                        Self::shift_to(body, 0);
+                        self.labels[fallback.index()]
+                    }
+                    None => {
+                        let scope = self.graph.block(block_id).scope;
+                        self.trap_out_of_line(body, use_position, *program_counter, scope, None)
+                    }
+                };
+                let target = defined_in(*value);
+                Self::float_operation(body, *operation, receiver, argument, target, declined);
             }
             // Its registers are the callee's: what the sender held there
             // is never stored.
@@ -779,6 +857,57 @@ impl Emitter<'_> {
                 instruction,
                 use_position,
             ),
+        }
+    }
+
+    /// `operation` of the operands in `receiver` and `argument`, which it
+    /// keeps, its answer into `target`, if any, or a jump to `declined`
+    /// having written nothing a value is held in: it computes in the
+    /// integer temporaries no value is allocated to -- the operands are
+    /// read where they are, since `floats::emit` writes neither -- and the
+    /// float scratch registers (`Roles::float_scratch`).
+    fn float_operation(
+        body: &mut BodyAssembler,
+        operation: FloatOperation,
+        receiver: Register,
+        argument: Register,
+        target: Option<Register>,
+        declined: Label,
+    ) {
+        let macro_assembler = &mut body.macro_assembler;
+        let temporaries = macro_assembler.roles().integer_temporaries();
+        let registers = FloatRegisters {
+            receiver,
+            argument,
+            result: macro_assembler.temporary(temporaries.left),
+            spare: macro_assembler.temporary(temporaries.right),
+        };
+        // Every check runs whether or not the answer is read: a decline
+        // is the leaf's to decide.
+        floats::emit(macro_assembler, operation, registers, declined);
+        if let Some(target) = target {
+            macro_assembler.move_register(target, registers.result);
+        }
+    }
+
+    /// Each `SmallInteger` fast path's mixed operation, out of line: the
+    /// operation on the fast path's operands, its answer into the node's
+    /// register, then back past the fast path; its decline goes on to the
+    /// fast path's own fallback or trap.
+    fn emit_mixed_paths(&mut self, body: &mut BodyAssembler) {
+        for path in std::mem::take(&mut self.mixed_paths) {
+            body.macro_assembler.assembler().bind(path.label);
+            body.macro_assembler.assume_frame_shift(path.shift);
+            self.hold(body, path.position);
+            Self::float_operation(
+                body,
+                path.operation,
+                path.receiver,
+                path.argument,
+                path.target,
+                path.declined,
+            );
+            body.macro_assembler.assembler().jump(path.done);
         }
     }
 
@@ -2191,6 +2320,94 @@ mod tests {
         assert_eq!(
             run_tree(&tree, (small_integer(1), Immediate::NIL.bits()), &integers),
             trap
+        );
+    }
+
+    fn small_float(value: f64) -> u64 {
+        Immediate::small_float(value).expect("a SmallFloat").bits()
+    }
+
+    /// `Float>>+` always inlined answers the sum of two `Float`s and of a
+    /// `Float` and a `SmallInteger` in machine code, and traps at its send,
+    /// running it again in the interpreter, on an argument it does not
+    /// take.
+    #[test]
+    fn an_inlined_float_arm_answers_and_traps_at_its_send() {
+        use crate::builtins::primitive::{FloatPrimitive, Primitive};
+        let tree = always_inlined_tree(
+            "+",
+            vec![1],
+            vec![(
+                2,
+                crate::jit::optimizing::tree::CalleeFacts::Primitive(Primitive::Float(
+                    FloatPrimitive::Add,
+                )),
+            )],
+        );
+        let index = crate::heap::Heap::machine_layout().small_float_index;
+        let floats = [(index, guard_word(2), 0)];
+        assert_eq!(
+            run_tree(&tree, (small_float(1.5), small_float(2.25)), &floats),
+            MachineExit::Returned {
+                value: small_float(3.75)
+            }
+        );
+        assert_eq!(
+            run_tree(&tree, (small_float(1.5), small_integer(2)), &floats),
+            MachineExit::Returned {
+                value: small_float(3.5)
+            }
+        );
+        assert_eq!(
+            run_tree(&tree, (small_float(1.5), Immediate::NIL.bits()), &floats),
+            MachineExit::Trap {
+                program_counter: 0,
+                site: 0,
+            }
+        );
+    }
+
+    /// A `SmallInteger`'s `+` always inlined takes a `Float` argument in
+    /// its mixed operation, out of line, where its fast path fails, and
+    /// traps only where that declines too: on an overflow, whose argument
+    /// is no `Float`.
+    #[test]
+    fn an_inlined_integer_arm_takes_a_float_argument() {
+        use crate::builtins::primitive::{IntegerPrimitive, Primitive};
+        let tree = always_inlined_tree(
+            "+",
+            vec![1],
+            vec![(
+                1,
+                crate::jit::optimizing::tree::CalleeFacts::Primitive(Primitive::Integer(
+                    IntegerPrimitive::Add,
+                )),
+            )],
+        );
+        let index = crate::heap::Heap::machine_layout().small_integer_index;
+        let integers = [(index, guard_word(1), 0)];
+        assert_eq!(
+            run_tree(&tree, (small_integer(3), small_float(0.5)), &integers),
+            MachineExit::Returned {
+                value: small_float(3.5)
+            }
+        );
+        assert_eq!(
+            run_tree(&tree, (small_integer(37), small_integer(5)), &integers),
+            MachineExit::Returned {
+                value: small_integer(42)
+            }
+        );
+        assert_eq!(
+            run_tree(
+                &tree,
+                (small_integer(SMALL_INTEGER_MAX), small_integer(1)),
+                &integers
+            ),
+            MachineExit::Trap {
+                program_counter: 0,
+                site: 0,
+            }
         );
     }
 

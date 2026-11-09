@@ -51,10 +51,81 @@ fn decimal_of_exponent_form(text: &str) -> Decimal {
     }
 }
 
-/// The shortest digits that read back as `magnitude`, which Rust's `{:e}`
-/// writes.
+/// The shortest digits that read back as `magnitude`, the closest to it
+/// among them, and of two equally close the one whose last digit is even.
+/// Rust's `{:e}` writes the shortest and closest digits, but breaks an
+/// exact tie between two of them upward (`even_at_a_tie`).
 fn shortest_decimal(magnitude: f64) -> Decimal {
-    decimal_of_exponent_form(&format!("{magnitude:e}"))
+    even_at_a_tie(
+        magnitude,
+        decimal_of_exponent_form(&format!("{magnitude:e}")),
+    )
+}
+
+/// `shortest`, the shortest closest digits of `magnitude`, or, where
+/// `magnitude` lies exactly halfway between them and the other digits of
+/// the same length on its other side, whichever of the two ends in an
+/// even digit, if it reads back as `magnitude` too: as the printers that
+/// pick the shortest text of a double round a halfway remainder, so that
+/// 900719925474099.25 prints as `900719925474099.2`, not `…099.3`.
+fn even_at_a_tie(magnitude: f64, shortest: Decimal) -> Decimal {
+    // A tie lies halfway past at most 17 digits, so the value has at most
+    // 18 significant digits, and its 26 written digits end in 8 zeros,
+    // exactly: most values are known not to tie without their whole
+    // expansion.
+    let leading = decimal_of_exponent_form(&format!("{magnitude:.25e}"));
+    if leading.digits[18..].iter().any(|digit| *digit != b'0') {
+        return shortest;
+    }
+    // The exact expansion: a finite double has at most 767 significant
+    // digits, so 800 after the first are the value itself.
+    let exact = decimal_of_exponent_form(&format!("{magnitude:.800e}"));
+    // The digits `exact` keeps down to `shortest`'s last digit's place.
+    let Some(kept) =
+        usize::try_from(digit_count(shortest.digits.len()) + exact.point - shortest.point)
+            .ok()
+            .filter(|kept| (1..exact.digits.len()).contains(kept))
+    else {
+        return shortest;
+    };
+    let (lower, rest) = exact.digits.split_at(kept);
+    let halfway = rest[0] == b'5' && rest[1..].iter().all(|digit| *digit == b'0');
+    let last_is_even = |digits: &[u8]| digits.last().is_some_and(|digit| digit % 2 == 0);
+    if !halfway || last_is_even(&shortest.digits) {
+        return shortest;
+    }
+    let mut digits = lower.to_vec();
+    let mut point = exact.point;
+    if !last_is_even(&digits) {
+        // The upper neighbour: the last digit raised, a 9 carried.
+        let mut position = digits.len();
+        loop {
+            if position == 0 {
+                digits.insert(0, b'1');
+                point += 1;
+                break;
+            }
+            position -= 1;
+            if digits[position] == b'9' {
+                digits[position] = b'0';
+            } else {
+                digits[position] += 1;
+                break;
+            }
+        }
+    }
+    while digits.len() > 1 && digits.last() == Some(&b'0') {
+        digits.pop();
+    }
+    let text = format!(
+        "0.{}e{point}",
+        std::str::from_utf8(&digits).expect("ASCII digits")
+    );
+    if text.parse::<f64>().ok().map(f64::to_bits) == Some(magnitude.to_bits()) {
+        Decimal { digits, point }
+    } else {
+        shortest
+    }
 }
 
 /// `significant` digits of `magnitude`, rounded half up on its exact binary
@@ -336,6 +407,26 @@ mod tests {
         assert_eq!(shortest(f64::INFINITY), "Infinity");
         assert_eq!(shortest(f64::NEG_INFINITY), "-Infinity");
         assert_eq!(shortest(f64::NAN), "NaN");
+    }
+
+    /// Of two shortest texts exactly as far from the value, the one
+    /// ending in an even digit: 900719925474099.25 lies halfway between
+    /// `…099.2` and `…099.3`, both of which read back as it.
+    #[test]
+    fn shortest_breaks_a_tie_to_the_even_digit() {
+        assert_eq!(shortest(900_719_925_474_099.0 + 0.25), "900719925474099.2");
+        assert_eq!(
+            shortest(-(900_719_925_474_099.0 + 0.25)),
+            "-900719925474099.2"
+        );
+        assert_eq!(shortest(900_719_925_474_098.0 + 0.25), "900719925474098.2");
+        // A tie whose even neighbour lies above.
+        assert_eq!(shortest(900_719_925_474_099.0 + 0.75), "900719925474099.8");
+        // No tie: the closer text.
+        assert_eq!(shortest(900_719_925_474_099.0 + 0.125), "900719925474099.1");
+        assert_eq!(shortest(900_719_925_474_099.0 + 0.375), "900719925474099.4");
+        assert_eq!(shortest(0.1 * 2f64.powi(53)), "900719925474099.2");
+        assert_eq!(shortest(3.0 * f64::from_bits(1)), "1.5e-323");
     }
 
     #[test]

@@ -123,6 +123,13 @@ const ANALYZER_STACK_BYTES: usize = 8 * 1024 * 1024;
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> ExitCode {
+    // First, before anything else runs: the workspace's crates are built for
+    // x86-64-v2, the precompiled standard library is not, so nothing before
+    // this check executes a v2 instruction.
+    if let Some(refusal) = ns_tooling::processor::refusal_for_missing_features("ns-next-analyzer") {
+        eprintln!("{refusal}");
+        return ExitCode::from(1);
+    }
     let command = Cli::parse().command;
     let worker = std::thread::Builder::new()
         .name("ns-next-analyzer".to_string())

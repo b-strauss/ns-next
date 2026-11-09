@@ -35,11 +35,13 @@
 
 use ns_assembler::{Assembled, Condition, Label, Memory, Register, Width};
 
+use super::float_operations::FloatOperation;
+use super::floats::{self, FloatRegisters};
 use super::leaves::Leaf;
 use super::macro_assembler::{Abi, MacroAssembler, Operand, Roles};
 use super::stubs::{emit_miss, finish_stub, BlockWord, ExitKind};
 use super::SHIFTED_SLOTS;
-use crate::builtins::primitive::{MachineCall, RowStub, MIRROR};
+use crate::builtins::primitive::{MachineCall, RowStub, MIRROR, ROW_STUB_COUNT};
 use crate::heap::machine_words::MachineWord;
 use crate::interpreter::inline_cache::cells::{
     BLOCK_BYTES, CELL_BYTES, CELL_WORDS, CHAIN_START_BITS, MAXIMUM_GLOBAL_ROWS, ROW_BYTES,
@@ -525,7 +527,7 @@ pub(crate) struct AccessorEntries {
     /// The method whose fast path is mirror row `index`, by index.
     pub(crate) mirror_methods: Vec<u32>,
     /// The method whose fast path is a row with a stub of its own, by
-    /// the stub's index (`RowStub::index`).
+    /// the stub's index (`builtins::primitive::row_stub_index`).
     pub(crate) row_stubs: Vec<u32>,
     /// The quick methods answering `nil`, `true` and `false`.
     pub(crate) nil: u32,
@@ -583,8 +585,10 @@ pub(crate) struct AccessorEntries {
 ///   `at:put:`, which read or write the element an index in range names
 ///   as the row's leaf does -- an Array's store through the inline write
 ///   barrier, a byte's without one, since a byte names no object -- and
-///   continue at the row's mirror method stub for every other case, so
-///   that the row's failures stay its leaf's;
+///   a `Float` row's operation on operands it takes, its result boxed
+///   inline (`floats::emit`); each continues at the row's mirror method
+///   stub for every other case, so that the row's failures stay its
+///   leaf's;
 /// - a nested class's accessor on a public or protected chain, whose
 ///   cell's guard is the receiver's dispatch id, so that the hidden slot
 ///   the entry recorded is the receiver's (`nested::nested_class`'s hit):
@@ -852,17 +856,22 @@ pub(crate) fn assemble_accessor_stubs(abi: Abi) -> (Assembled, AccessorEntries) 
         parameter_stubs(|position, slots| ClosureStub::ValueOfParameter { position, slots });
     let culls = parameter_stubs(|position, slots| ClosureStub::CullParameter { position, slots });
     emit_closure_stub_body(&mut macro_assembler, closure_body, decline);
-    let row_stubs: Vec<Label> = RowStub::ALL
-        .into_iter()
-        .map(|stub| {
-            emit_row_stub(
+    // One stub per row marked with one, in row order, as
+    // `row_stub_index` numbers them.
+    let row_stubs: Vec<Label> = MIRROR
+        .iter()
+        .enumerate()
+        .filter_map(|(row, entry)| match entry.machine_call {
+            MachineCall::Stub(stub) => Some(emit_row_stub(
                 &mut macro_assembler,
-                stub,
+                (row, stub),
                 [index, element, spare],
                 mirror_method,
-            )
+            )),
+            MachineCall::Leaf | MachineCall::Exit => None,
         })
         .collect();
+    debug_assert_eq!(row_stubs.len(), ROW_STUB_COUNT);
     let assembler = macro_assembler.assembler();
     // The mirror method: the receiver handed over in the machine words,
     // the row in the field's role, the send found by its return address.
@@ -1315,17 +1324,20 @@ const CHAIN_START_SHIFT: u8 = CHAIN_START_BITS as u8;
 // recorded none.
 const _: () = assert!(crate::mixin::DispatchId::NONE.bits() == 0);
 
-/// The stub of a method whose fast path is the row `stub` serves
-/// (`MachineCall::Stub`), at the label it answers: the element its
-/// index, in the send's slot 0, names -- read, or written with the value
-/// in slot 1 and the value answered -- once the receiver and the index
-/// are checked as the row's leaf checks them; every other case continues
-/// at `mirror_method` with the row's number in the field's role, so that
-/// the row's leaf decides it. `registers` are three registers it may
-/// clobber: none is the receiver's, the field's or the answer's.
+/// The stub of a method whose fast path is mirror row `row`, which `stub`
+/// serves (`MachineCall::Stub`), at the label it answers: for an Array's
+/// or a ByteArray's row, the element its index, in the send's slot 0,
+/// names -- read, or written with the value in slot 1 and the value
+/// answered -- once the receiver and the index are checked as the row's
+/// leaf checks them; for a `Float` row, its operation on the receiver
+/// and, for a binary one, the argument in slot 0 (`floats::emit`).
+/// Every other case continues at `mirror_method` with the row's number
+/// in the field's role, so that the row's leaf decides it. `registers` are three
+/// registers it may clobber: none is the receiver's, the field's or the
+/// answer's.
 fn emit_row_stub(
     macro_assembler: &mut MacroAssembler,
-    stub: RowStub,
+    (row, stub): (usize, RowStub),
     registers: [Register; 3],
     mirror_method: Label,
 ) -> Label {
@@ -1333,24 +1345,23 @@ fn emit_row_stub(
     let layout = crate::heap::Heap::machine_layout();
     let [index, element, spare] = registers;
     let (receiver, answer) = (roles.callee_receiver(), roles.leaf_result);
-    let Some(row) = MIRROR
-        .iter()
-        .position(|entry| entry.machine_call == MachineCall::Stub(stub))
-    else {
-        unreachable!("internal: every row stub serves a row");
-    };
     let assembler = macro_assembler.assembler();
     let (entry, fallback) = (assembler.label(), assembler.label());
     assembler.bind(entry);
     assembler.enter_called();
-    assembler.load(Width::Word64, index, argument_slot(roles, 0));
-    match stub {
-        RowStub::ArrayAt => {
+    // A unary operation's send has no slot 0, so its stub reads none.
+    // Only a float stub's row has one (`every_row_with_a_float_operation_has_the_float_stub`).
+    let float_operation = FloatOperation::of(MIRROR[row].primitive);
+    if float_operation.is_none_or(|operation| operation.argument_count() > 0) {
+        assembler.load(Width::Word64, index, argument_slot(roles, 0));
+    }
+    match (stub, float_operation) {
+        (RowStub::ArrayAt, _) => {
             macro_assembler.load_element_address(receiver, index, element, fallback);
             let assembler = macro_assembler.assembler();
             assembler.load(Width::Word64, answer, word_at(element));
         }
-        RowStub::ArrayAtPut => {
+        (RowStub::ArrayAtPut, _) => {
             macro_assembler.load_element_address(receiver, index, element, fallback);
             macro_assembler
                 .assembler()
@@ -1362,14 +1373,14 @@ fn emit_row_stub(
                 .assembler()
                 .load(Width::Word64, answer, argument_slot(roles, 1));
         }
-        RowStub::ByteArrayAt => {
+        (RowStub::ByteArrayAt, _) => {
             macro_assembler.load_byte_address(receiver, index, element, spare, fallback);
             let assembler = macro_assembler.assembler();
             assembler.load(Width::Byte, answer, word_at(element));
             assembler.shift_left(answer, layout.tag_bits);
             assembler.or_immediate(answer, layout.small_integer_tag);
         }
-        RowStub::ByteArrayAtPut => {
+        (RowStub::ByteArrayAtPut, _) => {
             macro_assembler.load_byte_address(receiver, index, element, spare, fallback);
             let assembler = macro_assembler.assembler();
             assembler.load(Width::Word64, answer, argument_slot(roles, 1));
@@ -1382,6 +1393,22 @@ fn emit_row_stub(
             assembler.move_register(spare, answer);
             assembler.shift_right_logical(spare, layout.tag_bits);
             assembler.store(Width::Byte, word_at(element), spare);
+        }
+        (RowStub::Float, None) => {
+            unreachable!("internal: a row with a float stub is a float operation's");
+        }
+        (RowStub::Float, Some(operation)) => {
+            // The answer's register is no operand's, and a decline writes
+            // only it, the element's and the idiom scratch register, none
+            // of which `mirror_method` reads before it writes it: the
+            // idiom scratch register it loads with the machine words.
+            let registers = FloatRegisters {
+                receiver,
+                argument: index,
+                result: answer,
+                spare: element,
+            };
+            floats::emit(macro_assembler, operation, registers, fallback);
         }
     }
     let assembler = macro_assembler.assembler();

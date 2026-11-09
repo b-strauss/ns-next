@@ -466,6 +466,7 @@ pub(crate) fn test_receiver(
         application,
         applications: vec![application, application],
         own_slot_bases: vec![own_slot_base, own_slot_base],
+        small_integer: false,
     }
 }
 

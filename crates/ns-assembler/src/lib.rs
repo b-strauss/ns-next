@@ -3,7 +3,8 @@
 //!
 //! The crate knows nothing of the VM: an operation is a move, a load or a
 //! store of one of the widths the heap uses, an arithmetic or logical
-//! operation, a compare, a jump to a label, a call, a push or a pop. Every
+//! operation, a compare, a jump to a label, a call, a push or a pop, or one
+//! of these on a double-precision value in a floating-point register. Every
 //! tier writes its code in these operations, so a second architecture is a
 //! second [`Encoder`] and nothing above it changes
 //! (`docs/design/execution.md`, "The foundation and the one extension
@@ -27,7 +28,7 @@
 //! Every constant of an encoder -- an opcode, a prefix, an opcode extension,
 //! a condition code, a field's bits, an instruction's size -- is a named
 //! `const` documented with its official source: the Intel SDM volume and
-//! section title for x64, the developer.arm.com page of the instruction for
+//! section title for x64, the support.arm.com page of the instruction for
 //! AArch64. A reader checks a byte against the manual instead of trusting
 //! it. `tests/encoding_sources.rs` (`every_encoding_constant_is_named_and_sourced`)
 //! holds every encoder file under `src/`, subdirectories included, to it:
@@ -49,6 +50,43 @@ pub use x64::X64;
 /// [`aarch64::X30`] and [`aarch64::SP`]).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Register(pub u8);
+
+/// A floating-point register, holding one double-precision value in its
+/// low 64 bits, numbered as the target architecture numbers it in its
+/// encodings ([`x64::XMM0`] … [`x64::XMM15`], [`aarch64::D0`] …
+/// [`aarch64::D31`]). The encoders keep none for themselves.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct FloatRegister(pub u8);
+
+/// The arithmetic of [`Operation::FloatArithmetic`], IEEE 754's in
+/// double precision, rounded to nearest, ties to even.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum FloatArithmetic {
+    /// `target + source`.
+    Add,
+    /// `target - source`.
+    Subtract,
+    /// `target * source`.
+    Multiply,
+    /// `target / source`.
+    Divide,
+}
+
+/// The direction [`Operation::FloatRound`] rounds to an integral value in,
+/// named as IEEE 754 names its rounding-direction attributes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "IEEE 754's names of the directions, each \"toward\" one"
+)]
+pub enum Rounding {
+    /// Toward negative infinity: the floor.
+    TowardNegative,
+    /// Toward positive infinity: the ceiling.
+    TowardPositive,
+    /// Toward zero: the truncation.
+    TowardZero,
+}
 
 /// The width of a load or a store. A load of less than a word fills the
 /// register's upper bits with zeros.
@@ -80,15 +118,23 @@ pub struct Memory {
 /// [`Encoder`] honours the same contract, so a condition means the same on
 /// every architecture:
 ///
-/// - **Sets, every condition defined**: `compare`, `compare_immediate`,
-///   `compare_memory` and `subtract_from_memory`. The signed conditions
-///   (`Less` … `GreaterOrEqual`) and the unsigned ones (`Below` …
-///   `AboveOrEqual`) compare `left` with `right` -- for
+/// - **Sets, every condition but the float ones defined**: `compare`,
+///   `compare_immediate`, `compare_memory` and `subtract_from_memory`.
+///   The signed conditions (`Less` … `GreaterOrEqual`) and the unsigned
+///   ones (`Below` … `AboveOrEqual`) compare `left` with `right` -- for
 ///   `subtract_from_memory` the word as it was before the subtraction
 ///   with the value subtracted -- and `Overflow` holds when
 ///   `left - right` overflows.
 /// - **Sets, only `Equal` and `NotEqual` defined**: `test_immediate` and
 ///   `test_immediate_with_width`.
+/// - **Sets, the float conditions defined**: `float_compare`, which
+///   compares `left` with `right` as doubles. `Unordered` holds when
+///   either is a NaN, `Ordered` when neither is; `FloatGreater` and
+///   `FloatGreaterOrEqual` compare them and are false when unordered.
+///   `Equal` and `NotEqual` are defined only on a path where `Unordered`
+///   was tested false: x64's `ucomisd` sets ZF on unordered, so `je`
+///   holds there, while AArch64's `fcmp` leaves Z clear, so `eq` does
+///   not. No other condition may be read after it.
 /// - **Sets, only `Overflow` and `NoOverflow` defined**: `add`,
 ///   `add_immediate`, `subtract` and `multiply_checked`. No other
 ///   condition may be read after them: the carry of an addition means
@@ -103,17 +149,23 @@ pub struct Memory {
 ///   to V alone. So the contract holds as x64's `imul` sets it, and the
 ///   operation needs no other condition.
 /// - **Clobbers**, the flags undefined afterwards: `and`, `and_immediate`,
-///   `or_immediate`, `shift_left`, `shift_right_arithmetic`,
-///   `shift_right_logical` -- x64's
-///   instructions set the flags, AArch64's plain `and`, `orr`, `lsl` and
-///   `asr` keep them, so neither may be relied on -- `divide_signed`,
+///   `or_immediate`, `xor_immediate`, `shift_left`,
+///   `shift_right_arithmetic`, `shift_right_logical`, `rotate_left`,
+///   `rotate_right` -- x64's
+///   instructions set the flags, AArch64's plain `and`, `orr`, `eor`, `lsl`,
+///   `asr` and `ror` keep them, so neither may be relied on --
+///   `integer_to_float`, `float_to_integer_truncated` and `float_round`,
+///   whose instructions keep them on both architectures but which the
+///   contract leaves free to change them, `divide_signed`,
 ///   whose flags x64 leaves undefined, and `call_register` and
 ///   `call_unentered`, whose callee may do anything.
 /// - **Keeps**: every other operation -- `move_register`, `move_if`,
 ///   `move_immediate`, `load`, `store`, `store_immediate32`, `push`, `pop`,
 ///   `add_stack`, `load_code_address`, `load_labelled`, `load_label_address`, `jump`, `jump_if`,
-///   `jump_register`, `enter_called`, `jump_into_called`, `return_` and `trap` -- so a compare
-///   may be separated from its branch by moves, loads and stores.
+///   `jump_register`, `enter_called`, `jump_into_called`, `return_`, `trap`,
+///   `move_to_float`, `move_from_float`, `move_float`, `load_float`,
+///   `store_float`, `float_arithmetic` and `float_square_root` -- so a
+///   compare may be separated from its branch by moves, loads and stores.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Condition {
     /// Equal; zero after `test_immediate`.
@@ -140,6 +192,16 @@ pub enum Condition {
     Overflow,
     /// No signed overflow of the last arithmetic operation.
     NoOverflow,
+    /// After `float_compare`: either operand is a NaN.
+    Unordered,
+    /// After `float_compare`: neither operand is a NaN.
+    Ordered,
+    /// After `float_compare`: `left` is greater than `right`; false when
+    /// unordered.
+    FloatGreater,
+    /// After `float_compare`: `left` is greater than or equal to `right`;
+    /// false when unordered.
+    FloatGreaterOrEqual,
 }
 
 /// A position in the code, named before it is placed. Only the assembler
@@ -219,6 +281,72 @@ pub enum Operation {
     ShiftRightArithmetic { target: Register, count: u8 },
     /// `target := target >> count`, zeros shifted in, `count` below 64.
     ShiftRightLogical { target: Register, count: u8 },
+    /// `target := target ^ value` sign-extended.
+    XorImmediate { target: Register, value: i32 },
+    /// `target :=` its 64 bits rotated left by `count`, below 64.
+    RotateLeft { target: Register, count: u8 },
+    /// `target :=` its 64 bits rotated right by `count`, below 64.
+    RotateRight { target: Register, count: u8 },
+    /// `target :=` the 64 bits of `source`, as a double.
+    MoveToFloat {
+        target: FloatRegister,
+        source: Register,
+    },
+    /// `target :=` the 64 bits of the double in `source`.
+    MoveFromFloat {
+        target: Register,
+        source: FloatRegister,
+    },
+    /// `target := source`, a double.
+    MoveFloat {
+        target: FloatRegister,
+        source: FloatRegister,
+    },
+    /// `target :=` the double at `source`.
+    LoadFloat {
+        target: FloatRegister,
+        source: Memory,
+    },
+    /// The 64-bit word at `target` := the double in `source`.
+    StoreFloat {
+        target: Memory,
+        source: FloatRegister,
+    },
+    /// `target := target operation source`, doubles.
+    FloatArithmetic {
+        operation: FloatArithmetic,
+        target: FloatRegister,
+        source: FloatRegister,
+    },
+    /// `target :=` the square root of `source`, a double.
+    FloatSquareRoot {
+        target: FloatRegister,
+        source: FloatRegister,
+    },
+    /// `target := source` rounded to an integral double as `rounding`
+    /// says.
+    FloatRound {
+        rounding: Rounding,
+        target: FloatRegister,
+        source: FloatRegister,
+    },
+    /// Sets the float conditions to compare `left` with `right`, doubles.
+    FloatCompare {
+        left: FloatRegister,
+        right: FloatRegister,
+    },
+    /// `target :=` the signed 64-bit integer in `source`, converted to
+    /// the nearest double, ties to even.
+    IntegerToFloat {
+        target: FloatRegister,
+        source: Register,
+    },
+    /// `target :=` the double in `source` truncated toward zero to a
+    /// signed 64-bit integer; defined only for a `source` within ±2^63.
+    FloatToIntegerTruncated {
+        target: Register,
+        source: FloatRegister,
+    },
     /// Sets the flags as `left - right` does.
     Compare { left: Register, right: Register },
     /// Sets the flags as `left - right` sign-extended does.
@@ -660,6 +788,112 @@ impl<E: Encoder> Assembler<E> {
     /// below 64. Clobbers the flags.
     pub fn shift_right_logical(&mut self, target: Register, count: u8) {
         self.emit(Operation::ShiftRightLogical { target, count });
+    }
+
+    /// `target := target ^ value` sign-extended. Clobbers the flags. On
+    /// AArch64 a `value` that is no bitmask immediate goes through a
+    /// scratch register, as for `and_immediate`.
+    pub fn xor_immediate(&mut self, target: Register, value: i32) {
+        self.emit(Operation::XorImmediate { target, value });
+    }
+
+    /// `target :=` its 64 bits rotated left by `count`; `count` must be
+    /// below 64. Clobbers the flags.
+    pub fn rotate_left(&mut self, target: Register, count: u8) {
+        self.emit(Operation::RotateLeft { target, count });
+    }
+
+    /// `target :=` its 64 bits rotated right by `count`; `count` must be
+    /// below 64. Clobbers the flags.
+    pub fn rotate_right(&mut self, target: Register, count: u8) {
+        self.emit(Operation::RotateRight { target, count });
+    }
+
+    /// `target :=` the 64 bits of `source`, unchanged, as a double. Keeps
+    /// the flags.
+    pub fn move_to_float(&mut self, target: FloatRegister, source: Register) {
+        self.emit(Operation::MoveToFloat { target, source });
+    }
+
+    /// `target :=` the 64 bits of the double in `source`, unchanged. Keeps
+    /// the flags.
+    pub fn move_from_float(&mut self, target: Register, source: FloatRegister) {
+        self.emit(Operation::MoveFromFloat { target, source });
+    }
+
+    /// `target := source`, a double. Keeps the flags.
+    pub fn move_float(&mut self, target: FloatRegister, source: FloatRegister) {
+        self.emit(Operation::MoveFloat { target, source });
+    }
+
+    /// `target :=` the double at `source`. Keeps the flags.
+    pub fn load_float(&mut self, target: FloatRegister, source: Memory) {
+        self.emit(Operation::LoadFloat { target, source });
+    }
+
+    /// The 64-bit word at `target` := the double in `source`. Keeps the
+    /// flags.
+    pub fn store_float(&mut self, target: Memory, source: FloatRegister) {
+        self.emit(Operation::StoreFloat { target, source });
+    }
+
+    /// `target := target operation source`, doubles, IEEE 754's result
+    /// rounded to nearest. Keeps the flags.
+    pub fn float_arithmetic(
+        &mut self,
+        operation: FloatArithmetic,
+        target: FloatRegister,
+        source: FloatRegister,
+    ) {
+        self.emit(Operation::FloatArithmetic {
+            operation,
+            target,
+            source,
+        });
+    }
+
+    /// `target :=` the square root of `source`, a double, correctly
+    /// rounded. Keeps the flags.
+    pub fn float_square_root(&mut self, target: FloatRegister, source: FloatRegister) {
+        self.emit(Operation::FloatSquareRoot { target, source });
+    }
+
+    /// `target := source` rounded to an integral double as `rounding`
+    /// says, raising no precision exception; the sign of a zero, an
+    /// infinity and a NaN pass through. Clobbers the flags.
+    pub fn float_round(
+        &mut self,
+        rounding: Rounding,
+        target: FloatRegister,
+        source: FloatRegister,
+    ) {
+        self.emit(Operation::FloatRound {
+            rounding,
+            target,
+            source,
+        });
+    }
+
+    /// Sets the flags to compare `left` with `right`, doubles: `Unordered`,
+    /// `Ordered`, `FloatGreater` and `FloatGreaterOrEqual` are defined
+    /// after it, and `Equal` and `NotEqual` only where `Unordered` was
+    /// tested false ([`Condition`]).
+    pub fn float_compare(&mut self, left: FloatRegister, right: FloatRegister) {
+        self.emit(Operation::FloatCompare { left, right });
+    }
+
+    /// `target :=` the signed 64-bit integer in `source`, converted to the
+    /// nearest double, ties to even. Clobbers the flags.
+    pub fn integer_to_float(&mut self, target: FloatRegister, source: Register) {
+        self.emit(Operation::IntegerToFloat { target, source });
+    }
+
+    /// `target :=` the double in `source` truncated toward zero to a
+    /// signed 64-bit integer. Defined only for a `source` within ±2^63,
+    /// which the caller establishes: outside it, and for a NaN, the
+    /// architectures answer different words. Clobbers the flags.
+    pub fn float_to_integer_truncated(&mut self, target: Register, source: FloatRegister) {
+        self.emit(Operation::FloatToIntegerTruncated { target, source });
     }
 
     /// Sets the flags to compare `left` with `right`; every condition is

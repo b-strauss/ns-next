@@ -189,6 +189,10 @@ pub(crate) fn named_registers(graph: &Graph) -> usize {
                 | Node::IntegerBinary {
                     destination_register,
                     ..
+                }
+                | Node::FloatOperation {
+                    destination_register,
+                    ..
                 } => note(*destination_register),
                 Node::Frame { reads, written, .. } => {
                     for (register, _) in reads {
@@ -243,6 +247,11 @@ pub(crate) fn bind(bindings: &mut [Binding], node: &Node) {
             }
         }
         Node::IntegerBinary {
+            destination_register,
+            value,
+            ..
+        }
+        | Node::FloatOperation {
             destination_register,
             value,
             ..
@@ -411,13 +420,9 @@ fn block_exits(graph: &Graph, block: BlockId, entry: &[Binding]) -> Vec<(BlockId
     let mut bindings = entry.to_vec();
     let mut exits = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
-        if let Node::IntegerBinary {
-            fallback: Some(fallback),
-            ..
-        } = node
-        {
-            if graph.block(block).exit_position(*fallback) == Some(index) {
-                exits.push((*fallback, bindings.clone()));
+        if let Some(fallback) = node.fallback() {
+            if graph.block(block).exit_position(fallback) == Some(index) {
+                exits.push((fallback, bindings.clone()));
             }
         }
         bind(&mut bindings, node);

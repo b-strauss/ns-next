@@ -1,0 +1,19 @@
+stdout = '''
+receiver | sqrt | negated | abs | isNaN | isFinite | isInfinite
+1.5 | 1.224744871391589 | -1.5 | 1.5 | false | true | false
+-2.25 | NaN | 2.25 | 2.25 | false | true | false
+0.1 | 0.31622776601683794 | -0.1 | 0.1 | false | true | false
+1e+300 | 1e+150 | -1e+300 | 1e+300 | false | true | false
+-1e+300 | NaN | 1e+300 | 1e+300 | false | true | false
+1e-300 | 1e-150 | -1e-300 | 1e-300 | false | true | false
+Infinity | Infinity | -Infinity | Infinity | false | false | true
+-Infinity | NaN | Infinity | Infinity | false | false | true
+NaN | NaN | NaN | NaN | true | false | false
+5e-324 | 2.2227587494850775e-162 | -5e-324 | 5e-324 | false | true | false
+-5e-324 | NaN | 5e-324 | 5e-324 | false | true | false
+4.0 | 2.0 | -4.0 | 4.0 | false | true | false
+2.0 | 1.4142135623730951 | -2.0 | 2.0 | false | true | false
+-4.0 | NaN | 4.0 | 4.0 | false | true | false
+100000000000000000000.0 | 10000000000.0 | -100000000000000000000.0 | 100000000000000000000.0 | false | true | false
+4611686018427388000.0 | 2147483648.0 | -4611686018427388000.0 | 4611686018427388000.0 | false | true | false
+'''

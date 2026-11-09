@@ -15,6 +15,7 @@ use std::ops::Range;
 
 use crate::bytecode::{IntegerOperation, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId, Immediate};
+use crate::jit::float_operations::FloatOperation;
 use crate::mixin::DispatchId;
 
 pub(crate) use super::plan::{EliminatedId, ScopeId};
@@ -201,6 +202,29 @@ impl ValueKind {
         }
     }
 
+    /// The kind of a `FloatOperation`'s result: a Boolean for a
+    /// comparison and a class test, a `SmallInteger` for `asInteger`,
+    /// which declines past the range, and otherwise a `Float`, which no
+    /// kind names.
+    pub(crate) fn of_float_operation(operation: FloatOperation) -> ValueKind {
+        match operation {
+            FloatOperation::Compare { .. }
+            | FloatOperation::IsNaN
+            | FloatOperation::IsFinite
+            | FloatOperation::IsInfinite => ValueKind::Boolean,
+            FloatOperation::AsInteger => ValueKind::SmallInteger,
+            FloatOperation::Arithmetic { .. }
+            | FloatOperation::SquareRoot
+            | FloatOperation::Negated
+            | FloatOperation::Absolute
+            | FloatOperation::Floor
+            | FloatOperation::Ceiling
+            | FloatOperation::Truncated
+            | FloatOperation::Rounded
+            | FloatOperation::IntegerAsFloat => ValueKind::Unknown,
+        }
+    }
+
     /// The kind of an immediate word.
     pub(crate) fn of_word(word: u64) -> ValueKind {
         if Immediate::is_small_integer_word(word) {
@@ -293,7 +317,13 @@ pub(crate) enum Node {
     /// writes the frame back and exits to run the instruction again
     /// (`docs/design/execution.md`, "Speculation", "Guards and traps"), so
     /// that past the node the result is certain and no merge with the
-    /// fallback's way costs a phi.
+    /// fallback's way costs a phi. `mixed` is, for an arm of a
+    /// `SmallInteger` receiver always inlined, its row's mixed operation
+    /// on the same operands -- a `Float` argument's -- which the fast
+    /// path's failure runs out of line before the fallback or the trap,
+    /// which its own decline takes (`floats::emit`): two `SmallInteger`s
+    /// run the fast path alone, and a `Float` argument stays in machine
+    /// code.
     IntegerBinary {
         operation: IntegerOperation,
         program_counter: u32,
@@ -301,6 +331,26 @@ pub(crate) enum Node {
         value: ValueId,
         left: ValueId,
         right: ValueId,
+        fallback: Option<BlockId>,
+        mixed: Option<FloatOperation>,
+    },
+    /// An arm always inlined whose callee is a row machine code computes
+    /// (`float_operations::FloatOperation`), at the send at `program_counter`: a
+    /// `Float` receiver's operation, or a `SmallInteger` receiver's mixed
+    /// one, of `receiver` and, for a binary operation, `argument`, tagged
+    /// in and out, a result outside the `SmallFloat64` range boxed in
+    /// eden. It runs no Newspeak code and calls nothing. Its decline -- an
+    /// operand the operation does not take, a box with eden full, every
+    /// case the row's leaf decides -- goes to `fallback`, the block of the
+    /// send, or, for `None`, a trap that runs the send again, by
+    /// `IntegerBinary`'s rule.
+    FloatOperation {
+        operation: FloatOperation,
+        program_counter: u32,
+        destination_register: u16,
+        value: ValueId,
+        receiver: ValueId,
+        argument: Option<ValueId>,
         fallback: Option<BlockId>,
     },
     /// A customized copy's read of the receiver's field at
@@ -537,6 +587,7 @@ impl Node {
             | Node::Constant { value, .. }
             | Node::Receiver { value }
             | Node::IntegerBinary { value, .. }
+            | Node::FloatOperation { value, .. }
             | Node::OwnSlotLoad { value, .. }
             | Node::CurrentClass { value, .. }
             | Node::FieldLoad { value, .. }
@@ -559,7 +610,14 @@ impl Node {
     pub(crate) fn kind(&self) -> ValueKind {
         match self {
             Node::Constant { word, .. } => ValueKind::of_word(*word),
-            Node::IntegerBinary { operation, .. } => ValueKind::of_operation(*operation),
+            Node::IntegerBinary {
+                operation, mixed, ..
+            } => match (ValueKind::of_operation(*operation), mixed) {
+                // A mixed operation's sum is a `Float`.
+                (ValueKind::SmallInteger, Some(_)) => ValueKind::Unknown,
+                (kind, _) => kind,
+            },
+            Node::FloatOperation { operation, .. } => ValueKind::of_float_operation(*operation),
             Node::IdentityCompare { .. } => ValueKind::Boolean,
             Node::IndexedLoad {
                 kind: IndexedKind::ByteArray,
@@ -593,6 +651,11 @@ impl Node {
     pub(crate) fn trap(&self) -> Option<u32> {
         match self {
             Node::IntegerBinary {
+                program_counter,
+                fallback: None,
+                ..
+            }
+            | Node::FloatOperation {
                 program_counter,
                 fallback: None,
                 ..
@@ -631,6 +694,7 @@ impl Node {
             | Node::Receiver { .. }
             | Node::Copy { .. }
             | Node::IntegerBinary { .. }
+            | Node::FloatOperation { .. }
             | Node::OwnSlotLoad { .. }
             | Node::Frame { .. }
             | Node::CurrentClass { .. }
@@ -667,6 +731,9 @@ impl Node {
             Node::IntegerBinary { left, right, .. } | Node::IdentityCompare { left, right, .. } => {
                 vec![*left, *right]
             }
+            Node::FloatOperation {
+                receiver, argument, ..
+            } => [Some(*receiver), *argument].into_iter().flatten().collect(),
             Node::FieldStore { object, source, .. } => vec![*object, *source],
             Node::IndexedLoad { object, index, .. } => vec![*object, *index],
             Node::IndexedStore {
@@ -676,6 +743,18 @@ impl Node {
                 ..
             } => vec![*object, *index, *source],
             Node::Frame { reads, .. } => reads.iter().map(|(_, value)| *value).collect(),
+        }
+    }
+
+    /// The block the node's failure goes to, if it goes to one rather
+    /// than to a trap or nowhere: an integer fast path's fallback, or a
+    /// float operation's.
+    pub(crate) fn fallback(&self) -> Option<BlockId> {
+        match self {
+            Node::IntegerBinary { fallback, .. } | Node::FloatOperation { fallback, .. } => {
+                *fallback
+            }
+            _ => None,
         }
     }
 }
@@ -730,13 +809,9 @@ impl Block {
     pub(crate) fn successors(&self) -> Vec<BlockId> {
         let mut successors = self.end.successors();
         for node in &self.nodes {
-            if let Node::IntegerBinary {
-                fallback: Some(fallback),
-                ..
-            } = node
-            {
-                if !successors.contains(fallback) {
-                    successors.push(*fallback);
+            if let Some(fallback) = node.fallback() {
+                if !successors.contains(&fallback) {
+                    successors.push(fallback);
                 }
             }
         }
@@ -751,9 +826,9 @@ impl Block {
         if self.end.successors().contains(&successor) {
             return Some(self.nodes.len());
         }
-        self.nodes.iter().position(
-            |node| matches!(node, Node::IntegerBinary { fallback: Some(fallback), .. } if *fallback == successor),
-        )
+        self.nodes
+            .iter()
+            .position(|node| node.fallback() == Some(successor))
     }
 }
 

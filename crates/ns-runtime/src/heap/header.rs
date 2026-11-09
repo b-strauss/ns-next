@@ -34,6 +34,11 @@ pub(super) const FORMAT_BITS: u64 = FORMAT_MASK << FORMAT_SHIFT;
 /// under `FORMAT_BITS`, for machine code's test of an indirection vector.
 pub(super) const INDEXABLE_POINTERS_BITS: u64 = (Format::IndexablePointers as u64) << FORMAT_SHIFT;
 
+/// The format bits of a `LargeInteger`'s and a boxed `Float`'s header
+/// (`Format::SixtyFourBit`), under `FORMAT_BITS`: what machine code's
+/// recognition of a boxed `Float` tests (`MacroAssembler::load_float`).
+pub(super) const SIXTY_FOUR_BIT_BITS: u64 = (Format::SixtyFourBit as u64) << FORMAT_SHIFT;
+
 /// The format bits of a class object's header: what `AllocateInstance`'s
 /// template compares its receiver's with, under `FORMAT_BITS`.
 pub(super) const CLASS_BITS: u64 = (Format::Class as u64) << FORMAT_SHIFT;

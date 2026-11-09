@@ -1,0 +1,88 @@
+/// The edges of the range of `Float`s held without a box, as operands
+/// and as results of `Float`'s `+ - * /`, `< > <= >=` and `=`: the
+/// largest such float and 2^129 just past it, 2^-127, which is outside
+/// though its exponent is the range's lowest, the smallest float inside
+/// and 2^-126, the subnormal 4.9e-324, the infinity and NaN. Each edge
+/// is made by exact arithmetic on powers of two, each operation is a
+/// block run on every pair, so that machine code runs it once the block
+/// is compiled, and the results that cross an edge -- into the range or
+/// out of it -- are printed beside the edges.
+class FloatRangeEdges = () (
+  /// 2.0 raised to `exponent`, by exact doublings or halvings.
+  twoRaisedTo: exponent = (
+    |
+      power ::= 1.0.
+      count ::= 0.
+    |
+    [count < exponent abs] whileTrue: [
+      power:: exponent < 0 ifTrue: [power / 2.0] ifFalse: [power * 2.0].
+      count:: count + 1.
+    ].
+    ^power.
+  )
+
+  /// The text of `operation` on `left` and `right`: its result printed,
+  /// or the message of the error it signals.
+  textOf: operation on: left and: right = (
+    ^[(operation value: left value: right) printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      largest = (twoRaisedTo: 128) * (2.0 - (twoRaisedTo: -52)).
+      past = twoRaisedTo: 129.
+      lowestExponent = twoRaisedTo: -127.
+      smallest = (twoRaisedTo: -127) + (twoRaisedTo: -179).
+      next = twoRaisedTo: -126.
+      edges = {largest. past. lowestExponent. smallest. next. 4.9e-324. Float infinity. Float nan}.
+      operands = {
+        largest.
+        past.
+        lowestExponent.
+        smallest.
+        1.0.
+        2.
+        4.9e-324.
+        Float infinity.
+        Float nan.
+      }.
+      operations = {
+        {'+'. [:left :right | left + right]}.
+        {'-'. [:left :right | left - right]}.
+        {'*'. [:left :right | left * right]}.
+        {'/'. [:left :right | left / right]}.
+        {'<'. [:left :right | left < right]}.
+        {'>'. [:left :right | left > right]}.
+        {'<='. [:left :right | left <= right]}.
+        {'>='. [:left :right | left >= right]}.
+        {'='. [:left :right | left = right]}.
+      }.
+    |
+    /// The results that cross an edge.
+    transcript
+        print: largest + (twoRaisedTo: 76);
+        show: ' ';
+        print: past - (twoRaisedTo: 76);
+        show: ' ';
+        print: next / 2.0;
+        show: ' ';
+        print: lowestExponent * 2.0;
+        show: ' ';
+        print: smallest - (twoRaisedTo: -179);
+        show: ' ';
+        print: lowestExponent + (twoRaisedTo: -179) = smallest;
+        newLine.
+    operations do: [:operation |
+      edges do: [:edge |
+        transcript show: edge printString , ' ' , (operation at: 1).
+        operands do: [:operand |
+          transcript
+              show: ' | ';
+              show: (textOf: (operation at: 2) on: edge and: operand).
+        ].
+        transcript newLine.
+      ].
+    ].
+  )
+)

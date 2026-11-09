@@ -1524,8 +1524,12 @@ that it is tested as such and so that `Heap::describe` writes a float in an
 error message as `printString` does.
 
 The layout is Primordial Soup's, which is what a program written against
-that API expects: the shortest digits that read back as the same double
-(Rust's `{:e}` finds them), written in decimal when the exponent of the first
+that API expects: the shortest digits that read back as the same double,
+the closest of them to it, and of two equally close the one ending in an
+even digit, as Primordial Soup's printer breaks the tie (Rust's `{:e}`
+finds them, but breaks the tie upward, so `float_text.rs` checks a value
+of at most 18 significant digits for one: 900719925474099.25 prints as
+`900719925474099.2`), written in decimal when the exponent of the first
 digit lies from -6 to 20 and in exponent form (`1e+21`, `1e-7`) outside it;
 `.0` after a decimal text that would otherwise look integral (`3.0`,
 `100000000000000000000.0`); `NaN`, `Infinity` and `-Infinity` by name; a `-`

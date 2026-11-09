@@ -4452,7 +4452,19 @@ fn run_thrice_on_one_instance(
     lowering: Lowering,
     jit: bool,
 ) -> ([i64; 3], JitStatistics) {
+    run_thrice_configured(source, lowering, jit, |_| {})
+}
+
+/// `run_thrice_on_one_instance`, the interpreter set up by `configure`
+/// once the module is loaded.
+fn run_thrice_configured(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+    configure: impl FnOnce(&mut Interpreter),
+) -> ([i64; 3], JitStatistics) {
     let (mut interpreter, class) = load_with(source, lowering);
+    configure(&mut interpreter);
     interpreter.set_jit_enabled(jit);
     interpreter.set_jit_stress(jit);
     interpreter.set_jit_counting(jit);
@@ -4573,6 +4585,328 @@ ns_runtime::for_each_lowering! {
                  `size` in its row's leaf: {}",
                 statistics.act_leaf_calls
             );
+        }
+    }
+}
+
+/// `Float`'s `* + - / <` sent five thousand times from a compiled loop,
+/// every operand and result a `SmallFloat64`: each cell names its row's
+/// stub, which computes the operation in machine code.
+const FLOAT_ARITHMETIC: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          value ::= 1.5.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          value:: value * 1.25 + 0.5 - 0.25 / 1.125.
+          value < 100.0 ifTrue: [count:: count + 1] ifFalse: [value:: value / 1000.0].
+          index:: index + 1.
+        ].
+        ^count.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `Float`'s arithmetic and orderings run in their rows' stubs: the
+    /// third run's sends leave machine code for nothing and call no leaf,
+    /// and the count is the interpreter's.
+    fn float_arithmetic_calls_no_leaf(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(FLOAT_ARITHMETIC, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(FLOAT_ARITHMETIC, lowering, false);
+        assert!(interpreted[0] > 0 && interpreted[0] < 1000, "{interpreted:?}");
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.miss_leaf_calls, 0);
+            assert_eq!(
+                statistics.act_leaf_calls, 0,
+                "every float operation ran in its row's stub"
+            );
+        }
+    }
+}
+
+/// `Float`'s unary and rounding operations sent from a compiled loop,
+/// every operand and result a `SmallFloat64` or a `SmallInteger`: each
+/// cell names its row's stub.
+const FLOAT_UNARY_OPERATIONS: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          value ::= 0.75.
+          scaled ::= 0.0.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          value:: (value + 1.5) sqrt negated abs.
+          value isNaN ifFalse: [count:: count + 1].
+          value isFinite ifTrue: [count:: count + 1].
+          value isInfinite ifFalse: [count:: count + 1].
+          scaled:: value * 10.0.
+          count:: count + scaled floor asInteger + scaled ceiling asInteger.
+          count:: count + scaled rounded asInteger + scaled truncated asInteger.
+          index:: index + 1.
+        ].
+        ^count.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `Float`'s `sqrt negated abs isNaN isFinite isInfinite floor
+    /// ceiling rounded truncated asInteger` run in their rows' stubs: the
+    /// third run's sends leave machine code for nothing and call no leaf,
+    /// and the count is the interpreter's.
+    fn float_unary_operations_call_no_leaf(lowering) {
+        let (compiled, statistics) =
+            run_thrice_on_one_instance(FLOAT_UNARY_OPERATIONS, lowering, true);
+        let (interpreted, _) =
+            run_thrice_on_one_instance(FLOAT_UNARY_OPERATIONS, lowering, false);
+        assert!(interpreted[0] > 3000, "{interpreted:?}");
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.miss_leaf_calls, 0);
+            assert_eq!(
+                statistics.act_leaf_calls, 0,
+                "every float operation ran in its row's stub"
+            );
+        }
+    }
+}
+
+/// A `SmallInteger` receiver's `+ - * / < > <= >= =` with a `Float`
+/// argument, and its `asFloat`, sent from a compiled loop: each cell
+/// names its row's stub.
+const MIXED_ARITHMETIC: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          sum ::= 0.0.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 1000] whileTrue: [
+          sum:: sum + (index + 0.5) + (index - 0.25) + (index * 1.5).
+          sum:: sum + (index / 4.0) + index asFloat.
+          (index < 500.5) ifTrue: [count:: count + 1].
+          (index > 500.5) ifTrue: [count:: count + 1].
+          (index <= 500.0) ifTrue: [count:: count + 1].
+          (index >= 500.0) ifTrue: [count:: count + 1].
+          (index = 500.0) ifTrue: [count:: count + 1].
+          index:: index + 1.
+        ].
+        ^count + sum asInteger.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A `SmallInteger`'s arithmetic, orderings and `=` with a `Float`,
+    /// and its `asFloat`, run in their rows' stubs: the third run's sends
+    /// leave machine code for nothing and call no leaf, and the answer is
+    /// the interpreter's.
+    fn mixed_arithmetic_calls_no_leaf(lowering) {
+        let (compiled, statistics) = run_thrice_on_one_instance(MIXED_ARITHMETIC, lowering, true);
+        let (interpreted, _) = run_thrice_on_one_instance(MIXED_ARITHMETIC, lowering, false);
+        assert!(interpreted[0] > 2001, "{interpreted:?}");
+        assert_eq!(compiled, interpreted);
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert_eq!(statistics.send_exits, 0, "every send stayed in machine code");
+            assert_eq!(statistics.miss_leaf_calls, 0);
+            assert_eq!(
+                statistics.act_leaf_calls, 0,
+                "every mixed operation ran in its row's stub"
+            );
+        }
+    }
+}
+
+/// How many boxed `Float`s `FLOAT_BOXES`' loop makes per run.
+#[cfg(debug_assertions)]
+const FLOAT_BOX_COUNT: u64 = 2000;
+
+/// A loop whose every sum is a `Float` outside the `SmallFloat64` range,
+/// boxed in eden, and one `asInteger`, of a `SmallInteger`'s value, at
+/// its end.
+#[cfg(debug_assertions)]
+const FLOAT_BOXES: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          value ::= 1.0e300.
+          index ::= 0.
+        |
+        [index < 2000] whileTrue: [
+          value:: value + 1.0e290.
+          index:: index + 1.
+        ].
+        ^(value / 1.0e290) asInteger.
+      )
+    ) : ()
+"};
+
+/// A `Float` boxed by a row's stub with eden past its scavenge threshold
+/// declines to the row's leaf, which allocates where the interpreter does
+/// and asks for the scavenge: with a threshold of a few hundred floats,
+/// the answers are the interpreter's, some sums boxed inline and some by
+/// the leaf. Debug builds only, where a test sets the scavenge
+/// threshold.
+#[cfg(debug_assertions)]
+#[test]
+fn a_float_boxed_with_eden_full_is_the_leaf_s() {
+    let small_eden = |interpreter: &mut Interpreter| interpreter.set_scavenge_threshold(4096);
+    let (compiled, statistics) =
+        run_thrice_configured(FLOAT_BOXES, Lowering::Optimized, true, small_eden);
+    let (interpreted, _) =
+        run_thrice_configured(FLOAT_BOXES, Lowering::Optimized, false, small_eden);
+    assert_eq!(compiled, interpreted);
+    assert!(interpreted[0] > 10_000_000_000, "{interpreted:?}");
+    if !a_stress_mode_is_on() {
+        // Every leaf call is a box that found eden full.
+        assert!(
+            statistics.act_leaf_calls > 1,
+            "some boxes found eden full: {}",
+            statistics.act_leaf_calls
+        );
+        assert!(
+            statistics.act_leaf_calls < FLOAT_BOX_COUNT / 2,
+            "most boxes were made inline: {}",
+            statistics.act_leaf_calls
+        );
+    }
+}
+
+/// `source`'s `run` sent `runs` times to one instance, the JIT on or
+/// off, under the optimize stress mode (`Interpreter::set_optimize_stress`),
+/// which optimizes every body run twice: the answers, what the JIT did
+/// over all the runs, and what it did in the last.
+fn run_optimize_stressed(
+    source: &str,
+    lowering: Lowering,
+    jit: bool,
+    runs: usize,
+) -> (Vec<i64>, JitStatistics, JitStatistics) {
+    let (mut interpreter, class) = load_with(source, lowering);
+    interpreter.set_jit_enabled(jit);
+    interpreter.set_jit_stress(jit);
+    interpreter.set_jit_counting(jit);
+    interpreter.set_optimize_stress(jit);
+    let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let before = interpreter.jit_statistics();
+    let mut last = before;
+    let mut answers = Vec::new();
+    for _ in 0..runs {
+        last = interpreter.jit_statistics();
+        answers.push(send_unary(&mut interpreter, &subject, "run"));
+    }
+    let after = interpreter.jit_statistics();
+    (answers, since(after, before), since(after, last))
+}
+
+/// A body's two points orbiting a centre, as NBody's `advance:` moves
+/// them: every operand and result a `Float` -- `+ - * /`, `sqrt`, `<`, a
+/// `SmallInteger` receiver's `*` with a `Float` and `Number`'s `/`,
+/// `rounded` and `asInteger` -- in one loop.
+const FLOAT_ORBIT: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          x ::= 0.5.
+          y ::= 1.25.
+          velocityX ::= 0.01.
+          velocityY ::= -0.02.
+          distance ::= 1.0.
+          energy ::= 0.0.
+          scaled ::= 0.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 2000] whileTrue: [
+          distance:: (x * x + (y * y)) sqrt.
+          velocityX:: velocityX - (x * 0.01 / distance).
+          velocityY:: velocityY - (y * 0.01 / distance).
+          x:: x + (velocityX * 0.01).
+          y:: y + (velocityY * 0.01).
+          energy:: energy + (velocityX * velocityX + (velocityY * velocityY) * 0.5)
+            - (1.0 / distance) + (index * 0.000001) + (index / 1000000.0).
+          energy < 0.0 ifTrue: [count:: count + 1].
+          scaled:: (energy * 1000.0) rounded asInteger.
+          index:: index + 1.
+        ].
+        ^count + scaled.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// Under the optimize stress mode `run` is optimized, its every float
+    /// operation a node of its copy: past the optimization the loop sends
+    /// nothing through a cell, calls no leaf and never leaves its machine
+    /// code, and the answers are the interpreter's.
+    fn an_optimized_float_loop_sends_nothing(lowering) {
+        let (compiled, statistics, last) =
+            run_optimize_stressed(FLOAT_ORBIT, lowering, true, 6);
+        let (interpreted, _, _) = run_optimize_stressed(FLOAT_ORBIT, lowering, false, 6);
+        assert_eq!(compiled, interpreted);
+        assert!(interpreted[0] != 0, "{interpreted:?}");
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(statistics.optimized_bodies >= 1, "{statistics:?}");
+            assert_eq!(last.compiled_calls, 0, "no send reached a cell: {last:?}");
+            assert_eq!(last.leaf_calls, 0, "no leaf was called: {last:?}");
+            assert_eq!(last.optimized_exits, 0, "nothing trapped: {last:?}");
+            assert_eq!(last.send_exits, 0, "{last:?}");
+        }
+    }
+}
+
+/// A loop whose `Float` operations take a `Float` until its 1500th turn,
+/// and then a `String` -- which `=` answers `false` for -- and a
+/// `LargeInteger` -- which `+` takes in the row's leaf.
+const FLOATS_TURNING_INTO_STRINGS: &str = indoc! {"
+    class Subject = Object new () (
+      public run = (
+        |
+          value ::= 0.5.
+          other ::= 0.25.
+          addend ::= 1.0.
+          scaled ::= 0.
+          count ::= 0.
+          index ::= 0.
+        |
+        [index < 2000] whileTrue: [
+          index = 1500 ifTrue: [
+            other:: 'a string'.
+            addend:: 1000000000000000000000.
+          ].
+          value:: value * 1.0001 + addend.
+          value = other ifFalse: [count:: count + 1].
+          scaled:: (value / 1.0e18) truncated asInteger.
+          index:: index + 1.
+        ].
+        ^count + scaled.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A float operation whose operand turns into one it does not take
+    /// traps, running its send again in the interpreter, whose leaf
+    /// decides: every run answers what the interpreter's does.
+    fn a_float_node_s_trap_deoptimizes_exactly(lowering) {
+        let (compiled, statistics, _) =
+            run_optimize_stressed(FLOATS_TURNING_INTO_STRINGS, lowering, true, 3);
+        let (interpreted, _, _) =
+            run_optimize_stressed(FLOATS_TURNING_INTO_STRINGS, lowering, false, 3);
+        assert_eq!(compiled, interpreted);
+        assert!(interpreted[0] > 2000, "{interpreted:?}");
+        if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
+            assert!(statistics.traps >= 1, "a float operation trapped: {statistics:?}");
         }
     }
 }
@@ -4937,7 +5271,7 @@ fn an_inlined_identity_with_a_future_traps_and_answers_the_interpreter_s_result(
 /// fails here, and so does one the list names that is not marked.
 #[test]
 fn every_leaf_row_is_audited() {
-    use ns_runtime::builtins::primitive::{MachineCall, RowStub, MIRROR};
+    use ns_runtime::builtins::primitive::{row_stub_index, MachineCall, MIRROR, ROW_STUB_COUNT};
     let marked: std::collections::BTreeSet<&str> = MIRROR
         .iter()
         .filter(|entry| entry.machine_call.is_leaf_safe())
@@ -4960,16 +5294,18 @@ fn every_leaf_row_is_audited() {
         unmarked.is_empty(),
         "audited but not marked Leaf: {unmarked:?}"
     );
-    // A row stub falls back to the row the first entry marked with it
-    // names (`jit::targets`'s `emit_row_stub`), so a second would be run
-    // as the first's.
-    for stub in RowStub::ALL {
-        let rows: Vec<&str> = MIRROR
-            .iter()
-            .filter(|entry| entry.machine_call == MachineCall::Stub(stub))
-            .map(|entry| entry.selector)
-            .collect();
-        assert_eq!(rows.len(), 1, "{stub:?} marks exactly one row: {rows:?}");
+    // Each row marked with a stub has one of its own, numbered densely in
+    // row order, which the zone's table of row stubs is indexed by.
+    let stubbed: Vec<usize> = MIRROR
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| matches!(entry.machine_call, MachineCall::Stub(_)))
+        .map(|(row, _)| row)
+        .collect();
+    assert_eq!(stubbed.len(), ROW_STUB_COUNT);
+    for row in 0..=MIRROR.len() {
+        let expected = stubbed.iter().position(|stubbed_row| *stubbed_row == row);
+        assert_eq!(row_stub_index(row), expected, "row {row}");
     }
 }
 
@@ -7830,6 +8166,20 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// The room past the stubs the tests of a small zone give bodies: a few
+/// dozen small bodies, far fewer than the hundreds of methods those tests
+/// make hot. It is fixed past the stubs (`zone_used_bytes`) rather than
+/// as the zone's size, since the stubs' size differs by architecture and
+/// grows with every row stub.
+const SMALL_ZONE_ROOM: usize = 4_544;
+
+/// Replaces `interpreter`'s zone with one of `room` bytes past its stubs.
+fn set_zone_room(interpreter: &mut Interpreter, room: usize) {
+    interpreter.set_jit_zone_bytes(1 << 20);
+    let stubs = interpreter.table_sizes().zone_used_bytes;
+    interpreter.set_jit_zone_bytes(stubs + room);
+}
+
 /// `count` methods `m0`, `m1`, ..., each answering its index and one, and
 /// for each a method `hot` sending it a hundred times from a loop of its
 /// own, which `run` sends one after another: each `m` is hot for a while
@@ -7871,7 +8221,7 @@ fn hot_in_turn(count: usize) -> String {
 }
 
 ns_runtime::for_each_lowering! {
-    /// A zone of four pages holds a few of two hundred methods hot in
+    /// A small zone holds a few of two hundred methods hot in
     /// turn: a compile that finds it full asks for a compaction, which
     /// frees the methods no longer sent, and every method is compiled once
     /// it is hot, none refused for want of room, the output the
@@ -7880,7 +8230,7 @@ ns_runtime::for_each_lowering! {
         let count = 200;
         let source = hot_in_turn(count);
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(16_384);
+        set_zone_room(&mut interpreter, SMALL_ZONE_ROOM);
         let (answer, done) = run_measured(&mut interpreter, &class);
         let expected: i64 = (1..=200).map(|index: i64| 100 * index).sum();
         assert_eq!(answer, expected, "the interpreter's");
@@ -8314,7 +8664,7 @@ ns_runtime::for_each_lowering! {
         let count = 300;
         let source = chain_of(count);
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(16_384);
+        set_zone_room(&mut interpreter, SMALL_ZONE_ROOM);
         let before = interpreter.jit_statistics();
         let runs = 4;
         for _ in 0..runs {
@@ -8622,7 +8972,10 @@ ns_runtime::for_each_lowering! {
         let count = 500;
         let source = leaving_bodies(count);
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(32_768);
+        // Room for a few dozen `leave` bodies, far fewer than the five
+        // hundred, past the stubs, whose size differs by architecture
+        // and grows with every row stub.
+        set_zone_room(&mut interpreter, 20_928);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let before = interpreter.jit_statistics();
         assert_eq!(
@@ -8704,7 +9057,7 @@ ns_runtime::for_each_lowering! {
             1,
         );
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(16_384);
+        set_zone_room(&mut interpreter, SMALL_ZONE_ROOM);
         interpreter.set_jit_counting(true);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let collections = interpreter.collector_statistics().collections;
@@ -9728,7 +10081,7 @@ ns_runtime::for_each_lowering! {
         let count = 300;
         let source = chain_ending_in_a_loop(count);
         let (mut interpreter, class) = load_with(&source, lowering);
-        interpreter.set_jit_zone_bytes(16_384);
+        set_zone_room(&mut interpreter, SMALL_ZONE_ROOM);
         let expected = 10_000 + count as i64 - 1;
         let before = interpreter.jit_statistics();
         for _ in 0..3 {

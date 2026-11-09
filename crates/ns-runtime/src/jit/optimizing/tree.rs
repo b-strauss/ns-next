@@ -47,6 +47,9 @@ pub(crate) struct ReceiverFacts {
     pub(crate) application: ApplicationIndex,
     pub(crate) applications: Vec<ApplicationIndex>,
     pub(crate) own_slot_bases: Vec<u32>,
+    /// Whether the guard is a `SmallInteger`'s, whose mixed rows with a
+    /// `Float` argument machine code computes (`plan::expressed`).
+    pub(crate) small_integer: bool,
 }
 
 /// What a cache entry's target says the send reached.
@@ -514,6 +517,7 @@ fn receiver_facts(heap: &Heap, guard: DispatchId) -> Option<ReceiverFacts> {
         application: index,
         applications,
         own_slot_bases,
+        small_integer: heap.dispatch_id(crate::heap::Value::small_integer(0)) == guard,
     })
 }
 

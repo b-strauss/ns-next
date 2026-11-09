@@ -75,7 +75,10 @@
 > and revival in `jit/mod.rs`, the compiler in `jit/baseline.rs`, the
 > idioms in `jit/macro_assembler.rs`, the entry, call, exit and cut stubs
 > in `jit/stubs.rs`, the sends in `jit/sends.rs` and the stubs a cell
-> names in `jit/targets.rs`, the closures, outer locals and futures in
+> names in `jit/targets.rs`, the `Float` operations its row stubs and
+> optimized code's nodes compute in `jit/floats.rs` (which rows they
+> are, in `jit/float_operations.rs`), the closures, outer
+> locals and futures in
 > `jit/closures.rs`, the cut of a non-local return in `jit/cut.rs`, the
 > exit's walk in `jit/materialize.rs`, the leaves in `jit/leaves.rs`, and
 > the code zone's compaction and freeing in `jit/zone.rs`; the
@@ -1529,9 +1532,12 @@ under 3.3%) -- noise far below the factors measured. The two far
 outliers, CD and NBody, are the two programs of floating-point
 arithmetic on objects' slots, where the JVM keeps doubles unboxed in
 registers and fields, and ns-next tags or boxes every intermediate
-result and calls a leaf for every `Float` operator, since machine code
-has no `Float` templates yet; no profile of them was taken, so how much
-of the gap that is is not measured. The narrowest, Queens and Permute,
+result, and at the commit measured called a leaf for every `Float`
+operator; no profile of them was taken, so how much of the gap that is
+is not measured. Machine code computes those operators since ("Floats
+in machine code"), NBody 72% and CD 16% faster against `master`
+("What floats in machine code moved"); the comparison was not taken
+again. The narrowest, Queens and Permute,
 under 6×, are programs of `SmallInteger` arithmetic, indexed access and
 small sends: the plan lowers the arithmetic and the indexed access to
 nodes and inlines the small sends as scopes, and inlining measured
@@ -1542,8 +1548,8 @@ cover: the five slow programs' `bench` figures include each
 application's setup and only one discarded warm-up run where Java's are
 a steady state after two seconds, which favours Java slightly; one
 machine and one JVM; and no JVM tuning. What remains of
-the gap is what `Float` arithmetic in SSE2 and the stages of road step 9
-after inlining are for (OPEN-WORK.md, "Next").
+the gap is what the stages of road step 9 after inlining are for
+(OPEN-WORK.md, "Next").
 
 ### What the eight-byte value moved
 
@@ -9403,6 +9409,129 @@ replacement into optimized code, stage 6's, so that a long activation
 -- Mandelbrot's, and `main:args:` of a program run once -- runs a copy
 only from its second entry; and the compiler thread, stage 8's.
 
+### What floats in machine code moved
+
+**Measured 2026-11-09, `893213ba` against `master` (`07e31091`)**, by
+the protocol of "What inlining moved": three pinned release builds a
+side with debug information, a, b and c laid out as there, the code
+zones at the same three paddings on both sides; `vm::run` spans 44.0,
+47.4 and 51.0 KB on both sides with 451 calls, and no build has a
+`run_stretch` or a `vm::run` closure of its own. Both sides were built
+with `target-cpu=x86-64-v2`, which `master`'s `.cargo/config.toml` does
+not carry, so that the table isolates the `Float` work from the build
+flag. Three rounds in one sitting, the order of the binaries rotated
+each round, every process held to the eight performance cores (the
+mask `0xC03C03`) from its start; `--iterations 3` for CD, Havlak,
+Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest. Each
+cell is a side's medians per build pooled by geometric mean, in
+milliseconds. Between the two trees lie the float operations of
+"Floats in machine code": the row stubs, `Node::FloatOperation`, the
+mixed operation of an `IntegerBinary`, and the start check.
+
+| Program | master (ms) | master's builds | branch (ms) | builds | vs master | separated |
+|---|---|---|---|---|---|---|
+| `Bounce` | 0.109 | 0.108–0.110 | 0.117 | 0.110–0.128 | +7.5% | no |
+| `CD` | 2988.348 | 2981.023–2992.453 | 2516.692 | 2503.814–2539.111 | -15.8% | faster |
+| `DeltaBlue` | 164.099 | 162.228–166.971 | 163.174 | 162.237–164.613 | -0.6% | no |
+| `DeltaBlueTon80` | 1.861 | 1.799–1.904 | 1.820 | 1.801–1.840 | -2.2% | no |
+| `Havlak` | 781.223 | 779.275–782.595 | 778.521 | 772.660–782.791 | -0.3% | no |
+| `Json` | 2.645 | 2.596–2.717 | 2.661 | 2.652–2.673 | +0.6% | no |
+| `List` | 0.063 | 0.062–0.065 | 0.064 | 0.062–0.065 | +1.6% | no |
+| `Mandelbrot` | 1787.996 | 1772.538–1805.950 | 444.743 | 444.154–445.438 | -75.1% | faster |
+| `NBody` | 933.835 | 923.403–939.643 | 262.856 | 262.262–263.194 | -71.9% | faster |
+| `Permute` | 0.073 | 0.072–0.075 | 0.080 | 0.072–0.098 | +9.1% | no |
+| `Queens` | 0.076 | 0.074–0.078 | 0.077 | 0.074–0.078 | +1.1% | no |
+| `Richards` | 11.299 | 11.213–11.460 | 11.380 | 11.361–11.399 | +0.7% | no |
+| `RichardsTon80` | 1.304 | 1.233–1.370 | 1.291 | 1.261–1.306 | -1.0% | no |
+| `Sieve` | 0.336 | 0.329–0.346 | 0.380 | 0.328–0.433 | +13.2% | no |
+| `Storage` | 0.510 | 0.490–0.524 | 0.495 | 0.486–0.503 | -3.0% | no |
+| `Towers` | 0.250 | 0.240–0.261 | 0.250 | 0.248–0.253 | -0.1% | no |
+| `bench_block` | 0.282 | 0.281–0.283 | 0.283 | 0.276–0.288 | +0.5% | no |
+| `bench_loop` | 0.083 | 0.082–0.084 | 0.083 | 0.083–0.083 | -0.1% | no |
+| `bench_megamorphic` | 0.711 | 0.705–0.715 | 0.720 | 0.709–0.729 | +1.3% | no |
+| `bench_recursion` | 0.471 | 0.467–0.477 | 0.527 | 0.494–0.547 | +11.9% | slower |
+| `bench_send` | 0.081 | 0.081–0.082 | 0.082 | 0.080–0.084 | +1.0% | no |
+| `bench_signal` | 19.133 | 18.905–19.330 | 19.216 | 19.131–19.321 | +0.4% | no |
+| `bench_while` | 3.209 | 3.053–3.463 | 3.159 | 3.021–3.404 | -1.6% | no |
+
+The geometric mean over the twenty-three sources is -10.1%, and each of
+the branch's three builds lies below each of `master`'s: 2.316, 2.317
+and 2.327 against 2.560, 2.581 and 2.601. What each difference is:
+
+- **Float arithmetic in machine code.** Mandelbrot runs 75% faster,
+  NBody 72% and CD 16%, every build of each: -75.1, -74.9 and -75.4%;
+  -72.0, -71.6 and -72.0%; -15.1, -16.3 and -15.9%. Their act-leaf
+  calls fall by 99.6%, 98.2% and 98.2% (below), while their exits, send
+  exits and traps stay as they were, so no `Float` operation newly
+  leaves machine code.
+- **No slowdown once the noise is removed.** `bench_recursion`, the one
+  row marked slower, is bimodal: every one of its 18 runs, on both
+  sides, has a minimum of 460.1 to 461.9 µs, and its medians jump
+  between a mode at 460 µs and one at 540 to 620 µs, which `master`'s
+  runs fell into twice and the branch's five times. The sub-millisecond
+  Are We Fast Yet programs scatter at eight iterations by up to 100%
+  (Bounce, List), 58% (Towers), 48% (Permute) and 41% (Sieve) between
+  one binary's rounds, single rounds falling into a slow mode on both
+  sides. A supplementary run in the same sitting, forty iterations,
+  three rounds rotated, all six binaries pinned:
+
+  | Program | master's builds | branch's builds | vs master | separated |
+  |---|---|---|---|---|
+  | `Bounce` | 0.099–0.104 | 0.100–0.103 | -0.5% | no |
+  | `Permute` | 0.075–0.075 | 0.072–0.075 | -1.6% | no |
+  | `Sieve` | 0.125–0.129 | 0.128–0.138 | +3.8% | no |
+  | `bench_recursion` | 0.461–0.464 | 0.461–0.463 | +0.0% | no |
+
+  With these in place of the eight-iteration values, the twenty sources
+  other than CD, Mandelbrot and NBody move -0.0% (+1.9% from the main
+  sitting alone) and the twenty-three -11.6%.
+- **An `IntegerBinary` with a mixed operation answers no known kind**,
+  so a later node tests its tag again where it tested none before
+  ("Floats in machine code"). The integer programs are level: Bounce,
+  Permute, Towers, Queens, Storage, List, Richards, `bench_loop` and
+  `bench_while` within 3% and not separated; Sieve, the only one above
+  zero at forty iterations, +3.8%, not separated, its build b +9.8% and
+  a and c +2.0% and -0.2%, its rounds still spreading 18% -- no
+  verdict.
+
+**What still reaches a leaf**, counted by an untimed copy of the CLI
+that printed every `JitStatistics` field, built in release against
+each tree's own crates, `bench --iterations 1` (the warm-up run and one
+timed run):
+
+| Program | side | leaf calls | act-leaf calls | compiled calls | send exits | exits | traps | sites inlined |
+|---|---|---|---|---|---|---|---|---|
+| NBody | master | 163,501,755 | 163,000,883 | 178,706,759 | 107 | 118 | 0 | 55 |
+| NBody | branch | 3,501,483 | 3,000,611 | 18,817,833 | 107 | 118 | 0 | 96 |
+| Mandelbrot | master | 336,687,266 | 336,687,185 | 338,944,372 | 8 | 15 | 2 | 0 |
+| Mandelbrot | branch | 1,268,180 | 1,268,099 | 3,638,401 | 8 | 15 | 2 | 24 |
+| CD | master | 102,905,489 | 92,785,831 | 131,027,365 | 446,210 | 479,722 | 4 | 269 |
+| CD | branch | 11,747,028 | 1,627,352 | 74,112,177 | 446,206 | 479,717 | 4 | 328 |
+
+- **Mandelbrot**'s remaining 1,268,099 act-leaf calls are integer
+  operations: `byteAccumulator << 1` once a pixel (750 × 750 × 2 runs,
+  1,125,000) and `bitXor:` once a byte (about 141,000) -- the bit
+  operations [OPEN-WORK.md](../OPEN-WORK.md) has templates for as an
+  item of its own. As far as the counts show, no `Float` operation
+  reaches a leaf or a send.
+- **NBody**'s 3,000,611 over 500,000 `advance:` calls are six a step,
+  its non-`Float` sends (its `to:do:` loops' `bodies size` among them),
+  not its hundreds of `Float` operations a step, `sqrt` once a pair
+  among them -- inferred from the counts, not traced per selector.
+- **CD** keeps 1.6 million act-leaf calls and 74 million compiled
+  calls, its churn of baseline code ("What reclamation moved")
+  unchanged at about 480,000 exits and 446,000 send exits; which
+  selectors its remaining leaves serve was not determined.
+
+**Not covered**: `bench_new`, `bench_new2`, `bench_newarg` and
+`bench_do`, rows of "What inlining moved" whose sources are not under
+`benchmarks/micro`; a per-selector breakdown of the remaining leaf
+calls; a profile or a sampling of retired instructions, and a padding
+sweep for Sieve; AArch64, which runs under QEMU only, and Linux x64;
+and `master` as shipped, without `target-cpu`, so that whether
+x86-64-v2 pays on the Rust side is not measured
+([OPEN-WORK.md](../OPEN-WORK.md)).
+
 ## The trampoline
 
 Sends do not recurse on the Rust stack. Every running activation lives on the
@@ -12464,18 +12593,30 @@ the compile eliminates have one arm taken without a test
 parameter; a lazy slot's getter, a load and a test that traps on `nil`
 (`Node::TrapIfNil`); `==` (`Node::IdentityCompare`), which traps where
 the words alone do not decide it -- a boxed number, a future; `class`
-(`Node::ClassOf`); the `SmallInteger` operations `IntegerBinary` has;
-and `Array`'s and `ByteArray`'s `at:` and `at:put:`
+(`Node::ClassOf`); the `SmallInteger` operations `IntegerBinary` has,
+each of whose rows that also takes a `Float` argument -- `Integer`'s
+`+ - * < > <= >= =` -- tries its mixed operation out of line where the
+fast path fails (`Node::IntegerBinary`'s `mixed`), so that two
+`SmallInteger`s run what they ran before; every row `jit::floats`
+computes (`Node::FloatOperation`): a `Float` receiver's arithmetic,
+orderings, `=`, `sqrt`, sign, class tests, roundings and `asInteger`,
+and a `SmallInteger` receiver's `asFloat` and `Number`'s `/` -- the
+mixed ones only for a `SmallInteger`'s arm (`plan::expressed`) --
+tagged in and out, a result outside the `SmallFloat64` range boxed in
+eden, emitted by the very code the baseline's row stubs run
+(`floats::emit`), declining to a trap where the row's leaf decides --
+stage 5 unboxes it; and `Array`'s and `ByteArray`'s `at:` and `at:put:`
 (`Node::IndexedLoad`, `Node::IndexedStore`), their bounds and kinds
 checked by traps. A node with a check is laid out only in a copy that
 speculates, at a site that never trapped (`build::Laying::expressed`);
 each trap runs the send again, whose error the interpreter raises.
-Sent, not expressed: a builtin class's accessor, whose class only the
-heap's tables name; `^<parameter> value` and `cull:`; and `Float`
-arithmetic, a leaf call until the baseline's `Float` templates in SSE2, the work
-right after this stage ([OPEN-WORK.md](../OPEN-WORK.md), "Planned: performance
-and representation"), which optimized code then emits through the same
-templates; stage 5 unboxes it. **The accesses need no guard**:
+At an `IntegerBinary`'s fallback send, where its test already failed,
+a `SmallInteger` row is its mixed operation alone. Two `NaN`s' sum
+carries the left operand's payload in machine code and LLVM's choice in
+the leaf; no program text depends on a `NaN`'s payload. Sent, not
+expressed: a builtin class's accessor, whose class only the heap's
+tables name; and `^<parameter> value` and `cull:`. **The accesses need
+no guard**:
 the field the lookup resolved the accessor to for the arm's receiver
 application -- and an inlined scope's own-slot read, at the plan's base
 for that application -- is read of an object the type-case's guard, or
@@ -12901,15 +13042,17 @@ What is built plans on the snapshot tree by frequency under limits
 measured, inlines type-cases, the always-inlined callees and blocks
 with their home ("Inlining" above). What is not:
 
-- **Always inlined, still sent**: `Float` arithmetic and comparisons,
-  leaf calls until the `Float` templates in SSE2 that come right after this
-  stage, and boxed until stage 5 unboxes them; outer
-  sends of fixed structure; a builtin class's accessor; and
-  `^<parameter> value` and `cull:`, which activate a block, so that a
-  block a quick method evaluates escapes and its callee is sent.
+- **Always inlined, still sent**: outer sends of fixed structure; a
+  builtin class's accessor; and `^<parameter> value` and `cull:`, which
+  activate a block, so that a block a quick method evaluates escapes
+  and its callee is sent.
   Strongtalk inlines its `always_inline` methods and critical selectors
   regardless of size (`compiler/inliner.cpp:132-206`) and its
   primitives through `PrimInliner` (`compiler/primInliner.cpp:823-930`).
+- **`Float` operations are tagged** in optimized code: each
+  `Node::FloatOperation` decodes its operands and encodes or boxes its
+  result ("Floats in machine code"), until stage 5 keeps a `Float64` in
+  a register between them.
 - **A callee whose scope creates a block that escapes** is inlined once
   optimized code creates the block itself, its home an inlined frame
   object (stage 4, below): until then the plan sends it.
@@ -12939,6 +13082,11 @@ with their home ("Inlining" above). What is not:
   Maglev's phi untagging (`maglev/maglev-phi-representation-selector.h:167-308`),
   so a loop over numbers tags nothing. Mixed arithmetic follows the
   kernel's semantics exactly and is tested against the interpreter.
+  The operations themselves are built: `floats::emit` computes every
+  float row machine code takes, tagged in and out, for the baseline's
+  row stubs and the third stage's `Node::FloatOperation` ("Floats in
+  machine code"), so this stage turns the node's ends into conversions
+  to and from a raw `Float64` and keeps the operation between them.
 - **Range analysis**, which removes overflow and bounds checks a range
   proves unnecessary, is a later pass; Strongtalk's
   `optimizeIntegerLoop` shows how easily one goes wrong ("fix this: must
@@ -13120,7 +13268,9 @@ machine code or a stub, the callee returns by `ret`, and an exit at any
 depth of compiled frames materializes all of them before the interpreter
 runs. The JIT is compiled where `crates/ns-runtime/build.rs` sets
 `cfg(ns_jit)`: on x64 everywhere, and on AArch64 on Linux and Apple's
-platforms (decided with the user on 2026-11-03). Windows on ARM stays
+platforms (decided with the user on 2026-11-03), every x86_64 binary
+built for x86-64-v2 and refusing a processor without it at start
+("Floats in machine code"). Windows on ARM stays
 interpreted, its calling convention and unwinding ones no stub crosses
 yet ([OPEN-WORK.md](../OPEN-WORK.md)); there, and on every other target,
 `jit::available` answers `false` and every body stays interpreted. x64's
@@ -13200,7 +13350,7 @@ the baseline JIT's foundation moved" that of the first two.
   ("Fixed registers and the calling convention" below): `enter_called`,
   `jump_into_called` and `call_unentered`. Every constant of an
   encoder is a named `const` citing its official source -- the Intel SDM's
-  volume and section for x64, the instruction's developer.arm.com page
+  volume and section for x64, the instruction's support.arm.com page
   for AArch64 -- and no integer literal but 0 and 1 stands outside one,
   which `tests/encoding_sources.rs` holds every encoder file to; every
   encoding is checked against a disassembler, `iced-x86`'s for x64
@@ -14018,14 +14168,18 @@ of an empty closure, frame object and future (`ClosureClass`,
 `ClosureHeader`, `FrameClass`, `FrameHeader`, `FutureClass`,
 `FutureHeader`), what `MakeClosure`, its reification of the frame and
 `MakeFuture` write, the future's header 0 until the heap has made a
-future, which only Rust records; the code table's epoch
+future, which only Rust records; the kernel's `Float` class as a stored
+word and the whole header of a boxed `Float` (`FloatClass`,
+`FloatHeader`, rewritten with the immediates' classes), what machine
+code's box of a result outside the `SmallFloat64` range writes; the code
+table's epoch
 (`CodeTableEpoch`), which a closure site and an outer-local site compare
 theirs with; the rows of the machine entry table committed
 (`MachineEntryRows`), which a closure stub compares a code id with; and
 the closure and its depth count an interpreter's `value` send hands the
 closure call stub (`CalleeClosure`, `CalleeCounted`), read only right
 after they were written. The area keeps room for the later stages'
-words (40 words, 33 of them taken). Eden's top and limit, which machine code bumps in place, are not
+words (40 words, 37 of them taken). Eden's top and limit, which machine code bumps in place, are not
 among them: they are the object space reservation's own cursor, which
 lies in an allocation of `ns-memory`'s for the same reason
 (`ns_memory::SharedCursor`; [memory.md](memory.md), "The memory
@@ -14427,6 +14581,122 @@ Strongtalk, V8 and HotSpot again for it.
   (`prior-art/strongtalk/vm/code/stubRoutines.cpp:315-435`), V8's
   megamorphic load its stub cache and HotSpot's vtable stub the vtable;
   a probe that misses calls the lookup as the miss does.
+
+### Floats in machine code
+
+Decided with the user on 2026-11-09, after reading Cog, HotSpot and V8
+for it. The rows that compute a `Float` operation in one instruction or
+a few run in machine code, written once against the macro assembler's
+idioms for the baseline's row stubs and optimized code's nodes alike
+(`jit/floats.rs`, `floats::emit`; which rows, `jit/float_operations.rs`'s
+`FloatOperation::of`, compiled on every target, since optimized code's
+graph and plan, compiled without a JIT too, name it). Every one answers
+bit for bit what its row's leaf answers (`builtins/numbers/float.rs`,
+`integer.rs`, `tower.rs`), or declines before it has written anything but its own
+result and spare registers, and the leaf decides the case: a receiver
+or an argument the operation does not take, an `=` of two `Float`s that
+compare unordered, an `asInteger` not finite or of a magnitude of 2^60
+or more, and a result to box with eden full. The goldens under
+`goldens/library/number/float/` -- signed zeros, the edges of the
+`SmallFloat64` range, a `SmallInteger` and a `Float` at 2^53 and 2^59
+-- hold machine code to the interpreter's answers.
+
+- **The baseline reaches a `Float` row through a row stub.** A method
+  whose fast path is a `Float` row -- or one of a `SmallInteger`
+  receiver's mixed rows, `Integer`'s `+ - * < > <= >= =` and `asFloat`
+  and `Number`'s `/` -- is marked `MachineCall::Stub(RowStub::Float)`
+  in `MIRROR` (`builtins/primitive.rs`), and its cell names a stub of
+  its own, one per marked row in row order (`row_stub_index`; 30 float
+  rows beside `Array`'s and `ByteArray`'s `at:` and `at:put:`), which
+  runs the operation and continues at the row's mirror method stub
+  wherever it declines, so that the row's failures stay its leaf's
+  (`targets::emit_row_stub`). This is Cog's compiled primitive
+  (`genFloatArithmetic:preOpCheck:boxed:`,
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cogitX64WIN64.c:14690-14755`),
+  not code inline at every arithmetic site: a site stays the size of a
+  send, and the stub, about 455 bytes on x64, is shared by every site
+  of its row (30 stubs, about 14 KB a zone; [OPEN-WORK.md](../OPEN-WORK.md)
+  has the shared tail that would shrink them).
+- **Optimized code computes a `Float` operation as a tagged node.** A
+  type-case arm on a `Float` receiver whose callee is a float row is a
+  `Node::FloatOperation` (`jit/optimizing/graph.rs`), emitted by the very
+  `floats::emit` the stub runs: tagged in and out, no interrupt point
+  and no call on its fast path, its decline going to the send's block
+  or, at a site that never trapped, to a trap that runs the send again,
+  by `IntegerBinary`'s rule ("Speculation"). A `SmallInteger` arm whose
+  row also takes a `Float` argument is an `IntegerBinary` whose `mixed`
+  operation is tried out of line where the fast path's test fails, so
+  that two `SmallInteger`s run what they ran before; its value is then
+  of no known kind, since it may be a `Float`, and a later node tests
+  its tag again, which measured level ("What floats in machine code
+  moved"). `asFloat` and `Number`'s `/` are float operations taken only
+  for a `SmallInteger` arm (`plan::expressed`): `Number`'s `/` is every
+  number's whose class does not override it, and any other receiver's
+  would always decline. Stage 5 makes the node's ends conversions to
+  and from a raw `Float64` ("Planned: the optimizing JIT", "Numbers").
+- **A result outside the `SmallFloat64` range is boxed inline in
+  eden.** `MacroAssembler::float_result` encodes a double the range
+  holds as `Value::small_float` does (`tag_float`: rotated left by one,
+  the exponent's offset `896 << 53` taken off, shifted and tagged, every
+  constant from `Heap::machine_layout()`), after the range test
+  `is_small_float_bits` states -- Cog's
+  `genJumpNotSmallFloatValueBits:scratch:` (`:15321-15357`) -- and
+  boxes any other through eden's bump (`box_float`), writing the
+  `FloatHeader` and `FloatClass` machine words as `Heap::allocate_float`
+  writes them, a new object's stores needing no barrier: Cog's
+  `genInstantiateFloatValue:into:scratchReg:scratchReg:mayFail:`
+  (`:15196-15270`) and Maglev's `Float64ToTagged`, which allocates its
+  heap number inline (`prior-art/v8/src/maglev/maglev-ir.cc:5900-5915`).
+  With eden full the operation declines and the leaf allocates, and
+  collects if it must.
+- **Four groups of rows.** Binary, a `Float` receiver's `+ - * /` and
+  `< > <= >= =` with a `Float` or a `SmallInteger` argument; unary in
+  an instruction or a few, `sqrt`, `negated` and `abs` (the sign bit
+  flipped or cleared, a NaN's payload kept), `isNaN`, `isFinite`,
+  `isInfinite`, `asInteger` and `SmallInteger>>asFloat`; the roundings,
+  `floor`, `ceiling` and `truncated` by `roundsd` and `frintm`, `frintp`
+  and `frintz`, and `rounded`, half away from zero, from the truncation
+  and one added or taken off; and the mixed rows of a `SmallInteger`
+  receiver with a `Float` argument. A `SmallInteger` takes part in
+  arithmetic converted to the nearest double, ties to even (`cvtsi2sd`,
+  `scvtf`), as the tower converts it, but compares exactly for every
+  `SmallInteger`, as `tower::float_order` does, by Cog's sequence
+  (`genFloatComparison:orIntegerComparison:invert:boxed:`,
+  `:14757-14867`): the `Float` compared with the integer converted, and
+  only where the two are equal -- the `Float` then integral and within
+  the range -- the integer with the `Float` truncated. An ordering with
+  a NaN answers `false`; `=` declines for two `Float`s that compare
+  unordered, since the leaf's NaN equals a NaN. The libm functions
+  (`sin`, `ln`, `raisedTo:` and the rest), `hash` and the printing rows
+  stay leaves. The floating-point registers are `Roles::float_scratch`,
+  three every convention lets its callee clobber (`xmm0` to `xmm2`,
+  `d0` to `d2`), so the entry stub saves none, and no double lives
+  across a leaf call, an exit or a node's end.
+- **The binary requires x86-64-v2.** Every x86_64 target is built with
+  `target-cpu=x86-64-v2` (`.cargo/config.toml`: SSE3, SSSE3, SSE4.1,
+  SSE4.2, POPCNT, CMPXCHG16B, LAHF-SAHF), and the templates emit SSE4.1's `roundsd`
+  without a choice. `ns-next` and `ns-next-analyzer` ask the processor
+  first thing in `main` and refuse with a message naming what it lacks
+  (`ns_tooling::processor`). They ask CPUID itself: under the v2 flags
+  `is_x86_feature_detected!` answers `true` for every feature the crate
+  is compiled with, without asking, and the check, plain integer code,
+  invites the compiler to no instruction past SSE2 before the message
+  is printed. HotSpot asks CPUID once at start (`generate_get_cpu_info`,
+  `prior-art/jdk/src/hotspot/cpu/x86/vm_version_x86.cpp:124`, and the
+  SSE level it settles, `:959-972`) and emits `roundsd` only with
+  SSE4.1 (`Op_RoundDoubleMode`, `prior-art/jdk/src/hotspot/cpu/x86/x86.ad:3171`),
+  and V8 probes its `CpuFeatures` likewise
+  (`prior-art/v8/src/codegen/x64/assembler-x64.cc:181-245`); both serve
+  every processor since the first x86-64, which ns-next does not: one
+  requirement replaces a detection, a choice in the macro assembler and
+  a stress mode that forces the base forms, without which no test on a
+  machine with the extensions would run the base forms.
+- **No extension form beyond v2.** No CPU detection beyond the start
+  check, no feature selection in the macro assembler, and no stress
+  mode for base forms; templates for `Integer`'s bit operations, and
+  whether BMI2's `shlx` and `sarx` and `lzcnt` pay for a detection,
+  are an item of their own ([OPEN-WORK.md](../OPEN-WORK.md), "Planned:
+  performance and representation").
 
 ### The register cache
 

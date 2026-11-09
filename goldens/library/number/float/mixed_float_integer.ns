@@ -1,0 +1,100 @@
+/// A `SmallInteger` receiver's `+ - * /`, `< > <= >=` and `=` with a
+/// `Float` argument, and the same orderings and `=` of a `Float`
+/// receiver with a `SmallInteger` argument. The arithmetic rounds the
+/// integer to the nearest double, ties to even, first; the orderings and
+/// `=` compare exact values, so `(2 raisedTo: 53) + 1` is greater than
+/// `(2 raisedTo: 53) asFloat` and not equal to it, though it rounds to
+/// it, and likewise past 2^59 and at the ends of the `SmallInteger`
+/// range. A NaN is ordered with nothing and equal to no integer. Two
+/// `SmallInteger`s, a `LargeInteger` receiver and an argument that is no
+/// number take the rows' other paths: `3 / 4` is a `Fraction`, `3 + nil`
+/// an error. Each operation is a block run on every pair, so that machine
+/// code runs it once the block is compiled; a line is the receiver, the
+/// operation and each result, or the error it signals, apart by ` | `.
+class MixedFloatInteger = () (
+  /// The text of `operation` on `left` and `right`: its result printed,
+  /// or the message of the error it signals.
+  textOf: operation on: left and: right = (
+    ^[(operation value: left value: right) printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      integers = {
+        3.
+        -7.
+        0.
+        (2 raisedTo: 53) + 1.
+        ((2 raisedTo: 53) + 1) negated.
+        (2 raisedTo: 59) + 1.
+        (2 raisedTo: 60) - 1.
+        (2 raisedTo: 60) negated.
+        2 raisedTo: 64.
+      }.
+      floats = {
+        0.0.
+        -0.0.
+        0.5.
+        3.0.
+        3.5.
+        -2.25.
+        (2 raisedTo: 53) asFloat.
+        (2 raisedTo: 59) asFloat.
+        (2 raisedTo: 60) asFloat.
+        Float infinity.
+        Float negativeInfinity.
+        Float nan.
+        1.0e300.
+      }.
+      others = {3. 4. nil}.
+      operations = {
+        {'+'. [:left :right | left + right]}.
+        {'-'. [:left :right | left - right]}.
+        {'*'. [:left :right | left * right]}.
+        {'/'. [:left :right | left / right]}.
+        {'<'. [:left :right | left < right]}.
+        {'>'. [:left :right | left > right]}.
+        {'<='. [:left :right | left <= right]}.
+        {'>='. [:left :right | left >= right]}.
+        {'='. [:left :right | left = right]}.
+      }.
+      orderings = {
+        {'<'. [:left :right | left < right]}.
+        {'>'. [:left :right | left > right]}.
+        {'<='. [:left :right | left <= right]}.
+        {'>='. [:left :right | left >= right]}.
+        {'='. [:left :right | left = right]}.
+      }.
+    |
+    operations do: [:operation |
+      integers do: [:receiver |
+        transcript show: receiver printString , ' ' , (operation at: 1).
+        floats , others do: [:argument |
+          transcript
+              show: ' | ';
+              show: (textOf: (operation at: 2) on: receiver and: argument).
+        ].
+        transcript newLine.
+      ].
+    ].
+    orderings do: [:operation |
+      floats do: [:receiver |
+        transcript show: receiver printString , ' ' , (operation at: 1).
+        integers do: [:argument |
+          transcript
+              show: ' | ';
+              show: (textOf: (operation at: 2) on: receiver and: argument).
+        ].
+        transcript newLine.
+      ].
+    ].
+    transcript show: 'asFloat'.
+    integers do: [:receiver |
+      transcript
+          show: ' | ';
+          print: receiver asFloat.
+    ].
+    transcript newLine.
+  )
+)

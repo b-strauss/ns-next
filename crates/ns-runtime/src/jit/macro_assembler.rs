@@ -7,16 +7,16 @@
 //! calling convention").
 
 use ns_assembler::aarch64::{
-    SP, X0, X1, X19, X2, X20, X21, X22, X23, X24, X25, X26, X27, X28, X29, X3, X4, X5, X6, X7, X8,
-    X9,
+    D0, D1, D2, SP, X0, X1, X19, X2, X20, X21, X22, X23, X24, X25, X26, X27, X28, X29, X3, X4, X5,
+    X6, X7, X8, X9,
 };
 use ns_assembler::x64::{
     DIVIDEND, R10, R11, R12, R13, R14, R15, R8, R9, RAX, RBP, RBX, RCX, RDI, RDX, REMAINDER, RSI,
-    RSP,
+    RSP, XMM0, XMM1, XMM2,
 };
 use ns_assembler::{
     Aarch64, Assembled, Assembler, AssemblyError, BranchForm, BranchKind, Condition, Encoder,
-    Label, LabelReference, Memory, Operation, Register, Width, X64,
+    FloatRegister, Label, LabelReference, Memory, Operation, Register, Width, X64,
 };
 
 use super::stubs::{BlockWord, ExitKind};
@@ -275,6 +275,13 @@ pub(crate) struct Roles {
     /// in. Windows64 preserves `rsi` and `rdi` and SystemV passes the
     /// shim's block and leaf index in them, so the count differs.
     pub(crate) survive_leaf_calls: usize,
+    /// The floating-point registers a `Float` operation computes in
+    /// (`jit::floats`), the only ones machine code uses: three every
+    /// convention has its callee clobber, so that the entry stub, which
+    /// saves no vector register, owes the host none, and no
+    /// floating-point value lives across a leaf call, an exit or a node
+    /// boundary.
+    pub(crate) float_scratch: [FloatRegister; 3],
     /// The registers a stub or a call is entered with, which the methods
     /// below name.
     entered_with: EnteredWith,
@@ -345,6 +352,7 @@ impl Roles {
                 stack_pointer: RSP,
                 allocatable: &[R13, RBP, R12, RSI, RDI, R8, R9, R10],
                 survive_leaf_calls: if abi == Abi::Windows64 { 5 } else { 3 },
+                float_scratch: [XMM0, XMM1, XMM2],
                 entered_with: EnteredWith {
                     exit_program_counter: RCX,
                     exit_code_address: RDX,
@@ -381,6 +389,7 @@ impl Roles {
                 stack_pointer: SP,
                 allocatable: &[X22, X23, X24, X25, X26, X27, X28, X3, X4, X5, X6, X7, X8],
                 survive_leaf_calls: 7,
+                float_scratch: [D0, D1, D2],
                 entered_with: EnteredWith {
                     exit_program_counter: X1,
                     exit_code_address: X2,
@@ -564,6 +573,16 @@ pub(crate) enum ObjectSize {
     /// it -- and that lies below the large-object threshold: what the
     /// caller has checked before.
     Register(Register),
+}
+
+/// What an operand of a `Float` operation may be (`MacroAssembler::load_float`):
+/// a `SmallFloat64` or a boxed `Float` always, a `SmallInteger` where the
+/// operation takes one -- a `Float` receiver's argument of an arithmetic,
+/// as `tower::arithmetic_double` takes it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FloatOperand {
+    Float,
+    FloatOrSmallInteger,
 }
 
 /// Code placed after the body's last instruction, out of the straight
@@ -1738,12 +1757,62 @@ impl MacroAssembler {
                 && ![object, header, class_word].contains(&scratch),
             "internal: an allocation's registers are distinct and none is the idiom scratch register"
         );
+        let Some(overflow_word) = self.bump_eden(object, size, slow) else {
+            return;
+        };
+        let assembler = &mut self.assembler;
+        if let Some(overflow_word) = overflow_word {
+            assembler.move_immediate(scratch, overflow_word);
+            assembler.store(
+                Width::Word64,
+                Memory {
+                    base: object,
+                    displacement: 0,
+                },
+                scratch,
+            );
+            assembler.add_immediate(object, WORD_BYTES);
+        }
+        assembler.store(
+            Width::Word64,
+            Memory {
+                base: object,
+                displacement: layout.header_displacement,
+            },
+            header,
+        );
+        assembler.store(
+            Width::Word64,
+            Memory {
+                base: object,
+                displacement: layout.class_word_displacement,
+            },
+            class_word,
+        );
+        assembler.subtract(object, object_space);
+        self.count_machine_allocation(header);
+    }
+
+    /// `bump_allocate`'s bump: moves eden's top past the block of an
+    /// object of `size`, or jumps to `slow` with nothing written, and
+    /// leaves `object` the block's absolute address -- its overflow word's,
+    /// when it has one. Answers `None` when the inline bump may not place
+    /// the block at all and only the jump was emitted, else the overflow
+    /// word the block starts with, if any. Clobbers the flags and the
+    /// idiom scratch register.
+    fn bump_eden(
+        &mut self,
+        object: Register,
+        size: ObjectSize,
+        slow: Label,
+    ) -> Option<Option<u64>> {
+        let (scratch, object_space) = (self.roles.idiom_scratch, self.roles.object_space);
         let (bytes, overflow_word) = match size {
             ObjectSize::Constant(word_count) => {
                 let block = crate::heap::Heap::machine_block(word_count);
                 if !block.inline {
                     self.assembler.jump(slow);
-                    return;
+                    return None;
                 }
                 (Some(block.bytes), block.overflow_word)
             }
@@ -1778,41 +1847,238 @@ impl MacroAssembler {
             (ObjectSize::Constant(_), None) => unreachable!("internal: a constant block's bytes"),
         }
         assembler.add(object, object_space);
-        if let Some(overflow_word) = overflow_word {
-            assembler.move_immediate(scratch, overflow_word);
+        Some(overflow_word)
+    }
+
+    /// Counts one object machine code placed in eden
+    /// (`MachineWord::MachineAllocations`), through `temporary`. Clobbers
+    /// the flags and the idiom scratch register.
+    fn count_machine_allocation(&mut self, temporary: Register) {
+        let scratch = self.roles.idiom_scratch;
+        self.load_machine_words(scratch);
+        let count = Self::machine_word(scratch, MachineWord::MachineAllocations);
+        let assembler = &mut self.assembler;
+        assembler.load(Width::Word64, temporary, count);
+        assembler.add_immediate(temporary, 1);
+        assembler.store(Width::Word64, count, temporary);
+    }
+
+    /// `target :=` the double the value in `value` names, as
+    /// `Heap::float_value` reads it -- a `SmallFloat64` decoded, a boxed
+    /// `Float`'s field loaded -- or, where `accepted` takes one, a
+    /// `SmallInteger` converted to the nearest double, ties to even, as
+    /// `tower::arithmetic_double` converts it; jumps to `decline` for
+    /// anything else. A boxed `Float` is recognised as `float_value`
+    /// recognises it: an object whose header guards on `Float`'s
+    /// instances (`MachineWord::ImmediateGuard` at the float's index,
+    /// which `Heap::allocate_float` writes) and whose format is
+    /// `SixtyFourBit`; only `allocate_float` makes such an object, always
+    /// with its one field. `value` is kept; clobbers the flags, `scratch`
+    /// and the idiom scratch register.
+    pub(crate) fn load_float(
+        &mut self,
+        value: Register,
+        target: FloatRegister,
+        scratch: Register,
+        accepted: FloatOperand,
+        decline: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let (idiom_scratch, object_space) = (self.roles.idiom_scratch, self.roles.object_space);
+        debug_assert!(
+            distinct(&[value, scratch, idiom_scratch]),
+            "internal: a float's load keeps its value in a register of its own"
+        );
+        let float_guard = MachineWord::ImmediateGuard(
+            usize::try_from(layout.small_float_index)
+                .expect("internal: an immediate's index is below five"),
+        );
+        let assembler = &mut self.assembler;
+        let (small_integer, small_float, done) =
+            (assembler.label(), assembler.label(), assembler.label());
+        if accepted == FloatOperand::FloatOrSmallInteger {
+            assembler.test_immediate(value, layout.small_integer_tag);
+            assembler.jump_if(Condition::NotEqual, small_integer);
+        }
+        assembler.test_immediate(value, layout.small_float_tag);
+        assembler.jump_if(Condition::NotEqual, small_float);
+        // A boxed `Float`, or nothing this takes.
+        self.jump_unless_object_word(value, decline);
+        let assembler = &mut self.assembler;
+        assembler.move_register(scratch, value);
+        assembler.add(scratch, object_space);
+        assembler.load(
+            Width::Word64,
+            scratch,
+            Memory {
+                base: scratch,
+                displacement: layout.header_displacement,
+            },
+        );
+        self.jump_unless_format(scratch, layout.sixty_four_bit_format, decline);
+        self.load_machine_words(idiom_scratch);
+        let assembler = &mut self.assembler;
+        assembler.and_immediate(scratch, layout.guard_mask);
+        assembler.compare_memory(scratch, Self::machine_word(idiom_scratch, float_guard));
+        assembler.jump_if(Condition::NotEqual, decline);
+        assembler.move_register(scratch, value);
+        assembler.add(scratch, object_space);
+        assembler.load_float(
+            target,
+            Memory {
+                base: scratch,
+                displacement: layout.fields_displacement,
+            },
+        );
+        assembler.jump(done);
+        // A `SmallFloat64`, decoded as `Value::kind` decodes it: the tag
+        // shifted out, the exponent's offset added back unless the bits
+        // are ±0.0's, the sign rotated back to the top.
+        assembler.bind(small_float);
+        let rotate = assembler.label();
+        assembler.move_register(scratch, value);
+        assembler.shift_right_logical(scratch, layout.tag_bits);
+        assembler.compare_immediate(scratch, 1);
+        assembler.jump_if(Condition::BelowOrEqual, rotate);
+        assembler.move_immediate(idiom_scratch, layout.small_float_exponent_offset);
+        assembler.add(scratch, idiom_scratch);
+        assembler.bind(rotate);
+        assembler.rotate_right(scratch, 1);
+        assembler.move_to_float(target, scratch);
+        if accepted == FloatOperand::FloatOrSmallInteger {
+            assembler.jump(done);
+            assembler.bind(small_integer);
+            assembler.move_register(scratch, value);
+            assembler.shift_right_arithmetic(scratch, layout.tag_bits);
+            assembler.integer_to_float(target, scratch);
+        }
+        assembler.bind(done);
+    }
+
+    /// `target :=` the `SmallFloat64` word of the double in `source`, as
+    /// `Value::small_float` encodes it, or a jump to `out_of_range`, with
+    /// `target` clobbered, where `is_small_float_bits` refuses the bits.
+    /// Rotated left by one, the sign at the bottom, ±0.0's bits are 0 and
+    /// 1 and are tagged as they are; with the exponent's offset taken
+    /// off, every other's are 2 or more and below 2^61 exactly when the
+    /// exponent is 897 to 1151, or 896 with a mantissa. `source` is kept;
+    /// clobbers the flags and the idiom scratch register.
+    pub(crate) fn tag_float(
+        &mut self,
+        source: FloatRegister,
+        target: Register,
+        out_of_range: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let idiom_scratch = self.roles.idiom_scratch;
+        debug_assert!(
+            target != idiom_scratch,
+            "internal: a float's tag is not left in the idiom scratch register"
+        );
+        // How many bits the tag's shift keeps: the offset bits must fit.
+        let kept_bits = u8::try_from(u64::BITS)
+            .ok()
+            .and_then(|bits| bits.checked_sub(layout.tag_bits))
+            .expect("internal: the tag takes a few of a word's bits");
+        let assembler = &mut self.assembler;
+        let tag = assembler.label();
+        assembler.move_from_float(target, source);
+        assembler.rotate_left(target, 1);
+        assembler.compare_immediate(target, 1);
+        assembler.jump_if(Condition::BelowOrEqual, tag);
+        assembler.move_immediate(idiom_scratch, layout.small_float_exponent_offset);
+        assembler.subtract(target, idiom_scratch);
+        // 0 and 1: the exponent 896 with no mantissa, ±2^-127, is boxed.
+        assembler.compare_immediate(target, 1);
+        assembler.jump_if(Condition::BelowOrEqual, out_of_range);
+        // At or past 2^61: an exponent below 896, wrapped, or past 1151.
+        assembler.move_register(idiom_scratch, target);
+        assembler.shift_right_logical(idiom_scratch, kept_bits);
+        assembler.compare_immediate(idiom_scratch, 0);
+        assembler.jump_if(Condition::NotEqual, out_of_range);
+        assembler.bind(tag);
+        assembler.shift_left(target, layout.tag_bits);
+        assembler.or_immediate(target, layout.small_float_tag);
+    }
+
+    /// `object :=` a new boxed `Float` holding the double in `source`, in
+    /// eden through `bump_allocate`'s bump and count, its header the
+    /// `FloatHeader` word and its class word the `FloatClass` word, as
+    /// `Heap::allocate_float` writes it; or a jump to `slow`, nothing
+    /// written, when eden has no room under its limit. The object is new,
+    /// so its stores need no barrier. `source` is kept; clobbers the
+    /// flags, `scratch` and the idiom scratch register.
+    pub(crate) fn box_float(
+        &mut self,
+        source: FloatRegister,
+        object: Register,
+        scratch: Register,
+        slow: Label,
+    ) {
+        let layout = crate::heap::Heap::machine_layout();
+        let (idiom_scratch, object_space) = (self.roles.idiom_scratch, self.roles.object_space);
+        debug_assert!(
+            distinct(&[object, scratch, idiom_scratch]),
+            "internal: a box's registers are distinct and none is the idiom scratch register"
+        );
+        let size = ObjectSize::Constant(layout.boxed_float_words);
+        let Some(overflow_word) = self.bump_eden(object, size, slow) else {
+            unreachable!("internal: a boxed Float lies far below the large-object threshold");
+        };
+        debug_assert!(
+            overflow_word.is_none(),
+            "internal: a boxed Float's header holds its count"
+        );
+        self.load_machine_words(idiom_scratch);
+        let assembler = &mut self.assembler;
+        for (displacement, word) in [
+            (layout.header_displacement, MachineWord::FloatHeader),
+            (layout.class_word_displacement, MachineWord::FloatClass),
+        ] {
+            assembler.load(
+                Width::Word64,
+                scratch,
+                Self::machine_word(idiom_scratch, word),
+            );
             assembler.store(
                 Width::Word64,
                 Memory {
                     base: object,
-                    displacement: 0,
+                    displacement,
                 },
                 scratch,
             );
-            assembler.add_immediate(object, WORD_BYTES);
         }
-        assembler.store(
-            Width::Word64,
+        assembler.store_float(
             Memory {
                 base: object,
-                displacement: layout.header_displacement,
+                displacement: layout.fields_displacement,
             },
-            header,
-        );
-        assembler.store(
-            Width::Word64,
-            Memory {
-                base: object,
-                displacement: layout.class_word_displacement,
-            },
-            class_word,
+            source,
         );
         assembler.subtract(object, object_space);
-        self.load_machine_words(scratch);
-        let count = Self::machine_word(scratch, MachineWord::MachineAllocations);
-        let assembler = &mut self.assembler;
-        assembler.load(Width::Word64, header, count);
-        assembler.add_immediate(header, 1);
-        assembler.store(Width::Word64, count, header);
+        self.count_machine_allocation(scratch);
+    }
+
+    /// `target :=` the value of the double in `source`, as
+    /// `Mutator::new_float` makes it: its `SmallFloat64` word
+    /// (`tag_float`), else a new boxed `Float` (`box_float`), else a jump
+    /// to `decline` with nothing written but `target` and `scratch`.
+    /// `source` is kept; clobbers the flags, `scratch` and the idiom
+    /// scratch register.
+    pub(crate) fn float_result(
+        &mut self,
+        source: FloatRegister,
+        target: Register,
+        scratch: Register,
+        decline: Label,
+    ) {
+        let (boxed, done) = (self.assembler.label(), self.assembler.label());
+        self.tag_float(source, target, boxed);
+        self.assembler.jump(done);
+        self.assembler.bind(boxed);
+        self.box_float(source, target, scratch, decline);
+        self.assembler.bind(done);
     }
 
     /// Writes `nil` into `count` fields of the object whose word is in
@@ -3780,6 +4046,38 @@ mod encoding_tests {
                 (roles.dividend, roles.remainder)
             );
             assert!(super::distinct(&registers[..4]), "{abi:?}");
+        }
+    }
+
+    /// The floating-point registers templates and nodes compute in are
+    /// ones every convention has its callee clobber, so that the entry
+    /// stub, which saves no vector register, owes the host none: Win64's
+    /// `xmm6`-`xmm15` and AAPCS64's `d8`-`d15` are preserved, so none of
+    /// them may be among them.
+    #[test]
+    fn float_scratch_registers_are_volatile_under_every_convention() {
+        use ns_assembler::aarch64::{D15, D8};
+        use ns_assembler::x64::{XMM15, XMM6};
+
+        for abi in [Abi::Windows64, Abi::SystemV, Abi::Aapcs64] {
+            let float_scratch = Roles::of(abi).float_scratch;
+            let preserved = match abi {
+                // System V preserves no vector register; Win64's range
+                // holds for both, since the two x64 conventions share the
+                // roles.
+                Abi::Windows64 | Abi::SystemV => XMM6.0..=XMM15.0,
+                Abi::Aapcs64 => D8.0..=D15.0,
+            };
+            for register in float_scratch {
+                assert!(!preserved.contains(&register.0), "{abi:?} {register:?}");
+            }
+            assert!(
+                float_scratch
+                    .iter()
+                    .enumerate()
+                    .all(|(position, register)| !float_scratch[position + 1..].contains(register)),
+                "{abi:?}"
+            );
         }
     }
 

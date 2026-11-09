@@ -35,6 +35,7 @@ use crate::builtins::primitive::{
 };
 use crate::bytecode::{CodeKind, HEADER_REGISTERS};
 use crate::heap::{ApplicationIndex, CodeId};
+use crate::jit::float_operations::{FloatOperation, FloatReceiver};
 use crate::mixin::{AccessorKind, DispatchId, MethodFastPath, QuickConstant};
 use crate::types::BuiltinClass;
 use crate::Symbol;
@@ -878,9 +879,14 @@ fn returns_otherwise(snapshot: &Snapshot) -> bool {
     })
 }
 
-/// Whether the graph expresses the leaf `primitive` inline.
-fn expressed(primitive: Primitive) -> bool {
-    matches!(
+/// Whether the graph expresses the leaf `primitive` inline for a
+/// receiver of `receiver`: a `SmallInteger` fast path, `==`, `class`, an
+/// indexed access, or a row machine code computes a float operation of
+/// (`FloatOperation::of`) -- a `SmallInteger` receiver's mixed one only
+/// for a `SmallInteger`, since `Number`'s `/` is every number's whose
+/// class does not override it, whose operation would always decline.
+fn expressed(primitive: Primitive, receiver: &ReceiverFacts) -> bool {
+    let integer_or_other = matches!(
         primitive,
         Primitive::Integer(
             IntegerPrimitive::Add
@@ -897,7 +903,23 @@ fn expressed(primitive: Primitive) -> bool {
                 CollectionPrimitive::ElementAt | CollectionPrimitive::ElementAtPut
             )
             | Primitive::Bytes(BytePrimitive::ElementAt | BytePrimitive::ElementAtPut)
-    )
+    );
+    integer_or_other
+        || match FloatOperation::of(primitive) {
+            Some(
+                FloatOperation::Arithmetic {
+                    receiver: FloatReceiver::SmallInteger,
+                    ..
+                }
+                | FloatOperation::Compare {
+                    receiver: FloatReceiver::SmallInteger,
+                    ..
+                }
+                | FloatOperation::IntegerAsFloat,
+            ) => receiver.small_integer,
+            Some(_) => true,
+            None => false,
+        }
 }
 
 /// Whether `callee` is a closure's `value`-family leaf.
@@ -980,13 +1002,13 @@ fn classify<'tree>(receiver: &ReceiverFacts, callee: &'tree CalleeFacts) -> Call
                 Callee::Always(AlwaysInlined::CullParameter(*position))
             }
             MethodFastPath::Mirror(row) => match MIRROR.get(row.index()) {
-                Some(row) if expressed(row.primitive) => {
+                Some(row) if expressed(row.primitive, receiver) => {
                     Callee::Always(AlwaysInlined::Primitive(row.primitive))
                 }
                 _ => Callee::Not,
             },
         },
-        CalleeFacts::Primitive(primitive) if expressed(*primitive) => {
+        CalleeFacts::Primitive(primitive) if expressed(*primitive, receiver) => {
             Callee::Always(AlwaysInlined::Primitive(*primitive))
         }
         CalleeFacts::Primitive(_) | CalleeFacts::Other => Callee::Not,

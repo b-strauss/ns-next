@@ -23,7 +23,10 @@ Rust 1.98.0, edition 2021, seven crates:
   `bytecode/compact.rs`; what a callee leaves in a frame's registers is
   `bytecode/leftovers.rs`'s analysis), the VM (`vm.rs`), the baseline JIT
   (`jit/`, on x64 and on AArch64 Linux and Apple, the targets `build.rs`
-  sets `cfg(ns_jit)` for, Windows on ARM interpreted; AArch64 run under
+  sets `cfg(ns_jit)` for, Windows on ARM interpreted; every x86_64
+  binary built with `target-cpu=x86-64-v2` (`.cargo/config.toml`), which
+  `ns-tooling`'s `processor.rs` checks through CPUID first in each
+  binary's `main`, refusing a processor without it; AArch64 run under
   QEMU only and unmeasured: a body compiled at its second entry through
   the one exhaustive `match` over `Instruction` in `jit/baseline.rs`, each
   instruction a template, a leaf of `jit/leaves.rs` or an exit that hands
@@ -42,7 +45,14 @@ Rust 1.98.0, edition 2021, seven crates:
   callee's machine code or a stub the cell names (`jit/sends.rs`,
   `jit/targets.rs`: polymorphic, megamorphic, accessor, mirror method,
   leaf, refusing, and the closure stubs, which enter a block's machine
-  code through the machine entry table, `heap/machine_entries.rs`), the
+  code through the machine entry table, `heap/machine_entries.rs`; and
+  the row stubs, a `Float` row's -- and a `SmallInteger` receiver's
+  mixed row's -- computing its operation bit for bit as the row's leaf
+  does, a result outside the `SmallFloat64` range boxed in eden, by the
+  code `jit/floats.rs` writes once for them and for optimized code's
+  `Node::FloatOperation`, the rows it computes classified by
+  `jit/float_operations.rs`, compiled without a JIT too, and continuing at
+  the mirror method stub wherever it declines; `execution.md`, "Floats in machine code"), the
   callee returns by `ret`, the miss leaf decides
   what the cell did not and may compile the callee, every body compiles
   lean and its `MakeClosure` transfers the frame into a reifying twin
@@ -88,7 +98,9 @@ Rust 1.98.0, edition 2021, seven crates:
   a bulk forward or a reclaimed id makes stale freed at once; and
   inlining: a plan over a tree of snapshots of the body and its callees
   (`tree.rs`, `plan.rs`), a cached send a type-case of inlined callees,
-  accessors, quick methods, `==`, `class` and indexed access nodes, each
+  accessors, quick methods, `==`, `class`, indexed access and tagged
+  `Float` operation nodes (an `Integer` arm whose row also takes a
+  `Float` an `IntegerBinary` with its `mixed` operation), each
   inlined scope laid out where the interpreter would push its
   activation, a block compiled with its home and eliminated where
   nothing lets it escape, the exit writing every scope's header and
@@ -176,7 +188,8 @@ Rust 1.98.0, edition 2021, seven crates:
   can be read-only, each with its fix, and `apply_all`
   (`docs/design/editor-support.md`, "Hints").
 - `crates/ns-tooling` — what `ns-next` and `ns-next-analyzer` share: loading and
-  resolving a source file, collecting `.ns` files, printing diagnostics. It is a crate
+  resolving a source file, collecting `.ns` files, printing diagnostics, and
+  the start check of the processor's x86-64-v2 features (`processor.rs`). It is a crate
   of its own so the analyzer's server dependencies never reach `ns-next`; it depends
   on `ns-syntax` and `ns-runtime` only.
 - `crates/ns-memory` — the memory layer (page-range reservation on Windows and
@@ -190,8 +203,10 @@ Rust 1.98.0, edition 2021, seven crates:
   The heap's object space is its user (`docs/design/memory.md`, "The memory
   layer", "The object space"), and the JIT (`execution.md`, "Executable
   memory").
-- `crates/ns-assembler` — the abstract machine operations the JIT emits and
-  two encoders, x64 (`x64.rs`) and AArch64 (`aarch64.rs`, which keeps
+- `crates/ns-assembler` — the abstract machine operations the JIT emits,
+  double-precision ones among them (SSE2 and SSE4.1's `roundsd` on x64,
+  a `FloatRegister` and float conditions with their own flags contract),
+  and two encoders, x64 (`x64.rs`) and AArch64 (`aarch64.rs`, which keeps
   `x16`, `x17`, `x18` and `x30` for itself), knowing nothing of the VM:
   labels, branches sized in one pass, a stated contract on the condition
   flags, the call convention's operations (`enter_called` begins every
@@ -812,9 +827,15 @@ and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
   commit (`core-library.md`, "The embedded shipped code").
 - **Every encoding constant of `ns-assembler` is a named `const` documented with its
   official source** -- the Intel SDM volume and section title for x64, the
-  developer.arm.com page of the instruction for AArch64 -- and no integer literal
-  other than 0 and 1 stands outside a `const`; held, for every encoder file under
-  `src/`, by `crates/ns-assembler/tests/encoding_sources.rs`.
+  support.arm.com page of the instruction (DDI0602) for an AArch64 instruction,
+  the section of the AAPCS64 in ARM-software/abi-aa on GitHub for the calling
+  convention; a link points at the concrete page or section, never at a
+  document -- and no integer literal other than 0 and 1 stands outside a
+  `const`; held, for every encoder file under `src/`, by
+  `crates/ns-assembler/tests/encoding_sources.rs`.
+- **A web link is never wrapped or shortened for line width.** A line
+  holding a link may exceed the width, in code comments and documents
+  alike: a URL cut across lines or abbreviated points nowhere.
 - **Object, frame and activation access goes through
   `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to the
   `heap` module (`heap.rs` and its submodules, `heap/value.rs` among them, which

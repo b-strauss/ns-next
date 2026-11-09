@@ -185,6 +185,10 @@ pub(crate) mod machine {
     pub(crate) const TAG_MASK: u64 = super::TAG_MASK;
     /// A `SmallFloat`'s tag, the one bit no other immediate's has.
     pub(crate) const SMALL_FLOAT_TAG: u64 = super::SMALL_FLOAT_TAG;
+    /// What a `SmallFloat`'s encoding takes off a double's bits rotated
+    /// left by one, and its decoding adds back, unless they are ±0.0's
+    /// (`Value::small_float`, `Value::kind`).
+    pub(crate) const SMALL_FLOAT_EXPONENT_OFFSET: u64 = super::SMALL_FLOAT_EXPONENT_OFFSET;
 }
 
 /// A value that holds no handle -- `nil`, a Boolean, a `SmallInteger`, a

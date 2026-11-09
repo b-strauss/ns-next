@@ -1,0 +1,51 @@
+/// `Float`'s `sqrt`, `negated`, `abs`, `isNaN`, `isFinite` and
+/// `isInfinite` of every kind of receiver -- `SmallFloat64`s, the boxed
+/// `1.0e300` and `1.0e-300`, both infinities, NaN, the subnormals -- and
+/// of negative numbers, whose square root is NaN. `negated` flips the
+/// sign and `abs` clears it, so neither rounds. Each operation is a block
+/// run on every receiver, so that machine code runs it once the block is
+/// compiled; a line is the receiver and each result, apart by ` | `.
+class FloatPredicates = () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      receivers = {
+        1.5.
+        -2.25.
+        0.1.
+        1.0e300.
+        -1.0e300.
+        1.0e-300.
+        Float infinity.
+        Float negativeInfinity.
+        Float nan.
+        4.9e-324.
+        -4.9e-324.
+        4.0.
+        2.0.
+        -4.0.
+        1.0e20.
+        (2 raisedTo: 62) asFloat.
+      }.
+      operations = {
+        [:receiver | receiver sqrt].
+        [:receiver | receiver negated].
+        [:receiver | receiver abs].
+        [:receiver | receiver isNaN].
+        [:receiver | receiver isFinite].
+        [:receiver | receiver isInfinite].
+      }.
+    |
+    transcript show: 'receiver | sqrt | negated | abs | isNaN | isFinite | isInfinite'.
+    transcript newLine.
+    receivers do: [:receiver |
+      transcript show: receiver printString.
+      operations do: [:operation |
+        transcript
+            show: ' | ';
+            print: (operation value: receiver).
+      ].
+      transcript newLine.
+    ].
+  )
+)

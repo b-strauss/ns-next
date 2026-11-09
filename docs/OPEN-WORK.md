@@ -58,13 +58,17 @@ lets them escape, made by the exit that finds them live; the
 recompilee found by walking up the stack; a frame that left at a poll
 gone back into its optimized code there; and a copy freed when anything
 it inlined changes; measured -34.0% on the geometric mean against
-`master` ("What inlining moved").
+`master` ("What inlining moved"). Beside it, `Float` in machine code
+is built (2026-11-09; "Floats in machine code"): `Float`'s arithmetic,
+orderings, `=`, `sqrt`, sign, class tests, roundings and `asInteger`
+and a `SmallInteger`'s mixed rows computed bit for bit as their leaves
+compute them, through row stubs in baseline code and as tagged nodes in
+optimized code, every x86_64 binary built for x86-64-v2; measured
+-10.1% on the geometric mean against `master`, Mandelbrot 75% and NBody
+72% faster ("What floats in machine code moved").
 
-The work right after the inlining branch is **`Float` arithmetic in
-SSE2, and the CPU's features asked once** (its entry under "Planned:
-performance and representation" below). The next stage of road step 9
-after it is the **fourth, inlined frame objects and the non-local
-return into an inlined home**, with `NS_NEXT_STRESS_INLINED_FRAMES`
+The next stage of road step 9 is the **fourth, inlined frame objects
+and the non-local return into an inlined home**, with `NS_NEXT_STRESS_INLINED_FRAMES`
 ("Planned: the optimizing JIT", "Closures, frames and non-local return
 in inlined scopes", "Stages"), which lifts the plan's rule that sends
 every callee whose scope would create a block that escapes; it gets its
@@ -549,15 +553,14 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     the mirror method leaf finds its send's selector and argument count by
     a hash lookup of the call's return address (`JitState::call_site`).
     Reading the selector and argument count where the leaf can reach them
-    without a lookup would remove most of what remains. `Float`'s
-    comparisons and arithmetic are such leaf calls: once closures ran in
-    machine code, 83 million of CD's 85 million leaf calls a run were
-    `Float`'s `=`, `-`, `<`, `<=`, `/`, `>` and `+` through the mirror
-    method leaf, at about 3.4 ns a call -- what the interpreter's inline
-    primitives cost, so a shift, not a loss (measured 2026-10-31). The
-    lasting fix is templates for `Float` comparisons and arithmetic, as
-    `SmallInteger`'s have ("What the templates emit inline" in
-    [execution.md](design/execution.md)).
+    without a lookup would remove most of what remains. Such a call costs
+    about 3.4 ns (measured 2026-10-31, when 83 million of CD's 85 million
+    leaf calls a run were `Float`'s); `Float`'s operations no longer make
+    it, run by row stubs and nodes instead ("Floats in machine code" in
+    [execution.md](design/execution.md)), and of what still does,
+    `Integer`'s bit operations are the hottest left ("Templates for
+    `Integer`'s bit operations" under "Planned: performance and
+    representation").
   - **A nested class's accessor on a private or `super` chain exits
     machine code**, as does one whose hidden slot lies past the
     `NESTED_CLASS_STUBS` slots or holds no class yet: only a public or
@@ -1009,6 +1012,26 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     or a field load hoisted out of the loop -- would, and is rebuilt only
     once a rule shows that no store between the load and the poll wrote
     the field.
+  - **What `Float` in machine code left** (2026-11-09), none a wrong
+    answer; [execution.md](design/execution.md), "Floats in machine
+    code":
+    - *The trapped bit conflates two causes.* A site's trapped bit is
+      set by a never-run site's trap as by a failed check, and a site
+      that trapped is sent in the next copy (`build::Laying::expressed`):
+      a `Float` site whose copy was optimized early -- before the site
+      ran, at a budget spent inside a long loop -- traps once at its
+      first run and stays a send through its row stub in every later
+      copy, where the node would have run. A bit of its own for a
+      never-run site's trap would keep the node.
+    - *An `IntegerBinary` with a mixed operation answers no known
+      kind*: an `Integer` arm whose row also takes a `Float` argument
+      may answer a `Float`, so a later node tests its tag again where it
+      tested none before. Measured level, Sieve +3.8% at forty
+      iterations, not separated and without a verdict ("What floats in
+      machine code moved"); a kind that says "a `SmallInteger` on the
+      fast path's way" would remove the test, and the mixed operation
+      can only decline where the right operand is known to be a
+      `SmallInteger`, so it could be left out there.
   - **Scalar replacement of value objects** (noted with the user on
     2026-10-22): a value whose allocation the JIT sees can live in
     registers and never be allocated, as escape analysis does for any
@@ -1064,38 +1087,52 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`) and
     the front end, HotSpot's `OptoLoopAlignment`; 0-3%, sometimes
     negative.
   - **`crc32` (SSE4.2) for the runtime's hash tables**, such as the
-    mirror method leaf's lookup by return address; Rust code, so the
-    `#[target_feature]` question of the SSE2 entry under "Planned:
-    performance and representation" comes with it.
+    mirror method leaf's lookup by return address. Every x86_64 build
+    targets x86-64-v2, which has SSE4.2 ([execution.md](design/execution.md),
+    "Floats in machine code"), so the Rust side needs no
+    `#[target_feature]` and no runtime switch for it; AArch64's `crc32`
+    instructions are optional before ARMv8.1, so the hash there needs
+    its own answer.
 
 Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: performance and representation
 
-- **`Float` arithmetic in SSE2, and the CPU's features asked once** (noted
-  with the user on 2026-11-09, to be taken up after the inlining
-  branch). The x64 encoder emits no SSE instruction, so every `Float`
-  comparison and arithmetic operation is a mirror method leaf call (the
-  step 8 entry's "`Float`'s comparisons and arithmetic are such leaf
-  calls", 83 million of CD's 85 million leaf calls a run). SSE2 is part
-  of every x86-64 CPU, so templates for them -- the `SmallFloat64` tag
-  taken apart inline, `addsd`, `subsd`, `mulsd`, `divsd`, `ucomisd`,
-  `sqrtsd`, `cvtsi2sd` on an `xmm` register role, and their AArch64
-  counterparts `fadd`, `fsub`, `fmul`, `fdiv`, `fcmp` -- need no
-  detection; they serve the baseline code and are what stage 5's
-  unboxed floats build on. Beside them, the JIT asks the CPU's
-  features once at start (`std::arch::is_x86_feature_detected!`, safe)
-  and records them in the macro assembler, which emits an extension's
-  form only where the CPU has it and the base form otherwise: SSE4.1's
-  `roundsd` for `floor`, `truncated` and `rounded`, `lzcnt`, `popcnt`,
-  BMI2's `shlx` and `sarx`, as HotSpot's `VM_Version` and V8's
-  `CpuFeatures` do. Each form is checked against `iced-x86`, and a
-  stress mode forces the base forms, or no test on a machine with the
-  extensions runs them. The Rust side stays built for the x86-64
-  baseline: per-function `#[target_feature]` with a runtime switch
-  needs `unsafe` and would pay only in `LargeInteger`'s digit loops
-  (`mulx`, `adcx`, `adox`), which no benchmark leans on.
-  Unmeasured.
+- **Templates for `Integer`'s bit operations** (decided with the user on
+  2026-11-09 to be an item of its own). `<<`, `>>`, `bitAnd:`, `bitOr:`
+  and `bitXor:` are mirror method leaf calls in machine code, about
+  3.4 ns each; they are the act-leaf calls Mandelbrot still makes,
+  1.27 million a run, `byteAccumulator << 1` once a pixel and `bitXor:`
+  once a byte ("What floats in machine code moved"). A row stub, as the
+  `Float` rows have ("Floats in machine code"), saves about 2.4 ns a
+  call, and a node in optimized code the call itself. BMI2's `shlx` and
+  `sarx`, which shift without the flags and without `cl`, and `lzcnt`,
+  for the shift's overflow check, would save about 0.2 ns more, but lie
+  beyond x86-64-v2: they need a detection at start, a choice in the
+  macro assembler and a stress mode that forces the base forms, or no
+  test on a machine with them runs the base forms -- the machinery the
+  `Float` work decided not to build ("No extension form beyond v2").
+  Whether they pay for it is open; the shifts' base forms are the
+  template. [execution.md](design/execution.md), "Floats in machine
+  code".
+- **Whether x86-64-v2 pays on the Rust side** (2026-11-09). Every
+  x86_64 build is compiled with `target-cpu=x86-64-v2`, decided for the
+  JIT's `roundsd` ("Floats in machine code"), which also lets LLVM use
+  SSE4.2, POPCNT and the rest in the interpreter, the collector and the
+  leaves. The measurement of the `Float` work built both sides with the
+  flag, so what it moves on its own is not known ("What floats in
+  machine code moved", "Not covered"). What would find out: `master`'s
+  shipped configuration against the same tree with the flag, three
+  pinned builds a side, by the protocol of "Measuring". It is a
+  requirement either way; the measurement says only whether the Rust
+  side gains anything from it.
+- **The float row stubs could share their tail** (2026-11-09). Each
+  float row stub is about 455 bytes on x64, its own copy of the box and
+  the return -- 30 stubs, about 14 KB of every zone, 0.1% of its
+  16 MiB. A tail shared by every float stub, entered with the double in
+  a float scratch register, would shrink them to the operation and its
+  operand checks. [execution.md](design/execution.md), "Floats in
+  machine code".
 - **The recompilee walk takes a snapshot tree and a plan at every step**
   (noted at the inlining branch's final review, 2026-11-09).
   `jit::find_recompilee` asks `inlines` at each frame it goes up to,
@@ -1904,6 +1941,19 @@ classes and a class from source with no predecessor are not edited
 
 ## Open design questions
 
+- **A NaN's payload after arithmetic on two NaNs** (2026-11-09). `+`
+  and `*` of two NaNs answer the left operand's payload in machine code
+  and whatever LLVM's code for the Rust leaf answers, which nothing
+  pins -- an operand order it may swap. A program observes the
+  difference through `==` on boxed `Float`s, which compares their bits,
+  and through a `Float64Array`'s bytes; no golden depends on it. The
+  options are to canonicalize every NaN a `Float` operation answers, in
+  the leaf and in machine code, or to pin the leaf's operand order to
+  machine code's. A semantic choice, the user's.
+  [execution.md](design/execution.md), "Inlining" and "Floats in
+  machine code"; [core-library.md](design/core-library.md), "The
+  numeric tower".
+
 - **A forwarding `Proxy` breaks the contract of `==` and `=`** (noted
   2026-11-01). A program's subclass of `Proxy` that forwards every message
   sends `==`, `=`, `hash` and `identityHash` on to its target. For a
@@ -2250,8 +2300,9 @@ classes and a class from source with no predecessor are not edited
   of every object it hashes whether it is a number; and an integer's leaf
   with a `Float` argument (`3 * 2.5`, `3 < 2.5`) goes through the tower's
   classification, where `Float`'s own leaf takes a `SmallInteger` on its
-  fast path. A program keying a `Map` by floats, or hashing large values,
-  would show what they cost. Noted by the numbers sub-project, 2026-10-11.
+  fast path, where machine code does not run the mixed row itself
+  (execution.md, "Floats in machine code"). A program keying a `Map` by
+  floats, or hashing large values, would show what they cost. Noted by the numbers sub-project, 2026-10-11.
   [core-library.md](design/core-library.md), "The numeric tower".
 - **Eden's first touch costs the short allocating programs 1.5% to 6.8%.**
   Measured with road step 4 against its base, Sieve is 6.8% slower
@@ -3011,7 +3062,7 @@ Small, deliberately left, none affecting an outcome.
 
 - The AArch64 encoder's sources are unfetched (noted 2026-11-03): every
   constant of `crates/ns-assembler/src/aarch64.rs` cites a
-  developer.arm.com page, as the convention asks, but the pages' paths
+  support.arm.com page, as the convention asks, but the pages' paths
   were written from the site's naming scheme and never opened, so a
   citation may name a page that does not exist; `tests/encoding_sources.rs`
   checks only the prefix.

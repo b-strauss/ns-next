@@ -55,8 +55,8 @@ const IMMEDIATE_GUARDS: usize = IMMEDIATE_CLASSES + IMMEDIATE_COUNT;
 /// a frame object's 25 and 26, the code table's epoch 27, the machine
 /// entry table's bound 28, the callee closure and whether it counts 29
 /// and 30, a future's class word and header 31 and 32, the unpointed
-/// budget 33, the deopt stress mode's countdown 34, the rest free for the
-/// later stages.
+/// budget 33, the deopt stress mode's countdown 34, a boxed `Float`'s
+/// class word and header 35 and 36, the rest free for the later stages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MachineWord {
     /// Not zero while the run loop's next safepoint must take its slow
@@ -191,6 +191,16 @@ pub(crate) enum MachineWord {
     /// the next (`JitState::invalidation_due_for_stress`).
     /// Unread outside the two modes.
     DeoptCountdown,
+    /// The kernel's `Float` class object, as `ArrayClass` holds the
+    /// `Array` class: the class word of a boxed `Float` machine code
+    /// makes for a result outside the `SmallFloat64` range
+    /// (`MacroAssembler::box_float`).
+    FloatClass,
+    /// The whole header word of a boxed `Float` -- guarding on `Float`'s
+    /// application, of format `SixtyFourBit`, its class word and one
+    /// field after it -- as `Heap::allocate_float` writes it: a boxed
+    /// `Float`'s size never varies, so no count is added to it.
+    FloatHeader,
 }
 
 /// What `MachineWord::UnpointedBudget` holds: negative, and far enough
@@ -236,6 +246,8 @@ impl MachineWord {
             MachineWord::FutureHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 18,
             MachineWord::UnpointedBudget => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 19,
             MachineWord::DeoptCountdown => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 20,
+            MachineWord::FloatClass => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 21,
+            MachineWord::FloatHeader => IMMEDIATE_GUARDS + IMMEDIATE_COUNT + 22,
         }
     }
 }
@@ -244,7 +256,7 @@ impl MachineWord {
 /// later stages put here, so that adding one moves none.
 const WORD_COUNT: usize = 40;
 
-const _: () = assert!(MachineWord::DeoptCountdown.index() < WORD_COUNT);
+const _: () = assert!(MachineWord::FloatHeader.index() < WORD_COUNT);
 
 /// The area. One per heap, created with it and never replaced; a clone
 /// is another handle to the same words, which the activation stack keeps
@@ -336,9 +348,11 @@ mod tests {
         offsets.push(MachineWords::offset(MachineWord::FutureHeader));
         offsets.push(MachineWords::offset(MachineWord::UnpointedBudget));
         offsets.push(MachineWords::offset(MachineWord::DeoptCountdown));
+        offsets.push(MachineWords::offset(MachineWord::FloatClass));
+        offsets.push(MachineWords::offset(MachineWord::FloatHeader));
         offsets.sort_unstable();
         offsets.dedup();
-        assert_eq!(offsets.len(), 25 + 2 * IMMEDIATE_COUNT);
+        assert_eq!(offsets.len(), 27 + 2 * IMMEDIATE_COUNT);
     }
 
     #[test]

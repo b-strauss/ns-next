@@ -13,7 +13,8 @@
 
 use ns_assembler::{
     aarch64, Aarch64, Assembled, Assembler, AssemblyError, BranchForm, BranchKind, Condition,
-    Encoder, Label, LabelReference, Memory, Register, Width,
+    Encoder, FloatArithmetic, FloatRegister, Label, LabelReference, Memory, Register, Rounding,
+    Width,
 };
 use yaxpeax_arch::{Decoder, U8Reader};
 use yaxpeax_arm::armv8::a64::{InstDecoder, Instruction};
@@ -114,6 +115,14 @@ fn name(register: Register) -> String {
 
 fn word_name(register: Register) -> String {
     format!("w{}", register.0)
+}
+
+fn float_registers() -> impl Iterator<Item = FloatRegister> + Clone {
+    (0..32).map(FloatRegister)
+}
+
+fn float_name(register: FloatRegister) -> String {
+    format!("d{}", register.0)
 }
 
 fn hexadecimal(value: u64) -> String {
@@ -425,6 +434,10 @@ fn every_condition_has_its_code() {
         (Condition::AboveOrEqual, "hs"),
         (Condition::Overflow, "vs"),
         (Condition::NoOverflow, "vc"),
+        (Condition::Unordered, "vs"),
+        (Condition::Ordered, "vc"),
+        (Condition::FloatGreater, "gt"),
+        (Condition::FloatGreaterOrEqual, "ge"),
     ];
     for (condition, code) in conditions {
         assert_eq!(
@@ -685,6 +698,213 @@ fn shifts_are_the_bitfield_move_aliases() {
 #[should_panic(expected = "shift by 64")]
 fn a_shift_by_sixty_four_is_refused() {
     text(|assembler| assembler.shift_left(aarch64::X0, 64));
+}
+
+#[test]
+fn rotations_are_ror_the_left_one_by_the_complement() {
+    for target in allowed() {
+        let register = name(target);
+        for count in [0_u8, 1, 3, 32, 63] {
+            assert_eq!(
+                text(|assembler| assembler.rotate_right(target, count)),
+                format!(
+                    "ror {register}, {register}, {}",
+                    hexadecimal(u64::from(count))
+                )
+            );
+            assert_eq!(
+                text(|assembler| assembler.rotate_left(target, count)),
+                format!(
+                    "ror {register}, {register}, {}",
+                    hexadecimal((64 - u64::from(count)) % 64)
+                )
+            );
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "shift by 64")]
+fn a_rotation_by_sixty_four_is_refused() {
+    text(|assembler| assembler.rotate_left(aarch64::X0, 64));
+}
+
+#[test]
+#[should_panic(expected = "stack pointer")]
+fn a_rotation_of_the_stack_pointer_is_refused() {
+    text(|assembler| assembler.rotate_right(aarch64::SP, 3));
+}
+
+#[test]
+fn an_exclusive_or_of_an_immediate_takes_the_bitmask_or_x16() {
+    for target in allowed_or_stack() {
+        for value in LOGICAL_IMMEDIATES.into_iter().chain(IMMEDIATES) {
+            assert_eq!(
+                text(|assembler| assembler.xor_immediate(target, value)),
+                joined(&logical_lines("eor", target, value)),
+                "{value:#x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_float_register_constants_are_the_machine_numbers() {
+    let constants = [
+        aarch64::D0,
+        aarch64::D1,
+        aarch64::D2,
+        aarch64::D3,
+        aarch64::D4,
+        aarch64::D5,
+        aarch64::D6,
+        aarch64::D7,
+        aarch64::D8,
+        aarch64::D9,
+        aarch64::D10,
+        aarch64::D11,
+        aarch64::D12,
+        aarch64::D13,
+        aarch64::D14,
+        aarch64::D15,
+        aarch64::D16,
+        aarch64::D17,
+        aarch64::D18,
+        aarch64::D19,
+        aarch64::D20,
+        aarch64::D21,
+        aarch64::D22,
+        aarch64::D23,
+        aarch64::D24,
+        aarch64::D25,
+        aarch64::D26,
+        aarch64::D27,
+        aarch64::D28,
+        aarch64::D29,
+        aarch64::D30,
+        aarch64::D31,
+    ];
+    for (number, constant) in constants.into_iter().enumerate() {
+        assert_eq!(usize::from(constant.0), number);
+    }
+}
+
+#[test]
+fn moves_and_conversions_between_general_and_float_registers() {
+    for float in float_registers() {
+        for general in allowed() {
+            let (float_text, general_text) = (float_name(float), name(general));
+            assert_eq!(
+                text(|assembler| assembler.move_to_float(float, general)),
+                format!("fmov {float_text}, {general_text}")
+            );
+            assert_eq!(
+                text(|assembler| assembler.move_from_float(general, float)),
+                format!("fmov {general_text}, {float_text}")
+            );
+            assert_eq!(
+                text(|assembler| assembler.integer_to_float(float, general)),
+                format!("scvtf {float_text}, {general_text}")
+            );
+            assert_eq!(
+                text(|assembler| assembler.float_to_integer_truncated(general, float)),
+                format!("fcvtzs {general_text}, {float_text}")
+            );
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "stack pointer")]
+fn a_move_of_the_stack_pointer_to_a_float_register_is_refused() {
+    text(|assembler| assembler.move_to_float(aarch64::D0, aarch64::SP));
+}
+
+#[test]
+#[should_panic(expected = "reserved")]
+fn a_conversion_into_a_reserved_register_is_refused() {
+    text(|assembler| assembler.float_to_integer_truncated(aarch64::X16, aarch64::D0));
+}
+
+#[test]
+fn float_register_operations() {
+    let arithmetic = [
+        (FloatArithmetic::Add, "fadd"),
+        (FloatArithmetic::Subtract, "fsub"),
+        (FloatArithmetic::Multiply, "fmul"),
+        (FloatArithmetic::Divide, "fdiv"),
+    ];
+    let roundings = [
+        (Rounding::TowardNegative, "frintm"),
+        (Rounding::TowardPositive, "frintp"),
+        (Rounding::TowardZero, "frintz"),
+    ];
+    for target in float_registers() {
+        for source in float_registers() {
+            let (left, right) = (float_name(target), float_name(source));
+            assert_eq!(
+                text(|assembler| assembler.move_float(target, source)),
+                format!("fmov {left}, {right}")
+            );
+            for (operation, mnemonic) in arithmetic {
+                assert_eq!(
+                    text(|assembler| assembler.float_arithmetic(operation, target, source)),
+                    format!("{mnemonic} {left}, {left}, {right}")
+                );
+            }
+            assert_eq!(
+                text(|assembler| assembler.float_square_root(target, source)),
+                format!("fsqrt {left}, {right}")
+            );
+            for (rounding, mnemonic) in roundings {
+                assert_eq!(
+                    text(|assembler| assembler.float_round(rounding, target, source)),
+                    format!("{mnemonic} {left}, {right}")
+                );
+            }
+            assert_eq!(
+                text(|assembler| assembler.float_compare(target, source)),
+                format!("fcmp {left}, {right}")
+            );
+        }
+    }
+    assert_eq!(
+        text(|assembler| assembler.float_arithmetic(
+            FloatArithmetic::Add,
+            aarch64::D9,
+            aarch64::D3
+        )),
+        "fadd d9, d9, d3"
+    );
+    assert_eq!(
+        text(|assembler| assembler.float_round(Rounding::TowardZero, aarch64::D2, aarch64::D2)),
+        "frintz d2, d2"
+    );
+}
+
+#[test]
+fn a_float_load_and_store_take_the_forms_of_a_word_s() {
+    for register in float_registers() {
+        for memory in memories(allowed_or_stack()) {
+            let float_text = float_name(register);
+            assert_eq!(
+                text(|assembler| assembler.load_float(register, memory)),
+                joined(&access_lines(Width::Word64, true, &float_text, memory)),
+                "{memory:?}"
+            );
+            assert_eq!(
+                text(|assembler| assembler.store_float(memory, register)),
+                joined(&access_lines(Width::Word64, false, &float_text, memory)),
+                "{memory:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "no float register 32")]
+fn a_float_register_beyond_d31_is_refused() {
+    text(|assembler| assembler.move_float(aarch64::D0, FloatRegister(32)));
 }
 
 /// The instructions of a compare of `left` with a register `right`.
@@ -1380,6 +1600,10 @@ fn branch_kinds() -> Vec<(BranchKind, String)> {
         (Condition::AboveOrEqual, "hs"),
         (Condition::Overflow, "vs"),
         (Condition::NoOverflow, "vc"),
+        (Condition::Unordered, "vs"),
+        (Condition::Ordered, "vc"),
+        (Condition::FloatGreater, "gt"),
+        (Condition::FloatGreaterOrEqual, "ge"),
     ];
     std::iter::once((BranchKind::Unconditional, "b".to_owned()))
         .chain(
