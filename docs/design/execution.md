@@ -1476,57 +1476,69 @@ which they include and whose share was not measured.
 
 ### Against Java
 
-Measured on 2026-11-02 at `b9abfd0c` (the baseline JIT through stage 4),
-asked for by the user: how far ns-next is from the JVM on the sixteen
-programs. Both harnesses ran with `--timed --warm-up 2000 --measure 3000`,
-a steady-state throughput: the default windows of 3 and 20 ms end long
-before HotSpot's C2 has compiled anything, so they would have timed the
-JVM's interpreter and C1 rather than the JVM. ns-next: the three pinned
-release builds of the `measuring-performance` skill (a, b, c, with the
-current shipped code), pooled, three rounds rotating the order of the four
-sides, nine scores a program; the five programs whose score is a fraction
-of a run per second -- too coarse at one fraction digit -- timed instead
-with `bench --iterations 3` on each build, nine runs a program. Java:
-Amazon Corretto 27, `javac --release 21`, the JVM's default flags (C2,
-G1), one JVM a round, three scores a program. One machine, an Intel Core
-Ultra 9 285K under Windows 11; the `dumpbin` check of the three builds was
-not made, since a factor of tens, not percents, is measured.
+Measured on 2026-11-09 at `0e40701f` (the baseline JIT and the optimizing
+tier through its third stage, inlining), asked for by the user: how far
+ns-next is from the JVM on the sixteen programs. Both harnesses ran with
+`--timed --warm-up 2000 --measure 3000`, a steady-state throughput: the
+default windows of 3 and 20 ms end long before HotSpot's C2 has compiled
+anything, so they would have timed the JVM's interpreter and C1 rather
+than the JVM. ns-next: the three pinned release builds of the
+`measuring-performance` skill (a, b, c, with the current shipped code),
+pooled, three rounds rotating the order of the four sides, nine scores a
+program; the five programs whose score is a fraction of a run per second
+or a few runs -- too coarse at one fraction digit -- CD, DeltaBlue,
+Havlak, Mandelbrot and NBody, timed instead with `bench --iterations 3`
+on each build, nine runs a program. Java: Amazon Corretto 27
+(27.0.0.35.1), `javac --release 21`, the JVM's default flags (C2, G1),
+one JVM a round, three scores a program. Every timed process, on both
+sides, ran with the affinity of the eight performance cores (`0xC03C03`).
+One machine, an Intel Core Ultra 9 285K under Windows 11; the `dumpbin`
+check of the three builds was not made, since a factor of tens, not
+percents, is measured.
 
 | Program | ns-next (runs/s, median) | Java (runs/s, median) | Java is faster by |
 |---|---|---|---|
-| Bounce | 5439.6 | 191581.2 | 35.2× |
-| CD | 0.326 (3065 ms a run) | 65.3 | 200× |
-| DeltaBlue | 3.98 (251.5 ms a run) | 174.0 | 43.8× |
-| DeltaBlueTon80 | 589.2 | 20666.1 | 35.1× |
-| Havlak | 0.832 (1203 ms a run) | 44.8 | 53.9× |
-| Json | 298.3 | 3249.1 | 10.9× |
-| List | 5719.4 | 133316.4 | 23.3× |
-| Mandelbrot | 0.552 (1813 ms a run) | 23.3 | 42.2× |
-| NBody | 0.900 (1111 ms a run) | 133.0 | 148× |
-| Permute | 4156.6 | 90040.2 | 21.7× |
-| Queens | 3867.0 | 75979.3 | 19.6× |
-| Richards | 59.1 | 3095.1 | 52.4× |
-| RichardsTon80 | 682.3 | 33214.2 | 48.7× |
-| Sieve | 4403.6 | 231853.8 | 52.7× |
-| Storage | 1918.0 | 41097.7 | 21.4× |
-| Towers | 2353.7 | 48577.5 | 20.6× |
+| Bounce | 14571.8 | 191843.4 | 13.2× |
+| CD | 0.335 (2983 ms a run) | 65.6 | 196× |
+| DeltaBlue | 6.04 (166 ms a run) | 174.8 | 29.0× |
+| DeltaBlueTon80 | 1031.5 | 22098.8 | 21.4× |
+| Havlak | 1.27 (789 ms a run) | 43.7 | 34.5× |
+| Json | 509.8 | 3289.4 | 6.5× |
+| List | 20210.7 | 135139.2 | 6.7× |
+| Mandelbrot | 0.558 (1793 ms a run) | 23.5 | 42.1× |
+| NBody | 1.06 (940 ms a run) | 133.7 | 126× |
+| Permute | 16946.4 | 91314.5 | 5.4× |
+| Queens | 17536.0 | 76750.4 | 4.4× |
+| Richards | 90.1 | 3051.1 | 33.9× |
+| RichardsTon80 | 1364.1 | 33516.2 | 24.6× |
+| Sieve | 6190.6 | 233328.8 | 37.7× |
+| Storage | 2354.1 | 41078.4 | 17.4× |
+| Towers | 5743.7 | 49376.6 | 8.6× |
 
-Java is faster by 38.5× on the geometric mean of the sixteen factors (the
-median 38.7×), from 10.9× on Json to 200× on CD. ns-next's nine values
-spread at most 6.4% of their median (Towers; Json 5.3%, every other
-program under 4.2%, the `bench` timings under 3.5%); Java's three up to
-15.4% (DeltaBlueTon80's one high round; Storage 11.8%, every other program
-under 7.5%) -- noise far below the factors measured. The two far outliers, CD and
-NBody, are the two programs of floating-point arithmetic on objects'
-slots, where the JVM keeps doubles unboxed in registers and fields, and
-ns-next tags or boxes every intermediate result and sends every operator;
-the narrowest, Json, spends its time in string handling, much of it in
-leaves on both sides. What the comparison does not cover: the five slow
-programs' `bench` figures include each application's setup and only one
-discarded warm-up run where Java's are a steady state after two seconds,
-which favours Java slightly; one machine and one JVM; and no JVM tuning.
-The gap is what an optimizing tier -- road step 9 -- is for
-(OPEN-WORK.md).
+Java is faster by 21.0× on the geometric mean of the sixteen factors (the
+median 23.0×), from 4.4× on Queens to 196× on CD. At `b9abfd0c`, the
+baseline JIT alone, the geometric mean was 38.5×; Java's scores are
+within a few percent of that comparison's, so the difference is
+ns-next's. ns-next's nine values spread at most 10.4% of their median
+(Mandelbrot, for one `bench` on build c at 1968 ms, two of its three runs
+slow, the other eight 1781–1808 ms); every other program under 4.8%
+(Json 4.7%, RichardsTon80 3.8%), the other `bench` timings under 2.7%,
+NBody's nine at 926–951 ms. Java's three spread up to 25.2% (DeltaBlue,
+153–197, rising from round to round; Storage 8.7%, every other program
+under 3.3%) -- noise far below the factors measured. The two far
+outliers, CD and NBody, are the two programs of floating-point
+arithmetic on objects' slots, where the JVM keeps doubles unboxed in
+registers and fields, and ns-next tags or boxes every intermediate
+result and calls a leaf for every `Float` operator, since machine code
+has no `Float` templates yet; the narrowest, Queens and Permute, under
+6×, are programs of `SmallInteger` arithmetic, indexed access and small
+sends, the code inlining turns into nodes. What the comparison does not
+cover: the five slow programs' `bench` figures include each
+application's setup and only one discarded warm-up run where Java's are
+a steady state after two seconds, which favours Java slightly; one
+machine and one JVM; and no JVM tuning. What remains of
+the gap is what `Float` arithmetic in SSE2 and the stages of road step 9
+after inlining are for (OPEN-WORK.md, "Next").
 
 ### What the eight-byte value moved
 
