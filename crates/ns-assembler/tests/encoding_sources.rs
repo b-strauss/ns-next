@@ -14,11 +14,17 @@
 use std::path::{Path, PathBuf};
 
 /// What a constant of an encoder must cite, by the encoder: the file's stem
-/// or, for an encoder split into a directory, the directory's name.
-fn required_citation(encoder: &str) -> &'static str {
+/// or, for an encoder split into a directory, the directory's name. Any one
+/// of the sources listed satisfies the rule: for AArch64 the instruction
+/// pages and encodings (DDI0602) or the procedure call standard on ARM's
+/// GitHub (`abi-aa`).
+fn required_citations(encoder: &str) -> &'static [&'static str] {
     match encoder {
-        "x64" => "Intel SDM Vol. 2",
-        "aarch64" => "https://support.arm.com/documentation/",
+        "x64" => &["Intel SDM Vol. 2"],
+        "aarch64" => &[
+            "https://support.arm.com/documentation/ddi0602/",
+            "https://github.com/ARM-software/abi-aa/",
+        ],
         _ => panic!("{encoder} is an encoder with no citation rule"),
     }
 }
@@ -149,7 +155,7 @@ fn starts_const_item(code: &str) -> bool {
 /// Every violation of the rule in `source`, a file of `encoder` at `path`,
 /// as `path:line: what`.
 fn violations(path: &str, encoder: &str, source: &str) -> Vec<String> {
-    let citation = required_citation(encoder);
+    let citations = required_citations(encoder).join(" or ");
     let lines: Vec<&str> = source.lines().collect();
     let mut found = Vec::new();
     let mut state = Lexical::Code;
@@ -158,9 +164,9 @@ fn violations(path: &str, encoder: &str, source: &str) -> Vec<String> {
         let code = code_of(line, &mut state);
         if inside_const.is_none() && starts_const_item(&code) {
             inside_const = Some(index);
-            if !documented_with(&lines, index, citation) {
+            if !documented_with(&lines, index, required_citations(encoder)) {
                 found.push(format!(
-                    "{path}:{}: a const without a `///` comment citing `{citation}`: {}",
+                    "{path}:{}: a const without a `///` comment citing {citations}: {}",
                     index + 1,
                     line.trim()
                 ));
@@ -180,8 +186,8 @@ fn violations(path: &str, encoder: &str, source: &str) -> Vec<String> {
 }
 
 /// Whether the `///` lines directly above the item at `start` (attributes
-/// between them skipped) contain `citation`.
-fn documented_with(lines: &[&str], start: usize, citation: &str) -> bool {
+/// between them skipped) contain one of `citations`.
+fn documented_with(lines: &[&str], start: usize, citations: &[&str]) -> bool {
     let mut documentation = String::new();
     for line in lines[..start].iter().rev() {
         let trimmed = line.trim();
@@ -195,7 +201,9 @@ fn documented_with(lines: &[&str], start: usize, citation: &str) -> bool {
             break;
         }
     }
-    documentation.contains(citation)
+    citations
+        .iter()
+        .any(|citation| documentation.contains(citation))
 }
 
 /// The encoder source files under `source_directory`, as paths relative to
@@ -303,7 +311,7 @@ fn body(code: &mut Vec<u8>) {
 }
 
 #[test]
-fn an_arm_constant_cites_a_support_arm_com_page() {
+fn an_arm_constant_cites_an_instruction_page_or_the_procedure_call_standard() {
     let sourced = "\
 /// `MOVZ` <https://support.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero->
 const MOVE_WIDE_ZERO: u32 = 0x5280_0000;
@@ -311,6 +319,12 @@ const MOVE_WIDE_ZERO: u32 = 0x5280_0000;
     assert!(violations("aarch64.rs", "aarch64", sourced).is_empty());
     let unsourced = sourced.replace("support.arm.com", "example.com");
     assert_eq!(violations("aarch64.rs", "aarch64", &unsourced).len(), 1);
+    let register = "/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose Registers)
+const FRAME_POINTER: u32 = 29;
+";
+    assert!(violations("aarch64.rs", "aarch64", register).is_empty());
+    let document_root = sourced.replace("ddi0602", "ddi0487");
+    assert_eq!(violations("aarch64.rs", "aarch64", &document_root).len(), 1);
 }
 
 #[test]

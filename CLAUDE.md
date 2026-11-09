@@ -827,9 +827,12 @@ and Are We Fast Yet (`benchmarks/are-we-fast-yet/java/`).
   commit (`core-library.md`, "The embedded shipped code").
 - **Every encoding constant of `ns-assembler` is a named `const` documented with its
   official source** -- the Intel SDM volume and section title for x64, the
-  support.arm.com page of the instruction for AArch64 -- and no integer literal
-  other than 0 and 1 stands outside a `const`; held, for every encoder file under
-  `src/`, by `crates/ns-assembler/tests/encoding_sources.rs`.
+  support.arm.com page of the instruction (DDI0602) for an AArch64 instruction,
+  the section of the AAPCS64 in ARM-software/abi-aa on GitHub for the calling
+  convention; a link points at the concrete page or section, never at a
+  document -- and no integer literal other than 0 and 1 stands outside a
+  `const`; held, for every encoder file under `src/`, by
+  `crates/ns-assembler/tests/encoding_sources.rs`.
 - **A web link is never wrapped or shortened for line width.** A line
   holding a link may exceed the width, in code comments and documents
   alike: a URL cut across lines or abbreviated points nowhere.

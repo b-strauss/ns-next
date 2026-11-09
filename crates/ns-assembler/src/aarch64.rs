@@ -28,7 +28,8 @@
 //! Every opcode, field shift, field mask, condition code and limit is a
 //! named constant whose documentation cites the instruction's page of the
 //! Arm A64 Instruction Set Architecture on support.arm.com, and the
-//! registers cite the Procedure Call Standard there. No numeric pattern
+//! registers cite the section of the Procedure Call Standard (AAPCS64) in
+//! ARM-software/abi-aa on GitHub. No numeric pattern
 //! appears in a function body; `tests/encoding_sources.rs` holds every
 //! encoder file to that.
 
@@ -39,7 +40,7 @@ use crate::{
 
 /// `x0`: register number 0, as an instruction's register fields name it.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -48,7 +49,7 @@ use crate::{
 pub const X0: Register = Register(0);
 /// `x1`: register number 1.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -57,7 +58,7 @@ pub const X0: Register = Register(0);
 pub const X1: Register = Register(1);
 /// `x2`: register number 2.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -66,7 +67,7 @@ pub const X1: Register = Register(1);
 pub const X2: Register = Register(2);
 /// `x3`: register number 3.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -75,7 +76,7 @@ pub const X2: Register = Register(2);
 pub const X3: Register = Register(3);
 /// `x4`: register number 4.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -84,7 +85,7 @@ pub const X3: Register = Register(3);
 pub const X4: Register = Register(4);
 /// `x5`: register number 5.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -93,7 +94,7 @@ pub const X4: Register = Register(4);
 pub const X5: Register = Register(5);
 /// `x6`: register number 6.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -102,7 +103,7 @@ pub const X5: Register = Register(5);
 pub const X6: Register = Register(6);
 /// `x7`: register number 7.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -111,7 +112,7 @@ pub const X6: Register = Register(6);
 pub const X7: Register = Register(7);
 /// `x8`: register number 8.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -120,7 +121,7 @@ pub const X7: Register = Register(7);
 pub const X8: Register = Register(8);
 /// `x9`: register number 9.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -129,119 +130,119 @@ pub const X8: Register = Register(8);
 pub const X9: Register = Register(9);
 /// `x10`: register number 10.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X10: Register = Register(10);
 /// `x11`: register number 11.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X11: Register = Register(11);
 /// `x12`: register number 12.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X12: Register = Register(12);
 /// `x13`: register number 13.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X13: Register = Register(13);
 /// `x14`: register number 14.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X14: Register = Register(14);
 /// `x15`: register number 15.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X15: Register = Register(15);
 /// `x16`: register number 16, IP0, the encoder's first scratch register
 /// and never an operand.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers: IP0, the intra-procedure-call scratch register).
 pub const X16: Register = Register(16);
 /// `x17`: register number 17, IP1, the encoder's second scratch register
 /// and never an operand.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers: IP1, the intra-procedure-call scratch register).
 pub const X17: Register = Register(17);
 /// `x18`: register number 18, the platform register, never an operand on
 /// any target.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers: the platform register).
 pub const X18: Register = Register(18);
 /// `x19`: register number 19.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X19: Register = Register(19);
 /// `x20`: register number 20.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X20: Register = Register(20);
 /// `x21`: register number 21.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X21: Register = Register(21);
 /// `x22`: register number 22.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X22: Register = Register(22);
 /// `x23`: register number 23.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X23: Register = Register(23);
 /// `x24`: register number 24.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X24: Register = Register(24);
 /// `x25`: register number 25.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X25: Register = Register(25);
 /// `x26`: register number 26.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X26: Register = Register(26);
 /// `x27`: register number 27.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X27: Register = Register(27);
 /// `x28`: register number 28.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 pub const X28: Register = Register(28);
 /// `x29`: register number 29, the frame pointer of the procedure call
 /// standard.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers: the frame pointer).
 pub const X29: Register = Register(29);
 /// `x30`: register number 30, the link register a call writes, owned by
 /// the call convention and never an operand.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers: the link register).
 pub const X30: Register = Register(30);
 /// `sp`, the stack pointer: register number 31 where an instruction's
 /// field reads it as the stack pointer, never the zero register, which no
 /// operand names.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers: the stack pointer).
 #[expect(
     clippy::min_ident_chars,
@@ -252,7 +253,7 @@ pub const SP: Register = Register(31);
 /// `d0`: SIMD and floating-point register number 0, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -262,7 +263,7 @@ pub const D0: FloatRegister = FloatRegister(0);
 /// `d1`: SIMD and floating-point register number 1, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -272,7 +273,7 @@ pub const D1: FloatRegister = FloatRegister(1);
 /// `d2`: SIMD and floating-point register number 2, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -282,7 +283,7 @@ pub const D2: FloatRegister = FloatRegister(2);
 /// `d3`: SIMD and floating-point register number 3, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -292,7 +293,7 @@ pub const D3: FloatRegister = FloatRegister(3);
 /// `d4`: SIMD and floating-point register number 4, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -302,7 +303,7 @@ pub const D4: FloatRegister = FloatRegister(4);
 /// `d5`: SIMD and floating-point register number 5, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -312,7 +313,7 @@ pub const D5: FloatRegister = FloatRegister(5);
 /// `d6`: SIMD and floating-point register number 6, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -322,7 +323,7 @@ pub const D6: FloatRegister = FloatRegister(6);
 /// `d7`: SIMD and floating-point register number 7, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -332,7 +333,7 @@ pub const D7: FloatRegister = FloatRegister(7);
 /// `d8`: SIMD and floating-point register number 8, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -342,7 +343,7 @@ pub const D8: FloatRegister = FloatRegister(8);
 /// `d9`: SIMD and floating-point register number 9, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 #[expect(
     clippy::min_ident_chars,
@@ -352,146 +353,146 @@ pub const D9: FloatRegister = FloatRegister(9);
 /// `d10`: SIMD and floating-point register number 10, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D10: FloatRegister = FloatRegister(10);
 /// `d11`: SIMD and floating-point register number 11, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D11: FloatRegister = FloatRegister(11);
 /// `d12`: SIMD and floating-point register number 12, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D12: FloatRegister = FloatRegister(12);
 /// `d13`: SIMD and floating-point register number 13, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D13: FloatRegister = FloatRegister(13);
 /// `d14`: SIMD and floating-point register number 14, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D14: FloatRegister = FloatRegister(14);
 /// `d15`: SIMD and floating-point register number 15, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D15: FloatRegister = FloatRegister(15);
 /// `d16`: SIMD and floating-point register number 16, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D16: FloatRegister = FloatRegister(16);
 /// `d17`: SIMD and floating-point register number 17, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D17: FloatRegister = FloatRegister(17);
 /// `d18`: SIMD and floating-point register number 18, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D18: FloatRegister = FloatRegister(18);
 /// `d19`: SIMD and floating-point register number 19, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D19: FloatRegister = FloatRegister(19);
 /// `d20`: SIMD and floating-point register number 20, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D20: FloatRegister = FloatRegister(20);
 /// `d21`: SIMD and floating-point register number 21, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D21: FloatRegister = FloatRegister(21);
 /// `d22`: SIMD and floating-point register number 22, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D22: FloatRegister = FloatRegister(22);
 /// `d23`: SIMD and floating-point register number 23, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D23: FloatRegister = FloatRegister(23);
 /// `d24`: SIMD and floating-point register number 24, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D24: FloatRegister = FloatRegister(24);
 /// `d25`: SIMD and floating-point register number 25, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D25: FloatRegister = FloatRegister(25);
 /// `d26`: SIMD and floating-point register number 26, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D26: FloatRegister = FloatRegister(26);
 /// `d27`: SIMD and floating-point register number 27, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D27: FloatRegister = FloatRegister(27);
 /// `d28`: SIMD and floating-point register number 28, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D28: FloatRegister = FloatRegister(28);
 /// `d29`: SIMD and floating-point register number 29, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D29: FloatRegister = FloatRegister(29);
 /// `d30`: SIMD and floating-point register number 30, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D30: FloatRegister = FloatRegister(30);
 /// `d31`: SIMD and floating-point register number 31, its 64-bit
 /// view.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 pub const D31: FloatRegister = FloatRegister(31);
 
 /// The number of SIMD and floating-point registers, `v0` to `v31`.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (SIMD and
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#simd-and-floating-point-registers> (SIMD and
 /// Floating-Point Registers).
 const FLOAT_REGISTER_COUNT: u8 = 32;
 
 /// The encoder's first scratch register: the immediate or displacement
 /// that does not fit its instruction, or a copy of the stack pointer.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers: IP0 may be used as a temporary register between subroutine
 /// calls).
 const SCRATCH: Register = X16;
@@ -500,7 +501,7 @@ const SCRATCH: Register = X16;
 /// word of memory, or an immediate while [`SCRATCH`] holds the stack
 /// pointer.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers: IP1 may be used as a temporary register between subroutine
 /// calls).
 const SECOND_SCRATCH: Register = X17;
@@ -509,7 +510,7 @@ const SECOND_SCRATCH: Register = X17;
 /// platform register, which some targets reserve, and the link register,
 /// which every call writes.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (General-purpose
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#general-purpose-registers> (General-purpose
 /// Registers).
 const RESERVED: [Register; 4] = [X16, X17, X18, X30];
 
@@ -527,14 +528,14 @@ pub struct Aarch64;
 /// The size in bytes of every A64 instruction, and the alignment each
 /// must have in memory.
 ///
-/// <https://support.arm.com/documentation/ddi0487/latest> (A64
+/// <https://support.arm.com/documentation/ddi0602/latest/Index-by-Encoding> (A64
 /// instructions are 32 bits wide and word-aligned).
 const INSTRUCTION_BYTES: u32 = 4;
 
 /// The bytes the stack pointer moves by: it stays 16-byte aligned, so a
 /// return address or a saved register takes a slot of 16.
 ///
-/// <https://support.arm.com/documentation/ihi0055/latest> (The Stack:
+/// <https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst#universal-stack-constraints> (The Stack:
 /// SP mod 16 = 0).
 const STACK_SLOT_BYTES: i32 = 16;
 
